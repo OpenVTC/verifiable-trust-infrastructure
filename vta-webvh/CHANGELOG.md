@@ -2,6 +2,53 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.24](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-webvh-v0.2.23...vta-webvh-v0.2.24) — 2026-09-26
+
+
+### Security
+
+- **workspace**: No type derives Debug over secret material ([#1711](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1711))
+
+A derived `Debug` prints every field, so on a type holding a private key, a
+  seed or mnemonic, a bearer or refresh token or a password it puts the secret
+  into anything that formats the value — a `tracing` field, an `unwrap` or
+  `expect` on an enclosing type, a test failure, a panic message. About 55 types
+  across twelve crates did exactly that. It surfaced when `vtc-client` began
+  holding an operator's key in a `HolderKey`, whose derived `Debug` printed it.
+
+  Each now has a hand-written `Debug` that reports the secret as `<redacted>` —
+  presence kept visible for an `Option` — and prints every other field as
+  before, the idiom the workspace already used where someone had thought of it.
+  Among them: `HolderKey`, `Session`, `ClientIdentity`, `CredentialBundle`,
+  `SecretEntry`, `AgentConfig`, `AgentConnect`, `AuthResult`, the key-import and
+  seed-rotation requests (mnemonic), `SeedRecord`, `MnemonicExportResponse`,
+  `SecretsConfig` (seed, Vault token, AppRole secret id), `VaultSecret`, its
+  `CustomField` values and secure notes, `TotpSeed`, the VTC install flow's
+  ephemeral signing keys, setup tokens and install JWT, the VTC backup's signing
+  bundle and password, mobile-core's X25519 and Ed25519 private keys, auth tokens
+  and push tokens (including the Web Push auth secret), and vta-mcp's
+  `--agent-key`/`--holder-key`/`--agent-secrets`.
+
+  `Zeroizing<T>` is not a redaction — its `Debug` prints the inner value — so the
+  fields wrapped in it were redacted too.
+
+  `vta-sdk/tests/secret_debug_census.rs` keeps the class closed. It parses every
+  workspace crate with `syn` and fails on a `#[derive(Debug)]` struct or enum
+  whose field has a secret-sounding name (`*_key`, `*token*`, `*secret*`,
+  `seed*`, `password`, `mnemonic`, `jwt`, and `secret_id` despite its `_id`)
+  and a raw type (`String`, bytes, `Zeroizing<_>`, optionally in an `Option` or
+  behind a reference). A field whose type is another workspace type inherits that
+  type's `Debug`, which is checked where it is defined. What the name rule
+  catches and is not a secret — a claim-type vocabulary token, a webvh path
+  called `mnemonic`, the name of an entry in a secret store — is on a
+  shrink-only list with what the field holds, and the census also refuses a
+  stale entry and a walk that has stopped finding types.
+
+  Not an API change: every type still implements `Debug`; only what it prints
+  differs, and no test asserted on the old output.
+
+
+
 ## [0.2.23](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-webvh-v0.2.22...vta-webvh-v0.2.23) — 2026-09-24
 
 

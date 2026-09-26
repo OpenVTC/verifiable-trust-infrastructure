@@ -2,6 +2,69 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.23.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.23.1...vta-cli-common-v0.23.2) — 2026-09-26
+
+
+### Added
+
+- **pnm**: Answer this VTA's consent requests from the CLI ([#1761](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1761))
+
+A task under a `requires: consent` rule waits for its approver set, and only
+  a device enrolled for the task-consent push could answer. `pnm` showed the
+  requester the code and waited.
+
+  `pnm consent {show,approve,deny} <file|->` is the approver's side. It takes
+  the refusal the requester relays (the body, its `details`, or a bare request
+  document) and picks the request addressed to this profile. It checks that
+  this VTA signed it, that it is addressed to this approver and that it has
+  not expired. Approving requires typing the requester's match code, or
+  `--match-code`. The decision is dispatched as a Trust Task, which the client
+  signs with the profile's key under assertionMethod.
+
+  The operator-facing half is now shared with `cnm consent`: reading the
+  input, what is shown, the code comparison, the report and the refusal
+  hints, all in `vta_cli_common::consent_approve`. `cnm consent` moves onto
+  it, keeping its VTC-specific hint for `permissionDenied`.
+
+  Tested end to end in `delegated_consent_e2e`: a real VTA-signed request
+  verifies through `vta_sdk::task_consent`. It is refused when it is
+  addressed to someone else or has been tampered with, and the decision
+  built from it is granted.
+
+- **cnm**: Answer the community's consent requests from the CLI (VTI-APV-014) ([#1759](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1759))
+
+Making or widening an unrestricted administrator at the VTC needs another
+  unrestricted administrator's consent (VTI-APV-014), but only a device
+  enrolled to handle the task-consent push could answer. An approver with a
+  cnm profile had no way to sign a decision.
+
+  `cnm consent {show,approve,deny} <file|->` takes the request the
+  requester relays (the refusal body, its `details`, or a bare request
+  document), picks the one addressed to this profile, and verifies it. The
+  VTC must have signed it, it must be addressed to this approver, and it
+  must not have expired. Approving requires typing the requester's match
+  code (or `--match-code`); a mismatch sends nothing. The decision is
+  signed with the profile's key under assertionMethod and posted to the
+  document endpoint.
+
+  The approver's shared half is a new `vta_sdk::task_consent` module:
+  `match_code`, `ConsentRequest::verify` returning a
+  `VerifiedConsentRequest` (the only type a decision can be built from),
+  and `decision`. `vtc-client` gains `decide_task_consent`.
+
+  It also fixes a mismatch between the two screens: the requester prompt
+  in `vta_cli_common::consent` printed the whole `zQm…` digest as the
+  "code", while approver devices show six hex characters of the decoded
+  digest. Both now call `vta_sdk::task_consent::match_code`, and so does
+  `vta-mobile-core`, which drops its copy.
+
+  Tested end to end in `unrestricted_admin_consent`: a real VTC-signed
+  request verifies through the SDK, is refused when it is addressed to
+  someone else, comes from another issuer, or has been tampered with, and
+  the decision built from it grants the consent.
+
+
+
 ## [0.23.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.23.0...vta-cli-common-v0.23.1) — 2026-09-24
 
 

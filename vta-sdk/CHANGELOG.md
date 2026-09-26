@@ -2,6 +2,197 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.53.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.52.0...vta-sdk-v0.53.0) — 2026-09-26
+
+
+### Added
+
+- **cnm**: Answer the community's consent requests from the CLI (VTI-APV-014) ([#1759](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1759))
+
+Making or widening an unrestricted administrator at the VTC needs another
+  unrestricted administrator's consent (VTI-APV-014), but only a device
+  enrolled to handle the task-consent push could answer. An approver with a
+  cnm profile had no way to sign a decision.
+
+  `cnm consent {show,approve,deny} <file|->` takes the request the
+  requester relays (the refusal body, its `details`, or a bare request
+  document), picks the one addressed to this profile, and verifies it. The
+  VTC must have signed it, it must be addressed to this approver, and it
+  must not have expired. Approving requires typing the requester's match
+  code (or `--match-code`); a mismatch sends nothing. The decision is
+  signed with the profile's key under assertionMethod and posted to the
+  document endpoint.
+
+  The approver's shared half is a new `vta_sdk::task_consent` module:
+  `match_code`, `ConsentRequest::verify` returning a
+  `VerifiedConsentRequest` (the only type a decision can be built from),
+  and `decision`. `vtc-client` gains `decide_task_consent`.
+
+  It also fixes a mismatch between the two screens: the requester prompt
+  in `vta_cli_common::consent` printed the whole `zQm…` digest as the
+  "code", while approver devices show six hex characters of the decoded
+  digest. Both now call `vta_sdk::task_consent::match_code`, and so does
+  `vta-mobile-core`, which drops its copy.
+
+  Tested end to end in `unrestricted_admin_consent`: a real VTC-signed
+  request verifies through the SDK, is refused when it is addressed to
+  someone else, comes from another issuer, or has been tampered with, and
+  the decision built from it grants the consent.
+
+- **vtc-service**: Git-ns drift/resolve, namespace/reseat, view 0.2 ([#1703](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1703))
+
+* feat(vtc-service): git-ns drift/resolve, namespace/reseat, view 0.2
+
+  Implements the git-ns tasks added in trust-tasks #625 and #627, on
+  trust-tasks-rs 0.22.5.
+
+  - git-ns/drift/resolve 0.1: an owner adopts a forge-side role as the
+    git-ns/right/grant it is (same fixed rules, policy, consent class), or
+    reverts a forge-side change through the bridge. Items are selected by
+    type, account (role items) and observed (required to adopt). Every
+    declared code: driftNotFound, notAdoptable, accountNotLinked,
+    noMatchingRight, notRevertible, plus the family's codes.
+  - git-ns/bridge/job 0.2: sent only for the revert of a roleAdded item
+    (projectRoles with removeAccounts), in-line, so a bridge implementing
+    only 0.1 is answered notRevertible; every other job stays 0.1.
+  - git-ns/namespace/reseat 0.1: a community administrator grants a
+    permanent git.ns.admin on a headless namespace to a current member,
+    atomically with the headless check; notHeadless otherwise. The audit
+    record keeps the statement and how earlier admin records ended.
+  - git-ns/view 0.2 (served beside 0.1): the caller's own linked forge
+    accounts, narrowed to the resource's forge.
+  - git-ns/bridge/event 0.2 (served beside 0.1, same handler): a transfer
+    detaches wherever it goes; an event any of whose resources, drift items
+    included, lies outside its namespace is refused before anything is
+    applied.
+  - cnm: `cnm git drift resolve`, `cnm git reseat`; `cnm git view` asks for
+    view 0.2. vtc-client gains the matching methods.
+  - Default gitNamespace policy: namespace.reseat receives a right;
+    drift.revert documented.
+
+
+
+### Security
+
+- **resolver**: One bounded DID-document cache per node, re-resolved once before a verification fails (VTI-KEY-134) ([#1737](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1737))
+
+* security(resolver)!: one bounded DID-document cache per node, re-resolved once before a verification fails (VTI-KEY-134)
+
+  The VTC ran two DID-document caches: the app resolver built in
+  `init_auth`, and a second one the messaging TDK built for itself
+  because it was given none. Both used the SDK defaults of a 300 s TTL and
+  100 entries. Every DIDComm and TSP message on the mediator socket was
+  checked against a cache the REST and Trust Task paths could not see or
+  evict. Neither cache was ever refreshed when a verification failed, so
+  a peer that rotated was refused as a forger until its entry aged out.
+
+  Bounded TTL (key-roles, dtgwg-vti-spec #42: VTI-KEY-060/062/122/123/134):
+
+  - A new `[did_cache]` section (`vti_common::config::DidCacheConfig`)
+    holds `ttl_secs` (default 60, refused outside 1..=300) and `capacity`
+    (default 1000). The VTA and the VTC read the same type.
+  - The TTL is what bounds how long a key revoked for compromise keeps
+    verifying: VTI-KEY-123 allows no overlap, and nothing else notices a
+    removal. A new key does not wait on the TTL, because of the refresh
+    below. 60 s caps the revocation window at a minute, for one resolution
+    per active DID per minute. 300 s, the SDK default and the old
+    behaviour, is the ceiling.
+  - `vta_sdk::resolver::build_verifier_did_cache_config` builds it, with
+    the webvh host policy the VTA already used. The VTC now uses that
+    policy too, so the private-host opt-in reaches it as well.
+
+  One cache:
+
+  - The VTC messaging TDK is handed the app resolver.
+  - The VTA already shared its resolver. Its fallback when there is no
+    app resolver now gets the same bounds, not the SDK defaults.
+
+  Re-resolve once, then fail closed (`vta_sdk::did_refresh`):
+
+  - `resolve_for_vm`: when a cached document does not list the method a
+    proof names, re-resolve it fresh once. This covers every Trust Task
+    proof on both nodes (`TrustTaskVmResolver`) and the VTC credential/VP
+    resolver (`DidVmResolver`).
+  - `verify_trust_task_proof_with`: when verification fails and the
+    signer's document came from the cache, evict it and verify once more.
+    This covers a key id kept with its material replaced.
+  - `unpack_refreshing_sender`: when an authcrypt unpack fails, evict the
+    sender named in the protected header (`skid`) and retry once. It is
+    used on the REST DIDComm auth and refresh paths of both nodes.
+  - Each forced refresh is rate-limited per DID (5 s, with at most 4096
+    DIDs tracked). A failing proof is something anyone can send, and
+    without the limit each one would make this node fetch a third party's
+    document.
+
+- **vta**: Key custody — seed and key material only through audited, scope-checked doors (FTL-29904) ([#1715](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1715))
+
+Every key the VTA holds is a pure function of the master seed and a BIP-32
+  path, so choosing a path is holding a key. FTL-29904 reported that a
+  context-scoped admin could list and rotate the instance-wide seed; the review
+  found the same mistake, a gate asking about the caller's role or context and
+  never about the path or key it named, in five more places:
+
+  - seeds list/rotate: gated on the admin role on REST, Trust Task AND DIDComm
+    (the report named two transports). Now super-admin, enforced once in the
+    operation so all three share one audited refusal (VTI-ACL-022, VTI-ACL-092).
+  - keys/create accepted any derivationPath and recorded the key under the
+    caller's own context, so keys/export-secret released it: another tenant's
+    key or the VTA's own did:webvh update key. Only a super-admin may choose a
+    path, and the path must belong to the record's context (VTI-KEY-030/032).
+  - keys/derive-and-sign(-document) signed as any path for any admin. Now
+    super-admin only and confined to the delegated-identity subtree m/26'/9';
+    every signature is audited with a digest of what was signed (VTI-VTA-006).
+  - vault/sign-trust-task and vault/proxy-login loaded the entry's signingKeyId
+    under InternalAuthority with no scope check, so an entry naming
+    {vta_did}#key-0 made the VTA sign as itself (reachable by `initiator`). The
+    key must now be in the entry's context subtree, at use and at upsert.
+  - credentials/issue and credentials/revoke (VTA-signed VCs over caller-chosen
+    claims) required only the admin role. Now super-admin.
+  - vault/credentials/receive could bind an mdoc to a context-less key without
+    super-admin.
+
+- **workspace**: No type derives Debug over secret material ([#1711](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1711))
+
+A derived `Debug` prints every field, so on a type holding a private key, a
+  seed or mnemonic, a bearer or refresh token or a password it puts the secret
+  into anything that formats the value — a `tracing` field, an `unwrap` or
+  `expect` on an enclosing type, a test failure, a panic message. About 55 types
+  across twelve crates did exactly that. It surfaced when `vtc-client` began
+  holding an operator's key in a `HolderKey`, whose derived `Debug` printed it.
+
+  Each now has a hand-written `Debug` that reports the secret as `<redacted>` —
+  presence kept visible for an `Option` — and prints every other field as
+  before, the idiom the workspace already used where someone had thought of it.
+  Among them: `HolderKey`, `Session`, `ClientIdentity`, `CredentialBundle`,
+  `SecretEntry`, `AgentConfig`, `AgentConnect`, `AuthResult`, the key-import and
+  seed-rotation requests (mnemonic), `SeedRecord`, `MnemonicExportResponse`,
+  `SecretsConfig` (seed, Vault token, AppRole secret id), `VaultSecret`, its
+  `CustomField` values and secure notes, `TotpSeed`, the VTC install flow's
+  ephemeral signing keys, setup tokens and install JWT, the VTC backup's signing
+  bundle and password, mobile-core's X25519 and Ed25519 private keys, auth tokens
+  and push tokens (including the Web Push auth secret), and vta-mcp's
+  `--agent-key`/`--holder-key`/`--agent-secrets`.
+
+  `Zeroizing<T>` is not a redaction — its `Debug` prints the inner value — so the
+  fields wrapped in it were redacted too.
+
+  `vta-sdk/tests/secret_debug_census.rs` keeps the class closed. It parses every
+  workspace crate with `syn` and fails on a `#[derive(Debug)]` struct or enum
+  whose field has a secret-sounding name (`*_key`, `*token*`, `*secret*`,
+  `seed*`, `password`, `mnemonic`, `jwt`, and `secret_id` despite its `_id`)
+  and a raw type (`String`, bytes, `Zeroizing<_>`, optionally in an `Option` or
+  behind a reference). A field whose type is another workspace type inherits that
+  type's `Debug`, which is checked where it is defined. What the name rule
+  catches and is not a secret — a claim-type vocabulary token, a webvh path
+  called `mnemonic`, the name of an entry in a secret store — is on a
+  shrink-only list with what the field holds, and the census also refuses a
+  stale entry and a walk that has stopped finding types.
+
+  Not an API change: every type still implements `Debug`; only what it prints
+  differs, and no test asserted on the old output.
+
+
+
 ## [0.52.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.51.0...vta-sdk-v0.52.0) — 2026-09-24
 
 
