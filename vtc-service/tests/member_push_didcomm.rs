@@ -116,10 +116,9 @@ async fn settle(
 /// (class 3).
 ///
 /// The peer stays offline until the VTC's outbox poll has seen the TSP message
-/// waiting at the mediator: the delivery layer counts a collection only once it
-/// has observed the message queued, so a peer that collected before the first
-/// poll would leave nothing to confirm (the same holds for DIDComm). The peer
-/// advertises TSP alone, so a push that fell back to DIDComm could not pass.
+/// waiting at the mediator, so this also covers the outbox listing the delivery
+/// layer falls back to. The peer advertises TSP alone, so a push that fell back
+/// to DIDComm could not pass.
 #[cfg(feature = "tsp")]
 #[tokio::test]
 async fn a_tsp_peer_gets_the_document_over_tsp_and_its_collection_is_recorded() {
@@ -174,6 +173,53 @@ async fn a_tsp_peer_gets_the_document_over_tsp_and_its_collection_is_recorded() 
         outcome,
         (true, Protocol::Tsp, "collected".to_string()),
         "delivered over TSP, on the mediator's evidence of collection"
+    );
+    peer.shutdown().await;
+}
+
+/// A peer that is already connected collects the push before any outbox poll
+/// could see it waiting, and the push still settles delivered, on the first
+/// transport, with no re-send.
+///
+/// This is affinidi-tdk-rs#896. Before mediator receipts, the delivery layer
+/// counted a collection only after observing the message queued; a live peer
+/// never produced that observation, so its push ran out its window unconfirmed
+/// and escalated — re-sent on the next transport it offered. The mediator now
+/// records that the recipient collected it (`messaging/message/status`), and the
+/// delivery layer settles on that.
+#[cfg(feature = "tsp")]
+#[tokio::test]
+async fn a_live_peer_that_collects_at_once_is_confirmed_not_re_sent() {
+    init_tracing();
+    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let peer = mock.connect_tsp_peer().await;
+    let doc = document(peer.did());
+
+    let id = member_push::push_trust_task(
+        &mock.vtc.state,
+        peer.did(),
+        doc.clone(),
+        Duration::from_secs(120),
+    )
+    .await
+    .expect("queued");
+    let got = peer
+        .next_trust_task(Duration::from_secs(30))
+        .await
+        .expect("the live peer collected the document");
+    assert_eq!(got, doc);
+
+    let outcome = settle(&mock, &id, Duration::from_secs(40))
+        .await
+        .expect("the push settled");
+    assert_eq!(
+        outcome,
+        (true, Protocol::Tsp, "collected".to_string()),
+        "confirmed on the mediator's receipt, on the first transport"
+    );
+    assert!(
+        peer.next_trust_task(Duration::from_secs(2)).await.is_none(),
+        "the document was not sent again"
     );
     peer.shutdown().await;
 }
