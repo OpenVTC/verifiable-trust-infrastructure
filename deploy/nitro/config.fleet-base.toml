@@ -27,6 +27,9 @@
 # ── Top-level settings (fleet policy, baked) ─────────────────────────────────
 
 # DID resolver — the resolver sidecar on the parent via vsock.
+# The sidecar keeps its own DID-document cache (`expire` in its
+# cache-conf.toml): a revoked key can keep verifying here for up to
+# [did_cache] ttl_secs + that expire. See deploy/nitro/README.md.
 resolver_url = "ws://127.0.0.1:4445/did/v1/ws"
 
 # ── TEE settings (fleet policy, baked — NOT overlay-settable) ─────────────────

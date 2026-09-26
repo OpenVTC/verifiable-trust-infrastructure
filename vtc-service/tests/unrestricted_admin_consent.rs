@@ -932,3 +932,120 @@ async fn vti_apv_014_an_invite_needs_the_step_up_and_another_admins_consent() {
     assert!(minted["installUrl"].is_string(), "{minted}");
     assert!(entry(&fix, &invitee.did).await.unwrap().is_super_admin());
 }
+
+/// A resolver that knows the test VTC's DID document, as an approver's resolver
+/// would learn it from the network.
+async fn resolver_knowing_the_vtc(fix: &Fixture) -> vta_sdk::trust_task_proof::TrustTaskVmResolver {
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+    let signer = fix.vtc.state.credential_signer.as_ref().expect("signers");
+    let vm = signer.assertion_method_id().to_string();
+    let multikey = affinidi_crypto::did_key::ed25519_pub_to_did_key(
+        signer.public_bytes().try_into().expect("an Ed25519 key"),
+    )
+    .trim_start_matches("did:key:")
+    .to_string();
+    let doc = json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": TEST_VTC_DID,
+        "verificationMethod": [{
+            "id": vm, "type": "Multikey", "controller": TEST_VTC_DID,
+            "publicKeyMultibase": multikey,
+        }],
+        "assertionMethod": [vm],
+    });
+    let mut client = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+        .await
+        .expect("local DID cache");
+    client
+        .add_did_document(
+            TEST_VTC_DID,
+            serde_json::from_value(doc).expect("fixture document"),
+        )
+        .await;
+    vta_sdk::trust_task_proof::TrustTaskVmResolver::new(client)
+}
+
+/// The approver's side as `cnm consent approve` runs it: the relayed request
+/// verifies through `vta_sdk::task_consent`, its match code agrees with the
+/// digest the refusal names, and the decision built from it is the one the VTC
+/// accepts. Driving a real VTC-signed request through the SDK verifier is the
+/// point — a proof that only round-trips through its own signer proves
+/// nothing about re-serialisation.
+#[tokio::test]
+async fn vti_apv_014_a_relayed_request_is_answered_through_the_sdk() {
+    use vta_sdk::task_consent::{ConsentRequest, TaskConsentError, extract_requests, match_code};
+
+    let mut fix = fixture().await;
+    let requester = admin_with_passkey(&mut fix).await;
+    let approver = admin(&fix).await;
+    let subject = Party::new();
+
+    let grant = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
+    let (_, refusal) = post(&fix, &grant).await;
+    make_gesture(&mut fix, &requester, &refusal).await;
+    let (_, refusal) = post(&fix, &grant).await;
+    let details = consent_required(&refusal);
+
+    // What the approver is handed: the refusal's details, relayed.
+    let requests = extract_requests(&details);
+    assert_eq!(requests.len(), 1);
+    let resolver = resolver_knowing_the_vtc(&fix).await;
+    let now = chrono::Utc::now();
+
+    // Refused when it is addressed to somebody else, when the approver expects
+    // a different community, or when a byte of it has changed.
+    let wrong = ConsentRequest::new(requests[0].clone())
+        .verify(TEST_VTC_DID, &requester.did, &resolver, now)
+        .await;
+    assert!(
+        matches!(wrong, Err(TaskConsentError::WrongRecipient { .. })),
+        "{wrong:?}"
+    );
+    let wrong = ConsentRequest::new(requests[0].clone())
+        .verify("did:web:other.example", &approver.did, &resolver, now)
+        .await;
+    assert!(
+        matches!(wrong, Err(TaskConsentError::WrongIssuer { .. })),
+        "{wrong:?}"
+    );
+    let mut tampered = requests[0].clone();
+    tampered["payload"]["subject"] = json!(Party::new().did);
+    let wrong = ConsentRequest::new(tampered)
+        .verify(TEST_VTC_DID, &approver.did, &resolver, now)
+        .await;
+    assert!(
+        matches!(wrong, Err(TaskConsentError::ProofInvalid)),
+        "{wrong:?}"
+    );
+
+    let verified = ConsentRequest::new(requests[0].clone())
+        .verify(TEST_VTC_DID, &approver.did, &resolver, now)
+        .await
+        .expect("the VTC's own request verifies");
+    assert_eq!(verified.issuer(), TEST_VTC_DID);
+    assert_eq!(verified.payload().requester, requester.did);
+    // The approver's code is the requester's code.
+    assert_eq!(
+        verified.match_code(),
+        match_code(details["payloadDigest"].as_str().unwrap()).unwrap()
+    );
+
+    let decision = verified
+        .decision(true, Some("checked with the requester"))
+        .unwrap();
+    let doc = signed(
+        &approver,
+        DECISION,
+        serde_json::to_value(&decision).unwrap(),
+    )
+    .await;
+    let (status, ack) = post(&fix, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+    assert_eq!(ack["status"], "granted", "{ack}");
+    let _: vta_sdk::task_consent::decision::Response =
+        serde_json::from_value(ack).expect("the reply is the generated response type");
+
+    let (status, reply) = post(&fix, &grant).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert!(entry(&fix, &subject.did).await.is_some());
+}
