@@ -1330,7 +1330,7 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            48,
+            51,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1343,7 +1343,10 @@ mod spine_proof_tests {
              credential-exchange steps a holder sends (`request`, `present`) + \
              `acl/update` and `acl/revoke` (`acl/show` and `acl/list` declare no \
              proof; their handlers authorize from the signer's ACL row, so an \
-             unsigned one is refused regardless). \
+             unsigned one is refused regardless) + the 3 step-up passkey tasks \
+             that declare one (`auth/passkey/enroll/invite/0.2`, \
+             `auth/passkey/revoke/start/0.2`, `revoke/finish/0.2`; `enroll/redeem/*` declares \
+             none, and `redeem/start`'s handler requires one regardless). \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries (its handler still requires the approver's \
@@ -3933,6 +3936,11 @@ mod tests {
             <acl_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             crate::acl::admin_consent::DECISION_TYPE,
+            step_up_passkey_tasks::INVITE_TYPE,
+            step_up_passkey_tasks::REDEEM_START_TYPE,
+            step_up_passkey_tasks::REDEEM_FINISH_TYPE,
+            step_up_passkey_tasks::REVOKE_START_TYPE,
+            step_up_passkey_tasks::REVOKE_FINISH_TYPE,
             backup_tasks::INITIATE_EXPORT_TYPE,
             backup_tasks::GET_CHUNK_TYPE,
             backup_tasks::COMPLETE_EXPORT_TYPE,
