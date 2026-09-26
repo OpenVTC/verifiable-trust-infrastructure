@@ -1122,13 +1122,20 @@ enable_websocket_endpoint = "${ENABLE_WEBSOCKET_ENDPOINT:true}"
 
 [cache]
 capacity_count = "${CACHE_CAPACITY_COUNT:1000}"
-expire = "${EXPIRE:300}"
+expire = "${EXPIRE:60}"
 EOF
 
 # Start it — must run from the directory containing conf/cache-conf.toml
 cd ~/vta-resolver
 nohup affinidi-did-resolver-cache-server > resolver.log 2>&1 &
 ```
+
+The sidecar's `expire` (seconds) is how long it serves a DID document from
+its own cache. The VTA caches on top of it (`[did_cache] ttl_secs`, default
+60 s), and a VTA-side forced refresh does not reach the sidecar, so **a key
+revoked from a DID document can keep verifying for up to the VTA's TTL plus
+the sidecar's `expire`**. Keep `expire` at 60 or lower; the upstream default
+of 300 would stretch that window to six minutes.
 
 The VTA's `config.toml` sets `resolver_url = "ws://127.0.0.1:4445/did/v1/ws"`
 which routes through socat inside the enclave → vsock:5600 → proxy →

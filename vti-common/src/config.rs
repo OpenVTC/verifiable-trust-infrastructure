@@ -208,6 +208,16 @@ pub struct DidCacheConfig {
     /// cost of one resolution per active DID per minute. Must be between 1 and
     /// [`DID_CACHE_TTL_MAX_SECS`] (300, the SDK's own default, which this
     /// narrows); a longer window is refused rather than honoured.
+    ///
+    /// **In network mode (`resolver_url`) the window is this TTL plus the
+    /// remote resolver's own.** The node then resolves through a cache server
+    /// that keeps its own copy of each document for its own `expire` (300 s by
+    /// default), and a forced refresh clears only this node's cache — the
+    /// remote answers from its copy until that expires too. A revoked key can
+    /// therefore keep verifying for up to `ttl_secs` + the remote TTL, and a
+    /// rotation is followed only once the remote copy is current. The node
+    /// cannot read the remote's setting; set the cache server's `expire` no
+    /// higher than you would set this.
     #[serde(default = "default_did_cache_ttl_secs")]
     pub ttl_secs: u32,
     /// Most documents held. Only a performance knob: an evicted document is

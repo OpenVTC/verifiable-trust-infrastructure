@@ -1993,7 +1993,14 @@ async fn init_auth(
     // rotation does not wait for the TTL.
     let resolver_config = {
         if let Some(ref url) = config.resolver_url {
-            info!(url = %url, "DID resolver using network mode (remote resolver)");
+            // The remote keeps its own cache, which this node can neither read
+            // nor evict: a revoked key keeps verifying for up to our TTL plus
+            // the remote's (`DidCacheConfig::ttl_secs`).
+            info!(
+                url = %url,
+                "DID resolver using network mode (remote resolver); a revoked key may keep \
+                 verifying for did_cache.ttl_secs plus the remote resolver's own cache expiry"
+            );
         } else {
             info!("DID resolver using local mode");
         }
