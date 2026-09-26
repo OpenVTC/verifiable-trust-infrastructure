@@ -554,6 +554,15 @@ enum ContextCommands {
         /// Requires `--admin-did`.
         #[arg(long, requires = "admin_did")]
         admin_expires: Option<String>,
+        /// Mark the admin entry as a **one-time hand-off** (VTI-ACL-054): the
+        /// admin DID may roll over once, while the entry is live, to a long-term
+        /// admin DID the VTA mints for it (provision-integration with an admin
+        /// template). The long-term admin is bounded by your own authority, and
+        /// takes your expiry rather than this entry's. Without it, the rollover
+        /// is refused because the long-term admin would outlive this entry.
+        /// Requires `--admin-expires`.
+        #[arg(long, requires = "admin_expires")]
+        admin_handoff: bool,
     },
     /// Update an existing context
     Update {
@@ -1261,6 +1270,7 @@ async fn main() {
                 admin_did,
                 admin_label,
                 admin_expires,
+                admin_handoff,
             } => {
                 let expires_at = match admin_expires.as_deref() {
                     Some(s) => match vta_cli_common::duration::duration_to_expires_at(s) {
@@ -1281,6 +1291,7 @@ async fn main() {
                     // identity; `pnm contexts create --admin-holder` is where
                     // that grant is made, deliberately.
                     holder: false,
+                    handoff: admin_handoff,
                 };
                 contexts::cmd_context_create(&client, &id, &name, description, parent, admin).await
             }
@@ -1357,6 +1368,7 @@ async fn main() {
                         // cnm exposes no capability flags; `None` leaves the
                         // entry holding everything its role implies.
                         None,
+                        false,
                     )
                     .await
                 }

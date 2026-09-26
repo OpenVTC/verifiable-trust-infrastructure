@@ -20,6 +20,7 @@ pub(crate) async fn run(
             label,
             contexts,
             expires,
+            handoff,
             step_up_approver,
             step_up_require,
             approve_all,
@@ -41,6 +42,7 @@ pub(crate) async fn run(
                     approve_contexts,
                     allowed_keys,
                     capabilities,
+                    handoff,
                 )
                 .await
             }

@@ -142,6 +142,10 @@ pub struct CreateAclResultBody {
     /// one nobody can verify.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// The entry carries an unexercised one-time hand-off marker
+    /// (VTI-ACL-054).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub handoff: bool,
 }
 
 #[cfg(test)]

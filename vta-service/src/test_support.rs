@@ -630,6 +630,23 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
         webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
     };
+    // The operator every provisioning test acts as ([`super_admin_claims`])
+    // must hold an entry: an ACL write is bounded by the writer's own entry
+    // (VTI-ACL-053), and a real caller could not have authenticated without
+    // one.
+    if crate::acl::get_acl_entry(&ts.acl_ks, &test_admin_did().0)
+        .await
+        .expect("read ACL")
+        .is_none()
+    {
+        seed_acl_entry(
+            &ts.acl_ks,
+            &test_admin_did().0,
+            crate::acl::Role::Admin,
+            vec![],
+        )
+        .await;
+    }
     (vta_did, deps)
 }
 
@@ -906,8 +923,21 @@ impl TestAppContext {
     /// no ATM, so authenticated-endpoint tests take this shortcut (the same one
     /// the route-integration suite uses): store an `Authenticated` session and
     /// encode a matching AAL1 JWT. An empty `contexts` vec is super-admin.
+    ///
+    /// Also writes the ACL row the token stands for, when there is none: a real
+    /// token is only minted for a DID with an entry, and an ACL write is
+    /// bounded by the writer's own entry (VTI-ACL-053). A row the test seeded
+    /// itself is left as it is.
     pub async fn mint_token(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
         use vti_common::auth::session::{Session, SessionState, store_session};
+        if let Ok(parsed) = crate::acl::Role::parse(role)
+            && crate::acl::get_acl_entry(&self.acl_ks, did)
+                .await
+                .expect("read ACL")
+                .is_none()
+        {
+            seed_acl_entry(&self.acl_ks, did, parsed, contexts.clone()).await;
+        }
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

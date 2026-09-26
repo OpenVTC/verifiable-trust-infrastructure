@@ -681,7 +681,7 @@
             "description": "Missing or invalid bearer token"
           },
           "403": {
-            "description": "Caller is not an admin"
+            "description": "Caller is not an unrestricted (community-wide) admin"
           },
           "409": {
             "description": "Target DID already has a non-admin ACL grant"

@@ -738,6 +738,48 @@ pub struct AclEntry {
     /// `acl/_shared/0.1/acl-entry#allowedKeys`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_keys: Option<BTreeSet<String>>,
+    /// One-time hand-off marker (VTI-ACL-054). `Some` lets this entry's
+    /// subject roll over, once and while the entry is live, to a successor
+    /// bounded by [`HandOff::bound`] instead of by this entry's own expiry.
+    ///
+    /// Set only by the granter at creation; no update or rotation writes or
+    /// carries it. Rows written before this field existed have no marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<HandOff>,
+}
+
+/// A granter's one-time hand-off decision, recorded on the entry it marks
+/// (VTI-ACL-054).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HandOff {
+    /// The granter that set the marker.
+    pub granted_by: String,
+    /// Unix-epoch seconds at which the marker was set.
+    pub granted_at: u64,
+    /// The granter's authority when the marker was set. A successor may not
+    /// exceed it on any axis (VTI-ACL-055).
+    pub bound: HandOffBound,
+}
+
+/// The granter's authority as it stood when a hand-off was marked: the role and
+/// act scope it acted with, and its stored entry's narrowing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HandOffBound {
+    pub role: Role,
+    /// Read like [`AclEntry::allowed_contexts`]: empty is unrestricted for an
+    /// admin.
+    #[serde(default)]
+    pub allowed_contexts: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<Capability>,
+    #[serde(default)]
+    pub approve_scope: ApproveScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_keys: Option<BTreeSet<String>>,
+    /// The granter's expiry. `None` only when the granter's entry was
+    /// permanent.
+    #[serde(default)]
+    pub expires_at: Option<u64>,
 }
 
 impl AclEntry {
@@ -766,6 +808,7 @@ impl AclEntry {
             step_up_require: None,
             approve_scope: ApproveScope::None,
             allowed_keys: None,
+            handoff: None,
         }
     }
 
@@ -785,6 +828,12 @@ impl AclEntry {
     /// Set the allowed-contexts (scope) list.
     pub fn with_contexts(mut self, allowed_contexts: Vec<String>) -> Self {
         self.allowed_contexts = allowed_contexts;
+        self
+    }
+
+    /// Set the one-time hand-off marker (VTI-ACL-054).
+    pub fn with_handoff(mut self, handoff: Option<HandOff>) -> Self {
+        self.handoff = handoff;
         self
     }
 
@@ -911,6 +960,41 @@ fn acl_key(did: &str) -> String {
 /// Retrieve an ACL entry by DID.
 pub async fn get_acl_entry(acl: &KeyspaceHandle, did: &str) -> Result<Option<AclEntry>, AppError> {
     acl.get(acl_key(did)).await
+}
+
+/// Retrieve an ACL entry together with the plaintext bytes it is stored as,
+/// for a later [`move_acl_entry_if_unchanged`].
+pub async fn get_acl_entry_with_bytes(
+    acl: &KeyspaceHandle,
+    did: &str,
+) -> Result<Option<(AclEntry, Vec<u8>)>, AppError> {
+    match acl.get_raw(acl_key(did)).await? {
+        Some(bytes) => Ok(Some((serde_json::from_slice(&bytes)?, bytes))),
+        None => Ok(None),
+    }
+}
+
+/// Replace the entry for `old_did` with `successor` in one atomic step, only if
+/// `old_did`'s row still holds exactly `expected` and `successor.did` has no
+/// entry. See [`crate::store::KeyspaceHandle::move_if_unchanged`].
+pub async fn move_acl_entry_if_unchanged(
+    acl: &KeyspaceHandle,
+    old_did: &str,
+    expected: Vec<u8>,
+    successor: &AclEntry,
+) -> Result<crate::store::MoveOutcome, AppError> {
+    let outcome = acl
+        .move_if_unchanged(
+            acl_key(old_did),
+            expected,
+            acl_key(&successor.did),
+            successor,
+        )
+        .await?;
+    if outcome == crate::store::MoveOutcome::Moved {
+        crate::integrity::reseal_if_active().await?;
+    }
+    Ok(outcome)
 }
 
 /// Store (create or overwrite) an ACL entry.

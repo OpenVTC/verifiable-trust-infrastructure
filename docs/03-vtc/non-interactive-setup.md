@@ -49,7 +49,7 @@ vtc setup --setup-key-out /srv/vtc/setup-key.json --context default
   create the vtc context and grant admin access to the setup DID:
 
     pnm contexts create --id default --name "VTC" \
-      --admin-did did:key:z6Mk… --admin-expires 1h
+      --admin-did did:key:z6Mk… --admin-expires 1h --admin-handoff
 
   Then finalise with:
     vtc setup --from <your-setup.toml>   (with setup_key_file = "/srv/vtc/setup-key.json")
@@ -58,10 +58,12 @@ vtc setup --setup-key-out /srv/vtc/setup-key.json --context default
 ## Phase 1½ — grant at the VTA
 
 Run the printed command on a host with `pnm` authenticated to the VTA (or
-`pnm acl create --did <setup-did> --role admin --contexts <ctx> --expires 1h`
-if the context already exists). The `--admin-expires 1h` grant is promoted
-to permanent on the setup DID's first authenticated call, which phase 2
-performs.
+`pnm acl create --did <setup-did> --role admin --contexts <ctx> --expires 1h --handoff`
+if the context already exists). The `--admin-expires 1h` grant is a one-time
+hand-off (VTI-ACL-054): in phase 2 the setup DID rolls over, once, to a
+long-term admin DID the VTA mints, bounded by your own authority. Without
+`--admin-handoff` the VTA refuses that rollover. See
+[the hand-off](../02-vta/provision-integration.md#who-writes-the-long-term-row-the-one-time-hand-off).
 
 ## Phase 2 — provision
 

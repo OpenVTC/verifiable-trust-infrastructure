@@ -144,7 +144,25 @@ impl UpdateAclBody {
     /// the entry holds everything its role implies. Names are not parsed here —
     /// the consumer maps them, and rejects one it does not recognise rather
     /// than dropping it.
+    ///
+    /// Also the one place every transport reads this body's `ext`, so it
+    /// refuses the hand-off marker here: only the granter may set it, and only
+    /// at creation (VTI-ACL-054). An update naming it, even as `false`, is
+    /// refused rather than ignored, so a caller that meant to set or clear it
+    /// learns that it cannot.
     pub fn capabilities(&self) -> Result<Option<Vec<String>>, String> {
+        if self
+            .ext
+            .as_ref()
+            .and_then(|e| e.get(super::entry::HANDOFF_EXT_MEMBER))
+            .is_some()
+        {
+            return Err(format!(
+                "`{}` can only be set by the granter when the entry is created \
+                 (VTI-ACL-054); an update cannot set, extend or clear it",
+                super::entry::HANDOFF_EXT_MEMBER
+            ));
+        }
         capabilities_from_ext(self.ext.as_ref())
     }
 }
@@ -163,6 +181,20 @@ mod tests {
     /// family where a camelCase/snake_case mismatch once let an empty
     /// `allowed_contexts` silently mint a super-admin (#656/#658) — the new
     /// member must round-trip under exactly one spelling.
+    /// VTI-ACL-054: an update cannot set, extend or clear the hand-off
+    /// marker, and says so rather than ignoring it.
+    #[test]
+    fn an_update_naming_the_handoff_marker_is_refused() {
+        for v in [serde_json::json!(true), serde_json::json!(false)] {
+            let b = body(serde_json::json!({
+                "subject": "did:key:zA",
+                "ext": { super::super::entry::HANDOFF_EXT_MEMBER: v }
+            }));
+            let err = b.capabilities().expect_err("refused");
+            assert!(err.contains("VTI-ACL-054"), "{err}");
+        }
+    }
+
     #[test]
     fn allowed_keys_round_trips_as_camel_case() {
         let b = UpdateAclBody {

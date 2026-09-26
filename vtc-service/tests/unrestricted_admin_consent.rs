@@ -798,6 +798,11 @@ async fn vti_apv_009_demoting_an_unrestricted_admin_is_attrition() {
 /// The last unrestricted admin cannot demote themselves while a scoped admin
 /// remains — the old last-admin guard counted the scoped admin and let it
 /// through, leaving nobody who could ever consent to an unrestricted grant.
+///
+/// A self-demotion is now refused before the attrition check runs: moving
+/// your own role in either direction modifies your own entry (VTI-ACL-052).
+/// The scoped admin cannot demote it either, since it does not cover the
+/// entry, so the attrition case stays unreachable from here.
 #[tokio::test]
 async fn the_last_unrestricted_admin_cannot_step_down_behind_a_scoped_one() {
     let fix = fixture().await;
@@ -819,11 +824,8 @@ async fn the_last_unrestricted_admin_cannot_step_down_behind_a_scoped_one() {
         json!({ "fromRole": "admin", "toRole": "member" }),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert!(
-        body.to_string().contains("last unrestricted admin"),
-        "{body}"
-    );
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains("VTI-ACL-052"), "{body}");
     assert!(entry(&fix, &a.did).await.unwrap().is_super_admin());
 }
 

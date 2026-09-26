@@ -711,6 +711,11 @@ enum ContextCommands {
         /// Requires `--admin-did`.
         #[arg(long, requires = "admin_did")]
         admin_expires: Option<String>,
+        /// Mark the admin entry as a one-time hand-off (VTI-ACL-054), so the
+        /// admin DID can roll over once to a VTA-minted long-term admin.
+        /// Requires `--admin-expires`.
+        #[arg(long, requires = "admin_expires")]
+        admin_handoff: bool,
     },
     /// Update an existing context.
     Update {
@@ -2000,6 +2005,7 @@ async fn main() {
                     admin_did,
                     admin_label,
                     admin_expires,
+                    admin_handoff,
                 } => {
                     bootstrap_cli::run_context_create(
                         cli.config,
@@ -2010,6 +2016,7 @@ async fn main() {
                         admin_did,
                         admin_label,
                         admin_expires,
+                        admin_handoff,
                     )
                     .await
                 }

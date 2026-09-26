@@ -12,10 +12,10 @@ use vta_sdk::protocols::acl_management::{
 
 use crate::acl::{
     AclEntry, ApproveScope, Capability, ContextDirection, Role, acl_entry_matches_context,
-    capabilities_beyond_role, delete_acl_entry, get_acl_entry, is_acl_entry_auditable,
-    is_acl_entry_visible, list_acl_entries, store_acl_entry, update_acl_entry_versioned,
-    validate_acl_modification, validate_additive_capability_grant, validate_approve_scope_grant,
-    validate_role_assignment,
+    capabilities_beyond_role, delete_acl_entry, effective_capabilities, get_acl_entry,
+    is_acl_entry_auditable, is_acl_entry_visible, list_acl_entries, store_acl_entry,
+    update_acl_entry_versioned, validate_acl_modification, validate_additive_capability_grant,
+    validate_approve_scope_grant, validate_role_assignment,
 };
 use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
@@ -221,6 +221,460 @@ fn not_manageable(auth: &AuthClaims, entry: &AclEntry, did: &str, verb: &str) ->
     }
 }
 
+/// The caller's own stored entry: the bound every entry it writes is measured
+/// against.
+///
+/// Read from the ACL rather than the token because the token carries only the
+/// role and contexts. The capability narrowing, the key filter, the approve
+/// scope and the expiry — every axis an entry can be narrowed on besides those
+/// two — live only on the row, and a grant measured against the token alone
+/// could hand another subject every one of them back (VTI-ACL-053).
+///
+/// A caller with no entry of its own, or an expired one, writes nothing: there
+/// is no authority to bound the grant by, and VTI-ACL-001 derives every
+/// decision from an entry.
+async fn caller_entry(acl_ks: &KeyspaceHandle, auth: &AuthClaims) -> Result<AclEntry, AppError> {
+    match get_acl_entry(acl_ks, &auth.did).await? {
+        Some(entry) if entry.is_expired(now_epoch()) => Err(AppError::Forbidden(format!(
+            "your ACL entry ({}) has expired; an expired entry confers no authority to grant \
+             (VTI-ACL-004)",
+            auth.did
+        ))),
+        Some(entry) => Ok(entry),
+        None => Err(AppError::Forbidden(format!(
+            "{} has no ACL entry of its own, so there is no authority to bound this change by \
+             (VTI-ACL-001, VTI-ACL-053)",
+            auth.did
+        ))),
+    }
+}
+
+/// Refuse a change to the caller's own entry (VTI-ACL-052).
+///
+/// A subject cannot raise its own authority by editing its row, and it cannot
+/// lower a control on it either — dropping its own key filter, extending its
+/// own expiry, pointing its step-up at a different approver. The only
+/// self-service write is the rotation (`acl/swap-key`), which moves the entry
+/// to a new subject and preserves its authority exactly (VTI-CLT-029).
+fn refuse_self_modification(auth: &AuthClaims, did: &str, verb: &str) -> Result<(), AppError> {
+    if auth.did == did {
+        return Err(AppError::Forbidden(format!(
+            "you cannot {verb} your own ACL entry (VTI-ACL-052) — another administrator whose \
+             scope covers it must make this change; to move your entry to a new key, rotate \
+             with acl/swap-key"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether `auth` administers **all** of `entry`'s authority, not merely some
+/// of it.
+///
+/// Overlap (VTI-ACL-050's necessary condition, [`is_acl_entry_visible`]) is
+/// what lets a caller *see* an entry. Changing it is another matter: an entry
+/// acting in `[a, b]` edited by an administrator of `a` alone changes what the
+/// subject may do in `b` — its capabilities, keys and expiry apply there too —
+/// and so does deleting it. So every context the entry acts in, and every
+/// context it may approve in, must be one the caller holds. A super-admin holds
+/// them all; an unrestricted or approve-all entry is a super-admin's to manage.
+fn caller_covers_entry(auth: &AuthClaims, entry: &AclEntry) -> bool {
+    use vti_common::acl::ActScope;
+    if auth.is_super_admin() {
+        return true;
+    }
+    let act = entry.act_scope();
+    let acts = match &act {
+        ActScope::Contexts(cs) => cs.iter().all(|c| auth.has_context_access(c)),
+        // Acts nowhere: its authority is whatever it may approve, checked below.
+        ActScope::None => true,
+        ActScope::All => false,
+    };
+    let approves = match &entry.approve_scope {
+        ApproveScope::None => true,
+        ApproveScope::Contexts(cs) => cs.iter().all(|c| auth.has_context_access(c)),
+        ApproveScope::All => false,
+    };
+    // An entry that neither acts nor approves anywhere names nothing for a
+    // scoped caller to hold, so it stays a super-admin's to manage.
+    let names_something =
+        !matches!(act, ActScope::None) || !matches!(entry.approve_scope, ApproveScope::None);
+    acts && approves && names_something
+}
+
+/// The refusal for an entry the caller can see but does not wholly administer.
+fn not_covered(did: &str, verb: &str) -> AppError {
+    AppError::Forbidden(format!(
+        "{did} holds authority outside your contexts — only an administrator whose scope covers \
+         every context it acts or approves in can {verb} it"
+    ))
+}
+
+/// Refuse an entry that would hold authority its writer does not (VTI-ACL-053,
+/// the general form of VTI-ACL-042 and VTI-ACL-071).
+///
+/// Role and act scope are checked where they always were
+/// ([`validate_role_assignment`], [`validate_acl_modification`]). This covers
+/// every other axis an entry can be narrowed on, each measured against the
+/// caller's own stored entry:
+///
+/// - **capabilities** — the target's effective set must sit inside the
+///   caller's. Additive capabilities are the exception: no role derives them,
+///   and VTI-ACL-033 gates their grant on unrestricted act authority instead
+///   ([`validate_additive_capability_grant`]);
+/// - **keys** — a caller narrowed to a key set cannot write an entry reaching
+///   a key outside it, nor one with no filter at all;
+/// - **expiry** — a caller whose entry expires cannot write one that outlives
+///   it, nor one that never expires;
+/// - **approve scope** — every context granted must be one the caller could
+///   itself confer in: by its own approve scope, or by administrative standing
+///   there (the predicate the consent gate uses, [`acl_entry_can_confer`]).
+///
+/// Without this a narrowed administrator widens itself in one step: it cannot
+/// edit its own entry, but it can create one for another DID it controls,
+/// scoped to the same context, with none of the narrowing.
+fn validate_within_caller(
+    auth: &AuthClaims,
+    caller: &AclEntry,
+    target: &AclEntry,
+) -> Result<(), AppError> {
+    // The ceiling is the *acting* role — the token's, so a consented per-task
+    // delegation (`with_delegated_authority`) is honoured — narrowed by the
+    // caller's own stored list.
+    let ceiling = effective_capabilities(&auth.role, &caller.capabilities);
+    let beyond: Vec<Capability> = effective_capabilities(&target.role, &target.capabilities)
+        .into_iter()
+        .filter(|c| !vti_common::acl::is_additive(*c) && !ceiling.contains(c))
+        .collect();
+    if !beyond.is_empty() {
+        return Err(AppError::Forbidden(format!(
+            "this entry would hold {beyond:?}, which your own entry does not — you can grant only \
+             capabilities you hold (VTI-ACL-053); narrow its capabilities to a subset of yours"
+        )));
+    }
+
+    if let Some(mine) = &caller.allowed_keys {
+        match &target.allowed_keys {
+            None => {
+                return Err(AppError::Forbidden(
+                    "your entry is narrowed to a set of keys, so you cannot write an entry with \
+                     no key filter — name the keys it may use, within your own (VTI-ACL-053)"
+                        .into(),
+                ));
+            }
+            Some(theirs) => {
+                let outside: Vec<&String> = theirs.difference(mine).collect();
+                if !outside.is_empty() {
+                    return Err(AppError::Forbidden(format!(
+                        "keys {outside:?} are outside your own key filter (VTI-ACL-053)"
+                    )));
+                }
+            }
+        }
+    }
+
+    if let Some(mine) = caller.expires_at {
+        match target.expires_at {
+            None => {
+                return Err(AppError::Forbidden(format!(
+                    "your entry expires at {mine}, so you cannot write a permanent one — give it \
+                     an expiry no later than yours (VTI-ACL-053)"
+                )));
+            }
+            Some(theirs) if theirs > mine => {
+                return Err(AppError::Forbidden(format!(
+                    "this entry would expire at {theirs}, after your own ({mine}) — an entry you \
+                     write cannot outlive your authority (VTI-ACL-053)"
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+
+    if let ApproveScope::Contexts(cs) = &target.approve_scope {
+        // The caller as it acts now: the token's role and contexts, with the
+        // row's approve scope.
+        let acting = AclEntry {
+            role: auth.role.clone(),
+            allowed_contexts: auth.allowed_contexts.clone(),
+            ..caller.clone()
+        };
+        let cannot: Vec<&String> = cs
+            .iter()
+            .filter(|c| !acl_entry_can_confer(&acting, c))
+            .collect();
+        if !cannot.is_empty() {
+            return Err(AppError::Forbidden(format!(
+                "you cannot confer approve authority in {cannot:?}: you neither approve nor \
+                 administer there yourself (VTI-ACL-042)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Build the hand-off marker a create is asked to set (VTI-ACL-054).
+///
+/// The bound is the granter as it acts now: the token's role and contexts
+/// (so a consented delegation is honoured, as in [`validate_within_caller`]),
+/// and its stored entry's capability narrowing, key filter, approve scope and
+/// expiry.
+fn mint_handoff(
+    auth: &AuthClaims,
+    me: &AclEntry,
+    subject: &str,
+    expires_at: Option<u64>,
+) -> Result<vti_common::acl::HandOff, AppError> {
+    if subject == auth.did {
+        return Err(AppError::Forbidden(
+            "you cannot mark your own entry as a hand-off (VTI-ACL-054)".into(),
+        ));
+    }
+    if me.handoff.is_some() {
+        return Err(AppError::Forbidden(
+            "your own entry is a hand-off, so you cannot mark another one (VTI-ACL-054) — \
+             an administrator whose entry carries no marker must grant it"
+                .into(),
+        ));
+    }
+    if expires_at.is_none() {
+        return Err(AppError::Validation(
+            "a hand-off entry must carry an expiry (VTI-ACL-054), so an unused bootstrap \
+             grant lapses — give it one, e.g. `--expires 1h`"
+                .into(),
+        ));
+    }
+    Ok(vti_common::acl::HandOff {
+        granted_by: auth.did.clone(),
+        granted_at: now_epoch(),
+        bound: vti_common::acl::HandOffBound {
+            role: auth.role.clone(),
+            allowed_contexts: auth.allowed_contexts.clone(),
+            capabilities: me.capabilities.clone(),
+            approve_scope: me.approve_scope.clone(),
+            allowed_keys: me.allowed_keys.clone(),
+            expires_at: me.expires_at,
+        },
+    })
+}
+
+/// Whether `did`'s entry carries an unexercised hand-off marker. A hint for
+/// choosing a path only: [`exercise_handoff`] re-checks everything itself.
+pub async fn holds_handoff(acl_ks: &KeyspaceHandle, did: &str) -> Result<bool, AppError> {
+    Ok(get_acl_entry(acl_ks, did)
+        .await?
+        .is_some_and(|e| e.handoff.is_some()))
+}
+
+/// What a hand-off's successor asks to hold, before it is bounded.
+#[derive(Debug, Clone)]
+pub struct HandOffSuccessor {
+    pub did: String,
+    pub role: Role,
+    pub label: Option<String>,
+    /// Empty is unrestricted for an admin, as everywhere else.
+    pub allowed_contexts: Vec<String>,
+    /// Capability narrowing, and any additive capabilities to carry over from
+    /// the marked entry.
+    pub capabilities: Vec<Capability>,
+}
+
+/// Serialises hand-offs in this process. The store's compare-and-move is what
+/// makes a rollover exactly-once on the local backend; this also covers the
+/// vsock backend, whose move is not atomic across round-trips.
+static HANDOFF_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Exercise the caller's hand-off marker: write one successor and remove the
+/// caller's entry, atomically (VTI-ACL-055 – VTI-ACL-057).
+///
+/// The successor is bounded twice: by the marked entry itself, except for its
+/// expiry, and by the granter's authority recorded with the marker. It takes
+/// the granter's recorded expiry. The audit row is written before the commit,
+/// and a failure to write it aborts the rollover.
+pub async fn exercise_handoff(
+    acl_ks: &KeyspaceHandle,
+    audit: &vta_audit::SharedAuditSink,
+    contexts_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    successor: HandOffSuccessor,
+    channel: &str,
+    context_id: Option<&str>,
+) -> Result<CreateAclResultBody, AppError> {
+    let _serialised = HANDOFF_LOCK.lock().await;
+    let now = now_epoch();
+
+    let Some((me, expected)) = vti_common::acl::get_acl_entry_with_bytes(acl_ks, &auth.did).await?
+    else {
+        return Err(AppError::Forbidden(format!(
+            "{} has no ACL entry, so there is no hand-off to exercise — it may already have \
+             been exercised (VTI-ACL-055)",
+            auth.did
+        )));
+    };
+    let Some(marker) = me.handoff.clone() else {
+        return Err(AppError::Forbidden(format!(
+            "{} carries no hand-off marker, so it cannot write a successor that outlives it \
+             (VTI-ACL-058) — the granter must mark the entry as a hand-off when creating it",
+            auth.did
+        )));
+    };
+    if me.is_expired(now) {
+        return Err(AppError::Forbidden(format!(
+            "the hand-off entry for {} has expired; an expired marker cannot be exercised \
+             (VTI-ACL-055)",
+            auth.did
+        )));
+    }
+    if marker.bound.expires_at.is_some_and(|t| t <= now) {
+        return Err(AppError::Forbidden(
+            "the granter's authority this hand-off is bounded by has expired (VTI-ACL-055)".into(),
+        ));
+    }
+    if successor.did == auth.did {
+        return Err(AppError::Validation(
+            "a hand-off's successor must be a different subject".into(),
+        ));
+    }
+
+    // The granter, as it stood when it set the marker.
+    let granter = AuthClaims {
+        did: marker.granted_by.clone(),
+        role: marker.bound.role.clone(),
+        allowed_contexts: marker.bound.allowed_contexts.clone(),
+        ..auth.clone()
+    };
+    let granter_entry = AclEntry::new(&marker.granted_by, marker.bound.role.clone(), "handoff")
+        .with_contexts(marker.bound.allowed_contexts.clone())
+        .with_capabilities(marker.bound.capabilities.clone())
+        .with_approve_scope(marker.bound.approve_scope.clone())
+        .with_allowed_keys(marker.bound.allowed_keys.clone())
+        .with_expires_at(marker.bound.expires_at);
+
+    // Shape checks, as a create applies them.
+    let beyond = capabilities_beyond_role(&successor.role, &successor.capabilities);
+    if !beyond.is_empty() {
+        return Err(AppError::Validation(format!(
+            "role {} does not carry {beyond:?}",
+            successor.role
+        )));
+    }
+    require_contexts_exist(contexts_ks, &successor.allowed_contexts).await?;
+
+    let entry = AclEntry::new(&successor.did, successor.role.clone(), auth.did.clone())
+        .with_label(successor.label.clone())
+        .with_contexts(successor.allowed_contexts.clone())
+        .with_capabilities(successor.capabilities.clone())
+        .with_allowed_keys(me.allowed_keys.clone())
+        .with_expires_at(marker.bound.expires_at);
+
+    // Never wider than the marked entry: role and act scope against the token,
+    // everything else against its stored row, with the one exception the
+    // marker makes — its own expiry does not bound the successor.
+    validate_role_assignment(auth, &entry.role)?;
+    validate_acl_modification(auth, &entry.role, &entry.allowed_contexts)?;
+    let me_unexpiring = AclEntry {
+        expires_at: None,
+        ..me.clone()
+    };
+    validate_within_caller(auth, &me_unexpiring, &entry)?;
+    let additive: Vec<Capability> = entry
+        .capabilities
+        .iter()
+        .copied()
+        .filter(|c| vti_common::acl::is_additive(*c))
+        .collect();
+    if let Some(c) = additive.iter().find(|c| !me.capabilities.contains(c)) {
+        return Err(AppError::Forbidden(format!(
+            "the successor would hold {c:?}, which the hand-off entry does not (VTI-ACL-055)"
+        )));
+    }
+
+    // Never wider than the granter was.
+    validate_role_assignment(&granter, &entry.role)
+        .and_then(|()| validate_acl_modification(&granter, &entry.role, &entry.allowed_contexts))
+        .and_then(|()| validate_additive_capability_grant(&granter, &additive))
+        .and_then(|()| validate_within_caller(&granter, &granter_entry, &entry))
+        .map_err(|e| {
+            AppError::Forbidden(format!(
+                "the successor exceeds the authority {} held when it marked this hand-off \
+                 (VTI-ACL-055): {e}",
+                marker.granted_by
+            ))
+        })?;
+
+    // Durable record before the commit (VTI-ACL-057): no row, no rollover.
+    let detail = format!("hand-off granted by {}", marker.granted_by);
+    vta_audit::record_with_detail(
+        audit,
+        "acl.handoff",
+        &auth.did,
+        Some(&entry.did),
+        "committing",
+        Some(channel),
+        context_id,
+        Some(&detail),
+    )
+    .await?;
+
+    let outcome =
+        vti_common::acl::move_acl_entry_if_unchanged(acl_ks, &auth.did, expected, &entry).await;
+    let refusal = match outcome {
+        Ok(crate::store::MoveOutcome::Moved) => None,
+        Ok(crate::store::MoveOutcome::SourceMissing) => Some(AppError::Conflict(
+            "the hand-off was exercised or revoked concurrently (VTI-ACL-056)".into(),
+        )),
+        Ok(crate::store::MoveOutcome::SourceChanged) => Some(AppError::Conflict(
+            "the hand-off entry changed while the rollover was prepared; retry (VTI-ACL-056)"
+                .into(),
+        )),
+        Ok(crate::store::MoveOutcome::TargetExists) => Some(AppError::Conflict(format!(
+            "ACL entry already exists for DID: {}",
+            entry.did
+        ))),
+        Err(e) => Some(e),
+    };
+    if let Some(e) = refusal {
+        audit::record_with_detail_best_effort(
+            audit,
+            "acl.handoff",
+            &auth.did,
+            Some(&entry.did),
+            "failure",
+            Some(channel),
+            context_id,
+            Some(&detail),
+        )
+        .await;
+        return Err(e);
+    }
+
+    info!(
+        channel,
+        from = %auth.did,
+        to = %entry.did,
+        granted_by = %marker.granted_by,
+        expires_at = ?entry.expires_at,
+        "hand-off exercised; marked entry replaced by its successor (VTI-ACL-056)"
+    );
+    audit!(
+        "acl.handoff",
+        actor = &auth.did,
+        resource = &entry.did,
+        outcome = "success"
+    );
+    audit::record_with_detail_best_effort(
+        audit,
+        "acl.handoff",
+        &auth.did,
+        Some(&entry.did),
+        "success",
+        Some(channel),
+        context_id,
+        Some(&detail),
+    )
+    .await;
+    Ok(to_result_body(&entry))
+}
+
 /// Parse wire capability names into the enum, refusing any it does not know.
 ///
 /// Every transport goes through this, so a name is spelled one way and refused
@@ -271,6 +725,7 @@ fn to_result_body(e: &AclEntry) -> CreateAclResultBody {
         // Serialized through serde so the names on the wire are the canonical
         // kebab-case ones a caller sends back, rather than a second spelling
         // invented here.
+        handoff: e.handoff.is_some(),
         capabilities: e
             .capabilities
             .iter()
@@ -335,6 +790,10 @@ pub struct CreateAclParams {
     /// wider than intended. Empty = whatever the role implies; a name the role
     /// does not carry is refused, never dropped ([`capabilities_beyond_role`]).
     pub capabilities: Vec<Capability>,
+    /// Mark the entry as a one-time hand-off (VTI-ACL-054). Requires an
+    /// expiry, a subject other than the caller, and a caller whose own entry
+    /// carries no marker.
+    pub handoff: bool,
 }
 
 pub async fn create_acl(
@@ -356,6 +815,7 @@ pub async fn create_acl(
         approve_scope,
         allowed_keys,
         capabilities,
+        handoff,
     } = params;
     let did = did.as_str();
 
@@ -403,6 +863,17 @@ pub async fn create_acl(
         .with_approve_scope(approve_scope)
         .with_allowed_keys(allowed_keys)
         .with_capabilities(capabilities);
+
+    // No entry the caller writes may hold more than the caller does, on any
+    // axis. The checks above bound role and contexts from the token; this
+    // bounds the rest from the caller's own row (VTI-ACL-053).
+    let me = caller_entry(acl_ks, auth).await?;
+    validate_within_caller(auth, &me, &entry)?;
+    let entry = if handoff {
+        entry.with_handoff(Some(mint_handoff(auth, &me, did, expires_at)?))
+    } else {
+        entry
+    };
 
     store_acl_entry(acl_ks, &entry).await?;
 
@@ -528,6 +999,7 @@ async fn update_acl(
     // — narrow it to Admin callers (creation still accepts Initiator via
     // `require_manage` so operators can grant Reader/Application access).
     auth.require_admin()?;
+    refuse_self_modification(auth, did, "update")?;
 
     let mut entry = get_acl_entry(acl_ks, did)
         .await?
@@ -536,6 +1008,10 @@ async fn update_acl(
     if !is_acl_entry_visible(auth, &entry) {
         return Err(not_manageable(auth, &entry, did, "update"));
     }
+    if !caller_covers_entry(auth, &entry) {
+        return Err(not_covered(did, "update"));
+    }
+    let me = caller_entry(acl_ks, auth).await?;
 
     if let Some(ref role) = params.role {
         validate_role_assignment(auth, role)?;
@@ -655,6 +1131,16 @@ async fn update_acl(
         entry.expires_at = Some(expires_at);
     }
 
+    // The patched entry, judged whole: one the caller could have created
+    // directly, holding nothing the caller does not (VTI-ACL-053). Clearing a
+    // capability narrowing or a key filter, or extending an expiry, is a grant
+    // like any other. Role and act scope are re-judged on the result too: a
+    // role change alone (no `allowed_contexts` in the patch) can still turn an
+    // entry's contexts from "nowhere" into "everywhere".
+    validate_role_assignment(auth, &entry.role)?;
+    validate_acl_modification(auth, &entry.role, &entry.allowed_contexts)?;
+    validate_within_caller(auth, &me, &entry)?;
+
     store_acl_entry(acl_ks, &entry).await?;
 
     info!(channel, did = %did, "ACL entry updated");
@@ -713,6 +1199,7 @@ async fn change_role(
     channel: &str,
 ) -> Result<CreateAclResultBody, AppError> {
     auth.require_admin()?;
+    refuse_self_modification(auth, subject, "change the role of")?;
 
     let mut entry = get_acl_entry(acl_ks, subject)
         .await?
@@ -720,6 +1207,9 @@ async fn change_role(
 
     if !is_acl_entry_visible(auth, &entry) {
         return Err(not_manageable(auth, &entry, subject, "change-role"));
+    }
+    if !caller_covers_entry(auth, &entry) {
+        return Err(not_covered(subject, "change-role"));
     }
 
     // `Role::parse` owns the vocabulary, but maps an unknown value to
@@ -753,6 +1243,10 @@ async fn change_role(
 
     let expected_version = entry.version;
     entry.role = to;
+    // A promotion raises the entry's capability ceiling with its role, so the
+    // result is bounded by the caller's own, as a grant is (VTI-ACL-053).
+    let me = caller_entry(acl_ks, auth).await?;
+    validate_within_caller(auth, &me, &entry)?;
 
     // Versioned write rather than a plain store: the role check above is
     // read-then-compare, so on its own it still leaves a window for another
@@ -821,6 +1315,8 @@ pub async fn delete_acl(
 ) -> Result<(), AppError> {
     auth.require_manage()?;
 
+    // VTI-ACL-052. Kept a `Conflict` (the historical status for this refusal)
+    // rather than routed through `refuse_self_modification`.
     if auth.did == did {
         return Err(AppError::Conflict(
             "cannot delete your own ACL entry".into(),
@@ -832,6 +1328,12 @@ pub async fn delete_acl(
         .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
     if !is_acl_entry_visible(auth, &entry) {
         return Err(not_manageable(auth, &entry, did, "delete"));
+    }
+    // Deleting an entry withdraws its authority everywhere it holds any, so
+    // the caller must hold all of it — overlap is enough to see the row, not
+    // to revoke the subject from a context the caller does not administer.
+    if !caller_covers_entry(auth, &entry) {
+        return Err(not_covered(did, "delete"));
     }
 
     // Caller must be at least as privileged as the entry they are
@@ -872,8 +1374,8 @@ pub async fn delete_acl(
 /// DID and delete the old one.
 ///
 /// Self-service by design: no `require_manage()` — the caller only moves their
-/// *own* authorization to a new key, copying the existing role/contexts, so
-/// there's no privilege escalation. The new DID is proven (VP-JWT) rather than
+/// *own* authorization to a new key, copying the entry exactly (VTI-CLT-029),
+/// so there's no privilege escalation. The new DID is proven (VP-JWT) rather than
 /// asserted, and the audience is bound to this VTA. Ordering is create-new →
 /// delete-old, so a failure after the first write leaves the old DID valid
 /// (never a lockout).
@@ -911,35 +1413,43 @@ pub async fn swap_acl(
         ));
     }
 
-    // The caller's own entry is what gets moved.
+    // The caller's own entry is what gets moved — and only while it is live.
+    // An expired entry confers nothing (VTI-ACL-004), so it has nothing to
+    // move; renaming it would resurrect it under a fresh subject.
     let old = get_acl_entry(acl_ks, &auth.did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("no ACL entry for caller: {}", auth.did)))?;
+    if old.is_expired(now) {
+        return Err(AppError::Forbidden(format!(
+            "ACL entry for {} has expired; an expired entry cannot be rotated",
+            auth.did
+        )));
+    }
     if get_acl_entry(acl_ks, &new_did).await?.is_some() {
         return Err(AppError::Conflict(format!(
             "ACL entry already exists for DID: {new_did}"
         )));
     }
 
-    // DO NOT inherit `expires_at` from the ephemeral. The swap
-    // expresses the operator's intent to hand off authority to the
-    // long-term DID — preserving the ephemeral's TTL would silently
-    // expire the long-term entry on the same clock (typically 1 h,
-    // since onboarding scripts set --expires 1h on the ephemeral by
-    // design). The acl_sweeper would then physically delete the
-    // long-term entry an hour later, and /auth/challenge would
-    // start returning "DID not in ACL" with no audit-log trace of
-    // the create→swap→sweep chain. Operators who genuinely want a
-    // time-limited long-term entry can `acl change-role --expires
-    // …` afterwards. See PR fixing this and the parallel
-    // acl_sweeper change that audit-logs every deletion.
-    let entry = AclEntry::new(new_did.clone(), old.role.clone(), auth.did.clone())
-        .with_label(old.label.clone())
-        .with_contexts(old.allowed_contexts.clone())
-        .with_created_at(now)
-        .with_kind(old.kind.clone())
-        .with_capabilities(old.capabilities.clone())
-        .with_device(old.device.clone());
+    // The rotation renames the grant and changes nothing else (VTI-CLT-029,
+    // `acl/swap-key` step 6): role, contexts, capabilities, key filter,
+    // approve scope, expiry, step-up settings, device binding and provenance
+    // all move across exactly as they are.
+    //
+    // This used to rebuild the entry field by field, and the fields it left
+    // out were the ones that narrow it. Dropping `expires_at` turned a
+    // one-hour bootstrap grant into a permanent one; dropping `allowed_keys`
+    // took a key-filtered entry back to every key in its contexts. Both were
+    // self-service widenings reachable by the subject alone — the escalation
+    // VTI-CLT-029 names. A client whose bootstrap entry carries an expiry now
+    // keeps that expiry after rotating; lifting it is an administrator's act
+    // (VTI-ACL-052), not the subject's.
+    let mut entry = old.clone();
+    entry.did = new_did.clone();
+    // The one thing a rotation does not carry: a hand-off marker is the
+    // granter's decision about the subject it was made for, and moving it to a
+    // new subject would re-set it (VTI-ACL-054). Dropping it only narrows.
+    entry.handoff = None;
 
     // Create new before deleting old: a crash between the two leaves the old
     // DID authoritative (stale, not locked out).
@@ -951,9 +1461,8 @@ pub async fn swap_acl(
         old = %auth.did,
         new = %new_did,
         role = %entry.role,
-        old_expires_at = ?old.expires_at,
-        new_expires_at = ?entry.expires_at,
-        "ACL entry swapped; long-term entry is permanent (ephemeral TTL not inherited)"
+        expires_at = ?entry.expires_at,
+        "ACL entry swapped; authority preserved exactly (VTI-CLT-029)"
     );
     audit!(
         "acl.swap",
@@ -1016,6 +1525,8 @@ pub async fn grant_from_entry(
         Ok(None) => Vec::new(),
         Err(reason) => return Err(AppError::Validation(reason)),
     };
+    let handoff = vta_sdk::protocols::acl_management::entry::handoff_from_ext(entry.ext.as_ref())
+        .map_err(AppError::Validation)?;
 
     let stored = create_acl(
         acl_ks,
@@ -1036,6 +1547,7 @@ pub async fn grant_from_entry(
                 .clone()
                 .map(|keys| keys.into_iter().collect()),
             capabilities,
+            handoff,
         },
         channel,
     )
@@ -1252,6 +1764,7 @@ mod tests {
         seed_target(&acl_ks, "did:key:zInB", &["ctx-b"]).await;
         seed_target(&acl_ks, "did:key:zSuper", &[]).await;
         let a_admin = ctx_admin("did:key:zAdminA", &["ctx-a"]);
+        seed_caller(&acl_ks, &a_admin).await;
         let may = async |auth: &AuthClaims, subject: &str| {
             may_manage_subject(&acl_ks, auth, subject).await.unwrap()
         };
@@ -1272,6 +1785,7 @@ mod tests {
         );
 
         let sup = super_admin("did:key:zRoot");
+        seed_caller(&acl_ks, &sup).await;
         for s in [
             "did:key:zInA",
             "did:key:zInB",
@@ -1286,6 +1800,7 @@ mod tests {
             role: Role::Reader,
             ..ctx_admin("did:key:zReader", &["ctx-a"])
         };
+        seed_caller(&acl_ks, &reader).await;
         assert!(may(&reader, "did:key:zReader").await);
         assert!(!may(&reader, "did:key:zInA").await);
     }
@@ -1329,6 +1844,7 @@ mod tests {
         .unwrap();
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        seed_caller(&acl_ks, &caller).await;
         let body = get_acl(&acl_ks, &caller, target, "test")
             .await
             .expect("an approver in my context must be auditable");
@@ -1350,6 +1866,7 @@ mod tests {
         .unwrap();
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        seed_caller(&acl_ks, &caller).await;
         let body = list_acl(&acl_ks, &caller, None, ContextDirection::default(), "test")
             .await
             .unwrap();
@@ -1422,6 +1939,7 @@ mod tests {
         let (_store, acl_ks, _audit, _contexts_ks, _dir) = fresh_store().await;
         seed_tenant_subtree(&acl_ks).await;
         let caller = super_admin("did:key:zRoot");
+        seed_caller(&acl_ks, &caller).await;
         assert_eq!(
             dids_for(&acl_ks, &caller, "acme/eng", ContextDirection::default()).await,
             dids_for(&acl_ks, &caller, "acme/eng", ContextDirection::ActingIn).await,
@@ -1437,6 +1955,7 @@ mod tests {
         seed_tenant_subtree(&acl_ks).await;
         // Admin of a sibling unit only.
         let caller = ctx_admin("did:key:zOpsAdmin", &["acme/ops"]);
+        seed_caller(&acl_ks, &caller).await;
         for direction in ContextDirection::ALL {
             let dids = dids_for(&acl_ks, &caller, "acme/eng", direction).await;
             assert!(
@@ -1454,6 +1973,7 @@ mod tests {
         let (_store, acl_ks, _audit, _contexts_ks, _dir) = fresh_store().await;
         seed_tenant_subtree(&acl_ks).await;
         let caller = super_admin("did:key:zRoot");
+        seed_caller(&acl_ks, &caller).await;
 
         let err = list_acl(&acl_ks, &caller, None, ContextDirection::Subtree, "test")
             .await
@@ -1476,6 +1996,7 @@ mod tests {
         seed_foreign_admin_conferring_into(&acl_ks, target, &["ctx-b"], &["ctx-a"]).await;
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        seed_caller(&acl_ks, &caller).await;
         // Readable…
         get_acl(&acl_ks, &caller, target, "test")
             .await
@@ -1500,6 +2021,7 @@ mod tests {
         seed_target(&acl_ks, target, &["ctx-b"]).await;
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        seed_caller(&acl_ks, &caller).await;
         let err = delete_acl(&acl_ks, &audit, &caller, target, "test")
             .await
             .expect_err("not visible, not auditable");
@@ -1660,7 +2182,7 @@ mod tests {
             &acl_ks,
             &audit,
             &contexts_ks,
-            &super_admin("did:key:zRoot"),
+            &seeded(&acl_ks, super_admin("did:key:zRoot")).await,
             wire,
             "test",
         )
@@ -1707,7 +2229,7 @@ mod tests {
             &acl_ks,
             &audit,
             &contexts_ks,
-            &super_admin("did:key:zRoot"),
+            &seeded(&acl_ks, super_admin("did:key:zRoot")).await,
             wire,
             "test",
         )
@@ -1747,7 +2269,7 @@ mod tests {
             &acl_ks,
             &audit,
             &contexts_ks,
-            &super_admin("did:key:zRoot"),
+            &seeded(&acl_ks, super_admin("did:key:zRoot")).await,
             wire,
             "test",
         )
@@ -1768,6 +2290,7 @@ mod tests {
         let target = "did:key:zAgent";
         seed_target(&acl_ks, target, &["ctx-a"]).await;
         let admin = super_admin("did:key:zRoot");
+        seed_caller(&acl_ks, &admin).await;
 
         let set = |caps: Option<Vec<Capability>>| UpdateAclParams {
             allowed_keys: None,
@@ -1852,7 +2375,7 @@ mod tests {
             &acl_ks,
             &audit,
             &contexts_ks,
-            &super_admin("did:key:zRoot"),
+            &seeded(&acl_ks, super_admin("did:key:zRoot")).await,
             target,
             UpdateAclParams {
                 allowed_keys: None,
@@ -1890,6 +2413,7 @@ mod tests {
         seed_target(&acl_ks, target, &["ctx-a"]).await;
 
         let admin = super_admin("did:key:zRoot");
+        seed_caller(&acl_ks, &admin).await;
         let set = |scope| UpdateAclParams {
             allowed_keys: None,
             role: None,
@@ -1979,6 +2503,7 @@ mod tests {
         let target = "did:key:zSigner";
         seed_target(&acl_ks, target, &["ctx-a"]).await;
         let admin = super_admin("did:key:zRoot");
+        seed_caller(&acl_ks, &admin).await;
 
         let set = |replacement| UpdateAclParams {
             role: None,
@@ -2093,6 +2618,7 @@ mod tests {
         let target = "did:key:zApprover";
         seed_target(&acl_ks, target, &["ctx-a"]).await;
         let admin = super_admin("did:key:zRoot");
+        seed_caller(&acl_ks, &admin).await;
 
         update_acl(
             &acl_ks,
@@ -2160,6 +2686,7 @@ mod tests {
         seed_target(&acl_ks, target, &["ctx-a"]).await;
 
         let ctx_admin_a = ctx_admin("did:key:zCallerA", &["ctx-a"]);
+        seed_caller(&acl_ks, &ctx_admin_a).await;
         let err = update_acl(
             &acl_ks,
             &audit,
@@ -2223,6 +2750,7 @@ mod tests {
         seed_target(&acl_ks, target, &["ctx-a", "ctx-b"]).await;
 
         let caller = ctx_admin("did:key:zCallerA", &["ctx-a"]);
+        seed_caller(&acl_ks, &caller).await;
         let err = update_acl(
             &acl_ks,
             &audit,
@@ -2263,6 +2791,7 @@ mod tests {
         // Caller admins both ctx-a and ctx-b → the symmetric diff
         // (just `ctx-b`) is in scope, so the shrink is allowed.
         let caller = ctx_admin("did:key:zCallerAB", &["ctx-a", "ctx-b"]);
+        seed_caller(&acl_ks, &caller).await;
         let body = update_acl(
             &acl_ks,
             &audit,
@@ -2300,6 +2829,7 @@ mod tests {
         seed_target(&acl_ks, target, &["ctx-a"]).await;
 
         let caller = ctx_admin("did:key:zCallerA", &["ctx-a"]);
+        seed_caller(&acl_ks, &caller).await;
         let err = update_acl(
             &acl_ks,
             &audit,
@@ -2347,6 +2877,7 @@ mod tests {
             amr: Vec::new(),
             acr: String::new(),
         };
+        seed_caller(&acl_ks, &caller).await;
         let err = create_acl(
             &acl_ks,
             &audit,
@@ -2384,7 +2915,7 @@ mod tests {
             &acl_ks,
             &audit,
             &contexts_ks,
-            &ctx_admin("did:key:zScoped", &["ctx-work"]),
+            &seeded(&acl_ks, ctx_admin("did:key:zScoped", &["ctx-work"])).await,
             CreateAclParams {
                 did: "did:key:zPuppet".into(),
                 role: Role::Admin,
@@ -2414,7 +2945,7 @@ mod tests {
             &acl_ks,
             &audit,
             &contexts_ks,
-            &super_admin("did:key:zSuper"),
+            &seeded(&acl_ks, super_admin("did:key:zSuper")).await,
             CreateAclParams {
                 did: "did:key:zClient".into(),
                 role: Role::Admin,
@@ -2454,7 +2985,7 @@ mod tests {
             &acl_ks,
             &audit,
             &contexts_ks,
-            &ctx_admin("did:key:zScoped", &["ctx-work"]),
+            &seeded(&acl_ks, ctx_admin("did:key:zScoped", &["ctx-work"])).await,
             "did:key:zPuppet",
             UpdateAclParams {
                 capabilities: Some(vec![Capability::PersonaHolder]),
@@ -2495,6 +3026,7 @@ mod tests {
             amr: Vec::new(),
             acr: String::new(),
         };
+        seed_caller(&acl_ks, &caller).await;
         let body = create_acl(
             &acl_ks,
             &audit,
@@ -2524,6 +3056,7 @@ mod tests {
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        seed_caller(&acl_ks, &caller).await;
         let body = create_acl(
             &acl_ks,
             &audit,
@@ -2555,6 +3088,7 @@ mod tests {
         seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        seed_caller(&acl_ks, &caller).await;
         let err = create_acl(
             &acl_ks,
             &audit,
@@ -2582,6 +3116,7 @@ mod tests {
         seed_contexts(&contexts_ks, &["ctx-a"]).await;
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        seed_caller(&acl_ks, &caller).await;
         let err = create_acl(
             &acl_ks,
             &audit,
@@ -2624,6 +3159,7 @@ mod tests {
             amr: Vec::new(),
             acr: String::new(),
         };
+        seed_caller(&acl_ks, &caller).await;
         let err = delete_acl(&acl_ks, &audit, &caller, admin_target, "test")
             .await
             .unwrap_err();
@@ -2644,6 +3180,7 @@ mod tests {
         seed_target(&acl_ks, admin_target, &["ctx-shared"]).await;
 
         let caller = ctx_admin("did:key:zCallerAdmin", &["ctx-shared"]);
+        seed_caller(&acl_ks, &caller).await;
         // `delete_acl` is the internal removal; the canonical response body is
         // built by `revoke_by_subject`, which reads the entry first so the
         // caller learns what was withdrawn.
@@ -2682,6 +3219,7 @@ mod tests {
             amr: Vec::new(),
             acr: String::new(),
         };
+        seed_caller(&acl_ks, &caller).await;
         let err = update_acl(
             &acl_ks,
             &audit,
@@ -2705,5 +3243,908 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Self-widening and grants beyond the granter (VTI-ACL-052, VTI-ACL-053,
+    // VTI-ACL-042, VTI-CLT-029)
+    // -----------------------------------------------------------------------
+
+    /// Store `auth`'s own entry — role and contexts from the claims — so a
+    /// write it makes has an entry to be bounded by.
+    async fn seed_caller(acl_ks: &KeyspaceHandle, auth: &AuthClaims) {
+        store_acl_entry(
+            acl_ks,
+            &AclEntry::new(auth.did.clone(), auth.role.clone(), "seed")
+                .with_contexts(auth.allowed_contexts.clone()),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// `auth`, with its own entry stored — for a caller passed inline.
+    async fn seeded(acl_ks: &KeyspaceHandle, auth: AuthClaims) -> AuthClaims {
+        seed_caller(acl_ks, &auth).await;
+        auth
+    }
+
+    fn no_change() -> UpdateAclParams {
+        UpdateAclParams {
+            role: None,
+            label: None,
+            allowed_contexts: None,
+            step_up_approver: None,
+            step_up_require: None,
+            approve_scope: None,
+            expires_at: None,
+            reason: None,
+            capabilities: None,
+            allowed_keys: None,
+        }
+    }
+
+    fn keys(ids: &[&str]) -> std::collections::BTreeSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    const BRIDGE: &str = "did:key:zGitBridge";
+
+    /// A companion service's credential, as the git bridge is provisioned:
+    /// `--role admin --contexts vgi-bridge`, here additionally narrowed on
+    /// every axis an entry can be narrowed on.
+    async fn seed_narrowed_bridge(acl_ks: &KeyspaceHandle) -> (AuthClaims, u64) {
+        let expires = now_epoch() + 3600;
+        store_acl_entry(
+            acl_ks,
+            &AclEntry::new(BRIDGE, Role::Admin, "seed")
+                .with_contexts(vec!["vgi-bridge".into()])
+                .with_capabilities(vec![Capability::Sign])
+                .with_allowed_keys(Some(keys(&["k-bridge"])))
+                .with_expires_at(Some(expires)),
+        )
+        .await
+        .unwrap();
+        (ctx_admin(BRIDGE, &["vgi-bridge"]), expires)
+    }
+
+    /// VTI-ACL-052: a context admin cannot edit its own entry — not to clear
+    /// its capability narrowing, not to drop its key filter, not to extend
+    /// its expiry, not to add a context (even one beneath its own), not even
+    /// to relabel it. Each of these succeeded before, and the first three
+    /// were privilege increases the subject could award itself.
+    #[tokio::test]
+    async fn vti_acl_052_a_context_admin_cannot_update_its_own_entry() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["vgi-bridge", "vgi-bridge/sub", "other"]).await;
+        let (bridge, expires) = seed_narrowed_bridge(&acl_ks).await;
+        let before = get_acl_entry(&acl_ks, BRIDGE).await.unwrap().unwrap();
+
+        let attempts: Vec<(&str, UpdateAclParams)> = vec![
+            (
+                "clear the capability narrowing",
+                UpdateAclParams {
+                    capabilities: Some(Vec::new()),
+                    ..no_change()
+                },
+            ),
+            (
+                "drop the key filter",
+                UpdateAclParams {
+                    allowed_keys: Some(None),
+                    ..no_change()
+                },
+            ),
+            (
+                "extend the expiry",
+                UpdateAclParams {
+                    expires_at: Some(expires + 365 * 24 * 3600),
+                    ..no_change()
+                },
+            ),
+            (
+                "add a foreign context",
+                UpdateAclParams {
+                    allowed_contexts: Some(vec!["vgi-bridge".into(), "other".into()]),
+                    ..no_change()
+                },
+            ),
+            (
+                "add a sub-context",
+                UpdateAclParams {
+                    allowed_contexts: Some(vec!["vgi-bridge".into(), "vgi-bridge/sub".into()]),
+                    ..no_change()
+                },
+            ),
+            (
+                "grant itself approve authority",
+                UpdateAclParams {
+                    approve_scope: Some(ApproveScope::Contexts(vec!["vgi-bridge".into()])),
+                    ..no_change()
+                },
+            ),
+            (
+                "relabel",
+                UpdateAclParams {
+                    label: Some("mine".into()),
+                    ..no_change()
+                },
+            ),
+        ];
+        for (what, params) in attempts {
+            let err = update_acl(
+                &acl_ks,
+                &audit,
+                &contexts_ks,
+                &bridge,
+                BRIDGE,
+                params,
+                "test",
+            )
+            .await
+            .expect_err(what);
+            assert!(
+                matches!(err, AppError::Forbidden(_)),
+                "{what}: expected Forbidden, got {err:?}"
+            );
+        }
+
+        let after = get_acl_entry(&acl_ks, BRIDGE).await.unwrap().unwrap();
+        assert_eq!(after.capabilities, before.capabilities);
+        assert_eq!(after.allowed_keys, before.allowed_keys);
+        assert_eq!(after.expires_at, before.expires_at);
+        assert_eq!(after.allowed_contexts, before.allowed_contexts);
+        assert_eq!(after.label, before.label);
+    }
+
+    /// VTI-ACL-052 on the role path: a subject cannot move its own role in
+    /// either direction.
+    #[tokio::test]
+    async fn vti_acl_052_a_subject_cannot_change_its_own_role() {
+        let (_store, acl_ks, audit, _contexts_ks, _dir) = fresh_store().await;
+        let (bridge, _) = seed_narrowed_bridge(&acl_ks).await;
+        let err = change_role(
+            &acl_ks,
+            &audit,
+            &bridge,
+            BRIDGE,
+            "admin",
+            "initiator",
+            None,
+            "test",
+        )
+        .await
+        .expect_err("self role change");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+        let stored = get_acl_entry(&acl_ks, BRIDGE).await.unwrap().unwrap();
+        assert_eq!(stored.role, Role::Admin);
+    }
+
+    /// VTI-ACL-053: what a narrowed administrator cannot award itself, it
+    /// cannot award a second DID it controls either. Every axis is refused
+    /// until the new entry fits inside the caller's own.
+    #[tokio::test]
+    async fn vti_acl_053_a_narrowed_admin_cannot_mint_a_wider_sibling() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["vgi-bridge"]).await;
+        let (bridge, expires) = seed_narrowed_bridge(&acl_ks).await;
+
+        let sibling = |n: u8| format!("did:key:zSibling{n}");
+        let params = |n: u8| CreateAclParams {
+            did: sibling(n),
+            role: Role::Admin,
+            allowed_contexts: vec!["vgi-bridge".into()],
+            ..Default::default()
+        };
+
+        let refusals = [
+            ("every capability", params(1)),
+            (
+                "caps within, no key filter",
+                CreateAclParams {
+                    capabilities: vec![Capability::Sign],
+                    ..params(2)
+                },
+            ),
+            (
+                "keys outside the caller's",
+                CreateAclParams {
+                    capabilities: vec![Capability::Sign],
+                    allowed_keys: Some(keys(&["k-bridge", "k-other"])),
+                    expires_at: Some(expires),
+                    ..params(3)
+                },
+            ),
+            (
+                "permanent",
+                CreateAclParams {
+                    capabilities: vec![Capability::Sign],
+                    allowed_keys: Some(keys(&["k-bridge"])),
+                    ..params(4)
+                },
+            ),
+            (
+                "outlives the caller",
+                CreateAclParams {
+                    capabilities: vec![Capability::Sign],
+                    allowed_keys: Some(keys(&["k-bridge"])),
+                    expires_at: Some(expires + 1),
+                    ..params(5)
+                },
+            ),
+        ];
+        for (what, p) in refusals {
+            let did = p.did.clone();
+            let err = create_acl(&acl_ks, &audit, &contexts_ks, &bridge, p, "test")
+                .await
+                .expect_err(what);
+            assert!(
+                matches!(err, AppError::Forbidden(_)),
+                "{what}: expected Forbidden, got {err:?}"
+            );
+            assert!(get_acl_entry(&acl_ks, &did).await.unwrap().is_none());
+        }
+
+        create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &bridge,
+            CreateAclParams {
+                capabilities: vec![Capability::Sign],
+                allowed_keys: Some(keys(&["k-bridge"])),
+                expires_at: Some(expires),
+                ..params(6)
+            },
+            "test",
+        )
+        .await
+        .expect("an entry inside the caller's own on every axis");
+    }
+
+    /// VTI-ACL-053 on update: clearing another entry's narrowing is a grant,
+    /// bounded by the caller exactly as a create is.
+    #[tokio::test]
+    async fn vti_acl_053_an_update_cannot_widen_another_entry_past_the_caller() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["vgi-bridge"]).await;
+        let (bridge, _) = seed_narrowed_bridge(&acl_ks).await;
+        let target = "did:key:zNarrowPeer";
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new(target, Role::Admin, "seed")
+                .with_contexts(vec!["vgi-bridge".into()])
+                .with_capabilities(vec![Capability::Sign])
+                .with_allowed_keys(Some(keys(&["k-bridge"])))
+                .with_expires_at(Some(now_epoch() + 60)),
+        )
+        .await
+        .unwrap();
+
+        for (what, params) in [
+            (
+                "clear capabilities",
+                UpdateAclParams {
+                    capabilities: Some(Vec::new()),
+                    ..no_change()
+                },
+            ),
+            (
+                "clear key filter",
+                UpdateAclParams {
+                    allowed_keys: Some(None),
+                    ..no_change()
+                },
+            ),
+            (
+                "extend past the caller",
+                UpdateAclParams {
+                    expires_at: Some(now_epoch() + 10 * 3600),
+                    ..no_change()
+                },
+            ),
+        ] {
+            let err = update_acl(
+                &acl_ks,
+                &audit,
+                &contexts_ks,
+                &bridge,
+                target,
+                params,
+                "test",
+            )
+            .await
+            .expect_err(what);
+            assert!(matches!(err, AppError::Forbidden(_)), "{what}: got {err:?}");
+        }
+    }
+
+    /// Overlap lets a context admin see an entry; it does not let it change
+    /// or delete one that also acts in a context it does not hold.
+    #[tokio::test]
+    async fn a_context_admin_cannot_manage_an_entry_reaching_outside_its_contexts() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
+        let target = "did:key:zStraddler";
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new(target, Role::Initiator, "seed")
+                .with_contexts(vec!["ctx-a".into(), "ctx-b".into()]),
+        )
+        .await
+        .unwrap();
+        let caller = ctx_admin("did:key:zAdminA", &["ctx-a"]);
+        seed_caller(&acl_ks, &caller).await;
+
+        let err = update_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &caller,
+            target,
+            UpdateAclParams {
+                expires_at: Some(now_epoch() + 60),
+                ..no_change()
+            },
+            "test",
+        )
+        .await
+        .expect_err("update of a straddling entry");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+
+        let err = change_role(
+            &acl_ks,
+            &audit,
+            &caller,
+            target,
+            "initiator",
+            "reader",
+            None,
+            "test",
+        )
+        .await
+        .expect_err("role change of a straddling entry");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+
+        let err = delete_acl(&acl_ks, &audit, &caller, target, "test")
+            .await
+            .expect_err("delete of a straddling entry");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+        assert!(get_acl_entry(&acl_ks, target).await.unwrap().is_some());
+    }
+
+    /// VTI-ACL-042: approve authority is conferred only by a caller that
+    /// holds it — by its own approve scope or by administering the context.
+    /// An initiator acting in a context does neither.
+    #[tokio::test]
+    async fn vti_acl_042_an_initiator_cannot_confer_approve_authority_it_lacks() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+        let initiator = AuthClaims {
+            role: Role::Initiator,
+            ..ctx_admin("did:key:zInitiator", &["ctx-a"])
+        };
+        seed_caller(&acl_ks, &initiator).await;
+        let approver = |did: &str| CreateAclParams {
+            did: did.into(),
+            role: Role::Reader,
+            approve_scope: ApproveScope::Contexts(vec!["ctx-a".into()]),
+            ..Default::default()
+        };
+
+        let err = create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &initiator,
+            approver("did:key:zApprover1"),
+            "test",
+        )
+        .await
+        .expect_err("an initiator holds no approve authority to confer");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+
+        // Given approve authority over ctx-a, it may confer that much.
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new(initiator.did.clone(), Role::Initiator, "seed")
+                .with_contexts(vec!["ctx-a".into()])
+                .with_approve_scope(ApproveScope::Contexts(vec!["ctx-a".into()])),
+        )
+        .await
+        .unwrap();
+        create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &initiator,
+            approver("did:key:zApprover2"),
+            "test",
+        )
+        .await
+        .expect("conferring approve authority the caller holds");
+    }
+
+    /// A caller with no entry of its own writes nothing: there is no
+    /// authority to bound the grant by.
+    #[tokio::test]
+    async fn a_caller_without_an_entry_cannot_grant() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+        let ghost = super_admin("did:key:zNoEntry");
+        let err = create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &ghost,
+            CreateAclParams {
+                did: "did:key:zAnyone".into(),
+                role: Role::Reader,
+                allowed_contexts: vec!["ctx-a".into()],
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .expect_err("no entry, no grant");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+    }
+
+    /// VTI-CLT-029: a rotation moves the entry and changes nothing about its
+    /// authority. It used to drop the expiry (a one-hour bootstrap grant
+    /// became permanent) and the key filter (back to every key in scope).
+    #[tokio::test]
+    async fn vti_clt_029_a_rotation_preserves_the_entry_exactly() {
+        use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
+        let (_store, acl_ks, audit, _contexts_ks, _dir) = fresh_store().await;
+        let (old_did, _) = crate::test_support::did_for_seed(0xC1);
+        let expires = now_epoch() + 3600;
+        let original = AclEntry::new(old_did.clone(), Role::Admin, "did:key:zEnroller")
+            .with_label(Some("bootstrap".into()))
+            .with_contexts(vec!["vgi-bridge".into()])
+            .with_capabilities(vec![Capability::Sign])
+            .with_allowed_keys(Some(keys(&["k-bridge"])))
+            .with_approve_scope(ApproveScope::Contexts(vec!["vgi-bridge".into()]))
+            .with_expires_at(Some(expires))
+            .with_handoff(Some(unrestricted_marker("did:key:zEnroller")));
+        store_acl_entry(&acl_ks, &original).await.unwrap();
+        let auth = ctx_admin(&old_did, &["vgi-bridge"]);
+
+        let vta_did = "did:key:zThisVta";
+        let new_sk = ed25519_dalek::SigningKey::from_bytes(&[0xC2; 32]);
+        let (new_did, _) = crate::test_support::did_for_seed(0xC2);
+        let pres = vta_sdk::protocols::acl_management::swap::build_swap_presentation(
+            &new_sk,
+            &new_did,
+            vta_did,
+            now_epoch(),
+            300,
+            None,
+        );
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .unwrap();
+
+        swap_acl(&acl_ks, &audit, &auth, &pres, &resolver, vta_did, "test")
+            .await
+            .expect("rotation");
+
+        assert!(get_acl_entry(&acl_ks, &old_did).await.unwrap().is_none());
+        let moved = get_acl_entry(&acl_ks, &new_did).await.unwrap().unwrap();
+        assert_eq!(moved.role, original.role);
+        assert_eq!(moved.allowed_contexts, original.allowed_contexts);
+        assert_eq!(moved.capabilities, original.capabilities);
+        assert_eq!(moved.allowed_keys, original.allowed_keys, "key filter kept");
+        assert_eq!(moved.approve_scope, original.approve_scope);
+        assert_eq!(moved.expires_at, Some(expires), "expiry kept");
+        assert_eq!(moved.label, original.label);
+        assert_eq!(moved.created_by, original.created_by);
+        assert_eq!(moved.created_at, original.created_at);
+        assert!(
+            moved.handoff.is_none(),
+            "a rotation must not carry the hand-off marker (VTI-ACL-054)"
+        );
+    }
+
+    // ── one-time hand-off (VTI-ACL-054 – VTI-ACL-058) ──────────────────
+
+    const GRANTER: &str = "did:key:zHandoffGranter";
+    const EPHEMERAL: &str = "did:key:zHandoffEphemeral";
+
+    /// A marker recorded by an unrestricted, permanent granter.
+    fn unrestricted_marker(granted_by: &str) -> vti_common::acl::HandOff {
+        vti_common::acl::HandOff {
+            granted_by: granted_by.into(),
+            granted_at: now_epoch(),
+            bound: vti_common::acl::HandOffBound {
+                role: Role::Admin,
+                allowed_contexts: Vec::new(),
+                capabilities: Vec::new(),
+                approve_scope: ApproveScope::None,
+                allowed_keys: None,
+                expires_at: None,
+            },
+        }
+    }
+
+    fn successor(did: &str, contexts: &[&str]) -> HandOffSuccessor {
+        HandOffSuccessor {
+            did: did.into(),
+            role: Role::Admin,
+            label: None,
+            allowed_contexts: contexts.iter().map(|s| s.to_string()).collect(),
+            capabilities: Vec::new(),
+        }
+    }
+
+    /// An unrestricted, permanent granter marks a one-hour ephemeral scoped to
+    /// `ctx-h`, the way `pnm contexts create --admin-expires 1h
+    /// --admin-handoff` does. Returns the ephemeral's claims.
+    async fn marked_ephemeral(
+        acl_ks: &KeyspaceHandle,
+        audit: &vta_audit::SharedAuditSink,
+        contexts_ks: &KeyspaceHandle,
+    ) -> AuthClaims {
+        let granter = seeded(acl_ks, super_admin(GRANTER)).await;
+        create_acl(
+            acl_ks,
+            audit,
+            contexts_ks,
+            &granter,
+            CreateAclParams {
+                did: EPHEMERAL.into(),
+                role: Role::Admin,
+                allowed_contexts: vec!["ctx-h".into()],
+                expires_at: Some(now_epoch() + 3600),
+                handoff: true,
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .expect("the granter marks the ephemeral");
+        ctx_admin(EPHEMERAL, &["ctx-h"])
+    }
+
+    /// VTI-ACL-055/056: the marked ephemeral rolls over once. The successor
+    /// takes the granter's expiry (permanent here), the ephemeral's row is
+    /// gone, and the marker cannot be spent again.
+    #[tokio::test]
+    async fn vti_acl_055_a_hand_off_succeeds_once() {
+        let (store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-h"]).await;
+        let eph = marked_ephemeral(&acl_ks, &audit, &contexts_ks).await;
+        let marked = get_acl_entry(&acl_ks, EPHEMERAL).await.unwrap().unwrap();
+        assert_eq!(
+            marked.handoff.as_ref().map(|h| h.granted_by.as_str()),
+            Some(GRANTER)
+        );
+
+        let out = exercise_handoff(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &eph,
+            successor("did:key:zSuccessor1", &["ctx-h"]),
+            "test",
+            Some("ctx-h"),
+        )
+        .await
+        .expect("the one rollover");
+        assert!(!out.handoff, "the successor carries no marker");
+        let succ = get_acl_entry(&acl_ks, "did:key:zSuccessor1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            succ.expires_at, None,
+            "the granter's expiry, not the ephemeral's"
+        );
+        assert_eq!(succ.allowed_contexts, vec!["ctx-h".to_string()]);
+        assert!(succ.handoff.is_none());
+        assert!(get_acl_entry(&acl_ks, EPHEMERAL).await.unwrap().is_none());
+
+        // Audited before the commit, and again once it landed.
+        let rows = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let rows = rows.prefix_iter_raw("log:").await.unwrap();
+        let outcomes: Vec<String> = rows
+            .iter()
+            .filter_map(|(_, v)| serde_json::from_slice::<serde_json::Value>(v).ok())
+            .filter(|e| e["action"] == "acl.handoff")
+            .map(|e| e["outcome"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(outcomes.contains(&"committing".to_string()), "{outcomes:?}");
+        assert!(outcomes.contains(&"success".to_string()), "{outcomes:?}");
+
+        let err = exercise_handoff(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &eph,
+            successor("did:key:zSuccessor2", &["ctx-h"]),
+            "test",
+            Some("ctx-h"),
+        )
+        .await
+        .expect_err("a second rollover");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+        assert!(
+            get_acl_entry(&acl_ks, "did:key:zSuccessor2")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// VTI-ACL-055: an expired marked entry cannot be exercised.
+    #[tokio::test]
+    async fn vti_acl_055_a_hand_off_after_expiry_is_refused() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-h"]).await;
+        let eph = marked_ephemeral(&acl_ks, &audit, &contexts_ks).await;
+        let mut marked = get_acl_entry(&acl_ks, EPHEMERAL).await.unwrap().unwrap();
+        marked.expires_at = Some(now_epoch() - 1);
+        store_acl_entry(&acl_ks, &marked).await.unwrap();
+
+        let err = exercise_handoff(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &eph,
+            successor("did:key:zLate", &["ctx-h"]),
+            "test",
+            None,
+        )
+        .await
+        .expect_err("expired");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+        assert!(
+            get_acl_entry(&acl_ks, "did:key:zLate")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(get_acl_entry(&acl_ks, EPHEMERAL).await.unwrap().is_some());
+    }
+
+    /// VTI-ACL-055: the successor is bounded by what the granter held when it
+    /// set the marker, and takes the granter's expiry.
+    #[tokio::test]
+    async fn vti_acl_055_a_hand_off_cannot_widen_past_the_granter() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-h", "ctx-x"]).await;
+        // A narrowed, expiring granter scoped to ctx-h.
+        let granter_expires = now_epoch() + 7200;
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new(GRANTER, Role::Admin, "seed")
+                .with_contexts(vec!["ctx-h".into()])
+                .with_capabilities(vec![Capability::Sign])
+                .with_expires_at(Some(granter_expires)),
+        )
+        .await
+        .unwrap();
+        let granter = ctx_admin(GRANTER, &["ctx-h"]);
+        create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &granter,
+            CreateAclParams {
+                did: EPHEMERAL.into(),
+                role: Role::Admin,
+                allowed_contexts: vec!["ctx-h".into()],
+                capabilities: vec![Capability::Sign],
+                expires_at: Some(now_epoch() + 600),
+                handoff: true,
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .expect("a marked grant inside the granter");
+        let eph = ctx_admin(EPHEMERAL, &["ctx-h"]);
+
+        // Every capability the role implies: beyond the granter.
+        let err = exercise_handoff(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &eph,
+            successor("did:key:zWide", &["ctx-h"]),
+            "test",
+            None,
+        )
+        .await
+        .expect_err("wider capabilities");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+
+        // A marked entry an administrator later widened past its granter —
+        // here to a second context — still cannot hand that on.
+        let mut marked = get_acl_entry(&acl_ks, EPHEMERAL).await.unwrap().unwrap();
+        marked.allowed_contexts = vec!["ctx-h".into(), "ctx-x".into()];
+        store_acl_entry(&acl_ks, &marked).await.unwrap();
+        let eph_wide = ctx_admin(EPHEMERAL, &["ctx-h", "ctx-x"]);
+        let err = exercise_handoff(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &eph_wide,
+            HandOffSuccessor {
+                capabilities: vec![Capability::Sign],
+                ..successor("did:key:zWide2", &["ctx-h", "ctx-x"])
+            },
+            "test",
+            None,
+        )
+        .await
+        .expect_err("a context the granter did not hold");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains(GRANTER)),
+            "got {err:?}"
+        );
+        assert!(
+            get_acl_entry(&acl_ks, "did:key:zWide2")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Inside both bounds: accepted, with the granter's expiry.
+        let out = exercise_handoff(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &eph_wide,
+            HandOffSuccessor {
+                capabilities: vec![Capability::Sign],
+                ..successor("did:key:zNarrow", &["ctx-h"])
+            },
+            "test",
+            None,
+        )
+        .await
+        .expect("within the granter");
+        assert_eq!(out.expires_at, Some(granter_expires));
+    }
+
+    /// VTI-ACL-054: only the granter sets the marker, only at creation, only
+    /// with an expiry — and a marked holder cannot mint another.
+    #[tokio::test]
+    async fn vti_acl_054_the_holder_cannot_set_the_marker() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-h"]).await;
+        let eph = marked_ephemeral(&acl_ks, &audit, &contexts_ks).await;
+
+        // The marked holder re-setting it on a second DID it controls.
+        let err = create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &eph,
+            CreateAclParams {
+                did: "did:key:zSecondBootstrap".into(),
+                role: Role::Admin,
+                allowed_contexts: vec!["ctx-h".into()],
+                expires_at: Some(now_epoch() + 60),
+                handoff: true,
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .expect_err("a marked holder cannot mint a marker");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+
+        // A marker needs an expiry, so an unused bootstrap lapses.
+        let granter = super_admin(GRANTER);
+        let err = create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &granter,
+            CreateAclParams {
+                did: "did:key:zPermanentBootstrap".into(),
+                role: Role::Admin,
+                allowed_contexts: vec!["ctx-h".into()],
+                handoff: true,
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .expect_err("no expiry");
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+
+        // An update by another administrator leaves the marker as the granter
+        // set it: it has no member for it (the wire member is refused by
+        // `UpdateAclBody::capabilities`).
+        update_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &granter,
+            EPHEMERAL,
+            UpdateAclParams {
+                label: Some("relabelled".into()),
+                ..no_change()
+            },
+            "test",
+        )
+        .await
+        .expect("an administrator's update");
+        let marked = get_acl_entry(&acl_ks, EPHEMERAL).await.unwrap().unwrap();
+        assert_eq!(
+            marked.handoff.as_ref().map(|h| h.granted_by.as_str()),
+            Some(GRANTER)
+        );
+    }
+
+    /// VTI-ACL-056: of two concurrent rollovers, exactly one lands.
+    #[tokio::test]
+    async fn vti_acl_056_a_concurrent_double_hand_off_yields_one_success() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-h"]).await;
+        let eph = marked_ephemeral(&acl_ks, &audit, &contexts_ks).await;
+
+        let (a, b) = tokio::join!(
+            exercise_handoff(
+                &acl_ks,
+                &audit,
+                &contexts_ks,
+                &eph,
+                successor("did:key:zRaceA", &["ctx-h"]),
+                "test",
+                None,
+            ),
+            exercise_handoff(
+                &acl_ks,
+                &audit,
+                &contexts_ks,
+                &eph,
+                successor("did:key:zRaceB", &["ctx-h"]),
+                "test",
+                None,
+            ),
+        );
+        assert_eq!(
+            [a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(),
+            1,
+            "a: {a:?}, b: {b:?}"
+        );
+        let landed = [
+            get_acl_entry(&acl_ks, "did:key:zRaceA").await.unwrap(),
+            get_acl_entry(&acl_ks, "did:key:zRaceB").await.unwrap(),
+        ];
+        assert_eq!(landed.iter().filter(|e| e.is_some()).count(), 1);
+    }
+
+    /// VTI-ACL-058: a time-boxed admin without the marker gets no exemption.
+    #[tokio::test]
+    async fn vti_acl_058_no_marker_no_hand_off() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-h"]).await;
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new(EPHEMERAL, Role::Admin, GRANTER)
+                .with_contexts(vec!["ctx-h".into()])
+                .with_expires_at(Some(now_epoch() + 3600)),
+        )
+        .await
+        .unwrap();
+        let err = exercise_handoff(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &ctx_admin(EPHEMERAL, &["ctx-h"]),
+            successor("did:key:zUnmarked", &["ctx-h"]),
+            "test",
+            None,
+        )
+        .await
+        .expect_err("no marker");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("VTI-ACL-058")),
+            "got {err:?}"
+        );
     }
 }
