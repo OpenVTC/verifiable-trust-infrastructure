@@ -39,6 +39,10 @@ pub const REQUEST_TYPE: &str = <request::Payload as trust_tasks_rs::Payload>::TY
 /// Type URI of the decision document an approver returns.
 pub const DECISION_TYPE: &str = <decision::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// The proof purpose a consent request is signed under: the issuing node's
+/// operational key, under `authentication` (VTI-KEY-106/107).
+pub const REQUEST_PROOF_PURPOSE: &str = "authentication";
+
 /// Length of the match code, in hex characters. UI-only: there is no wire
 /// field, so every surface showing one must agree on this.
 pub const MATCH_CODE_LEN: usize = 6;
@@ -62,6 +66,12 @@ pub enum TaskConsentError {
     /// The proof is missing or does not verify.
     #[error("the request's proof does not verify")]
     ProofInvalid,
+    /// The proof declares a purpose other than `authentication`. A consent
+    /// request is an operational document of its node, signed with the node's
+    /// operational key under `authentication` (VTI-KEY-106/107); only the
+    /// approver's *decision* is an assertion.
+    #[error("the request's proof declares proofPurpose {0}, not authentication")]
+    WrongProofPurpose(String),
     /// The proof verifies, but under a key the document's issuer does not
     /// control.
     #[error("the request is signed by {signer}, not by its issuer {issuer}")]
@@ -158,7 +168,8 @@ impl ConsentRequest {
     /// Verify the request and read it.
     ///
     /// Refuses unless the document is a request that matches its schema, its
-    /// proof verifies, the proof's signer is the document's issuer, that
+    /// proof verifies under the `authentication` purpose, the proof's signer
+    /// is the document's issuer, that
     /// issuer is `expected_issuer`, the document is addressed to `approver`,
     /// and it has not expired at `now`.
     ///
@@ -186,6 +197,16 @@ impl ConsentRequest {
         let signer = crate::trust_task_proof::verify_trust_task_proof_with(&doc, resolver)
             .await
             .map_err(|_| TaskConsentError::ProofInvalid)?;
+        // The purpose is part of the signed proof configuration, so once the
+        // proof verifies it is the node's own declaration.
+        let purpose = self
+            .raw
+            .pointer("/proof/proofPurpose")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if purpose != REQUEST_PROOF_PURPOSE {
+            return Err(TaskConsentError::WrongProofPurpose(purpose.to_string()));
+        }
         let issuer = doc.issuer.clone().unwrap_or_default();
         if signer != issuer {
             return Err(TaskConsentError::SignerNotIssuer { signer, issuer });
@@ -327,5 +348,51 @@ mod tests {
             1
         );
         assert!(extract_requests(&other).is_empty());
+    }
+
+    /// A request signed as an assertion — a valid proof, by the right node, to
+    /// the right approver — is still refused: a consent request is signed
+    /// under `authentication`.
+    #[cfg(feature = "client")]
+    #[tokio::test]
+    async fn a_request_signed_as_an_assertion_is_refused() {
+        let seed = [0x7a; 32];
+        let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let node = format!(
+            "did:key:{}",
+            crate::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+        );
+        let mut secret = vec![0x80, 0x26];
+        secret.extend_from_slice(&seed);
+        let key = crate::trust_task_sign::HolderKey::from_did_key(
+            &node,
+            multibase::encode(multibase::Base::Base58Btc, &secret),
+        )
+        .unwrap();
+        let approver = "did:example:approver";
+        // `build_signed_with` signs under assertionMethod.
+        let signed = crate::trust_task_sign::build_signed_with(
+            REQUEST_TYPE,
+            serde_json::json!({}),
+            &key,
+            approver,
+        )
+        .await
+        .unwrap();
+        let raw: Value = serde_json::from_str(&signed).unwrap();
+        assert_eq!(raw["proof"]["proofPurpose"], "assertionMethod");
+
+        let refused = ConsentRequest::new(raw)
+            .verify(
+                &node,
+                approver,
+                &crate::trust_task_proof::TrustTaskVmResolver::did_key_only(),
+                chrono::Utc::now(),
+            )
+            .await;
+        assert!(
+            matches!(&refused, Err(TaskConsentError::WrongProofPurpose(p)) if p == "assertionMethod"),
+            "{refused:?}"
+        );
     }
 }
