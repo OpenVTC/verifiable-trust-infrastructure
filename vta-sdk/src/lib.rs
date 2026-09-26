@@ -209,6 +209,9 @@ pub mod session;
 // private one (#830).
 #[cfg(feature = "session")]
 pub mod session_hub;
+/// The approver's side of task consent: the match code, request verification,
+/// and the decision payload.
+pub mod task_consent;
 /// Holder-signing for Trust Task documents — the shared `eddsa-jcs-2022`
 /// primitive both services' holder surfaces verify against.
 #[cfg(feature = "client")]
