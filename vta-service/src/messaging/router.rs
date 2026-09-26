@@ -35,10 +35,10 @@ use crate::store::KeyspaceHandle;
 #[cfg(feature = "didcomm")]
 use super::handlers;
 
+#[cfg(feature = "didcomm")]
+use vta_sdk::protocols;
 #[cfg(all(feature = "tee", feature = "didcomm"))]
 use vta_sdk::protocols::attestation_management;
-#[cfg(feature = "didcomm")]
-use vta_sdk::protocols::{self, credential_exchange};
 
 /// Trust-ping protocol identifiers (was the framework's `TRUST_PING_TYPE` /
 /// `TRUST_PONG_TYPE`). Re-declared locally now the framework is gone.
@@ -336,13 +336,10 @@ pub async fn dispatch(
         return finish(handlers::handle_problem_report(ctx, msg).await);
     }
 
-    // ── Credential exchange (AppState) ───────────────────────────────
-    if t == credential_exchange::ISSUE {
-        return finish(handlers::handle_credential_issue(ctx, msg, Extension(app_state)).await);
-    }
-    if t == credential_exchange::OFFER {
-        return finish(handlers::handle_credential_offer(ctx, msg, Extension(app_state)).await);
-    }
+    // Credential exchange (`offer`, `issue`, `query`) was the last family
+    // served typed as itself. It is a Trust Task on the spine now, reached
+    // through the envelope above like everything else; typed as itself it
+    // falls to `handle_unknown`, which refuses it naming the envelope.
 
     // ── TEE attestation (tee) ────────────────────────────────────────
     #[cfg(feature = "tee")]

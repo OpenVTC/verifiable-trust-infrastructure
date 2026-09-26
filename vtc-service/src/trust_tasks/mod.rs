@@ -58,6 +58,7 @@ pub(crate) mod helpers;
 // VTI-OPS-027 makes it every binding's, not this spine's: the dispatcher below
 // is its first caller, a bearer REST route is its second (#1641 phase 2).
 pub(crate) mod accepted_ids;
+mod credential_exchange;
 
 // The node-neutral `backup/*` family (#1641): a backup too large for one
 // document moves as a chunked bundle. `pub(crate)` for `blob_dir`, which the
@@ -712,6 +713,12 @@ async fn dispatch_typed(
         jr::JOIN_REQUEST_SUPPLEMENT_TYPE => handle_supplement(state, ctx, doc).await,
         jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
         mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
+        vta_sdk::protocols::credential_exchange::REQUEST => {
+            credential_exchange::handle_request(state, ctx, doc).await
+        }
+        vta_sdk::protocols::credential_exchange::PRESENT => {
+            credential_exchange::handle_present(state, ctx, doc).await
+        }
         vetting_wire::VETTING_REVOKE_STATEMENT_TYPE => {
             handle_revoke_statement(state, ctx, doc).await
         }
@@ -1280,7 +1287,7 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            44,
+            46,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1289,7 +1296,8 @@ mod spine_proof_tests {
              5's `backup/export` + `acl/grant` + `acl/change-role` + the 7 \
              `backup/*` chunked-transfer tasks + `task-consent/decision/0.1` (VTI-APV-014) \
              + the 3 trust-tasks 0.23 made proof-REQUIRED (`vetting/vetters/profile`, \
-             `vetting/vetters/resend`, `members/personhood/challenge`). \
+             `vetting/vetters/resend`, `members/personhood/challenge`) + the 2 \
+             credential-exchange steps a holder sends (`request`, `present`). \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries (its handler still requires the approver's \
@@ -1600,6 +1608,12 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
     jr::MEMBER_SELF_REMOVE_TYPE,
     mem::MEMBER_VMC_TYPE,
+    // The two credential-exchange steps a holder sends: `request` redeems an
+    // offer, `present` answers a join query. Each is answered by the VTC pushing
+    // the next step (`issue`, `join-requests/submit-receipt`); see
+    // `credential_exchange`.
+    vta_sdk::protocols::credential_exchange::REQUEST,
+    vta_sdk::protocols::credential_exchange::PRESENT,
     // A vetter withdrawing a statement (OpenVTC vetting design §9.6).
     vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
     // An admin naming a vetter — also mounted on REST as `POST /v1/vetting/vetters`.
@@ -3814,6 +3828,8 @@ mod tests {
             jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
             jr::MEMBER_SELF_REMOVE_TYPE,
             mem::MEMBER_VMC_TYPE,
+            <trust_tasks_rs::specs::credential_exchange::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::credential_exchange::present::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
             vetting_wire::VETTING_VETTER_GRANT_TYPE,
             vetting_wire::VETTING_VETTER_PROFILE_TYPE,

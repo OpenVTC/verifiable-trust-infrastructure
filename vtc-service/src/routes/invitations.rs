@@ -566,15 +566,17 @@ pub async fn deliver(
         .map_err(|e| AppError::Internal(format!("serialise offer: {e}")))?;
     let returned_offer = match channel {
         Channel::Message => {
-            let message = affinidi_messaging_didcomm::Message::build(
-                uuid::Uuid::new_v4().to_string(),
-                vta_sdk::protocols::credential_exchange::OFFER.to_string(),
+            // A signed `credential-exchange/offer`, over whichever transport
+            // the invitee speaks. Its `request` answer threads on this id.
+            if let Err(e) = crate::credentials::delivery::push_document(
+                &state,
+                &record.subject_did,
+                vta_sdk::protocols::credential_exchange::OFFER,
                 serde_json::json!({ "credential_offer": offer_json }),
+                crate::credentials::delivery::Thread::New,
             )
-            .from(vtc_did.clone())
-            .to(record.subject_did.clone())
-            .finalize();
-            if let Err(e) = state.send_to_member(&record.subject_did, message).await {
+            .await
+            {
                 // Nothing went out, so no offer should be live for it.
                 if let Some(code) = record.offer_code.take() {
                     crate::credentials::exchange::withdraw_offer(&state.join_requests_ks, &code)

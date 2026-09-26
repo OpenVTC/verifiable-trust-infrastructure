@@ -33,7 +33,7 @@ use trust_tasks_rs::specs::git_ns::right::{
     break_glass::v0_1 as break_glass, break_glass_notice::v0_1 as notice, ratify::v0_1 as ratify,
 };
 use vti_common::audit::{AuditEvent, GitNsBreakGlassData};
-use vti_common::capability_client::{TRUST_TASK_ENVELOPE_TYPE, build_document};
+use vti_common::capability_client::build_document;
 use vti_common::error::AppError;
 
 use crate::acl::VtcRole;
@@ -232,8 +232,10 @@ fn notice_payload(
     Ok(v)
 }
 
-/// One signed notice, in the trust-task envelope, queued over the VTC's own
-/// mediator connection — as [`crate::ceremony::removal_notice`] sends.
+/// One signed notice, pushed over whichever transport the recipient speaks
+/// (TSP > DIDComm > REST, [`crate::member_push`]) — as
+/// [`crate::ceremony::removal_notice`] sends: the VTC composed it, so it is
+/// signed with the operational key under `authentication` (VTI-KEY-106).
 async fn send_notice(state: &AppState, recipient: &str, payload: &Value) -> Result<(), AppError> {
     let vtc_did = state
         .config
@@ -251,23 +253,15 @@ async fn send_notice(state: &AppState, recipient: &str, payload: &Value) -> Resu
     let doc = build_document(&vtc_did, recipient, type_uri, payload.clone());
     let mut doc_value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise break-glass notice: {e}")))?;
-    signer.sign_doc(&mut doc_value).await?;
-    let envelope = affinidi_messaging_didcomm::Message::build(
-        format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        TRUST_TASK_ENVELOPE_TYPE.to_string(),
-        doc_value,
-    )
-    .from(vtc_did)
-    .to(recipient.to_string())
-    .finalize();
+    signer.sign_operational_doc(&mut doc_value).await?;
     // An administrator who is away still needs to hear of it: the long window.
-    state
-        .send_to_member_by(
-            recipient,
-            envelope,
-            crate::server::REMOVAL_NOTICE_DELIVER_BY,
-        )
-        .await?;
+    crate::member_push::push_trust_task(
+        state,
+        recipient,
+        doc_value,
+        crate::server::REMOVAL_NOTICE_DELIVER_BY,
+    )
+    .await?;
     info!(recipient, "break-glass notice queued");
     Ok(())
 }
