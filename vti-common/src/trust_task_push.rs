@@ -77,6 +77,7 @@ use vta_sdk::protocol::matching::{
 use crate::capability_client::TRUST_TASK_ENVELOPE_TYPE;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
+use crate::tsp_reach::TspReachability;
 
 /// What a node lends the push engine: the stores and handles that are its own.
 #[derive(Clone, Copy)]
@@ -94,6 +95,10 @@ pub struct PushContext<'a> {
     pub messaging: Option<PushMessaging<'a>>,
     /// Whether this build and configuration can send over TSP.
     pub tsp: bool,
+    /// Which peers were recently seen sending to this node over TSP. A
+    /// recipient whose document advertises no transport at all is reached
+    /// over TSP first when it is fresh here. `None` learns nothing.
+    pub learned_tsp: Option<&'a TspReachability>,
 }
 
 /// The node's running messaging.
@@ -254,6 +259,27 @@ fn ours(ctx: &PushContext<'_>) -> Ours {
 async fn plan(ctx: &PushContext<'_>, recipient: &str) -> Result<(Vec<Protocol>, Reach), AppError> {
     let reach = resolve_reach(ctx, recipient).await;
     let ours = ours(ctx);
+    let learned_tsp = ctx.learned_tsp.is_some_and(|seen| seen.fresh(recipient));
+    let plan = choose(&reach, &ours, learned_tsp);
+    if plan.is_empty() {
+        return Err(AppError::Validation(format!(
+            "no matching protocol for {recipient}: it advertises {} and this node can \
+             send over {}",
+            describe_reach(&reach),
+            describe_ours(&ours)
+        )));
+    }
+    Ok((plan, reach))
+}
+
+/// The transports both sides speak, TSP > DIDComm > REST.
+///
+/// A recipient that advertises nothing is reached over DIDComm through this
+/// node's mediator — and over TSP first when it was recently seen sending
+/// here over TSP (`learned_tsp`). DIDComm stays behind TSP in that plan,
+/// because a peer that switched back to DIDComm since gives no error on TSP,
+/// only silence, and escalation is what recovers from silence.
+fn choose(reach: &Reach, ours: &Ours, learned_tsp: bool) -> Vec<Protocol> {
     let mut plan = Vec::new();
     for p in Protocol::PREFERENCE_ORDER {
         let both = match p {
@@ -265,18 +291,15 @@ async fn plan(ctx: &PushContext<'_>, recipient: &str) -> Result<(Vec<Protocol>, 
             plan.push(p);
         }
     }
-    if plan.is_empty() && !reach.advertises_anything() && ours.didcomm {
-        plan.push(Protocol::Didcomm);
+    if plan.is_empty() && !reach.advertises_anything() {
+        if ours.tsp && learned_tsp {
+            plan.push(Protocol::Tsp);
+        }
+        if ours.didcomm {
+            plan.push(Protocol::Didcomm);
+        }
     }
-    if plan.is_empty() {
-        return Err(AppError::Validation(format!(
-            "no matching protocol for {recipient}: it advertises {} and this node can \
-             send over {}",
-            describe_reach(&reach),
-            describe_ours(&ours)
-        )));
-    }
-    Ok((plan, reach))
+    plan
 }
 
 fn describe_reach(r: &Reach) -> String {
@@ -874,6 +897,52 @@ mod tests {
         let r = Reach::from_document(&d);
         assert!(r.rest_base.is_none());
         assert!(!r.advertises_anything());
+    }
+
+    fn ours_all() -> Ours {
+        Ours {
+            tsp: true,
+            didcomm: true,
+            rest: true,
+        }
+    }
+
+    /// A peer that advertises nothing but spoke TSP to this node recently is
+    /// tried over TSP first, with DIDComm behind it for escalation.
+    #[test]
+    fn a_silent_peer_seen_on_tsp_is_tried_over_tsp_then_didcomm() {
+        let silent = Reach::default();
+        assert_eq!(
+            choose(&silent, &ours_all(), true),
+            vec![Protocol::Tsp, Protocol::Didcomm]
+        );
+        assert_eq!(choose(&silent, &ours_all(), false), vec![Protocol::Didcomm]);
+    }
+
+    /// What a peer advertises wins over what was learned: learning only fills
+    /// in for a document that says nothing.
+    #[test]
+    fn learned_reach_never_overrides_an_advertised_document() {
+        let didcomm_only = Reach {
+            didcomm: true,
+            ..Reach::default()
+        };
+        assert_eq!(
+            choose(&didcomm_only, &ours_all(), true),
+            vec![Protocol::Didcomm]
+        );
+    }
+
+    #[test]
+    fn a_node_without_tsp_ignores_learned_reach() {
+        let ours = Ours {
+            tsp: false,
+            ..ours_all()
+        };
+        assert_eq!(
+            choose(&Reach::default(), &ours, true),
+            vec![Protocol::Didcomm]
+        );
     }
 
     #[test]
