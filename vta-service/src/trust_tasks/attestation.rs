@@ -56,7 +56,7 @@ pub(super) async fn handle_mnemonic_export(
         return app_error_to_reject(
             &doc,
             AppError::Forbidden(
-                "the mnemonic export over a hop-by-hop transport is allowed only as a request                  whose clientDid is the signing caller's own DID, so the words are sealed to a                  key only the caller holds. Set clientDid to your DID, or send the request over                  DIDComm or TSP"
+                "the mnemonic export over a hop-by-hop transport is allowed only as a request whose clientDid is the signing caller's own DID, so the words are sealed to a key only the caller holds. Set clientDid to your DID, or send the request over DIDComm or TSP"
                     .into(),
             ),
         );
