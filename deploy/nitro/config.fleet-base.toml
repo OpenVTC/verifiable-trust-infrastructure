@@ -36,7 +36,6 @@ resolver_url = "ws://127.0.0.1:4445/did/v1/ws"
 
 [tee]
 mode = "required"
-embed_in_did = true
 
 # AWS account IDs whose KMS key ARNs this image's tenant overlay may use.
 # Baked + PCR0-committed — the parent cannot extend this at runtime. Empty means

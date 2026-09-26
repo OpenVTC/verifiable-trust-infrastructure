@@ -360,7 +360,10 @@ identity pinning.
 
 On first boot, configure `services.rest = true` and the top-level `public_url`
 to the externally reachable REST base URL. TEE identity generation includes
-that URL as a signed `VTARest` service, independently of `tee.embed_in_did`.
+that URL as a signed `VTARest` service. (The `TeeAttestation` service that
+`tee.embed_in_did` used to add is gone, and a config that still sets the key
+is refused: attestation is the public `vta/attestation/*` Trust Tasks, reached
+over the transports the document advertises.)
 The host, port, and path are preserved; the DID log's hosting URL is not used
 as an API URL. Disabled REST or an absent public URL does not advertise REST.
 
@@ -406,7 +409,6 @@ or the explicit warning-bearing opt-out.
 ```toml
 [tee]
 mode = "required"
-embed_in_did = true
 attestation_cache_ttl = 300
 # Storage key derivation salt (change to invalidate all stored data)
 storage_key_salt = "vta-tee-storage-v1"

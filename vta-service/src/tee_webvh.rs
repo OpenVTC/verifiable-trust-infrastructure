@@ -141,12 +141,11 @@ mod tests {
     }
 
     impl AutogenFixture {
-        async fn new(rest: bool, public_url: Option<&str>, embed: bool) -> Self {
+        async fn new(rest: bool, public_url: Option<&str>) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let mut config = test_app_config(dir.path().into());
             config.services.rest = rest;
             config.public_url = public_url.map(str::to_owned);
-            config.tee.embed_in_did = embed;
             config.tee.kms = Some(
                 serde_json::from_value(serde_json::json!({
                     "region": "ap-southeast-1",
@@ -206,28 +205,18 @@ mod tests {
 
     #[tokio::test]
     async fn tee_generated_log_supports_bootstrap_rest_discovery() {
-        for (rest, url, embed, expected) in [
-            (true, Some(PUBLIC_URL), true, Some(PUBLIC_URL)),
-            (true, Some(PUBLIC_URL), false, Some(PUBLIC_URL)),
+        for (rest, url, expected) in [
+            (true, Some(PUBLIC_URL), Some(PUBLIC_URL)),
             (
                 true,
                 Some("  https://api.example.com:8443/vta/  "),
-                false,
                 Some("https://api.example.com:8443/vta/"),
             ),
-            // Same padded value with the attestation service on: both
-            // endpoints must read the trimmed URL, not one each way.
-            (
-                true,
-                Some("  https://api.example.com:8443/vta/  "),
-                true,
-                Some("https://api.example.com:8443/vta/"),
-            ),
-            (false, Some(PUBLIC_URL), true, None),
-            (true, None, false, None),
-            (true, Some("  "), false, None),
+            (false, Some(PUBLIC_URL), None),
+            (true, None, None),
+            (true, Some("  "), None),
         ] {
-            let fx = AutogenFixture::new(rest, url, embed).await;
+            let fx = AutogenFixture::new(rest, url).await;
             let log = fx.log().await;
             let doc = verified_document(&log);
             assert_eq!(doc["id"].as_str(), fx.config.vta_did.as_deref());
@@ -270,7 +259,7 @@ mod tests {
 
         // Generate the legacy no-REST shape by leaving public_url unset.
         // Never edit a signed genesis to construct (or repair) this fixture.
-        let mut fx = AutogenFixture::new(true, None, false).await;
+        let mut fx = AutogenFixture::new(true, None).await;
         let genesis = fx.log().await;
         let original = verified_document(&genesis);
         assert!(

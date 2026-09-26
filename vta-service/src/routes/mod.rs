@@ -246,20 +246,9 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         .routes(routes!(auth::challenge))
         .routes(routes!(auth::authenticate))
         .routes(routes!(auth::refresh));
-    // Public, unauthenticated TEE attestation endpoints. These take no
-    // auth extractor and run crypto on caller input (report generation),
-    // so they MUST sit on the rate-limited + body-capped unauth branch —
-    // not the main router, where they previously bypassed both. The
-    // super-admin `/attestation/mnemonic` routes stay on the authed
-    // router (JWT is their gate).
-    #[cfg(feature = "tee")]
-    let unauth = unauth
-        .routes(routes!(attestation::status))
-        .routes(routes!(
-            attestation::cached_report,
-            attestation::generate_report
-        ))
-        .routes(routes!(attestation::config_report));
+    // The public TEE attestation reads are Trust Tasks now
+    // (`vta/attestation/{status,report,config-report}/0.1`), served on
+    // `/trust-tasks` below to anonymous callers, behind this same limiter.
     // Tighter body cap on unauth endpoints — see UNAUTH_BODY_SIZE.
     // Applied after ALL auth-branch routes (including the cfg-gated ones) are
     // registered so every POST on this branch (auth, attestation report)
@@ -325,6 +314,31 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // `provision/integration` is a Trust Task only (TSP, DIDComm, or HTTPS on
     // `/trust-tasks`); its `/bootstrap/provision-integration` route is gone.
 
+    // The Trust-Task dispatcher: two paths, one dispatcher, and the first is
+    // the conformant one.
+    //
+    // The HTTPS binding POSTs to `<serviceEndpoint>/trust-tasks`, where
+    // `serviceEndpoint` is what the VTA advertises on its Trust-Task service
+    // entry — an ORIGIN in every deployment example, so a client built from the
+    // published binding asks for `/trust-tasks`. `/api/trust-tasks` stays for
+    // deployed clients and is marked superseded.
+    //
+    // It serves authenticated callers (their credential is the gate) and, for a
+    // public task only, anonymous ones (`trust_tasks::PUBLIC_URIS`). The
+    // anonymous requests are charged to the unauthenticated limiter; the
+    // authenticated ones are not, as on every other JWT-gated route.
+    let trust_tasks = OpenApiRouter::new()
+        .route(
+            "/trust-tasks",
+            post(crate::trust_tasks::dispatch_trust_task),
+        )
+        .route(
+            "/api/trust-tasks",
+            post(crate::trust_tasks::dispatch_trust_task),
+        );
+    let trust_tasks =
+        rate_limit::apply_anonymous(trust_tasks, Limiter::Auth, trust_xff_cidrs, &quotas);
+
     let router = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(unauth)
         .merge(did_log);
@@ -333,35 +347,7 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     let router = router
         .routes(routes!(auth::session_list, auth::revoke_sessions_by_did))
         .routes(routes!(auth::revoke_session))
-        // Trust-task envelope dispatcher (per
-        // docs/05-design-notes/trust-task-uri-registry.md). Phase 2
-        // scaffold; handlers register per Phase 3 slice. Not yet documented
-        // in OpenAPI (dynamic envelope payload).
-        // Two paths, one dispatcher, and the second is the conformant one.
-        //
-        // The HTTPS binding POSTs to `<serviceEndpoint>/trust-tasks`, where
-        // `serviceEndpoint` is what the VTA advertises on its Trust-Task
-        // service entry. Every deployment example advertises an ORIGIN
-        // (`https://trust.example.com`), so a client built from the published
-        // binding asks for `/trust-tasks` and, until now, got a 404 — while
-        // `vta-sdk` worked only because it hardcodes the same `/api` prefix
-        // this service happens to serve. Two implementations agreeing by
-        // convention is not a contract; it just hides its absence from the
-        // people who wrote both ends.
-        //
-        // Serving both makes every existing advertisement conformant without
-        // an operator touching it: for an origin-advertising VTA the
-        // Trust-Task base IS the origin. `/api/trust-tasks` stays for deployed
-        // clients and is marked superseded, so the same metric that governs
-        // every other retired route decides when it goes.
-        .route(
-            "/trust-tasks",
-            post(crate::trust_tasks::dispatch_trust_task),
-        )
-        .route(
-            "/api/trust-tasks",
-            post(crate::trust_tasks::dispatch_trust_task),
-        )
+        .merge(trust_tasks)
         .routes(routes!(config::get_config, config::update_config))
         .routes(routes!(keys::list_keys, keys::create_key))
         .routes(routes!(

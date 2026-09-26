@@ -53,7 +53,7 @@ echo "  Forward: CID ${ENCLAVE_CID}:${ENCLAVE_PORT} (vsock)"
 echo ""
 echo "Test with:"
 echo "  curl http://localhost:${LISTEN_PORT}/health"
-echo "  curl http://localhost:${LISTEN_PORT}/attestation/status"
+echo "  curl http://localhost:${LISTEN_PORT}/health"
 echo ""
 
 # ---------------------------------------------------------------------------

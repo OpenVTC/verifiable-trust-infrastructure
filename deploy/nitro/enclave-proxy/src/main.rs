@@ -214,7 +214,7 @@ async fn main() {
     eprintln!("  Test:");
     eprintln!("    curl http://localhost:{}/health", config.listen_port);
     eprintln!(
-        "    curl http://localhost:{}/attestation/status",
+        "    curl http://localhost:{}/health",
         config.listen_port
     );
     eprintln!();

@@ -4067,24 +4067,29 @@ async fn backup_blob_branch_is_rate_limited() {
     assert_eq!(resp.headers()["x-rate-limit-scope"], "backup-blob");
 }
 
-/// P0.10: the unauthenticated TEE attestation endpoints (`status`,
-/// `report`, `did-log`) were on the main router, bypassing the rate
-/// limiter. They now live on the governed `unauth` branch. Flooding
-/// `GET /attestation/status` must trip 429 — the governor runs before the
-/// handler, so this holds even though the test app has no real TEE state
-/// (the handler would otherwise error). Only the super-admin
-/// `/attestation/mnemonic` routes stay off the limiter (JWT-gated).
-#[cfg(feature = "tee")]
+/// A public Trust Task (`vta_sdk::trust_tasks::PUBLIC_URIS` — the attestation
+/// reads) may be sent to `/trust-tasks` with no credential, and every such
+/// anonymous request is charged to the unauthenticated limiter. They were
+/// REST routes on the governed `unauth` branch (P0.10); on `/trust-tasks`, which
+/// also serves JWT callers who must stay off the limiter, the limiter charges
+/// only requests that present no credential. The limiter runs before the
+/// handler, so this holds in a build with no TEE at all.
 #[tokio::test]
-async fn unauth_attestation_status_is_rate_limited() {
+async fn anonymous_public_trust_tasks_are_rate_limited() {
     let (app, _ctx) = TestApp::new().await;
+    let doc = serde_json::json!({
+        "id": "urn:uuid:00000000-0000-4000-8000-00000000a771",
+        "type": vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
+        "payload": {},
+    });
     let mut saw_429 = false;
     for _ in 0..20 {
         let req = Request::builder()
-            .method("GET")
-            .uri("/attestation/status")
+            .method("POST")
+            .uri("/trust-tasks")
+            .header("content-type", "application/json")
             .header("x-forwarded-for", "192.0.2.9")
-            .body(Body::empty())
+            .body(Body::from(doc.to_string()))
             .unwrap();
         let (status, _) = app.request(req).await;
         if status == StatusCode::TOO_MANY_REQUESTS {
@@ -4094,9 +4099,30 @@ async fn unauth_attestation_status_is_rate_limited() {
     }
     assert!(
         saw_429,
-        "expected a 429 within 20 GET /attestation/status calls; the unauth \
-         attestation routes are not on the governed branch"
+        "expected a 429 within 20 anonymous /trust-tasks calls; anonymous public \
+         tasks are not on the unauthenticated limiter"
     );
+}
+
+/// Anonymity is for public tasks only. Any other task sent with no credential
+/// is refused before it is dispatched — 401, and nothing runs.
+#[tokio::test]
+async fn an_anonymous_non_public_trust_task_is_refused() {
+    let (app, _ctx) = TestApp::new().await;
+    let doc = serde_json::json!({
+        "id": "urn:uuid:00000000-0000-4000-8000-00000000a772",
+        "type": vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0,
+        "payload": {},
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/trust-tasks")
+        .header("content-type", "application/json")
+        .header("x-forwarded-for", "192.0.2.10")
+        .body(Body::from(doc.to_string()))
+        .unwrap();
+    let (status, body) = app.request(req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body:?}");
 }
 
 /// P0.10: a handler that stalls must not hold its connection forever. The

@@ -428,8 +428,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // bytes before any arrive, so a repeat stores nothing new (`stored: false`).
     (trust_tasks::TASK_BACKUP_PUT_CHUNK_1_0, RetrySafe),
     // ── Attestation ─────────────────────────────────────────────────────
-    (trust_tasks::TASK_ATTESTATION_STATUS_1_0, ReadOnly),
-    (trust_tasks::TASK_ATTESTATION_REPORT_1_0, ReadOnly),
+    (trust_tasks::TASK_ATTESTATION_STATUS_0_1, ReadOnly),
+    // A fresh quote per request, but no state changes: a repeat with the same
+    // nonce yields equivalent evidence for the same verifier.
+    (trust_tasks::TASK_ATTESTATION_REPORT_0_1, ReadOnly),
+    (trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1, ReadOnly),
     // One-time: a repeat is refused once the entropy is gone, and the reply is
     // the (sealed) root mnemonic, which never sits in the dedup store.
     (
