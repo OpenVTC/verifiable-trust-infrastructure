@@ -2,11 +2,12 @@
 //! `auth/passkey/enroll/invite/0.2` (`purpose: stepUp`),
 //! `auth/passkey/enroll/redeem/{start,finish}/0.1` and
 //! `auth/passkey/revoke/{start,finish}/0.2` for an administrator revoking on a
-//! member's behalf. The operations are [`crate::step_up_passkey`]'s; this file
+//! member's behalf, and `auth/passkey/admin-list/0.1` for an administrator
+//! listing them. The operations are [`crate::step_up_passkey`]'s; this file
 //! decides only who is asking.
 //!
 //! Every one arrives here the same way over TSP, DIDComm or HTTPS, and there is
-//! no other door: no REST route issues, redeems or revokes one.
+//! no other door: no REST route issues, redeems, revokes or lists one.
 //!
 //! | task | signed by | authority |
 //! |---|---|---|
@@ -14,6 +15,7 @@
 //! | `enroll/redeem/start` | the member the invite names — required here, although the specification makes the proof optional | the invite token, the claim code and the signer, together |
 //! | `enroll/redeem/finish` | the member, or nobody (the browser that ran the ceremony) | the ceremony a signed start opened |
 //! | `revoke/start`, `revoke/finish` | a community administrator | their ACL row, and a user-verified assertion from their own passkey |
+//! | `admin-list` | an administrator with authority over the member — community-wide, or scoped to a context the member's entry names | their ACL row |
 
 use serde_json::Value;
 use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2 as invite;
@@ -27,6 +29,7 @@ use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, reject_with, reject_with_code, success_response,
     task_error_to_reject,
 };
+use super::passkey_admin_list_v0_1 as admin_list;
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::server::AppState;
 
@@ -39,6 +42,9 @@ pub(crate) const REVOKE_START_TYPE: &str =
     <revoke_start::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 pub(crate) const REVOKE_FINISH_TYPE: &str =
     <revoke_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// TODO(trust-tasks release carrying trust-tasks #658): use the generated
+/// `admin_list::v0_1` type URI.
+pub(crate) const ADMIN_LIST_TYPE: &str = admin_list::TYPE_URI;
 
 /// Exactly what [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[
@@ -47,6 +53,7 @@ pub(crate) const URIS: &[&str] = &[
     REDEEM_FINISH_TYPE,
     REVOKE_START_TYPE,
     REVOKE_FINISH_TYPE,
+    ADMIN_LIST_TYPE,
 ];
 
 /// Tasks whose response carries a bearer secret — the invite's token and
@@ -68,6 +75,7 @@ pub(super) async fn dispatch(
         REDEEM_FINISH_TYPE => handle_redeem_finish(state, ctx, doc).await,
         REVOKE_START_TYPE => handle_revoke_start(state, ctx, doc).await,
         REVOKE_FINISH_TYPE => handle_revoke_finish(state, ctx, doc).await,
+        ADMIN_LIST_TYPE => handle_admin_list(state, ctx, doc).await,
         _ => return None,
     })
 }
@@ -213,6 +221,53 @@ async fn handle_revoke_finish(
     }
 }
 
+/// `auth/passkey/admin-list/0.1`: an administrator lists one member's step-up
+/// passkeys. The specification requires a proof; this build's registry does
+/// not publish it yet, so the spine cannot enforce that and this handler does
+/// (TODO(trust-tasks release carrying trust-tasks #658): the spine's policy
+/// check then refuses it first, with the same code).
+///
+/// A signer that does not resolve to an administrator — no ACL row, an
+/// expired one, or a role other than admin — is `notAdministrator`, decided
+/// before the subject is looked at.
+async fn handle_admin_list(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if ctx.verified_signer.is_none() {
+        return reject_with(&doc, RejectReason::ProofRequired);
+    }
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        // A storage failure is not a refusal of standing.
+        Err(reject) if reject.status.is_server_error() => return reject,
+        Err(_) => {
+            return reject_with_code(
+                &doc,
+                super::helpers::extended_code(admin_list::error_codes::NOT_ADMINISTRATOR),
+                "only an administrator lists a member's passkeys",
+                None,
+            );
+        }
+    };
+    let payload = match admin_list::Payload::parse(&doc.payload) {
+        Ok(p) => p,
+        Err(reason) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("payload: {reason}"),
+                },
+            );
+        }
+    };
+    match crate::step_up_passkey::admin_list(state, &actor, &payload).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
 /// Each task through the spine, as every transport hands it over: REST (the
 /// holder proven by the document's proof) and DIDComm and TSP (the sender a
 /// claim the proof must bind). The live-mediator round trip is
@@ -237,6 +292,7 @@ mod tests {
         JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, TrustTaskOutcome, dispatch_trust_task_core,
     };
     use super::revoke_start;
+    use super::{ADMIN_LIST_TYPE, admin_list};
     use super::{INVITE_TYPE, REDEEM_FINISH_TYPE, REDEEM_START_TYPE, REVOKE_FINISH_TYPE};
     use super::{REVOKE_START_TYPE, invite, redeem_finish, redeem_start, revoke_finish};
     use crate::acl::VtcRole;
@@ -1048,6 +1104,273 @@ mod tests {
                 ["invited", "registered", "revoked"],
                 "{t:?}"
             );
+        }
+    }
+
+    // ── admin-list ───────────────────────────────────────────────────────
+
+    /// `payload.subject` / `payload.purpose`, as the console sends them.
+    fn list_of(subject: &str) -> Value {
+        json!({ "subject": subject, "purpose": "stepUp" })
+    }
+
+    /// The listing's credentials, checked against the published response
+    /// shape (the stand-in's `deny_unknown_fields` is the schema's
+    /// `additionalProperties: false`).
+    fn listed(out: &TrustTaskOutcome, what: &str) -> Vec<admin_list::ListedCredential> {
+        let payload = ok(out, what);
+        let response: admin_list::Response =
+            serde_json::from_value(payload).unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert_eq!(response.purpose, admin_list::Purpose::StepUp, "{what}");
+        response.credentials
+    }
+
+    /// Re-seed `did`'s ACL row scoped to `contexts`, keeping its role.
+    async fn scope(fix: &Fixture, did: &str, role: VtcRole, contexts: &[&str]) {
+        seed_acl(
+            &fix.vtc,
+            did,
+            role,
+            contexts.iter().map(|c| c.to_string()).collect(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn admin_list_by_an_administrator_with_authority_lists_metadata_and_changes_nothing() {
+        for t in TRANSPORTS {
+            let mut fix = fixture().await;
+            let member = fix.member.did.clone();
+            let issued = invite_over(&mut fix, t, &member).await;
+            let cred = redeem_over(&mut fix, t, &issued).await;
+
+            let out = send(&fix, t, &fix.admin, ADMIN_LIST_TYPE, list_of(&member)).await;
+            let payload = ok(&out, "the listing");
+            assert_eq!(payload["subject"], member, "{t:?}");
+            let listed_now = listed(&out, "the listing");
+            assert_eq!(listed_now.len(), 1, "{t:?}");
+            let c = &listed_now[0];
+            assert_eq!(c.credential_id, cred);
+            assert_eq!(c.device_label.as_deref(), Some("Carol's laptop"));
+            assert!(c.last_used_at.is_none(), "never used yet");
+            let enrolled_count = c.sign_count.expect("the counter is disclosed");
+            // Nothing but metadata: no public key, no user handle, no ceremony.
+            let keys: Vec<&String> = payload["credentials"][0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect();
+            assert!(
+                keys.iter().all(|k| [
+                    "credentialId",
+                    "deviceLabel",
+                    "registeredAt",
+                    "lastUsedAt",
+                    "signCount"
+                ]
+                .contains(&k.as_str())),
+                "{keys:?}"
+            );
+
+            // No side effects: listing again answers the same, and wrote no
+            // audit row.
+            let again = send(&fix, t, &fix.admin, ADMIN_LIST_TYPE, list_of(&member)).await;
+            assert_eq!(listed(&again, "again"), listed_now, "{t:?}");
+            assert_eq!(audited_stages(&fix).await, ["invited", "registered"]);
+
+            // A use shows up: last used, and the counter moved.
+            let request = bound_request(&fix, &member).await;
+            let assertion = fix
+                .member_key
+                .authenticate(&request_options(&request["webauthn"]), RP_ORIGIN);
+            let out = approve(&fix, t, &fix.member, &request, &assertion).await;
+            ok(&out, "the gesture");
+            let after = send(&fix, t, &fix.admin, ADMIN_LIST_TYPE, list_of(&member)).await;
+            let after = listed(&after, "after a use");
+            assert!(after[0].last_used_at.is_some(), "{t:?}");
+            assert!(after[0].sign_count.unwrap() > enrolled_count, "{t:?}");
+        }
+    }
+
+    /// A context-scoped administrator has authority over a member whose
+    /// entry names one of their contexts, and lists them like anyone else.
+    #[tokio::test]
+    async fn admin_list_by_a_scoped_administrator_over_a_member_in_their_context() {
+        for t in TRANSPORTS {
+            let mut fix = fixture().await;
+            let member = fix.member.did.clone();
+            let issued = invite_over(&mut fix, t, &member).await;
+            let cred = redeem_over(&mut fix, t, &issued).await;
+            let scoped = Party::new();
+            scope(&fix, &scoped.did, VtcRole::Admin, &["team-a"]).await;
+            scope(&fix, &member, VtcRole::Member, &["team-a"]).await;
+
+            let out = send(&fix, t, &scoped, ADMIN_LIST_TYPE, list_of(&member)).await;
+            let got = listed(&out, "a scoped administrator in the member's context");
+            assert_eq!(got.len(), 1, "{t:?}");
+            assert_eq!(got[0].credential_id, cred);
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_list_refuses_a_signer_who_is_not_an_administrator() {
+        for t in TRANSPORTS {
+            let fix = fixture().await;
+            let member = fix.member.did.clone();
+            for (from, what) in [
+                (&fix.member, "a member, about themselves"),
+                (&fix.other, "another member"),
+            ] {
+                let out = send(&fix, t, from, ADMIN_LIST_TYPE, list_of(&member)).await;
+                assert_code(&out, admin_list::error_codes::NOT_ADMINISTRATOR, what);
+            }
+            // Decided before the subject: a non-administrator asking about
+            // nobody gets the same answer.
+            let out = send(
+                &fix,
+                t,
+                &fix.other,
+                ADMIN_LIST_TYPE,
+                list_of("did:key:z6MkNotAMember"),
+            )
+            .await;
+            assert_code(
+                &out,
+                admin_list::error_codes::NOT_ADMINISTRATOR,
+                "no oracle",
+            );
+            let stranger = Party::new();
+            let out = send(&fix, t, &stranger, ADMIN_LIST_TYPE, list_of(&member)).await;
+            assert_code(
+                &out,
+                admin_list::error_codes::NOT_ADMINISTRATOR,
+                "no ACL row",
+            );
+        }
+    }
+
+    /// A member outside the administrator's authority is answered exactly
+    /// as one that does not exist.
+    #[tokio::test]
+    async fn admin_list_refuses_a_member_outside_the_administrators_authority() {
+        for t in TRANSPORTS {
+            let mut fix = fixture().await;
+            let member = fix.member.did.clone();
+            let issued = invite_over(&mut fix, t, &member).await;
+            redeem_over(&mut fix, t, &issued).await;
+            let scoped = Party::new();
+            scope(&fix, &scoped.did, VtcRole::Admin, &["team-a"]).await;
+            scope(&fix, &member, VtcRole::Member, &["team-b"]).await;
+
+            let outside = send(&fix, t, &scoped, ADMIN_LIST_TYPE, list_of(&member)).await;
+            assert_code(
+                &outside,
+                admin_list::error_codes::SUBJECT_UNKNOWN,
+                "a member in another context",
+            );
+            let nobody = send(
+                &fix,
+                t,
+                &scoped,
+                ADMIN_LIST_TYPE,
+                list_of("did:key:z6MkNotAMember"),
+            )
+            .await;
+            assert_code(
+                &nobody,
+                admin_list::error_codes::SUBJECT_UNKNOWN,
+                "nobody at all",
+            );
+            // Neither later code is ever an answer about them.
+            let session = send(
+                &fix,
+                t,
+                &scoped,
+                ADMIN_LIST_TYPE,
+                json!({ "subject": member, "purpose": "session" }),
+            )
+            .await;
+            assert_code(
+                &session,
+                admin_list::error_codes::SUBJECT_UNKNOWN,
+                "authority before purpose",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_list_refuses_an_unknown_or_former_member_and_session_credentials() {
+        for t in TRANSPORTS {
+            let fix = fixture().await;
+            let member = fix.member.did.clone();
+            let out = send(
+                &fix,
+                t,
+                &fix.admin,
+                ADMIN_LIST_TYPE,
+                list_of("did:key:z6MkNotAMember"),
+            )
+            .await;
+            assert_code(&out, admin_list::error_codes::SUBJECT_UNKNOWN, "unknown");
+
+            let out = send(
+                &fix,
+                t,
+                &fix.admin,
+                ADMIN_LIST_TYPE,
+                json!({ "subject": member, "purpose": "session" }),
+            )
+            .await;
+            assert_code(
+                &out,
+                admin_list::error_codes::PURPOSE_NOT_SUPPORTED,
+                "session credentials are their owner's to list",
+            );
+
+            let mut departed = crate::members::Member::fresh(&fix.other.did);
+            departed.removed_at = Some(chrono::Utc::now());
+            crate::members::store_member(&fix.vtc.state.members_ks, &departed)
+                .await
+                .unwrap();
+            let out = send(
+                &fix,
+                t,
+                &fix.admin,
+                ADMIN_LIST_TYPE,
+                list_of(&fix.other.did),
+            )
+            .await;
+            assert_code(
+                &out,
+                admin_list::error_codes::SUBJECT_NOT_MEMBER,
+                "a member who has left",
+            );
+
+            // An empty inventory is an answer, not a refusal.
+            let out = send(&fix, t, &fix.admin, ADMIN_LIST_TYPE, list_of(&member)).await;
+            assert!(listed(&out, "none enrolled").is_empty(), "{t:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_list_refuses_an_unsigned_document() {
+        for t in TRANSPORTS {
+            let fix = fixture().await;
+            let doc = unsigned(&fix.admin, ADMIN_LIST_TYPE, list_of(&fix.member.did));
+            let out = dispatch_doc(&fix, t, &fix.admin, &doc).await;
+            assert_code(&out, "proofRequired", "a listing is signed");
+        }
+    }
+
+    #[tokio::test]
+    async fn admin_list_refuses_a_payload_the_schema_refuses() {
+        let fix = fixture().await;
+        for bad in [
+            json!({ "subject": fix.member.did }),
+            json!({ "subject": fix.member.did, "purpose": "stepUp", "includePublicKeys": true }),
+        ] {
+            let out = send(&fix, JoinTransport::Rest, &fix.admin, ADMIN_LIST_TYPE, bad).await;
+            assert_code(&out, "malformedRequest", "schema");
         }
     }
 }

@@ -527,10 +527,15 @@ The rules:
   are never recorded.
 - **Backup.** Like `passkey`, `step_up_passkeys` is excluded: after a restore,
   members enrol again through a fresh invite.
-- **Listing.** The console reads a member's step-up passkeys from
-  `GET /v1/admin/step-up-passkeys?subject=` (community administrators). The
-  published `auth/passkey/list` lists only the signer's own credentials, so no
-  task covers an administrator reading another member's.
+- **Listing.** An administrator lists a member's step-up passkeys with
+  `auth/passkey/admin-list/0.1` (`purpose: stepUp`), signed, over any
+  transport; the console sends it from the member's page. A community-wide
+  administrator may list any member's, a context-scoped one only those of a
+  member whose entry names one of their contexts. A non-administrator is
+  refused `notAdministrator`, a subject outside the administrator's authority
+  `subjectUnknown` (as one that does not exist), and a former member
+  `subjectNotMember`. The answer is metadata only — id, label, when enrolled,
+  when last used, signature counter — and reading it changes nothing.
 
 ## Administrator surface
 

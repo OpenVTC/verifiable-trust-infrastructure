@@ -86,6 +86,7 @@ use crate::auth::session::now_epoch;
 use crate::error::TaskError;
 use crate::install::claim_secret;
 use crate::server::AppState;
+use crate::trust_tasks::passkey_admin_list_v0_1 as admin_list;
 
 /// Wrong claim codes an invite survives. On the fifth it is invalidated
 /// (`redeem/start` 0.1, step 2).
@@ -157,10 +158,10 @@ struct Revocation {
     expires_at: u64,
 }
 
-/// What the console lists about a step-up passkey.
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+/// What `auth/passkey/admin-list/0.1` lists about a step-up passkey, beside
+/// the counter kept on the credential itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[schema(as = StepUpPasskeyCredential)]
 pub struct CredentialMeta {
     /// Credential id, hex.
     pub credential_id: String,
@@ -294,27 +295,111 @@ pub async fn record_use(
     Ok(())
 }
 
-/// Every step-up passkey, or one member's, for the console.
-pub async fn list(
-    ks: &KeyspaceHandle,
-    subject: Option<&str>,
-) -> Result<Vec<CredentialMeta>, AppError> {
-    let mut out = Vec::new();
+/// `auth/passkey/admin-list/0.1`: one member's step-up passkeys, for an
+/// administrator with authority over them. `actor` is the signer's resolved
+/// administrator standing (the spine's `admin_signer`).
+///
+/// The order is the specification's: authority over the subject first —
+/// a subject outside it is `subjectUnknown`, exactly like one that does not
+/// exist, so neither of the later codes says anything about them — then the
+/// purpose, then membership. Reads only: no counter, last-used time or
+/// invite is touched.
+pub async fn admin_list(
+    state: &AppState,
+    actor: &vti_common::auth::extractor::AuthClaims,
+    payload: &admin_list::Payload,
+) -> Result<admin_list::Response, TaskError> {
+    use admin_list::error_codes as codes;
+
+    let subject = payload.subject.as_str();
+    let unknown = || {
+        TaskError::declared(
+            codes::SUBJECT_UNKNOWN,
+            AppError::NotFound("no such member within your authority".into()),
+        )
+    };
+    let entry = crate::acl::get_acl_entry(&state.acl_ks, subject)
+        .await?
+        .filter(|e| !e.is_expired(now_epoch()));
+    // A community-wide administrator's authority covers every subject; a
+    // context-scoped one's, only a member whose entry lies in their contexts
+    // (the same visibility `acl/show` applies).
+    let within = actor.is_super_admin()
+        || entry.as_ref().is_some_and(|e| {
+            vti_common::acl::is_acl_entry_visible(actor, &crate::routes::acl::as_vti_acl_entry(e))
+        });
+    if !within {
+        return Err(unknown());
+    }
+    if payload.purpose != admin_list::Purpose::StepUp {
+        return Err(TaskError::declared(
+            codes::PURPOSE_NOT_SUPPORTED,
+            AppError::Forbidden(
+                "this community lists only members' step-up passkeys to administrators; a \
+                 session passkey is listed to its owner (auth/passkey/list)"
+                    .into(),
+            ),
+        ));
+    }
+    if !crate::git_ns::ops::standing(state, subject).await?.member {
+        let known = entry.is_some()
+            || crate::members::get_member(&state.members_ks, subject)
+                .await?
+                .is_some();
+        return Err(if known {
+            TaskError::declared(
+                codes::SUBJECT_NOT_MEMBER,
+                AppError::Forbidden(
+                    "the subject is not a current member; their step-up passkeys answer nothing"
+                        .into(),
+                ),
+            )
+        } else {
+            unknown()
+        });
+    }
+
+    let ks = &state.step_up_passkeys_ks;
+    // The counter lives on the credential, which webauthn-rs keeps opaque; its
+    // serialised form carries it as `cred.counter`.
+    let counters: std::collections::HashMap<String, u32> = get_passkey_user_by_did(ks, subject)
+        .await?
+        .map(|u| u.credentials)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| {
+            let v = serde_json::to_value(p).ok()?;
+            let n = u32::try_from(v.pointer("/cred/counter")?.as_u64()?).ok()?;
+            Some((cred_hex(p), n))
+        })
+        .collect();
+    let rfc3339 = |t: DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut metas = Vec::new();
     for (_, v) in ks.prefix_iter_raw(b"meta:".to_vec()).await? {
         if let Ok(meta) = serde_json::from_slice::<CredentialMeta>(&v)
-            && subject.is_none_or(|s| s == meta.subject)
+            && meta.subject == subject
         {
-            out.push(meta);
+            metas.push(meta);
         }
     }
-    // Newest first, as `auth/passkey/list` asks: one enrolled a moment ago by
+    // Newest first, as the specification asks: one enrolled a moment ago by
     // someone else shows at the top rather than under the legitimate ones.
-    out.sort_by(|a, b| {
-        a.subject
-            .cmp(&b.subject)
-            .then(b.registered_at.cmp(&a.registered_at))
-    });
-    Ok(out)
+    metas.sort_by_key(|m| std::cmp::Reverse(m.registered_at));
+    let credentials = metas
+        .into_iter()
+        .map(|m| admin_list::ListedCredential {
+            sign_count: counters.get(&m.credential_id).copied(),
+            credential_id: m.credential_id,
+            device_label: m.device_label,
+            registered_at: rfc3339(m.registered_at),
+            last_used_at: m.last_used_at.map(rfc3339),
+        })
+        .collect();
+    Ok(admin_list::Response {
+        subject: subject.to_string(),
+        purpose: admin_list::Purpose::StepUp,
+        credentials,
+    })
 }
 
 // ── enroll/invite 0.2 ───────────────────────────────────────────────────────

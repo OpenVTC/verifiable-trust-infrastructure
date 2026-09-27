@@ -318,8 +318,8 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 37 top-level `*_ks` fields plus the three `AppState::git_ns` carries.
-        assert_eq!(ALL.len(), 40, "ALL must list every AppState keyspace");
+        // 38 top-level `*_ks` fields plus the three `AppState::git_ns` carries.
+        assert_eq!(ALL.len(), 41, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

@@ -74,6 +74,10 @@ pub(crate) mod backup_tasks;
 // The operations are `crate::step_up_passkey`'s; this is their only door.
 pub(crate) mod step_up_passkey_tasks;
 
+// `auth/passkey/admin-list/0.1`, hand-written until the trust-tasks-rs release
+// that generates it (trust-tasks #658).
+pub(crate) mod passkey_admin_list_v0_1;
+
 // The integration tests' soft WebAuthn authenticator, for the spine tests that
 // drive a real passkey ceremony.
 #[cfg(test)]
@@ -1717,13 +1721,15 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // Another admin's consent to an unrestricted grant (VTI-APV-014). The
     // request it answers is pushed by this service, never dispatched here.
     crate::acl::admin_consent::DECISION_TYPE,
-    // Members' step-up passkeys: the invite, its redemption, and an
-    // administrator's revocation for the member. No REST route serves them.
+    // Members' step-up passkeys: the invite, its redemption, an
+    // administrator's revocation for the member, and an administrator's
+    // listing of them. No REST route serves them.
     step_up_passkey_tasks::INVITE_TYPE,
     step_up_passkey_tasks::REDEEM_START_TYPE,
     step_up_passkey_tasks::REDEEM_FINISH_TYPE,
     step_up_passkey_tasks::REVOKE_START_TYPE,
     step_up_passkey_tasks::REVOKE_FINISH_TYPE,
+    step_up_passkey_tasks::ADMIN_LIST_TYPE,
     // backup/* — the chunked transfer `vtc/backup/import` could never be,
     // because its envelope does not fit one document.
     backup_tasks::INITIATE_EXPORT_TYPE,
@@ -3941,6 +3947,7 @@ mod tests {
             step_up_passkey_tasks::REDEEM_FINISH_TYPE,
             step_up_passkey_tasks::REVOKE_START_TYPE,
             step_up_passkey_tasks::REVOKE_FINISH_TYPE,
+            step_up_passkey_tasks::ADMIN_LIST_TYPE,
             backup_tasks::INITIATE_EXPORT_TYPE,
             backup_tasks::GET_CHUNK_TYPE,
             backup_tasks::COMPLETE_EXPORT_TYPE,
