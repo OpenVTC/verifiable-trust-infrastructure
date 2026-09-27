@@ -1,169 +1,118 @@
-//! Pure transport-resolution logic for WebVH hosting servers.
+//! How this VTA reaches a DID hosting service, read from the service's DID
+//! document. Pure (no resolver, no async, no I/O) so it can be unit-tested
+//! with stub service entries.
 //!
-//! Walks a server DID's service array and decides whether the VTA can
-//! reach it through the **outbound Trust-Task seam** or must fall back
-//! to the legacy WebVH REST API — and, for REST, which URL to dial.
-//! Kept pure (no resolver, no async, no I/O) so it can be unit-tested
-//! with stub service entries instead of a live `DIDCacheClient`.
+//! ## Every call is a Trust Task
 //!
-//! ## This decides *whether* the seam applies, never *which* transport
+//! The hosting service serves its whole DID-management surface as Trust Tasks
+//! over TSP, DIDComm and HTTPS (affinidi-webvh-service #217, #218), so there
+//! is one client and the transport is `operations::outbound`'s choice, in the
+//! workspace order TSP > DIDComm > HTTPS. This module answers two narrower
+//! questions:
 //!
-//! There used to be two transport selectors in this service, and this
-//! was the second one: it answered "DIDComm or REST" from its own copy
-//! of the service-type constants, in its own precedence order, with no
-//! knowledge of TSP. So a did-host advertising TSP was answered over
-//! DIDComm — the seam's `PREFERENCE_ORDER` (TSP > DIDComm > REST) never
-//! got to speak, because the choice had already been made here.
+//! 1. **Can the seam reach the host at all?** Yes when it advertises
+//!    `TSPTransport`, `DIDCommMessaging`, `TrustTaskHTTPS` or `WebVHHosting`.
+//! 2. **Where is its HTTPS binding when it does not advertise one?** The
+//!    hosting service serves `POST /api/trust-tasks` at the origin its
+//!    `WebVHHosting` service names, so the Trust-Task HTTPS base is
+//!    `{uri}/api`. An advertised `TrustTaskHTTPS` endpoint wins over this;
+//!    the seam only uses it to fill the empty slot
+//!    (`Outbound::with_https_base`). The origin must be `https://`; plain
+//!    `http://` is accepted only to a loopback host (localhost, 127/8, ::1),
+//!    as the retired REST client required, so a signed request never
+//!    crosses a network in the clear.
 //!
-//! Now this answers one narrower question: *can the seam carry a Trust
-//! Task to this server at all?* If the server advertises any transport
-//! the seam can use, the answer is [`ResolvedTransport::TrustTask`] and
-//! `operations::outbound` picks between them. Only a server advertising
-//! none of them falls back to the legacy REST client.
+//! Replies are required to carry the host's proof whichever transport carried
+//! them (`ReplyTrust::SignedByRecipient`), so reaching the host over HTTPS,
+//! where TLS authenticates a hostname rather than a DID, claims no more than
+//! the sealing transports do.
 //!
-//! The service-type constants come from `vta_sdk::protocol::matching`,
-//! the same module the seam reads, so the two cannot drift apart again.
+//! ## `hostingPath` is not the base
 //!
-//! ## Accepted service types
-//!
-//! - `TSPTransport`, `DIDCommMessaging` — either one means the seam can
-//!   reach this server; it decides which to use.
-//! - `WebVHHosting` — the canonical type emitted by current
-//!   `did-hosting-daemon` / `did-hosting-server` builds.
-//! - `WebVHHostingService` — legacy alias accepted on **read only**.
-//!   We never emit it; existing daemon DIDs stamped before the
-//!   unification keep working.
-//!
-//! ## Seam precedence
-//!
-//! Workspace-wide invariant: when a DID advertises several transports,
-//! Service[] is canonically ordered (see
-//! `protocol::document::sort_services_canonical`). We don't rely on
-//! that ordering for *reading* foreign DIDs though — a seam-capable
-//! entry, wherever it sits, wins over every legacy-REST entry. This
-//! keeps third-party DIDs that emit non-canonical orderings working
-//! without surprising the operator.
-//!
-//! Note what this does **not** cover: `TrustTaskHTTPS`. A server
-//! advertising only that is reachable by the seam over its REST
-//! binding, but routing there would swap the legacy WebVH REST API for
-//! the Trust-Task one on the publish path — a live-data change this
-//! selector has no business making on its own. It stays on the legacy
-//! client until that retirement is taken deliberately.
-//!
-//! ## `hostingPath` is not the REST base
-//!
-//! The `did-host-http*` templates used to stamp a `hostingPath` beside
-//! `uri` in the `WebVHHosting` endpoint. It described nothing: no
-//! caller ever set the `HOSTING_PATH` var, so every document carried
-//! the template's own default (`/webvh`), and no server in the
-//! ecosystem ever read the field back. #756 mistook it for a
-//! control-plane prefix and joined it onto the base; the live
-//! deployment says otherwise —
-//!
-//! ```text
-//! GET https://webvh.storm.ws/api/health        -> 200 {"status":"ok"}
-//! GET https://webvh.storm.ws/webvh/api/health  -> 404
-//! ```
-//!
-//! — and the hosting service nests its whole API at `/api` off the
-//! origin root, with no prefix setting to configure. The REST base is
-//! `serviceEndpoint.uri` alone. `hostingPath` is ignored on read, and
-//! the templates no longer emit it (#759).
+//! The `did-host-http*` templates used to stamp a `hostingPath` beside `uri`
+//! in the `WebVHHosting` endpoint. No server ever read it back, and the
+//! hosting service nests its whole API at `/api` off the origin root, so the
+//! base is `serviceEndpoint.uri` alone (#756, #759).
 
-/// Service types that mean "the outbound seam can carry a Trust Task here".
-///
-/// Re-exported from `vta_sdk::protocol::matching` rather than spelled again:
-/// a local copy is how this module came to not know about TSP in the first
-/// place, and the seam reads that module to decide what it can actually send.
+/// `TSPTransport`, from the module the seam reads.
 pub(crate) const SVC_TSP: &str = vta_sdk::protocol::matching::TSP_SERVICE_TYPE;
 
-/// Service-type string emitted on DIDComm endpoints (per DIDComm v2).
+/// `DIDCommMessaging`, from the module the seam reads.
 pub(crate) const SVC_DIDCOMM: &str = vta_sdk::protocol::matching::DIDCOMM_SERVICE_TYPE;
 
-/// Service-type string emitted on current WebVH-host endpoints.
+/// `TrustTaskHTTPS`, from the module the seam reads.
+pub(crate) const SVC_TRUST_TASK_HTTPS: &str =
+    vta_sdk::protocol::matching::TRUST_TASK_HTTPS_SERVICE_TYPE;
+
+/// The service type the hosting service publishes for the origin it serves
+/// DID documents and its API from.
 pub(crate) const SVC_WEBVH_HOSTING: &str = "WebVHHosting";
 
-/// Legacy alias for [`SVC_WEBVH_HOSTING`]. Accepted on read; never
-/// emitted by this workspace.
-pub(crate) const SVC_WEBVH_HOSTING_LEGACY: &str = "WebVHHostingService";
+/// Where the hosting service mounts its Trust-Task HTTPS binding under the
+/// `WebVHHosting` origin: requests go to `{origin}/api/trust-tasks`.
+const HOSTING_TRUST_TASK_BASE_PATH: &str = "/api";
 
-/// Minimal abstraction over a DID-document service entry, sufficient
-/// for transport resolution. Implemented for
-/// `affinidi_did_common::Service` in `mod.rs`; tests construct stub
-/// values.
+/// Minimal abstraction over a DID-document service entry, sufficient for
+/// reachability. Implemented for `affinidi_did_common::Service` below; tests
+/// construct stub values.
 pub(crate) trait ServiceEntry {
     fn types(&self) -> &[String];
     fn endpoint_uri(&self) -> Option<String>;
 }
 
-/// Outcome of walking a server's service array.
+/// How the seam reaches a hosting service.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResolvedTransport {
-    /// Reachable through `operations::outbound`, which picks the actual
-    /// transport from the peer's advertisement (TSP > DIDComm > REST).
-    TrustTask,
-    /// Legacy WebVH REST API — not the Trust-Task HTTPS binding.
-    Rest { url: String },
+pub(crate) struct HostReach {
+    /// The Trust-Task HTTPS base derived from `WebVHHosting`, used only when
+    /// the host advertises no `TrustTaskHTTPS` endpoint.
+    pub https_base: Option<String>,
 }
 
-/// Walk `services` and decide how the VTA should talk to this server.
+/// Walk `services` and decide whether, and how, the seam can reach this host.
 ///
-/// Returns `None` if no usable service is advertised; the caller
-/// surfaces an `AppError::Validation` so the operator sees the
-/// specific server DID.
+/// `None` when it advertises nothing the seam can carry a Trust Task over; the
+/// caller surfaces an `AppError::Validation` naming the server DID.
 ///
-/// REST URLs returned here are stripped of:
-/// - surrounding double-quotes — some JSON-LD serialisers emit
-///   `"https://host"` (quotes included) for `serviceEndpoint`,
-/// - one trailing `/` — to keep the per-route `format!("{base}/api/…")`
-///   helpers from producing double slashes.
-pub(crate) fn resolve_server_transport<S: ServiceEntry>(
-    services: &[S],
-) -> Option<ResolvedTransport> {
-    if services
+/// A `WebVHHosting` URI is stripped of surrounding double quotes (some JSON-LD
+/// serialisers emit them) and one trailing `/` before the base path is added.
+pub(crate) fn resolve_host_reach<S: ServiceEntry>(services: &[S]) -> Option<HostReach> {
+    let https_base = services
         .iter()
-        .any(|s| s.types().iter().any(is_seam_capable))
-    {
-        return Some(ResolvedTransport::TrustTask);
+        .filter(|s| s.types().iter().any(|t| t == SVC_WEBVH_HOSTING))
+        .filter_map(|s| s.endpoint_uri())
+        .map(|raw| raw.trim_matches('"').trim_end_matches('/').to_string())
+        .find(|origin| origin_is_secure(origin))
+        .map(|origin| format!("{origin}{HOSTING_TRUST_TASK_BASE_PATH}"));
+    let seam = services.iter().any(|s| {
+        s.types()
+            .iter()
+            .any(|t| t == SVC_TSP || t == SVC_DIDCOMM || t == SVC_TRUST_TASK_HTTPS)
+    });
+    (seam || https_base.is_some()).then_some(HostReach { https_base })
+}
+
+/// `https://`, or `http://` to a loopback host.
+fn origin_is_secure(origin: &str) -> bool {
+    let Ok(url) = url::Url::parse(origin) else {
+        return false;
+    };
+    match url.scheme() {
+        "https" => url.host().is_some(),
+        "http" => match url.host() {
+            Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        },
+        _ => false,
     }
-    for svc in services {
-        if svc.types().iter().any(is_webvh_rest)
-            && let Some(raw) = svc.endpoint_uri()
-        {
-            let url = raw.trim_matches('"').trim_end_matches('/').to_string();
-            if url.is_empty() {
-                continue;
-            }
-            return Some(ResolvedTransport::Rest { url });
-        }
-    }
-    None
 }
 
-#[inline]
-fn is_seam_capable(t: &String) -> bool {
-    t == SVC_TSP || t == SVC_DIDCOMM
-}
-
-#[inline]
-fn is_webvh_rest(t: &String) -> bool {
-    t == SVC_WEBVH_HOSTING || t == SVC_WEBVH_HOSTING_LEGACY
-}
-
-/// Human-readable description of accepted service types. Used in
-/// the `validate_server_did` failure message so operators see the
-/// full accepted set at the point of rejection.
+/// Human-readable description of the accepted service types, for the
+/// refusal an operator sees when a server advertises none of them.
 pub(crate) const SUPPORTED_TYPES_HUMAN: &str =
-    "TSPTransport, DIDCommMessaging, WebVHHosting, or WebVHHostingService (legacy)";
+    "TSPTransport, DIDCommMessaging, TrustTaskHTTPS, or WebVHHosting at an https:// origin";
 
-// ── ServiceEntry impl for the resolver's concrete Service type ─────
-//
-// Lets `resolve_server_transport(&doc.service)` work without an
-// adaptor at the call site. We reach the type through the
-// `affinidi_tdk` umbrella — that's the path the workspace already
-// uses for adjacent resolver types, and it spares us from adding
-// `affinidi-did-common` as a direct dependency just for this impl.
 impl ServiceEntry for affinidi_tdk::did_common::service::Service {
     fn types(&self) -> &[String] {
         &self.type_
@@ -176,38 +125,6 @@ impl ServiceEntry for affinidi_tdk::did_common::service::Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── hostingPath is not the REST base ────────────────────────────
-
-    /// Regression guard for #756/#759, pinned against the live document.
-    ///
-    /// This is the verbatim `WebVHHosting` entry `webvh.storm.ws` publishes,
-    /// parsed by the same concrete `Service` type the resolver hands us. #756
-    /// read the `hostingPath` beside `uri` as a control-plane prefix and
-    /// dialled `https://webvh.storm.ws/webvh/api/...`; that server answers
-    /// `/api/health` with 200 and `/webvh/api/health` with 404, so the base is
-    /// the origin alone. Anyone tempted to join the two halves again should
-    /// re-probe a live server first.
-    #[test]
-    fn advertised_hosting_path_is_ignored_on_the_live_document() {
-        let svc: affinidi_tdk::did_common::service::Service = serde_json::from_str(
-            r#"{
-                "id": "did:webvh:QmUcyd...:webvh.storm.ws#webvh-hosting",
-                "type": "WebVHHosting",
-                "serviceEndpoint": {
-                    "hostingPath": "/webvh",
-                    "uri": "https://webvh.storm.ws"
-                }
-            }"#,
-        )
-        .expect("the live WebVHHosting entry parses");
-        assert_eq!(
-            resolve_server_transport(std::slice::from_ref(&svc)),
-            Some(ResolvedTransport::Rest {
-                url: "https://webvh.storm.ws".to_string()
-            })
-        );
-    }
 
     struct TestService {
         types: Vec<String>,
@@ -230,244 +147,156 @@ mod tests {
         }
     }
 
-    #[test]
-    fn empty_service_list_yields_none() {
-        let services: Vec<TestService> = vec![];
-        assert_eq!(resolve_server_transport(&services), None);
+    fn reach(services: &[TestService]) -> Option<HostReach> {
+        resolve_host_reach(services)
     }
 
-    #[test]
-    fn unsupported_service_type_yields_none() {
-        // A DID with services but none we can talk to — operator
-        // sees a "no supported service" error upstream.
-        let services = vec![TestService::new(&["LinkedDomains"], Some("https://x"))];
-        assert_eq!(resolve_server_transport(&services), None);
+    fn base(url: &str) -> Option<HostReach> {
+        Some(HostReach {
+            https_base: Some(url.to_string()),
+        })
     }
 
-    /// **The regression this change exists to end.** A did-host advertising
-    /// TSP — and nothing else the seam can use — used to fall through to the
-    /// legacy REST client, because this selector had never heard of TSP. The
-    /// host was reachable over its highest-preference transport the whole time
-    /// and the VTA dialled its REST API instead.
+    /// The verbatim `WebVHHosting` entry `webvh.storm.ws` publishes: the base
+    /// is the origin plus `/api`, and `hostingPath` is ignored (#756/#759).
     #[test]
-    fn tsp_only_reaches_the_seam() {
-        let services = vec![TestService::new(&[SVC_TSP], None)];
+    fn the_live_hosting_entry_yields_the_origin_api_base() {
+        let svc: affinidi_tdk::did_common::service::Service = serde_json::from_str(
+            r#"{
+                "id": "did:webvh:QmUcyd...:webvh.storm.ws#webvh-hosting",
+                "type": "WebVHHosting",
+                "serviceEndpoint": { "hostingPath": "/webvh", "uri": "https://webvh.storm.ws" }
+            }"#,
+        )
+        .expect("the live WebVHHosting entry parses");
         assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::TrustTask)
+            resolve_host_reach(std::slice::from_ref(&svc)),
+            base("https://webvh.storm.ws/api")
         );
     }
 
-    /// TSP beside legacy REST: the seam is chosen, and `operations::outbound`
-    /// decides from there. This selector deliberately does **not** rank TSP
-    /// against DIDComm — that is `PREFERENCE_ORDER`'s job, and having two
-    /// rankings is what put a TSP host on DIDComm.
-    #[test]
-    fn tsp_beside_legacy_rest_still_reaches_the_seam() {
-        let services = vec![
-            TestService::new(&[SVC_WEBVH_HOSTING], Some("https://host.example")),
-            TestService::new(&[SVC_TSP], None),
-        ];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::TrustTask)
-        );
-    }
-
-    /// Both seam transports advertised: one answer, not a choice made here.
-    #[test]
-    fn tsp_and_didcomm_together_yield_one_answer() {
-        let services = vec![
-            TestService::new(&[SVC_DIDCOMM], None),
-            TestService::new(&[SVC_TSP], None),
-        ];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::TrustTask)
-        );
-    }
-
-    /// `TrustTaskHTTPS` is deliberately **not** a seam trigger here — see the
-    /// module header. A host advertising only it stays on the legacy WebVH
-    /// REST client, because routing it through the seam would swap the publish
-    /// path's API on live data.
-    #[test]
-    fn trust_task_https_alone_does_not_divert_the_publish_path() {
-        let services = vec![
-            TestService::new(
-                &[vta_sdk::protocol::matching::TRUST_TASK_HTTPS_SERVICE_TYPE],
-                Some("https://host.example/api"),
-            ),
-            TestService::new(&[SVC_WEBVH_HOSTING], Some("https://host.example")),
-        ];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::Rest {
-                url: "https://host.example".to_string()
-            })
-        );
-    }
-
-    /// The constants are the SDK's, not a second copy. A local copy is how this
-    /// module came to not know about TSP, so the equality is asserted rather
-    /// than trusted to review.
     #[test]
     fn the_service_types_are_the_sdk_ones() {
-        assert_eq!(SVC_TSP, vta_sdk::protocol::matching::TSP_SERVICE_TYPE);
+        assert_eq!(SVC_TSP, "TSPTransport");
+        assert_eq!(SVC_DIDCOMM, "DIDCommMessaging");
+        assert_eq!(SVC_TRUST_TASK_HTTPS, "TrustTaskHTTPS");
+    }
+
+    #[test]
+    fn nothing_the_seam_can_use_is_unreachable() {
+        assert_eq!(reach(&[]), None);
         assert_eq!(
-            SVC_DIDCOMM,
-            vta_sdk::protocol::matching::DIDCOMM_SERVICE_TYPE
+            reach(&[TestService::new(&["LinkedDomains"], Some("https://x"))]),
+            None
+        );
+        // The retired alias names nothing any more: test deployments are
+        // recreated, not migrated.
+        assert_eq!(
+            reach(&[TestService::new(
+                &["WebVHHostingService"],
+                Some("https://x")
+            )]),
+            None
         );
     }
 
     #[test]
-    fn didcomm_only_reaches_the_seam() {
-        let services = vec![TestService::new(&[SVC_DIDCOMM], None)];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::TrustTask)
-        );
+    fn a_sealing_transport_alone_reaches_the_host_with_no_https_base() {
+        for t in [SVC_TSP, SVC_DIDCOMM, SVC_TRUST_TASK_HTTPS] {
+            assert_eq!(
+                reach(&[TestService::new(&[t], Some("did:example:mediator"))]),
+                Some(HostReach { https_base: None }),
+                "{t}"
+            );
+        }
     }
 
+    /// The hosting service advertises TSP, DIDComm and `WebVHHosting`: the
+    /// seam picks TSP; the HTTPS base is carried for when it cannot.
     #[test]
-    fn webvh_hosting_canonical_resolves_to_rest() {
-        // The canonical type emitted by current daemon builds.
-        let services = vec![TestService::new(
-            &[SVC_WEBVH_HOSTING],
-            Some("https://daemon.example"),
-        )];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::Rest {
-                url: "https://daemon.example".into()
-            })
-        );
-    }
-
-    #[test]
-    fn webvh_hosting_service_legacy_alias_accepted() {
-        // Older daemon deployments emit WebVHHostingService. We
-        // never emit it ourselves but tolerate it on read so
-        // pre-unification DIDs keep working.
-        let services = vec![TestService::new(
-            &[SVC_WEBVH_HOSTING_LEGACY],
-            Some("https://legacy.example"),
-        )];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::Rest {
-                url: "https://legacy.example".into()
-            })
-        );
-    }
-
-    #[test]
-    fn a_seam_transport_wins_when_listed_first() {
+    fn the_hosting_service_shape_carries_its_https_base() {
         let services = vec![
-            TestService::new(&[SVC_DIDCOMM], None),
-            TestService::new(&[SVC_WEBVH_HOSTING], Some("https://x")),
+            TestService::new(&[SVC_TSP], Some("did:example:mediator")),
+            TestService::new(&[SVC_DIDCOMM], Some("did:example:mediator")),
+            TestService::new(&[SVC_WEBVH_HOSTING], Some("https://host.example")),
         ];
+        assert_eq!(reach(&services), base("https://host.example/api"));
+    }
+
+    #[test]
+    fn the_hosting_origin_is_normalised() {
+        for raw in [
+            "https://host.example",
+            "https://host.example/",
+            "\"https://host.example\"",
+            "\"https://host.example/\"",
+        ] {
+            assert_eq!(
+                reach(&[TestService::new(&[SVC_WEBVH_HOSTING], Some(raw))]),
+                base("https://host.example/api"),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hosting_entry_without_a_usable_uri_is_skipped() {
+        assert_eq!(reach(&[TestService::new(&[SVC_WEBVH_HOSTING], None)]), None);
         assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::TrustTask)
+            reach(&[
+                TestService::new(&[SVC_WEBVH_HOSTING], Some("\"\"")),
+                TestService::new(&[SVC_WEBVH_HOSTING], Some("https://second.example")),
+            ]),
+            base("https://second.example/api")
+        );
+    }
+
+    /// A signed request never crosses a network in the clear: plain `http://`
+    /// is refused except to a loopback host, and so is any other scheme.
+    #[test]
+    fn a_plaintext_hosting_origin_is_refused_off_loopback() {
+        for raw in [
+            "http://host.example",
+            "http://10.0.0.5:8080",
+            "ftp://host.example",
+            "not a url",
+        ] {
+            assert_eq!(
+                reach(&[TestService::new(&[SVC_WEBVH_HOSTING], Some(raw))]),
+                None,
+                "{raw}"
+            );
+        }
+        for (raw, expected) in [
+            ("http://127.0.0.1:8530", "http://127.0.0.1:8530/api"),
+            ("http://localhost:8530", "http://localhost:8530/api"),
+            ("http://[::1]:8530", "http://[::1]:8530/api"),
+        ] {
+            assert_eq!(
+                reach(&[TestService::new(&[SVC_WEBVH_HOSTING], Some(raw))]),
+                base(expected),
+                "{raw}"
+            );
+        }
+        // A plaintext origin beside a sealing transport: the host is still
+        // reachable, just not over HTTPS.
+        assert_eq!(
+            reach(&[
+                TestService::new(&[SVC_DIDCOMM], Some("did:example:mediator")),
+                TestService::new(&[SVC_WEBVH_HOSTING], Some("http://host.example")),
+            ]),
+            Some(HostReach { https_base: None })
         );
     }
 
     #[test]
-    fn a_seam_transport_wins_when_listed_after_rest() {
-        // The canonical ordering puts DIDComm first, but third-party
-        // DIDs may not honour that. Walk the array twice rather than
-        // trust the order.
-        let services = vec![
-            TestService::new(&[SVC_WEBVH_HOSTING], Some("https://x")),
-            TestService::new(&[SVC_DIDCOMM], None),
-        ];
+    fn a_multi_typed_entry_matches_any_type() {
         assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::TrustTask)
-        );
-    }
-
-    #[test]
-    fn rest_url_strips_surrounding_quotes() {
-        let services = vec![TestService::new(
-            &[SVC_WEBVH_HOSTING],
-            Some("\"https://daemon.example\""),
-        )];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::Rest {
-                url: "https://daemon.example".into()
-            })
-        );
-    }
-
-    #[test]
-    fn rest_url_strips_trailing_slash() {
-        let services = vec![TestService::new(
-            &[SVC_WEBVH_HOSTING],
-            Some("https://daemon.example/"),
-        )];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::Rest {
-                url: "https://daemon.example".into()
-            })
-        );
-    }
-
-    #[test]
-    fn rest_url_strips_quotes_and_trailing_slash_together() {
-        let services = vec![TestService::new(
-            &[SVC_WEBVH_HOSTING],
-            Some("\"https://daemon.example/\""),
-        )];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::Rest {
-                url: "https://daemon.example".into()
-            })
-        );
-    }
-
-    #[test]
-    fn rest_entry_without_endpoint_falls_through() {
-        // A WebVHHosting entry with no URI shouldn't short-circuit —
-        // a later valid entry should still win.
-        let services = vec![
-            TestService::new(&[SVC_WEBVH_HOSTING], None),
-            TestService::new(&[SVC_WEBVH_HOSTING], Some("https://second.example")),
-        ];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::Rest {
-                url: "https://second.example".into()
-            })
-        );
-    }
-
-    #[test]
-    fn rest_entry_with_empty_uri_after_trim_is_skipped() {
-        // "/" → trims to empty → not usable. Caller should treat as
-        // no REST service, fall through to a later entry or None.
-        let services = vec![TestService::new(&[SVC_WEBVH_HOSTING], Some("/"))];
-        assert_eq!(resolve_server_transport(&services), None);
-    }
-
-    #[test]
-    fn multi_typed_service_entry_matches_any_type() {
-        // A service entry can carry multiple types in `type` (rare
-        // but valid per DID-Core). Match if any one of them is a
-        // supported type.
-        let services = vec![TestService::new(
-            &["LinkedDomains", SVC_WEBVH_HOSTING],
-            Some("https://multi.example"),
-        )];
-        assert_eq!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::Rest {
-                url: "https://multi.example".into()
-            })
+            reach(&[TestService::new(
+                &["LinkedDomains", SVC_WEBVH_HOSTING],
+                Some("https://host.example")
+            )]),
+            base("https://host.example/api")
         );
     }
 }

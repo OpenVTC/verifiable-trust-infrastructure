@@ -183,10 +183,12 @@ async fn url_direct_admin_rotation_round_trips_against_rest_only_mock() {
 }
 
 /// Full server-managed `create_did_webvh` round-trip against a REST-only mock
-/// with an in-process stub hosting backend (#431): the VTA resolves the seeded
-/// `did:webvh` server DID to the loopback stub, reserves a path, mints the
-/// persona `did:webvh` via `didwebvh-rs`, and publishes the signed log to the
-/// stub. Mirrors `url_direct_admin_rotation_round_trips_against_rest_only_mock`
+/// with an in-process stub hosting service (#431): the VTA resolves the seeded
+/// `did:webvh` server DID, reaches the stub's Trust-Task HTTPS binding through
+/// its `WebVHHosting` origin, reserves a path (`did/check-name`), mints the
+/// persona `did:webvh` via `didwebvh-rs`, and publishes the signed log
+/// (`did/register`). The stub refuses unsigned requests and signs its answers,
+/// so this also proves both halves of the proof exchange. Mirrors `url_direct_admin_rotation_round_trips_against_rest_only_mock`
 /// for the persona-mint layer.
 #[tokio::test]
 async fn create_did_webvh_round_trips_against_stub_host() {
@@ -241,6 +243,56 @@ async fn create_did_webvh_round_trips_against_stub_host() {
         "a server-managed mint must return the server-assigned mnemonic"
     );
     assert!(!res.scid.is_empty(), "minted DID must carry an SCID");
+
+    mock.shutdown().await;
+}
+
+/// The host's answers must carry its own proof. The stub signs with a key that
+/// is not the one its DID document lists, while naming that document's method:
+/// a forged answer over HTTPS, where TLS alone would not have caught it. The
+/// reservation is refused before anything is minted or stored.
+#[tokio::test]
+async fn create_did_webvh_refuses_a_host_answer_not_signed_by_the_host() {
+    use vta_sdk::client::CreateDidWebvhRequest;
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    mock.forge_webvh_host_replies();
+    let client = signing_client(&mock, 0x12, "admin", vec![]).await;
+
+    let err = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id: Some(MockVta::WEBVH_SERVER_ID.into()),
+            url: None,
+            path: None,
+            path_mode: Some(WebvhPathMode::AutoAssign),
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            add_tsp_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect_err("a forged host answer must not reserve a slot");
+    assert!(
+        err.to_string().contains("proof does not verify"),
+        "refused for the forged proof: {err}"
+    );
+    let stored = vta_service::webvh_store::list_dids(&mock.ctx.webvh_ks)
+        .await
+        .unwrap();
+    assert!(stored.is_empty(), "nothing is stored: {stored:?}");
 
     mock.shutdown().await;
 }
@@ -733,14 +785,37 @@ async fn webvh_family_response_shapes_inner() {
 
     // ── server surface ────────────────────────────────────────────────────
     client.list_webvh_servers().await.expect("servers/list");
-    client
+    // Both used to be REST-only; they now read the host's `me/domains` and
+    // paged `did/list` Trust Tasks, so the answers are the host's, not blanks.
+    let domains = client
         .list_webvh_server_domains(MockVta::WEBVH_SERVER_ID)
         .await
         .expect("servers/domains");
-    client
+    assert_eq!(domains.default.as_deref(), Some("webvh-host.test"));
+    assert_eq!(domains.domains.len(), 1);
+    assert!(domains.domains[0].default_domain);
+    assert_eq!(domains.domains[0].status, "active");
+    assert_eq!(
+        domains.domains[0].created_at.as_deref(),
+        Some("2026-01-01T00:00:00Z")
+    );
+    let report = client
         .reconcile_webvh_server_dids(MockVta::WEBVH_SERVER_ID)
         .await
         .expect("servers/reconcile");
+    assert_eq!(
+        report
+            .host_only
+            .iter()
+            .map(|d| d.slot_id.as_str())
+            .collect::<Vec<_>>(),
+        ["cov-orphan-slot"],
+        "the host's slot with no local record is host-only"
+    );
+    assert!(
+        report.agent_only.iter().any(|d| d.did == did),
+        "the minted DID, absent from the host's listing, is agent-only"
+    );
 
     // ── agent names ───────────────────────────────────────────────────────
     // Ordered as an operator would: claim, read back, disable, re-enable, drop.
@@ -752,10 +827,17 @@ async fn webvh_family_response_shapes_inner() {
         .check_agent_name(&did, "coverage-agent")
         .await
         .expect("agent-name/check");
-    client
+    let names = client
         .list_agent_names(&did)
         .await
         .expect("agent-name/list");
+    assert!(
+        names
+            .names
+            .iter()
+            .any(|n| n.name == "coverage-agent" && n.enabled && n.created_at == 1_767_225_600),
+        "the host's RFC 3339 createdAt is relayed as Unix seconds: {names:?}"
+    );
     client
         .disable_agent_name(&did, "coverage-agent")
         .await
@@ -1241,10 +1323,7 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
 
     // Point the VTA at it. `services/*` mutate *this* DID's document, so the
     // one under test has to be the one the VTA calls its own.
-    {
-        let mut cfg = mock.ctx.config.write().await;
-        cfg.vta_did = Some(did.clone());
-    }
+    mock.ctx.adopt_vta_did(&did).await;
 
     // And re-address the caller. The VTA's identity just changed, and a
     // document's `recipient` has to name the consumer it is sent to — SPEC §7.2

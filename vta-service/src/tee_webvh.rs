@@ -262,9 +262,7 @@ mod tests {
 
     #[tokio::test]
     async fn tee_existing_identity_rest_repair_appends_signed_update() {
-        use crate::operations::did_webvh::{
-            UpdateDidWebvhOptions, WebvhAuthLocks, WebvhDeps, update_did_webvh,
-        };
+        use crate::operations::did_webvh::{UpdateDidWebvhOptions, WebvhDeps, update_did_webvh};
         use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
         use std::sync::Arc;
 
@@ -297,7 +295,6 @@ mod tests {
             .await
             .unwrap();
         let bridge = Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
-        let locks = WebvhAuthLocks::new();
         let audit = vta_audit::shared_keyspace_sink(fx.keyspace(crate::keyspaces::AUDIT));
         let deps = WebvhDeps {
             keys_ks: &fx.keyspace(crate::keyspaces::KEYS),
@@ -309,9 +306,7 @@ mod tests {
             seed_store: &fx.seed,
             did_resolver: &resolver,
             didcomm_bridge: &bridge,
-            auth_locks: &locks,
             // Offline: no mediator socket to lend, so the seam cannot choose
-            // TSP. Same reason as the `auth_locks` note above.
             #[cfg(feature = "tsp")]
             tsp: None,
         };

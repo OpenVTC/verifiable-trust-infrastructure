@@ -2,9 +2,8 @@
 //! (optionally with its `did.jsonl` log), or list records filtered by
 //! context/server.
 //!
-//! Delete lives in the parent module alongside the `WebvhTransport`
-//! abstraction because it has to reach out to the hosting server for
-//! remote cleanup. Create is the main flow and also stays in mod.rs.
+//! Delete lives in the parent module because it has to reach out to the
+//! hosting server for remote cleanup. Create is the main flow and also stays in mod.rs.
 
 use tracing::info;
 

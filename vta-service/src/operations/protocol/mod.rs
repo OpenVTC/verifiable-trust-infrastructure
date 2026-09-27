@@ -155,7 +155,7 @@ impl OpContext {
 /// DIDComm).
 ///
 /// Before P2.5 each op took the same long run of positional arguments (config,
-/// keyspaces, seed-store, resolver, bridge, telemetry, auth-locks, and — for the
+/// keyspaces, seed-store, resolver, bridge, telemetry, and — for the
 /// DIDComm family — the mediator registry, drain sweeper, and drain keyspace),
 /// tripping `clippy::too_many_arguments` (the worst topped out at 25 args).
 /// Bundling them into one borrowed struct — built once at the transport boundary
@@ -188,7 +188,6 @@ pub struct ServiceOpDeps<'a> {
     pub did_resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
     pub didcomm_bridge: &'a std::sync::Arc<crate::didcomm_bridge::DIDCommBridge>,
     pub telemetry: &'a vti_common::telemetry::SharedTelemetrySink,
-    pub webvh_auth_locks: &'a crate::operations::did_webvh::WebvhAuthLocks,
     /// Active + draining mediator listener registry — DIDComm family only.
     #[cfg(all(feature = "webvh", feature = "didcomm"))]
     pub registry: &'a crate::messaging::registry::MediatorListenerRegistry,
@@ -229,7 +228,6 @@ impl<'a> ServiceOpDeps<'a> {
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             telemetry: &s.telemetry,
-            webvh_auth_locks: &s.webvh_auth_locks,
             #[cfg(feature = "didcomm")]
             registry: &s.mediator_registry,
             #[cfg(feature = "didcomm")]
@@ -261,14 +259,13 @@ impl<'a> ServiceOpDeps<'a> {
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
             telemetry: &s.telemetry,
-            webvh_auth_locks: &s.webvh_auth_locks,
             registry: &s.mediator_registry,
             sweeper: &s.drain_sweeper,
         }
     }
 
     /// Borrow the [`WebvhDeps`](crate::operations::did_webvh::WebvhDeps) subset —
-    /// the keyspaces + seed-store + resolver + bridge + auth-locks the WebVH
+    /// the keyspaces + seed-store + resolver + bridge the WebVH
     /// publish path (`update_did_webvh`) needs. Lets the protocol ops hand their
     /// `update_did_webvh` call a `WebvhDeps` without re-listing every field.
     pub fn webvh(&self) -> crate::operations::did_webvh::WebvhDeps<'a> {
@@ -283,7 +280,6 @@ impl<'a> ServiceOpDeps<'a> {
             seed_store: self.seed_store,
             did_resolver: self.did_resolver,
             didcomm_bridge: self.didcomm_bridge,
-            auth_locks: self.webvh_auth_locks,
             // `ProtocolDeps` is assembled from the same narrow borrows this
             // bundle re-lists; none of them is a mediator socket. Threading a
             // sender onto `ProtocolDeps` is what would change this, and no

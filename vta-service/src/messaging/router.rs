@@ -103,11 +103,6 @@ pub struct VtaState {
     /// Per-mediator TTL sweeper.
     #[cfg(feature = "webvh")]
     pub drain_sweeper: Arc<crate::messaging::drain_sweeper::DrainSweeper>,
-    /// Per-webvh-server async mutex registry. Mirrored from
-    /// `AppState` so DIDComm-transport handlers serialise the same
-    /// daemon-REST auth-cache reads as REST handlers.
-    #[cfg(feature = "webvh")]
-    pub webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks,
     /// Pluggable telemetry sink — driven by both REST and DIDComm
     /// transport handlers so `mediator report` is consistent
     /// regardless of which transport posted the inbound event.
@@ -177,7 +172,6 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
             config: state.config.clone(),
             did_resolver: state.did_resolver.clone(),
             didcomm_bridge: state.didcomm_bridge.clone(),
-            webvh_auth_locks: state.webvh_auth_locks.clone(),
         }
     }
 }
@@ -186,14 +180,11 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
 /// [`AppState`].
 ///
 /// `VtaState` is a strict subset of `AppState` — every field is a cheap clone
-/// of the corresponding `AppState` field (an `Arc`, a `KeyspaceHandle`, or the
-/// `Arc`-backed [`WebvhAuthLocks`]). Building it this way is what guarantees the
-/// REST front-end and the DIDComm router share the *same* config `RwLock`,
-/// `WebvhAuthLocks`, mediator registry, drain sweeper, and telemetry sink
-/// (P1.1): a `PATCH /config` on the REST side is visible to DIDComm handlers,
-/// and the per-server webvh auth-cache lock serialises across both transports.
-/// Constructing `VtaState` with a freshly-minted webvh auth-lock registry or a
-/// freshly-wrapped config lock was a live divergence bug — don't reintroduce
+/// of the corresponding `AppState` field (an `Arc` or a `KeyspaceHandle`).
+/// Building it this way is what guarantees the REST front-end and the DIDComm
+/// router share the *same* config `RwLock`, mediator registry, drain sweeper,
+/// and telemetry sink (P1.1): a `PATCH /config` on the REST side is visible to
+/// DIDComm handlers. Constructing `VtaState` with a freshly-wrapped config lock was a live divergence bug — don't reintroduce
 /// it; always derive from the canonical `AppState`.
 impl From<&AppState> for VtaState {
     fn from(state: &AppState) -> Self {
@@ -220,8 +211,6 @@ impl From<&AppState> for VtaState {
             mediator_registry: Arc::clone(&state.mediator_registry),
             #[cfg(feature = "webvh")]
             drain_sweeper: Arc::clone(&state.drain_sweeper),
-            #[cfg(feature = "webvh")]
-            webvh_auth_locks: state.webvh_auth_locks.clone(),
             telemetry: Arc::clone(&state.telemetry),
             seed_store: state.seed_store.clone(),
             config: Arc::clone(&state.config),

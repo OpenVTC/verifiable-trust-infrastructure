@@ -173,11 +173,6 @@ pub async fn run_create_did_webvh(
         is_vta_identity: false,
     };
 
-    // Offline CLI: no shared AppState, so create a local per-server
-    // auth-lock registry. This path is serverless (`server_id: None`),
-    // so it won't authenticate to a hosting server, but the deps bundle
-    // requires the field.
-    let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
     let deps = operations::did_webvh::CreateDidWebvhDeps {
         keys_ks: &keys_ks,
         imported_ks: &imported_ks,
@@ -189,10 +184,8 @@ pub async fn run_create_did_webvh(
         config: &config,
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
-        auth_locks: &auth_locks,
         acl_ks: None,
         // Offline: no mediator socket to lend, so the seam cannot choose
-        // TSP. Same reason as the `auth_locks` note above.
         #[cfg(feature = "tsp")]
         tsp: None,
     };
@@ -910,7 +903,6 @@ mod tests {
             .unwrap();
         let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
             Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
-        let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
         let deps = operations::did_webvh::CreateDidWebvhDeps {
             keys_ks: &keys_ks,
             imported_ks: &imported_ks,
@@ -922,10 +914,8 @@ mod tests {
             config: &config,
             did_resolver: &did_resolver,
             didcomm_bridge: &no_bridge,
-            auth_locks: &auth_locks,
             acl_ks: None,
             // Offline: no mediator socket to lend, so the seam cannot choose
-            // TSP. Same reason as the `auth_locks` note above.
             #[cfg(feature = "tsp")]
             tsp: None,
         };
@@ -1027,7 +1017,6 @@ mod tests {
             .unwrap();
         let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
             Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
-        let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
         let deps = operations::did_webvh::CreateDidWebvhDeps {
             keys_ks: &keys_ks,
             imported_ks: &imported_ks,
@@ -1039,7 +1028,6 @@ mod tests {
             config,
             did_resolver: &did_resolver,
             didcomm_bridge: &no_bridge,
-            auth_locks: &auth_locks,
             acl_ks: None,
             #[cfg(feature = "tsp")]
             tsp: None,

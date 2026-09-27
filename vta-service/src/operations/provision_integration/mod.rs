@@ -124,11 +124,6 @@ pub struct ProvisionIntegrationDeps {
     pub config: Arc<RwLock<AppConfig>>,
     pub did_resolver: Option<DIDCacheClient>,
     pub didcomm_bridge: Arc<DIDCommBridge>,
-    /// Per-server webvh auth-cache mutex registry, shared with the rest
-    /// of the process via `AppState`. Needed so a provisioned
-    /// server-managed DID authenticates its publish to the hosting
-    /// daemon (challenge → VTA-signed JWS → Bearer token).
-    pub webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks,
 }
 
 impl From<&AppState> for ProvisionIntegrationDeps {
@@ -149,7 +144,6 @@ impl From<&AppState> for ProvisionIntegrationDeps {
             didcomm_bridge: state.didcomm_bridge.clone(),
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: std::sync::Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder()),
-            webvh_auth_locks: state.webvh_auth_locks.clone(),
         }
     }
 }
@@ -502,7 +496,6 @@ pub async fn provision_integration(
                 config: &config,
                 did_resolver,
                 didcomm_bridge: &state.didcomm_bridge,
-                auth_locks: &state.webvh_auth_locks,
                 acl_ks: Some(&state.acl_ks),
                 // `ProvisionIntegrationDeps` carries no mediator socket, so the
                 // seam falls to DIDComm here. Provisioning is also the one moment
