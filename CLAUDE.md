@@ -718,19 +718,18 @@ new flow, update both this section and the relevant `docs/*.md`.
   Forward operations carry an `OpContext::{Direct,Rollback}`
   parameter — rollback-dispatched ops emit
   `triggered_by: "rollback"` on their telemetry event.
-- **Transport**: all operations except `services didcomm enable`
-  are reachable over both REST and DIDComm. `enable_didcomm` is
-  REST-only by nature (DIDComm isn't running yet). Wire types
-  live in `vta_sdk::protocol::services`; DIDComm message types
-  in `vta_sdk::protocols::protocol_management` under
-  `services-management/1.0/`.
+- **Transport**: every operation is a `vta/services/*` Trust Task,
+  over TSP, DIDComm or HTTPS (`/trust-tasks`) — `enable_didcomm`
+  included, which a REST-only VTA receives over HTTPS. The SDK's
+  typed methods (`vta_sdk::protocol`) map to them.
 - **Code**: `vta-service/src/operations/protocol/{enable_rest,
   update_rest,disable_rest,rollback_rest,enable_didcomm,
   update_didcomm,disable_didcomm,rollback_didcomm,list,
   list_drain,snapshot,invariant,document}.rs`,
   `vta-service/src/messaging/{registry,drain_store,drain_sweeper,
   handshake,live_prover,transient_handshake}.rs`,
-  `vta-service/src/routes/protocol.rs`,
+  `vta-service/src/trust_tasks/services.rs` (the `vta/services/*`
+  Trust Tasks — the only surface; the REST routes are gone),
   `vta_sdk::protocol::{mod,services}`,
   `vta_cli_common::commands::services` (the `mediator`
   submodule was deleted in P5),

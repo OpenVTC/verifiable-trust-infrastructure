@@ -18,7 +18,6 @@ pub mod keys;
 #[cfg(feature = "webvh")]
 mod passkey_vms;
 #[cfg(feature = "webvh")]
-mod protocol;
 pub mod rate_limit;
 #[cfg(feature = "webvh")]
 mod self_hosted_did;
@@ -450,50 +449,10 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // `GET /attestation/admin-credential` retired in Phase 3 —
     // sealed-bootstrap Mode B replaces it via `POST /bootstrap/request`.
 
-    // Protocol management routes (DIDComm enable/disable/migrate;
-    // spec docs/05-design-notes/didcomm-protocol-management.md).
-    // Plus the symmetric REST routes (spec
-    // docs/05-design-notes/runtime-service-management.md §3.4).
-    #[cfg(feature = "webvh")]
-    let router = router
-        .routes(routes!(protocol::enable_rest_handler))
-        .routes(routes!(protocol::update_rest_handler))
-        .routes(routes!(protocol::disable_rest_handler))
-        .routes(routes!(protocol::rollback_rest_handler))
-        .routes(routes!(protocol::enable_tsp_handler))
-        .routes(routes!(protocol::update_tsp_handler))
-        .routes(routes!(protocol::disable_tsp_handler))
-        .routes(routes!(protocol::rollback_tsp_handler))
-        .routes(routes!(protocol::enable_webauthn_handler))
-        .routes(routes!(protocol::update_webauthn_handler))
-        .routes(routes!(protocol::disable_webauthn_handler))
-        .routes(routes!(protocol::rollback_webauthn_handler))
-        .routes(routes!(protocol::list_services_handler))
-        .routes(routes!(protocol::mediator_report_handler));
-
-    // The DIDComm half of service management — enable/disable/update/rollback
-    // plus the drain surface, which is DIDComm-only (REST and TSP have no
-    // drain window). Absent from a TSP-only build, along with the operations
-    // behind them; `services {rest,tsp,webauthn} …` above stay mounted.
-    #[cfg(all(feature = "webvh", feature = "didcomm"))]
-    let router = router
-        .routes(routes!(protocol::enable_didcomm_handler))
-        .routes(routes!(protocol::get_didcomm_status_handler))
-        .routes(routes!(protocol::disable_didcomm_handler))
-        // GET list-drain + POST cancel share /services/didcomm/drain.
-        .routes(routes!(
-            protocol::list_drain_handler,
-            protocol::drain_cancel_handler
-        ))
-        .routes(routes!(protocol::update_didcomm_handler))
-        .routes(routes!(protocol::rollback_didcomm_handler))
-        // Alias mount of the drain-cancel handler; its #[utoipa::path] lives on
-        // the canonical /services/didcomm/drain entry above, so this stays a
-        // plain (undocumented) route to avoid a duplicate operation.
-        .route(
-            "/mediators/drain/cancel",
-            post(protocol::drain_cancel_handler),
-        );
+    // Service management (`vta/services/*`) is Trust Tasks only, on
+    // `/trust-tasks`: the twenty `/services/*` routes and `/mediators/*` that
+    // stood here are removed. The SDK's `services` methods dispatch the tasks
+    // over whichever transport the client holds.
 
     // WebVH routes (feature-gated)
     #[cfg(feature = "webvh")]
@@ -749,9 +708,8 @@ mod cors_tests {
             "/vta/restart",
             "/backup/export",
             "/backup/blob/{bundle_id}",
-            // webvh (default feature) groups
-            "/services/didcomm/enable",
-            "/services",
+            // webvh (default feature) groups. (Service management is the
+            // `vta/services/*` Trust Tasks, with no REST paths to document.)
             "/webvh/dids",
             "/webvh/servers",
             "/did/verification-methods/passkey",

@@ -529,6 +529,12 @@ pub const TASK_SERVICES_ENABLE_1_0: &str = "https://trusttasks.org/spec/vta/serv
 /// Refused when the transport is not enabled — that case is `enable`.
 pub const TASK_SERVICES_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/services/update/1.0";
 
+/// `spec/vta/services/update/1.1` — as 1.0, plus an optional `drainTtlSecs` for
+/// the mediated transports (`didcomm`, `tsp`): how long the replaced mediator
+/// keeps accepting delivery. One mediator carrying both drains once for both.
+pub const TASK_SERVICES_UPDATE_1_1: &str =
+    <trust_tasks_rs::specs::vta::services::update::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/services/disable/1.0` — stop advertising a transport.
 /// Payload: `{ service, drainTtlSecs? }`. Auth: super-admin.
 ///
@@ -559,6 +565,13 @@ pub const TASK_SERVICES_DRAIN_LIST_1_0: &str =
 /// which is the whole reason the drain window existed.
 pub const TASK_SERVICES_DRAIN_CANCEL_1_0: &str =
     "https://trusttasks.org/spec/vta/services/drain/cancel/1.0";
+
+/// `spec/vta/services/report/0.1` — per-mediator inbound counts and each
+/// sender's last-seen mediator over a window, across every mediated transport.
+/// Payload: `{ since?, until? }`. Auth: super-admin — it is a contact log of
+/// other parties' DIDs.
+pub const TASK_SERVICES_REPORT_0_1: &str =
+    <trust_tasks_rs::specs::vta::services::report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ─── Audit slice (canonical spec/audit/*, plus spec/vta/audit/*) ─────────
 
@@ -2085,10 +2098,12 @@ pub const ALL_URIS: &[&str] = &[
     TASK_SERVICES_GET_1_0,
     TASK_SERVICES_ENABLE_1_0,
     TASK_SERVICES_UPDATE_1_0,
+    TASK_SERVICES_UPDATE_1_1,
     TASK_SERVICES_DISABLE_1_0,
     TASK_SERVICES_ROLLBACK_1_0,
     TASK_SERVICES_DRAIN_LIST_1_0,
     TASK_SERVICES_DRAIN_CANCEL_1_0,
+    TASK_SERVICES_REPORT_0_1,
     // Audit slice
     TASK_AUDIT_LIST_0_1,
     TASK_AUDIT_VERIFY_0_1,
