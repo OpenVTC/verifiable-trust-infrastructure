@@ -185,31 +185,44 @@ pub async fn cmd_key_import(
         return Err("either --private-key or --private-key-file is required".into());
     };
 
-    // Fetch the server's ephemeral wrapping pubkey and seal the private
-    // key via sealed-transfer. The REST `POST /keys/import` handler no
-    // longer accepts `private_key_multibase` (the previous fallback) —
-    // posting raw key material over a TLS-only channel was rejected by
-    // the April 2026 security review (patch #9). If the wrapping-key
-    // fetch fails, surface the error to the operator with the cause
-    // intact rather than silently downgrading to a request the server
-    // would reject as `unknown field`.
-    let wrapping_key = client.get_wrapping_key().await.map_err(|e| {
-        format!(
-            "failed to fetch ephemeral wrapping key from {}/keys/import/wrapping-key: {e} \
-             — the VTA must support sealed-transfer key import (vta-sdk ≥ 0.8); \
-             raw `private_key_multibase` over REST is no longer accepted",
-            client.endpoint_label()
-        )
-    })?;
-    let sealed = seal_private_key(&wrapping_key.x, &key_type, &private_key_multibase).await?;
-
-    let req = ImportKeyRequest {
-        key_type,
-        private_key_sealed: Some(sealed),
-        private_key_jwe: None,
-        private_key_multibase: None,
-        label,
-        context_id,
+    let req = match import_carrier(client.trust_task_transport()) {
+        // DIDComm and TSP are confidential end to end, so `keys/import/0.1`
+        // takes the cleartext multibase carrier there. There is no wrapping
+        // key to fetch: that route is REST, and fetching it would make a
+        // messaging client depend on a transport it never chose.
+        ImportCarrier::Multibase => ImportKeyRequest {
+            key_type,
+            private_key_sealed: None,
+            private_key_jwe: None,
+            private_key_multibase: Some(private_key_multibase),
+            label,
+            context_id,
+        },
+        // Over REST, TLS terminates wherever the operator terminates it, and
+        // the VTA refuses a cleartext key (the April 2026 review, patch #9).
+        // The key is sealed to the VTA's ephemeral wrapping key instead. If the
+        // fetch fails, the cause is surfaced rather than downgraded to a
+        // request the server would refuse.
+        ImportCarrier::Sealed => {
+            let wrapping_key = client.get_wrapping_key().await.map_err(|e| {
+                format!(
+                    "failed to fetch ephemeral wrapping key from {}/keys/import/wrapping-key: {e} \
+                     — the VTA must support sealed-transfer key import (vta-sdk ≥ 0.8); \
+                     a cleartext key over REST is not accepted",
+                    client.endpoint_label()
+                )
+            })?;
+            let sealed =
+                seal_private_key(&wrapping_key.x, &key_type, &private_key_multibase).await?;
+            ImportKeyRequest {
+                key_type,
+                private_key_sealed: Some(sealed),
+                private_key_jwe: None,
+                private_key_multibase: None,
+                label,
+                context_id,
+            }
+        }
     };
     let resp = client.import_key(req).await?;
 
@@ -232,6 +245,25 @@ pub async fn cmd_key_import(
     );
 
     Ok(())
+}
+
+/// How `keys import` carries the private key to the VTA.
+#[derive(Debug, PartialEq, Eq)]
+enum ImportCarrier {
+    /// Cleartext multibase, for a transport confidential end to end.
+    Multibase,
+    /// HPKE-sealed to the VTA's wrapping key, for REST.
+    Sealed,
+}
+
+/// The carrier `keys/import/0.1` accepts over the transport this client uses
+/// for Trust Tasks.
+fn import_carrier(surface: vta_sdk::client::SurfaceTransport) -> ImportCarrier {
+    use vta_sdk::client::SurfaceTransport;
+    match surface {
+        SurfaceTransport::Didcomm | SurfaceTransport::Tsp => ImportCarrier::Multibase,
+        SurfaceTransport::Rest => ImportCarrier::Sealed,
+    }
 }
 
 /// Seal a multibase-encoded private key to the VTA's wrapping pubkey using
@@ -581,4 +613,29 @@ pub async fn cmd_key_secrets(
         println!("Secret Key Multibase: {}", resp.private_key_multibase);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ImportCarrier, import_carrier};
+    use vta_sdk::client::SurfaceTransport;
+
+    /// `keys/import/0.1` over DIDComm or TSP takes the multibase carrier, with
+    /// no wrapping-key fetch (a REST route). Over REST the key is sealed, since
+    /// the VTA refuses a cleartext key there.
+    #[test]
+    fn keys_import_carrier_follows_the_trust_task_transport() {
+        assert_eq!(
+            import_carrier(SurfaceTransport::Didcomm),
+            ImportCarrier::Multibase
+        );
+        assert_eq!(
+            import_carrier(SurfaceTransport::Tsp),
+            ImportCarrier::Multibase
+        );
+        assert_eq!(
+            import_carrier(SurfaceTransport::Rest),
+            ImportCarrier::Sealed
+        );
+    }
 }
