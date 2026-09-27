@@ -37,8 +37,6 @@ use super::handlers;
 
 #[cfg(feature = "didcomm")]
 use vta_sdk::protocols;
-#[cfg(all(feature = "tee", feature = "didcomm"))]
-use vta_sdk::protocols::attestation_management;
 
 /// Trust-ping protocol identifiers (was the framework's `TRUST_PING_TYPE` /
 /// `TRUST_PONG_TYPE`). Re-declared locally now the framework is gone.
@@ -300,12 +298,9 @@ fn trust_ping_reply(msg: &Message, sender_did: Option<&str>) -> Option<DIDCommRe
 pub async fn dispatch(
     msg: Message,
     ctx: HandlerContext,
-    vta_state: Arc<VtaState>,
+    _vta_state: Arc<VtaState>,
     app_state: AppState,
 ) -> Option<DIDCommResponse> {
-    // Only the TEE attestation arms read the VTA state.
-    #[cfg(not(feature = "tee"))]
-    let _ = &vta_state;
     let t = msg.typ.clone();
     let t = t.as_str();
 
@@ -341,18 +336,10 @@ pub async fn dispatch(
     // through the envelope above like everything else; typed as itself it
     // falls to `handle_unknown`, which refuses it naming the envelope.
 
-    // ── TEE attestation (tee) ────────────────────────────────────────
-    #[cfg(feature = "tee")]
-    {
-        if t == attestation_management::GET_TEE_STATUS {
-            return finish(handlers::handle_tee_status(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == attestation_management::REQUEST_ATTESTATION {
-            return finish(
-                handlers::handle_request_attestation(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-    }
+    // The TEE attestation reads were bare `firstperson.network/vta/1.0/
+    // attestation/*` messages here, which nothing sent. They are
+    // `vta/attestation/*` Trust Tasks on the spine now, reached through the
+    // envelope above.
 
     // The `discovery/1.0/*` DIDComm protocol was routed here — unauthenticated
     // — until #1043 retired it with the task behind it. Capability discovery is

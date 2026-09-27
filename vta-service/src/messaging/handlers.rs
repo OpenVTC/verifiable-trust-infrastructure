@@ -4,12 +4,7 @@
 //! surface is [`handle_trust_task`]: the Trust-Task envelope, whose document
 //! must carry a Data Integrity proof bound to the sender
 //! (`trust_tasks::bind_document_to_sender`). The rest are unauthenticated by
-//! nature: problem reports, TEE status/attestation, and the credential-exchange
-//! holder side, which acts on the VTA's own authority and uses the sender only
-//! as a label.
-
-#[cfg(feature = "tee")]
-use std::sync::Arc;
+//! nature: trust-ping and problem reports.
 
 use crate::messaging::shim::{
     DIDCommResponse, DIDCommServiceError, Extension, HandlerContext, ProblemReport,
@@ -19,102 +14,15 @@ use affinidi_messaging_didcomm::Message;
 use tracing::warn;
 
 use crate::error::AppError;
-#[cfg(feature = "tee")]
-use crate::operations;
 use crate::server::AppState;
-
-#[cfg(feature = "tee")]
-use super::router::VtaState;
 
 type HandlerResult = Result<Option<DIDCommResponse>, DIDCommServiceError>;
 
 /// Helper to convert non-domain errors (serde, base64, missing subsystem)
 /// into `DIDCommServiceError::Handler`, which the transport renders as
-/// `e.p.msg.internal-error`. For domain errors (`AppError`) use [`app_try!`]
-/// so the caller receives a typed problem-report code (`e.p.msg.conflict`,
-/// `e.p.msg.not-found`, etc.) instead of an opaque internal-error.
+/// `e.p.msg.internal-error`.
 fn handler_err(e: impl std::fmt::Display) -> DIDCommServiceError {
     DIDCommServiceError::Handler(e.to_string())
-}
-
-/// Map an [`AppError`] to its typed [`ProblemReport`] so the client sees the
-/// right `e.p.msg.*` code (conflict/not-found/unauthorized/forbidden/
-/// bad-request) instead of everything collapsing into `internal-error`.
-///
-/// Split out from [`app_err_to_response`] so the variant → code contract can
-/// be unit-tested on `ProblemReport`'s public fields (the `DIDCommResponse`
-/// body is `pub(crate)` in the transport crate and not inspectable here).
-///
-/// Only the TEE attestation arms still answer a bare DIDComm message with a
-/// problem-report; everything else is a Trust Task answered by the spine.
-#[cfg(any(feature = "tee", test))]
-fn app_err_to_problem_report(e: &AppError) -> ProblemReport {
-    match e {
-        // No `gone` code exists in the affinidi taxonomy, and no DIDComm
-        // surface produces `Gone` today (its producers — the TEE bootstrap
-        // carve-out and the one-shot backup blob slots — are REST-only). Ride
-        // with `conflict` rather than the `internal-error` fallback, which
-        // would tell the caller a permanently-consumed resource was a server
-        // bug worth retrying.
-        AppError::Conflict(msg) | AppError::Gone(msg) => ProblemReport::conflict(msg.clone()),
-        AppError::NotFound(msg) => ProblemReport::not_found(msg.clone()),
-        AppError::Authentication(msg) | AppError::Unauthorized(msg) => {
-            ProblemReport::unauthorized(msg.clone())
-        }
-        // The affinidi taxonomy doesn't define a `forbidden` code,
-        // but collapsing into `unauthorized` means SDK clients see
-        // "Token may be expired" for what's actually a permission /
-        // privilege-laundering rejection. Emit a workspace-specific
-        // `e.p.msg.forbidden` code; SDK clients that don't know it
-        // fall back to `DidcommRemote { code, comment }` cleanly.
-        // Step-up-required is a policy refusal (the op needs an AAL2 session
-        // the caller doesn't have). Surface it as `forbidden` rather than
-        // `internal-error` — DIDComm sender-auth can't be elevated to AAL2,
-        // so the comment directs the caller to the REST step-up path.
-        AppError::Forbidden(msg) | AppError::StepUpRequired(msg) => ProblemReport {
-            code: vta_sdk::protocols::problem_report_codes::FORBIDDEN.to_string(),
-            comment: msg.clone(),
-            args: Vec::new(),
-            escalate_to: None,
-        },
-        AppError::Validation(msg) => ProblemReport::bad_request(msg.clone()),
-        // A rejected pagination cursor is a caller fault — REST already
-        // answers 400. Collapsed into `internal-error` it reads as a
-        // server fault the caller should retry, when the correct
-        // response is to restart from the first page.
-        AppError::InvalidCursor => ProblemReport::bad_request(e.to_string()),
-        _ => ProblemReport::internal_error(e.to_string()),
-    }
-}
-
-/// Wrap [`app_err_to_problem_report`] in a [`DIDCommResponse::problem_report`].
-///
-/// Call via the [`app_try!`] macro at operation, auth, and role-check sites.
-#[cfg(feature = "tee")]
-fn app_err_to_response(e: AppError) -> DIDCommResponse {
-    DIDCommResponse::problem_report(app_err_to_problem_report(&e))
-}
-
-/// `?`-style early-return for `Result<T, AppError>` inside a `HandlerResult`.
-/// On `Err`, returns `Ok(Some(problem_report))` with the correct typed code.
-#[cfg(feature = "tee")]
-macro_rules! app_try {
-    ($expr:expr) => {
-        match $expr {
-            Ok(v) => v,
-            Err(err) => return Ok(Some($crate::messaging::handlers::app_err_to_response(err))),
-        }
-    };
-}
-
-/// Helper to build a typed response from a serializable result.
-#[cfg(feature = "tee")]
-fn response<T: serde::Serialize>(
-    msg_type: &str,
-    result: &T,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let body = serde_json::to_value(result).map_err(handler_err)?;
-    Ok(Some(DIDCommResponse::new(msg_type, body)))
 }
 
 /// DIDComm `type` for Trust-Tasks envelopes, per the framework binding
@@ -220,49 +128,6 @@ pub async fn handle_trust_task(
 }
 
 // ---------------------------------------------------------------------------
-// TEE Attestation (feature-gated, unauthenticated)
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "tee")]
-pub async fn handle_tee_status(
-    _ctx: HandlerContext,
-    _message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let tee_state = state
-        .tee_state
-        .as_ref()
-        .ok_or_else(|| handler_err("TEE attestation is not enabled on this VTA"))?;
-    let status = operations::attestation::get_tee_status(tee_state);
-    response(
-        vta_sdk::protocols::attestation_management::GET_TEE_STATUS_RESULT,
-        &status,
-    )
-}
-
-#[cfg(feature = "tee")]
-pub async fn handle_request_attestation(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let tee_state = state
-        .tee_state
-        .as_ref()
-        .ok_or_else(|| handler_err("TEE attestation is not enabled on this VTA"))?;
-    let body: crate::tee::types::AttestationRequest =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::attestation::generate_attestation_report(tee_state, &state.config, &body.nonce)
-            .await
-    );
-    response(
-        vta_sdk::protocols::attestation_management::ATTESTATION_RESULT,
-        &result,
-    )
-}
-
-// ---------------------------------------------------------------------------
 // Problem report & fallback
 // ---------------------------------------------------------------------------
 
@@ -355,59 +220,4 @@ pub(crate) fn trust_task_needs_envelope(typ: &str) -> Option<String> {
              binding envelope `{TRUST_TASK_ENVELOPE_TYPE}` with the task document as the body"
         )
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use vta_sdk::protocols::problem_report_codes as codes;
-
-    /// Pins the `AppError` → `e.p.msg.*` code contract for the shared DIDComm
-    /// error mapping that every `dispatch`-based handler funnels through. A
-    /// regression here would silently change the problem-report code SDK
-    /// clients switch on (e.g. forbidden collapsing back into unauthorized).
-    #[test]
-    fn app_error_maps_to_byte_identical_codes() {
-        let cases = [
-            (AppError::Conflict("c".into()), codes::CONFLICT, "c"),
-            // The taxonomy has no `gone`; what matters is that it does not
-            // land in the `internal-error` fallback and read as a server bug.
-            (AppError::Gone("g".into()), codes::CONFLICT, "g"),
-            (AppError::NotFound("n".into()), codes::NOT_FOUND, "n"),
-            (
-                AppError::Authentication("a".into()),
-                codes::UNAUTHORIZED,
-                "a",
-            ),
-            (AppError::Unauthorized("u".into()), codes::UNAUTHORIZED, "u"),
-            (AppError::Forbidden("f".into()), codes::FORBIDDEN, "f"),
-            (AppError::StepUpRequired("s".into()), codes::FORBIDDEN, "s"),
-            (AppError::Validation("v".into()), codes::BAD_REQUEST, "v"),
-        ];
-        for (err, expected_code, expected_comment) in cases {
-            let report = app_err_to_problem_report(&err);
-            assert_eq!(report.code, expected_code, "code for {err:?}");
-            assert_eq!(report.comment, expected_comment, "comment for {err:?}");
-        }
-    }
-
-    /// A rejected pagination cursor is a caller fault. REST answers 400;
-    /// this transport must not report it as an internal error, which
-    /// would tell the caller to retry the same cursor instead of
-    /// restarting from the first page.
-    #[test]
-    fn invalid_cursor_is_a_bad_request_not_an_internal_error() {
-        let report = app_err_to_problem_report(&AppError::InvalidCursor);
-        assert_eq!(report.code, codes::BAD_REQUEST);
-        assert_ne!(report.code, codes::INTERNAL);
-    }
-
-    /// Catch-all variants collapse to `internal-error` with the `Display`
-    /// string as the comment — matches the prior `_ => internal_error(...)`.
-    #[test]
-    fn app_error_catch_all_is_internal_error() {
-        let report = app_err_to_problem_report(&AppError::Internal("boom".into()));
-        assert_eq!(report.code, codes::INTERNAL);
-        assert_eq!(report.comment, "internal error: boom");
-    }
 }

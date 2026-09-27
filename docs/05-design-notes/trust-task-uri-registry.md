@@ -153,7 +153,7 @@ URL was misleading). See `spec/vta/seeds/export-mnemonic/1.0`.
 
 | URI | Today's surface |
 |---|---|
-| `spec/vta/attestation/status/1.0` | `GET /attestation/status` |
+| `spec/vta/attestation/{status,report,config-report}/0.1` | Dispatched on the spine, public (`PUBLIC_URIS`); the REST routes are removed |
 | `spec/vta/attestation/did-log/1.0` | `GET /attestation/did-log` |
 
 ### Services management slice (`spec/vta/services/*`)
@@ -447,7 +447,7 @@ REST:
   PATCH  /acl/{did}                                 → acl/update/0.1
   DELETE /acl/{did}                                 → acl/revoke/0.1
   GET    /audit/logs                                → audit/list/0.1
-  GET    /attestation/status                        → vta/attestation/status/1.0
+  GET    /attestation/status                        → vta/attestation/status/0.1 (route removed)
   GET    /attestation/did-log                       → vta/attestation/did-log/1.0
   GET    /services                                  → vta/services/list/1.0
   POST   /services/rest/enable                      → vta/services/rest/enable/1.0

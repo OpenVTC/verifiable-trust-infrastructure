@@ -395,21 +395,8 @@ fn build_vta_did_document(
         }));
     }
 
-    // Add TeeAttestation service if configured
-    if config.tee.embed_in_did
-        && let Some(url) = public_url
-    {
-        let services = did_document
-            .as_object_mut()
-            .unwrap()
-            .entry("service")
-            .or_insert_with(|| json!([]));
-        services.as_array_mut().unwrap().push(json!({
-            "id": "{DID}#tee-attestation",
-            "type": "TeeAttestation",
-            "serviceEndpoint": format!("{}/attestation/report", url.trim_end_matches('/'))
-        }));
-    }
+    // No `TeeAttestation` service: attestation is the `vta/attestation/*`
+    // Trust Tasks, reached over the transports above, not a REST URL.
 
     did_document
 }

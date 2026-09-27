@@ -235,6 +235,9 @@ const READ_VERBS: &[&str] = &[
     "domains",
     "render",
     "report",
+    // `vta/attestation/config-report`: fresh evidence over the booted
+    // config's digest — a public read, no state changes.
+    "config-report",
     "status",
     "ping",
     "explain",
