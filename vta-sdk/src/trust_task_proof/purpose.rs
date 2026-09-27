@@ -100,6 +100,47 @@ impl std::fmt::Display for ProofPurpose {
     }
 }
 
+/// Slugs whose documents the registry defines as the issuer's **attestation**
+/// — an approver's decision a third party relies on — and so requires to be
+/// signed for `assertionMethod`, by a key listed under that relationship:
+///
+/// - `auth/step-up/approve-response` — "the approver's attestation of a
+///   decision" (0.1–0.5);
+/// - `task-consent/decision` — "the approver's attestation, not an operational
+///   message";
+/// - `confirm/response` — the subject's signed confirmation.
+///
+/// Every other document is operational and is signed for `authentication`
+/// (VTI-KEY-106, VTI-KEY-022).
+pub const ATTESTATION_SLUGS: [&str; 3] = [
+    "auth/step-up/approve-response",
+    "task-consent/decision",
+    "confirm/response",
+];
+
+/// The purpose a Trust Task document of type `type_uri` must be signed for.
+///
+/// `assertionMethod` only for a request document of a registry slug in
+/// [`ATTESTATION_SLUGS`]; `authentication` for everything else, including the
+/// `#response` variant of such a slug (the executor's reply, an operational
+/// message) and a private registry's reuse of the slug (only
+/// `https://trusttasks.org` slugs are classified). Nothing a requester
+/// supplies other than the type decides it, so an operational document can
+/// never be signed as an attestation.
+#[must_use]
+pub fn purpose_for_document_type(type_uri: &trust_tasks_rs::TypeUri) -> ProofPurpose {
+    let on_registry =
+        trust_tasks_rs::TypeUri::canonical(type_uri.slug(), type_uri.major(), type_uri.minor())
+            .is_ok_and(|canonical| canonical == type_uri.bare());
+    let is_attestation =
+        !type_uri.is_response() && on_registry && ATTESTATION_SLUGS.contains(&type_uri.slug());
+    if is_attestation {
+        ProofPurpose::AssertionMethod
+    } else {
+        ProofPurpose::Authentication
+    }
+}
+
 /// Resolves a verification method to its key **only if** the DID that names
 /// it authorised it for `purpose` (see the module docs for the rules).
 #[async_trait::async_trait]
