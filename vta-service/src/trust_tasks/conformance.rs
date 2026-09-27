@@ -4682,7 +4682,7 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
         // Typed explicitly: without it the array literal takes its element type
         // from the first entry, and each `parses::<T>` is a distinct fn item
         // rather than the `ParseFn` pointer the alias expects.
-        let services: [(&'static str, ReqParts, RespParts); 10] = [
+        let services: [(&'static str, ReqParts, RespParts); 11] = [
             (
                 uris::TASK_SERVICES_LIST_1_0,
                 (
@@ -4779,6 +4779,22 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                 (
                     json!({ "mediatorDid": "did:web:old-mediator.example" }),
                     parses::<svc::drain::cancel::v1_0::Response>,
+                ),
+            ),
+            (
+                // 1.1 adds the drain window to rollback: a DIDComm rollback that
+                // leaves the superseded mediator draining for a day.
+                uris::TASK_SERVICES_ROLLBACK_1_1,
+                (
+                    json!({ "service": "didcomm", "drainTtlSecs": 86_400 }),
+                    parses::<svc::rollback::v1_1::Payload>,
+                    validates::<svc::rollback::v1_1::Payload>,
+                ),
+                (
+                    json!({ "result": { "kind": "updated", "serverless": false,
+                                        "drainingMediator": "did:web:old-mediator.example",
+                                        "drainUntil": "2026-08-20T21:00:00Z" } }),
+                    parses::<svc::rollback::v1_1::Response>,
                 ),
             ),
             (

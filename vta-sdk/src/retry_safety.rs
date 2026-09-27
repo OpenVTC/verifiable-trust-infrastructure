@@ -184,6 +184,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // it — extending the life of a mediator the operator is decommissioning.
     (trust_tasks::TASK_SERVICES_DISABLE_1_0, Keyed),
     (trust_tasks::TASK_SERVICES_ROLLBACK_1_0, Keyed),
+    (trust_tasks::TASK_SERVICES_ROLLBACK_1_1, Keyed),
     (trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0, ReadOnly),
     // Destructive and not undoable: the messages the cancelled drain was
     // protecting are already gone by the time a retry arrives.

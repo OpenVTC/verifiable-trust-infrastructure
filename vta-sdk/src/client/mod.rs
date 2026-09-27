@@ -134,14 +134,13 @@ pub(super) enum Transport {
         session: crate::didcomm_session::DIDCommSession,
         rest_client: Option<Client>,
         rest_url: Option<String>,
-        /// The **Trust-Task surface**'s transport, when it has been moved to
-        /// TSP by [`VtaClient::enable_tsp_trust_tasks`]. `None` means every
-        /// surface uses DIDComm.
+        /// The TSP leg Trust Tasks ride, when attached by
+        /// [`VtaClient::enable_tsp_trust_tasks`]. `None` means Trust Tasks go
+        /// over DIDComm.
         ///
-        /// TSP is selected *per surface*, not per client: it carries Trust
-        /// Tasks, and a client that holds both keeps its DIDComm leg (the
-        /// mediator's one socket per DID) and adds this one, rather than
-        /// choosing between them.
+        /// A client that holds both keeps its DIDComm session (the mediator's
+        /// one socket per DID, on which TSP receive arrives) and adds this leg,
+        /// rather than opening a second socket.
         #[cfg(feature = "tsp")]
         tsp: Option<TspLeg>,
     },
@@ -212,14 +211,12 @@ pub(super) enum TspLegKind {
     Separate,
 }
 
-/// Which transport carries a given surface on this client.
+/// Which transport carries the Trust-Task surface on this client.
 ///
-/// A `VtaClient` no longer has *one* transport. TSP carries the Trust-Task
-/// surface only, so a client can legitimately be on DIDComm for protocol
-/// messages and TSP for trust tasks at the same time — an operator-facing
-/// display that renders a single value is therefore wrong by construction. Read
-/// both [`VtaClient::trust_task_transport`] and
-/// [`VtaClient::protocol_message_transport`].
+/// Every client operation is a Trust Task, so there is one surface and
+/// [`VtaClient::trust_task_transport`] reports it. A DIDComm client that has
+/// attached a TSP leg reports TSP: its DIDComm session stays open only as the
+/// mediator's one socket per DID, on which TSP receive arrives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceTransport {
     /// REST/HTTPS with a bearer token.
@@ -752,10 +749,8 @@ impl VtaClient {
     /// The **Trust-Task surface** — the VTA's TSP inbound dispatcher feeds each
     /// unpacked payload to the same `dispatch_trust_task_core` spine REST and
     /// DIDComm use, so those operations are byte-identical across transports.
-    /// The older DIDComm protocol-message surface (`key-management/1.0/*` and
-    /// friends) has no TSP dispatcher behind it and reports
-    /// [`VtaError::UnsupportedTransport`] naming DIDComm — deliberately, rather
-    /// than sending a frame the VTA would answer with an error.
+    /// Every client operation is a Trust Task, so everything routes over TSP;
+    /// the older bare-DIDComm protocol-message surface is gone from the SDK.
     ///
     /// # Authentication
     ///
@@ -1158,9 +1153,10 @@ impl VtaClient {
     /// ([`dispatch_trust_task`](Self::dispatch_trust_task), `rpc_tt`, the
     /// `device/*` and `vault/*` methods).
     ///
-    /// Pairs with [`protocol_message_transport`](Self::protocol_message_transport):
-    /// a client can be on TSP for one and DIDComm for the other, so rendering a
-    /// single "transport" for a `VtaClient` is wrong.
+    /// Every client operation is a Trust Task, so this is the client's
+    /// transport. A DIDComm client with a TSP leg reports TSP: the DIDComm
+    /// session remains only as the mediator's one socket per DID, carrying TSP
+    /// receive.
     pub fn trust_task_transport(&self) -> SurfaceTransport {
         match &self.transport {
             Transport::Rest { .. } => SurfaceTransport::Rest,
@@ -1178,26 +1174,6 @@ impl VtaClient {
                 }
                 SurfaceTransport::Didcomm
             }
-        }
-    }
-
-    /// Which transport would carry a DIDComm **protocol message**. The SDK sends
-    /// none any more (every client method is a Trust Task); this remains for
-    /// displays that report both surfaces.
-    ///
-    /// Never TSP: the VTA has no TSP dispatcher for these, so they report
-    /// [`VtaError::UnsupportedTransport`] on a TSP-only client rather than being
-    /// silently routed somewhere that cannot serve them.
-    pub fn protocol_message_transport(&self) -> SurfaceTransport {
-        match &self.transport {
-            Transport::Rest { .. } => SurfaceTransport::Rest,
-            #[cfg(feature = "session")]
-            Transport::DIDComm { .. } => SurfaceTransport::Didcomm,
-            // A TSP-only client cannot serve this surface at all; naming DIDComm
-            // here would claim a leg it does not have, so report TSP and let the
-            // call itself fail with the message that names the fix.
-            #[cfg(feature = "tsp")]
-            Transport::Tsp { .. } => SurfaceTransport::Tsp,
         }
     }
 
@@ -2020,8 +1996,8 @@ impl VtaClient {
                 tsp,
                 ..
             } => {
-                // Per-surface routing: with a TSP leg attached, trust tasks go
-                // over TSP while this session's DIDComm leg keeps the socket. The document is byte-identical either way — the VTA's TSP
+                // With a TSP leg attached, trust tasks go over TSP while this
+                // session's DIDComm leg keeps the socket. The document is byte-identical either way — the VTA's TSP
                 // inbound dispatcher and its DIDComm envelope handler both feed
                 // `dispatch_trust_task_core`.
                 #[cfg(feature = "tsp")]
@@ -3752,14 +3728,13 @@ mod tests {
         );
     }
 
-    // ── Per-surface transport reporting ─────────────────────────────
+    // ── Transport reporting ─────────────────────────────────────────
 
-    /// A REST client is on REST for everything — no per-surface split to make.
+    /// A REST client carries its Trust Tasks over REST.
     #[test]
-    fn a_rest_client_reports_rest_for_both_surfaces() {
+    fn a_rest_client_reports_rest_for_trust_tasks() {
         let client = VtaClient::new("https://vta.example.com");
         assert_eq!(client.trust_task_transport(), SurfaceTransport::Rest);
-        assert_eq!(client.protocol_message_transport(), SurfaceTransport::Rest);
     }
 
     #[test]

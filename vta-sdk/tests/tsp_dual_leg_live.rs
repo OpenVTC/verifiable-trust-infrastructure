@@ -128,7 +128,7 @@ async fn ping(client: &VtaClient) -> Result<serde_json::Value, VtaError> {
         .await
 }
 
-/// **The core case.** One client, one socket, both surfaces — against the real
+/// **The core case.** One client, one socket, both protocols — against the real
 /// deployment.
 ///
 /// That deployment resolves `#tsp` and `#vta-didcomm` to the same mediator,
@@ -172,10 +172,6 @@ async fn a_deployed_vta_answers_a_trust_task_over_the_didcomm_sessions_socket() 
     .expect("connect DIDComm and put trust tasks on TSP");
 
     assert_eq!(client.trust_task_transport(), SurfaceTransport::Tsp);
-    assert_eq!(
-        client.protocol_message_transport(),
-        SurfaceTransport::Didcomm
-    );
 
     let result = ping(&client).await;
     client.shutdown().await;

@@ -802,16 +802,29 @@ pub(super) async fn handle_rollback(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    let req: spec::rollback::v1_0::Payload = match parse_payload(&doc) {
+    // 1.1 is 1.0 plus an optional `drainTtlSecs`, so one parse serves both: a
+    // 1.0 document (validated against 1.0's schema on the spine) reads as a 1.1
+    // payload with no drain requested.
+    let req: spec::rollback::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    use spec::rollback::v1_1::ServiceKind as K;
+    // As `update/1.1`: the drain belongs to the mediated transports, and a
+    // member that cannot apply to the named service is malformed, not ignored.
+    if req.drain_ttl_secs.is_some() && matches!(req.service, K::Rest | K::Webauthn) {
+        return app_error_to_reject(
+            &doc,
+            AppError::Validation(
+                "drainTtlSecs applies only to a mediated transport (didcomm, tsp)".into(),
+            ),
+        );
+    }
     let resolver = match resolver(state_) {
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, e),
     };
     let deps = ServiceOpDeps::from_app_state(state_, &resolver);
-    use spec::rollback::v1_0::ServiceKind as K;
 
     let result = match req.service {
         K::Rest => {
@@ -855,10 +868,29 @@ pub(super) async fn handle_rollback(
         }
         K::Didcomm => {
             // Rolling DIDComm back can leave the superseded mediator draining,
-            // so it takes the same arrival guard as disable.
+            // so it takes the same arrival guard as disable. `rollback/1.1`'s
+            // window when one is asked for, else the floor; over a request that
+            // arrived through the mediator being replaced, a shorter window is
+            // raised to the floor (the spec's MUST), since cutting that mediator
+            // discards the reply. A window on a rollback that leaves nothing
+            // draining is accepted and does nothing.
+            let floor = crate::operations::protocol::disable_didcomm::MIN_DRAIN_TTL_OVER_DIDCOMM;
+            let transport = arrival_transport();
+            let drain_ttl = match req.drain_ttl_secs {
+                None => floor,
+                Some(secs) => {
+                    let asked = std::time::Duration::from_secs(secs);
+                    match transport {
+                        crate::operations::protocol::disable_didcomm::DisableTransport::Didcomm => {
+                            asked.max(floor)
+                        }
+                        _ => asked,
+                    }
+                }
+            };
             let params = crate::operations::protocol::rollback_didcomm::RollbackDidcommParams {
-                drain_ttl: crate::operations::protocol::disable_didcomm::MIN_DRAIN_TTL_OVER_DIDCOMM,
-                transport: arrival_transport(),
+                drain_ttl,
+                transport,
             };
             // Rolling back re-runs the forward op, so it needs a prover for
             // the same reason enable does — and `AlwaysOkProver` for the same

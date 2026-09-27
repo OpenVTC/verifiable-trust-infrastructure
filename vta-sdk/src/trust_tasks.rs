@@ -566,6 +566,12 @@ pub const TASK_SERVICES_DISABLE_1_0: &str = "https://trusttasks.org/spec/vta/ser
 pub const TASK_SERVICES_ROLLBACK_1_0: &str =
     "https://trusttasks.org/spec/vta/services/rollback/1.0";
 
+/// `spec/vta/services/rollback/1.1` — as 1.0, plus an optional `drainTtlSecs`
+/// for the mediated transports: how long a mediator the rollback leaves
+/// draining keeps accepting delivery. Same rules as `update/1.1`'s.
+pub const TASK_SERVICES_ROLLBACK_1_1: &str =
+    <trust_tasks_rs::specs::vta::services::rollback::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/services/drain/list/1.0` — DIDComm mediators still accepting
 /// delivery after being unadvertised. Payload: empty. Auth: super-admin.
 pub const TASK_SERVICES_DRAIN_LIST_1_0: &str =
@@ -2142,6 +2148,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_SERVICES_UPDATE_1_1,
     TASK_SERVICES_DISABLE_1_0,
     TASK_SERVICES_ROLLBACK_1_0,
+    TASK_SERVICES_ROLLBACK_1_1,
     TASK_SERVICES_DRAIN_LIST_1_0,
     TASK_SERVICES_DRAIN_CANCEL_1_0,
     TASK_SERVICES_REPORT_0_1,

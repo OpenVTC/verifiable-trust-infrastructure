@@ -4390,6 +4390,84 @@ async fn every_superseded_row_names_a_live_route() {
     }
 }
 
+/// Every REST-exception row (`deprecation::rest_exceptions_table`) names a route
+/// the service serves, with that method, and is not stamped deprecated.
+///
+/// Same reasoning as `every_superseded_row_names_a_live_route`: a row that
+/// outlives its route keeps claiming an exception for nothing, and one naming
+/// the wrong path or method leaves the real route undeclared.
+#[tokio::test]
+async fn every_rest_exception_names_a_live_route() {
+    use axum::extract::MatchedPath;
+    use axum::http::HeaderValue;
+
+    async fn echo_matched_path(
+        req: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> axum::response::Response {
+        let matched = req
+            .extensions()
+            .get::<MatchedPath>()
+            .map(|m| m.as_str().to_owned());
+        let mut resp = next.run(req).await;
+        if let Some(m) = matched
+            && let Ok(v) = HeaderValue::from_str(&m)
+        {
+            resp.headers_mut().insert("x-probe-matched-path", v);
+        }
+        resp
+    }
+
+    let (app, _ctx) = TestApp::new().await;
+    let probe = app
+        .router
+        .clone()
+        .layer(axum::middleware::from_fn(echo_matched_path));
+
+    for row in vta_service::deprecation::rest_exceptions_table() {
+        let uri: String = row
+            .path
+            .split('/')
+            .map(|seg| if seg.starts_with('{') { "probe" } else { seg })
+            .collect::<Vec<_>>()
+            .join("/");
+
+        let req = Request::builder()
+            .method(row.method)
+            .uri(&uri)
+            .body(Body::empty())
+            .unwrap();
+        let resp = probe.clone().oneshot(req).await.expect("request failed");
+
+        let matched = resp
+            .headers()
+            .get("x-probe-matched-path")
+            .map(|v| v.to_str().unwrap().to_owned());
+        assert_eq!(
+            matched.as_deref(),
+            Some(row.path),
+            "the REST-exception row `{} {}` does not match a live route — it matched \
+             {matched:?}. Drop the row if the route was removed; correct it if it is a typo.",
+            row.method,
+            row.path
+        );
+        assert_ne!(
+            resp.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "the REST-exception row `{} {}` names a path the service serves but not \
+             that method.",
+            row.method,
+            row.path
+        );
+        assert!(
+            resp.headers().get("deprecation").is_none(),
+            "the REST exception `{} {}` is stamped deprecated",
+            row.method,
+            row.path
+        );
+    }
+}
+
 // ─── the Trust-Task endpoint contract ──────────────────────────────────────
 
 #[tokio::test]

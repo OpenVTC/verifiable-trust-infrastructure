@@ -250,6 +250,15 @@ pnm approvals require https://trusttasks.org/spec/acl/grant/0.1 --reauth
 When a gated op is initiated, the agent's request returns a step-up challenge;
 the operator approves with a passkey (`auth/passkey-login`), and the op proceeds.
 
+Enrolling that passkey as a verification method on a DID goes through
+`/did/verification-methods/passkey{,/challenge,/{fragment}}` — REST routes kept
+on purpose as the **WebAuthn exception** to "every remote operation is a Trust
+Task": the browser driving the ceremony (the VTA's auth portal, or
+`examples/vta-auth-demo`) holds only the bearer passkey-login issued, with no DID
+key to sign a Trust Task. A client that does hold a DID key uses the
+`vta/passkey-vms/{enroll-challenge,enroll-submit,list,revoke}/0.1` Trust Tasks
+instead, over any transport.
+
 ## Step 6 — Agent memory (optional, but the reason most agents want a VTA)
 
 An agent that forgets everything between runs is a tool. The VTA carries a

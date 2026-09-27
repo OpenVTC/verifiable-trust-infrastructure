@@ -443,11 +443,15 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         ))
         .routes(routes!(did_webvh::get_did_log_handler))
         .routes(routes!(did_webvh::register_did_with_server_handler))
-        // Passkey-as-verificationMethod enrolment. See
-        // `docs/02-vta/passkey-verification-methods.md` (forthcoming).
-        // First-time enrolment expects a short-lived enrolment-scope
-        // JWT minted by `pnm passkey-enroll-token`; subsequent calls
-        // use a passkey-derived session JWT.
+        // Passkey-as-verificationMethod enrolment. REST by design: this
+        // is the WebAuthn exception to "every remote operation is a Trust
+        // Task" — the browser driving the ceremony holds only a bearer
+        // from passkey-login, no DID key to sign a Trust Task. Declared in
+        // `deprecation::REST_EXCEPTIONS`; DID-holding clients use the
+        // `vta/passkey-vms/*` twins. First-time enrolment expects a
+        // short-lived enrolment-scope JWT minted by
+        // `pnm passkey-enroll-token`; subsequent calls use a
+        // passkey-derived session JWT.
         .routes(routes!(passkey_vms::enroll_challenge_handler))
         .routes(routes!(
             passkey_vms::enroll_submit_handler,
