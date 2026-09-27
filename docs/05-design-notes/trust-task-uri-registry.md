@@ -153,7 +153,7 @@ URL was misleading). See `spec/vta/seeds/export-mnemonic/1.0`.
 
 | URI | Today's surface |
 |---|---|
-| `spec/vta/attestation/status/1.0` | `GET /attestation/status` |
+| `spec/vta/attestation/{status,report,config-report}/0.1` | Dispatched on the spine, public (`PUBLIC_URIS`); the REST routes are removed |
 | `spec/vta/attestation/did-log/1.0` | `GET /attestation/did-log` |
 
 ### Services management slice (`spec/vta/services/*`)
@@ -405,7 +405,7 @@ These wire surfaces do NOT become trust-task envelopes:
 
 | Surface | Reason |
 |---|---|
-| `GET /health/details` | Operator/infra observability. Health checks must be cheap and proxy-friendly; trust-task overhead is wrong here. |
+| `GET /health` | Load-balancer liveness. Cheap and proxy-friendly; answers `{"status":"ok"}` and nothing else. (`GET /health/details` was listed here; it became the `vta/health/details/0.1` and `vta/restore/status/0.1` Trust Tasks.) |
 | `GET /metrics` | Prometheus scrape format. Standard exporter contract; not application-level. |
 | `GET /did/{did}/log` (public, unauthed) | **LOAD-BEARING**: failover path for WebVH log resolution. When a WebVH hosting service drops a LogEntry, any DID resolver in the world must be able to fetch the canonical copy from the minting VTA. Wrapping it in a trust-task envelope makes it useless for that purpose. Stays plain REST + public-unauthed forever. (The authed admin equivalent `GET /webvh/dids/{did}/log` is served by `spec/vta/webvh/dids/get/1.0` with `includeLog`.) |
 | Mediator pickup (DIDComm transport infrastructure) | Mediator protocol is its own DIDComm spec (`coordinate-mediation/2.0`, `messagepickup/3.0`); not application-level. |
@@ -447,7 +447,7 @@ REST:
   PATCH  /acl/{did}                                 → acl/update/0.1
   DELETE /acl/{did}                                 → acl/revoke/0.1
   GET    /audit/logs                                → audit/list/0.1
-  GET    /attestation/status                        → vta/attestation/status/1.0
+  GET    /attestation/status                        → vta/attestation/status/0.1 (route removed)
   GET    /attestation/did-log                       → vta/attestation/did-log/1.0
   GET    /services                                  → vta/services/list/1.0
   POST   /services/rest/enable                      → vta/services/rest/enable/1.0
@@ -480,7 +480,7 @@ REST:
                                                       remains, the parallel REST
                                                       route does not)
 
-  GET /health/details, GET /metrics,
+  GET /health, GET /metrics,
   GET /did/{did}/log (public),
   GET/POST /backup/blob/{id} (token-gated bulk transport) — EXCLUDED, stay REST.
 

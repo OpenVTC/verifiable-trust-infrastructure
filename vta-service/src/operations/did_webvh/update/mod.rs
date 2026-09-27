@@ -690,7 +690,6 @@ mod pre_rotation_e2e_tests {
         seed_store: &'a dyn crate::keys::seed_store::SeedStore,
         resolver: &'a DIDCacheClient,
         bridge: &'a Arc<DIDCommBridge>,
-        locks: &'a crate::operations::did_webvh::WebvhAuthLocks,
     ) -> crate::operations::did_webvh::WebvhDeps<'a> {
         crate::operations::did_webvh::WebvhDeps {
             // The update path publishes a log entry; it deletes nothing.
@@ -703,7 +702,6 @@ mod pre_rotation_e2e_tests {
             seed_store,
             did_resolver: resolver,
             didcomm_bridge: bridge,
-            auth_locks: locks,
             // Test scaffolding: no mediator socket.
             #[cfg(feature = "tsp")]
             tsp: None,
@@ -757,9 +755,6 @@ mod pre_rotation_e2e_tests {
         context_id: &str,
         pre_rotation_count: u32,
     ) -> (String, String) {
-        // Serverless create helper — no server publish, so a fresh local
-        // auth-lock registry suffices.
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
         let deps = CreateDidWebvhDeps {
             keys_ks: &ts.keys_ks,
             imported_ks: &ts.imported_ks,
@@ -771,10 +766,8 @@ mod pre_rotation_e2e_tests {
             config: cfg,
             did_resolver: resolver,
             didcomm_bridge: bridge,
-            auth_locks: &auth_locks,
             acl_ks: None,
             // Offline: no mediator socket to lend, so the seam cannot choose
-            // TSP. Same reason as the `auth_locks` note above.
             #[cfg(feature = "tsp")]
             tsp: None,
         };
@@ -850,8 +843,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -893,8 +885,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -959,8 +950,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -1010,8 +1000,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -1070,8 +1059,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -1158,8 +1146,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         // Genesis without pre-rotation.
         let (did, scid) = create_did(
@@ -1263,8 +1250,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -1325,8 +1311,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -1378,8 +1363,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -1464,8 +1448,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -1690,8 +1673,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -1784,8 +1766,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -1868,8 +1849,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         // Genesis entry — mirrors `vta setup`'s `create_webvh` (no
         // pre-rotation, the plain serverless case from the bug report).
@@ -1949,8 +1929,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
         let (did, scid) = create_did(
             &ts,
             &seed_store,
@@ -2021,8 +2000,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
         let (did, scid) = create_did(
             &ts,
             &seed_store,
@@ -2098,8 +2076,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -2222,8 +2199,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -2278,8 +2254,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -2336,8 +2311,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -2426,8 +2400,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -2481,8 +2454,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (_did, scid) = create_did(
             &ts,
@@ -2541,8 +2513,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) = create_did(
             &ts,
@@ -2648,8 +2619,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
 
         let (did, scid) =
             create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 1).await;
@@ -2934,8 +2904,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
         let (did, scid) =
             create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 0).await;
 
@@ -2985,8 +2954,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
         let (_did, scid) =
             create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 0).await;
 
@@ -3043,8 +3011,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
         let (did, scid) =
             create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 0).await;
         let prior_version = {
@@ -3175,8 +3142,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
         let (did_a, scid_a) = create_did(
             &ts,
             &seed_store,
@@ -3318,8 +3284,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
         let (did, scid) = create_did(
             &ts,
             &seed_store,
@@ -3430,8 +3395,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
         let (did, scid) = create_did(
             &ts,
             &seed_store,
@@ -3535,8 +3499,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
         let (did, scid) =
             create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 1).await;
         sleep(VERSION_TIME_GAP).await;
@@ -3569,8 +3532,7 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge);
         let (did, scid) =
             create_did(&ts, &seed_store, &cfg, &auth, &resolver, &bridge, ctx_id, 0).await;
         let id = format!("{did}#key-0");

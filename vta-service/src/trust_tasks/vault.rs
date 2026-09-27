@@ -1750,9 +1750,13 @@ struct VaultSignTrustTaskResponseBody {
 ///
 /// Conformance check order matches the spec's error precedence:
 /// `not_found` → `permission_denied` (cap) → context scope →
-/// `not_signable` (entry kind) → `envelope_invalid` (structure) →
-/// `envelope_already_proofed` → `envelope_issuer_mismatch` →
-/// `envelope_expired` → sign.
+/// `not_signable` (entry kind) → `envelope_invalid` (structure, including a
+/// `type` that is not a Type URI) → `envelope_already_proofed` →
+/// `envelope_issuer_mismatch` → `envelope_expired` → sign.
+///
+/// The proof is made for `authentication` unless the envelope's `type` is one
+/// of the approver/attestation types the registry signs for `assertionMethod`
+/// (`vta_sdk::trust_task_proof::purpose_for_document_type`).
 pub(super) async fn handle_sign_trust_task(
     state: &AppState,
     auth: &AuthClaims,
@@ -1863,6 +1867,17 @@ pub(super) async fn handle_sign_trust_task(
                 },
             );
         }
+        Err(SignTrustTaskError::TypeNotTypeUri) => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason:
+                        "vault/sign-trust-task:envelopeInvalid — type must be a Trust Task Type URI"
+                            .into(),
+                    details: None,
+                },
+            );
+        }
         Err(SignTrustTaskError::AlreadyProofed) => {
             return reject_with(
                 &doc,
@@ -1927,6 +1942,7 @@ pub(super) async fn handle_sign_trust_task(
         envelope_type = %str_field("type"),
         envelope_recipient = %str_field("recipient"),
         principal_did = %signed.principal_did,
+        proof_purpose = %signed.proof_purpose,
         "vault/sign-trust-task: signed"
     );
 

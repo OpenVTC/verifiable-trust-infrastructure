@@ -343,57 +343,6 @@ pub struct BackupConfig {
 
 // ── Request/response types ─────────────────────────────────────────
 
-/// Export request body (REST + DIDComm).
-#[derive(Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct ExportRequest {
-    pub password: String,
-    #[serde(default)]
-    pub include_audit: bool,
-}
-
-impl std::fmt::Debug for ExportRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ExportRequest")
-            .field("password", &"<redacted>")
-            .field("include_audit", &self.include_audit)
-            .finish()
-    }
-}
-
-/// Import request body (REST + DIDComm).
-#[derive(Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct ImportRequest {
-    pub backup: BackupEnvelope,
-    pub password: String,
-    /// If false, returns a preview without modifying state.
-    #[serde(default = "default_true")]
-    pub confirm: bool,
-    /// Allow the restore to replace a *different* identity this VTA already
-    /// runs as. Without it a backup whose DID differs from the running one is
-    /// refused — the guard against restoring the wrong file over a live agent.
-    /// Disaster recovery onto a freshly set-up VTA (which has minted a DID of
-    /// its own) is the case that needs it.
-    #[serde(default)]
-    pub replace_identity: bool,
-}
-
-impl std::fmt::Debug for ImportRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ImportRequest")
-            .field("backup", &self.backup)
-            .field("password", &"<redacted>")
-            .field("confirm", &self.confirm)
-            .field("replace_identity", &self.replace_identity)
-            .finish()
-    }
-}
-
-fn default_true() -> bool {
-    true
-}
-
 /// Import preview/result response.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

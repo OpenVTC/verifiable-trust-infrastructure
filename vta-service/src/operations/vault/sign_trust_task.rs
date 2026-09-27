@@ -7,9 +7,16 @@
 //! the wire response, and maps the typed [`SignTrustTaskError`] back to the
 //! canonical spec reject codes. The signable-kind check, envelope structural
 //! validation, and the signing live here.
+//!
+//! The proof purpose is the envelope type's, never the requester's: an
+//! operational document is signed for `authentication`, and only the
+//! approver/attestation types in
+//! [`vta_sdk::trust_task_proof::ATTESTATION_SLUGS`] for `assertionMethod`
+//! (VTI-KEY-022, VTI-KEY-106).
 
 use serde_json::Value;
 
+use vti_common::auth::ProofPurpose;
 use vti_common::vault::VaultSecret;
 
 use crate::error::AppError;
@@ -21,6 +28,8 @@ use crate::store::KeyspaceHandle;
 pub struct SignedEnvelope {
     pub signed: Value,
     pub principal_did: String,
+    /// The purpose the proof was made for, decided by the envelope's `type`.
+    pub proof_purpose: ProofPurpose,
 }
 
 /// Why signing failed. The route maps each onto the canonical
@@ -36,6 +45,9 @@ pub enum SignTrustTaskError {
     EnvelopeMissingField { field: &'static str },
     /// `issuer` is present but not a string.
     IssuerNotString,
+    /// `type` is not a Trust Task Type URI, so the purpose it must be signed
+    /// for cannot be decided.
+    TypeNotTypeUri,
     /// The envelope already carries a `proof`.
     AlreadyProofed,
     /// `envelope.issuer` != the entry's principal DID.
@@ -100,6 +112,20 @@ pub async fn sign_envelope(
             return Err(SignTrustTaskError::EnvelopeMissingField { field });
         }
     }
+    // The proof purpose is decided by the document type alone (VTI-KEY-022,
+    // VTI-KEY-106): an operational document is signed for `authentication`,
+    // and only the approver/attestation types the registry names for
+    // `assertionMethod`. The requester has no say, so a relying party that
+    // refuses `assertionMethod` on operational tasks accepts what the vault
+    // signs, and an operational document can never be passed off as an
+    // attestation.
+    let proof_purpose = envelope_obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .and_then(|t| t.parse::<trust_tasks_rs::TypeUri>().ok())
+        .map(|t| vti_common::auth::purpose_for_document_type(&t))
+        .ok_or(SignTrustTaskError::TypeNotTypeUri)?;
+
     if envelope_obj.contains_key("proof") {
         return Err(SignTrustTaskError::AlreadyProofed);
     }
@@ -150,7 +176,7 @@ pub async fn sign_envelope(
     let proof = affinidi_data_integrity::DataIntegrityProof::sign(
         unsigned_envelope,
         &secret_key,
-        affinidi_data_integrity::SignOptions::new(),
+        affinidi_data_integrity::SignOptions::new().with_proof_purpose(proof_purpose.as_str()),
     )
     .await
     .map_err(|e| AppError::Internal(format!("DataIntegrityProof sign failed: {e}")))?;
@@ -167,5 +193,6 @@ pub async fn sign_envelope(
     Ok(SignedEnvelope {
         signed,
         principal_did,
+        proof_purpose,
     })
 }

@@ -1,17 +1,22 @@
-//! Ephemeral X25519 wrapping key for REST key import.
+//! Ephemeral wrapping keys for key import — `keys/import-wrapping-key/0.1`.
 //!
-//! Each wrapping key is single-use with a 60-second TTL. The VTA generates
-//! an ephemeral X25519 keypair and returns the public key as a JWK. Clients
-//! may then import a private key via one of two paths:
+//! Each wrapping key is single-use with a 60-second TTL, held only in memory.
+//! The VTA generates an ephemeral **Ed25519** keypair and returns the public
+//! half as a `did:key` — the addressing every sealed-transfer recipient in this
+//! workspace uses. Only the X25519 counterpart of the private half is kept
+//! (derived by the RFC 7748 §4.1 birational map); the Ed25519 seed is zeroized
+//! at once, since the key never signs anything. Producers seal to the X25519
+//! counterpart of the `did:key`, and the two openers below use the kept X25519
+//! secret:
 //!
 //! - **Sealed transfer (preferred)** — client seals a
 //!   [`SealedPayloadV1::RawPrivateKey`](vta_sdk::sealed_transfer::SealedPayloadV1)
-//!   to the wrapping pubkey using HPKE via `vta_sdk::sealed_transfer`, sends
-//!   the armored bundle. Server opens it with
+//!   to the wrapping key's X25519 counterpart using HPKE via
+//!   `vta_sdk::sealed_transfer`, sends the armored bundle. Server opens it with
 //!   [`WrappingKeyCache::unwrap_sealed`].
-//! - **Legacy JWE** — historical compact ECDH-ES + AES-GCM format. Retained
-//!   only so in-flight clients keep working; new code should use the
-//!   sealed-transfer path.
+//! - **Legacy JWE** — historical compact ECDH-ES + AES-GCM format, keyed by the
+//!   wrapping key's `keyId`. Retained only so in-flight clients keep working;
+//!   new code should use the sealed-transfer path.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,6 +46,18 @@ struct WrappingEntry {
     used: bool,
 }
 
+/// A wrapping key [`WrappingKeyCache::generate`] has just minted.
+#[derive(Debug, Clone)]
+pub struct GeneratedWrappingKey {
+    /// The cache's opaque handle — the `kid` a legacy JWE carrier names.
+    pub kid: String,
+    /// The public half, as an Ed25519 `did:key`. Seal to its X25519
+    /// counterpart.
+    pub public_did: String,
+    /// The instant after which the cache no longer opens anything sealed to it.
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
 /// In-memory cache of ephemeral wrapping keys.
 #[derive(Clone)]
 pub struct WrappingKeyCache {
@@ -62,14 +79,26 @@ impl WrappingKeyCache {
         }
     }
 
-    /// Generate a new ephemeral wrapping keypair and return (kid, public_key_base64url).
-    pub async fn generate(&self) -> (String, String) {
+    /// Generate a new ephemeral wrapping key.
+    ///
+    /// Returns the key's opaque handle, its public half as an Ed25519
+    /// `did:key`, and the instant it stops being accepted. A fresh key pair
+    /// every call, from the OS CSPRNG, so the same key is never returned twice.
+    pub async fn generate(&self) -> GeneratedWrappingKey {
         let kid = Uuid::new_v4().to_string();
-        // Use StaticSecret so we can store it (EphemeralSecret is consumed on DH)
-        let secret = StaticSecret::random_from_rng(&mut rand::rng());
-        let public = PublicKey::from(&secret);
 
-        let public_b64 = BASE64.encode(public.as_bytes());
+        let mut seed = [0u8; 32];
+        rand::fill(&mut seed);
+        let verifying = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+        let did_key = affinidi_crypto::did_key::ed25519_pub_to_did_key(verifying.as_bytes());
+        // The X25519 counterpart is the only half that is ever used; the
+        // Ed25519 seed signs nothing, so it does not outlive this call.
+        let mut x_secret = affinidi_crypto::ed25519::ed25519_private_to_x25519(&seed);
+        seed.zeroize();
+        // StaticSecret so it can be stored (EphemeralSecret is consumed on DH).
+        let secret = StaticSecret::from(x_secret);
+        x_secret.zeroize();
+        let public = PublicKey::from(&secret);
 
         let entry = WrappingEntry {
             private_key: secret,
@@ -80,7 +109,12 @@ impl WrappingKeyCache {
 
         self.entries.lock().await.insert(kid.clone(), entry);
 
-        (kid, public_b64)
+        GeneratedWrappingKey {
+            kid,
+            public_did: did_key,
+            expires_at: chrono::Utc::now()
+                + chrono::TimeDelta::from_std(TTL).unwrap_or(chrono::TimeDelta::seconds(60)),
+        }
     }
 
     /// Consume a wrapping key and decrypt a JWE-like payload.
@@ -275,6 +309,28 @@ impl WrappingKeyCache {
 mod tests {
     use super::*;
 
+    /// The X25519 counterpart of a wrapping key's `did:key` — what a producer
+    /// seals to.
+    fn x25519_of(did_key: &str) -> [u8; 32] {
+        let ed =
+            affinidi_crypto::did_key::did_key_to_ed25519_pub(did_key).expect("an Ed25519 did:key");
+        affinidi_crypto::did_key::ed25519_pub_to_x25519_bytes(&ed).expect("a valid Ed25519 key")
+    }
+
+    /// Two calls never return the same key, and the key is an Ed25519
+    /// `did:key` expiring about a minute out (keys/import-wrapping-key/0.1).
+    #[tokio::test]
+    async fn every_wrapping_key_is_a_fresh_ed25519_did_key() {
+        let cache = WrappingKeyCache::new();
+        let a = cache.generate().await;
+        let b = cache.generate().await;
+        assert!(a.public_did.starts_with("did:key:z6Mk"), "{}", a.public_did);
+        assert_ne!(a.public_did, b.public_did);
+        assert_ne!(a.kid, b.kid);
+        let ttl = a.expires_at - chrono::Utc::now();
+        assert!(ttl > chrono::TimeDelta::seconds(50) && ttl <= chrono::TimeDelta::seconds(60));
+    }
+
     /// Client-side wrapping helper for tests.
     fn wrap_for_test(vta_pub_bytes: &[u8; 32], kid: &str, plaintext: &[u8]) -> String {
         let vta_pub = PublicKey::from(*vta_pub_bytes);
@@ -306,9 +362,12 @@ mod tests {
     #[tokio::test]
     async fn test_generate_and_unwrap() {
         let cache = WrappingKeyCache::new();
-        let (kid, pub_b64) = cache.generate().await;
-
-        let pub_bytes: [u8; 32] = BASE64.decode(&pub_b64).unwrap().try_into().unwrap();
+        let GeneratedWrappingKey {
+            kid,
+            public_did: did_key,
+            ..
+        } = cache.generate().await;
+        let pub_bytes = x25519_of(&did_key);
 
         let secret = b"test-private-key-32-bytes!!!!!!";
         let jwe = wrap_for_test(&pub_bytes, &kid, secret);
@@ -320,8 +379,12 @@ mod tests {
     #[tokio::test]
     async fn test_single_use() {
         let cache = WrappingKeyCache::new();
-        let (kid, pub_b64) = cache.generate().await;
-        let pub_bytes: [u8; 32] = BASE64.decode(&pub_b64).unwrap().try_into().unwrap();
+        let GeneratedWrappingKey {
+            kid,
+            public_did: did_key,
+            ..
+        } = cache.generate().await;
+        let pub_bytes = x25519_of(&did_key);
 
         let jwe = wrap_for_test(&pub_bytes, &kid, b"secret");
         cache.unwrap_jwe(&jwe).await.unwrap();
@@ -339,8 +402,7 @@ mod tests {
         };
 
         let cache = WrappingKeyCache::new();
-        let (_kid, pub_b64) = cache.generate().await;
-        let pub_bytes: [u8; 32] = BASE64.decode(&pub_b64).unwrap().try_into().unwrap();
+        let pub_bytes = x25519_of(&cache.generate().await.public_did);
 
         let secret_key = b"deadbeef-private-key-material-32";
         let payload = SealedPayloadV1::RawPrivateKey(RawPrivateKey {

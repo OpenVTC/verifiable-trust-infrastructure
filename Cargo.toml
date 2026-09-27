@@ -90,7 +90,7 @@ uniffi = "0.32"
 # the floor is now structural rather than a specific patch: do not move this
 # back below 0.9, and do not drop to a bare major.
 # 0.11 re-exports `affinidi-mdoc` 0.3 — see the coupling note on `coset` below.
-affinidi-tdk = "0.18"
+affinidi-tdk = "0.19"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -180,7 +180,7 @@ affinidi-messaging-core = "0.1"
 # 0.27.1 is a FLOOR: it is the release in which `record_incoming_control`
 # answers a mutual §7.3 cancellation itself (Keyring VTI-38), which is what the
 # VTA's and VTC's `handle_tsp_control` rely on when they stop answering it.
-affinidi-messaging-sdk = { version = "0.28", default-features = false }
+affinidi-messaging-sdk = { version = "0.29", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
@@ -409,13 +409,17 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # (trustoverip/dtgwg-trust-tasks-tf#659), and `auth/passkey/admin-list/0.1`
 # (#658) — `vtc-service/src/git_ns/admin_reads.rs`'s hand-written stand-ins and
 # `trust_tasks::passkey_admin_list_v0_1` were written for the pre-0.23.4 gap
-# and are gone below this floor. `trust-tasks-capability-client` published its
-# own 0.23.4 alongside it, pinned to match for the same reason 0.23.1 was.
-trust-tasks-rs = { version = "0.23.4", default-features = false, features = [
+# and are gone below this floor.
+#
+# 0.23.6 raises it for `vta/health/details` 0.1, `vta/restore/status` 0.1,
+# `auth/revoke-session` 0.2 and `keys/import-wrapping-key` 0.1 — the Trust
+# Tasks that replace `GET /health/details`, the `/auth/sessions` REST routes and
+# `GET /keys/import/wrapping-key`.
+trust-tasks-rs = { version = "0.23.6", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.23.4"
+trust-tasks-capability-client = "0.23.1"
 trust-tasks-https = { version = "0.23", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —

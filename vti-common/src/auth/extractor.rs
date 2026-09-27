@@ -674,9 +674,26 @@ impl<S: AuthState> FromRequestParts<S> for WriteAuth {
 /// Returns `None` when the cookie isn't present. Does **not**
 /// percent-decode — cookie values minted by the VTC's admin-session
 /// flow are JWTs (base64url + dots), which are ASCII-safe.
+/// Whether a request presents a credential by the rule the extractors use —
+/// a well-formed `Authorization: Bearer` header, or the
+/// [`ADMIN_SESSION_COOKIE`]. A request this says `false` for is one
+/// `Option<AuthClaims>` extracts as `None`; one it says `true` for is either
+/// authenticated or refused, never treated as anonymous. Anything that treats
+/// anonymous requests differently (a rate limiter in front of an endpoint that
+/// also serves authenticated callers) must decide with this, so that a junk
+/// header cannot move a request from one class to the other.
+pub fn presents_credential(headers: &axum::http::HeaderMap) -> bool {
+    use axum_extra::headers::HeaderMapExt as _;
+    headers.typed_get::<Authorization<Bearer>>().is_some()
+        || cookie_value(headers, ADMIN_SESSION_COOKIE).is_some()
+}
+
 fn cookie_token(parts: &Parts, name: &str) -> Option<String> {
-    parts
-        .headers
+    cookie_value(&parts.headers, name)
+}
+
+fn cookie_value(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    headers
         .get_all(axum::http::header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())

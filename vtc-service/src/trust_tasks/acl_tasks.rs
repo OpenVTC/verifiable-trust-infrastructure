@@ -181,20 +181,20 @@ pub(super) async fn handle_revoke(
     if let Err(e) = actor.require_admin() {
         return app_error_to_reject(&doc, &e);
     }
-    let _checked: acl_revoke::Payload = match parse_spec_payload(&doc) {
+    let req: acl_revoke::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    let req: ops::RevokeRequest = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(reject) => return reject,
-    };
+    // The schema gives `scopes` at least one member when present, so an empty
+    // list is an absent one: remove the entry rather than reduce it.
+    let scopes: Vec<String> = req.scopes.iter().map(|s| s.to_string()).collect();
+    let reason = req.reason.as_ref().map(|r| r.to_string());
     match ops::revoke_entry(
         state,
         &actor,
         &req.subject,
-        req.scopes.as_deref(),
-        req.reason.as_deref(),
+        (!scopes.is_empty()).then_some(scopes.as_slice()),
+        reason.as_deref(),
     )
     .await
     {

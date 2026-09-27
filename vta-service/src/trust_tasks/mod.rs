@@ -71,6 +71,7 @@ mod credentials;
 mod device;
 mod did_templates;
 mod discovery;
+mod health;
 mod helpers;
 mod idempotency;
 mod keys;
@@ -175,8 +176,12 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration — requires `webvh`.
     vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
-    // The mnemonic export — requires `tee`.
+    // The attestation slice — requires `tee`: the mnemonic export and the
+    // three public reads.
     vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_0_1,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1,
     // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
@@ -200,7 +205,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // PR #139 ("PR 1 of N") as the shared vocabulary for the
     // cross-repo did-management migration (vta-sdk + vta-service +
     // affinidi-webvh-service all reference these). They are
-    // **outbound producer URIs** — VTA's `webvh_didcomm.rs` sends
+    // **outbound producer URIs** — VTA's `webvh_host.rs` sends
     // requests with these URIs to did-hosting, then matches
     // `<uri>#response` on the way back. They are not consumed by any
     // vta-service inbound dispatcher arm, so the parity harness
@@ -270,9 +275,9 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     // else. The reduction plan's §D suggestion of a top-level `backup/*` was
     // not taken — the family is agent lifecycle, and `vta/` is where the rest
     // of it lives.)
-    // ─ vta/attestation/* (REST-routed, unauthenticated) — keep-and-spec.
-    "https://trusttasks.org/spec/vta/attestation/status/1.0",
-    "https://trusttasks.org/spec/vta/attestation/report/1.0",
+    // (vta/attestation/{status,report} were here until
+    // trustoverip/dtgwg-trust-tasks-tf#654 specified them, with config-report,
+    // as `…/0.1`; trust-tasks-rs 0.23.2.)
     // ─ vta/webvh/** — two-ends-of-one-wire decision pending (plan §B).
     //   `dids/update` is published; the rest are not.
     // ─ Vault archival lifecycle (#540) — generalise with a store
@@ -416,10 +421,37 @@ macro_rules! dispatch_table {
 /// rather than axum's text/plain default. The route mount caps body
 /// size separately (the workspace-wide 1 MB cap applies).
 pub async fn dispatch_trust_task(
-    auth: AuthClaims,
+    auth: Option<AuthClaims>,
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
+    // A caller with no credential may send only a public task
+    // (`vta_sdk::trust_tasks::PUBLIC_URIS`), which it runs on a claim that
+    // reaches nothing. A caller who presents a credential has it verified by
+    // the extractor, and a bad one is refused there — never downgraded to
+    // anonymous. The route sits behind the unauthenticated limiter for exactly
+    // the requests this lets through anonymously (`rate_limit::apply_anonymous`).
+    let auth = match auth {
+        Some(auth) => auth,
+        None => {
+            let type_uri = ceremony::peek_type_uri(&body);
+            match type_uri.as_deref() {
+                Some(uri) if is_public_task(uri) => {
+                    if body.len() > PUBLIC_TASK_BODY_LIMIT {
+                        return Err(AppError::Validation(format!(
+                            "an anonymous request is limited to {PUBLIC_TASK_BODY_LIMIT} bytes"
+                        )));
+                    }
+                    anonymous_claims()
+                }
+                _ => {
+                    return Err(AppError::Unauthorized(
+                        "this task needs a session: authenticate, or send a public task".into(),
+                    ));
+                }
+            }
+        }
+    };
     // REST is hop-by-hop by construction: TLS terminates at whatever the
     // operator put in front of this process, and the plaintext exists there.
     Ok(transport::with_binding(
@@ -433,6 +465,30 @@ pub async fn dispatch_trust_task(
     )
     .await
     .into_response())
+}
+
+/// The largest body an anonymous caller may send: the cap the other
+/// unauthenticated routes carry (`routes::UNAUTH_BODY_SIZE`). The route sits on
+/// the authenticated router, whose cap is the global one, so the public path
+/// enforces its own.
+const PUBLIC_TASK_BODY_LIMIT: usize = 64 * 1024;
+
+/// Does this Type URI name a task any caller may send with no identity?
+/// See [`vta_sdk::trust_tasks::PUBLIC_URIS`].
+pub(crate) fn is_public_task(type_uri: &str) -> bool {
+    vta_sdk::trust_tasks::PUBLIC_URIS.contains(&type_uri)
+}
+
+/// The claim a public task runs on when its caller has no identity here: no
+/// role that reaches anything, no contexts. `did` is empty — there is nobody
+/// to attribute the request to, and a placeholder would read as one.
+pub(crate) fn anonymous_claims() -> AuthClaims {
+    AuthClaims {
+        did: String::new(),
+        role: crate::acl::Role::Monitor,
+        allowed_contexts: Vec::new(),
+        ..Default::default()
+    }
 }
 
 /// Transport-agnostic trust-task dispatch core.
@@ -1027,6 +1083,14 @@ pub(crate) async fn bind_document_to_sender(
             reason: format!("not a Trust Task document: {e}"),
         })?;
     if doc.proof.is_none() {
+        // A public task's specification declares the request proof OPTIONAL,
+        // and it is accepted unsigned over HTTPS; refusing the same document
+        // over DIDComm or TSP would make the requirement depend on the
+        // transport, which VTI-OPS-021 forbids. A proof that IS attached is
+        // still verified and bound below.
+        if is_public_task(&doc.type_uri.to_string()) {
+            return Ok(());
+        }
         return Err(RejectReason::ProofRequired);
     }
     let signer =
@@ -1911,7 +1975,7 @@ impl DispatchAudit {
         //
         // The handlers' action vocabulary is hand-chosen and does not follow
         // the URI: `acl/grant/0.1` audits as `acl.create`, `keys/create/0.1` as
-        // `key.create`, `auth/revoke-session/0.1` as `session.revoke`. There is
+        // `key.create`, `auth/revoke-session/0.2` as `session.revoke`. There is
         // no derivation, so matching it would need a table keyed by URI — 84
         // entries that go stale invisibly the first time someone adds a task.
         //
@@ -2022,7 +2086,7 @@ pub(crate) fn reject_trust_task(body: &[u8], reason: RejectReason) -> TrustTaskO
 // them.
 dispatch_table! {
     // ─── Auth slice (authenticated operations) ───────────────────
-    vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1 => auth::handle_revoke_session
+    vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2 => auth::handle_revoke_session
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1 => auth::handle_whoami
         [ None Metadata false ],
@@ -2121,8 +2185,10 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0 => services::handle_enable
         [ Mutating None false ],
+    // 1.0 and 1.1 share the handler: 1.1 only adds the optional drain window.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0 => services::handle_update
+    vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0 | vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_1
+        => services::handle_update
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0 => services::handle_disable
@@ -2136,6 +2202,10 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0 => services::handle_drain_cancel
         [ Destructive None false ],
+    // A contact log of other parties' DIDs — metadata, read-only.
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_SERVICES_REPORT_0_1 => services::handle_report
+        [ None Metadata false ],
     // ─── Contexts slice ──────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0 => contexts::handle_list
         [ None Metadata false ],
@@ -2165,6 +2235,8 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_KEYS_IMPORT_0_1 => keys::handle_import
         [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1 => keys::handle_import_wrapping_key
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_SHOW_0_1 => keys::handle_get
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_RENAME_0_1 => keys::handle_rename
@@ -2182,10 +2254,29 @@ dispatch_table! {
     // `vta/contexts/secrets`, for the same reason — the act is disclosure.
     vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1 => keys::handle_export_secret
         [ None Secret false ],
-    // ─── Attestation slice (the dispatched one; end-to-end only) ─
+    // ─── Health + restore slice ─────────────────────────────────
+    // The public flags (any caller, `vta_sdk::trust_tasks::PUBLIC_URIS`) and
+    // the administrator-only version + restore record. They replace
+    // `GET /health/details`.
+    vta_sdk::trust_tasks::TASK_VTA_HEALTH_DETAILS_0_1 => health::handle_health_details
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_RESTORE_STATUS_0_1 => health::handle_restore_status
+        [ None Metadata false ],
+    // ─── Attestation slice ──────────────────────────────────────
+    // The mnemonic export (end-to-end only) and the three public reads, which
+    // any caller may send with no identity (`vta_sdk::trust_tasks::PUBLIC_URIS`).
     #[cfg(feature = "tee")]
     vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0 => attestation::handle_mnemonic_export
         [ Mutating Secret false ],
+    #[cfg(feature = "tee")]
+    vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1 => attestation::handle_status
+        [ None Metadata false ],
+    #[cfg(feature = "tee")]
+    vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_0_1 => attestation::handle_report
+        [ None Metadata false ],
+    #[cfg(feature = "tee")]
+    vta_sdk::trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1 => attestation::handle_config_report
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1 => keys::handle_sign
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
@@ -2700,6 +2791,54 @@ mod tests {
 
     use super::*;
 
+    /// **The public exception stays narrow.** A task in
+    /// `vta_sdk::trust_tasks::PUBLIC_URIS` runs for a caller with no identity —
+    /// anonymously over HTTPS, and **unsigned** over DIDComm and TSP, where every
+    /// other document must carry a proof bound to its sender
+    /// ([`bind_document_to_sender`]). That is sound only for a task whose own
+    /// specification makes the request proof optional and which changes and
+    /// discloses nothing: a public fact, answered in this agent's signed
+    /// response. This census fails the moment a task that is not one is added to
+    /// the list — which would hand an unauthenticated caller a privileged task.
+    #[test]
+    fn every_public_task_is_proof_optional_and_read_only() {
+        assert!(
+            !vta_sdk::trust_tasks::PUBLIC_URIS.is_empty(),
+            "no public tasks — the census is vacuous"
+        );
+        for uri in vta_sdk::trust_tasks::PUBLIC_URIS {
+            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .unwrap_or_else(|| panic!("{uri} is public but has no published specification"));
+            assert!(
+                !policy.is_proof_required,
+                "{uri} is public, but its specification requires a request proof: a caller \
+                 with no identity cannot send it, so it does not belong in PUBLIC_URIS"
+            );
+            // The dispatch class is this service's own statement of what the
+            // handler does — what the PDP reads — and so the one that has to be
+            // harmless. Only a build that dispatches the task has a class for it.
+            #[cfg(feature = "tee")]
+            {
+                let class = class_for(uri)
+                    .unwrap_or_else(|| panic!("{uri} is public but not dispatched here"));
+                assert_eq!(
+                    class.side_effects,
+                    crate::policy::SideEffectLevel::None,
+                    "{uri} is public but changes state"
+                );
+                assert_ne!(
+                    class.exposure.discloses,
+                    crate::policy::Discloses::Secret,
+                    "{uri} is public but discloses secret material"
+                );
+                assert!(
+                    !class.exposure.acts_as_subject,
+                    "{uri} is public but acts as its subject"
+                );
+            }
+        }
+    }
+
     /// **A success response carries this agent's proof.**
     ///
     /// SPEC §7.3 item 7: a specification declaring a single
@@ -3113,7 +3252,7 @@ mod tests {
         let _ = vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_1;
-        let _ = vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1;
+        let _ = vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1;
@@ -4317,39 +4456,61 @@ mod response_coverage {
     // needs a provisioned integration rather than a seeded row. That belongs
     // with the provision-integration tests.
 
-    /// `all: true` is a legal document, refused as unsupported — not malformed.
-    ///
-    /// `auth/revoke-session/0.1` is `sessionId` **XOR** `all`. This VTA
-    /// implements only the named-session arm, and its request type used to
-    /// require `sessionId`, so a conforming client sending `{"all": true}` got
-    /// `malformedRequest` — which tells the client its *shape* is wrong when
-    /// the shape was fine. An unimplemented option deserves to be named.
+    /// `auth/revoke-session/0.2`: `all: true` ends every session of the caller
+    /// and counts them; `all: false` targets nothing and is `malformedRequest`,
+    /// as the specification requires — it stays schema-valid only because 0.1
+    /// admitted it.
     #[tokio::test]
-    async fn revoke_all_is_refused_as_unsupported_not_malformed() {
+    async fn revoke_all_ends_the_callers_sessions_and_all_false_is_malformed() {
         let (state, _dir) = build_signing_test_app_state().await;
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
-        let body = signed_body(
-            t::TASK_AUTH_REVOKE_SESSION_0_1,
-            &vta_did,
-            json!({ "all": true }),
-        );
-        let outcome = super::dispatch_trust_task_core(
-            &state,
-            &crate::test_support::super_admin_claims(),
-            &body,
-            transport::TransportConfidentiality::HopByHop,
-        )
-        .await;
-        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        let caller = crate::test_support::test_admin_did().0;
+        for n in 0..2 {
+            let session = crate::auth::session::Session {
+                session_id: format!("sess-all-{n}"),
+                did: caller.clone(),
+                challenge: String::new(),
+                state: crate::auth::session::SessionState::Authenticated,
+                created_at: crate::auth::session::now_epoch(),
+                last_seen: crate::auth::session::now_epoch(),
+                refresh_token: None,
+                refresh_expires_at: None,
+                tee_attested: false,
+                amr: vec!["did".into()],
+                acr: "aal1".into(),
+                acr_expires_at: None,
+                token_id: None,
+                session_pubkey_b58btc: None,
+            };
+            crate::auth::session::store_session(&state.sessions_ks, &session)
+                .await
+                .expect("store session");
+        }
+
+        let dispatch = |payload: Value| {
+            let body = signed_body(t::TASK_AUTH_REVOKE_SESSION_0_2, &vta_did, payload);
+            let state = state.clone();
+            async move {
+                let outcome = super::dispatch_trust_task_core(
+                    &state,
+                    &crate::test_support::super_admin_claims(),
+                    &body,
+                    transport::TransportConfidentiality::HopByHop,
+                )
+                .await;
+                serde_json::from_slice::<Value>(&outcome.body).expect("a response document")
+            }
+        };
+
+        let doc = dispatch(json!({ "all": false })).await;
+        assert_eq!(doc["payload"]["code"], "malformedRequest", "{doc}");
+
+        let doc = dispatch(json!({ "all": true, "reason": "device-lost" })).await;
+        assert_eq!(doc["payload"]["revokedCount"], 2, "{doc}");
+        let doc = dispatch(json!({ "all": true })).await;
         assert_eq!(
-            doc["payload"]["code"], "taskFailed",
-            "a legal document must not be called malformed: {doc}"
-        );
-        assert!(
-            doc["payload"]["message"]
-                .as_str()
-                .is_some_and(|m| m.contains("revoke_all_unsupported")),
-            "the refusal must name the option it cannot honour: {doc}"
+            doc["payload"]["revokedCount"], 0,
+            "a repeat converges on zero, a success: {doc}"
         );
     }
 
@@ -4377,10 +4538,8 @@ mod response_coverage {
         .await;
 
         ok(&state, t::TASK_MESSAGING_PING_0_1, json!({})).await;
-        // `auth/revoke-session` is not covered for a success response: it needs
-        // a real session row, and `all: true` is a legal document this VTA
-        // refuses by design (it revokes one named session). The refusal path is
-        // asserted in `revoke_all_is_refused_as_unsupported_not_malformed`.
+        // `auth/revoke-session` has its own test with real session rows:
+        // `revoke_all_ends_the_callers_sessions_and_all_false_is_malformed`.
     }
 
     /// Issue then revoke, chained: revoke needs an id only an issue produces.
@@ -5685,6 +5844,29 @@ mod didcomm_sender_binding {
         let body = document(&victim.did, None, &vta_did).await;
         let reply = over_didcomm(&state, &victim.did, &body).await;
         assert_eq!(code(&reply), Some("proofRequired"), "{reply}");
+    }
+
+    /// The one exception, and a narrow one: a public task (proof OPTIONAL in its
+    /// specification, read-only — see `every_public_task_is_proof_optional_and_
+    /// read_only`) is not refused for want of a proof over DIDComm, because it is
+    /// accepted unsigned over HTTPS and VTI-OPS-021 forbids the requirement to
+    /// depend on the transport. (In a build without `tee` the task is then not
+    /// dispatched; what this pins is only that the proof gate let it through.)
+    #[tokio::test]
+    async fn an_unsigned_public_task_is_not_refused_for_its_missing_proof() {
+        let (state, _dir, victim, _attacker, vta_did) = setup().await;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
+            "issuer": victim.did,
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {},
+        }))
+        .unwrap();
+        let reply = over_didcomm(&state, &victim.did, &body).await;
+        assert_ne!(code(&reply), Some("proofRequired"), "{reply}");
+        assert_ne!(code(&reply), Some("permissionDenied"), "{reply}");
     }
 
     /// The forged-sender shape: the sender claims the victim, the document is

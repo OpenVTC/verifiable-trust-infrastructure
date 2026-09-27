@@ -188,7 +188,8 @@ Two deliberate limits:
   The document is the transport-agnostic answer. Adding the header as well is a
   reasonable follow-up for HTTP intermediaries; it is not a correctness gap.
 - **No outbound client in this repo currently retries HTTP at all** —
-  `webvh_client` and the foreign-fetch path make a single attempt. So DRARM
+  the DID hosting client (`webvh_host`) and the foreign-fetch path make a single
+  attempt. So DRARM
   `RLA-029` (Retry-After non-compliance) has nothing to remediate here today. The
   rule below is what keeps it that way.
 

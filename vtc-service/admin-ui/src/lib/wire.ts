@@ -2291,12 +2291,64 @@ export interface components {
              */
             truncated: boolean;
         };
-        /**
-         * @description Canonical `acl/revoke/0.1` response: the entry the maintainer now holds —
-         *     `null` after a full removal, the reduced entry after a scope reduction.
-         */
-        AclRevokeResponse: {
-            entry?: null | components["schemas"]["AclEntryResponse"];
+        AclRevokeV0_1AclEntry: {
+            /** @description Key identifiers this subject may invoke the maintainer's signing oracle on. INTERSECTS WITH `scopes` — it can only narrow, never widen: a key named here that lies outside the entry's scopes remains unreachable, exactly as if it were not named. ABSENT means every key within the entry's scopes (the behaviour of entries that pre-date this member); explicit `null` is equivalent to absent, and producers SHOULD omit the member instead. PRESENT-BUT-EMPTY means authorized on NO keys — the opposite of absent, and deliberately so: emptiness is never a wildcard (CONVENTIONS.md §5). A consumer MUST preserve and enforce the absent-vs-empty distinction end to end; collapsing the two (e.g. by testing emptiness alone) re-creates the empty-means-unrestricted class of privilege-escalation defect this family's conventions exist to prevent. */
+            allowedKeys?: unknown;
+            /**
+             * @description Approve-authority: what this subject may **confer on others** by ratifying an approval, as distinct from `scopes`, which is what it may **exercise itself**. The two axes are independent, and that independence is the point — it is what lets a maintainer configure a least-privilege approver who can authorize an operation in a scope it has no authority to perform.
+             *
+             *     OMISSION MEANS NOTHING IS CONFERRED. An absent `approve`, an absent `all`, and an empty `scopes` are all equivalent to "this subject may ratify nothing". A consumer that does not implement this member therefore confers less than the producer intended rather than more, which is the direction a missed member has to fail in.
+             *
+             *     A subject with approve-authority is NOT thereby authorized to act. Consumers MUST resolve the two axes separately: reading `approve` to answer "may this party ratify X" and `scopes` to answer "may this party do X". Collapsing them grants an approver the ability to perform what it was only meant to sign off on.
+             */
+            approve?: {
+                /** @description The subject may confer ANY scope. Takes precedence over `scopes`, which a consumer MUST ignore when this is true. Absent or false → only the scopes listed below, if any. */
+                all?: boolean;
+                /** @description Opaque scope identifiers this subject may confer, drawn from the same vocabulary as the entry's own `scopes`. Where a maintainer's scopes are hierarchical, conferring a scope confers its descendants — the same containment rule the maintainer already applies to `scopes`, so the two axes cannot disagree about what a scope means. An empty array confers nothing; it is not a wildcard. */
+                scopes?: string[];
+            };
+            /** Format: date-time */
+            createdAt?: string;
+            /** @description VID of the party that originally added this entry. */
+            createdBy?: string;
+            /**
+             * Format: date-time
+             * @description Optional time after which the entry is no longer effective.
+             */
+            expiresAt?: string;
+            ext?: components["schemas"]["AclRevokeV0_1Ext"];
+            /** @description Optional human-readable label. */
+            label?: string;
+            /** @description Opaque role identifier interpreted by the ACL maintainer. */
+            role: string;
+            /** @description Opaque scope identifiers (e.g. contexts, domains, resource prefixes). */
+            scopes?: string[];
+            /** @description Per-entry authentication step-up configuration, consumed by the ACL maintainer when it gates an operation behind a step-up (see auth/step-up/policy/0.1). ADDITIVE-ONLY: a per-entry setting MAY raise the assurance required of this subject above the maintainer's system-wide floor, but MUST NOT lower it. The maintainer resolves the effective requirement as the strictest of (system floor, this entry). */
+            stepUp?: {
+                /** @description VID authorized to ratify step-up for this subject — the `recipient` the maintainer addresses an auth/step-up/approve-request to (e.g. the holder's mobile authenticator or browser companion). Absent → the subject is its own approver (mode `self`) when it holds a usable authenticator; if neither an `approver` nor a self authenticator exists, no step-up method is available for this subject and the maintainer's fail-closed rule applies. */
+                approver?: string;
+                /**
+                 * @description Minimum step-up mode this subject MUST satisfy for gated operations, raising the system floor. `self` = the subject re-authenticates its own session; `delegated` = a separate `approver` MUST ratify. Omitted → the system floor applies unchanged. A value weaker than the resolved floor is ignored (additive-only).
+                 * @enum {string}
+                 */
+                require?: "self" | "delegated";
+            };
+            /** @description VID of the party in the ACL. Compared by exact string equality (SPEC.md §4.8); producers SHOULD emit canonical form. */
+            subject: string;
+            /** Format: date-time */
+            updatedAt?: string;
+            /** @description VID of the party that last modified this entry. */
+            updatedBy?: string;
+        };
+        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
+        AclRevokeV0_1Ext: {
+            [key: string]: unknown;
+        };
+        /** @description The success response to an acl/revoke request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/acl/revoke/0.1#response. */
+        AclRevokeV0_1Response: {
+            /** @description The AclEntry the maintainer now holds for the subject. null for a full removal; an AclEntry with reduced scopes for a scope reduction. */
+            entry: unknown | components["schemas"]["AclRevokeV0_1AclEntry"];
+            ext?: components["schemas"]["AclRevokeV0_1Ext"];
         };
         ActivateResponse: {
             /**
@@ -6942,7 +6994,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AclRevokeResponse"];
+                    "application/json": components["schemas"]["AclRevokeV0_1Response"];
                 };
             };
             /** @description `scopes` present but empty */

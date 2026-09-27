@@ -3,7 +3,7 @@
 use super::{
     CreateKeyRequest, CreateKeyResponse, GetKeySecretResponse, ImportKeyRequest, ImportKeyResponse,
     InvalidateKeyResponse, ListKeysResponse, ListSeedsResponse, RenameKeyResponse,
-    RotateSeedRequest, RotateSeedResponse, SignResponse, Transport, VtaClient, WrappingKeyResponse,
+    RotateSeedRequest, RotateSeedResponse, SignResponse, VtaClient, WrappingKeyResponse,
 };
 use crate::error::VtaError;
 use crate::keys::{KeyRecord, KeyType};
@@ -312,29 +312,40 @@ impl VtaClient {
 
     // ── Import key methods ──────────────────────────────────────────
 
-    /// Fetch an ephemeral wrapping key for REST key import.
+    /// A fresh, single-use wrapping key to seal a private key to before
+    /// [`import_key`](Self::import_key) — `keys/import-wrapping-key/0.1`.
+    ///
+    /// The key is an Ed25519 `did:key`; seal to its X25519 counterpart
+    /// (`affinidi_crypto::did_key::ed25519_pub_to_x25519_bytes`) before
+    /// `expiresAt`, and use it once. Reachable over every transport, though a
+    /// DIDComm or TSP client does not need it: those carry the cleartext
+    /// `privateKeyMultibase` end-to-end encrypted.
+    ///
+    /// **The reply's proof is always verified, and must be the VTA's.** This
+    /// task exists for transports with an intermediary that sees plaintext, and
+    /// that intermediary could hand back a key of its own and read whatever is
+    /// sealed to it. So a client with no identity to verify against is refused
+    /// here, and the unsigned-reply staging control
+    /// ([`trusting_unsigned_replies`](Self::trusting_unsigned_replies)) does not
+    /// apply to this task.
     pub async fn get_wrapping_key(&self) -> Result<WrappingKeyResponse, VtaError> {
-        match &self.transport {
-            Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                Self::ensure_token_valid(client, base_url, auth).await?;
-                let token = auth.lock().await.token.clone();
-                let req = client.get(format!("{base_url}/keys/import/wrapping-key"));
-                let resp = Self::with_auth_token(req, &token).send().await?;
-                Self::handle_response(resp).await
-            }
-            #[cfg(feature = "session")]
-            Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
-                "wrapping key not needed for DIDComm transport".into(),
-            )),
-            #[cfg(feature = "tsp")]
-            Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
-                "wrapping key not needed for TSP transport".into(),
-            )),
+        #[cfg(feature = "test-loopback")]
+        let loopback = self.loopback.is_some();
+        #[cfg(not(feature = "test-loopback"))]
+        let loopback = false;
+        if self.identity.is_none() && !loopback {
+            return Err(VtaError::Protocol(
+                "a wrapping key cannot be used unverified, and this client has no VTA DID to \
+                 verify the reply against — build the client with an identity"
+                    .into(),
+            ));
         }
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+            serde_json::json!({}),
+            30,
+        )
+        .await
     }
 
     // ── Seed methods ────────────────────────────────────────────────

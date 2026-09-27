@@ -21,183 +21,25 @@ pub(crate) async fn run(
             include_audit,
             output,
             force,
-            use_rest_legacy,
         } => {
             if let Some(path) = &output {
                 secure_file::check_export_path(path, force)?;
             }
-            if use_rest_legacy {
-                warn_legacy_over_mediator(client);
-                cmd_backup_export(client, include_audit, output, force).await
-            } else {
-                cmd_backup_export_descriptor(client, include_audit, output, force).await
-            }
+            cmd_backup_export_descriptor(client, include_audit, output, force).await
         }
         BackupCommands::Import {
             file,
             preview,
             replace_identity,
-            use_rest_legacy,
-        } => {
-            if use_rest_legacy {
-                warn_legacy_over_mediator(client);
-                cmd_backup_import(client, file, preview, replace_identity).await
-            } else {
-                cmd_backup_import_descriptor(client, file, preview, replace_identity).await
-            }
-        }
+        } => cmd_backup_import_descriptor(client, file, preview, replace_identity).await,
     }
-}
-
-/// `--use-rest-legacy` is only REST when the client is.
-///
-/// The legacy calls ride the protocol-message surface, so on a DIDComm client
-/// the flag silently sent the whole backup envelope as one DIDComm message.
-/// A mediator refuses anything over its `message_size` limit (1 MiB by
-/// default, and DIDComm's base64 layers leave roughly half of that for the
-/// envelope), so for any real VTA the reply never arrives and the CLI waits out
-/// its timeout with no explanation. The flag is kept, and a small VTA may still
-/// fit, so this warns rather than refuses — but it says what is actually
-/// happening and how to get what the flag name promises.
-fn warn_legacy_over_mediator(client: &VtaClient) {
-    let surface = client.protocol_message_transport();
-    if let Some(warning) = legacy_over_mediator_warning(surface) {
-        eprintln!("{RED}warning:{RESET} {warning}");
-    }
-}
-
-fn legacy_over_mediator_warning(surface: SurfaceTransport) -> Option<String> {
-    match surface {
-        SurfaceTransport::Rest => None,
-        other => Some(format!(
-            "`--use-rest-legacy` is not using REST: this client reaches the VTA over \
-             {other}, so the whole backup travels as a single mediator message. A \
-             mediator refuses messages over its size limit (1 MiB by default, roughly \
-             half of that usable after DIDComm encoding), so this fails — usually as a \
-             timeout — for all but very small VTAs. Drop the flag: the default flow \
-             moves the backup in verified chunks over {other}. Or re-run with \
-             `--transport rest` for an actual REST transfer."
-        )),
-    }
-}
-
-#[allow(deprecated)] // the `--use-rest-legacy` escape hatch; removed at rollout step 6
-async fn cmd_backup_export(
-    client: &VtaClient,
-    include_audit: bool,
-    output: Option<std::path::PathBuf>,
-    force: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Prompt for password
-    let password = dialoguer::Password::new()
-        .with_prompt(format!(
-            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
-        ))
-        .with_confirmation("Confirm password", "Passwords do not match")
-        .interact()?;
-    validate_backup_password(&password)?;
-
-    println!("Exporting backup...");
-    let envelope = client.backup_export(&password, include_audit).await?;
-
-    // Determine output path
-    let path = output.unwrap_or_else(|| {
-        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let slug = secure_file::did_filename_slug(envelope.source_did.as_deref(), "vta");
-        std::path::PathBuf::from(format!("vta-backup-{slug}-{ts}.vtabak"))
-    });
-
-    let json = serde_json::to_string_pretty(&envelope)?;
-    // Owner-only (0600), and never silently over an existing file.
-    secure_file::write_secret_export(&path, json.as_bytes(), force)?;
-
-    println!("{GREEN}✓{RESET} Backup saved to {}", path.display());
-    println!(
-        "  Source DID: {}",
-        envelope.source_did.as_deref().unwrap_or("(none)")
-    );
-    println!("  Includes audit: {}", envelope.includes_audit);
-    println!("  File size: {} bytes", json.len());
-    Ok(())
-}
-
-#[allow(deprecated)] // the `--use-rest-legacy` escape hatch; removed at rollout step 6
-async fn cmd_backup_import(
-    client: &VtaClient,
-    file: std::path::PathBuf,
-    preview_only: bool,
-    replace_identity: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let json = std::fs::read_to_string(&file)?;
-    let envelope: vta_sdk::protocols::backup_management::types::BackupEnvelope =
-        serde_json::from_str(&json)?;
-
-    println!("Backup file: {}", file.display());
-    println!(
-        "  Source DID:  {}",
-        envelope.source_did.as_deref().unwrap_or("(none)")
-    );
-    println!("  Created:     {}", envelope.created_at);
-    println!("  Version:     {}", envelope.source_version);
-    println!("  Audit:       {}", envelope.includes_audit);
-
-    // The floor binds on the way in too, so check it here rather than let the
-    // refusal arrive as a schema-conformance error naming a task URI.
-    let password = dialoguer::Password::new()
-        .with_prompt(format!(
-            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
-        ))
-        .interact()?;
-    validate_backup_password(&password)?;
-
-    // Preview first
-    let preview = client
-        .backup_import_with(&envelope, &password, false, replace_identity)
-        .await?;
-    println!();
-    println!("  Keys:        {}", preview.key_count);
-    println!("  ACL entries: {}", preview.acl_count);
-    println!("  Contexts:    {}", preview.context_count);
-    println!("  Audit logs:  {}", preview.audit_count);
-
-    if preview_only {
-        println!("\n{DIM}Preview only — no changes applied.{RESET}");
-        return Ok(());
-    }
-
-    // Confirm
-    println!();
-    println!("{RED}WARNING: This will REPLACE ALL DATA in the VTA.{RESET}");
-    print!("Type 'yes' to confirm: ");
-    std::io::Write::flush(&mut std::io::stdout())?;
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
-    if input.trim() != "yes" {
-        println!("Import cancelled.");
-        return Ok(());
-    }
-
-    println!("Importing...");
-    let result = client
-        .backup_import_with(&envelope, &password, true, replace_identity)
-        .await?;
-    println!(
-        "{GREEN}✓{RESET} {}",
-        result.message.as_deref().unwrap_or("Import complete")
-    );
-
-    if result.status == "imported" {
-        print_restart_notice();
-    }
-    Ok(())
 }
 
 // ─── Descriptor-pattern variants ──────────────────────────────────────────
 //
 // Drive the 3-phase ceremony via the trust-task envelope + the
 // out-of-band blob endpoint. See
-// `docs/05-design-notes/backup-descriptor-pattern.md`. The user-visible
-// flow is identical to the legacy paths above; the wire is different.
+// `docs/05-design-notes/backup-descriptor-pattern.md`.
 
 async fn cmd_backup_export_descriptor(
     client: &VtaClient,
@@ -310,7 +152,7 @@ async fn cmd_backup_import_descriptor(
     let bytes = std::fs::read(&file)?;
 
     // Surface the envelope's metadata to the operator before
-    // prompting for password — same UX as the legacy path.
+    // prompting for password.
     let envelope: vta_sdk::protocols::backup_management::types::BackupEnvelope =
         serde_json::from_slice(&bytes)?;
 
@@ -432,7 +274,9 @@ async fn cmd_backup_import_descriptor(
 
 fn print_restart_notice() {
     println!("  The VTA is restarting to apply the restore.");
-    println!("  Once it is back, `GET /health/details` reports the restore it came from.");
+    println!(
+        "  Once it is back, `pnm health` reports the restore it came from (vta/restore/status)."
+    );
     println!("  You may need to re-authenticate if the VTA DID changed.");
 }
 
@@ -452,20 +296,5 @@ mod tests {
         assert_eq!(human_bytes(12), "12 B");
         assert_eq!(human_bytes(262_144), "256.0 KiB");
         assert_eq!(human_bytes(3 * 1024 * 1024), "3.0 MiB");
-    }
-
-    #[test]
-    fn legacy_flag_is_silent_on_a_rest_client() {
-        assert!(legacy_over_mediator_warning(SurfaceTransport::Rest).is_none());
-    }
-
-    #[test]
-    fn legacy_flag_warns_with_the_size_caveat_on_a_mediator_client() {
-        for surface in [SurfaceTransport::Didcomm, SurfaceTransport::Tsp] {
-            let w = legacy_over_mediator_warning(surface).expect("a warning");
-            assert!(w.contains("1 MiB"), "{w}");
-            assert!(w.contains("--transport rest"), "{w}");
-            assert!(w.contains("Drop the flag"), "{w}");
-        }
     }
 }

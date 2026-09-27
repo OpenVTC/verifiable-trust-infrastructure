@@ -4,15 +4,10 @@
 //!
 //! - [`webvh_store`] — the local `did:webvh` DID-record + server-record store
 //!   (fjall `webvh` keyspace).
-//! - [`webvh_client`] — the HTTP client to a remote `did:webvh` hosting server.
-//! - [`webvh_auth`] — the DID-auth handshake the client uses against that host.
 //!
-//! Each depends only on `vti-common`, `vta-keyspaces`, `vta-sdk`, and
-//! `affinidi-tdk` — never on `vta-service`. `vta-service` re-exports each as
-//! `crate::<module>` (behind its `webvh` feature), so existing
-//! `crate::webvh_store::…` / `crate::webvh_client::…` / `crate::webvh_auth::…`
-//! paths are unchanged.
+//! The client to a DID hosting service is `vta_service::webvh_host`: every
+//! call is a Trust Task over the transport the host advertises, so it lives
+//! beside the outbound seam that carries it. `vta-service` re-exports this
+//! module as `crate::webvh_store` (behind its `webvh` feature).
 
-pub mod webvh_auth;
-pub mod webvh_client;
 pub mod webvh_store;

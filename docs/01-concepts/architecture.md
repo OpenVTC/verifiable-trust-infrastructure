@@ -50,7 +50,6 @@ AppState
   sessions_ks      KeyspaceHandle                         "sessions" partition
   acl_ks           KeyspaceHandle                         "acl" partition
   contexts_ks      KeyspaceHandle                         "contexts" partition
-  cache_ks         KeyspaceHandle                         "cache" partition
   config           Arc<RwLock<AppConfig>>                 runtime-mutable config
   seed_store       Arc<dyn SeedStore>                     master-seed backend (keyring, KMS, …)
   did_resolver     Option<DIDCacheClient>                 DID resolution (None before setup)
@@ -121,7 +120,6 @@ vta-service/src/
     keys.rs        Key CRUD + signing oracle
     contexts.rs    Context CRUD
     acl.rs         ACL CRUD
-    cache.rs       Token cache (GET/PUT/DELETE)
     bootstrap.rs   Sealed-transfer + provision-integration endpoints
 ```
 
@@ -131,7 +129,12 @@ vta-service/src/
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | /health | Status + version |
+| GET | /health | Status |
+
+The richer report is two Trust Tasks (over `POST /trust-tasks`, DIDComm or
+TSP): `vta/health/details/0.1` — public, the same non-identifying flags for
+every caller — and `vta/restore/status/0.1` — software version and the
+VTI-VTA-051 restore record, administrators only. `GET /health/details` is gone.
 
 ### Authentication
 
@@ -141,9 +144,13 @@ vta-service/src/
 | POST | /auth/ | None | Submit signed challenge, get tokens |
 | POST | /auth/refresh | None | Refresh access token |
 | POST | /auth/credentials | Manage | Generate did:key credential |
-| GET | /auth/sessions | Manage | List sessions of subjects the caller may manage (own + ACL entries it could remove; all for a super-admin) |
-| DELETE | /auth/sessions/{id} | Auth | Revoke a session: own, or of a subject the caller may manage |
-| DELETE | /auth/sessions?did=X | Admin | Revoke all sessions for a DID the caller may manage (never a super-admin's, for a scoped admin) |
+
+Sessions are Trust Tasks, not routes: `auth/sessions/list/0.1` lists the
+caller's own sessions, and `auth/revoke-session/0.2` ends one named session,
+every session of the caller (`all: true`), or every session of a `subject` the
+caller may manage — the check that governs removing that subject's ACL entry
+(VTI-SES-043, VTI-ACL-050), so a scoped admin never reaches a super-admin's.
+The `/auth/sessions` routes are gone.
 
 ### Configuration
 
@@ -163,14 +170,6 @@ vta-service/src/
 | PATCH | /keys/{key_id} | Admin | Rename key (context access checked) |
 | GET | /keys/{key_id}/secret | Admin | Export private key material |
 | POST | /keys/{key_id}/sign | Auth | Sign payload (signing oracle) |
-
-### Cache
-
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | /cache/{key} | Auth | Retrieve cached value |
-| PUT | /cache/{key} | Auth | Store value with TTL |
-| DELETE | /cache/{key} | Auth | Delete cached value |
 
 ### Contexts
 
@@ -200,17 +199,15 @@ vta-service/src/
 
 ### Backup
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | /backup/export | Admin | Export encrypted backup |
-| POST | /backup/import | Admin | Import encrypted backup |
+A backup is the `vta/backup/*` Trust Tasks (super-admin, over TSP or DIDComm)
+plus `GET|POST /backup/blob/{id}` for the bytes. There is no inline
+export/import route.
 
 ### Bootstrap
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | /bootstrap/request | None (rate-limited) | TEE Mode B sealed first-boot |
-| POST | /bootstrap/provision-integration | Admin | Template-driven integration bootstrap |
 | GET | /did/{did}/log | None (rate-limited) | Public webvh `did.jsonl` retrieval |
 
 Auth levels: **Auth** = any valid JWT, **Manage** = Admin or
@@ -230,7 +227,6 @@ All data lives in fjall keyspaces:
 | acl | `acl:{did}` | AclEntry (JSON) |
 | contexts | `ctx:{id}` | ContextRecord (JSON) |
 | contexts | `ctx_counter` | u32 (LE bytes) |
-| cache | `cache:{did}:{key}` | CacheEntry (JSON) |
 
 In TEE deployments the `Store` enum dispatches transparently to a
 `VsockStore` running on the parent EC2 instance instead of a local

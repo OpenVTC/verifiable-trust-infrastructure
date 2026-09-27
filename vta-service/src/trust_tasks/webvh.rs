@@ -407,7 +407,9 @@ pub(super) async fn handle_agent_name_list(
                     .map(|e| AgentNameEntry {
                         name: e.name,
                         enabled: e.enabled,
-                        created_at: e.created_at,
+                        // The host speaks RFC 3339; the canonical entry the
+                        // VTA relays speaks Unix seconds.
+                        created_at: e.created_at.timestamp().max(0) as u64,
                     })
                     .collect(),
             },

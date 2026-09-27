@@ -123,21 +123,12 @@ const NO_AUDIT_BY_DESIGN: &[(&str, &str)] = &[];
 /// This is a limit of the census, not a defect in the handlers, and it is
 /// named rather than folded into the other list so that nobody later "fixes"
 /// a handler into auditing work it did not do.
-const NO_AUDIT_WHEN_NO_OP: &[(&str, &str)] = &[
-    (
-        "https://trusttasks.org/spec/auth/revoke-session/0.1",
-        "The fixture names a session that does not exist, so the handler takes \
-         its no-session arm: a `tracing` line with outcome=\"no-op\" and no \
-         sink row. The path that actually deletes a session records both forms, \
-         and says why they are not redundant.",
-    ),
-    (
-        "https://trusttasks.org/spec/consent/revoke/1.0",
-        "The fixture names a subject with no grant, so the handler returns \
+const NO_AUDIT_WHEN_NO_OP: &[(&str, &str)] = &[(
+    "https://trusttasks.org/spec/consent/revoke/1.0",
+    "The fixture names a subject with no grant, so the handler returns \
          `notFound` as a status before reaching its audit call — deliberately: \
          \"a revoke that deleted nothing is not a state change worth a line\".",
-    ),
-];
+)];
 
 /// A sink that keeps what it is given. Deliberately not backed by a keyspace,
 /// so "reached storage" cannot be mistaken for "reached the sink".

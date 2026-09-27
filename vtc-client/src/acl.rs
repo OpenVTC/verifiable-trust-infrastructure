@@ -1,12 +1,17 @@
 //! The community's ACL: the canonical `acl/{list,show,grant,update,change-role,
 //! revoke}/0.1` tasks.
 //!
-//! Every one of them is a signed Trust Task the VTC dispatches on its spine,
-//! so they go the way every such admin verb goes ([`VtcClient::admin_document`]):
-//! over the messaging session when the client has one, otherwise signed with
-//! the operator's key and posted to `POST {base}/trust-tasks`. Only a client
-//! built from a bare token ([`VtcClient::with_token`]) uses the bearer routes,
-//! and `acl/update` has none — it answers [`VtcError::Unsupported`] there.
+//! Every one of them is a signed Trust Task, sent the way every `cnm access`
+//! call goes — over the DIDComm or TSP session when the client holds one
+//! ([`VtcClient::connect_tsp`], [`VtcClient::connect_didcomm`]), otherwise
+//! signed with a [`HolderKey`] and posted to `POST {base}/trust-tasks`. As for
+//! `git-ns/*` ([`crate::git_ns`]): over a session the VTC takes the document
+//! only when its proof, its `issuer` and the envelope's sender are the same
+//! DID, so `key` must be the session's own identity — a call signed as any
+//! other DID is refused here before anything is sent. A refusal reads the
+//! same either way — [`VtcError::Refused`] over a session,
+//! [`VtcError::Http`]'s body over HTTPS — carrying the `trust-task-error`
+//! document as the VTC wrote it.
 //!
 //! Requests are built from the generated schema and validated against it
 //! before they are sent; replies are decoded into the generated `Response`
@@ -15,9 +20,11 @@
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 use trust_tasks_rs::validate::ValidatedPayload;
 
-use crate::{MAX_DOCUMENT_RESPONSE_BYTES, VtcClient, VtcError, decode_payload};
+use crate::{HolderKey, MAX_DOCUMENT_RESPONSE_BYTES, VtcClient, VtcError, decode_payload};
 
 /// The generated wire types for the family, re-exported so a caller names the
 /// reply types without depending on `trust-tasks-rs` itself.
@@ -86,37 +93,25 @@ pub struct AclUpdate {
 
 impl VtcClient {
     /// One page of the ACL entries this caller may see. Manage authority.
-    pub async fn acl_list(&self, filter: &AclListFilter) -> Result<list::Response, VtcError> {
+    pub async fn acl_list(
+        &self,
+        filter: &AclListFilter,
+        key: &HolderKey,
+    ) -> Result<list::Response, VtcError> {
         let payload = checked::<list::Payload>(serde_json::to_value(filter).map_err(bad)?)?;
-        if let Some(reply) = self.acl_document(task::LIST, payload.clone(), &[]).await? {
-            return decode_payload(reply, "acl/list");
-        }
-        let mut url = self.api_url(&["acl"])?;
-        if let Some(map) = payload.as_object() {
-            let mut q = url.query_pairs_mut();
-            for (k, v) in map {
-                match v {
-                    serde_json::Value::String(s) => q.append_pair(k, s),
-                    other => q.append_pair(k, &other.to_string()),
-                };
-            }
-        }
-        let resp = self
-            .tt(reqwest::Method::GET, url, task::LIST)?
-            .send()
-            .await?;
-        decode_payload(crate::expect_success(resp).await?.json().await?, "acl/list")
+        self.acl_task(task::LIST, payload, key, &[]).await
     }
 
     /// Every ACL entry this caller may see, following the cursor to the end.
     pub async fn acl_list_all(
         &self,
         filter: &AclListFilter,
+        key: &HolderKey,
     ) -> Result<Vec<list::AclEntry>, VtcError> {
         let mut filter = filter.clone();
         let mut out = Vec::new();
         loop {
-            let page = self.acl_list(&filter).await?;
+            let page = self.acl_list(&filter, key).await?;
             out.extend(page.entries);
             match (page.truncated, page.cursor) {
                 (true, Some(cursor)) => filter.cursor = Some(cursor),
@@ -135,24 +130,24 @@ impl VtcClient {
 
     /// One entry. [`VtcError::Http`] 404 (or the document's `notFound`) when
     /// the subject holds none this caller may see.
-    pub async fn acl_show(&self, subject: &str) -> Result<show::Response, VtcError> {
+    pub async fn acl_show(
+        &self,
+        subject: &str,
+        key: &HolderKey,
+    ) -> Result<show::Response, VtcError> {
         let payload = checked::<show::Payload>(serde_json::json!({ "subject": subject }))?;
-        if let Some(reply) = self.acl_document(task::SHOW, payload, &[]).await? {
-            return decode_payload(reply, "acl/show");
-        }
-        let url = self.api_url(&["acl", subject])?;
-        let resp = self
-            .tt(reqwest::Method::GET, url, task::SHOW)?
-            .send()
-            .await?;
-        decode_payload(crate::expect_success(resp).await?.json().await?, "acl/show")
+        self.acl_task(task::SHOW, payload, key, &[]).await
     }
 
     /// Write the entry `grant.subject` should hold. Conferring administrator
     /// authority needs a passkey gesture bound to this grant, and
     /// community-wide authority another administrator's consent; the refusal
     /// carries the ceremony in its `details`.
-    pub async fn acl_grant(&self, grant: &AclGrant) -> Result<grant::Response, VtcError> {
+    pub async fn acl_grant(
+        &self,
+        grant: &AclGrant,
+        key: &HolderKey,
+    ) -> Result<grant::Response, VtcError> {
         let mut entry = serde_json::json!({
             "subject": grant.subject,
             "role": grant.role,
@@ -169,24 +164,15 @@ impl VtcClient {
             body["reason"] = serde_json::json!(reason);
         }
         let payload = checked::<grant::Payload>(body)?;
-        if let Some(reply) = self.acl_document(task::GRANT, payload.clone(), &[]).await? {
-            return decode_payload(reply, "acl/grant");
-        }
-        let url = self.api_url(&["acl"])?;
-        let resp = self
-            .tt(reqwest::Method::POST, url, task::GRANT)?
-            .json(&payload)
-            .send()
-            .await?;
-        decode_payload(
-            crate::expect_success(resp).await?.json().await?,
-            "acl/grant",
-        )
+        self.acl_task(task::GRANT, payload, key, &[]).await
     }
 
-    /// Amend an existing entry's label, scopes or expiry. Signed documents
-    /// only: the VTC has no bearer route for it.
-    pub async fn acl_update(&self, update: &AclUpdate) -> Result<update::Response, VtcError> {
+    /// Amend an existing entry's label, scopes or expiry.
+    pub async fn acl_update(
+        &self,
+        update: &AclUpdate,
+        key: &HolderKey,
+    ) -> Result<update::Response, VtcError> {
         let mut body = serde_json::json!({ "subject": update.subject });
         if let Some(label) = &update.label {
             body["label"] = serde_json::json!(label);
@@ -201,15 +187,8 @@ impl VtcClient {
             body["reason"] = serde_json::json!(reason);
         }
         let payload = checked::<update::Payload>(body)?;
-        match self
-            .acl_document(task::UPDATE, payload, update::ERROR_CODES)
-            .await?
-        {
-            Some(reply) => decode_payload(reply, "acl/update"),
-            None => Err(VtcError::Unsupported(
-                "acl/update is a signed Trust Task only — connect with a key or a session",
-            )),
-        }
+        self.acl_task(task::UPDATE, payload, key, update::ERROR_CODES)
+            .await
     }
 
     /// Move `subject` from `from_role` to `to_role`, compare-and-swapped on
@@ -220,6 +199,7 @@ impl VtcClient {
         from_role: &str,
         to_role: &str,
         reason: Option<&str>,
+        key: &HolderKey,
     ) -> Result<change_role::Response, VtcError> {
         let mut body = serde_json::json!({
             "subject": subject,
@@ -230,26 +210,7 @@ impl VtcClient {
             body["reason"] = serde_json::json!(reason);
         }
         let payload = checked::<change_role::Payload>(body)?;
-        if let Some(reply) = self
-            .acl_document(task::CHANGE_ROLE, payload.clone(), &[])
-            .await?
-        {
-            return decode_payload(reply, "acl/change-role");
-        }
-        let mut rest = payload;
-        if let Some(map) = rest.as_object_mut() {
-            map.remove("subject");
-        }
-        let url = self.api_url(&["acl", subject])?;
-        let resp = self
-            .tt(reqwest::Method::PATCH, url, task::CHANGE_ROLE)?
-            .json(&rest)
-            .send()
-            .await?;
-        decode_payload(
-            crate::expect_success(resp).await?.json().await?,
-            "acl/change-role",
-        )
+        self.acl_task(task::CHANGE_ROLE, payload, key, &[]).await
     }
 
     /// Remove `subject`'s entry, or — with `scopes` — only those scopes. The
@@ -260,6 +221,7 @@ impl VtcClient {
         subject: &str,
         scopes: Option<&[String]>,
         reason: Option<&str>,
+        key: &HolderKey,
     ) -> Result<revoke::Response, VtcError> {
         let mut body = serde_json::json!({ "subject": subject });
         if let Some(scopes) = scopes {
@@ -269,40 +231,82 @@ impl VtcClient {
             body["reason"] = serde_json::json!(reason);
         }
         let payload = checked::<revoke::Payload>(body)?;
-        if let Some(reply) = self
-            .acl_document(task::REVOKE, payload, revoke::ERROR_CODES)
-            .await?
-        {
-            return decode_payload(reply, "acl/revoke");
-        }
-        let mut url = self.api_url(&["acl", subject])?;
-        {
-            let mut q = url.query_pairs_mut();
-            if let Some(scopes) = scopes {
-                q.append_pair("scopes", &scopes.join(","));
-            }
-            if let Some(reason) = reason {
-                q.append_pair("reason", reason);
-            }
-        }
-        let resp = self
-            .tt(reqwest::Method::DELETE, url, task::REVOKE)?
-            .send()
-            .await?;
-        decode_payload(
-            crate::expect_success(resp).await?.json().await?,
-            "acl/revoke",
-        )
+        self.acl_task(task::REVOKE, payload, key, revoke::ERROR_CODES)
+            .await
     }
 
-    async fn acl_document(
+    /// Sign one `acl/*` document as `key` and send it, over the client's
+    /// session when it holds one — `key` must then be the session's identity
+    /// — otherwise signed with `key` and posted to the document endpoint.
+    /// `declared` is the task's declared error codes, honoured only on the
+    /// HTTPS path (a 404 naming one becomes [`VtcError::NotFound`]); a session
+    /// refusal is always [`VtcError::Refused`].
+    async fn acl_task<R: DeserializeOwned>(
         &self,
         type_uri: &str,
-        payload: serde_json::Value,
+        payload: Value,
+        key: &HolderKey,
         declared: &[trust_tasks_rs::DeclaredErrorCode],
-    ) -> Result<Option<serde_json::Value>, VtcError> {
-        self.admin_document(type_uri, payload, declared, MAX_DOCUMENT_RESPONSE_BYTES)
+    ) -> Result<R, VtcError> {
+        #[cfg(feature = "didcomm")]
+        if self.documents.is_some() {
+            return self
+                .acl_over_session(type_uri, payload, key.holder_did())
+                .await;
+        }
+        let doc =
+            vta_sdk::trust_task_sign::build_signed_with(type_uri, payload, key, &self.vtc_did)
+                .await
+                .map_err(|e| VtcError::Signing(e.to_string()))?;
+        let reply = self
+            .post_document(doc, declared, MAX_DOCUMENT_RESPONSE_BYTES)
+            .await?;
+        decode_payload(reply, type_uri)
+    }
+
+    /// One `acl/*` task over the client's session, attributed to `signer_did`.
+    ///
+    /// The session signs the document as its own DID and the VTC binds that
+    /// proof to the envelope's sender, so a task meant to be signed as any
+    /// other DID cannot go this way: it is refused here, before anything is
+    /// sent, rather than arrive attributed to the wrong member — the same
+    /// guard [`crate::git_ns`] applies to `git-ns/*`.
+    #[cfg(feature = "didcomm")]
+    async fn acl_over_session<R: DeserializeOwned>(
+        &self,
+        type_uri: &str,
+        payload: Value,
+        signer_did: &str,
+    ) -> Result<R, VtcError> {
+        let (Some(documents), Some(session_did)) = (&self.documents, &self.session_did) else {
+            return Err(VtcError::Session("this client holds no session".into()));
+        };
+        let base = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+        if base(signer_did) != base(session_did) {
+            return Err(VtcError::Signing(format!(
+                "{type_uri} is to be signed as {signer_did}, but this client's session is \
+                 {session_did}; over a session the VTC accepts a document only from the DID \
+                 that signed it"
+            )));
+        }
+        let reply = documents
+            .dispatch_trust_task_document(type_uri, payload, crate::SESSION_TIMEOUT_SECS)
             .await
+            .map_err(|e| VtcError::Session(e.to_string()))?;
+        let refused = reply
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.starts_with("https://trusttasks.org/spec/trust-task-error/"));
+        if refused {
+            return Err(VtcError::Refused {
+                document: reply.to_string(),
+            });
+        }
+        let payload = reply.get("payload").cloned().unwrap_or(Value::Null);
+        serde_json::from_value(payload).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("{type_uri} response does not fit its schema: {e}"),
+        })
     }
 }
 

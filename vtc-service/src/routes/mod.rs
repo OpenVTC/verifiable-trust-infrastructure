@@ -1077,25 +1077,8 @@ fn build_api_chain(
         )
     };
 
-    // P3.9 — encrypted backup / restore. Both routes only ever answer 403: a
-    // backup is the `backup/*` Trust Task family, served over DIDComm or TSP
-    // (see `routes::backup`). They stay mounted so an old client gets a reason
-    // rather than a 404, and keep the default body cap — nothing is read.
-    let api = api
-        .route(
-            "/backup/export",
-            ttl(
-                post(backup::export),
-                <trust_tasks_rs::specs::vtc::backup::export::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            ),
-        )
-        .route(
-            "/backup/import",
-            ttl(
-                post(backup::import),
-                <trust_tasks_rs::specs::vtc::backup::import::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            ),
-        );
+    // P3.9 — encrypted backup / restore has no route: a backup is the
+    // `vtc/backup/export` + `backup/*` Trust Tasks, over TSP or DIDComm only.
 
     let api = api
         // §14.4 — every authenticated API route inherits the 1 MiB

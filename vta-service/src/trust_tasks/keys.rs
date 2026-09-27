@@ -424,6 +424,50 @@ pub(super) async fn handle_derive_and_sign_document(
     }
 }
 
+/// Handler for `keys/import-wrapping-key/0.1`. Admin only — the authority
+/// `keys/import` needs, since a wrapping key is useful for nothing else and
+/// each one costs this agent memory until it expires.
+///
+/// Mints a fresh Ed25519 key pair per request and keeps only its X25519
+/// counterpart, in memory, single-use, for 60 seconds
+/// ([`vta_keys::wrapping::WrappingKeyCache`]). The public half goes back as a
+/// `did:key` in this agent's signed response, which a producer must verify
+/// before sealing to it: the transports that need a wrapping key are the ones
+/// with an intermediary that could substitute its own. Replaces
+/// `GET /keys/import/wrapping-key`, which returned an X25519 JWK unsigned, and
+/// is reachable over every transport — over HTTPS it is what makes a key import
+/// possible at all, since the cleartext carrier is refused there.
+pub(super) async fn handle_import_wrapping_key(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::specs::keys::import_wrapping_key::v0_1 as spec;
+    if let Err(e) = auth.require_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    if let Err(resp) = parse_payload::<spec::Payload>(&doc) {
+        return resp;
+    }
+    let key = state.wrapping_cache.generate().await;
+    let body = serde_json::json!({
+        "wrappingKey": key.public_did,
+        "keyId": key.kid,
+        "expiresAt": key.expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    });
+    // Through the generated type, so the `did:key:z6Mk…` pattern is checked on
+    // the way out.
+    match serde_json::from_value::<spec::Response>(body) {
+        Ok(r) => success_response(&doc, r),
+        Err(e) => reject_with(
+            &doc,
+            RejectReason::InternalError {
+                reason: format!("wrapping key does not match its schema: {e}"),
+            },
+        ),
+    }
+}
+
 /// Handler for `keys/import/0.1`. Admin only.
 ///
 /// **The cleartext `privateKeyMultibase` carrier is admitted only where the
@@ -744,5 +788,107 @@ mod key_export_tests {
             refused_by_the_gate(&out),
             "a narrowing without key-export removes it, even from an admin"
         );
+    }
+}
+
+#[cfg(test)]
+mod import_wrapping_key_tests {
+    use crate::acl::Role;
+    use crate::auth::AuthClaims;
+    use crate::test_support::build_signing_test_app_state;
+    use serde_json::{Value, json};
+
+    async fn ask(state: &crate::server::AppState, seed: u8, role: Role) -> Value {
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let (did, _) = crate::test_support::did_for_seed(seed);
+        let mut doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": vta_sdk::trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+            "issuer": did,
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {},
+        }))
+        .unwrap();
+        crate::test_support::sign_as(seed, &mut doc);
+        let claims = AuthClaims {
+            did,
+            role,
+            allowed_contexts: vec![],
+            ..Default::default()
+        };
+        let out = super::super::dispatch_trust_task_core(
+            state,
+            &claims,
+            &serde_json::to_vec(&doc).unwrap(),
+            super::super::transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        serde_json::from_slice(&out.body).expect("a JSON document")
+    }
+
+    /// keys/import-wrapping-key/0.1: an admin gets a fresh Ed25519 `did:key`
+    /// in the agent's signed answer, a new one every time; the key opens a
+    /// bundle sealed to its X25519 counterpart exactly once.
+    #[tokio::test]
+    async fn an_admin_gets_a_fresh_signed_did_key_that_opens_one_sealed_bundle() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let first = ask(&state, 0x68, Role::Admin).await;
+        let second = ask(&state, 0x68, Role::Admin).await;
+        let key = first["payload"]["wrappingKey"].as_str().expect("{first}");
+        assert!(key.starts_with("did:key:z6Mk"), "{first}");
+        assert!(first["payload"]["keyId"].is_string(), "{first}");
+        assert!(first["payload"]["expiresAt"].is_string(), "{first}");
+        assert!(first["proof"].is_object(), "the answer is signed: {first}");
+        assert_ne!(
+            first["payload"]["wrappingKey"],
+            second["payload"]["wrappingKey"]
+        );
+
+        // Seal to the did:key's X25519 counterpart; the cache opens it once.
+        use base64::Engine as _;
+        use vta_sdk::sealed_transfer::{
+            AssertionProof, InMemoryNonceStore, ProducerAssertion, RawPrivateKey, SealedPayloadV1,
+            armor, generate_ed25519_keypair, seal_payload,
+        };
+        let x = affinidi_crypto::did_key::ed25519_pub_to_x25519_bytes(
+            &affinidi_crypto::did_key::did_key_to_ed25519_pub(key).unwrap(),
+        )
+        .unwrap();
+        let (_s, prod) = generate_ed25519_keypair();
+        let bundle = seal_payload(
+            &x,
+            [9u8; 16],
+            ProducerAssertion {
+                producer_did: affinidi_crypto::did_key::ed25519_pub_to_did_key(&prod),
+                proof: AssertionProof::PinnedOnly,
+            },
+            &SealedPayloadV1::RawPrivateKey(RawPrivateKey {
+                key_type: "ed25519".into(),
+                key_bytes_b64: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode([0x33u8; 32]),
+            }),
+            &InMemoryNonceStore::new(),
+        )
+        .await
+        .unwrap();
+        let armored = armor::encode(&bundle);
+        let (kind, bytes) = state.wrapping_cache.unwrap_sealed(&armored).await.unwrap();
+        assert_eq!(
+            (kind.as_str(), bytes.as_slice()),
+            ("ed25519", &[0x33u8; 32][..])
+        );
+        assert!(
+            state.wrapping_cache.unwrap_sealed(&armored).await.is_err(),
+            "single use"
+        );
+    }
+
+    /// The authority `keys/import` needs: anyone else is refused.
+    #[tokio::test]
+    async fn a_non_admin_is_refused_a_wrapping_key() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let resp = ask(&state, 0x69, Role::Reader).await;
+        assert_eq!(resp["payload"]["code"], "permissionDenied", "{resp}");
     }
 }

@@ -459,15 +459,37 @@ pub struct Outbound<'a> {
     /// the entry in [`OUTBOUND_SUPPORTED`] that would select it.
     #[cfg(feature = "didcomm")]
     bridge: &'a DIDCommBridge,
+    /// The Trust-Task HTTPS base to use when the peer advertises none, set by a
+    /// caller that knows the peer's product serves the binding at a fixed path
+    /// (see [`Outbound::with_https_base`]). It only ever fills an empty slot:
+    /// an advertised `TrustTaskHTTPS` endpoint wins, and TSP and DIDComm still
+    /// come first.
+    https_base: Option<String>,
 }
 
 impl<'a> Outbound<'a> {
+    /// Reach the peer over the Trust-Task HTTPS binding at `base` (the request
+    /// URL is `base + "/trust-tasks"`) when its DID document advertises no
+    /// Trust-Task HTTPS endpoint of its own.
+    ///
+    /// For a peer whose product documents where it serves the binding but whose
+    /// DID document does not say so — the DID hosting service serves
+    /// `POST /api/trust-tasks` at the origin its `WebVHHosting` service names.
+    /// It does not change the preference order: a peer that advertises TSP or
+    /// DIDComm is still reached over it. A caller setting this should also ask
+    /// for [`ReplyTrust::SignedByRecipient`], because TLS authenticates the
+    /// host, not the DID that composed the reply.
+    #[must_use]
+    pub fn with_https_base(mut self, base: Option<String>) -> Self {
+        self.https_base = base;
+        self
+    }
+
     /// A seam assembled from borrowed parts rather than from an `AppState`.
     ///
     /// For a caller whose own dependencies were threaded to it — today that is
-    /// the webvh layer, whose client is constructed deep inside
-    /// `WebvhTransport` and which carries a [`TspSender`] down from its
-    /// `WebvhDeps`. Passing `tsp: None` is a real answer, not a shortcut: a
+    /// the webvh layer, whose `WebvhHostClient` carries a [`TspSender`] down
+    /// from its `WebvhDeps`. Passing `tsp: None` is a real answer, not a shortcut: a
     /// CLI or a setup wizard holds no mediator socket, and the seam correctly
     /// falls to DIDComm there.
     ///
@@ -486,6 +508,7 @@ impl<'a> Outbound<'a> {
             tsp,
             #[cfg(feature = "didcomm")]
             bridge,
+            https_base: None,
         }
     }
 
@@ -509,6 +532,7 @@ impl<'a> Outbound<'a> {
             tsp: TspSender::from_app_state(state),
             #[cfg(feature = "didcomm")]
             bridge: state.didcomm_bridge.as_ref(),
+            https_base: None,
         }
     }
 }
@@ -611,7 +635,7 @@ impl Outbound<'_> {
         // every caller pays the whole thing in stack whether or not it is deep
         // already.
         //
-        // `webvh_didcomm` is deep already — it sits under `create_did_webvh`,
+        // `webvh_host` is deep already — it sits under `create_did_webvh`,
         // which is itself several awaits down — and calling this inline
         // overflowed the 2MB stack a `#[tokio::test]` worker gets. It surfaced
         // as `mock_vta` aborting with SIGABRT during a full-workspace run, on a
@@ -639,7 +663,10 @@ impl Outbound<'_> {
         })?;
         let doc_value = serde_json::to_value(&resolved.doc)
             .map_err(|e| AppError::Internal(format!("serialise the peer's DID document: {e}")))?;
-        let caps = ServiceCapabilities::from_did_document(&doc_value);
+        let mut caps = ServiceCapabilities::from_did_document(&doc_value);
+        if caps.rest.is_none() {
+            caps.rest.clone_from(&self.https_base);
+        }
         let (protocol, endpoint) = pick_transport(&caps, &self.initiable_protocols(), recipient)?;
 
         let reply = match protocol {
@@ -842,12 +869,22 @@ async fn verify_reply(
     let vm_resolver = vti_common::auth::TrustTaskVmResolver::from_optional(Some(resolver.clone()));
     let signer = vti_common::auth::verify_trust_task_proof_with(&doc, &vm_resolver)
         .await
-        .map_err(|e| {
-            AppError::Forbidden(format!(
+        .map_err(|e| match e {
+            // Still a refusal, and deliberately not a 5xx: the SDK retries a
+            // 5xx under the caller's idempotency key, which would re-send a
+            // request the peer may already have applied. The reply is not
+            // believed; only the wording tells the operator why.
+            vti_common::auth::DiProofError::ResolverFailed(_) => AppError::Forbidden(format!(
+                "could not retrieve `{recipient}`'s verification key, so its reply was not \
+                 checked and is not believed ({e}). This is a key-retrieval failure, not a bad \
+                 proof: the request may have taken effect at `{recipient}`, so check its state \
+                 before sending it again"
+            )),
+            other => AppError::Forbidden(format!(
                 "the reply from `{recipient}` is unsigned or its proof does not verify \
-                 ({e}), so nothing in it can be believed — an unsigned answer is bytes, not \
+                 ({other}), so nothing in it can be believed — an unsigned answer is bytes, not \
                  evidence"
-            ))
+            )),
         })?;
 
     if signer != recipient {
@@ -894,6 +931,95 @@ mod tests {
         )
         .await
         .expect("a refusal needs no proof");
+    }
+
+    /// A reply signed by a DID method this resolver cannot resolve fails at
+    /// resolution — before any signature is even inspected — and must be
+    /// reported as a retrieval failure, not folded into "does not verify".
+    /// The mutation may already have committed on the peer's side; only the
+    /// verification *fetch* failed (FTL-29595, fix direction 3, server-side
+    /// half: this is the VTA acting as an outbound caller to a peer/room-host).
+    #[tokio::test]
+    async fn a_resolver_failure_reports_retrieval_not_invalid_proof() {
+        let reply = serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000002",
+            "type": "https://trusttasks.org/spec/rooms/epoch/chain/0.1#response",
+            "issuer": "did:example:host",
+            "recipient": "did:example:agent",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": { "links": [] },
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": "did:example:host#key-0",
+                "created": "2026-01-01T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        });
+        let err = verify_reply(
+            &test_resolver().await,
+            &reply,
+            "did:example:host",
+            ReplyTrust::SignedByRecipient,
+        )
+        .await
+        .expect_err("did:example is not a method this resolver can resolve");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not retrieve"),
+            "expected a retrieval-failure message, got: {msg}"
+        );
+        assert!(msg.contains("before sending it again"), "got: {msg}");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "a retrieval failure must stay a refusal the SDK does not retry: {err:?}"
+        );
+        assert!(
+            !msg.contains("does not verify"),
+            "a retrieval failure must not read as an invalid proof: {msg}"
+        );
+    }
+
+    /// The control: an actual bad signature, reached through a `did:key`
+    /// verification method the resolver handles locally (so resolution
+    /// itself succeeds), must still say "does not verify".
+    #[tokio::test]
+    async fn an_actual_bad_signature_still_says_does_not_verify() {
+        let (recipient, _vm) = crate::test_support::did_for_seed(13);
+        let mut doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000003",
+            "type": "https://trusttasks.org/spec/rooms/epoch/chain/0.1#response",
+            "issuer": recipient,
+            "recipient": "did:key:zAgent",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": { "links": [] }
+        }))
+        .expect("well-formed reply");
+        crate::test_support::sign_as(13, &mut doc);
+
+        // Corrupt the signature — a one-character flip keeps the multibase
+        // string decodable, so this exercises "does not verify" rather than
+        // "malformed proof".
+        let proof = doc.proof.as_mut().expect("document is signed");
+        let last = proof.proof_value.pop().expect("non-empty proofValue");
+        proof.proof_value.push(if last == '1' { '2' } else { '1' });
+
+        let reply = serde_json::to_value(&doc).expect("doc serialises");
+        let err = verify_reply(
+            &test_resolver().await,
+            &reply,
+            &recipient,
+            ReplyTrust::SignedByRecipient,
+        )
+        .await
+        .expect_err("a corrupted signature must not verify");
+        let msg = err.to_string();
+        assert!(msg.contains("does not verify"), "got: {msg}");
+        assert!(
+            !msg.contains("could not retrieve"),
+            "a bad signature must not read as a retrieval failure: {msg}"
+        );
     }
 
     /// An unsigned success reply is refused. Bytes off a socket attest to

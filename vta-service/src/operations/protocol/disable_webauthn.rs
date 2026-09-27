@@ -158,7 +158,6 @@ pub async fn disable_webauthn(
         deps.did_resolver,
         deps.didcomm_bridge,
         auth,
-        deps.webvh_auth_locks,
         channel,
     )
     .await?;

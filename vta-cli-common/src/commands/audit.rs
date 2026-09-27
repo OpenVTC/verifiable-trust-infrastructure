@@ -15,6 +15,11 @@ pub async fn cmd_list_audit_logs(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let result = client.list_audit_logs(params).await?;
 
+    if crate::render::is_json_output() {
+        crate::render::print_json(&result)?;
+        return Ok(());
+    }
+
     if result.entries.is_empty() {
         println!("  No audit log entries found.");
         return Ok(());

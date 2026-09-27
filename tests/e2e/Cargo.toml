@@ -19,7 +19,7 @@ autobins = false
 
 [dev-dependencies]
 # Embedded mediator fixture from affinidi-tdk-rs.
-affinidi-messaging-test-mediator = { version = "0.11", features = ["tsp"] }
+affinidi-messaging-test-mediator = { version = "0.12", features = ["tsp"] }
 
 # VTA: enable the `test-support` feature so we can stand up complete VTA
 # state (in-memory keyspaces, default `AppConfig`, bootstrap helpers)
@@ -45,6 +45,9 @@ tempfile = "3"
 reqwest = { workspace = true }
 ed25519-dalek = { workspace = true }
 multibase = { workspace = true }
+# Sealing to a wrapping key's X25519 counterpart (`keys/import-wrapping-key`).
+affinidi-crypto = { workspace = true }
+base64 = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }

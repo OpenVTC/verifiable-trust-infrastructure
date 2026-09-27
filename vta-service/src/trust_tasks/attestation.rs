@@ -1,6 +1,14 @@
-//! Attestation slice trust-task handlers — the one dispatched task of the
-//! family, `spec/vta/attestation/mnemonic-export/1.0`. (`status` and `report`
-//! are REST-routed and unauthenticated; see `vta_sdk::trust_tasks`.)
+//! Attestation slice trust-task handlers.
+//!
+//! - `spec/vta/attestation/{status,report,config-report}/0.1` — the three
+//!   **public** reads ([`vta_sdk::trust_tasks::PUBLIC_URIS`]). A verifier asks
+//!   before it trusts this agent, so they need no session, ACL entry or request
+//!   proof; the nonce bound into the evidence is what makes a report the
+//!   verifier's own, and the spine signs every response with this agent's
+//!   `authentication` key. They were REST-only routes and a DIDComm arm nothing
+//!   sent to; on the spine they are reachable over TSP, DIDComm and HTTPS alike.
+//! - `spec/vta/attestation/mnemonic-export/1.0` — authenticated, end-to-end
+//!   only (or a signed first-boot request); see [`handle_mnemonic_export`].
 
 use serde_json::Value;
 use trust_tasks_rs::specs::vta::attestation::mnemonic_export::v1_0 as mnemonic_export_spec;
@@ -9,12 +17,189 @@ use vta_sdk::sealed_transfer::BootstrapRequest;
 use vti_common::error::AppError;
 
 use super::helpers::{
-    TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, success_response,
+    TrustTaskOutcome, app_error_to_reject, parse_payload, reject_declared, reject_with,
+    success_response,
 };
 use super::transport::{self, TransportConfidentiality};
 use crate::auth::AuthClaims;
 use crate::operations;
 use crate::server::AppState;
+use trust_tasks_rs::specs::vta::attestation::{
+    config_report::v0_1 as config_report_spec, report::v0_1 as report_spec,
+    status::v0_1 as status_spec,
+};
+
+/// The platform name as the specifications spell it. The internal enum
+/// displays `sev_snp`; the registry says `sev-snp`.
+fn tee_type_wire(tee_type: &str) -> &'static str {
+    match tee_type {
+        "nitro" => "nitro",
+        "sev_snp" | "sev-snp" => "sev-snp",
+        _ => "simulated",
+    }
+}
+
+/// Unix seconds as the RFC 3339 `generatedAt` the specifications carry.
+fn rfc3339(secs: u64) -> Option<String> {
+    chrono::DateTime::from_timestamp(i64::try_from(secs).ok()?, 0)
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+/// Build the response through the generated type, so what goes out is checked
+/// against the published schema on the way (the patterns on `nonce`,
+/// `evidence`, the digest) rather than trusted to a hand-built map.
+fn typed_response<R: serde::de::DeserializeOwned + serde::Serialize>(
+    doc: &TrustTask<Value>,
+    body: Value,
+) -> TrustTaskOutcome {
+    match serde_json::from_value::<R>(body) {
+        Ok(r) => success_response(doc, r),
+        Err(e) => reject_with(
+            doc,
+            RejectReason::InternalError {
+                reason: format!("attestation response does not match its schema: {e}"),
+            },
+        ),
+    }
+}
+
+/// `spec/vta/attestation/status/0.1` — which TEE this agent detected at boot.
+/// Public: answered to anyone, the same for everyone.
+pub(super) async fn handle_status(
+    state: &AppState,
+    _auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(resp) = parse_payload::<status_spec::Payload>(&doc) {
+        return resp;
+    }
+    let Some(tee) = state.tee.as_ref() else {
+        return reject_declared(
+            &doc,
+            status_spec::error_codes::NOT_ATTESTED,
+            "this agent has no attestation provider",
+        );
+    };
+    let status = operations::attestation::get_tee_status(&tee.state);
+    let mut body = serde_json::json!({
+        "teeType": tee_type_wire(&status.tee_type.to_string()),
+        "detected": status.detected,
+    });
+    if let Some(v) = status.platform_version {
+        body["platformVersion"] = Value::String(v);
+    }
+    typed_response::<status_spec::Response>(&doc, body)
+}
+
+/// `spec/vta/attestation/report/0.1` — fresh evidence binding the verifier's
+/// nonce and this agent's DID. Public; there is no nonce-less form, because a
+/// report nobody asked for is one anybody can replay.
+pub(super) async fn handle_report(
+    state: &AppState,
+    _auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let payload: report_spec::Payload = match parse_payload(&doc) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let Some(tee) = state.tee.as_ref() else {
+        return reject_declared(
+            &doc,
+            report_spec::error_codes::NOT_ATTESTED,
+            "this agent has no attestation provider",
+        );
+    };
+    let nonce = payload.nonce.to_string();
+    let report = match operations::attestation::generate_attestation_report(
+        &tee.state,
+        &state.config,
+        &nonce,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e @ AppError::Validation(_)) => return app_error_to_reject(&doc, e),
+        Err(e) => {
+            tracing::warn!(error = %e, "attestation report: the platform produced no quote");
+            return reject_declared(
+                &doc,
+                report_spec::error_codes::EVIDENCE_UNAVAILABLE,
+                "the platform did not produce a quote",
+            );
+        }
+    };
+    let mut body = serde_json::json!({
+        "teeType": tee_type_wire(&report.tee_type.to_string()),
+        "evidence": report.evidence,
+        "nonce": nonce,
+        "generatedAt": rfc3339(report.generated_at),
+    });
+    if let Some(did) = report.vta_did {
+        body["vtaDid"] = Value::String(did);
+    }
+    typed_response::<report_spec::Response>(&doc, body)
+}
+
+/// `spec/vta/attestation/config-report/0.1` — fresh evidence binding the
+/// verifier's nonce and the SHA-384 of the secret-free view of the
+/// configuration this enclave booted. Public. Only the enclave front-end
+/// captures that view at boot; any other build answers `noConfigSnapshot`.
+pub(super) async fn handle_config_report(
+    state: &AppState,
+    _auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let payload: config_report_spec::Payload = match parse_payload(&doc) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let Some(tee) = state.tee.as_ref() else {
+        return reject_declared(
+            &doc,
+            config_report_spec::error_codes::NOT_ATTESTED,
+            "this agent has no attestation provider",
+        );
+    };
+    {
+        let cfg = state.config.read().await;
+        if cfg.effective_config_digest.is_none() || cfg.effective_config_view.is_none() {
+            return reject_declared(
+                &doc,
+                config_report_spec::error_codes::NO_CONFIG_SNAPSHOT,
+                "this agent captured no configuration snapshot at boot",
+            );
+        }
+    }
+    let nonce = payload.nonce.to_string();
+    let report = match operations::attestation::generate_config_attestation(
+        &tee.state,
+        &state.config,
+        &nonce,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e @ AppError::Validation(_)) => return app_error_to_reject(&doc, e),
+        Err(e) => {
+            tracing::warn!(error = %e, "config attestation: the platform produced no quote");
+            return reject_declared(
+                &doc,
+                config_report_spec::error_codes::EVIDENCE_UNAVAILABLE,
+                "the platform did not produce a quote",
+            );
+        }
+    };
+    let body = serde_json::json!({
+        "configDigestSha384": report.config_digest_sha384,
+        "configView": report.config_view,
+        "nonce": report.nonce,
+        "teeType": tee_type_wire(&report.tee_type),
+        "evidence": report.evidence,
+        "generatedAt": rfc3339(report.generated_at),
+    });
+    typed_response::<config_report_spec::Response>(&doc, body)
+}
 
 /// `spec/vta/attestation/mnemonic-export/1.0` — release the TEE VTA's seed
 /// mnemonic, sealed to the requester, over one of the two paths the
@@ -460,5 +645,163 @@ mod tests {
             String::from_utf8_lossy(&replay.body)
         );
         assert_ne!(replay.status, axum::http::StatusCode::OK);
+    }
+
+    // ── the public reads ────────────────────────────────────────────────
+
+    const NONCE: &str = "8f14e45fceea167a5a36dedd4bea2543a1f0b1c2d3e4f5a6b7c8d9e0f1a2b3c4";
+
+    /// A request as an unidentified verifier sends it: no issuer, no proof,
+    /// addressed to this agent.
+    async fn anonymous_request(
+        state: &crate::server::AppState,
+        type_uri: &str,
+        payload: Value,
+    ) -> Vec<u8> {
+        let mut doc = json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": type_uri,
+            // The spec leaves it optional; this agent requires it on every
+            // document, to bound its duplicate-execution record (SPEC §7.2).
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": payload,
+        });
+        if let Some(vta_did) = state.config.read().await.vta_did.clone() {
+            doc["recipient"] = json!(vta_did);
+        }
+        serde_json::to_vec(&doc).unwrap()
+    }
+
+    /// Dispatch as an anonymous HTTPS caller would reach it.
+    async fn dispatch_anonymously(
+        state: &crate::server::AppState,
+        type_uri: &str,
+        payload: Value,
+    ) -> Value {
+        let body = anonymous_request(state, type_uri, payload).await;
+        let out = super::super::dispatch_trust_task_core(
+            state,
+            &super::super::anonymous_claims(),
+            &body,
+            TransportConfidentiality::HopByHop,
+        )
+        .await;
+        serde_json::from_slice(&out.body).expect("a JSON document")
+    }
+
+    fn error_code(doc: &Value) -> Option<&str> {
+        doc.pointer("/payload/code").and_then(Value::as_str)
+    }
+
+    /// A verifier with no identity gets the agent's platform, in the agent's
+    /// own signed answer, with the registry's spelling of the platform.
+    #[tokio::test]
+    async fn status_is_answered_to_an_anonymous_caller_and_signed() {
+        let (state, _guard, _dir) = state_with_guard().await;
+        let resp = dispatch_anonymously(
+            &state,
+            vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
+            json!({}),
+        )
+        .await;
+        assert_eq!(
+            resp["type"],
+            format!(
+                "{}#response",
+                vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1
+            ),
+            "{resp}"
+        );
+        assert_eq!(resp["payload"]["teeType"], "simulated", "{resp}");
+        assert_eq!(resp["payload"]["detected"], true, "{resp}");
+        assert!(
+            resp["proof"].is_object(),
+            "the answer is the agent's signed document: {resp}"
+        );
+    }
+
+    /// The evidence binds the verifier's nonce, which comes back with it.
+    #[tokio::test]
+    async fn a_report_binds_the_verifiers_nonce() {
+        let (state, _guard, _dir) = state_with_guard().await;
+        let resp = dispatch_anonymously(
+            &state,
+            vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_0_1,
+            json!({ "nonce": NONCE }),
+        )
+        .await;
+        assert_eq!(resp["payload"]["nonce"], NONCE, "{resp}");
+        assert!(
+            resp["payload"]["evidence"]
+                .as_str()
+                .is_some_and(|e| !e.is_empty()),
+            "{resp}"
+        );
+        assert!(resp["payload"]["generatedAt"].is_string(), "{resp}");
+        assert!(resp["proof"].is_object(), "{resp}");
+    }
+
+    /// There is no nonce-less report: it would be evidence anybody can replay.
+    #[tokio::test]
+    async fn a_report_without_a_nonce_is_refused() {
+        let (state, _guard, _dir) = state_with_guard().await;
+        let resp = dispatch_anonymously(
+            &state,
+            vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_0_1,
+            json!({}),
+        )
+        .await;
+        assert!(
+            resp["type"]
+                .as_str()
+                .is_some_and(|t| t.contains("trust-task-error")),
+            "{resp}"
+        );
+    }
+
+    /// An agent with no attestation provider says so in the specification's
+    /// own code, for each of the three reads.
+    #[tokio::test]
+    async fn no_attestation_provider_is_not_attested() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        for (uri, payload) in [
+            (vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1, json!({})),
+            (
+                vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_0_1,
+                json!({ "nonce": NONCE }),
+            ),
+            (
+                vta_sdk::trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1,
+                json!({ "nonce": NONCE }),
+            ),
+        ] {
+            let resp = dispatch_anonymously(&state, uri, payload).await;
+            let slug = uri
+                .trim_start_matches("https://trusttasks.org/spec/")
+                .trim_end_matches("/0.1");
+            assert_eq!(
+                error_code(&resp),
+                Some(format!("{slug}:notAttested").as_str()),
+                "{uri}: {resp}"
+            );
+        }
+    }
+
+    /// Only the enclave front-end captures a configuration snapshot at boot;
+    /// any other build answers the declared `noConfigSnapshot`.
+    #[tokio::test]
+    async fn a_config_report_without_a_snapshot_says_so() {
+        let (state, _guard, _dir) = state_with_guard().await;
+        let resp = dispatch_anonymously(
+            &state,
+            vta_sdk::trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1,
+            json!({ "nonce": NONCE }),
+        )
+        .await;
+        assert_eq!(
+            error_code(&resp),
+            Some("vta/attestation/config-report:noConfigSnapshot"),
+            "{resp}"
+        );
     }
 }

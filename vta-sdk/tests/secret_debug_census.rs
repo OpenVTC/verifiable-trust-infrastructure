@@ -74,13 +74,13 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
         "a webvh host's path label for the DID, not a BIP-39 phrase",
     ),
     (
-        "vta-webvh/src/webvh_client.rs",
+        "vta-service/src/webvh_host.rs",
         "RequestUriResponse",
         "mnemonic",
         "a webvh host's path label for the DID, not a BIP-39 phrase",
     ),
     (
-        "vta-webvh/src/webvh_client.rs",
+        "vta-service/src/webvh_host.rs",
         "HostedDidEntry",
         "mnemonic",
         "a webvh host's path label for the DID, not a BIP-39 phrase",

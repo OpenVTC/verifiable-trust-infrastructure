@@ -124,7 +124,6 @@ use vta_sdk::protocols::audit_management::list::{
 use vta_sdk::protocols::audit_management::verify::{
     AuditChainBreak, AuditChainReport, VTA_EXT_KEY, VtaVerifyExt,
 };
-use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse};
 use vta_sdk::protocols::consent_management::{
     ConsentApproverListBody, ConsentApproverSetBody, ConsentDecisionBody, ConsentListBody,
     ConsentRequestBody, ConsentRevokeBody,
@@ -561,15 +560,15 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── auth ────────────────────────────────────────────────
         (
-            uris::TASK_AUTH_REVOKE_SESSION_0_1,
+            uris::TASK_AUTH_REVOKE_SESSION_0_2,
             checked!(
-                specs::auth::revoke_session::v0_1::Payload,
-                specs::auth::revoke_session::v0_1::Response,
-                to_v(RevokeSessionRequest {
-                    all: None,
-                    session_id: Some("sess-1".into()),
+                specs::auth::revoke_session::v0_2::Payload,
+                specs::auth::revoke_session::v0_2::Response,
+                json!({
+                    "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "reason": "access-withdrawn"
                 }),
-                to_v(RevokeSessionResponse { revoked_count: 1 })
+                json!({ "revokedCount": 3 })
             ),
         ),
         (
@@ -1023,6 +1022,58 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     context_id: Some("app".into()),
                 }),
                 to_v(CreateKeyResponseBody { key: key_result() })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+            checked!(
+                specs::keys::import_wrapping_key::v0_1::Payload,
+                specs::keys::import_wrapping_key::v0_1::Response,
+                json!({}),
+                json!({
+                    "wrappingKey": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+                    "keyId": "5f2c0a9e-1b7d-4c3e-8f6a-2d9b0e4c7a18",
+                    "expiresAt": "2026-09-27T09:11:00Z"
+                })
+            ),
+        ),
+        // ─── health + restore ────────────────────────────────────
+        (
+            uris::TASK_VTA_HEALTH_DETAILS_0_1,
+            checked!(
+                specs::vta::health::details::v0_1::Payload,
+                specs::vta::health::details::v0_1::Response,
+                json!({}),
+                json!({
+                    "status": "ok",
+                    "mediatorUrl": "https://mediator.example.com",
+                    "mediatorDid": "did:web:mediator.example.com",
+                    "teeStatus": { "teeType": "sev-snp", "detected": true },
+                    "sealed": true,
+                    "storageEncrypted": true,
+                    "tspEnabled": true
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_RESTORE_STATUS_0_1,
+            checked!(
+                specs::vta::restore::status::v0_1::Payload,
+                specs::vta::restore::status::v0_1::Response,
+                json!({}),
+                json!({
+                    "version": "0.40.0",
+                    "restored": true,
+                    "restore": {
+                        "appliedAt": "2026-09-26T08:15:02Z",
+                        "stagedAt": "2026-09-26T08:14:40Z",
+                        "stagedBy": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                        "sourceDid": "did:webvh:QmOldScid:vta-old.example.com",
+                        "sourceEnvironment": "hardened",
+                        "targetEnvironment": "tee",
+                        "internalKeysLost": ["audit-checkpoint-signer"]
+                    }
+                })
             ),
         ),
         (
@@ -3065,6 +3116,56 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ));
     }
 
+    // ─── vta/attestation/{status,report,config-report} (public, tee-gated) ─
+    //
+    // The handlers build each response through the generated type; these pin
+    // that the shapes they emit — the registry's `sev-snp` spelling, RFC 3339
+    // `generatedAt`, the 64-hex nonce — are the published ones.
+    #[cfg(feature = "tee")]
+    {
+        let nonce = "8f14e45fceea167a5a36dedd4bea2543a1f0b1c2d3e4f5a6b7c8d9e0f1a2b3c4";
+        t.push((
+            uris::TASK_ATTESTATION_STATUS_0_1,
+            checked!(
+                specs::vta::attestation::status::v0_1::Payload,
+                specs::vta::attestation::status::v0_1::Response,
+                json!({}),
+                json!({ "teeType": "sev-snp", "detected": true, "platformVersion": "3" })
+            ),
+        ));
+        t.push((
+            uris::TASK_ATTESTATION_REPORT_0_1,
+            checked!(
+                specs::vta::attestation::report::v0_1::Payload,
+                specs::vta::attestation::report::v0_1::Response,
+                json!({ "nonce": nonce }),
+                json!({
+                    "teeType": "nitro",
+                    "evidence": "hEShATgioFkRXqlpbW9kdWxlX2lk",
+                    "nonce": nonce,
+                    "vtaDid": "did:webvh:QmExampleScid:vta.example.com",
+                    "generatedAt": "2026-09-26T12:00:00Z",
+                })
+            ),
+        ));
+        t.push((
+            uris::TASK_ATTESTATION_CONFIG_REPORT_0_1,
+            checked!(
+                specs::vta::attestation::config_report::v0_1::Payload,
+                specs::vta::attestation::config_report::v0_1::Response,
+                json!({ "nonce": nonce }),
+                json!({
+                    "configDigestSha384": "OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb",
+                    "configView": "eyJ0ZWUiOnt9fQ==",
+                    "nonce": nonce,
+                    "teeType": "nitro",
+                    "evidence": "hEShATgioFkRXqlpbW9kdWxlX2lk",
+                    "generatedAt": "2026-09-26T12:00:00Z",
+                })
+            ),
+        ));
+    }
+
     // ─── vta/webvh/dids/update (webvh-gated like its dispatch arm) ─
     #[cfg(feature = "webvh")]
     {
@@ -4581,7 +4682,7 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
         // Typed explicitly: without it the array literal takes its element type
         // from the first entry, and each `parses::<T>` is a distinct fn item
         // rather than the `ParseFn` pointer the alias expects.
-        let services: [(&'static str, ReqParts, RespParts); 8] = [
+        let services: [(&'static str, ReqParts, RespParts); 10] = [
             (
                 uris::TASK_SERVICES_LIST_1_0,
                 (
@@ -4678,6 +4779,37 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                 (
                     json!({ "mediatorDid": "did:web:old-mediator.example" }),
                     parses::<svc::drain::cancel::v1_0::Response>,
+                ),
+            ),
+            (
+                // 1.1 adds the mediator drain window: a DIDComm replacement
+                // held open two days for correspondents on the old route.
+                uris::TASK_SERVICES_UPDATE_1_1,
+                (
+                    json!({ "service": "didcomm", "config": { "mediatorDid": "did:web:mediator.example" },
+                            "drainTtlSecs": 172_800 }),
+                    parses::<svc::update::v1_1::Payload>,
+                    validates::<svc::update::v1_1::Payload>,
+                ),
+                (
+                    json!({ "result": mutation_result() }),
+                    parses::<svc::update::v1_1::Response>,
+                ),
+            ),
+            (
+                uris::TASK_SERVICES_REPORT_0_1,
+                (
+                    json!({ "since": "2026-09-19T00:00:00Z" }),
+                    parses::<svc::report::v0_1::Payload>,
+                    validates::<svc::report::v0_1::Payload>,
+                ),
+                (
+                    json!({ "since": "2026-09-19T00:00:00Z", "until": "2026-09-26T12:00:00Z",
+                            "mediators": [{ "mediatorDid": "did:web:old-mediator.example", "inboundCount": 3,
+                                            "firstSeen": "2026-09-19T08:00:00Z", "lastSeen": "2026-09-24T17:40:00Z" }],
+                            "senders": [{ "senderDid": "did:key:z6MkLagging", "lastSeenMediator": "did:web:old-mediator.example",
+                                          "lastSeenAt": "2026-09-24T17:40:00Z" }] }),
+                    parses::<svc::report::v0_1::Response>,
                 ),
             ),
         ];
