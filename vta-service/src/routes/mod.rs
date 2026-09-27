@@ -17,7 +17,6 @@ mod health;
 pub mod keys;
 #[cfg(feature = "webvh")]
 mod passkey_vms;
-#[cfg(feature = "webvh")]
 pub mod rate_limit;
 #[cfg(feature = "webvh")]
 mod self_hosted_did;
