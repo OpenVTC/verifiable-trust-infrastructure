@@ -2200,20 +2200,56 @@ mod tests {
     const FISH_BREAKOUT: &str = r"x\' ; echo INJECTED ; echo \";
 
     /// What `shell` makes of `words`, read back through an external printf.
-    fn argv_in(shell: &str, words: &str) -> Option<Vec<String>> {
-        let home = std::env::temp_dir().join("cnm-shell-word-test-home");
-        std::fs::create_dir_all(&home).ok()?;
-        let out = std::process::Command::new(shell)
+    ///
+    /// `home` is a directory unique to this test *run*, not a fixed path
+    /// under the system temp dir: several worktrees on this machine run
+    /// this same test concurrently, and a shared, never-cleaned-up `$HOME`
+    /// is the one non-hermetic seam here (`env_clear` already drops
+    /// `BASH_ENV`/`ENV`/`ZDOTDIR`/`XDG_CONFIG_HOME`, so no shell reads an rc
+    /// file from it either way, but there is no reason to share it). Stdin
+    /// is explicitly closed rather than left inherited, and reading stdout
+    /// happens on its own thread so a hung shell — real under load — fails
+    /// the test loudly on a timeout instead of blocking the run forever.
+    fn argv_in(shell: &str, words: &str, home: &std::path::Path) -> Option<Vec<String>> {
+        let mut child = match std::process::Command::new(shell)
             .arg("-c")
             .arg(format!(r"env printf '%s\0' {words}"))
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", &home)
+            .env("HOME", home)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .output()
-            .ok()?;
-        assert!(out.status.success(), "{shell} failed on {words:?}");
-        let text = String::from_utf8(out.stdout).expect("utf-8");
+            .spawn()
+        {
+            Ok(child) => child,
+            // Not installed: the documented skip. Any other spawn failure
+            // (permissions, resource exhaustion) is a real problem and must
+            // not be swallowed as a silent skip.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => panic!("{shell} is present but would not run: {e}"),
+        };
+        let mut stdout = child.stdout.take().expect("stdout is piped");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            let _ = stdout.read_to_end(&mut buf);
+            let _ = tx.send(buf);
+        });
+        let out = match rx.recv_timeout(std::time::Duration::from_secs(20)) {
+            Ok(buf) => buf,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "{shell} did not finish within 20s on {words:?} (hung, or the machine is overloaded)"
+                );
+            }
+        };
+        let status = child.wait().expect("wait after stdout closed");
+        assert!(status.success(), "{shell} failed on {words:?}");
+        let text = String::from_utf8(out).expect("utf-8");
         let mut v: Vec<String> = text.split('\0').map(str::to_string).collect();
         v.pop();
         Some(v)
@@ -2256,10 +2292,12 @@ mod tests {
             .map(|v| shell_word(v))
             .collect::<Vec<_>>()
             .join(" ");
+        // Unique to this run and cleaned up on drop: see `argv_in`.
+        let home = tempfile::tempdir().expect("temp HOME for the shell round trip");
         let mut ran = 0;
         for shell in ["sh", "bash", "zsh", "fish"] {
             // sh is everywhere; the others are checked where installed.
-            let Some(argv) = argv_in(shell, &words) else {
+            let Some(argv) = argv_in(shell, &words, home.path()) else {
                 assert_ne!(shell, "sh", "sh must be runnable");
                 continue;
             };
