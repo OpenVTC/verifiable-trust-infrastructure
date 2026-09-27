@@ -793,8 +793,9 @@ pub(crate) enum BootstrapCommands {
         #[arg(long)]
         out: std::path::PathBuf,
     },
-    /// Bridge a VP-framed BootstrapRequest to `POST /bootstrap/provision-integration`
-    /// on the configured VTA, writing the returned armored sealed bundle to disk.
+    /// Send a VP-framed BootstrapRequest to the configured VTA as the
+    /// `provision/integration` Trust Task, writing the returned armored sealed
+    /// bundle to disk.
     ///
     /// Mirrors the offline `vta bootstrap provision-integration` command;
     /// the difference is purely the transport — the VTA runs the same

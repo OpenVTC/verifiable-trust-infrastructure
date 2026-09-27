@@ -526,7 +526,7 @@ mod tests {
     use super::*;
     use crate::provision_client::setup_key::EphemeralSetupKey;
     use serde_json::json;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// `did:key` is self-resolving (the verification key is encoded in
@@ -823,15 +823,18 @@ mod tests {
     /// operator read it as "provisioning is broken on this VTA" and went
     /// looking in the wrong half of the system.
     ///
-    /// The `/bootstrap/provision-integration` route is deliberately left
-    /// unmounted: reaching it at all would fail this test with a 404, which is
-    /// how it asserts the run stops *before* the mint rather than during it.
+    /// Only discovery is mounted: a `provision/integration` document would
+    /// find no mock and fail this test with a 404, which is how it asserts the
+    /// run stops *before* the mint rather than during it.
     #[tokio::test]
     async fn a_vta_on_the_previous_provision_version_is_named_before_minting() {
         let server = MockServer::start().await;
         mount_auth(&server).await;
         Mock::given(method("POST"))
             .and(path("/trust-tasks"))
+            .and(body_partial_json(json!({
+                "type": "https://trusttasks.org/spec/trust-task-discovery/0.1"
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": "urn:uuid:11111111-1111-4111-8111-111111111111",
                 "type": "https://trusttasks.org/spec/trust-task-discovery/0.1#response",
@@ -902,7 +905,10 @@ mod tests {
         let server = MockServer::start().await;
         mount_auth(&server).await;
         Mock::given(method("POST"))
-            .and(path("/bootstrap/provision-integration"))
+            .and(path("/trust-tasks"))
+            .and(body_partial_json(json!({
+                "type": "https://trusttasks.org/spec/provision/integration/0.3"
+            })))
             .respond_with(ResponseTemplate::new(400).set_body_string("template render rejected"))
             .mount(&server)
             .await;
@@ -973,7 +979,10 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/bootstrap/provision-integration"))
+            .and(path("/trust-tasks"))
+            .and(body_partial_json(json!({
+                "type": "https://trusttasks.org/spec/provision/integration/0.3"
+            })))
             .respond_with(ResponseTemplate::new(400).set_body_string("template render rejected"))
             .mount(&server)
             .await;

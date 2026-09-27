@@ -210,7 +210,6 @@ vta-service/src/
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | /bootstrap/request | None (rate-limited) | TEE Mode B sealed first-boot |
-| POST | /bootstrap/provision-integration | Admin | Template-driven integration bootstrap |
 | GET | /did/{did}/log | None (rate-limited) | Public webvh `did.jsonl` retrieval |
 
 Auth levels: **Auth** = any valid JWT, **Manage** = Admin or

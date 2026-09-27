@@ -1,8 +1,9 @@
 //! Mock-based end-to-end smoke test for the online provisioning workflow.
 //!
 //! Drives the SDK's REST entry point (`provision_via_rest`) against a
-//! wiremock-backed fake VTA. The fake decodes the VP nonce from the
-//! incoming `ProvisionIntegrationRequest`, seals a synthetic
+//! wiremock-backed fake VTA. The request is the signed
+//! `provision/integration/0.3` Trust Task on `/trust-tasks`; the fake decodes
+//! the VP nonce from its `ProvisionIntegrationRequest` payload, seals a synthetic
 //! `TemplateBootstrapPayload` to the test's setup-key X25519 pubkey, and
 //! returns the armored bundle + matching digest. This exercises the
 //! HPKE seal/open + response_to_result chain that the per-runner unit
@@ -16,10 +17,11 @@
 #![cfg(all(feature = "provision-client", feature = "test-support"))]
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use ed25519_dalek::SigningKey;
 use serde_json::json;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use vta_sdk::did_key::decode_private_key_multibase;
@@ -74,8 +76,10 @@ fn req_str(request: &serde_json::Value, member: &str) -> String {
 
 impl Respond for SealResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
-        let req: ProvisionIntegrationRequest =
-            serde_json::from_slice(&request.body).expect("decode ProvisionIntegrationRequest body");
+        let doc: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("a Trust Task document");
+        let req: ProvisionIntegrationRequest = serde_json::from_value(doc["payload"].clone())
+            .expect("decode the ProvisionIntegrationRequest payload");
 
         // VP nonce is a base64url-no-pad 16-byte string.
         let nonce: [u8; 16] = {
@@ -203,8 +207,52 @@ impl Respond for SealResponder {
             },
         };
 
-        ResponseTemplate::new(200).set_body_json(response)
+        ResponseTemplate::new(200).set_body_json(signed_reply(
+            "https://trusttasks.org/spec/provision/integration/0.3#response",
+            serde_json::to_value(response).expect("response serialises"),
+        ))
     }
+}
+
+/// The VTA these mocks answer as: a real `did:key` and its private half, so
+/// the reply's proof is one the client can verify and bind to the VTA it
+/// authenticated against — which it does on every Trust Task reply.
+fn test_vta() -> &'static (String, String) {
+    static VTA: OnceLock<(String, String)> = OnceLock::new();
+    VTA.get_or_init(|| {
+        let key = EphemeralSetupKey::generate().unwrap();
+        (key.did.clone(), key.private_key_multibase().to_string())
+    })
+}
+
+/// Wrap `payload` in a `#response` document signed as [`test_vta`].
+///
+/// Signing is async and `Respond` is sync, so this crosses to a fresh thread
+/// and runtime, as the seal does.
+fn signed_reply(type_uri: &str, payload: serde_json::Value) -> serde_json::Value {
+    let (vta_did, vta_priv) = test_vta().clone();
+    let mut doc: trust_tasks_rs::TrustTask<serde_json::Value> = serde_json::from_value(json!({
+        "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+        "type": type_uri,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": payload,
+    }))
+    .expect("a well-formed Trust Task document");
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build runtime")
+                .block_on(vta_sdk::trust_task_sign::sign_in_place(
+                    &mut doc, &vta_did, &vta_priv,
+                ))
+        })
+        .join()
+        .expect("sign thread join")
+    })
+    .expect("sign the mock VTA's reply");
+    serde_json::to_value(doc).expect("serialise the signed reply")
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -272,7 +320,7 @@ async fn mount_auth_mocks(server: &MockServer) {
 /// `did:key` is self-resolving — the auth flow extracts the recipient
 /// X25519 from the identifier itself, so no network roundtrip happens.
 fn test_vta_did_key() -> String {
-    EphemeralSetupKey::generate().unwrap().did
+    test_vta().0.clone()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -287,7 +335,10 @@ async fn provision_via_rest_didcomm_mediator_round_trip() {
     let integration_did = "did:webvh:mediator.example.com".to_string();
     let admin_did = "did:key:z6MkAdminMediator".to_string();
     Mock::given(method("POST"))
-        .and(path("/bootstrap/provision-integration"))
+        .and(path("/trust-tasks"))
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/provision/integration/0.3"
+        })))
         .respond_with(SealResponder {
             recipient_x_pub,
             integration_did: integration_did.clone(),
@@ -336,7 +387,10 @@ async fn provision_via_rest_webvh_server_round_trip() {
     let integration_did = "did:webvh:service.example.com".to_string();
     let admin_did = "did:key:z6MkAdminWebvhSvc".to_string();
     Mock::given(method("POST"))
-        .and(path("/bootstrap/provision-integration"))
+        .and(path("/trust-tasks"))
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/provision/integration/0.3"
+        })))
         .respond_with(SealResponder {
             recipient_x_pub,
             integration_did: integration_did.clone(),
@@ -390,8 +444,10 @@ struct AdminRotationResponder {
 
 impl Respond for AdminRotationResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
-        let req: ProvisionIntegrationRequest =
-            serde_json::from_slice(&request.body).expect("decode ProvisionIntegrationRequest body");
+        let doc: serde_json::Value =
+            serde_json::from_slice(&request.body).expect("a Trust Task document");
+        let req: ProvisionIntegrationRequest = serde_json::from_value(doc["payload"].clone())
+            .expect("decode the ProvisionIntegrationRequest payload");
 
         let nonce: [u8; 16] = {
             use base64::Engine;
@@ -484,7 +540,10 @@ impl Respond for AdminRotationResponder {
             },
         };
 
-        ResponseTemplate::new(200).set_body_json(response)
+        ResponseTemplate::new(200).set_body_json(signed_reply(
+            "https://trusttasks.org/spec/provision/integration/0.3#response",
+            serde_json::to_value(response).expect("response serialises"),
+        ))
     }
 }
 
@@ -522,7 +581,10 @@ async fn admin_rotated_via_rest_round_trip() {
     let rotated_admin_did = "did:key:z6MkRotatedAdminFresh".to_string();
     let rotated_admin_private_key_mb = "zRotatedAdminFreshPriv".to_string();
     Mock::given(method("POST"))
-        .and(path("/bootstrap/provision-integration"))
+        .and(path("/trust-tasks"))
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/provision/integration/0.3"
+        })))
         .respond_with(AdminRotationResponder {
             recipient_x_pub,
             admin_did: rotated_admin_did.clone(),
@@ -555,8 +617,19 @@ async fn admin_rotated_via_rest_round_trip() {
     .await
     .expect("auth handshake");
 
-    let client = VtaClient::new(&server.uri());
-    client.set_token_async(token.access_token).await;
+    // The relayer signs the `provision/integration` document it sends, so the
+    // client carries the identity it authenticated as.
+    let client = VtaClient::authenticated(
+        &server.uri(),
+        vta_sdk::client::ClientIdentity {
+            client_did: key.did.clone(),
+            private_key_multibase: key.private_key_multibase().to_string(),
+            vta_did: test_vta_did_key(),
+            verification_method: None,
+        },
+        token.access_token,
+    )
+    .await;
 
     let req = ProvisionIntegrationRequest {
         request: signed.to_signed_wire_value().expect("serialize VP"),
@@ -612,7 +685,10 @@ async fn provision_admin_rotated_via_rest_public_entry_round_trip() {
     let rotated_admin_did = "did:key:z6MkRotatedAdminPublicEntry".to_string();
     let rotated_admin_private_key_mb = "zRotatedAdminPublicEntryPriv".to_string();
     Mock::given(method("POST"))
-        .and(path("/bootstrap/provision-integration"))
+        .and(path("/trust-tasks"))
+        .and(body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/provision/integration/0.3"
+        })))
         .respond_with(AdminRotationResponder {
             recipient_x_pub,
             admin_did: rotated_admin_did.clone(),

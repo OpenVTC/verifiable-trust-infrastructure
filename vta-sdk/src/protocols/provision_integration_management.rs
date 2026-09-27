@@ -10,9 +10,8 @@
 //! second proof; both must agree (`from == VP holder`) for the
 //! handler to proceed.
 //!
-//! Both parties exchange the same on-the-wire shapes the REST endpoint
-//! at `POST /bootstrap/provision-integration` does — wire format is
-//! transport-neutral. See
+//! The wire format is transport-neutral: the same payload over TSP,
+//! DIDComm, or HTTPS (`/trust-tasks`). See
 //! [`crate::provision_integration::http::ProvisionIntegrationRequest`]
 //! and [`crate::provision_integration::http::ProvisionIntegrationResponse`].
 //!
