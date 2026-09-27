@@ -293,6 +293,22 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     //   by specification rather than by deletion.
 ];
 
+/// A dispatched handler's future, on the heap. See `dispatch_typed`.
+type BoxedTask<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = TrustTaskOutcome> + Send + 'a>>;
+
+/// Build a handler's future in this function's frame, not the caller's.
+///
+/// `#[inline(never)]` is the point: inlined, the future's temporary lands back
+/// in `dispatch_typed`'s frame, one slot per arm in a debug build (VTI-08).
+#[inline(never)]
+fn boxed_task<'a, F>(make: impl FnOnce() -> F) -> BoxedTask<'a>
+where
+    F: std::future::Future<Output = TrustTaskOutcome> + Send + 'a,
+{
+    Box::pin(make())
+}
+
 /// Declarative Trust-Task dispatch table.
 ///
 /// Each entry is `URI(s) => slice::handler`. From one list the macro generates
@@ -334,29 +350,35 @@ macro_rules! dispatch_table {
             doc: TrustTask<Value>,
         ) -> TrustTaskOutcome {
             let type_uri = doc.type_uri.to_string();
-            match type_uri.as_str() {
+            // Two stack costs live here, and both have bitten (Keyring VTI-08).
+            //
+            // The *future*: an async fn's future is sized to its largest live
+            // state, so awaiting every handler inline would size this one
+            // future to the worst case of every task the VTA dispatches. Each
+            // handler's future goes on the heap instead.
+            //
+            // The *frame*: `Box::pin(handler(..))` written in the arm builds the
+            // handler's future as a temporary in THIS function's frame before
+            // moving it to the heap, and an unoptimised build gives every arm's
+            // temporary its own stack slot. With ~200 arms that frame was the
+            // sum of every handler's future — about a megabyte — so a debug
+            // build overflowed a 2 MiB tokio worker once the HTTP or DIDComm
+            // layers sat on top of it. `boxed_task` builds the future inside its
+            // own small frame, the match yields one `BoxedTask`, and there is a
+            // single await. Do NOT inline the handler call back into the arm.
+            let task: BoxedTask<'_> = match type_uri.as_str() {
                 $(
                     $(#[$meta])*
-                    // `Box::pin` is load-bearing, not a style choice. An async
-                    // fn's future is sized to its largest live state, and a
-                    // `match` future is sized to its largest arm — so awaiting
-                    // every handler *inline* here would size this one future to
-                    // the sum-shaped worst case of every task the VTA dispatches
-                    // (the backup/webvh/services handlers are each large on their
-                    // own). Debug builds do not elide that layout, so the first
-                    // inbound Trust Task overflowed the worker-thread stack —
-                    // which reads as, but is not, infinite recursion. Boxing
-                    // heap-allocates each handler's future so this dispatch frame
-                    // stays pointer-sized per arm. Do NOT "simplify" this away.
-                    $($uri)|+ => Box::pin($handler(state, auth, doc)).await,
+                    $($uri)|+ => boxed_task(move || $handler(state, auth, doc)),
                 )+
                 // A client mistakenly sending a REST-routed URI through the
                 // envelope path gets `unsupported_type` here — correct from the
                 // dispatcher's POV; the operation lives elsewhere. A client on
                 // the wrong *version* of a family this dispatcher does own gets
                 // `unsupportedVersion` plus the served versions instead.
-                _ => method_not_found(doc, &type_uri),
-            }
+                _ => return method_not_found(doc, &type_uri),
+            };
+            task.await
         }
 
         /// The authoritative SPEC §7.3 side-effect + exposure class of a
@@ -5918,5 +5940,74 @@ mod didcomm_sender_binding {
         .await;
         let reply: Value = serde_json::from_slice(&outcome.body).unwrap();
         assert_eq!(code(&reply), Some("identityMismatch"), "{reply}");
+    }
+}
+
+/// Keyring VTI-08: `vta/contexts/create/1.0` overflowed a tokio worker's stack
+/// in a debug build. The spine's dispatch frame held a slot for every handler's
+/// future (see `dispatch_typed`), so the success path needed over 1 MiB before
+/// the handler ran; with the future built in `boxed_task` it fits in a fraction
+/// of a default 2 MiB worker.
+#[cfg(test)]
+mod vti_08_stack {
+    use serde_json::json;
+
+    /// Half a default tokio worker stack. The regression needed more than 1 MiB.
+    const STACK_KIB: usize = 512;
+
+    /// A stack overflow aborts the process rather than failing a test, so the
+    /// work runs in a child copy of this test binary and the parent reads its
+    /// exit status.
+    #[test]
+    fn vti_08_context_create_fits_half_a_default_worker_stack() {
+        let exe = std::env::current_exe().expect("test binary");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "trust_tasks::vti_08_stack::child_context_create",
+                "--test-threads=1",
+            ])
+            .env("VTI_08_CHILD", "1")
+            .output()
+            .expect("run child");
+        assert!(
+            out.status.success(),
+            "contexts/create over the spine did not fit a {STACK_KIB} KiB stack: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn child_context_create() {
+        if std::env::var_os("VTI_08_CHILD").is_none() {
+            return;
+        }
+        let worker = std::thread::Builder::new()
+            .stack_size(STACK_KIB * 1024)
+            .spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                rt.block_on(async {
+                    let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+                    let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+                    let body = super::response_coverage::signed_body(
+                        vta_sdk::trust_tasks::TASK_CONTEXTS_CREATE_1_0,
+                        &vta_did,
+                        json!({ "id": "vti08", "name": "VTI-08" }),
+                    );
+                    let out = super::dispatch_trust_task_core(
+                        &state,
+                        &crate::test_support::super_admin_claims(),
+                        &body,
+                        super::transport::TransportConfidentiality::EndToEnd,
+                    )
+                    .await;
+                    assert!(out.status.is_success(), "contexts/create must succeed");
+                });
+            })
+            .expect("spawn worker");
+        assert!(worker.join().is_ok());
     }
 }
