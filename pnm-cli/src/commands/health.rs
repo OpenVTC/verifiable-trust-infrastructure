@@ -709,65 +709,6 @@ async fn tsp_probe(
     hprintln!("  {DIM}advertised — rebuild pnm with `--features tsp` to probe over TSP{RESET}");
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_report_files_checks_under_the_open_section() {
-        let mut r = Report::default();
-        r.section("vta", "VTA");
-        r.record("resolution", true, Some("webvh".into()));
-        r.section("mediator", "Mediator");
-        r.record("trust-ping", false, None);
-
-        let sections: Vec<_> = r.checks.iter().map(|c| c.section).collect();
-        assert_eq!(sections, vec!["vta", "mediator"]);
-    }
-
-    #[test]
-    fn test_report_failures_counts_only_failed_checks() {
-        let mut r = Report::default();
-        r.section("vta", "VTA");
-        r.record("a", true, None);
-        r.record("b", false, None);
-        r.record("c", false, None);
-        assert_eq!(r.failures(), 2);
-    }
-
-    #[test]
-    fn test_report_empty_is_not_healthy() {
-        // A run that probed nothing has not established health, so it
-        // must not hand a pipeline a green light.
-        let r = Report::default();
-        assert_eq!(r.failures(), 0, "nothing ran, so nothing failed");
-        assert!(!r.healthy(), "but zero checks is not a pass");
-    }
-
-    #[test]
-    fn test_report_all_passing_is_healthy() {
-        let mut r = Report::default();
-        r.section("vta", "VTA");
-        r.record("resolution", true, None);
-        assert!(r.healthy());
-    }
-
-    #[test]
-    fn test_check_serializes_camel_case_and_omits_absent_detail() {
-        let mut r = Report::default();
-        r.section("vta", "VTA");
-        r.record("resolution", true, None);
-        let v = serde_json::to_value(&r.checks).expect("checks should serialize");
-        let first = &v[0];
-        assert_eq!(first["section"], "vta");
-        assert_eq!(first["ok"], true);
-        assert!(
-            first.get("detail").is_none(),
-            "an absent detail must not appear as null: {first}"
-        );
-    }
-}
-
 /// The "Deployment" rows: `vta/health/details/0.1` for everyone, then
 /// `vta/restore/status/0.1`, which answers only an administrator — anyone else
 /// gets a dim note rather than a failure, since not being an admin is not a
@@ -874,5 +815,64 @@ async fn print_deployment(client: &VtaClient) {
             println!("  {DIM}(version and restore record are shown to administrators only){RESET}")
         }
         Err(e) => println!("  {CYAN}{:<13}{RESET} {RED}✗{RESET} {e}", "Restore"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_report_files_checks_under_the_open_section() {
+        let mut r = Report::default();
+        r.section("vta", "VTA");
+        r.record("resolution", true, Some("webvh".into()));
+        r.section("mediator", "Mediator");
+        r.record("trust-ping", false, None);
+
+        let sections: Vec<_> = r.checks.iter().map(|c| c.section).collect();
+        assert_eq!(sections, vec!["vta", "mediator"]);
+    }
+
+    #[test]
+    fn test_report_failures_counts_only_failed_checks() {
+        let mut r = Report::default();
+        r.section("vta", "VTA");
+        r.record("a", true, None);
+        r.record("b", false, None);
+        r.record("c", false, None);
+        assert_eq!(r.failures(), 2);
+    }
+
+    #[test]
+    fn test_report_empty_is_not_healthy() {
+        // A run that probed nothing has not established health, so it
+        // must not hand a pipeline a green light.
+        let r = Report::default();
+        assert_eq!(r.failures(), 0, "nothing ran, so nothing failed");
+        assert!(!r.healthy(), "but zero checks is not a pass");
+    }
+
+    #[test]
+    fn test_report_all_passing_is_healthy() {
+        let mut r = Report::default();
+        r.section("vta", "VTA");
+        r.record("resolution", true, None);
+        assert!(r.healthy());
+    }
+
+    #[test]
+    fn test_check_serializes_camel_case_and_omits_absent_detail() {
+        let mut r = Report::default();
+        r.section("vta", "VTA");
+        r.record("resolution", true, None);
+        let v = serde_json::to_value(&r.checks).expect("checks should serialize");
+        let first = &v[0];
+        assert_eq!(first["section"], "vta");
+        assert_eq!(first["ok"], true);
+        assert!(
+            first.get("detail").is_none(),
+            "an absent detail must not appear as null: {first}"
+        );
     }
 }

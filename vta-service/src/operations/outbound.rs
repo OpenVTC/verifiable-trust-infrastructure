@@ -548,18 +548,42 @@ impl<'a> Outbound<'a> {
 /// `OUTBOUND_SUPPORTED`, so a TSP-advertising peer was *selected* over TSP even
 /// when this sender held no `TspSender`, and the send then failed with an
 /// internal error instead of falling to the next shared transport.
+///
+/// A REST candidate is skipped — logged, not selected — when its endpoint is
+/// not `https://` (or `http://` to an exact loopback host —
+/// [`vta_sdk::protocol::matching::is_https_or_loopback`]): `send_rest` puts a
+/// signed document on the wire with no encryption of its own, so a peer
+/// advertising plain `http://` would otherwise have it delivered in the clear.
+/// TSP and DIDComm are unaffected — their advertised value is a mediator DID,
+/// not a URL this function dials. With REST the only shared protocol and its
+/// endpoint refused this way, selection falls through to the closed error
+/// below exactly as if the peer had advertised no REST at all.
 pub fn pick_transport(
     caps: &ServiceCapabilities,
     initiable: &[Protocol],
     peer: &str,
 ) -> Result<(Protocol, String), AppError> {
+    let mut rest_refused_plaintext = false;
     for protocol in Protocol::PREFERENCE_ORDER {
         if !initiable.contains(&protocol) {
             continue;
         }
-        if let Some(endpoint) = caps.endpoint(protocol) {
-            return Ok((protocol, endpoint.to_string()));
+        let Some(endpoint) = caps.endpoint(protocol) else {
+            continue;
+        };
+        if protocol == Protocol::Rest
+            && !vta_sdk::protocol::matching::is_https_or_loopback(endpoint)
+        {
+            tracing::warn!(
+                peer,
+                endpoint,
+                "ignoring a peer's plaintext http:// REST endpoint; only a loopback host may use \
+                 http://"
+            );
+            rest_refused_plaintext = true;
+            continue;
         }
+        return Ok((protocol, endpoint.to_string()));
     }
 
     let advertised: Vec<&str> = Protocol::PREFERENCE_ORDER
@@ -571,7 +595,7 @@ pub fn pick_transport(
 
     Err(AppError::Validation(format!(
         "no transport in common with `{peer}`: it advertises [{}] and this agent can \
-         initiate [{}]. This is not a peer that cannot be reached — it is one this agent cannot \
+         initiate [{}].{} This is not a peer that cannot be reached — it is one this agent cannot \
          yet start a conversation with, which is a gap in the agent rather than in the peer.",
         if advertised.is_empty() {
             "nothing".to_string()
@@ -579,6 +603,12 @@ pub fn pick_transport(
             advertised.join(", ")
         },
         ours.join(", "),
+        if rest_refused_plaintext {
+            " Its REST endpoint is plaintext http:// to a non-loopback host, so it was not \
+             usable."
+        } else {
+            ""
+        },
     )))
 }
 
@@ -1061,6 +1091,67 @@ mod tests {
             pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").expect("reachable");
         assert_eq!(protocol, Protocol::Rest);
         assert_eq!(endpoint, "https://host.example");
+    }
+
+    /// A peer advertising REST over plain `http://` to a non-loopback host is
+    /// not reachable over REST at all: `send_rest` puts a signed document on
+    /// the wire in the clear, and a peer that only offers that is treated as
+    /// if it advertised nothing, failing closed with a named reason.
+    #[test]
+    fn a_peer_serving_plaintext_http_rest_is_refused() {
+        let caps = caps_from(serde_json::json!([{
+            "id": "#rest", "type": "TrustTaskHTTPS", "serviceEndpoint": "http://host.example"
+        }]));
+        let msg = pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer")
+            .expect_err("plaintext REST must not be selected")
+            .to_string();
+        assert!(
+            msg.contains("plaintext http://"),
+            "the refusal must say why: {msg}"
+        );
+    }
+
+    /// Lookalike hosts — a domain that merely contains a loopback address or
+    /// name — are ordinary DNS names, not loopback, and are refused exactly
+    /// like any other plaintext non-loopback endpoint.
+    #[test]
+    fn a_peer_serving_a_lookalike_loopback_host_over_http_is_refused() {
+        for endpoint in ["http://127.0.0.1.evil.com", "http://localhost.evil"] {
+            let caps = caps_from(serde_json::json!([{
+                "id": "#rest", "type": "TrustTaskHTTPS", "serviceEndpoint": endpoint
+            }]));
+            assert!(
+                pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").is_err(),
+                "{endpoint} must be refused"
+            );
+        }
+    }
+
+    /// Plain `http://` to exact loopback is still selectable, for local
+    /// development.
+    #[test]
+    fn a_peer_serving_http_to_loopback_is_still_reachable() {
+        let caps = caps_from(serde_json::json!([{
+            "id": "#rest", "type": "TrustTaskHTTPS", "serviceEndpoint": "http://127.0.0.1:8100"
+        }]));
+        let (protocol, endpoint) =
+            pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").expect("reachable");
+        assert_eq!(protocol, Protocol::Rest);
+        assert_eq!(endpoint, "http://127.0.0.1:8100");
+    }
+
+    /// A refused plaintext REST entry does not stop a shared higher-preference
+    /// transport from being picked — it only takes REST off the table.
+    #[test]
+    fn a_plaintext_rest_endpoint_does_not_block_a_shared_didcomm_transport() {
+        let caps = caps_from(serde_json::json!([
+            { "id": "#rest", "type": "TrustTaskHTTPS", "serviceEndpoint": "http://host.example" },
+            { "id": "#didcomm", "type": "DIDCommMessaging",
+              "serviceEndpoint": [{ "uri": "did:example:mediator", "accept": ["didcomm/v2"] }] }
+        ]));
+        let (protocol, _) =
+            pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").expect("reachable");
+        assert_eq!(protocol, Protocol::Didcomm);
     }
 
     /// The case that matters in practice: a room host started with

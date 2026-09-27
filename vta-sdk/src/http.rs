@@ -575,15 +575,19 @@ impl EndpointPolicy {
 /// The loopback hosts that may be dialled over plain `http://`: exactly
 /// `localhost`, any address in `127.0.0.0/8`, and `::1`.
 ///
-/// Matches `is_loopback_host` in `vta-webvh`'s webvh client. IPv4-mapped forms
-/// such as `::ffff:127.0.0.1` are deliberately not included.
-fn is_loopback_host(host: &url::Host<&str>) -> bool {
-    match host {
-        url::Host::Domain(d) => d.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
-        url::Host::Ipv4(ip) => ip.is_loopback(),
-        url::Host::Ipv6(ip) => ip.is_loopback(),
-    }
-}
+/// The one definition lives in [`crate::protocol::matching`] — unconditional
+/// there, so a server-only consumer of the matching seam gets it without this
+/// module's `client`-gated dependencies (`reqwest` among them). Matches
+/// `is_loopback_host` in `vta-webvh`'s webvh client. IPv4-mapped forms such as
+/// `::ffff:127.0.0.1` are deliberately not included.
+use crate::protocol::matching::is_loopback_host;
+
+/// Whether `url` may carry a peer's Trust-Task or VTA REST traffic in the
+/// clear. Re-exported here — see
+/// [`crate::protocol::matching::is_https_or_loopback`] for the definition and
+/// full docs — because [`guard_vta_endpoint`] lives in this module and a
+/// caller reaching for one endpoint check should find both from `http::`.
+pub use crate::protocol::matching::is_https_or_loopback;
 
 /// Vet a VTA REST endpoint taken from a DID document before any request is
 /// made to it.
@@ -1073,6 +1077,71 @@ mod tests {
             .expect("send");
         assert_eq!(resp.status().as_u16(), 200);
         assert_eq!(resp.text().await.unwrap(), "moved");
+    }
+
+    // ── is_https_or_loopback ────────────────────────────────────────────────
+
+    #[test]
+    fn is_https_or_loopback_accepts_https_anywhere() {
+        for u in [
+            "https://vta.example.com",
+            "https://vta.example.com/trust-tasks",
+            "https://10.0.0.5",
+            "https://127.0.0.1",
+        ] {
+            assert!(is_https_or_loopback(u), "{u} must be accepted");
+        }
+    }
+
+    #[test]
+    fn is_https_or_loopback_accepts_http_only_to_exact_loopback() {
+        for u in [
+            "http://localhost",
+            "http://localhost:8080/trust-tasks",
+            "http://LOCALHOST/",
+            "http://localhost./",
+            "http://127.0.0.1",
+            "http://127.0.0.1:9099/trust-tasks",
+            "http://127.255.255.254/",
+            "http://[::1]",
+            "http://[::1]:7037/",
+        ] {
+            assert!(is_https_or_loopback(u), "{u} must be accepted");
+        }
+    }
+
+    /// The one thing this check exists for: a peer advertising plain
+    /// `http://` to anything other than loopback must be refused, including
+    /// a lookalike hostname that merely *contains* a loopback address or
+    /// name — `url::Host::Domain` parses these as ordinary DNS names, not as
+    /// the loopback host they resemble.
+    #[test]
+    fn is_https_or_loopback_refuses_plaintext_to_non_loopback_and_lookalikes() {
+        for u in [
+            "http://vta.example.com",
+            "http://10.0.0.5",
+            "http://169.254.169.254/",
+            "http://127.0.0.1.evil.com",
+            "http://127.0.0.1.evil.com:8080/",
+            "http://localhost.evil",
+            "http://evil-localhost",
+            "http://[::1].evil.com",
+        ] {
+            assert!(!is_https_or_loopback(u), "{u} must be refused");
+        }
+    }
+
+    #[test]
+    fn is_https_or_loopback_refuses_other_schemes_and_garbage() {
+        for u in [
+            "ftp://localhost/",
+            "ws://localhost/",
+            "file:///etc/passwd",
+            "not a url",
+            "",
+        ] {
+            assert!(!is_https_or_loopback(u), "{u} must be refused");
+        }
     }
 
     #[test]
