@@ -2,6 +2,79 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.6.1...vta-backup-v0.7.0) — 2026-09-27
+
+
+### Added
+
+- **webvh**: Reach the DID hosting service with Trust Tasks only ([#1789](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1789))
+
+* feat(webvh)!: reach the DID hosting service with Trust Tasks only
+
+  Stage 2b of the webvh-service Trust Tasks plan (trust-tasks #661). The
+  VTA's REST client to the hosting service and WebvhTransport::Rest are
+  removed; one client, vta-service/src/webvh_host.rs, makes every call as a
+  Trust Task typed with the generated did-management bindings, over the
+  transport the seam picks (TSP > DIDComm > HTTPS POST {base}/trust-tasks).
+
+  - The HTTPS base defaults to {WebVHHosting origin}/api, where the hosting
+    service serves its binding; https:// only, or http:// to loopback.
+  - Every reply must carry the host's proof (SignedByRecipient), thread to
+    the request, be addressed to this VTA and have the asked-for type.
+    Refusals are read from trust-task-error documents by spec code;
+    did/problem-report is no longer read.
+  - servers/domains reads me/domains; reconcile and retire-orphan read the
+    paged did/list {records, total} and now work over Trust Tasks. A listing
+    that disagrees with its total is refused.
+  - The DID-auth handshake, the server-auth token cache, WebvhAuthLocks and
+    the WebVHHostingService alias are gone. vta-webvh is the store only.
+
+  The test hosting service is now a Trust-Task host that refuses unsigned
+  requests and signs its answers; a forged answer is refused.
+
+- **sdk**: Remove the last legacy backup and webvh surfaces; realign-keys is a Trust Task ([#1783](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1783))
+
+* feat!: remove the last legacy backup and webvh surfaces; realign-keys is a Trust Task
+
+  Every remote API is a spine-dispatched Trust Task over TSP, DIDComm and
+  HTTPS. What was left off the spine on these two surfaces was deprecated,
+  and most of it could no longer succeed anywhere. Test deployments carry no
+  compat, so it is deleted rather than refused.
+
+  Backup
+  - SDK `backup_export`, `backup_import`, `backup_import_with` (deprecated
+    since 0.21.3 / 0.49.0), the `backup-management/1.0` message constants, and
+    `ExportRequest` / `ImportRequest`.
+  - `pnm backup {export,import} --use-rest-legacy`. It could not work on any
+    transport: the VTA answered 403 over REST (VTI-VTA-003), and the SDK's
+    `rpc` refuses DIDComm and TSP. Its doc said "works only over DIDComm".
+  - The VTA's `POST /backup/{export,import}` and the VTC's
+    `POST /v1/backup/{export,import}`, which only ever answered 403. A backup
+    is the `vta/backup/*` (VTA) or `vtc/backup/export` + `backup/*` (VTC) Trust
+    Tasks, over an end-to-end transport only; that policy is unchanged.
+
+  webvh
+  - SDK `update_did_webvh` / `rotate_did_webvh_keys` (the `(context, scid)`
+    forms, deprecated since 0.20.32) and their message constants. The by-DID
+    `update_did_webvh_by_did` / `rotate_did_webvh_keys_by_did` are the only
+    forms.
+  - The VTA's `POST /contexts/{ctx}/dids/{scid}/{update,rotate-keys}` and
+    `POST /webvh/dids/{did}/realign-keys`.
+  - `realign_did_webvh_keys` was REST-only "deliberately". The reason was out of
+    date: the VTA already dispatched `webvh/dids/realign-keys/1.0`. The SDK now
+    sends the task, so `pnm did-mgmt dids realign-keys` works over TSP and
+    DIDComm too.
+
+  Tests
+  - The REST behaviour tests for update and rotate (metadata-only update,
+    document update, rotate, unknown DID, invalid document) are ported to
+    `/trust-tasks`. The removed routes are held gone.
+  - The webvh REST-parity consent test is dropped. The Trust Task consent path
+    it compared against is covered by the rest of `delegated_consent_e2e`.
+  - `mock_vta` drives the by-DID update.
+
+
+
 ## [0.6.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.6.0...vta-backup-v0.6.1) — 2026-09-26
 
 

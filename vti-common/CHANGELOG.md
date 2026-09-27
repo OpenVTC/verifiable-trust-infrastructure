@@ -2,6 +2,130 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.27.0...vti-common-v0.28.0) — 2026-09-27
+
+
+### Added
+
+- **attestation**: The TEE attestation reads are public Trust Tasks, over any transport ([#1776](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1776))
+
+* feat(attestation)!: the TEE attestation reads are public Trust Tasks, over any transport
+
+  A TEE VTA answered three attestation reads only as unauthenticated REST routes
+  (`GET /attestation/status`, `GET`/`POST /attestation/report`,
+  `POST /attestation/config-report`), plus a bare DIDComm protocol arm that
+  nothing sent to. Under the rule that every remote API is a spec-first,
+  spine-dispatched Trust Task reachable over TSP, DIDComm and HTTPS, they are now
+  `vta/attestation/{status,report,config-report}/0.1` (trustoverip/
+  dtgwg-trust-tasks-tf#654, trust-tasks-rs 0.23.2), dispatched on the spine.
+
+  Public tasks
+  - `vta_sdk::trust_tasks::PUBLIC_URIS` names the tasks a caller may send with no
+    identity: no session, no ACL entry, no request proof. A verifier asks before
+    it trusts the VTA; the nonce bound into the evidence is what makes a report
+    its own, and every response is the VTA's signed operational document.
+  - HTTPS: `/trust-tasks` takes an optional credential. An anonymous caller may
+    send only a public task (anything else is 401), capped at 64 KB, and those
+    requests are charged to the unauthenticated limiter — which charges only
+    requests presenting no credential, decided by the extractor's own rule
+    (`vti_common::auth::extractor::presents_credential`), so a junk header cannot
+    move a request between the two classes.
+  - DIDComm/TSP: a sender the ACL does not know gets a zero-authority claim for a
+    public task, and `bind_document_to_sender` accepts it unsigned — the spec
+    makes the request proof OPTIONAL and HTTPS accepts it unsigned, so refusing it
+    here would make the requirement depend on the transport (VTI-OPS-021). An
+    attached proof is still verified and bound.
+  - A census (`every_public_task_is_proof_optional_and_read_only`) fails if a task
+    whose spec requires a proof, or whose dispatch class changes state, discloses
+    a secret or acts as its subject, is ever added to `PUBLIC_URIS`.
+
+  Behaviour
+  - `report` and `config-report` require a 32-byte verifier nonce; the cached,
+    nonce-less report is not carried over — evidence nobody asked for is evidence
+    anybody can replay.
+  - Failures carry the specs' declared codes: `notAttested` (no provider),
+    `noConfigSnapshot` (only the enclave front-end captures one),
+    `evidenceUnavailable` (the platform refused a quote).
+  - The VTA still requires `issuedAt` on every document (bounding its replay
+    record), stricter than the spec; the deploy README examples send it.
+
+  Removed (breaking)
+  - The REST routes above and the DIDComm `firstperson.network/vta/1.0/
+    attestation/*` arms, with their SDK constants; `TASK_ATTESTATION_{STATUS,
+    REPORT}_1_0` become `TASK_ATTESTATION_{STATUS,REPORT,CONFIG_REPORT}_0_1` and
+    leave `REST_ROUTED_URIS`.
+  - The `TeeAttestation` DID-document service, which pointed at the REST route
+    (user decision: removed, not re-pointed). `tee.embed_in_did` and
+    `VTA_TEE_EMBED_IN_DID` are **refused** at config load as retired, naming the
+    replacement, rather than silently ignored. The shipped Nitro configs drop the
+    key; the deploy scripts' health hints point at `/health`.
+
+- **vtc**: Step-up passkeys a member enrols through an admin's invite ([#1756](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1756))
+
+* feat(vtc/git-ns): separation of duties and break-glass for elevated git rights
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#641.
+
+  - Fixed rule 7: no elevated self-grant (git.ns.admin, git.repo.create,
+    git.repo.own) through grant 0.1/0.3, drift adopt, repo/adopt or reseat;
+    refused git-ns:selfGrantNotAllowed, naming cnm git break-glass.
+  - git-ns/right/break-glass/0.1: grant authority, or a community admin on a
+    headless namespace; always an operation-bound passkey step-up
+    (acl::bound_step_up, whose spent mark now yields its evidence); mandatory
+    justification; immediate, no expiry; flagged breakGlass on the record.
+  - git-ns/right/ratify/0.1 and revoke 0.3: another administrator ratifies,
+    bound to breakGlass.at; any community admin may revoke an unratified one,
+    which policy cannot refuse. Unratified records do not count toward the
+    last-owner and last-admin invariants.
+  - Visibility no policy can turn off: AuditEvent::GitNsBreakGlass at
+    AuditSeverity::Critical with the step-up evidence, activity items, a signed
+    git-ns/right/break-glass-notice/0.1 to every community admin and ns admin,
+    view 0.4, GET /v1/git-ns/break-glass, and breakGlass on the rights rows.
+  - git_ns.rego settings: break_glass (enabled by default), a delay and a
+    minimum justification; deny decisions on right.breakGlass and right.ratify.
+  - cnm: git break-glass, git ratify and git break-glass-list; git view flags
+    break-glass rights; grant and revoke move to 0.3.
+
+
+
+### Fixed
+
+- **sdk**: Holder signing picks its proof purpose, and Trust Task endpoints must be https ([#1791](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1791))
+
+* fix(vault): sign-trust-task picks the proof purpose from the document type
+
+  vault/sign-trust-task signed every document for assertionMethod. Under
+  VTI-KEY-022/106 an operational Trust Task is signed for authentication, and
+  relying parties that enforce it (the DID hosting control plane since
+  affinidi-webvh-service#218) refused every task a proxy-login wallet session
+  had the VTA sign.
+
+  The VTA now decides the purpose from the envelope's type alone:
+  assertionMethod only for the registry's attestation types
+  (auth/step-up/approve-response, task-consent/decision, confirm/response),
+  authentication for everything else, including their #response variants and
+  a private registry's reuse of those slugs. The requester cannot choose it;
+  a type that is not a Type URI is refused as envelopeInvalid.
+
+- **vault**: Sign-trust-task picks the proof purpose from the document type ([#1788](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1788))
+
+* fix(vault): sign-trust-task picks the proof purpose from the document type
+
+  vault/sign-trust-task signed every document for assertionMethod. Under
+  VTI-KEY-022/106 an operational Trust Task is signed for authentication, and
+  relying parties that enforce it (the DID hosting control plane since
+  affinidi-webvh-service#218) refused every task a proxy-login wallet session
+  had the VTA sign.
+
+  The VTA now decides the purpose from the envelope's type alone:
+  assertionMethod only for the registry's attestation types
+  (auth/step-up/approve-response, task-consent/decision, confirm/response),
+  authentication for everything else, including their #response variants and
+  a private registry's reuse of those slugs. The requester cannot choose it;
+  a type that is not a Type URI is refused as envelopeInvalid.
+
+
+
 ## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.26.0...vti-common-v0.27.0) — 2026-09-26
 
 

@@ -2,6 +2,172 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.19.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.18.0...cnm-cli-v0.19.0) — 2026-09-27
+
+
+### Added
+
+- **vtc-service**: Git-ns administrator reads as signed Trust Tasks ([#1781](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1781))
+
+* feat(cnm,vtc-client): send cnm git Trust Tasks over TSP, DIDComm or HTTPS
+
+  Every signed `cnm git` command now reaches the VTC over TSP when it
+  advertises it, else DIDComm, else as a signed document over HTTPS, through
+  one shared connect helper (`vtc::connect_for_tasks`, which `cnm backup`'s
+  end-to-end connect now also uses). The global `--transport` flag pins a
+  transport; the session is closed on every path out.
+
+  vtc-client's git-ns calls go over the session when the client holds one.
+  The document is signed and bound to its sender the same way on every
+  transport: over a session the key must be the session's own DID, and a key
+  naming another DID is refused before anything is sent. A session refusal
+  comes back as `VtcError::Refused` carrying the trust-task-error document,
+  so `task_error` and `step_up_request` read the code and details alike on
+  every transport (VTI-OPS-021/093).
+
+  vta-sdk gains `VtaClient::dispatch_trust_task_document`, which answers the
+  whole reply document (refusals included) rather than its payload.
+
+  The admin listings (namespace list, repos, view --admin, break-glass-list)
+  are console projections with no git-ns Trust Task and stay HTTPS admin reads.
+
+- **cnm**: Send cnm access Trust Tasks over TSP, DIDComm or HTTPS ([#1780](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1780))
+
+* feat(cnm,vtc-client): send cnm git Trust Tasks over TSP, DIDComm or HTTPS
+
+  Every signed `cnm git` command now reaches the VTC over TSP when it
+  advertises it, else DIDComm, else as a signed document over HTTPS, through
+  one shared connect helper (`vtc::connect_for_tasks`, which `cnm backup`'s
+  end-to-end connect now also uses). The global `--transport` flag pins a
+  transport; the session is closed on every path out.
+
+  vtc-client's git-ns calls go over the session when the client holds one.
+  The document is signed and bound to its sender the same way on every
+  transport: over a session the key must be the session's own DID, and a key
+  naming another DID is refused before anything is sent. A session refusal
+  comes back as `VtcError::Refused` carrying the trust-task-error document,
+  so `task_error` and `step_up_request` read the code and details alike on
+  every transport (VTI-OPS-021/093).
+
+  vta-sdk gains `VtaClient::dispatch_trust_task_document`, which answers the
+  whole reply document (refusals included) rather than its payload.
+
+  The admin listings (namespace list, repos, view --admin, break-glass-list)
+  are console projections with no git-ns Trust Task and stay HTTPS admin reads.
+
+- **cnm,vtc-client**: Send cnm git Trust Tasks over TSP, DIDComm or HTTPS ([#1778](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1778))
+
+Every signed `cnm git` command now reaches the VTC over TSP when it
+  advertises it, else DIDComm, else as a signed document over HTTPS, through
+  one shared connect helper (`vtc::connect_for_tasks`, which `cnm backup`'s
+  end-to-end connect now also uses). The global `--transport` flag pins a
+  transport; the session is closed on every path out.
+
+  vtc-client's git-ns calls go over the session when the client holds one.
+  The document is signed and bound to its sender the same way on every
+  transport: over a session the key must be the session's own DID, and a key
+  naming another DID is refused before anything is sent. A session refusal
+  comes back as `VtcError::Refused` carrying the trust-task-error document,
+  so `task_error` and `step_up_request` read the code and details alike on
+  every transport (VTI-OPS-021/093).
+
+  vta-sdk gains `VtaClient::dispatch_trust_task_document`, which answers the
+  whole reply document (refusals included) rather than its payload.
+
+  The admin listings (namespace list, repos, view --admin, break-glass-list)
+  are console projections with no git-ns Trust Task and stay HTTPS admin reads.
+
+- **vtc**: Step-up passkeys a member enrols through an admin's invite ([#1756](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1756))
+
+* feat(vtc/git-ns): separation of duties and break-glass for elevated git rights
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#641.
+
+  - Fixed rule 7: no elevated self-grant (git.ns.admin, git.repo.create,
+    git.repo.own) through grant 0.1/0.3, drift adopt, repo/adopt or reseat;
+    refused git-ns:selfGrantNotAllowed, naming cnm git break-glass.
+  - git-ns/right/break-glass/0.1: grant authority, or a community admin on a
+    headless namespace; always an operation-bound passkey step-up
+    (acl::bound_step_up, whose spent mark now yields its evidence); mandatory
+    justification; immediate, no expiry; flagged breakGlass on the record.
+  - git-ns/right/ratify/0.1 and revoke 0.3: another administrator ratifies,
+    bound to breakGlass.at; any community admin may revoke an unratified one,
+    which policy cannot refuse. Unratified records do not count toward the
+    last-owner and last-admin invariants.
+  - Visibility no policy can turn off: AuditEvent::GitNsBreakGlass at
+    AuditSeverity::Critical with the step-up evidence, activity items, a signed
+    git-ns/right/break-glass-notice/0.1 to every community admin and ns admin,
+    view 0.4, GET /v1/git-ns/break-glass, and breakGlass on the rights rows.
+  - git_ns.rego settings: break_glass (enabled by default), a delay and a
+    minimum justification; deny decisions on right.breakGlass and right.ratify.
+  - cnm: git break-glass, git ratify and git break-glass-list; git view flags
+    break-glass rights; grant and revoke move to 0.3.
+
+- **vtc**: Serve acl/{show,list,update,revoke} as Trust Tasks on the spine ([#1772](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1772))
+
+* feat(vtc)!: serve acl/{show,list,update,revoke} as Trust Tasks on the spine
+
+  The VTC served only acl/grant and acl/change-role as signed Trust Tasks;
+  reading an entry, listing the ACL and revoking one existed only as bearer
+  REST routes, so the VTI-ACL-050 full-cover check on revoke lived on one
+  door and a community could not take authority away over TSP or DIDComm.
+
+  Server (vtc-service)
+  - acl/show, acl/list, acl/update and acl/revoke are dispatched by the
+    spine (trust_tasks/acl_tasks.rs). Authority is the verified signer's ACL
+    row at execution time; payloads are validated against the generated
+    trust-tasks-rs schemas.
+  - One code path: routes::acl::{list_entries, show_entry, revoke_entry,
+    plan_update} are the operations; GET /v1/acl, GET and DELETE
+    /v1/acl/{did} are thin adapters over them.
+  - acl/update is planned by plan_grant with the role held fixed, so it
+    inherits VTI-ACL-052 (no self-modification), VTI-ACL-050 (full cover)
+    and VTI-ACL-053 (bounded by the granter). It refuses a missing entry
+    (acl/update:notFound), a narrowing (acl/update:narrowingNotPermitted),
+    a role (acl/update:roleChangeNotPermitted), and the VTA-only members
+    allowedKeys/approve/stepUp. Widening an admin needs the bound passkey
+    gesture, and community-wide authority another admin's consent, through
+    the same gate acl/grant uses (settle_signed_gate).
+  - acl/revoke emits acl/revoke:subjectNotPresent and
+    acl/revoke:lastAuthorityProtected, and now revokes the subject's live
+    sessions on a full removal too.
+  - acl/list gains `direction` (acting-in, subtree, any).
+  - acl/grant: restating an admin with a later or no expiry now counts as
+    widening (needs the gesture); a rewrite that reduces authority revokes
+    the subject's sessions; the audit row names the actual actor rather
+    than the entry's original creator, and an update is audited as
+    AclUpdated.
+
+
+
+### Fixed
+
+- **vtc-service**: A community backup travels only over DIDComm or TSP ([#1755](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1755))
+
+* fix(vtc-service)!: a community backup travels only over DIDComm or TSP
+
+  The backup request carries its password, and the backup carries the
+  community's signing key bundle. Over REST both exist in plaintext wherever
+  TLS terminates.
+
+  - POST /v1/backup/export and /v1/backup/import always answer 403.
+  - vtc/backup/export and backup/initiate-export, initiate-import and
+    finalize-import are refused on the REST binding, after the super-admin
+    check and before any state is serialized, a slot is opened or the
+    password is used. The chunks are ciphertext and are unaffected.
+  - The export audit row is still written before the envelope is returned,
+    and a VTC with no audit trail now refuses to export instead of releasing
+    the backup unrecorded.
+  - vtc-client export_backup and import_backup use the backup/* chunked
+    transfer over a DIDComm or TSP session, verifying every chunk and the
+    whole, and refuse without a session.
+  - cnm backup connects to the VTC over TSP, or DIDComm when the VTC
+    advertises no TSP, and has no REST fallback.
+
+  Implements trustoverip/dtgwg-trust-tasks-tf#646.
+
+
+
 ## [0.18.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.17.6...cnm-cli-v0.18.0) — 2026-09-26
 
 
