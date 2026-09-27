@@ -233,7 +233,20 @@ fn not_manageable(auth: &AuthClaims, entry: &AclEntry, did: &str, verb: &str) ->
 /// A caller with no entry of its own, or an expired one, writes nothing: there
 /// is no authority to bound the grant by, and VTI-ACL-001 derives every
 /// decision from an entry.
+///
+/// The one principal bounded otherwise is the on-host offline CLI
+/// ([`AuthClaims::is_local_cli_principal`]). It is not a caller on the
+/// operation surface: it runs with the node stopped, as the OS account that
+/// holds the store and the seed, and the offline writers that store an entry
+/// directly (`vta acl create`, `vta import-did`) answer to nothing more. Its
+/// bound is the node's whole authority. Refusing it here refused the admin
+/// grant of every offline `vta bootstrap provision-integration`.
 async fn caller_entry(acl_ks: &KeyspaceHandle, auth: &AuthClaims) -> Result<AclEntry, AppError> {
+    if auth.is_local_cli_principal() {
+        return Ok(
+            AclEntry::new(&auth.did, Role::Admin, &auth.did).with_approve_scope(ApproveScope::All)
+        );
+    }
     match get_acl_entry(acl_ks, &auth.did).await? {
         Some(entry) if entry.is_expired(now_epoch()) => Err(AppError::Forbidden(format!(
             "your ACL entry ({}) has expired; an expired entry confers no authority to grant \
@@ -3686,6 +3699,64 @@ mod tests {
         )
         .await
         .expect_err("no entry, no grant");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+    }
+
+    /// The on-host offline CLI has no entry and is not a caller on the
+    /// operation surface; its bound is the node's whole authority. Refusing it
+    /// broke the admin grant of every offline provision-integration.
+    #[tokio::test]
+    async fn the_offline_cli_grants_without_an_entry_of_its_own() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+        let cli = AuthClaims::unsafe_local_cli_super_admin("provision-integration");
+        create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &cli,
+            CreateAclParams {
+                did: "did:key:zNewAdmin".into(),
+                role: Role::Admin,
+                allowed_contexts: vec!["ctx-a".into()],
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .expect("the offline CLI writes the grant");
+        assert!(
+            get_acl_entry(&acl_ks, "did:key:zNewAdmin")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    /// Only the synthesised principal is exempt: a claim that merely names a
+    /// `cli:` subject, without the CLI's authentication marker, is refused like
+    /// any caller without an entry.
+    #[tokio::test]
+    async fn a_cli_named_caller_without_the_cli_marker_cannot_grant() {
+        let (_store, acl_ks, audit, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+        let mut impostor = super_admin("cli:provision-integration");
+        impostor.amr = vec!["did".into()];
+        let err = create_acl(
+            &acl_ks,
+            &audit,
+            &contexts_ks,
+            &impostor,
+            CreateAclParams {
+                did: "did:key:zAnyone".into(),
+                role: Role::Reader,
+                allowed_contexts: vec!["ctx-a".into()],
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .expect_err("not the CLI principal, no entry, no grant");
         assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
     }
 
