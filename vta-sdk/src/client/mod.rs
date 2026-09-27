@@ -2261,9 +2261,10 @@ impl VtaClient {
             .map_err(|e| match e {
                 crate::trust_task_proof::DiProofError::ResolverFailed(_) => {
                     VtaError::Protocol(format!(
-                        "could not retrieve `{}`'s verification key to check the reply ({e}). This \
-                     is a retrieval failure, not a bad proof — the reply may be genuine; retry \
-                     once the resolver is reachable",
+                        "could not retrieve `{}`'s verification key, so its reply was not \
+                         checked and is not believed ({e}). This is a key-retrieval failure, \
+                         not a bad proof: the request may have taken effect, so check its \
+                         state before sending it again",
                         identity.vta_did
                     ))
                 }
@@ -3217,7 +3218,7 @@ mod tests {
             msg.contains("could not retrieve"),
             "expected a retrieval-failure message, got: {msg}"
         );
-        assert!(msg.contains("retry"), "got: {msg}");
+        assert!(msg.contains("before sending it again"), "got: {msg}");
         assert!(
             !msg.contains("does not verify"),
             "a retrieval failure must not read as an invalid proof: {msg}"

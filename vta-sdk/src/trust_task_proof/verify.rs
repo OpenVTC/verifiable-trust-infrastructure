@@ -52,9 +52,12 @@ pub enum DiProofError {
     NotDataIntegrity,
     /// The proof's `verificationMethod` carries no DID.
     NoDid,
-    /// The verification-method resolver could not retrieve the signer's key
-    /// (network/rate-limit/lookup failure) — distinct from the signature
-    /// itself being wrong. Renders identically to [`Self::VerifyFailed`] on
+    /// The signer's key could not be retrieved — no resolver is configured
+    /// for its DID method, or the DID did not resolve (network, rate limit,
+    /// lookup failure) — so the proof was never checked. Distinct from the
+    /// proof being wrong, which includes a key the signer's DID document does
+    /// not authorise for the proof's purpose: that stays [`Self::VerifyFailed`].
+    /// Either way the document is refused. Renders identically to [`Self::VerifyFailed`] on
     /// the wire (see that variant's `Display` arm for why); a caller that
     /// verifies its own outbound reply may branch on this variant directly to
     /// tell "could not retrieve the key" apart from "proof is invalid".
@@ -122,11 +125,18 @@ impl std::fmt::Display for DiProofError {
 /// Classify a verification failure as a retrieval problem or an actual bad
 /// proof — the one place `DataIntegrityError` becomes a `DiProofError`, so
 /// every caller of [`verify_trust_task_proof_with`] gets the same answer.
+///
+/// Only a failure to *retrieve* the key is a resolver failure. The resolver
+/// also refuses keys the DID document does not authorise for the proof's
+/// purpose, controller mismatches and malformed methods through the same
+/// upstream `Resolver` variant; those are verdicts on the proof, and reporting
+/// one as "could not retrieve" would tell a caller a forged reply "may be
+/// genuine".
 fn classify(e: DataIntegrityError) -> DiProofError {
-    match e {
-        DataIntegrityError::Resolver(msg) => DiProofError::ResolverFailed(msg),
-        other => DiProofError::VerifyFailed(other.to_string()),
+    if super::vm_resolver::is_unretrievable(&e) {
+        return DiProofError::ResolverFailed(e.to_string());
     }
+    DiProofError::VerifyFailed(e.to_string())
 }
 
 /// Verify the proof on `doc` **against `did:key` only**, with no network I/O.
@@ -401,6 +411,58 @@ mod tests {
         assert!(
             matches!(err, DiProofError::ResolverFailed(_)),
             "expected ResolverFailed, got {err:?}"
+        );
+    }
+
+    /// The resolver refuses keys the signer's DID document does not authorise
+    /// for the proof's purpose through the same upstream `Resolver` variant
+    /// it uses for a failed lookup. That refusal is a verdict on the proof:
+    /// classifying it as a retrieval failure would tell the caller a forged
+    /// reply "may be genuine".
+    #[test]
+    fn an_authorisation_refusal_is_an_invalid_proof_not_a_retrieval_failure() {
+        for refusal in [
+            "verificationMethod is not listed under assertionMethod in its DID document",
+            "verificationMethod's controller is not the DID that names it",
+            "a did:key X25519 key is authorised for keyAgreement only",
+        ] {
+            let err = classify(DataIntegrityError::Resolver(refusal.to_string()));
+            assert!(
+                matches!(err, DiProofError::VerifyFailed(_)),
+                "`{refusal}` must stay an invalid proof, got {err:?}"
+            );
+        }
+    }
+
+    /// End to end: a `did:key` proof whose method is not the key's own
+    /// (the fragment does not repeat the key id) is refused by the resolver,
+    /// and that refusal is an invalid proof.
+    #[tokio::test]
+    async fn a_did_key_method_mismatch_classifies_as_verify_failed() {
+        let doc: TrustTask<Value> = serde_json::from_value(serde_json::json!({
+            "id": "urn:uuid:22222222-2222-4222-8222-222222222222",
+            "type": "https://trusttasks.org/spec/vta/contexts/create/1.0",
+            "issuer": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "recipient": "did:key:z6MkVta",
+            "payload": {},
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod":
+                    "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#not-the-key",
+                "created": "2026-08-29T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        }))
+        .expect("a well-formed Trust Task");
+
+        let err = verify_trust_task_proof_with(&doc, &TrustTaskVmResolver::did_key_only())
+            .await
+            .expect_err("the method is not the did:key's own key");
+        assert!(
+            matches!(err, DiProofError::VerifyFailed(_)),
+            "expected VerifyFailed, got {err:?}"
         );
     }
 

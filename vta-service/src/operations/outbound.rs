@@ -843,10 +843,15 @@ async fn verify_reply(
     let signer = vti_common::auth::verify_trust_task_proof_with(&doc, &vm_resolver)
         .await
         .map_err(|e| match e {
-            vti_common::auth::DiProofError::ResolverFailed(_) => bad_gateway_error(format!(
-                "could not retrieve `{recipient}`'s verification key to check the reply ({e}). \
-                 This is a retrieval failure, not a bad proof — the reply may be genuine; retry \
-                 once the resolver is reachable"
+            // Still a refusal, and deliberately not a 5xx: the SDK retries a
+            // 5xx under the caller's idempotency key, which would re-send a
+            // request the peer may already have applied. The reply is not
+            // believed; only the wording tells the operator why.
+            vti_common::auth::DiProofError::ResolverFailed(_) => AppError::Forbidden(format!(
+                "could not retrieve `{recipient}`'s verification key, so its reply was not \
+                 checked and is not believed ({e}). This is a key-retrieval failure, not a bad \
+                 proof: the request may have taken effect at `{recipient}`, so check its state \
+                 before sending it again"
             )),
             other => AppError::Forbidden(format!(
                 "the reply from `{recipient}` is unsigned or its proof does not verify \
@@ -938,7 +943,11 @@ mod tests {
             msg.contains("could not retrieve"),
             "expected a retrieval-failure message, got: {msg}"
         );
-        assert!(msg.contains("retry"), "got: {msg}");
+        assert!(msg.contains("before sending it again"), "got: {msg}");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "a retrieval failure must stay a refusal the SDK does not retry: {err:?}"
+        );
         assert!(
             !msg.contains("does not verify"),
             "a retrieval failure must not read as an invalid proof: {msg}"
