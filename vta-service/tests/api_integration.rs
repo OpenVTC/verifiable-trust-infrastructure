@@ -3345,68 +3345,89 @@ async fn sign_sample_bootstrap_request() -> vta_sdk::provision_integration::Boot
     .expect("sign sample VP")
 }
 
+/// Send `provision/integration/0.3` over REST as the test admin, whose bearer
+/// carries `role` in `contexts`. The `/bootstrap/provision-integration` route is
+/// gone; `/trust-tasks` is the same dispatcher TSP and DIDComm reach.
+#[cfg(feature = "webvh")]
+async fn provision_task(
+    app: &TestApp,
+    ctx: &TestContext,
+    role: &str,
+    contexts: Vec<String>,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let token = ctx
+        .auth_token(
+            &vta_service::test_support::test_admin_did().0,
+            role,
+            contexts,
+        )
+        .await;
+    app.request(post_auth(
+        "/trust-tasks",
+        &token,
+        signed_doc(
+            ctx,
+            &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
+            payload,
+        ),
+    ))
+    .await
+}
+
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_requires_auth() {
-    // No Bearer token → the AdminAuth extractor rejects before any
-    // validation runs.
-    let (app, _ctx) = TestApp::new().await;
+    // No bearer token: refused before any validation runs.
+    let (app, ctx) = TestApp::new().await;
     let vp = sign_sample_bootstrap_request().await;
-    let body = json!({
-        "request": vp,
-        "context": "prod-mediator",
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/bootstrap/provision-integration")
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap();
-    let (status, _) = app.request(req).await;
+    let doc = signed_doc(
+        &ctx,
+        &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
+        json!({ "request": vp, "context": "prod-mediator" }),
+    );
+    let (status, _) = app.request(post_unauth("/trust-tasks", doc)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_rejects_non_admin_token() {
-    // Caller authenticates as role "reader" — AdminAuth must reject.
+    // The relayer authenticates as a reader: not an admin in the context.
     let (app, ctx) = TestApp::new().await;
-    let token = ctx
-        .auth_token("did:key:z6MkReader", "reader", vec!["prod-mediator".into()])
-        .await;
     let vp = sign_sample_bootstrap_request().await;
-    let body = json!({
-        "request": vp,
-        "context": "prod-mediator",
-    });
-    let (status, _) = app
-        .request(post_auth("/bootstrap/provision-integration", &token, body))
-        .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = provision_task(
+        &app,
+        &ctx,
+        "reader",
+        vec!["prod-mediator".into()],
+        json!({ "request": vp, "context": "prod-mediator" }),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    assert_eq!(body["payload"]["code"], "permissionDenied", "{body}");
 }
 
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_rejects_tampered_vp() {
-    // Admin token + structurally valid body, but the VP's nonce has
-    // been mutated after signing — the handler calls `.verify()` on
-    // the request and returns 400.
+    // The VP's nonce is mutated after signing, so its proof no longer covers
+    // the bytes: the holder layer refuses it however the relayer is authorised.
     let (app, ctx) = TestApp::new().await;
-    let token = ctx
-        .auth_token("did:key:z6MkAdmin", "admin", vec!["prod-mediator".into()])
-        .await;
     let mut vp = sign_sample_bootstrap_request().await;
-    // Swap the nonce — same length, different bytes → signature
-    // over the mutated body is now invalid.
     vp.nonce = "BBBBBBBBBBBBBBBBBBBBBB".to_string();
-    let body = json!({
-        "request": vp,
-        "context": "prod-mediator",
-    });
-    let (status, _) = app
-        .request(post_auth("/bootstrap/provision-integration", &token, body))
-        .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = provision_task(
+        &app,
+        &ctx,
+        "admin",
+        vec!["prod-mediator".into()],
+        json!({ "request": vp, "context": "prod-mediator" }),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    assert_eq!(body["payload"]["code"], "malformedRequest", "{body}");
 }
 
 /// Sign a `provision/integration/0.1`-shape VP: `ask.type` PascalCase
@@ -3471,28 +3492,27 @@ async fn sign_pascalcase_bootstrap_request() -> Value {
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_accepts_a_v0_1_pascalcase_holder() {
-    // A holder on vta-sdk < 0.21.11 signs `ask.type` as PascalCase. The
-    // route must verify the proof against the bytes as posted; if it
-    // instead re-serialises the typed struct it re-emits the 0.2
-    // `templateBootstrap` tag and the holder's own valid signature is
-    // rejected as a forgery.
+    // A holder on vta-sdk < 0.21.11 signs `ask.type` as PascalCase. The handler
+    // must verify the proof against the bytes as received; re-serialising the
+    // typed struct would re-emit the 0.2 `templateBootstrap` tag and reject the
+    // holder's own valid signature as a forgery.
     //
-    // Asserted as the absence of a *proof* failure rather than a 200:
-    // provisioning proper needs template + context state this fixture
-    // app doesn't stand up, so it legitimately fails further in. What
-    // must never come back is "signature invalid".
+    // Asserted as the absence of a *proof* failure rather than success:
+    // provisioning proper needs template + context state this fixture app does
+    // not stand up, so it legitimately fails further in.
     let (app, ctx) = TestApp::new().await;
-    let token = ctx
-        .auth_token("did:key:z6MkAdmin", "admin", vec!["prod-mediator".into()])
-        .await;
-    let body = json!({
-        "request": sign_pascalcase_bootstrap_request().await,
-        "context": "prod-mediator",
-    });
-    let (_status, err) = app
-        .request(post_auth("/bootstrap/provision-integration", &token, body))
-        .await;
-    let err = err.to_string();
+    let (_status, body) = provision_task(
+        &app,
+        &ctx,
+        "admin",
+        vec!["prod-mediator".into()],
+        json!({
+            "request": sign_pascalcase_bootstrap_request().await,
+            "context": "prod-mediator",
+        }),
+    )
+    .await;
+    let err = body.to_string();
     assert!(
         !err.contains("signature invalid") && !err.contains("verify BootstrapRequest"),
         "0.1-cased holder must clear proof verification, got {err}"
@@ -3502,28 +3522,40 @@ async fn provision_integration_accepts_a_v0_1_pascalcase_holder() {
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_rejects_unknown_field_in_body() {
-    // `deny_unknown_fields` on BootstrapRequest (item 22 hardening)
-    // kicks in at deserialize time for any field the verifier doesn't
-    // know about. The handler surfaces this as a Deserialize error
-    // → 400 via axum's default JSON extractor rejection.
+    // `deny_unknown_fields` on BootstrapRequest (item 22 hardening): a member
+    // the verifier does not know is refused, not ignored.
     let (app, ctx) = TestApp::new().await;
-    let token = ctx
-        .auth_token("did:key:z6MkAdmin", "admin", vec!["prod-mediator".into()])
-        .await;
     let mut vp_value =
         serde_json::to_value(sign_sample_bootstrap_request().await).expect("serialize VP");
-    // Inject an attacker-chosen field — item-22 guard must reject.
     vp_value["smugglerField"] = json!("malicious");
-    let body = json!({
-        "request": vp_value,
-        "context": "prod-mediator",
-    });
-    let (status, _) = app
-        .request(post_auth("/bootstrap/provision-integration", &token, body))
+    let (status, body) = provision_task(
+        &app,
+        &ctx,
+        "admin",
+        vec!["prod-mediator".into()],
+        json!({ "request": vp_value, "context": "prod-mediator" }),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    assert_eq!(body["payload"]["code"], "malformedRequest", "{body}");
+}
+
+/// The REST route is gone: `provision/integration` is a Trust Task only.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn the_provision_integration_rest_route_is_gone() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+    let (status, body) = app
+        .request(post_auth(
+            "/bootstrap/provision-integration",
+            &token,
+            json!({}),
+        ))
         .await;
     assert!(
-        status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
-        "expected 4xx rejection for unknown field, got {status}"
+        status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED,
+        "{status} {body}"
     );
 }
 

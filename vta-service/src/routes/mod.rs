@@ -324,17 +324,12 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     let auth_portal_router =
         OpenApiRouter::new().route("/auth/portal", get(auth_portal::portal_handler));
 
-    // Authenticated provision-integration (context-admin gated). Kept
-    // separate from `unauth` so the rate-limiter doesn't apply — the
-    // endpoint already hard-gates on `AdminAuth`.
-    #[cfg(feature = "webvh")]
-    let auth_provision = OpenApiRouter::new().routes(routes!(bootstrap::provision_integration));
+    // `provision/integration` is a Trust Task only (TSP, DIDComm, or HTTPS on
+    // `/trust-tasks`); its `/bootstrap/provision-integration` route is gone.
 
     let router = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(unauth)
         .merge(did_log);
-    #[cfg(feature = "webvh")]
-    let router = router.merge(auth_provision);
     let router = router.merge(auth_portal_router);
 
     let router = router

@@ -1,6 +1,6 @@
 //! `provision-integration` — shared library function driven by both the
-//! VTA CLI (`vta bootstrap provision-integration`) and the HTTP endpoint
-//! (`POST /bootstrap/provision-integration`).
+//! VTA CLI (`vta bootstrap provision-integration`) and the
+//! `provision/integration` Trust Task.
 //!
 //! See `docs/02-vta/provision-integration.md` for the full design.
 //!

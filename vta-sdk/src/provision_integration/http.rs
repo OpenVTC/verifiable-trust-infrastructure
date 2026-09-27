@@ -1,8 +1,5 @@
-//! Wire types for `POST /bootstrap/provision-integration`.
-//!
-//! Mirrors the shape of
-//! `vta-service::routes::bootstrap::provision::*` on the client side,
-//! so `VtaClient::provision_integration` consumers don't need to
+//! Wire types for the `provision/integration` Trust Task payload and
+//! response, so `VtaClient::provision_integration` consumers don't need to
 //! depend on vta-service.
 
 use serde::{Deserialize, Serialize};
