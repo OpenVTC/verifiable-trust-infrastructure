@@ -4,7 +4,6 @@ mod attestation;
 mod audit;
 mod auth;
 mod auth_portal;
-mod backup;
 mod backup_blob;
 mod bootstrap;
 mod cache;
@@ -471,9 +470,6 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         ))
         .routes(routes!(did_webvh::get_did_log_handler))
         .routes(routes!(did_webvh::register_did_with_server_handler))
-        .routes(routes!(did_webvh::update_did_handler))
-        .routes(routes!(did_webvh::rotate_did_keys_handler))
-        .routes(routes!(did_webvh::realign_did_keys_handler))
         // Passkey-as-verificationMethod enrolment. See
         // `docs/02-vta/passkey-verification-methods.md` (forthcoming).
         // First-time enrolment expects a short-lived enrolment-scope
@@ -489,9 +485,7 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // VTA management routes
     let router = router
         .routes(routes!(vta::restart))
-        .routes(routes!(vta::metrics))
-        .routes(routes!(backup::export))
-        .routes(routes!(backup::import));
+        .routes(routes!(vta::metrics));
 
     // Backup-descriptor blob endpoints. NOT JWT-gated — the
     // `X-Backup-Token` header IS the credential (one-shot for
@@ -700,7 +694,6 @@ mod cors_tests {
             "/cache/{key}",
             "/config",
             "/vta/restart",
-            "/backup/export",
             "/backup/blob/{bundle_id}",
             // webvh (default feature) groups. (Service management is the
             // `vta/services/*` Trust Tasks, with no REST paths to document.)

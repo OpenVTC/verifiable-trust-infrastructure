@@ -472,7 +472,7 @@ optional hardening:
   committed at import and adopted at boot; see `backup-restore-portability.md`). If it does not preserve
   the split, restoring a backup **silently downgrades a dual-unlock VTA to
   KMS-only**. Must fail closed rather than re-wrap single-share.
-- **Backup export** (`POST /backup/export`, Argon2id + AES-256-GCM) exports the
+- **Backup export** (`vta/backup/initiate-export`, Argon2id + AES-256-GCM) exports the
   seed to an operator password. That is a different threat actor (needs
   super-admin, i.e. VTA access), but it is a parallel path out and should be
   reviewed alongside — dual-unlock protects the at-rest seed, not an

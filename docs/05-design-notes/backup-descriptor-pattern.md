@@ -484,6 +484,11 @@ the descriptor's `algorithm` field is the discriminator.
 
 ## Coexistence with the legacy `/backup/export` + `/backup/import`
 
+> **Closed.** The legacy routes, the SDK's inline `backup_export` /
+> `backup_import`, the `backup-management/1.0` messages and
+> `pnm backup --use-rest-legacy` are removed. The descriptor Trust Tasks
+> are the only surface. The history below is kept for the record.
+
 Both surfaces ship alongside each other through the migration window.
 After every internal caller (pnm-cli, cnm-cli, vta-cli-common) has
 moved to the descriptor pattern, the legacy routes get a

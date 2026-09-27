@@ -453,7 +453,11 @@ pub struct StageRequest<'a> {
     pub config: &'a tokio::sync::RwLock<vta_config::AppConfig>,
     pub committer: &'a dyn RestoreCommitter,
     pub auth: &'a AuthClaims,
-    /// See [`ImportRequest::replace_identity`].
+    /// Allow the restore to replace a *different* identity this VTA already
+    /// runs as. Without it a backup whose DID differs from the running one is
+    /// refused — the guard against restoring the wrong file over a live agent.
+    /// Disaster recovery onto a freshly set-up VTA (which has minted a DID of
+    /// its own) is the case that needs it.
     pub replace_identity: bool,
 }
 

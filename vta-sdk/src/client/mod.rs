@@ -319,7 +319,6 @@ mod acl;
 mod agent_devices;
 #[cfg(feature = "session")]
 mod auto_connect;
-mod backup;
 mod backup_chunked;
 mod backup_descriptors;
 pub use backup_chunked::{ChunkedDownload, ChunkedUpload, TransferProgress};
@@ -358,17 +357,6 @@ mod audit;
 pub use crate::session::TokenResult;
 #[cfg(feature = "session")]
 pub use auto_connect::{AutoConnect, ConnectedVta};
-
-/// Percent-encode characters that are unsafe inside a URL path segment.
-///
-/// `%` must be escaped first — re-ordering would double-escape any
-/// already-percent-encoded character.
-pub(super) fn encode_path_segment(s: &str) -> String {
-    s.replace('%', "%25")
-        .replace('#', "%23")
-        .replace('?', "%3F")
-        .replace('/', "%2F")
-}
 
 /// The error for a legacy DIDComm *protocol message* attempted over TSP.
 ///
@@ -3195,49 +3183,6 @@ mod tests {
         let doc = serde_json::json!({ "id": "urn:uuid:1", "reason": "not authorized" });
         let err = VtaClient::extract_trust_task_payload(doc).expect_err("must be an error");
         assert!(err.to_string().contains("not authorized"), "{err}");
-    }
-
-    // ── encode_path_segment ─────────────────────────────────────────
-
-    #[test]
-    fn test_encode_hash_in_did_fragment() {
-        assert_eq!(
-            encode_path_segment("did:key:z6Mk123#z6Mk123"),
-            "did:key:z6Mk123%23z6Mk123"
-        );
-    }
-
-    #[test]
-    fn test_encode_question_mark() {
-        assert_eq!(encode_path_segment("foo?bar"), "foo%3Fbar");
-    }
-
-    #[test]
-    fn test_encode_percent_is_escaped_first() {
-        assert_eq!(encode_path_segment("100%#done"), "100%25%23done");
-    }
-
-    #[test]
-    fn test_encode_colon_preserved() {
-        assert_eq!(encode_path_segment("did:key:z6Mk"), "did:key:z6Mk");
-    }
-
-    #[test]
-    fn test_encode_plain_string_unchanged() {
-        assert_eq!(encode_path_segment("simple-id"), "simple-id");
-    }
-
-    #[test]
-    fn test_encode_multiple_hashes() {
-        assert_eq!(encode_path_segment("a#b#c"), "a%23b%23c");
-    }
-
-    #[test]
-    fn test_encode_slash_in_derivation_path() {
-        assert_eq!(
-            encode_path_segment("m/44'/0'/0'/0"),
-            "m%2F44'%2F0'%2F0'%2F0"
-        );
     }
 
     // ── VtaClient::new ──────────────────────────────────────────────

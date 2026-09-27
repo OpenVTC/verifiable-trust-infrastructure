@@ -200,10 +200,9 @@ vta-service/src/
 
 ### Backup
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | /backup/export | Admin | Export encrypted backup |
-| POST | /backup/import | Admin | Import encrypted backup |
+A backup is the `vta/backup/*` Trust Tasks (super-admin, over TSP or DIDComm)
+plus `GET|POST /backup/blob/{id}` for the bytes. There is no inline
+export/import route.
 
 ### Bootstrap
 

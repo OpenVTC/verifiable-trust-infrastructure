@@ -849,8 +849,8 @@ new flow, update both this section and the relevant `docs/*.md`.
 ### Backup / restore
 - **What**: Encrypted full-state dump + restore, portable between plain,
   hardened and TEE VTAs in any direction.
-- **Endpoints**: `POST /backup/export`, `POST /backup/import`
-  (super-admin), and the descriptor Trust Tasks (`vta/backup/*`).
+- **Surface**: the descriptor Trust Tasks (`vta/backup/*`), super-admin,
+  over an end-to-end transport only. There is no inline REST route.
 - **Export** walks `vta_keyspaces::BACKED_UP` and dumps every row (format
   `vta-backup-v2`) — no per-keyspace collector, so listing a keyspace *is*
   backing it up. Rows in `ENVIRONMENT_BOUND_ROWS` (`keys ▸ tee:*`,
