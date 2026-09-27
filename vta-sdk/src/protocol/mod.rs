@@ -299,14 +299,15 @@ mod via_trust_tasks {
         pub(super) async fn services_rollback(
             &self,
             kind: Kind,
+            drain_ttl_secs: Option<u64>,
             timeout: u64,
         ) -> Result<RollbackResponse, VtaError> {
-            let r: spec::rollback::v1_0::Response = self
-                .rpc_tt(
-                    uri::TASK_SERVICES_ROLLBACK_1_0,
-                    json!({ "service": kind.wire() }),
-                    timeout,
-                )
+            let mut payload = json!({ "service": kind.wire() });
+            if let Some(secs) = drain_ttl_secs {
+                payload["drainTtlSecs"] = secs.into();
+            }
+            let r: spec::rollback::v1_1::Response = self
+                .rpc_tt(uri::TASK_SERVICES_ROLLBACK_1_1, payload, timeout)
                 .await?;
             let r = r.result;
             Ok(RollbackResponse {
@@ -427,8 +428,8 @@ mod via_trust_tasks {
     /// [`RollbackResponse::kind`]'s documented snake_case form. The wire says
     /// `noOp`, and the CLI (like any caller reading the documented values)
     /// tests for `no_op`, so this is spelled out rather than serialised.
-    fn rollback_kind(k: spec::rollback::v1_0::RollbackResultKind) -> &'static str {
-        use spec::rollback::v1_0::RollbackResultKind as K;
+    fn rollback_kind(k: spec::rollback::v1_1::RollbackResultKind) -> &'static str {
+        use spec::rollback::v1_1::RollbackResultKind as K;
         match k {
             K::Disabled => "disabled",
             K::Enabled => "enabled",
@@ -474,7 +475,7 @@ mod via_trust_tasks {
         /// is what the CLI tests for to print "nothing to do".
         #[test]
         fn a_no_op_rollback_reads_as_the_documented_no_op() {
-            let r: spec::rollback::v1_0::RollbackResultKind =
+            let r: spec::rollback::v1_1::RollbackResultKind =
                 serde_json::from_value(json!("noOp")).unwrap();
             assert_eq!(rollback_kind(r), "no_op");
         }
@@ -633,7 +634,7 @@ impl VtaClient {
         &self,
         _req: services::RollbackRestRequest,
     ) -> Result<services::RollbackResponse, VtaError> {
-        self.services_rollback(Kind::Rest, 60).await
+        self.services_rollback(Kind::Rest, None, 60).await
     }
 
     /// Enable TSP advertisement (`#tsp` → the mediator DID). Spec §3.4.
@@ -689,7 +690,7 @@ impl VtaClient {
         &self,
         _req: services::RollbackTspRequest,
     ) -> Result<services::RollbackResponse, VtaError> {
-        self.services_rollback(Kind::Tsp, 60).await
+        self.services_rollback(Kind::Tsp, None, 60).await
     }
 
     /// Enable WebAuthn-RP advertisement (`#vta-webauthn`).
@@ -732,19 +733,21 @@ impl VtaClient {
         &self,
         _req: services::RollbackWebauthnRequest,
     ) -> Result<services::RollbackResponse, VtaError> {
-        self.services_rollback(Kind::Webauthn, 300).await
+        self.services_rollback(Kind::Webauthn, None, 300).await
     }
 
     /// Fail-forward the most recent DIDComm mutation.
     ///
-    /// `drain_ttl_secs` is not carried: `vta/services/rollback/1.0` has no
-    /// drain member, so a rollback that lands on a drain transition takes the
-    /// agent's default window.
+    /// `drain_ttl_secs` rides `vta/services/rollback/1.1`: how long a mediator
+    /// the rollback leaves draining keeps accepting delivery. Omitted, the
+    /// agent applies its default; over a request arriving through the mediator
+    /// being replaced it raises a shorter window to its floor.
     pub async fn rollback_didcomm(
         &self,
-        _req: services::RollbackDidcommRequest,
+        req: services::RollbackDidcommRequest,
     ) -> Result<services::RollbackResponse, VtaError> {
-        self.services_rollback(Kind::Didcomm, 120).await
+        self.services_rollback(Kind::Didcomm, req.drain_ttl_secs, 120)
+            .await
     }
 
     /// The VTA's currently-advertised transport services, in canonical order.

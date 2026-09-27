@@ -439,6 +439,17 @@ async fn every_optional_argument_unset_still_builds_a_conforming_payload() {
         })
         .await,
     );
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.rollback_didcomm(svc::RollbackDidcommRequest {
+                    drain_ttl_secs: Some(86_400),
+                })
+                .await,
+            )
+        })
+        .await,
+    );
 }
 
 /// An [`UNPUBLISHED`] entry names a task that really has no schema *today*.

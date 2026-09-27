@@ -2193,8 +2193,10 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0 => services::handle_disable
         [ Mutating None false ],
+    // 1.0 and 1.1 share the handler: 1.1 only adds the optional drain window.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_0 => services::handle_rollback
+    vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_0 | vta_sdk::trust_tasks::TASK_SERVICES_ROLLBACK_1_1
+        => services::handle_rollback
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0 => services::handle_drain_list
@@ -4394,6 +4396,48 @@ mod response_coverage {
             "expected a success response from {uri}, got: {doc}"
         );
         doc["payload"].clone()
+    }
+
+    /// `vta/services/{update,rollback}/1.1`: a drain window names a mediator,
+    /// so on `rest` or `webauthn` it is `malformedRequest`, not silently
+    /// ignored — the rule both 1.1 specifications state.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn services_1_1_refuses_a_drain_on_an_unmediated_transport() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        for (uri, service, payload) in [
+            (
+                t::TASK_SERVICES_UPDATE_1_1,
+                "rest",
+                json!({ "service": "rest", "config": { "url": "https://vta.example.com" },
+                        "drainTtlSecs": 60 }),
+            ),
+            (
+                t::TASK_SERVICES_ROLLBACK_1_1,
+                "rest",
+                json!({ "service": "rest", "drainTtlSecs": 60 }),
+            ),
+            (
+                t::TASK_SERVICES_ROLLBACK_1_1,
+                "webauthn",
+                json!({ "service": "webauthn", "drainTtlSecs": 60 }),
+            ),
+        ] {
+            let body = signed_body(uri, &vta_did, payload);
+            let outcome = super::dispatch_trust_task_core(
+                &state,
+                &crate::test_support::super_admin_claims(),
+                &body,
+                transport::TransportConfidentiality::HopByHop,
+            )
+            .await;
+            let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+            assert_eq!(
+                doc["payload"]["code"], "malformedRequest",
+                "{uri} with a drain on {service}: {doc}"
+            );
+        }
     }
 
     /// [`ok`], but on a transport that is confidential end to end.
