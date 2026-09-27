@@ -123,6 +123,12 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_view)
         .on_async(handle_view_v2)
         .on_async(handle_view_v4)
+        // TODO(trust-tasks release carrying trust-tasks #659): the three
+        // administrator reads are registered under hand-written stand-in
+        // payload types (`super::admin_reads`), until the generated ones ship.
+        .on_async(handle_view_v5)
+        .on_async(handle_namespace_list)
+        .on_async(handle_repo_list)
         .on_async(handle_drift_resolve)
         .on_async(handle_drift_resolve_v3)
         .on_async(handle_reseat)
@@ -308,6 +314,25 @@ signed_handler!(
 // `git-ns/namespace/reseat/0.3` — the only reseat version served (0.1 and
 // 0.2 queued a namespace-level forge projection that no longer exists).
 signed_handler!(handle_reseat, reseat::Payload, ops::namespace_reseat);
+// The administrator's reads (`super::admin_reads`). Each refuses an unsigned
+// document in `signer`, because this build's registry cannot yet tell the
+// spine their proof is REQUIRED; a console key acts as the admin DID that
+// delegated it, exactly as for the family's changes.
+signed_handler!(
+    handle_view_v5,
+    super::admin_reads::view_v0_5::Payload,
+    super::admin_reads::view_v5
+);
+signed_handler!(
+    handle_namespace_list,
+    super::admin_reads::namespace_list_v0_1::Payload,
+    super::admin_reads::namespace_list
+);
+signed_handler!(
+    handle_repo_list,
+    super::admin_reads::repo_list_v0_1::Payload,
+    super::admin_reads::repo_list
+);
 signed_handler!(
     handle_reproject,
     reproject::Payload,

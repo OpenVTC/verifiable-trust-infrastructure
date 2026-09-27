@@ -985,7 +985,11 @@ new flow, update both this section and the relevant `docs/*.md`.
   `trust_tasks_rs::specs::git_ns`, served on the document dispatcher. Authority
   is the proof signer's **git rights**, read from the VTC's records at
   execution time — never a bearer token, and never the community-admin role
-  (which only binds). The admin REST routes (`/v1/git-ns/*`) are read-only.
+  (which only binds). The admin REST routes (`/v1/git-ns/*`) are read-only
+  console projections; the administrator's view, namespace and repository
+  listings and break-glass list are signed reads (`git-ns/view/0.5`,
+  `git-ns/namespace/list`, `git-ns/repo/list` in `git_ns::admin_reads`),
+  answered to a namespace's administrators only, never to a bearer session.
 - **Invariants to preserve**: the fixed rules of `git-ns/right/grant` live in
   `git_ns::rules` and run before the `gitNamespace` policy, which can only
   refuse; rights are keyed by repository id, not name (a rename moves them, a

@@ -434,7 +434,8 @@ cnm git break-glass --right=git.repo.own --resource=github.com/acme/widgets \
   every live namespace admin except the actor, over the VTC's mediator
   connection; the flag in `git-ns/view/0.4` to every administrator it
   concerns; and the console's banner and *Break-glass grants* list
-  (`GET /v1/git-ns/break-glass`). If the audit row cannot be written, the
+  (`git-ns/view/0.5` with `scope: administrator` and `breakGlass: true`). If
+  the audit row cannot be written, the
   break-glass is undone.
 - **Ratify or revoke**: another administrator — a community administrator, or
   someone whose *confirmed* rights carry grant authority over it — ratifies
@@ -443,7 +444,7 @@ cnm git break-glass --right=git.repo.own --resource=github.com/acme/widgets \
   `breakGlass.at` they read). Any community administrator may revoke an
   unratified one with the ordinary `git-ns/right/revoke`, and no policy can
   refuse that. Both are audited and announced like the break-glass.
-  `cnm git break-glass-list` shows them all.
+  `cnm git break-glass-list [--resource <res>]` shows them all.
 
 **Policy** (`git_ns.rego` `settings`) may disable or tighten it, never quieten
 it: `break_glass` (`"enabled"` by default, or `"disabled"`),
@@ -453,21 +454,44 @@ decision on `input.action == "right.breakGlass"` (or `"right.ratify"`).
 
 ## Administrator surface
 
-Read-only, admin session. `view`, `rights`, `rights/issued-by-departed`,
+### Signed reads
+
+The administrator's view, the namespace and repository listings and the
+break-glass list are signed Trust Tasks, served on the document dispatcher the
+same way over TSP, DIDComm and `POST /v1/trust-tasks`
+(`vtc-service/src/git_ns/admin_reads.rs`). They answer a namespace's
+administrators only — the community-administrator capability (every
+namespace) or a live, explicitly recorded `git.ns.admin` on it, held by a
+current member — and never a bearer session, so a context-scoped
+administrator who holds no `git.ns.admin` sees nothing through them. A caller
+who administers nothing, or who names a namespace they do not administer or
+one that does not exist, is refused with the task's `notAdministrator`, the
+same way in each case. An unsigned document is refused `proofRequired`.
+
+| Task | Answer | `cnm` |
+|---|---|---|
+| `git-ns/namespace/list/0.1` (`namespace?`) | administered namespaces with admins, bridge, headless flag, bridge-reported app/plan status, effective `role_drift` / `cascade_on_departure`, role map (`roleMap`, absent while unknown; `roleMapSource`: `reported` or `unknown`) | `cnm git namespace list` |
+| `git-ns/repo/list/0.1` (`namespace?`) | repositories in them with owners, right counts, bootstrap, sync, guard in force, step outcomes, last check, effective role map, `roleMapStale`; for a community administrator also those an unbound namespace left | `cnm git repos [--namespace <id>]` |
+| `git-ns/view/0.5` (`scope: administrator`) | every record and reason in the administered namespaces (0.4's response shape) | `cnm git view --admin` |
+| `git-ns/view/0.5` (`breakGlass: true`) | only break-glass records, ratified ones included, and the namespaces holding them | `cnm git break-glass-list` |
+
+These specifications (trustoverip/dtgwg-trust-tasks-tf#659) are served ahead
+of their `trust-tasks-rs` release on hand-written stand-ins; each handler
+refuses an unsigned document itself until the registry can declare the
+proof requirement to the spine.
+
+### Console projections
+
+Read-only, admin session. `rights`, `rights/issued-by-departed`,
 `projection`, `accounts` and `drift` show every member's rights, grant
 reasons and forge identities — and, in drift, the forge accounts of people
 outside the community — so they need a community-wide administrator (an admin
 session not narrowed to a context); `activity` is for any session and shows
-only the namespaces the caller administers. `view` also takes
-`Trust-Task: https://trusttasks.org/spec/git-ns/view/0.1`, because its body is
-that task's response; the rest are console projections no specification
-defines, and carry no Trust-Task URL.
+only the namespaces the caller administers. They are console projections no
+specification defines, and carry no Trust-Task URL.
 
 | Route | Body |
 |---|---|
-| `GET /v1/git-ns/view?resource=` | `git-ns/view/0.1#response`, every record and reason |
-| `GET /v1/git-ns/namespaces` | namespaces with admins, bridge, headless flag, bridge-reported app/plan status, effective `role_drift` / `cascade_on_departure`, role map (`roleMap`, absent while unknown; `roleMapSource`: `reported` or `unknown`) |
-| `GET /v1/git-ns/repos?namespace=` | repositories with owners, bootstrap, sync, guard in force, step outcomes, last check, effective role map, `roleMapStale` |
 | `GET /v1/git-ns/rights?resource=&subject=` | recorded and role-derived rights |
 | `GET /v1/git-ns/rights/issued-by-departed` | grants whose granter left |
 | `GET /v1/git-ns/drift` | repositories with outstanding drift |
@@ -505,11 +529,15 @@ DID it stands for on every member-facing `git-ns/*` task.
 
 Every change is a signed `git-ns/*` Trust Task on `POST /v1/trust-tasks` (or
 DIDComm/TSP). `cnm git …` signs them with the community profile's key.
-`git-ns/view` is served as 0.1 and 0.2; 0.2 adds the caller's own linked forge
-accounts (`accounts`, narrowed to a `resource`'s forge), never another
-member's. `cnm git view` asks for 0.2.
+`git-ns/view` is served as 0.1, 0.2, 0.4 and 0.5; 0.2 adds the caller's own
+linked forge accounts (`accounts`, narrowed to a `resource`'s forge), never
+another member's, and 0.5 the administrator's scope and the break-glass
+narrowing above. `cnm git view` asks for 0.5.
 
-The admin console's **Repos** plugin (`/admin/repos`) renders these routes:
+The admin console's **Repos** plugin (`/admin/repos`) renders these reads —
+the signed ones sent with the browser's console key, so a browser with no
+console key enrolled is told to enable signing rather than shown an empty
+page:
 namespace cards (kind, mode, what the bridge reported of its App — missing
 permissions, a pending permission upgrade, org rulesets — admins, the
 bridge's service grant, the effective `role_drift` and

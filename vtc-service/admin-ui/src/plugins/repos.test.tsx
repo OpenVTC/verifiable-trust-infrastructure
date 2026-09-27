@@ -11,8 +11,11 @@ import {
   PERSONAL,
   PRIYA,
   SANDBOX,
+  signedReads,
   WIDGETS,
+  isChange,
 } from "@/plugins/repos/fixtures.test-data";
+import { TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW } from "@/plugins/repos/api";
 import { mockFetch, renderWithProviders } from "@/test/render";
 
 // The browser's signing door, controlled per test: jsdom has no IndexedDB to
@@ -20,6 +23,7 @@ import { mockFetch, renderWithProviders } from "@/test/render";
 // vary. Everything else in `@/lib/api` is the real module over mocked fetch.
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
   signingAvailable: vi.fn(async () => false),
   postSignedTrustTask: vi.fn(),
 }));
@@ -47,21 +51,28 @@ const COMMUNITY_ADMIN = signedInAs(["admin"], []);
 const CONTEXT_ADMIN = signedInAs(["admin"], ["ctx-a"]);
 
 describe("Repos plugin — overview", () => {
-  it("reads the console projections with no Trust-Task header, and sends nothing", async () => {
+  it("sends the administrator's reads as Trust Tasks, the projections with no header, and changes nothing", async () => {
     const requests = mockFetch(gitNsRoutes());
     mount();
 
     expect(await screen.findByRole("link", { name: "github.com/acme" })).toBeTruthy();
     await screen.findByText("acme/widgets");
+    // The namespaces and repositories are signed reads on the document
+    // endpoint — no bearer view serves them any more.
+    const reads = requests.filter((r) => r.url === "/v1/trust-tasks");
+    const types = new Set(reads.map((r) => (r.body as { type: string }).type));
+    expect(types).toEqual(new Set([TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW]));
+    for (const r of reads) expect(r.method).toBe("POST");
+    expect(requests.some((r) => /^\/v1\/git-ns\/(namespaces|repos|view|break-glass)/.test(r.url))).toBe(false);
+    // The projections are mounted with no binding, and sending one would
+    // claim a contract.
     const gitNs = requests.filter((r) => r.url.startsWith("/v1/git-ns/"));
     expect(gitNs.length).toBeGreaterThan(0);
-    // Only `/v1/git-ns/view` answers a specification's read; the projections
-    // are mounted with no binding, and sending one would claim a contract.
     for (const r of gitNs) {
       expect(r.method).toBe("GET");
       expect(r.headers.get("Trust-Task")).toBeNull();
     }
-    expect(requests.every((r) => r.method === "GET")).toBe(true);
+    expect(vi.mocked(postSignedTrustTask)).not.toHaveBeenCalled();
   });
 
   it("shows each namespace card with its kind, mode, counts and policy", async () => {
@@ -287,7 +298,7 @@ describe("Repos plugin — overview", () => {
     expect(within(sign).queryByRole("button", { name: "Sign and send" })).toBeNull();
     expect(within(sign).queryByLabelText(/destructive and want to sign it/)).toBeNull();
     expect(postSignedTrustTask).not.toHaveBeenCalled();
-    expect(requests.every((r) => r.method === "GET")).toBe(true);
+    expect(requests.some(isChange)).toBe(false);
   });
 
   it("does not build a reseat to the viewer themselves (separation of duties)", async () => {
@@ -308,7 +319,7 @@ describe("Repos plugin — overview", () => {
     expect(form.textContent).toMatch(/cannot grant yourself this right: separation of duties/);
     expect(within(form).queryByLabelText("Document")).toBeNull();
     expect(postSignedTrustTask).not.toHaveBeenCalled();
-    expect(requests.every((r) => r.method === "GET")).toBe(true);
+    expect(requests.some(isChange)).toBe(false);
   });
 
   it("makes a reseat be confirmed before this browser signs and sends it", async () => {
@@ -386,7 +397,7 @@ describe("Repos plugin — overview", () => {
     expect(sign.querySelector(".gitns-parties")!.textContent).toMatch(
       new RegExp(`Resource${SANDBOX.resource.replace(/\./g, "\\.")}First ownerBob Mensah${BOB}`),
     );
-    expect(requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(requests.some(isChange)).toBe(false);
     expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 
@@ -553,7 +564,7 @@ describe("Repos plugin — overview", () => {
   });
 
   it("says a failed read is a failure to ask, not an empty community", async () => {
-    mockFetch([{ path: "/v1/git-ns/namespaces", status: 500, body: { error: "store unavailable" } }]);
+    mockFetch([signedReads({ namespaces: [], repos: [], breakGlass: [], namespacesStatus: 500 })]);
     mount();
 
     expect(await screen.findByText("Namespaces could not be read")).toBeTruthy();
@@ -591,7 +602,7 @@ describe("Repos plugin — issued by departed members", () => {
     );
     expect(sign.textContent).toMatch(/Consent class: Normal/);
     expect(sign.querySelector(".gitns-parties")!.textContent).toContain(PRIYA);
-    expect(requests.every((r) => r.method === "GET")).toBe(true);
+    expect(requests.some(isChange)).toBe(false);
     expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 });

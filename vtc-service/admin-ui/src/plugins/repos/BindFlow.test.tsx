@@ -6,10 +6,11 @@ import { postSignedTrustTask, signingAvailable } from "@/lib/api";
 import { Repos } from "@/plugins/repos";
 import { mockFetch, renderWithProviders } from "@/test/render";
 
-import { ACME, gitNsRoutes } from "./fixtures.test-data";
+import { ACME, gitNsRoutes, isChange } from "./fixtures.test-data";
 
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
   signingAvailable: vi.fn(async () => false),
   postSignedTrustTask: vi.fn(),
 }));
@@ -80,7 +81,7 @@ describe("Bind namespace", () => {
 
     expect(await screen.findByText("Waiting for the VTC to record github.com/acme")).toBeTruthy();
     expect(stepState(/Install on acme/)).toBe("current");
-    expect(requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(requests.some(isChange)).toBe(false);
     expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 

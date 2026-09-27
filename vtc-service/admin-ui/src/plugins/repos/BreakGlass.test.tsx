@@ -8,10 +8,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   postSignedDocument,
+  postSignedRead,
   postSignedTrustTask,
   signingAvailable,
+  SigningUnavailableError,
   type WhoamiResponse,
 } from "@/lib/api";
+import { unsignedRead } from "@/test/signed-read";
 import { answerStepUp } from "@/lib/bound-step-up";
 import { BreakGlassBanner } from "@/components/BreakGlassBanner";
 import { Repos } from "@/plugins/repos";
@@ -30,6 +33,7 @@ import {
 
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: vi.fn((await import("@/test/signed-read")).unsignedRead),
   signingAvailable: vi.fn(async () => false),
   postSignedTrustTask: vi.fn(),
   postSignedDocument: vi.fn(),
@@ -44,6 +48,7 @@ beforeEach(() => {
   vi.mocked(postSignedTrustTask).mockReset();
   vi.mocked(postSignedDocument).mockReset();
   vi.mocked(answerStepUp).mockReset();
+  vi.mocked(postSignedRead).mockImplementation(unsignedRead);
 });
 
 const signedInAs = (subject: string, roles: string[] = ["admin"], scopes: string[] = []): WhoamiResponse => ({
@@ -90,6 +95,32 @@ describe("break-glass banner", () => {
     renderWithProviders(<BreakGlassBanner />);
     await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalled());
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("break-glass banner without a console key", () => {
+  it("says the list cannot be checked here, rather than showing an all-clear", async () => {
+    mockFetch(gitNsRoutes({ breakGlass: [ALICE_BREAK_GLASS] }));
+    vi.mocked(postSignedRead).mockRejectedValue(new SigningUnavailableError("no-key"));
+    renderWithProviders(<BreakGlassBanner />, { whoami: signedInAs(HANA) });
+    const notice = await screen.findByRole("status");
+    expect(notice.textContent).toMatch(/cannot be checked from this browser/);
+    expect(within(notice).getByRole("link", { name: "Enable console signing" }).getAttribute("href")).toBe(
+      "/console-keys",
+    );
+  });
+});
+
+describe("the break-glass read", () => {
+  it("is git-ns/view 0.5 with the administrator's scope, narrowed to break-glass records", async () => {
+    const requests = mockFetch(gitNsRoutes({ breakGlass: [ALICE_BREAK_GLASS] }));
+    renderWithProviders(<BreakGlassBanner />, { whoami: signedInAs(HANA) });
+    await screen.findByRole("alert");
+    const read = requests.find((r) => r.url === "/v1/trust-tasks");
+    expect(read?.body).toEqual({
+      type: "https://trusttasks.org/spec/git-ns/view/0.5",
+      payload: { scope: "administrator", breakGlass: true },
+    });
   });
 });
 

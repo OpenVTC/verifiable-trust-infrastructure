@@ -12,6 +12,7 @@ import { SignTaskDialog } from "./ui";
 
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
   signingAvailable: vi.fn(async () => false),
   postSignedTrustTask: vi.fn(),
 }));

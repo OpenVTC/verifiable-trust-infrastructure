@@ -2,18 +2,21 @@
 //!
 //! Two kinds of command, and the difference is who is authorized:
 //!
-//! - **Changes** (`namespace bind|unbind`, `grant`, `revoke`, `adopt`, `view`,
+//! - **Changes** (`namespace bind|unbind`, `grant`, `revoke`, `adopt`,
 //!   `link`, `unlink`) are signed `git-ns/*` Trust Tasks, signed with this community profile's
 //!   key and authorized by *that DID's git rights* in the VTC's records. A
 //!   community administrator's role binds namespaces and nothing more: to
 //!   grant, this DID must hold a right that carries the authority.
-//!   They reach the VTC over TSP when it advertises it, else DIDComm, else as
-//!   a signed document over HTTPS (`--transport` pins one), through the
-//!   connect helper `cnm backup` shares ([`vtc_target::connect_for_tasks`]).
-//! - **Listings** (`namespace list`, `repos`, `view --admin`,
-//!   `break-glass-list`) are the administrator's REST reads and authenticate
-//!   with an admin session, like `cnm vetting`: they are console projections
-//!   with no `git-ns/*` Trust Task to send.
+//! - **Listings** (`view`, and the administrator's `namespace list`, `repos`,
+//!   `view --admin`, `break-glass-list`) are signed `git-ns/*` reads too —
+//!   `git-ns/view`, `git-ns/namespace/list` and `git-ns/repo/list` — answered
+//!   from this DID's standing: the administrator's reads to a community
+//!   administrator (every namespace) or a namespace's `git.ns.admin` (theirs),
+//!   and to nobody on the strength of a session.
+//!
+//! Every one reaches the VTC over TSP when it advertises it, else DIDComm,
+//! else as a signed document over HTTPS (`--transport` pins one), through the
+//! connect helper `cnm backup` shares ([`vtc_target::connect_for_tasks`]).
 //!
 //! A refusal is reported by its specification code with the fix, where there
 //! is one — `git-ns:lastOwner` names the grant that makes the revoke possible.
@@ -40,7 +43,8 @@ pub enum GitCommands {
         #[command(subcommand)]
         command: NamespaceCommands,
     },
-    /// List the repositories the community records (admin session).
+    /// List the repositories in the namespaces this DID administers
+    /// (`git-ns/repo/list`): a community administrator's, every one.
     Repos {
         /// Only this namespace (its identifier, from `namespace list`).
         #[arg(long)]
@@ -173,10 +177,11 @@ pub enum GitCommands {
         statement: Option<String>,
     },
     /// Every break-glass record in the namespaces you administer, unratified
-    /// first (admin session).
+    /// first (`git-ns/view` with `scope: administrator`, `breakGlass: true`).
     BreakGlassList {
+        /// Only this namespace or repository (`github.com/acme`).
         #[arg(long)]
-        namespace: Option<String>,
+        resource: Option<String>,
     },
     /// Have the bridge re-apply the forge roles of every repository in a
     /// namespace, or of one repository, from the VTC's rights under the
@@ -192,8 +197,9 @@ pub enum GitCommands {
         reason: Option<String>,
     },
     /// What this profile's DID may see (`git-ns/view`), with its linked forge
-    /// accounts, or with `--admin` every record and reason (admin session).
-    /// Break-glass records are flagged, and every unratified one is listed.
+    /// accounts, or with `--admin` every record and reason in the namespaces
+    /// it administers. Break-glass records are flagged, and every unratified
+    /// one is listed.
     View {
         #[arg(long)]
         resource: Option<String>,
@@ -402,7 +408,8 @@ pub enum NamespaceCommands {
         /// The namespace identifier (`namespace list`).
         namespace: String,
     },
-    /// List bound and pending namespaces (admin session).
+    /// List the bound and pending namespaces this DID administers
+    /// (`git-ns/namespace/list`): a community administrator's, every one.
     List,
 }
 
@@ -581,6 +588,13 @@ fn guidance(code: &str, message: &str, did: &str) -> String {
         "git-ns:lastOwner" => format!(
             "\nA repository always keeps an owner. Name another first:\n  {bin} git grant \
              --subject <did> --right git.repo.own --resource <repository>\nthen revoke this one."
+        ),
+        "git-ns/view:notAdministrator"
+        | "git-ns/namespace/list:notAdministrator"
+        | "git-ns/repo/list:notAdministrator" => format!(
+            "\nThe administrator's listings answer a community administrator (every \
+             namespace) or a namespace's admin (git.ns.admin, that namespace). {did} is \
+             neither for what you asked. Your own rights are in:\n  {bin} git view"
         ),
         "git-ns:lastAdmin" => format!(
             "\nA namespace always keeps an admin. Grant another first:\n  {bin} git grant \
@@ -1067,6 +1081,69 @@ fn break_glass_flag(record: &Value) -> String {
     }
 }
 
+/// The break-glass records of a `git-ns/view/0.5` answer asked for with
+/// `breakGlass: true`, each with its `namespace` and its `state` —
+/// `unratified`, `pending` (not yet in effect) or `ratified` — unratified and
+/// pending first, newest first within each.
+fn break_glass_items(view: &Value, now: chrono::DateTime<chrono::Utc>) -> Vec<Value> {
+    let namespace_of = |resource: &str| {
+        let ns_resource: String = resource
+            .splitn(3, '/')
+            .take(2)
+            .collect::<Vec<_>>()
+            .join("/");
+        view["namespaces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|n| {
+                format!(
+                    "{}/{}",
+                    n["forge"].as_str().unwrap_or_default(),
+                    n["owner"].as_str().unwrap_or_default()
+                ) == ns_resource
+            })
+            .and_then(|n| n["id"].as_str())
+            .map(str::to_string)
+    };
+    let mut items: Vec<Value> = view["rights"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r.get("breakGlass").is_some_and(Value::is_object))
+        .map(|r| {
+            let bg = &r["breakGlass"];
+            let pending = bg["effectiveAt"]
+                .as_str()
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .is_some_and(|t| t > now);
+            let state = if bg.get("ratifiedBy").is_some_and(|v| !v.is_null()) {
+                "ratified"
+            } else if pending {
+                "pending"
+            } else {
+                "unratified"
+            };
+            let mut it = r.clone();
+            it["state"] = state.into();
+            if let Some(ns) = namespace_of(r["resource"].as_str().unwrap_or_default()) {
+                it["namespace"] = ns.into();
+            }
+            it
+        })
+        .collect();
+    items.sort_by(|a, b| {
+        (a["state"] == "ratified")
+            .cmp(&(b["state"] == "ratified"))
+            .then_with(|| {
+                b.pointer("/breakGlass/at")
+                    .and_then(Value::as_str)
+                    .cmp(&a.pointer("/breakGlass/at").and_then(Value::as_str))
+            })
+    });
+    items
+}
+
 /// The ratify command for one unratified break-glass record, quoted so it
 /// pastes as it stands in sh, bash, zsh and fish.
 fn ratify_command(record: &Value) -> String {
@@ -1093,109 +1170,18 @@ fn ratify_command(record: &Value) -> String {
 /// over HTTPS — `transport` (`--transport`) pins one. The session is closed on
 /// every path out.
 ///
-/// The administrator's listings (`namespace list`, `repos`, `view --admin`,
-/// `break-glass-list`) are console projections no `git-ns/*` specification
-/// defines, so there is no Trust Task to send: they stay the admin session's
-/// reads over HTTPS.
+/// Reads included: the administrator's listings are signed `git-ns/*` reads
+/// too, answered from this DID's standing rather than an admin session.
 pub async fn run(
     command: GitCommands,
     keyring_key: &str,
     target: &VtcTarget,
     transport: TransportChoice,
 ) -> CliResult {
-    match command {
-        GitCommands::Namespace {
-            command: NamespaceCommands::List,
-        } => {
-            let vtc = vtc_target::connect(keyring_key, target).await?;
-            let v = vtc.client.git_ns_namespaces().await?;
-            if is_json_output() {
-                return Ok(print_json(&v)?);
-            }
-            for ns in v["namespaces"].as_array().into_iter().flatten() {
-                println!(
-                    "{BOLD}{}{RESET}  {}  {} {}  admins: {}  repos: {}",
-                    ns["resource"].as_str().unwrap_or_default(),
-                    ns["id"].as_str().unwrap_or_default(),
-                    ns["mode"].as_str().unwrap_or_default(),
-                    ns["state"].as_str().unwrap_or_default(),
-                    ns["admins"].as_array().map_or(0, Vec::len),
-                    ns["repoCount"],
-                );
-            }
-            Ok(())
-        }
-        GitCommands::Repos { namespace } => {
-            let vtc = vtc_target::connect(keyring_key, target).await?;
-            let v = vtc.client.git_ns_repos(namespace.as_deref()).await?;
-            if is_json_output() {
-                return Ok(print_json(&v)?);
-            }
-            for r in v["repos"].as_array().into_iter().flatten() {
-                println!(
-                    "{BOLD}{}{RESET}  {}  owners: {}  sync: {}",
-                    r["resource"].as_str().unwrap_or_default(),
-                    r["state"].as_str().unwrap_or_default(),
-                    r["owners"].as_array().map_or(0, Vec::len),
-                    r["syncState"].as_str().unwrap_or_default(),
-                );
-            }
-            Ok(())
-        }
-        GitCommands::View {
-            resource,
-            admin: true,
-        } => {
-            let vtc = vtc_target::connect(keyring_key, target).await?;
-            let v = vtc.client.git_ns_admin_view(resource.as_deref()).await?;
-            show(&v)
-        }
-        GitCommands::BreakGlassList { namespace } => {
-            let vtc = vtc_target::connect(keyring_key, target).await?;
-            let v = vtc
-                .client
-                .git_ns_break_glass_list(namespace.as_deref())
-                .await?;
-            if is_json_output() {
-                return Ok(print_json(&v)?);
-            }
-            let items = v["items"].as_array().cloned().unwrap_or_default();
-            if items.is_empty() {
-                println!("No break-glass records.");
-            }
-            for it in &items {
-                println!(
-                    "{BOLD}{}{RESET}  {}  {}  {} — {}",
-                    terminal_safe(it["state"].as_str().unwrap_or_default()),
-                    terminal_safe(it["resource"].as_str().unwrap_or_default()),
-                    terminal_safe(it["right"].as_str().unwrap_or_default()),
-                    terminal_safe(it["subject"].as_str().unwrap_or_default()),
-                    terminal_safe(
-                        it.pointer("/breakGlass/justification")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                    ),
-                );
-                if it["state"] != "ratified" {
-                    println!("    ratify: {}", ratify_command(it));
-                    println!(
-                        "    revoke: {} git revoke --subject {} --right {} --resource {}",
-                        shell_word(bin_name()),
-                        shell_word(it["subject"].as_str().unwrap_or_default()),
-                        shell_word(it["right"].as_str().unwrap_or_default()),
-                        shell_word(it["resource"].as_str().unwrap_or_default()),
-                    );
-                }
-            }
-            Ok(())
-        }
-        command => {
-            let vtc = vtc_target::connect_for_tasks(keyring_key, target, transport).await?;
-            let outcome = run_task(command, &vtc.client, keyring_key, target).await;
-            vtc.client.shutdown().await;
-            outcome
-        }
-    }
+    let vtc = vtc_target::connect_for_tasks(keyring_key, target, transport).await?;
+    let outcome = run_task(command, &vtc.client, keyring_key, target).await;
+    vtc.client.shutdown().await;
+    outcome
 }
 
 /// A signed command, over `client` — whichever transport it was built for.
@@ -1245,7 +1231,37 @@ async fn run_task(
                     .map_err(|e| explain(e, &did))?;
                 show(&resp)
             }
-            NamespaceCommands::List => unreachable!("an admin read, answered in `run`"),
+            NamespaceCommands::List => {
+                let (did, key) = signing_key(keyring_key)?;
+                let v = client
+                    .git_ns_namespace_list(None, &key)
+                    .await
+                    .map_err(|e| explain(e, &did))?;
+                if is_json_output() {
+                    return Ok(print_json(&v)?);
+                }
+                let namespaces = v["namespaces"].as_array().cloned().unwrap_or_default();
+                if namespaces.is_empty() {
+                    println!("No namespaces.");
+                }
+                for ns in &namespaces {
+                    println!(
+                        "{BOLD}{}{RESET}  {}  {} {}  admins: {}  repos: {}{}",
+                        terminal_safe(ns["resource"].as_str().unwrap_or_default()),
+                        terminal_safe(ns["id"].as_str().unwrap_or_default()),
+                        ns["mode"].as_str().unwrap_or_default(),
+                        ns["state"].as_str().unwrap_or_default(),
+                        ns["admins"].as_array().map_or(0, Vec::len),
+                        ns["repoCount"],
+                        if ns["headless"] == true {
+                            "  [HEADLESS: no admin]"
+                        } else {
+                            ""
+                        },
+                    );
+                }
+                Ok(())
+            }
         },
         GitCommands::Grant {
             subject,
@@ -1368,8 +1384,74 @@ async fn run_task(
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
         }
-        GitCommands::Repos { .. } | GitCommands::BreakGlassList { .. } => {
-            unreachable!("an admin read, answered in `run`")
+        GitCommands::Repos { namespace } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let v = client
+                .git_ns_repo_list(namespace.as_deref(), &key)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            let repos = v["repos"].as_array().cloned().unwrap_or_default();
+            if repos.is_empty() {
+                println!("No repositories.");
+            }
+            for r in &repos {
+                println!(
+                    "{BOLD}{}{RESET}  {}  owners: {}  sync: {}",
+                    terminal_safe(r["resource"].as_str().unwrap_or_default()),
+                    r["state"].as_str().unwrap_or_default(),
+                    r["owners"].as_array().map_or(0, Vec::len),
+                    r["syncState"].as_str().unwrap_or_default(),
+                );
+            }
+            Ok(())
+        }
+        GitCommands::BreakGlassList { resource } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let resp = client
+                .git_ns_view_v5(
+                    resource.map(|r| r.to_lowercase()).as_deref(),
+                    true,
+                    true,
+                    &key,
+                )
+                .await
+                .map_err(|e| explain(e, &did))?;
+            let v = serde_json::to_value(&resp)?;
+            let items = break_glass_items(&v, chrono::Utc::now());
+            if is_json_output() {
+                return Ok(print_json(&json!({ "items": items }))?);
+            }
+            if items.is_empty() {
+                println!("No break-glass records.");
+            }
+            for it in &items {
+                println!(
+                    "{BOLD}{}{RESET}  {}  {}  {} — {}",
+                    terminal_safe(it["state"].as_str().unwrap_or_default()),
+                    terminal_safe(it["resource"].as_str().unwrap_or_default()),
+                    terminal_safe(it["right"].as_str().unwrap_or_default()),
+                    terminal_safe(it["subject"].as_str().unwrap_or_default()),
+                    terminal_safe(
+                        it.pointer("/breakGlass/justification")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                );
+                if it["state"] != "ratified" {
+                    println!("    ratify: {}", ratify_command(it));
+                    println!(
+                        "    revoke: {} git revoke --subject {} --right {} --resource {}",
+                        shell_word(bin_name()),
+                        shell_word(it["subject"].as_str().unwrap_or_default()),
+                        shell_word(it["right"].as_str().unwrap_or_default()),
+                        shell_word(it["resource"].as_str().unwrap_or_default()),
+                    );
+                }
+            }
+            Ok(())
         }
         GitCommands::Adopt { resource, owners } => {
             for o in &owners {
@@ -1383,12 +1465,9 @@ async fn run_task(
             show(&resp)
         }
         GitCommands::View { resource, admin } => {
-            if admin {
-                unreachable!("an admin read, answered in `run`");
-            }
             let (did, key) = signing_key(keyring_key)?;
             let resp = client
-                .git_ns_view_v4(resource.as_deref(), &key)
+                .git_ns_view_v5(resource.as_deref(), admin, false, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             let v = serde_json::to_value(&resp)?;
@@ -2382,6 +2461,58 @@ mod tests {
         );
         let evil = json!({ "subject": "did:key:z'; rm -rf ~", "right": "git.repo.own", "resource": "x", "breakGlass": { "at": "t" } });
         assert!(ratify_command(&evil).contains("'did:key:z'\"'\"'; rm -rf ~'"));
+    }
+
+    #[test]
+    fn a_not_administrator_refusal_says_who_the_listings_answer() {
+        for code in [
+            "git-ns/view:notAdministrator",
+            "git-ns/namespace/list:notAdministrator",
+            "git-ns/repo/list:notAdministrator",
+        ] {
+            let g = guidance(code, "you administer none", "did:key:z");
+            assert!(g.contains("community administrator"), "{code}: {g}");
+            assert!(g.contains("git view"), "{code}: {g}");
+        }
+    }
+
+    #[test]
+    fn break_glass_items_carry_state_and_namespace_unratified_first() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-26T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let view = json!({
+            "namespaces": [{ "id": "ns_1", "forge": "github.com", "owner": "acme",
+                             "mode": "manual", "state": "bound" }],
+            "repos": [],
+            "rights": [
+                { "subject": "did:key:za", "right": "git.repo.own",
+                  "resource": "github.com/acme/widgets", "grantedBy": "did:key:za",
+                  "grantedAt": "2026-09-20T00:00:00Z",
+                  "breakGlass": { "by": "did:key:za", "at": "2026-09-20T00:00:00Z",
+                                  "justification": "old", "ratifiedBy": "did:key:zb",
+                                  "ratifiedAt": "2026-09-21T00:00:00Z" } },
+                { "subject": "did:key:zc", "right": "git.ns.admin",
+                  "resource": "github.com/acme", "grantedBy": "did:key:zc",
+                  "grantedAt": "2026-09-25T00:00:00Z",
+                  "breakGlass": { "by": "did:key:zc", "at": "2026-09-25T00:00:00Z",
+                                  "justification": "now" } },
+                { "subject": "did:key:zd", "right": "git.repo.create",
+                  "resource": "github.com/acme", "grantedBy": "did:key:zd",
+                  "grantedAt": "2026-09-26T11:00:00Z",
+                  "breakGlass": { "by": "did:key:zd", "at": "2026-09-26T11:00:00Z",
+                                  "justification": "later",
+                                  "effectiveAt": "2026-09-27T11:00:00Z" } },
+                { "subject": "did:key:ze", "right": "git.commit.sign",
+                  "resource": "github.com/acme/widgets", "grantedBy": "did:key:za",
+                  "grantedAt": "2026-09-20T00:00:00Z" }
+            ],
+            "accounts": []
+        });
+        let items = break_glass_items(&view, now);
+        let states: Vec<&str> = items.iter().map(|i| i["state"].as_str().unwrap()).collect();
+        assert_eq!(states, ["pending", "unratified", "ratified"]);
+        assert!(items.iter().all(|i| i["namespace"] == "ns_1"));
     }
 
     #[test]

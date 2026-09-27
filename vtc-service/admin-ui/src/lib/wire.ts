@@ -946,22 +946,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/git-ns/break-glass": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsBreakGlassList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/git-ns/drift": {
         parameters: {
             query?: never;
@@ -994,22 +978,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/git-ns/namespaces": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsNamespacesList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/git-ns/projection": {
         parameters: {
             query?: never;
@@ -1018,22 +986,6 @@ export interface paths {
             cookie?: never;
         };
         get: operations["gitNsProjection"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/repos": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsReposList"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1066,22 +1018,6 @@ export interface paths {
             cookie?: never;
         };
         get: operations["gitNsRightsIssuedByDeparted"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/view": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsAdminView"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3594,27 +3530,6 @@ export interface components {
             variables: boolean;
             workflow: boolean;
         };
-        /** @description One break-glass record. */
-        GitNsBreakGlassItem: {
-            breakGlass: components["schemas"]["GitNsBreakGlassMark"];
-            grantedAt: string;
-            /** @description The namespace's identifier. */
-            namespace: string;
-            /** @description The namespace's resource (`github.com/acme`). */
-            namespaceResource: string;
-            resource: string;
-            right: string;
-            /**
-             * @description `unratified` — live, flagged, awaiting another administrator;
-             *     `pending` — unratified and not yet in effect (a policy delay);
-             *     `ratified` — an ordinary grant now, kept here as history.
-             */
-            state: string;
-            subject: string;
-        };
-        GitNsBreakGlassList: {
-            items: components["schemas"]["GitNsBreakGlassItem"][];
-        };
         /** @description A record's `breakGlass` (`git-ns/_shared/0.4` `BreakGlass`). */
         GitNsBreakGlassMark: {
             at: string;
@@ -3695,6 +3610,13 @@ export interface components {
              *     `cancelled`.
              */
             state: string;
+        };
+        /** @description The last verify-trust check run the bridge saw on a repository. */
+        GitNsLastCheck: {
+            at: string;
+            /** @description In the forge's words (`success`, `failure`). */
+            conclusion: string;
+            sha?: string | null;
         };
         GitNsNamespaceList: {
             namespaces: components["schemas"]["GitNsNamespaceRow"][];
@@ -3798,8 +3720,7 @@ export interface components {
              */
             guard?: string | null;
             id: string;
-            /** @description The last verify-trust check the bridge saw (`{conclusion, at, sha?}`). */
-            lastCheck?: Record<string, never> | null;
+            lastCheck?: null | components["schemas"]["GitNsLastCheck"];
             lastError?: string | null;
             maintainers: number;
             namespace: string;
@@ -9147,43 +9068,6 @@ export interface operations {
             };
         };
     };
-    gitNsBreakGlassList: {
-        parameters: {
-            query?: {
-                /** @description Only this namespace (its identifier). */
-                namespace?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Break-glass records in the namespaces the caller administers, unratified first */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsBreakGlassList"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The caller administers no namespace (or not the one named) */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     gitNsDriftList: {
         parameters: {
             query?: never;
@@ -9252,40 +9136,6 @@ export interface operations {
             };
         };
     };
-    gitNsNamespacesList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bound and pending namespaces */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsNamespaceList"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     gitNsProjection: {
         parameters: {
             query?: never;
@@ -9312,43 +9162,6 @@ export interface operations {
                 content?: never;
             };
             /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsReposList: {
-        parameters: {
-            query?: {
-                /** @description Only repositories in this namespace (its identifier). */
-                namespace?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Recorded repositories */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsRepoList"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9420,53 +9233,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["GitNsDepartedGrants"];
                 };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsAdminView: {
-        parameters: {
-            query?: {
-                /**
-                 * @description Narrow to this forge-qualified resource and everything it contains
-                 *     (`github.com/acme`, `github.com/acme/widgets`).
-                 */
-                resource?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Every namespace, repository and recorded right, reasons included */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsViewV0_1Response"];
-                };
-            };
-            /** @description The resource is not a forge-qualified resource */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
             /** @description Missing or invalid bearer token */
             401: {

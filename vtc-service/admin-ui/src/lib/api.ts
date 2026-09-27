@@ -464,6 +464,21 @@ export async function postSignedTrustTask<T>(
 }
 
 /**
+ * A signed **read**: the same document, key and endpoint as
+ * [`postSignedTrustTask`], for a task that changes nothing — the `git-ns/*`
+ * administrator reads the Repos plugin renders.
+ *
+ * A separate export for one reason: a component test stands in for the
+ * console's *changes* by mocking `postSignedTrustTask`, and must still see
+ * its reads reach the fixtures. Reads have no bearer fallback either — the
+ * daemon answers them to the signer only — so [`SigningUnavailableError`]
+ * propagates to the screen, which says how to enable signing.
+ */
+export async function postSignedRead<T>(typeUri: string, payload: unknown): Promise<T> {
+  return postSignedDocument<T>(await signTrustTask(typeUri, payload));
+}
+
+/**
  * Build and sign `payload` as a Trust Task document from this browser's
  * console key, without sending it.
  *

@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { GitNsBreakGlassItem } from "@/lib/wire-types";
+import type { GitNsBreakGlassItem } from "./model";
 import { forgetConsoleKey, generateConsoleKey, resetConsoleKeyCacheForTests } from "@/lib/console-key";
 import { mockFetch } from "@/test/render";
 

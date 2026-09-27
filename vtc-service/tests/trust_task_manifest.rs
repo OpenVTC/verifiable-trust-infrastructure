@@ -430,6 +430,18 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
+    // The git-ns administrator's reads — `git-ns/view/0.5`,
+    // `git-ns/namespace/list/0.1` and `git-ns/repo/list/0.1` — specified in
+    // trustoverip/dtgwg-trust-tasks-tf#659 and served here ahead of its
+    // release on hand-written stand-ins (`git_ns::admin_reads`).
+    // TODO(trust-tasks release carrying trust-tasks #659): back to zero —
+    // remove this entry and swap the stand-ins for the generated types.
+    (
+        "https://trusttasks.org/spec/git-ns/",
+        3,
+        "git-ns administrator reads (view 0.5, namespace/list, repo/list) — \
+         dtgwg-trust-tasks-tf#659, awaiting a trust-tasks-rs release",
+    ),
     // `git-ns/bridge/job/0.4` and `git-ns/namespace/reseat/0.3` were sent
     // and served ahead of their release here, and went back to zero with
     // trust-tasks-rs 0.23, which generates both.
@@ -709,6 +721,10 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/repo/create/0.3",
     "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
     "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
+    // The administrator's reads, which replaced the console's bearer views.
+    "https://trusttasks.org/spec/git-ns/view/0.5",
+    "https://trusttasks.org/spec/git-ns/namespace/list/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/list/0.1",
 ];
 
 /// Signed-document types the console sends that the *spine* dispatches rather

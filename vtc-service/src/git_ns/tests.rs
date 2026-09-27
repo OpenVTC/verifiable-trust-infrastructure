@@ -2062,12 +2062,9 @@ async fn the_bridges_ext_report_reaches_the_admin_rows() {
 async fn get(f: &Fixture, did: &str, contexts: Vec<String>, path: &str) -> (u16, Value) {
     use tower::ServiceExt;
     let token = f.vtc.token(did, "admin", contexts).await;
-    let mut req = axum::http::Request::builder()
+    let req = axum::http::Request::builder()
         .uri(format!("/v1{path}"))
         .header("authorization", format!("Bearer {token}"));
-    if path.starts_with("/git-ns/view") {
-        req = req.header("trust-task", uri("view"));
-    }
     let req = req.body(axum::body::Body::empty()).unwrap();
     let resp = f.vtc.router.clone().oneshot(req).await.unwrap();
     let status = resp.status().as_u16();
@@ -2503,7 +2500,6 @@ async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
     let f = fixture().await;
     bind_manual(&f).await;
     for path in [
-        "/git-ns/view",
         "/git-ns/rights",
         "/git-ns/accounts",
         "/git-ns/rights/issued-by-departed",
@@ -2514,7 +2510,6 @@ async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
         assert_eq!(status, 403, "{path}: {body}");
     }
     for path in [
-        "/git-ns/view",
         "/git-ns/rights",
         "/git-ns/accounts",
         "/git-ns/rights/issued-by-departed",
@@ -6084,12 +6079,15 @@ async fn view_0_4_shows_an_unratified_break_glass_to_every_administrator_it_conc
 
     // The console list: the community administrator and Carol's co-admin read
     // it; a plain member session is refused.
-    let (status, body) = get(&f, &dana.did, vec![], "/git-ns/break-glass").await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(body["items"][0]["state"], "unratified");
-    assert_eq!(body["items"][0]["namespaceResource"], "github.com/acme");
-    let (status, _) = get(&f, &f.bob.did, vec!["ops".into()], "/git-ns/break-glass").await;
-    assert_eq!(status, 403);
+    let bg = json!({ "scope": "administrator", "breakGlass": true });
+    let body = ok(&send_v(&f.vtc.state, &dana, view_v0_5::TYPE_URI, bg.clone()).await);
+    assert!(
+        body["rights"][0]["breakGlass"]["ratifiedBy"].is_null(),
+        "{body}"
+    );
+    assert_eq!(body["namespaces"][0]["owner"], "acme");
+    let out = send_v(&f.vtc.state, &f.bob, view_v0_5::TYPE_URI, bg).await;
+    assert_eq!(code(&out), view_v0_5::error_codes::NOT_ADMINISTRATOR);
     let (status, body) = get(&f, &f.admin.did, vec![], "/git-ns/rights").await;
     assert_eq!(status, 200);
     assert!(
@@ -6473,8 +6471,13 @@ async fn adopt_is_refused_after_binding_until_the_bridge_reports_its_map() {
     // Bound, and no report yet: the default is not assumed.
     let out = resolve(&f, &f.bob, maintain_adopt(), "adopt").await;
     assert_eq!(code(&out), super::drift::ROLE_MAP_UNKNOWN);
-    let (status, body) = get(&f, &f.admin.did, vec![], "/git-ns/namespaces").await;
-    assert_eq!(status, 200, "{body}");
+    let body = ok(&send_v(
+        &f.vtc.state,
+        &f.admin,
+        namespace_list_v0_1::TYPE_URI,
+        json!({}),
+    )
+    .await);
     assert_eq!(body["namespaces"][0]["roleMapSource"], "unknown");
     assert!(body["namespaces"][0].get("roleMap").is_none(), "{body}");
     // The bridge reports the default: now it holds.
@@ -6954,4 +6957,534 @@ async fn a_role_change_is_measured_against_the_projected_right_as_drift_resolve_
     )
     .await;
     assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
+}
+
+// ── the administrator's reads: view/0.5, namespace/list/0.1, repo/list/0.1 ──
+//
+// Each runs through the spine as each transport hands it in: REST (the
+// holder proven by the proof alone), and DIDComm and TSP (the sender claimed
+// by the envelope, bound to the proof by the spine).
+
+use super::admin_reads::{namespace_list_v0_1, repo_list_v0_1, view_v0_5};
+use crate::join::JoinTransport;
+
+const TRANSPORTS: [JoinTransport; 3] = [
+    JoinTransport::Rest,
+    JoinTransport::DIDComm,
+    JoinTransport::Tsp,
+];
+
+fn ctx_for(transport: JoinTransport, who: &Party) -> JoinAuthCtx {
+    match transport {
+        JoinTransport::Rest => JoinAuthCtx::rest(),
+        _ => JoinAuthCtx {
+            transport,
+            sender_did: Some(who.did.clone()),
+            verified_signer: None,
+        },
+    }
+}
+
+/// `payload` as `type_uri`, signed by `who` (or not), over `transport`.
+async fn read_over(
+    f: &Fixture,
+    transport: JoinTransport,
+    who: &Party,
+    type_uri: &str,
+    payload: Value,
+    signed: bool,
+) -> TrustTaskOutcome {
+    let mut doc: TrustTask<Value> =
+        vta_sdk::trust_task_sign::build_unsigned(type_uri, payload, &who.did, TEST_VTC_DID)
+            .unwrap();
+    if signed {
+        let key =
+            vta_sdk::trust_task_sign::HolderKey::from_did_key(&who.did, &who.secret_multibase)
+                .unwrap();
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+            .await
+            .unwrap();
+    }
+    let body = serde_json::to_vec(&doc).unwrap();
+    dispatch_trust_task_core(&f.vtc.state, &ctx_for(transport, who), &body).await
+}
+
+/// Two namespaces: `github.com/acme`, where Carol is an admin beside the
+/// community administrator and owns its one repository; and
+/// `github.com/other`, which only the community administrator administers,
+/// and whose one repository Bob owns. Bob also holds a commit right in `acme`,
+/// and administers nothing: owning is not administering. Returns
+/// `(acme, other)`.
+async fn two_namespaces(f: &Fixture) -> (String, String) {
+    let acme = bind_manual(f).await;
+    let other = ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "namespace/bind",
+        json!({ "forge": "github.com", "owner": "other", "mode": "manual" }),
+    )
+    .await)["namespace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(&grant(f, &f.admin, &f.carol.did, "git.ns.admin", "github.com/acme").await);
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/create",
+        json!({ "namespace": acme, "name": "widgets", "visibility": "public", "owners": [f.carol.did] }),
+    )
+    .await);
+    ok(&send(
+        &f.vtc.state,
+        &f.admin,
+        "repo/create",
+        json!({ "namespace": other, "name": "hidden", "visibility": "private", "owners": [f.bob.did] }),
+    )
+    .await);
+    ok(&send(
+        &f.vtc.state,
+        &f.carol,
+        "right/grant",
+        json!({ "subject": f.bob.did, "right": "git.commit.sign",
+                "resource": "github.com/acme/widgets", "reason": "release help" }),
+    )
+    .await);
+    (acme, other)
+}
+
+/// `key` of every entry in `list`, sorted: `view` promises no order.
+fn resources(v: &Value, list: &str, key: &str) -> Vec<String> {
+    let mut out: Vec<String> = v[list]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x[key].as_str().unwrap().to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+// `git-ns/namespace/list/0.1`
+
+#[tokio::test]
+async fn namespace_list_answers_each_administrator_the_namespaces_they_administer() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        let (acme, _) = two_namespaces(&f).await;
+        let all = ok(&read_over(
+            &f,
+            t,
+            &f.admin,
+            namespace_list_v0_1::TYPE_URI,
+            json!({}),
+            true,
+        )
+        .await);
+        assert_eq!(
+            resources(&all, "namespaces", "resource"),
+            ["github.com/acme", "github.com/other"],
+            "{t:?}: a community administrator sees every namespace"
+        );
+        let acme_row = &all["namespaces"][0];
+        assert_eq!(acme_row["id"], acme.as_str());
+        assert_eq!(acme_row["repoCount"], 1);
+        assert_eq!(acme_row["headless"], false);
+        assert!(
+            acme_row["admins"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(f.carol.did))
+        );
+        assert_eq!(
+            acme_row["forgeStatus"],
+            Value::Null,
+            "nothing reported, nothing shown"
+        );
+
+        let mine = ok(&read_over(
+            &f,
+            t,
+            &f.carol,
+            namespace_list_v0_1::TYPE_URI,
+            json!({}),
+            true,
+        )
+        .await);
+        assert_eq!(
+            resources(&mine, "namespaces", "resource"),
+            ["github.com/acme"],
+            "{t:?}: a namespace admin sees their own namespace and nothing else"
+        );
+        let one = ok(&read_over(
+            &f,
+            t,
+            &f.carol,
+            namespace_list_v0_1::TYPE_URI,
+            json!({ "namespace": acme }),
+            true,
+        )
+        .await);
+        assert_eq!(
+            resources(&one, "namespaces", "id"),
+            [acme.as_str()],
+            "{t:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn namespace_list_refuses_a_caller_who_administers_nothing() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        two_namespaces(&f).await;
+        // Bob holds a commit right, and a stranger nothing at all.
+        for who in [&f.bob, &f.stranger] {
+            let out = read_over(&f, t, who, namespace_list_v0_1::TYPE_URI, json!({}), true).await;
+            assert_eq!(
+                code(&out),
+                namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR,
+                "{t:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn namespace_list_refuses_a_namespace_admin_outside_their_namespace() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        let (_, other) = two_namespaces(&f).await;
+        for named in [other.as_str(), "ns_does_not_exist"] {
+            let out = read_over(
+                &f,
+                t,
+                &f.carol,
+                namespace_list_v0_1::TYPE_URI,
+                json!({ "namespace": named }),
+                true,
+            )
+            .await;
+            assert_eq!(
+                code(&out),
+                namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR,
+                "{t:?}: {named} — an unknown namespace is answered as one not administered"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn namespace_list_refuses_an_unsigned_document() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        two_namespaces(&f).await;
+        let out = read_over(
+            &f,
+            t,
+            &f.admin,
+            namespace_list_v0_1::TYPE_URI,
+            json!({}),
+            false,
+        )
+        .await;
+        assert_eq!(code(&out), "proofRequired", "{t:?}");
+    }
+}
+
+// `git-ns/repo/list/0.1`
+
+#[tokio::test]
+async fn repo_list_answers_each_administrator_the_repositories_they_administer() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        let (acme, other) = two_namespaces(&f).await;
+        let all = ok(&read_over(&f, t, &f.admin, repo_list_v0_1::TYPE_URI, json!({}), true).await);
+        assert_eq!(
+            resources(&all, "repos", "resource"),
+            ["github.com/acme/widgets", "github.com/other/hidden"],
+            "{t:?}"
+        );
+        let widgets = &all["repos"][0];
+        assert_eq!(widgets["namespace"], acme.as_str());
+        assert_eq!(
+            widgets["committers"], 1,
+            "{t:?}: Bob's commit right is counted"
+        );
+        assert_eq!(widgets["steps"], json!([]));
+
+        let mine = ok(&read_over(&f, t, &f.carol, repo_list_v0_1::TYPE_URI, json!({}), true).await);
+        assert_eq!(
+            resources(&mine, "repos", "resource"),
+            ["github.com/acme/widgets"],
+            "{t:?}"
+        );
+
+        let one = ok(&read_over(
+            &f,
+            t,
+            &f.admin,
+            repo_list_v0_1::TYPE_URI,
+            json!({ "namespace": other }),
+            true,
+        )
+        .await);
+        assert_eq!(
+            resources(&one, "repos", "resource"),
+            ["github.com/other/hidden"],
+            "{t:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn repo_list_refuses_a_caller_who_administers_nothing() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        two_namespaces(&f).await;
+        for who in [&f.bob, &f.stranger] {
+            let out = read_over(&f, t, who, repo_list_v0_1::TYPE_URI, json!({}), true).await;
+            assert_eq!(
+                code(&out),
+                repo_list_v0_1::error_codes::NOT_ADMINISTRATOR,
+                "{t:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn repo_list_refuses_a_namespace_admin_outside_their_namespace() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        let (_, other) = two_namespaces(&f).await;
+        let out = read_over(
+            &f,
+            t,
+            &f.carol,
+            repo_list_v0_1::TYPE_URI,
+            json!({ "namespace": other }),
+            true,
+        )
+        .await;
+        assert_eq!(
+            code(&out),
+            repo_list_v0_1::error_codes::NOT_ADMINISTRATOR,
+            "{t:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn repo_list_refuses_an_unsigned_document() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        two_namespaces(&f).await;
+        let out = read_over(&f, t, &f.admin, repo_list_v0_1::TYPE_URI, json!({}), false).await;
+        assert_eq!(code(&out), "proofRequired", "{t:?}");
+    }
+}
+
+// `git-ns/view/0.5`
+
+#[tokio::test]
+async fn view_0_5_administrator_scope_answers_every_record_and_reason_in_the_administered_namespaces()
+ {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        two_namespaces(&f).await;
+        let admin_scope = json!({ "scope": "administrator" });
+        let all = ok(&read_over(
+            &f,
+            t,
+            &f.admin,
+            view_v0_5::TYPE_URI,
+            admin_scope.clone(),
+            true,
+        )
+        .await);
+        assert_eq!(
+            resources(&all, "repos", "resource"),
+            ["github.com/acme/widgets", "github.com/other/hidden"],
+            "{t:?}"
+        );
+        let bobs = all["rights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["subject"] == f.bob.did.as_str() && r["right"] == "git.commit.sign")
+            .expect("Bob's grant is listed");
+        assert_eq!(
+            bobs["reason"], "release help",
+            "{t:?}: reasons go to administrators"
+        );
+
+        let carols = ok(&read_over(&f, t, &f.carol, view_v0_5::TYPE_URI, admin_scope, true).await);
+        let ns: Vec<String> = carols["namespaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["owner"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            ns,
+            ["acme"],
+            "{t:?}: a namespace admin's administrator read is their own"
+        );
+        assert_eq!(
+            resources(&carols, "repos", "resource"),
+            ["github.com/acme/widgets"]
+        );
+        assert!(
+            carols["rights"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["resource"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("github.com/acme")),
+            "{t:?}: nothing of `other` reaches Carol"
+        );
+
+        // The default scope is 0.4's member view, unchanged.
+        let member = ok(&read_over(&f, t, &f.bob, view_v0_5::TYPE_URI, json!({}), true).await);
+        assert_eq!(member["accounts"], json!([]));
+    }
+}
+
+#[tokio::test]
+async fn view_0_5_administrator_scope_refuses_a_member_who_administers_nothing() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        two_namespaces(&f).await;
+        let out = read_over(
+            &f,
+            t,
+            &f.bob,
+            view_v0_5::TYPE_URI,
+            json!({ "scope": "administrator" }),
+            true,
+        )
+        .await;
+        assert_eq!(
+            code(&out),
+            view_v0_5::error_codes::NOT_ADMINISTRATOR,
+            "{t:?}"
+        );
+        // A non-member has no view at all.
+        let out = read_over(&f, t, &f.stranger, view_v0_5::TYPE_URI, json!({}), true).await;
+        assert_eq!(code(&out), "permissionDenied", "{t:?}");
+    }
+}
+
+#[tokio::test]
+async fn view_0_5_administrator_scope_refuses_a_namespace_admin_outside_their_namespace() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        two_namespaces(&f).await;
+        for resource in [
+            "github.com/other",
+            "github.com/other/hidden",
+            "github.com/nobody",
+        ] {
+            let out = read_over(
+                &f,
+                t,
+                &f.carol,
+                view_v0_5::TYPE_URI,
+                json!({ "scope": "administrator", "resource": resource }),
+                true,
+            )
+            .await;
+            assert_eq!(
+                code(&out),
+                view_v0_5::error_codes::NOT_ADMINISTRATOR,
+                "{t:?}: {resource}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn view_0_5_refuses_an_unsigned_document() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        two_namespaces(&f).await;
+        let out = read_over(
+            &f,
+            t,
+            &f.admin,
+            view_v0_5::TYPE_URI,
+            json!({ "scope": "administrator" }),
+            false,
+        )
+        .await;
+        assert_eq!(code(&out), "proofRequired", "{t:?}");
+    }
+}
+
+/// `breakGlass: true` narrows to the break-glass records — and the namespaces
+/// holding them — and is shown to every administrator of the namespace: the
+/// community administrator and Carol, who holds `git.ns.admin` there.
+#[tokio::test]
+async fn view_0_5_break_glass_lists_only_break_glass_records_to_their_administrators() {
+    for t in TRANSPORTS {
+        let f = fixture().await;
+        two_namespaces(&f).await;
+        let dana = Party::new();
+        seed_acl(&f.vtc.state, &dana.did, VtcRole::Member).await;
+        ok(&grant(&f, &f.admin, &dana.did, "git.ns.admin", "github.com/acme").await);
+        ok(&break_glass(&f, &dana, "git.repo.create", "github.com/acme").await);
+        let q = json!({ "scope": "administrator", "breakGlass": true });
+        for who in [&f.admin, &f.carol] {
+            let v = ok(&read_over(&f, t, who, view_v0_5::TYPE_URI, q.clone(), true).await);
+            let rights = v["rights"].as_array().unwrap();
+            assert_eq!(rights.len(), 1, "{t:?}: {rights:?}");
+            assert_eq!(rights[0]["subject"], dana.did.as_str());
+            assert!(rights[0]["breakGlass"]["ratifiedBy"].is_null());
+            assert_eq!(v["namespaces"].as_array().unwrap().len(), 1, "{t:?}");
+            assert_eq!(v["repos"], json!([]), "{t:?}: the record is namespace-wide");
+        }
+        let out = read_over(&f, t, &f.bob, view_v0_5::TYPE_URI, q, true).await;
+        assert_eq!(
+            code(&out),
+            view_v0_5::error_codes::NOT_ADMINISTRATOR,
+            "{t:?}"
+        );
+    }
+}
+
+/// A console key acts as the administrator who delegated it, as it does for
+/// the family's changes.
+#[tokio::test]
+async fn namespace_list_signed_by_a_console_key_answers_its_administrator() {
+    let f = fixture().await;
+    two_namespaces(&f).await;
+    let console = Party::new();
+    crate::acl::console_key::store_delegation(
+        &f.vtc.state.console_keys_ks,
+        &crate::acl::console_key::ConsoleKeyDelegation {
+            console_did: console.did.clone(),
+            admin_did: f.carol.did.clone(),
+            label: None,
+            created_at: chrono::Utc::now(),
+            expires_at: None,
+            last_used_at: None,
+            revoked_at: None,
+            revoked_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    let v = ok(&read_over(
+        &f,
+        JoinTransport::Rest,
+        &console,
+        namespace_list_v0_1::TYPE_URI,
+        json!({}),
+        true,
+    )
+    .await);
+    assert_eq!(resources(&v, "namespaces", "resource"), ["github.com/acme"]);
 }
