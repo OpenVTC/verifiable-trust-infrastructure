@@ -153,6 +153,17 @@ pub enum GitCommands {
         #[arg(long)]
         justification: String,
     },
+    /// Enrol a step-up passkey from a community administrator's invite
+    /// (`auth/passkey/enroll/redeem/start/0.1`, signed as this profile's DID
+    /// — the invite redeems only for the member it names). Asks for the claim
+    /// code the administrator sent separately, then prints the link where your
+    /// browser creates the passkey. It answers only step-ups asked of this DID
+    /// (a break-glass, say), always beside this profile's signature, and never
+    /// signs anyone in.
+    EnrolStepUpPasskey {
+        /// The invite link (`…/admin/enrol-step-up#token=…`), or its token.
+        invite: String,
+    },
     /// Ratify another member's break-glass, turning it into an ordinary grant
     /// (`git-ns/right/ratify/0.1`).
     Ratify {
@@ -1020,14 +1031,23 @@ fn step_up_url(base: &str, request: &Value) -> String {
 }
 
 /// Send a signed document; when it is refused for want of an operation-bound
-/// passkey gesture (`details.stepUpRequest`), show where to make it, wait,
-/// and send the **identical** document again.
+/// passkey gesture (`details.stepUpRequest`), show where to make it, take the
+/// answer, and send the **identical** document again.
+///
+/// The gesture is made in a browser, which is the WebAuthn relying party's
+/// origin. A signed-in console answers it there, signed with its console key.
+/// A member who is no console user answers with a step-up passkey: the page
+/// cannot sign for them, so it shows an **answer code** — the passkey
+/// assertion — and this profile's key signs the approve-response around it.
+/// The passkey is in addition to that signature, never instead of it
+/// (approve-response 0.5).
 async fn send_with_step_up(
     client: &VtcClient,
     base: &str,
     type_uri: &str,
     doc: &str,
     did: &str,
+    key: &HolderKey,
 ) -> CliResult<Value> {
     for _ in 0..3 {
         match client.git_ns_send_signed::<Value>(type_uri, doc).await {
@@ -1040,17 +1060,131 @@ async fn send_with_step_up(
                 let bound = terminal_safe(req["boundTo"].as_str().unwrap_or_default());
                 eprintln!(
                     "{BOLD}This needs a passkey gesture bound to this one request.{RESET}\n  \
-                     {reason}\n  bound to: {bound}\nOpen this in the admin console, where your \
-                     passkey is registered, and confirm:\n  {}\nThen press Enter to send the \
-                     same request again (within five minutes).",
+                     {reason}\n  bound to: {bound}\nOpen this in a browser and confirm with \
+                     your passkey — a console passkey, or the step-up passkey a community \
+                     administrator invited you to enrol (no sign-in needed):\n  {}\nPaste the \
+                     answer code the page shows and press Enter; if the page says the gesture \
+                     is recorded, just press Enter (within five minutes).",
                     step_up_url(base, &req)
                 );
                 let mut line = String::new();
                 std::io::stdin().read_line(&mut line)?;
+                let answer = line.trim();
+                if !answer.is_empty() {
+                    answer_step_up(client, &req, answer, key).await?;
+                }
             }
         }
     }
     Err("the step-up was not completed; nothing was changed".into())
+}
+
+/// The prefix of the answer code `/admin/step-up` shows a member with no
+/// console key: `sua1.<rawId>.<authenticatorData>.<clientDataJSON>.<signature>[.<userHandle>]`,
+/// each part the browser's base64url. Dot-separated and unwrapped so it fits a
+/// terminal line (macOS reads at most 1024 bytes a line from a tty).
+const ANSWER_CODE_PREFIX: &str = "sua1.";
+
+/// The `AuthenticatorAssertionResponse` an answer code carries.
+fn assertion_from_answer_code(code: &str) -> CliResult<Value> {
+    let rest = code.strip_prefix(ANSWER_CODE_PREFIX).ok_or(
+        "that is not an answer code from the step-up page (it starts with `sua1.`); copy it again",
+    )?;
+    let parts: Vec<&str> = rest.split('.').collect();
+    let b64url = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    if !(4..=5).contains(&parts.len()) || !parts.iter().all(|p| b64url(p)) {
+        return Err("that answer code is incomplete or damaged; copy all of it again".into());
+    }
+    let mut response = json!({
+        "authenticatorData": parts[1],
+        "clientDataJSON": parts[2],
+        "signature": parts[3],
+    });
+    if let Some(handle) = parts.get(4) {
+        response["userHandle"] = json!(handle);
+    }
+    Ok(json!({
+        "id": parts[0],
+        "rawId": parts[0],
+        "type": "public-key",
+        "response": response,
+        "clientExtensionResults": {},
+    }))
+}
+
+/// Answer `request` with the passkey assertion in `answer`, signed as this
+/// profile (`auth/step-up/approve-response/0.4`).
+async fn answer_step_up(
+    client: &VtcClient,
+    request: &Value,
+    answer: &str,
+    key: &HolderKey,
+) -> CliResult {
+    let subject = request["subject"].as_str().unwrap_or_default();
+    if subject != key.holder_did() {
+        return Err(format!(
+            "this step-up was asked of {}, not of this profile ({})",
+            terminal_safe(subject),
+            key.holder_did()
+        )
+        .into());
+    }
+    let payload = json!({
+        "subject": subject,
+        "challenge": request["challenge"],
+        "decision": "approved",
+        "evidence": { "kind": "webauthn", "assertion": assertion_from_answer_code(answer)? },
+    });
+    let type_uri = vtc_client::git_ns::STEP_UP_APPROVE_RESPONSE_TYPE;
+    let doc = client.git_ns_sign(type_uri, &payload, key).await?;
+    let ack: Value = client
+        .git_ns_send_signed(type_uri, &doc)
+        .await
+        .map_err(|e| explain(e, key.holder_did()))?;
+    match ack["status"].as_str() {
+        Some("recorded") => Ok(()),
+        _ => Err(format!(
+            "the community did not record the gesture: {}",
+            terminal_safe(ack["reason"].as_str().unwrap_or("no reason given"))
+        )
+        .into()),
+    }
+}
+
+/// The token of a step-up passkey invite: the link an administrator sent
+/// (`…/admin/enrol-step-up#token=…`), or the token alone.
+fn invite_token(invite: &str) -> CliResult<String> {
+    let invite = invite.trim();
+    let token = match invite.split_once("#token=") {
+        Some((_, t)) => t.split('&').next().unwrap_or_default(),
+        None => invite,
+    };
+    let ok = (16..=512).contains(&token.len())
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !ok {
+        return Err(
+            "that is not a step-up passkey invite: paste the whole link the administrator sent"
+                .into(),
+        );
+    }
+    Ok(token.to_string())
+}
+
+/// Where the browser finishes a redemption `redeem/start` opened: the start's
+/// response, in the fragment, which a browser never sends to a server.
+fn enrol_url(base: &str, started: &Value) -> String {
+    let json = serde_json::to_vec(started).unwrap_or_default();
+    format!(
+        "{}/admin/enrol-step-up#enrollment={}",
+        base.trim_end_matches('/'),
+        base64url(&json)
+    )
 }
 
 /// A break-glass record's flag, for a listing line.
@@ -1466,6 +1600,33 @@ async fn run_task(
             }
             Ok(())
         }
+        GitCommands::EnrolStepUpPasskey { invite } => {
+            let (did, key) = signing_key(keyring_key)?;
+            let token = invite_token(&invite)?;
+            let code = dialoguer::Password::new()
+                .with_prompt("Claim code (the administrator sent it separately)")
+                .interact()?;
+            let type_uri = vtc_client::git_ns::STEP_UP_PASSKEY_REDEEM_START_TYPE;
+            let payload = json!({ "token": token, "claimCode": code.trim() });
+            let doc = client.git_ns_sign(type_uri, &payload, &key).await?;
+            let started: Value = client
+                .git_ns_send_signed(type_uri, &doc)
+                .await
+                .map_err(|e| explain(e, &did))?;
+            if started["subject"].as_str() != Some(did.as_str()) {
+                return Err(
+                    "the community answered for a different DID; nothing was enrolled".into(),
+                );
+            }
+            eprintln!(
+                "{BOLD}Open this in a browser to create the passkey{RESET} (within five \
+                 minutes; the link is for you alone — do not share it):\n  {}\n{DIM}It will \
+                 answer only the step-ups this community asks of {did}, and always beside a \
+                 document you sign here.{RESET}",
+                enrol_url(&target.base, &started)
+            );
+            Ok(())
+        }
         GitCommands::BreakGlass {
             resource,
             right,
@@ -1500,7 +1661,7 @@ async fn run_task(
                      told, with your justification, and the grant stays flagged until one of \
                      them ratifies or revokes it.{RESET}"
             );
-            let v = send_with_step_up(client, &target.base, type_uri, &doc, &did).await?;
+            let v = send_with_step_up(client, &target.base, type_uri, &doc, &did, &key).await?;
             show(&v)
         }
         GitCommands::Ratify {
@@ -2345,6 +2506,50 @@ mod tests {
             "did:key:z",
         );
         assert!(g.contains("git link --forge"), "{g}");
+    }
+
+    #[test]
+    fn an_answer_code_is_the_assertion_the_browser_made() {
+        let a = assertion_from_answer_code("sua1.cmF3.YXV0aA.Y2Rq.c2ln.dXNlcg").unwrap();
+        assert_eq!(a["id"], "cmF3");
+        assert_eq!(a["rawId"], "cmF3");
+        assert_eq!(a["type"], "public-key");
+        assert_eq!(a["response"]["authenticatorData"], "YXV0aA");
+        assert_eq!(a["response"]["clientDataJSON"], "Y2Rq");
+        assert_eq!(a["response"]["signature"], "c2ln");
+        assert_eq!(a["response"]["userHandle"], "dXNlcg");
+        let no_handle = assertion_from_answer_code("sua1.cmF3.YXV0aA.Y2Rq.c2ln").unwrap();
+        assert!(no_handle["response"].get("userHandle").is_none());
+        for bad in [
+            "cmF3.YXV0aA.Y2Rq.c2ln",
+            "sua1.cmF3.YXV0aA.Y2Rq",
+            "sua1.cmF3..Y2Rq.c2ln",
+            "sua1.cmF3.YXV0aA.Y2Rq.c2ln.dXNlcg.more",
+            "sua1.cm F3.YXV0aA.Y2Rq.c2ln",
+        ] {
+            assert!(assertion_from_answer_code(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_invite_is_read_from_its_link_or_its_token() {
+        let token = "sup_AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        assert_eq!(
+            invite_token(&format!(
+                "https://vtc.example/admin/enrol-step-up#token={token}"
+            ))
+            .unwrap(),
+            token
+        );
+        assert_eq!(invite_token(&format!("  {token} ")).unwrap(), token);
+        assert!(invite_token("https://vtc.example/admin/enrol-step-up#token=").is_err());
+        assert!(invite_token("sup_short").is_err());
+        assert!(invite_token("sup_AAAAAAAAAAAAAAAA\u{1b}[2J").is_err());
+        let url = enrol_url("https://vtc.example/", &json!({ "enrollmentId": "e" }));
+        assert!(
+            url.starts_with("https://vtc.example/admin/enrol-step-up#enrollment="),
+            "{url}"
+        );
     }
 
     #[test]

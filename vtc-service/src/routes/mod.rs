@@ -600,6 +600,10 @@ fn build_api_chain(
             routes!(admin::passkeys::revoke_finish),
             "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
         ))
+        // Members' step-up passkeys (`crate::step_up_passkey`) have no route
+        // here: issuing, redeeming, revoking and an administrator's listing
+        // (`auth/passkey/admin-list/0.1`) are Trust Tasks served only by the
+        // spine (`trust_tasks::step_up_passkey_tasks`), on every transport.
         // Admin console signing keys (#1684) — the delegation that lets the
         // admin SPA author signed Trust Task documents at all.
         //

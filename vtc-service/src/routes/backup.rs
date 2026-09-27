@@ -6,7 +6,6 @@
 //! keyspace census, crypto, identity guard, crash-safe replay — lives in
 //! [`crate::backup`].
 
-use axum::Json;
 use axum::extract::State;
 use serde::Serialize;
 
@@ -49,19 +48,19 @@ pub struct ExportResponse {
 pub async fn export(
     SuperAdminAuth(_auth): SuperAdminAuth,
     State(_state): State<AppState>,
-) -> Result<Json<ExportResponse>, TaskError> {
+) -> Result<(), TaskError> {
     Err(TaskError::App(AppError::Forbidden(
         REST_EXPORT_REFUSED.into(),
     )))
 }
 
 const REST_EXPORT_REFUSED: &str = "a backup export is refused over REST: the backup password \
-    and the backup would exist in plaintext wherever TLS terminates. Export over DIDComm or TSP \
-    (cnm backup export does)";
+    and the backup would exist in plaintext wherever TLS terminates. Export over an end-to-end \
+    transport, TSP or DIDComm (cnm backup export does)";
 
 const REST_IMPORT_REFUSED: &str = "a backup import is refused over REST: the backup and the \
-    password that opens it would exist in plaintext wherever TLS terminates. Import over DIDComm \
-    or TSP (cnm backup import does)";
+    password that opens it would exist in plaintext wherever TLS terminates. Import over an \
+    end-to-end transport, TSP or DIDComm (cnm backup import does)";
 
 /// The export, independent of the door it was asked through — the bearer
 /// route above and the signed `vtc/backup/export/0.1` document
@@ -112,7 +111,7 @@ pub(crate) async fn export_inner(
 pub async fn import(
     SuperAdminAuth(_auth): SuperAdminAuth,
     State(_state): State<AppState>,
-) -> Result<Json<ImportResult>, TaskError> {
+) -> Result<(), TaskError> {
     Err(TaskError::App(AppError::Forbidden(
         REST_IMPORT_REFUSED.into(),
     )))

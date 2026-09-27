@@ -341,6 +341,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         consumed_invitations_ks,
         console_keys_ks,
         step_up_marks_ks,
+        step_up_passkeys_ks: store.keyspace("step_up_passkeys").unwrap(),
         task_consent_ks,
         member_pushes_ks,
         tsp_reach: std::sync::Arc::new(vti_common::tsp_reach::TspReachability::new()),

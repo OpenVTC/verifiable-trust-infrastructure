@@ -105,6 +105,7 @@ const VETTER_ROLE = "vetter";
 const MAX_ENDORSEMENT_PAGES = 50;
 
 import { MemberGitCard, MemberGitCell, useMemberGit } from "@/plugins/members/MemberGit";
+import { StepUpPasskeysCard } from "@/plugins/members/StepUpPasskeys";
 import { readErrorMessage } from "@/plugins/repos/ui";
 import {
   claimedDigest,
@@ -962,6 +963,8 @@ function MemberDetail() {
           </section>
 
           <MemberGitCard did={decoded} />
+
+          <StepUpPasskeysCard did={decoded} />
 
           <section className="card">
             <h3>Disposition + consent</h3>
