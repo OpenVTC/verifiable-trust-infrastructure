@@ -705,10 +705,12 @@ mod cors_tests {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
         }
         // The full surface should be substantial — guard against a regression
-        // that silently drops the bulk of the routes.
+        // that silently drops the bulk of the routes. The REST surface shrinks
+        // on purpose as routes move onto Trust Tasks, so this is a floor
+        // against a bulk loss, not a count to keep constant.
         assert!(
-            paths.len() >= 60,
-            "expected the documented surface to be >= 60 paths, got {}",
+            paths.len() >= 40,
+            "expected the documented surface to be >= 40 paths, got {}",
             paths.len()
         );
     }
