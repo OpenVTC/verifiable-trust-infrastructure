@@ -312,10 +312,7 @@ mod via_trust_tasks {
             Ok(RollbackResponse {
                 log_entry_version_id: r.log_entry_version_id.unwrap_or_default(),
                 effective_at: r.effective_at.map(ts).unwrap_or_default(),
-                kind: serde_json::to_value(r.kind)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_string))
-                    .unwrap_or_default(),
+                kind: rollback_kind(r.kind).into(),
                 drain_until: r.drain_until.map(ts),
                 draining_mediator: r.draining_mediator,
                 vta_did: r.vta_did.unwrap_or_default(),
@@ -427,6 +424,21 @@ mod via_trust_tasks {
         }
     }
 
+    /// [`RollbackResponse::kind`]'s documented snake_case form. The wire says
+    /// `noOp`, and the CLI (like any caller reading the documented values)
+    /// tests for `no_op`, so this is spelled out rather than serialised.
+    fn rollback_kind(k: spec::rollback::v1_0::RollbackResultKind) -> &'static str {
+        use spec::rollback::v1_0::RollbackResultKind as K;
+        match k {
+            K::Disabled => "disabled",
+            K::Enabled => "enabled",
+            K::Updated => "updated",
+            K::NoOp => "no_op",
+            // `#[non_exhaustive]`: a kind this build does not know.
+            _ => "unknown",
+        }
+    }
+
     /// The published flat state as the SDK's tagged enum. A kind this build
     /// does not know (the generated enum is `#[non_exhaustive]`) is dropped
     /// rather than guessed at.
@@ -452,6 +464,20 @@ mod via_trust_tasks {
             },
             _ => return None,
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The wire's `noOp` reaches callers as the documented `no_op`, which
+        /// is what the CLI tests for to print "nothing to do".
+        #[test]
+        fn a_no_op_rollback_reads_as_the_documented_no_op() {
+            let r: spec::rollback::v1_0::RollbackResultKind =
+                serde_json::from_value(json!("noOp")).unwrap();
+            assert_eq!(rollback_kind(r), "no_op");
+        }
     }
 }
 
