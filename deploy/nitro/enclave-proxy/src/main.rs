@@ -213,10 +213,6 @@ async fn main() {
     eprintln!();
     eprintln!("  Test:");
     eprintln!("    curl http://localhost:{}/health", config.listen_port);
-    eprintln!(
-        "    curl http://localhost:{}/health",
-        config.listen_port
-    );
     eprintln!();
 
     // Spawn all proxy channels as concurrent tasks
