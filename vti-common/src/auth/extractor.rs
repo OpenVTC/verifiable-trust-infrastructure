@@ -312,6 +312,27 @@ impl AuthClaims {
         }
     }
 
+    /// Whether these claims are the on-host offline CLI principal minted by
+    /// [`unsafe_local_cli_super_admin`](Self::unsafe_local_cli_super_admin),
+    /// rather than a caller authenticated over the operation surface.
+    ///
+    /// Such a principal has no ACL entry and never will: its authority is the
+    /// OS account that can open the node's store and seed while the node is
+    /// stopped. Checks that bound a caller by its own stored entry
+    /// (VTI-ACL-053) must recognise it through this predicate, not by treating
+    /// "no entry" as unrestricted for everyone.
+    ///
+    /// Not reachable over the wire: an authenticated `did` is a resolved
+    /// DID, which a `cli:` sentinel is not, and `amr` is written only by the
+    /// node's own authentication paths, none of which records `"cli"`.
+    /// Ungated, unlike the constructor, so a server-only build can still ask.
+    pub fn is_local_cli_principal(&self) -> bool {
+        self.did.starts_with("cli:")
+            && self.session_id == self.did
+            && self.amr.len() == 1
+            && self.amr[0] == "cli"
+    }
+
     /// This caller's authority to **act**, decoded from `(role,
     /// allowed_contexts)`.
     ///
@@ -1044,5 +1065,42 @@ mod tests {
         let a = AuthClaims::unsafe_local_cli_super_admin("provision-integration");
         let b = AuthClaims::unsafe_local_cli_super_admin("keys-bundle");
         assert_ne!(a.did, b.did);
+    }
+
+    #[cfg(feature = "cli-synthesis")]
+    #[test]
+    fn local_cli_principal_is_recognised() {
+        let claims = AuthClaims::unsafe_local_cli_super_admin("provision-integration");
+        assert!(claims.is_local_cli_principal());
+    }
+
+    #[test]
+    fn authenticated_claims_are_not_the_local_cli_principal() {
+        // A real session carries a DID and the factor it authenticated with.
+        let real = AuthClaims {
+            did: "did:key:z6MkExample".into(),
+            role: Role::Admin,
+            session_id: "sess-1".into(),
+            amr: vec!["did".into()],
+            ..Default::default()
+        };
+        assert!(!real.is_local_cli_principal());
+
+        // Each marker alone is not enough: a `cli:` subject authenticated by
+        // some other factor, or a `cli` factor on a DID, is not the sentinel.
+        let wrong_amr = AuthClaims {
+            did: "cli:x".into(),
+            session_id: "cli:x".into(),
+            amr: vec!["did".into()],
+            ..Default::default()
+        };
+        assert!(!wrong_amr.is_local_cli_principal());
+        let wrong_did = AuthClaims {
+            did: "did:key:z6MkExample".into(),
+            session_id: "did:key:z6MkExample".into(),
+            amr: vec!["cli".into()],
+            ..Default::default()
+        };
+        assert!(!wrong_did.is_local_cli_principal());
     }
 }
