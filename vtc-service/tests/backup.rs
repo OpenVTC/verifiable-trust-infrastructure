@@ -396,7 +396,9 @@ async fn backup_export_and_import_are_refused_over_rest() {
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
-    assert!(body.to_string().contains("DIDComm or TSP"), "{body}");
+    // The refusal names what the export needs — an end-to-end transport —
+    // rather than a fixed ordering of the transports that provide one.
+    assert!(body.to_string().contains("end-to-end transport"), "{body}");
 
     for confirm in [false, true] {
         let (status, body) = post_backup(

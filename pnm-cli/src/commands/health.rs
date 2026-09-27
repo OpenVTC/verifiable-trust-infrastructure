@@ -276,7 +276,7 @@ pub(crate) async fn run(
             Ok(Some((mediator_did, via_status_endpoint))) => {
                 println!("  {CYAN}{:<13}{RESET} {mediator_did}", "DID");
                 if via_status_endpoint {
-                    println!("                {DIM}discovered via /services/didcomm{RESET}");
+                    println!("                {DIM}discovered via vta/services/get{RESET}");
                 }
 
                 // Resolve mediator DID document (uses cached resolver)
