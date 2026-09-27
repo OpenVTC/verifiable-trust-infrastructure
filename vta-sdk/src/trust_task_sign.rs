@@ -218,10 +218,23 @@ pub async fn sign_in_place(
 ///
 /// The proof is computed over the document with `proof` removed — see the
 /// module docs for why that matters.
+///
+/// The proof's `proofPurpose` is decided by the document's own `type`
+/// ([`crate::trust_task_proof::purpose_for_document_type`]), never a default
+/// this signer picks: `assertionMethod` only for the registry's attestation
+/// types (an approver's decision, a subject's confirmation), `authentication`
+/// for everything else (VTI-KEY-022, VTI-KEY-106). `doc.type_uri` is already a
+/// parsed [`trust_tasks_rs::TypeUri`] — a document whose `type` did not parse
+/// as one cannot exist as a `TrustTask<Value>` in the first place, so there is
+/// no separate "not a type URI" case to refuse here; [`build_unsigned`] is
+/// where a caller's raw `type_uri: &str` is refused
+/// ([`TrustTaskSignError::TypeUri`]).
 pub async fn sign_in_place_with(
     doc: &mut TrustTask<Value>,
     key: &HolderKey,
 ) -> Result<(), TrustTaskSignError> {
+    let purpose = crate::trust_task_proof::purpose_for_document_type(&doc.type_uri);
+
     let vm_id = key.verification_method.clone();
     let seed = decode_private_key_multibase(&key.private_key_multibase)
         .map_err(|e| TrustTaskSignError::BadPrivateKey(e.to_string()))?;
@@ -237,7 +250,7 @@ pub async fn sign_in_place_with(
         &signing_doc,
         &signer,
         SignOptions::new()
-            .with_proof_purpose("assertionMethod")
+            .with_proof_purpose(purpose.as_str())
             .with_created(Utc::now()),
     )
     .await
@@ -459,5 +472,60 @@ mod tests {
         assert_eq!(doc.issuer.as_deref(), Some("did:key:z6MkA"));
         assert_eq!(doc.recipient.as_deref(), Some("did:key:z6MkB"));
         assert!(doc.proof.is_none());
+    }
+
+    /// `sign_in_place_with` picks the proof's purpose from the document's own
+    /// `type`, not a default: an operational document (`TYPE` here —
+    /// `join-requests/submit`, not in the registry's attestation list) is
+    /// signed for `authentication` (VTI-KEY-106, VTI-KEY-022).
+    #[tokio::test]
+    async fn an_operational_document_is_signed_for_authentication() {
+        let (did, pk) = did_key_from_seed(0xc1);
+        let mut doc = build_unsigned(TYPE, json!({}), &did, "did:key:z6MkVtc").unwrap();
+        sign_in_place(&mut doc, &did, &pk).await.unwrap();
+        assert_eq!(doc.proof.as_ref().unwrap().proof_purpose, "authentication");
+    }
+
+    /// The registry's attestation types — an approver's decision, a step-up
+    /// approve-response, a subject's confirmation — are signed for
+    /// `assertionMethod`, whoever calls this signer with one.
+    #[tokio::test]
+    async fn attestation_types_are_signed_for_assertion_method() {
+        for uri in [
+            "https://trusttasks.org/spec/task-consent/decision/0.1",
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.3",
+            "https://trusttasks.org/spec/confirm/response/0.1",
+        ] {
+            let (did, pk) = did_key_from_seed(0xc2);
+            let mut doc = build_unsigned(uri, json!({}), &did, "did:key:z6MkVtc").unwrap();
+            sign_in_place(&mut doc, &did, &pk).await.unwrap();
+            assert_eq!(
+                doc.proof.as_ref().unwrap().proof_purpose,
+                "assertionMethod",
+                "{uri}"
+            );
+        }
+    }
+
+    /// A `type` that does not parse as a Trust Task Type URI is refused before
+    /// any purpose is chosen or any signature is made — `build_unsigned`
+    /// refuses it, so `sign_in_place_with` never sees a document whose `type`
+    /// is not a real [`trust_tasks_rs::TypeUri`].
+    #[tokio::test]
+    async fn a_malformed_type_is_refused() {
+        let (did, pk) = did_key_from_seed(0xc3);
+        for bad in [
+            "not-a-uri-at-all",
+            "https://trusttasks.org/spec/task-consent/decision", // no version
+            "http://trusttasks.org/spec/task-consent/decision/0.1", // not https
+        ] {
+            let err = build_signed(bad, json!({}), &did, &pk, "did:key:z6MkVtc")
+                .await
+                .expect_err("a malformed type must be refused before signing");
+            assert!(
+                matches!(err, TrustTaskSignError::TypeUri(_)),
+                "{bad}: {err:?}"
+            );
+        }
     }
 }

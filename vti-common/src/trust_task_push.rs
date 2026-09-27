@@ -213,8 +213,17 @@ impl Reach {
 /// only through this type: it is the one that claims to accept Trust Task
 /// documents, and an application REST API advertised under another type never
 /// agreed to (HTTPS binding 0.2 §6.2).
+///
+/// An endpoint that is not `https://` (or `http://` to an exact loopback host
+/// — [`vta_sdk::protocol::matching::is_https_or_loopback`]) is refused and logged, the same
+/// rule [`ServiceCapabilities::from_did_document`] applies to a `VTARest`/
+/// `TrustTaskHTTPS` candidate: a peer advertising plain `http://` must not
+/// receive a signed Trust Task in the clear. The refusal makes this function
+/// report no REST endpoint at all — `plan`/`choose` then simply do not offer
+/// REST for this peer, and the push fails closed if no other transport is
+/// shared.
 fn trust_task_https_base(doc: &Value) -> Option<String> {
-    doc.get("service")?.as_array()?.iter().find_map(|svc| {
+    let uri = doc.get("service")?.as_array()?.iter().find_map(|svc| {
         let typed = match svc.get("type")? {
             Value::String(t) => t == TRUST_TASK_HTTPS_SERVICE_TYPE,
             Value::Array(ts) => ts
@@ -230,7 +239,18 @@ fn trust_task_https_base(doc: &Value) -> Option<String> {
             Value::Object(o) => o.get("uri").and_then(Value::as_str).map(str::to_string),
             _ => None,
         }
-    })
+    })?;
+    if vta_sdk::protocol::matching::is_https_or_loopback(&uri) {
+        Some(uri)
+    } else {
+        let did = doc.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        warn!(
+            did,
+            endpoint = %uri,
+            "ignoring a plaintext http:// TrustTaskHTTPS endpoint advertised to a non-loopback host"
+        );
+        None
+    }
 }
 
 /// What this node can send over right now.
@@ -897,6 +917,43 @@ mod tests {
         let r = Reach::from_document(&d);
         assert!(r.rest_base.is_none());
         assert!(!r.advertises_anything());
+    }
+
+    /// A peer advertising `TrustTaskHTTPS` over plain `http://` is not
+    /// reachable over REST at all — a signed Trust Task is not encrypted, and
+    /// this node must not send one in the clear.
+    #[test]
+    fn a_plaintext_trust_task_https_endpoint_is_not_a_rest_candidate() {
+        let d = doc(json!([
+            { "id": "#tt", "type": "TrustTaskHTTPS", "serviceEndpoint": "http://peer.example/" },
+        ]));
+        let r = Reach::from_document(&d);
+        assert!(r.rest_base.is_none());
+        assert!(!r.advertises_anything());
+    }
+
+    /// Lookalike hosts are ordinary DNS names, not loopback, and are refused
+    /// exactly like any other plaintext endpoint.
+    #[test]
+    fn plaintext_lookalike_loopback_is_not_a_rest_candidate() {
+        for endpoint in ["http://127.0.0.1.evil.com/", "http://localhost.evil/"] {
+            let d = doc(json!([
+                { "id": "#tt", "type": "TrustTaskHTTPS", "serviceEndpoint": endpoint },
+            ]));
+            let r = Reach::from_document(&d);
+            assert!(r.rest_base.is_none(), "{endpoint}");
+        }
+    }
+
+    /// Plain `http://` to exact loopback is still a candidate, for local
+    /// development.
+    #[test]
+    fn plaintext_http_to_loopback_is_still_a_rest_candidate() {
+        let d = doc(json!([
+            { "id": "#tt", "type": "TrustTaskHTTPS", "serviceEndpoint": "http://127.0.0.1:8100/" },
+        ]));
+        let r = Reach::from_document(&d);
+        assert_eq!(r.rest_base.as_deref(), Some("http://127.0.0.1:8100/"));
     }
 
     fn ours_all() -> Ours {
