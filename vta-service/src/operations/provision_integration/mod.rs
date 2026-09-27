@@ -2978,6 +2978,43 @@ mod tests {
         assert!(provision_integration(&deps, &auth, params()).await.is_err());
     }
 
+    /// `vta bootstrap provision-integration` runs offline as the synthesised
+    /// `cli:provision-integration` principal, which has no ACL entry. The
+    /// admin grant must still be written: v0.44.0 refused it with "has no ACL
+    /// entry of its own" (VTI-ACL-053 applied to a non-caller).
+    #[tokio::test]
+    async fn offline_cli_provision_integration_writes_the_admin_grant() {
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "webvh", "webvh")
+            .await
+            .expect("create context");
+
+        let auth = AuthClaims::unsafe_local_cli_super_admin("provision-integration");
+        let request = signed_admin_rotation_request("vta-admin", "webvh").await;
+
+        let output = provision_integration(
+            &deps,
+            &auth,
+            ProvisionIntegrationParams {
+                request,
+                context: "webvh".into(),
+                admin_scope: AdminScope::Context,
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .expect("offline provision-integration");
+
+        let entry = crate::acl::get_acl_entry(&deps.acl_ks, &output.summary.admin_did)
+            .await
+            .expect("ACL lookup")
+            .expect("admin grant written");
+        assert_eq!(entry.role, crate::acl::Role::Admin);
+        assert_eq!(entry.created_by, "cli:provision-integration");
+    }
+
     #[tokio::test]
     async fn provision_integration_admin_rotation_swap_audit_skipped_when_no_ephemeral_row() {
         // Relayer-mode flow: the holder ephemeral was never granted an
