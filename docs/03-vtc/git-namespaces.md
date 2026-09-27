@@ -419,7 +419,8 @@ cnm git break-glass --right=git.repo.own --resource=github.com/acme/widgets \
   `<vtc>/admin/step-up#request=…` link) and the identical document is sent
   again. Because a real step-up applies, `[git_ns] elevated_requires_admin`
   does not gate it: a namespace admin who is not a community administrator
-  can break the glass, provided they have a passkey registered.
+  can break the glass, provided they have a passkey this community knows — a
+  console passkey, or a **step-up passkey** (below).
 - **Immediate, no expiry**: the right takes effect at once and lasts until
   another administrator acts on it.
 - **Flagged**: the record carries `breakGlass {by, at, justification,
@@ -450,6 +451,91 @@ it: `break_glass` (`"enabled"` by default, or `"disabled"`),
 `break_glass_delay_seconds` (the right takes effect later; at most a day;
 revocable meanwhile), `break_glass_min_justification_chars`, and any deny
 decision on `input.action == "right.breakGlass"` (or `"right.ratify"`).
+
+
+### Step-up passkeys for members
+
+A member who is no console user acts only through signed documents and has no
+passkey, so without one they could never answer a break-glass step-up. They
+enrol a **step-up passkey** (`auth/passkey/enroll/invite/0.2`, `purpose:
+stepUp`; `vtc-service/src/step_up_passkey.rs`). Every step is a Trust Task on
+the spine (`trust_tasks::step_up_passkey_tasks`), served the same way over TSP,
+DIDComm and HTTPS; no REST route issues, redeems or revokes one.
+
+1. A community administrator opens the member's page (Members → the member →
+   *Step-up passkeys*) and clicks *Invite…*. The console signs
+   `auth/passkey/enroll/invite/0.2` with its console key, and the VTC asks for
+   a passkey gesture bound to that one document before it issues anything. The
+   console then shows a link and, separately, a **claim code**. It shows the
+   code once, and the code is never part of the link.
+2. The administrator sends the link over one channel and the code over
+   another.
+3. The member opens `<vtc>/admin/enrol-step-up#token=…` (no sign-in). The page
+   shows the command that redeems it:
+
+   ```sh
+   cnm git enrol-step-up-passkey '<vtc>/admin/enrol-step-up#token=…'
+   ```
+
+   `cnm` asks for the claim code and signs
+   `auth/passkey/enroll/redeem/start/0.1` as the member: an invite redeems only
+   for the DID it names, so whoever else holds the two messages — another
+   member, or the administrator who wrote them — cannot bind a passkey to it.
+   `cnm` prints `<vtc>/admin/enrol-step-up#enrollment=…`.
+4. The member opens that link, checks the DID shown is theirs, and creates the
+   passkey. The browser sends `auth/passkey/enroll/redeem/finish/0.1`; its
+   authority is the ceremony the signed start opened.
+5. When `cnm` later prints a `<vtc>/admin/step-up#request=…` link, the member
+   answers it with that passkey. The page cannot sign for someone who is no
+   console user, so it shows an **answer code** (the passkey assertion); the
+   member pastes it into `cnm`, which signs the
+   `auth/step-up/approve-response` with the member's own `assertionMethod` key
+   and sends the original document again.
+
+The rules:
+
+- **Step-up only, by construction.** The credentials live in their own
+  keyspace (`step_up_passkeys`), which login and session step-up never read.
+  The only place they count is `acl::bound_step_up`, for a step-up issued to
+  their own member, while they are a current member. They confer no role and
+  no scope.
+- **Never instead of a proof.** Every approve-response carries the approver's
+  `assertionMethod` proof; the passkey assertion is a second gate beside it
+  (approve-response 0.5). An unsigned answer, or one signed by anyone but the
+  step-up's subject, is refused before the pending step-up is touched.
+- **Two factors, two parties.** A stolen signing key alone cannot enrol one
+  (that takes the administrator's invite and its claim code), and the invite
+  alone cannot either (that takes the member's signature on `redeem/start`).
+- **Single use and time-bounded.** An invite redeems once, for the DID it
+  names, and lasts one hour by default (at most 24 h). Its response is not
+  kept in the duplicate-delivery record, so the claim code exists only in the
+  one reply.
+- **Five wrong attempts and the invite is void.** A wrong code and a signer
+  the invite was not issued to both count, and get the same refusal as a
+  wrong token.
+- **A second one needs the first.** Once a member holds a step-up passkey, a
+  further one also needs a user-verified gesture from it.
+- **No self-invites.** An administrator does not invite themselves: they enrol
+  their own passkeys under Settings → Passkeys.
+- **Revocation.** A community administrator revokes one from the member's
+  page, verifying with their own passkey (`auth/passkey/revoke/{start,finish}/0.2`
+  with `subject`). A member may be left with none. A revoked passkey cannot
+  answer a step-up that was already pending.
+- **Audit.** Every step is an `AuditEvent::StepUpPasskeyChanged` row (`invited`,
+  `registered`, `inviteInvalidated`, `revoked`), and every use is the
+  `OperationStepUpRecorded` row of the step-up it answered. The token and code
+  are never recorded.
+- **Backup.** Like `passkey`, `step_up_passkeys` is excluded: after a restore,
+  members enrol again through a fresh invite.
+- **Listing.** An administrator lists a member's step-up passkeys with
+  `auth/passkey/admin-list/0.1` (`purpose: stepUp`), signed, over any
+  transport; the console sends it from the member's page. A community-wide
+  administrator may list any member's, a context-scoped one only those of a
+  member whose entry names one of their contexts. A non-administrator is
+  refused `notAdministrator`, a subject outside the administrator's authority
+  `subjectUnknown` (as one that does not exist), and a former member
+  `subjectNotMember`. The answer is metadata only — id, label, when enrolled,
+  when last used, signature counter — and reading it changes nothing.
 
 ## Administrator surface
 

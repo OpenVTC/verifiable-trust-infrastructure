@@ -600,6 +600,10 @@ fn build_api_chain(
             routes!(admin::passkeys::revoke_finish),
             "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
         ))
+        // Members' step-up passkeys (`crate::step_up_passkey`) have no route
+        // here: issuing, redeeming, revoking and an administrator's listing
+        // (`auth/passkey/admin-list/0.1`) are Trust Tasks served only by the
+        // spine (`trust_tasks::step_up_passkey_tasks`), on every transport.
         // Admin console signing keys (#1684) — the delegation that lets the
         // admin SPA author signed Trust Task documents at all.
         //
@@ -1069,25 +1073,8 @@ fn build_api_chain(
         )
     };
 
-    // P3.9 — encrypted backup / restore. Both routes only ever answer 403: a
-    // backup is the `backup/*` Trust Task family, served over DIDComm or TSP
-    // (see `routes::backup`). They stay mounted so an old client gets a reason
-    // rather than a 404, and keep the default body cap — nothing is read.
-    let api = api
-        .route(
-            "/backup/export",
-            ttl(
-                post(backup::export),
-                <trust_tasks_rs::specs::vtc::backup::export::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            ),
-        )
-        .route(
-            "/backup/import",
-            ttl(
-                post(backup::import),
-                <trust_tasks_rs::specs::vtc::backup::import::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            ),
-        );
+    // P3.9 — encrypted backup / restore has no route: a backup is the
+    // `vtc/backup/export` + `backup/*` Trust Tasks, over TSP or DIDComm only.
 
     let api = api
         // §14.4 — every authenticated API route inherits the 1 MiB

@@ -4,10 +4,8 @@ mod attestation;
 mod audit;
 mod auth;
 mod auth_portal;
-mod backup;
 mod backup_blob;
 mod bootstrap;
-mod cache;
 mod config;
 mod contexts;
 mod did_templates;
@@ -17,8 +15,6 @@ mod health;
 pub mod keys;
 #[cfg(feature = "webvh")]
 mod passkey_vms;
-#[cfg(feature = "webvh")]
-mod protocol;
 pub mod rate_limit;
 #[cfg(feature = "webvh")]
 mod self_hosted_did;
@@ -250,20 +246,9 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         .routes(routes!(auth::challenge))
         .routes(routes!(auth::authenticate))
         .routes(routes!(auth::refresh));
-    // Public, unauthenticated TEE attestation endpoints. These take no
-    // auth extractor and run crypto on caller input (report generation),
-    // so they MUST sit on the rate-limited + body-capped unauth branch —
-    // not the main router, where they previously bypassed both. The
-    // super-admin `/attestation/mnemonic` routes stay on the authed
-    // router (JWT is their gate).
-    #[cfg(feature = "tee")]
-    let unauth = unauth
-        .routes(routes!(attestation::status))
-        .routes(routes!(
-            attestation::cached_report,
-            attestation::generate_report
-        ))
-        .routes(routes!(attestation::config_report));
+    // The public TEE attestation reads are Trust Tasks now
+    // (`vta/attestation/{status,report,config-report}/0.1`), served on
+    // `/trust-tasks` below to anonymous callers, behind this same limiter.
     // Tighter body cap on unauth endpoints — see UNAUTH_BODY_SIZE.
     // Applied after ALL auth-branch routes (including the cfg-gated ones) are
     // registered so every POST on this branch (auth, attestation report)
@@ -326,43 +311,23 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     let auth_portal_router =
         OpenApiRouter::new().route("/auth/portal", get(auth_portal::portal_handler));
 
-    // Authenticated provision-integration (context-admin gated). Kept
-    // separate from `unauth` so the rate-limiter doesn't apply — the
-    // endpoint already hard-gates on `AdminAuth`.
-    #[cfg(feature = "webvh")]
-    let auth_provision = OpenApiRouter::new().routes(routes!(bootstrap::provision_integration));
+    // `provision/integration` is a Trust Task only (TSP, DIDComm, or HTTPS on
+    // `/trust-tasks`); its `/bootstrap/provision-integration` route is gone.
 
-    let router = OpenApiRouter::with_openapi(ApiDoc::openapi())
-        .merge(unauth)
-        .merge(did_log);
-    #[cfg(feature = "webvh")]
-    let router = router.merge(auth_provision);
-    let router = router.merge(auth_portal_router);
-
-    let router = router
-        .routes(routes!(auth::session_list, auth::revoke_sessions_by_did))
-        .routes(routes!(auth::revoke_session))
-        // Trust-task envelope dispatcher (per
-        // docs/05-design-notes/trust-task-uri-registry.md). Phase 2
-        // scaffold; handlers register per Phase 3 slice. Not yet documented
-        // in OpenAPI (dynamic envelope payload).
-        // Two paths, one dispatcher, and the second is the conformant one.
-        //
-        // The HTTPS binding POSTs to `<serviceEndpoint>/trust-tasks`, where
-        // `serviceEndpoint` is what the VTA advertises on its Trust-Task
-        // service entry. Every deployment example advertises an ORIGIN
-        // (`https://trust.example.com`), so a client built from the published
-        // binding asks for `/trust-tasks` and, until now, got a 404 — while
-        // `vta-sdk` worked only because it hardcodes the same `/api` prefix
-        // this service happens to serve. Two implementations agreeing by
-        // convention is not a contract; it just hides its absence from the
-        // people who wrote both ends.
-        //
-        // Serving both makes every existing advertisement conformant without
-        // an operator touching it: for an origin-advertising VTA the
-        // Trust-Task base IS the origin. `/api/trust-tasks` stays for deployed
-        // clients and is marked superseded, so the same metric that governs
-        // every other retired route decides when it goes.
+    // The Trust-Task dispatcher: two paths, one dispatcher, and the first is
+    // the conformant one.
+    //
+    // The HTTPS binding POSTs to `<serviceEndpoint>/trust-tasks`, where
+    // `serviceEndpoint` is what the VTA advertises on its Trust-Task service
+    // entry — an ORIGIN in every deployment example, so a client built from the
+    // published binding asks for `/trust-tasks`. `/api/trust-tasks` stays for
+    // deployed clients and is marked superseded.
+    //
+    // It serves authenticated callers (their credential is the gate) and, for a
+    // public task only, anonymous ones (`trust_tasks::PUBLIC_URIS`). The
+    // anonymous requests are charged to the unauthenticated limiter; the
+    // authenticated ones are not, as on every other JWT-gated route.
+    let trust_tasks = OpenApiRouter::new()
         .route(
             "/trust-tasks",
             post(crate::trust_tasks::dispatch_trust_task),
@@ -370,7 +335,19 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         .route(
             "/api/trust-tasks",
             post(crate::trust_tasks::dispatch_trust_task),
-        )
+        );
+    let trust_tasks =
+        rate_limit::apply_anonymous(trust_tasks, Limiter::Auth, trust_xff_cidrs, &quotas);
+
+    let router = OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .merge(unauth)
+        .merge(did_log);
+    let router = router.merge(auth_portal_router);
+
+    let router = router
+        .routes(routes!(auth::session_list, auth::revoke_sessions_by_did))
+        .routes(routes!(auth::revoke_session))
+        .merge(trust_tasks)
         .routes(routes!(config::get_config, config::update_config))
         .routes(routes!(keys::list_keys, keys::create_key))
         .routes(routes!(
@@ -422,20 +399,11 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         .routes(routes!(did_templates::render_context_handler))
         // ACL routes (flattened for consistency)
         .routes(routes!(acl::list_acl, acl::create_acl))
-        // Static segment registered before `/acl/{did}` so it isn't captured
-        // as a DID. Self-service key rotation (any authenticated caller).
-        .routes(routes!(acl::swap_acl))
         .routes(routes!(acl::get_acl, acl::update_acl, acl::delete_acl))
         .routes(routes!(acl::change_role))
         // Audit log routes
         .routes(routes!(audit::list_audit_logs))
-        .routes(routes!(audit::get_retention, audit::update_retention))
-        // Cache routes (token caching / key-value store)
-        .routes(routes!(
-            cache::get_cached,
-            cache::put_cached,
-            cache::delete_cached
-        ));
+        .routes(routes!(audit::get_retention, audit::update_retention));
 
     // TEE attestation routes (feature-gated). The unauthenticated ones
     // (`status`, `report`, `did-log`) live on the rate-limited `unauth`
@@ -450,50 +418,10 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // `GET /attestation/admin-credential` retired in Phase 3 —
     // sealed-bootstrap Mode B replaces it via `POST /bootstrap/request`.
 
-    // Protocol management routes (DIDComm enable/disable/migrate;
-    // spec docs/05-design-notes/didcomm-protocol-management.md).
-    // Plus the symmetric REST routes (spec
-    // docs/05-design-notes/runtime-service-management.md §3.4).
-    #[cfg(feature = "webvh")]
-    let router = router
-        .routes(routes!(protocol::enable_rest_handler))
-        .routes(routes!(protocol::update_rest_handler))
-        .routes(routes!(protocol::disable_rest_handler))
-        .routes(routes!(protocol::rollback_rest_handler))
-        .routes(routes!(protocol::enable_tsp_handler))
-        .routes(routes!(protocol::update_tsp_handler))
-        .routes(routes!(protocol::disable_tsp_handler))
-        .routes(routes!(protocol::rollback_tsp_handler))
-        .routes(routes!(protocol::enable_webauthn_handler))
-        .routes(routes!(protocol::update_webauthn_handler))
-        .routes(routes!(protocol::disable_webauthn_handler))
-        .routes(routes!(protocol::rollback_webauthn_handler))
-        .routes(routes!(protocol::list_services_handler))
-        .routes(routes!(protocol::mediator_report_handler));
-
-    // The DIDComm half of service management — enable/disable/update/rollback
-    // plus the drain surface, which is DIDComm-only (REST and TSP have no
-    // drain window). Absent from a TSP-only build, along with the operations
-    // behind them; `services {rest,tsp,webauthn} …` above stay mounted.
-    #[cfg(all(feature = "webvh", feature = "didcomm"))]
-    let router = router
-        .routes(routes!(protocol::enable_didcomm_handler))
-        .routes(routes!(protocol::get_didcomm_status_handler))
-        .routes(routes!(protocol::disable_didcomm_handler))
-        // GET list-drain + POST cancel share /services/didcomm/drain.
-        .routes(routes!(
-            protocol::list_drain_handler,
-            protocol::drain_cancel_handler
-        ))
-        .routes(routes!(protocol::update_didcomm_handler))
-        .routes(routes!(protocol::rollback_didcomm_handler))
-        // Alias mount of the drain-cancel handler; its #[utoipa::path] lives on
-        // the canonical /services/didcomm/drain entry above, so this stays a
-        // plain (undocumented) route to avoid a duplicate operation.
-        .route(
-            "/mediators/drain/cancel",
-            post(protocol::drain_cancel_handler),
-        );
+    // Service management (`vta/services/*`) is Trust Tasks only, on
+    // `/trust-tasks`: the twenty `/services/*` routes and `/mediators/*` that
+    // stood here are removed. The SDK's `services` methods dispatch the tasks
+    // over whichever transport the client holds.
 
     // WebVH routes (feature-gated)
     #[cfg(feature = "webvh")]
@@ -518,9 +446,6 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         ))
         .routes(routes!(did_webvh::get_did_log_handler))
         .routes(routes!(did_webvh::register_did_with_server_handler))
-        .routes(routes!(did_webvh::update_did_handler))
-        .routes(routes!(did_webvh::rotate_did_keys_handler))
-        .routes(routes!(did_webvh::realign_did_keys_handler))
         // Passkey-as-verificationMethod enrolment. See
         // `docs/02-vta/passkey-verification-methods.md` (forthcoming).
         // First-time enrolment expects a short-lived enrolment-scope
@@ -536,9 +461,7 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // VTA management routes
     let router = router
         .routes(routes!(vta::restart))
-        .routes(routes!(vta::metrics))
-        .routes(routes!(backup::export))
-        .routes(routes!(backup::import));
+        .routes(routes!(vta::metrics));
 
     // Backup-descriptor blob endpoints. NOT JWT-gated — the
     // `X-Backup-Token` header IS the credential (one-shot for
@@ -744,14 +667,11 @@ mod cors_tests {
             "/acl/{did}",
             "/did-templates",
             "/audit/logs",
-            "/cache/{key}",
             "/config",
             "/vta/restart",
-            "/backup/export",
             "/backup/blob/{bundle_id}",
-            // webvh (default feature) groups
-            "/services/didcomm/enable",
-            "/services",
+            // webvh (default feature) groups. (Service management is the
+            // `vta/services/*` Trust Tasks, with no REST paths to document.)
             "/webvh/dids",
             "/webvh/servers",
             "/did/verification-methods/passkey",
@@ -760,10 +680,12 @@ mod cors_tests {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
         }
         // The full surface should be substantial — guard against a regression
-        // that silently drops the bulk of the routes.
+        // that silently drops the bulk of the routes. The REST surface shrinks
+        // on purpose as routes move onto Trust Tasks, so this is a floor
+        // against a bulk loss, not a count to keep constant.
         assert!(
-            paths.len() >= 60,
-            "expected the documented surface to be >= 60 paths, got {}",
+            paths.len() >= 40,
+            "expected the documented surface to be >= 40 paths, got {}",
             paths.len()
         );
     }

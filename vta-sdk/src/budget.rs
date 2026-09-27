@@ -170,6 +170,7 @@ pub const RELAYS_ONWARD: &[&str] = &[
     // URI.
     trust_tasks::TASK_SERVICES_ENABLE_1_0,
     trust_tasks::TASK_SERVICES_UPDATE_1_0,
+    trust_tasks::TASK_SERVICES_UPDATE_1_1,
     // ── Provisioning ────────────────────────────────────────────────────
     // A template naming a `WEBVH_SERVER` mints through the very same
     // server-managed path as `dids/create`.

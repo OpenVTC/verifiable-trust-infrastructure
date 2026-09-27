@@ -2,13 +2,14 @@
   "schemaVersion": 1,
   "name": "push-gateway",
   "kind": "push-gateway",
-  "description": "Push wake-up gateway: signing + key-agreement methods and a DIDCommMessaging service so devices, VTAs, and mediators can authcrypt push/* Trust Tasks (register/provision/wake) to it. Implements https://trusttasks.org/binding/push/0.1.",
+  "description": "Push wake-up gateway: signing + key-agreement methods and a DIDCommMessaging service so devices, VTAs, and mediators can authcrypt push/* Trust Tasks (register/provision/wake) to it. Implements https://trusttasks.org/binding/push/0.1. Transport-agnostic: the gateway also serves Trust Tasks over TSP and HTTPS, so it can optionally advertise a TSPTransport service naming the same mediator DID. Supply SERVICE_TSP (built by vta_sdk::did_templates::tsp_service) to advertise it, and omit it for a gateway minted without TSP — the null-pruning slot drops the entry, same mechanism as vtc-host. Both a mediator DID document and this gateway's own document use the shared mediator, so advertising TSP here is a promise about that mediator, not about the gateway binary alone.",
   "methods": ["webvh", "web"],
   "requiredVars": ["URL"],
   "optionalVars": {
     "ACCEPT": ["didcomm/v2"],
     "ROUTING_KEYS": [],
-    "WEBVH_SERVER": null
+    "WEBVH_SERVER": null,
+    "SERVICE_TSP": null
   },
   "defaults": {
     "preRotationCount": 2,
@@ -39,6 +40,7 @@
     "assertionMethod": ["{DID}#key-0"],
     "keyAgreement": ["{DID}#key-1"],
     "service": [
+      "{SERVICE_TSP}",
       {
         "id": "{DID}#service",
         "type": ["DIDCommMessaging"],

@@ -453,7 +453,11 @@ pub struct StageRequest<'a> {
     pub config: &'a tokio::sync::RwLock<vta_config::AppConfig>,
     pub committer: &'a dyn RestoreCommitter,
     pub auth: &'a AuthClaims,
-    /// See [`ImportRequest::replace_identity`].
+    /// Allow the restore to replace a *different* identity this VTA already
+    /// runs as. Without it a backup whose DID differs from the running one is
+    /// refused — the guard against restoring the wrong file over a live agent.
+    /// Disaster recovery onto a freshly set-up VTA (which has minted a DID of
+    /// its own) is the case that needs it.
     pub replace_identity: bool,
 }
 
@@ -1106,10 +1110,6 @@ pub(crate) mod tests {
             .insert_raw("hardened:jwt_key", vec![1u8; 32])
             .await
             .unwrap();
-        ts.webvh_ks
-            .insert_raw("server-auth:srv", b"token".to_vec())
-            .await
-            .unwrap();
         ts.keys_ks
             .insert_raw("path_counter:m/1'", 3u32.to_le_bytes().to_vec())
             .await
@@ -1132,7 +1132,7 @@ pub(crate) mod tests {
             .flat_map(|d| d.rows.iter().map(|(k, _)| BASE64.decode(k).unwrap()))
             .collect();
         assert!(keys.iter().any(|k| k == b"path_counter:m/1'"));
-        for bound in [&b"tee:vta_did"[..], b"hardened:jwt_key", b"server-auth:srv"] {
+        for bound in [&b"tee:vta_did"[..], b"hardened:jwt_key"] {
             assert!(
                 !keys.iter().any(|k| k == bound),
                 "{} must not be exported",

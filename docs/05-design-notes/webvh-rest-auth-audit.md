@@ -1,5 +1,12 @@
 # WebVH daemon REST integration — robustness audit
 
+> **Superseded.** The REST client this audit covers (`webvh_client.rs`,
+> `webvh_auth.rs`, the `server-auth:` token cache and its per-server locks)
+> has been removed. The VTA reaches a DID hosting service only with Trust
+> Tasks (`vta-service/src/webvh_host.rs`), over TSP, DIDComm or HTTPS, with
+> every request signed by the VTA and every reply required to carry the
+> host's proof. Kept as a record of the findings.
+
 Status: 2026-05-15. Captures the audit performed during the
 `feat/webvh-rest-auth-hardened` branch (successor to PR #111).
 

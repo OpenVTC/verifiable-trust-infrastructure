@@ -417,6 +417,25 @@ pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> Trust
 /// `details` passes through [`bound_details`] exactly as in [`reject_with`],
 /// so this cannot become the construction site that skips the framework's
 /// size bound.
+/// Reject with a code the task's own specification declares
+/// (`<slug>:<local>`, SPEC §8.5), from its generated `error_codes`.
+#[cfg_attr(not(any(feature = "webvh", feature = "tee")), allow(dead_code))]
+pub(super) fn reject_declared(
+    doc: &TrustTask<Value>,
+    code: trust_tasks_rs::DeclaredErrorCode,
+    message: impl Into<String>,
+) -> TrustTaskOutcome {
+    reject_with_code(
+        doc,
+        TrustTaskCode::Extended {
+            slug: code.namespace().to_string(),
+            local: code.local().to_string(),
+        },
+        message,
+        None,
+    )
+}
+
 pub(super) fn reject_with_code(
     doc: &TrustTask<Value>,
     code: TrustTaskCode,

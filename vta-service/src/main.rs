@@ -798,7 +798,7 @@ enum WebvhCommands {
         /// Server identifier
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a WebVHHostingService endpoint)
+        /// Server DID (must resolve to a DID document the VTA can reach it through: TSPTransport, DIDCommMessaging, TrustTaskHTTPS, or WebVHHosting at an https:// origin)
         #[arg(long)]
         did: String,
         /// Human-readable label
@@ -980,8 +980,9 @@ enum DidMgmtServerCommands {
         /// Server identifier.
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a
-        /// WebVHHostingService endpoint).
+        /// Server DID (must resolve to a DID document the VTA can reach it
+        /// through: TSPTransport, DIDCommMessaging, TrustTaskHTTPS, or
+        /// WebVHHosting at an https:// origin).
         #[arg(long)]
         did: String,
         /// Human-readable label.

@@ -173,10 +173,8 @@ All routes except `/health` and `/auth/*` require a valid JWT bearer token (`Aut
 
 ### Backup & Restore
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/backup/export` | Export encrypted backup (Admin) |
-| `POST` | `/backup/import` | Import encrypted backup (Admin) |
+The `vta/backup/*` Trust Tasks (super-admin, TSP or DIDComm), with the bytes
+over `GET|POST /backup/blob/{id}`. See `docs/02-vta/backup-restore.md`.
 
 ### VTA Management
 

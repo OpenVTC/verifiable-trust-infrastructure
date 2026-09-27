@@ -37,8 +37,6 @@ use super::handlers;
 
 #[cfg(feature = "didcomm")]
 use vta_sdk::protocols;
-#[cfg(all(feature = "tee", feature = "didcomm"))]
-use vta_sdk::protocols::attestation_management;
 
 /// Trust-ping protocol identifiers (was the framework's `TRUST_PING_TYPE` /
 /// `TRUST_PONG_TYPE`). Re-declared locally now the framework is gone.
@@ -103,11 +101,6 @@ pub struct VtaState {
     /// Per-mediator TTL sweeper.
     #[cfg(feature = "webvh")]
     pub drain_sweeper: Arc<crate::messaging::drain_sweeper::DrainSweeper>,
-    /// Per-webvh-server async mutex registry. Mirrored from
-    /// `AppState` so DIDComm-transport handlers serialise the same
-    /// daemon-REST auth-cache reads as REST handlers.
-    #[cfg(feature = "webvh")]
-    pub webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks,
     /// Pluggable telemetry sink — driven by both REST and DIDComm
     /// transport handlers so `mediator report` is consistent
     /// regardless of which transport posted the inbound event.
@@ -177,7 +170,6 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
             config: state.config.clone(),
             did_resolver: state.did_resolver.clone(),
             didcomm_bridge: state.didcomm_bridge.clone(),
-            webvh_auth_locks: state.webvh_auth_locks.clone(),
         }
     }
 }
@@ -186,14 +178,11 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
 /// [`AppState`].
 ///
 /// `VtaState` is a strict subset of `AppState` — every field is a cheap clone
-/// of the corresponding `AppState` field (an `Arc`, a `KeyspaceHandle`, or the
-/// `Arc`-backed [`WebvhAuthLocks`]). Building it this way is what guarantees the
-/// REST front-end and the DIDComm router share the *same* config `RwLock`,
-/// `WebvhAuthLocks`, mediator registry, drain sweeper, and telemetry sink
-/// (P1.1): a `PATCH /config` on the REST side is visible to DIDComm handlers,
-/// and the per-server webvh auth-cache lock serialises across both transports.
-/// Constructing `VtaState` with a freshly-minted webvh auth-lock registry or a
-/// freshly-wrapped config lock was a live divergence bug — don't reintroduce
+/// of the corresponding `AppState` field (an `Arc` or a `KeyspaceHandle`).
+/// Building it this way is what guarantees the REST front-end and the DIDComm
+/// router share the *same* config `RwLock`, mediator registry, drain sweeper,
+/// and telemetry sink (P1.1): a `PATCH /config` on the REST side is visible to
+/// DIDComm handlers. Constructing `VtaState` with a freshly-wrapped config lock was a live divergence bug — don't reintroduce
 /// it; always derive from the canonical `AppState`.
 impl From<&AppState> for VtaState {
     fn from(state: &AppState) -> Self {
@@ -220,8 +209,6 @@ impl From<&AppState> for VtaState {
             mediator_registry: Arc::clone(&state.mediator_registry),
             #[cfg(feature = "webvh")]
             drain_sweeper: Arc::clone(&state.drain_sweeper),
-            #[cfg(feature = "webvh")]
-            webvh_auth_locks: state.webvh_auth_locks.clone(),
             telemetry: Arc::clone(&state.telemetry),
             seed_store: state.seed_store.clone(),
             config: Arc::clone(&state.config),
@@ -300,12 +287,9 @@ fn trust_ping_reply(msg: &Message, sender_did: Option<&str>) -> Option<DIDCommRe
 pub async fn dispatch(
     msg: Message,
     ctx: HandlerContext,
-    vta_state: Arc<VtaState>,
+    _vta_state: Arc<VtaState>,
     app_state: AppState,
 ) -> Option<DIDCommResponse> {
-    // Only the TEE attestation arms read the VTA state.
-    #[cfg(not(feature = "tee"))]
-    let _ = &vta_state;
     let t = msg.typ.clone();
     let t = t.as_str();
 
@@ -341,18 +325,10 @@ pub async fn dispatch(
     // through the envelope above like everything else; typed as itself it
     // falls to `handle_unknown`, which refuses it naming the envelope.
 
-    // ── TEE attestation (tee) ────────────────────────────────────────
-    #[cfg(feature = "tee")]
-    {
-        if t == attestation_management::GET_TEE_STATUS {
-            return finish(handlers::handle_tee_status(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == attestation_management::REQUEST_ATTESTATION {
-            return finish(
-                handlers::handle_request_attestation(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-    }
+    // The TEE attestation reads were bare `firstperson.network/vta/1.0/
+    // attestation/*` messages here, which nothing sent. They are
+    // `vta/attestation/*` Trust Tasks on the spine now, reached through the
+    // envelope above.
 
     // The `discovery/1.0/*` DIDComm protocol was routed here — unauthenticated
     // — until #1043 retired it with the task behind it. Capability discovery is

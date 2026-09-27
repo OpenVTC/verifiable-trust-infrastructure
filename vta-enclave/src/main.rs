@@ -417,7 +417,7 @@ async fn main() {
     // that reconciliation then overrode. The helper strips the JWT signing key and
     // `[secrets]`, so it stays secret-free and reproducible even though this runs
     // after secret injection. Both the boot anchor below and
-    // POST /attestation/config-report read `effective_config_digest`; the report
+    // `vta/attestation/config-report` read `effective_config_digest`; the report
     // also returns `effective_config_view` (the exact bytes hashed) so a verifier
     // can authenticate the config without re-deriving the enclave-generated DID.
     match config.capture_effective_config_attestation() {
@@ -455,7 +455,7 @@ async fn main() {
         // it — the log flows over the vsock-log channel to the (untrusted)
         // parent, which can withhold it, and the empty nonce gives no freshness.
         // The on-demand, nonce-bound pull path that completes the verifier story
-        // now exists: `POST /attestation/config-report` returns the current
+        // now exists: ``vta/attestation/config-report`` returns the current
         // digest bound to a caller-supplied nonce (see
         // `vta_service::operations::attestation::generate_config_attestation` and
         // the "config-report" section of README). This anchor is retained as a

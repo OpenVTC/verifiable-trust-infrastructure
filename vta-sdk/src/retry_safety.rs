@@ -176,6 +176,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_SERVICES_GET_1_0, ReadOnly),
     (trust_tasks::TASK_SERVICES_ENABLE_1_0, Keyed),
     (trust_tasks::TASK_SERVICES_UPDATE_1_0, Keyed),
+    (trust_tasks::TASK_SERVICES_UPDATE_1_1, Keyed),
+    (trust_tasks::TASK_SERVICES_REPORT_0_1, ReadOnly),
     // Disable schedules a drain, and a repeat inside the window would restart
     // it — extending the life of a mediator the operator is decommissioning.
     (trust_tasks::TASK_SERVICES_DISABLE_1_0, Keyed),
@@ -426,8 +428,11 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // bytes before any arrive, so a repeat stores nothing new (`stored: false`).
     (trust_tasks::TASK_BACKUP_PUT_CHUNK_1_0, RetrySafe),
     // ── Attestation ─────────────────────────────────────────────────────
-    (trust_tasks::TASK_ATTESTATION_STATUS_1_0, ReadOnly),
-    (trust_tasks::TASK_ATTESTATION_REPORT_1_0, ReadOnly),
+    (trust_tasks::TASK_ATTESTATION_STATUS_0_1, ReadOnly),
+    // A fresh quote per request, but no state changes: a repeat with the same
+    // nonce yields equivalent evidence for the same verifier.
+    (trust_tasks::TASK_ATTESTATION_REPORT_0_1, ReadOnly),
+    (trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1, ReadOnly),
     // One-time: a repeat is refused once the entropy is gone, and the reply is
     // the (sealed) root mnemonic, which never sits in the dedup store.
     (

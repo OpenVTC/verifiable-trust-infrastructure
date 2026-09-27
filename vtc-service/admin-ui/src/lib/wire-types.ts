@@ -226,3 +226,4 @@ export type GitNsActivityItem = Schemas["GitNsActivityItem"];
 export type GitNsBreakGlassMark = Schemas["GitNsBreakGlassMark"];
 export type GitNsBreakGlassItem = Schemas["GitNsBreakGlassItem"];
 export type GitNsBreakGlassList = Schemas["GitNsBreakGlassList"];
+

@@ -27,6 +27,16 @@
 // `/admin/step-up#request=<base64url(JSON)>`; that page (`StepUpPage`) runs
 // step 2 here, and `cnm` then re-sends its document. The request travels in
 // the fragment, which browsers never send to a server.
+//
+// ## Every answer is signed by the approver
+//
+// The approve-response is the approver's attestation, so it always carries
+// their `assertionMethod` proof; the passkey is in addition to it, never
+// instead (approve-response 0.5). A console user's browser signs with its
+// console key. A member who is no console user answers with a step-up
+// passkey and has no key here, so this page does the ceremony and shows an
+// **answer code** — the assertion — which `cnm` signs into the
+// approve-response with the member's own key.
 
 import { postSignedTrustTask } from "./api";
 import {
@@ -118,18 +128,15 @@ export interface ApproveAck {
 }
 
 /**
- * Run the passkey ceremony `req` asks for and send the approve-response.
+ * Run the passkey ceremony `req` asks for and return the assertion.
  *
- * Resolves once the VTC has **recorded** the gesture against the operation;
- * throws if it rejected it, or if the browser returned no credential. The
- * approve-response is itself a signed document from this browser's console
- * key; the WebAuthn assertion inside it is the gate, and the VTC checks that
- * it came from a passkey registered to `req.subject`.
+ * Throws if the request cannot be answered here, or the browser returned no
+ * credential.
  */
-export async function answerStepUp(
+export async function runStepUpCeremony(
   req: StepUpRequest,
   credentials: Pick<CredentialsContainer, "get"> = navigator.credentials,
-): Promise<ApproveAck> {
+): Promise<PublicKeyCredential> {
   if (!answerableHere(req)) {
     throw new Error("the VTC asked for a step-up this console cannot answer with a passkey");
   }
@@ -146,7 +153,25 @@ export async function answerStepUp(
   }) as PublicKeyCredentialRequestOptions;
   const credential = (await credentials.get({ publicKey })) as PublicKeyCredential | null;
   if (!credential) throw new Error("the passkey ceremony returned no credential");
+  return credential;
+}
 
+/**
+ * Run the passkey ceremony `req` asks for and send the approve-response,
+ * signed by this browser's console key.
+ *
+ * Resolves once the VTC has **recorded** the gesture against the operation;
+ * throws if it rejected it, if the browser returned no credential, or —
+ * `SigningUnavailableError` — if this browser holds no console key (then use
+ * [`runStepUpCeremony`] and [`answerCodeOf`], and let `cnm` sign). The
+ * WebAuthn assertion inside is the second gate; the VTC checks that it came
+ * from a passkey of `req.subject`'s and that the proof is theirs too.
+ */
+export async function answerStepUp(
+  req: StepUpRequest,
+  credentials: Pick<CredentialsContainer, "get"> = navigator.credentials,
+): Promise<ApproveAck> {
+  const credential = await runStepUpCeremony(req, credentials);
   const payload: Record<string, unknown> = {
     subject: req.subject,
     challenge: req.challenge,
@@ -163,4 +188,34 @@ export async function answerStepUp(
     );
   }
   return ack;
+}
+
+/** The prefix `cnm` reads an answer code by. */
+export const ANSWER_CODE_PREFIX = "sua1.";
+
+/**
+ * The assertion as an **answer code** for `cnm` to sign into the
+ * approve-response: `sua1.<rawId>.<authenticatorData>.<clientDataJSON>.<signature>[.<userHandle>]`,
+ * each part base64url. One unwrapped line, short enough for a terminal to
+ * read back (macOS reads at most 1024 bytes a line from a tty). It is useless
+ * without the member's signature, and good for one challenge only.
+ */
+export function answerCodeOf(credential: PublicKeyCredential): string {
+  const a = serializeAssertion(credential) as {
+    rawId: string;
+    response: {
+      authenticatorData: string;
+      clientDataJSON: string;
+      signature: string;
+      userHandle: string | null;
+    };
+  };
+  const parts = [
+    a.rawId,
+    a.response.authenticatorData,
+    a.response.clientDataJSON,
+    a.response.signature,
+  ];
+  if (a.response.userHandle) parts.push(a.response.userHandle);
+  return ANSWER_CODE_PREFIX + parts.join(".");
 }

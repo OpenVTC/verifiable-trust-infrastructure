@@ -16,8 +16,7 @@
 use chrono::Utc;
 use vta_sdk::protocols::auth::TokenBundle;
 use vta_sdk::protocols::backup_management::types::{
-    BackupConfig, BackupEnvelope, BackupPayload, EncryptionParams, ExportRequest, ImportRequest,
-    ImportedSecretBackup, KdfParams, KeyspaceDump, SeedRecordBackup,
+    BackupConfig, BackupPayload, ImportedSecretBackup, KeyspaceDump, SeedRecordBackup,
 };
 use vta_sdk::protocols::did_management::create::CreateDidWebvhResultBody;
 use vta_sdk::protocols::key_management::create::CreateKeyBody;
@@ -115,47 +114,6 @@ fn rotate_seed_body_debug_redacts_mnemonic() {
     };
     assert_redacted(&body, "RotateSeedBody");
     assert_serializes_marker(&body, "RotateSeedBody");
-}
-
-#[test]
-fn export_request_debug_redacts_password() {
-    let req = ExportRequest {
-        password: MARKER.into(),
-        include_audit: true,
-    };
-    assert_redacted(&req, "ExportRequest");
-    assert_serializes_marker(&req, "ExportRequest");
-}
-
-#[test]
-fn import_request_debug_redacts_password() {
-    let req = ImportRequest {
-        backup: BackupEnvelope {
-            version: 1,
-            format: "vta-backup-v1".into(),
-            created_at: Utc::now(),
-            source_did: None,
-            source_version: "0.0.0".into(),
-            kdf: KdfParams {
-                algorithm: "argon2id".into(),
-                salt: "AA".into(),
-                m_cost: 65536,
-                t_cost: 3,
-                p_cost: 4,
-            },
-            encryption: EncryptionParams {
-                algorithm: "aes-256-gcm".into(),
-                nonce: "AA".into(),
-            },
-            includes_audit: false,
-            ciphertext: "AA".into(),
-        },
-        password: MARKER.into(),
-        confirm: false,
-        replace_identity: false,
-    };
-    assert_redacted(&req, "ImportRequest");
-    assert_serializes_marker(&req, "ImportRequest");
 }
 
 #[test]

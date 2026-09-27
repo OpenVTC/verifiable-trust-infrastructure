@@ -50,7 +50,6 @@ AppState
   sessions_ks      KeyspaceHandle                         "sessions" partition
   acl_ks           KeyspaceHandle                         "acl" partition
   contexts_ks      KeyspaceHandle                         "contexts" partition
-  cache_ks         KeyspaceHandle                         "cache" partition
   config           Arc<RwLock<AppConfig>>                 runtime-mutable config
   seed_store       Arc<dyn SeedStore>                     master-seed backend (keyring, KMS, …)
   did_resolver     Option<DIDCacheClient>                 DID resolution (None before setup)
@@ -121,7 +120,6 @@ vta-service/src/
     keys.rs        Key CRUD + signing oracle
     contexts.rs    Context CRUD
     acl.rs         ACL CRUD
-    cache.rs       Token cache (GET/PUT/DELETE)
     bootstrap.rs   Sealed-transfer + provision-integration endpoints
 ```
 
@@ -164,14 +162,6 @@ vta-service/src/
 | GET | /keys/{key_id}/secret | Admin | Export private key material |
 | POST | /keys/{key_id}/sign | Auth | Sign payload (signing oracle) |
 
-### Cache
-
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | /cache/{key} | Auth | Retrieve cached value |
-| PUT | /cache/{key} | Auth | Store value with TTL |
-| DELETE | /cache/{key} | Auth | Delete cached value |
-
 ### Contexts
 
 | Method | Path | Auth | Purpose |
@@ -200,17 +190,15 @@ vta-service/src/
 
 ### Backup
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | /backup/export | Admin | Export encrypted backup |
-| POST | /backup/import | Admin | Import encrypted backup |
+A backup is the `vta/backup/*` Trust Tasks (super-admin, over TSP or DIDComm)
+plus `GET|POST /backup/blob/{id}` for the bytes. There is no inline
+export/import route.
 
 ### Bootstrap
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | /bootstrap/request | None (rate-limited) | TEE Mode B sealed first-boot |
-| POST | /bootstrap/provision-integration | Admin | Template-driven integration bootstrap |
 | GET | /did/{did}/log | None (rate-limited) | Public webvh `did.jsonl` retrieval |
 
 Auth levels: **Auth** = any valid JWT, **Manage** = Admin or
@@ -230,7 +218,6 @@ All data lives in fjall keyspaces:
 | acl | `acl:{did}` | AclEntry (JSON) |
 | contexts | `ctx:{id}` | ContextRecord (JSON) |
 | contexts | `ctx_counter` | u32 (LE bytes) |
-| cache | `cache:{did}:{key}` | CacheEntry (JSON) |
 
 In TEE deployments the `Store` enum dispatches transparently to a
 `VsockStore` running on the parent EC2 instance instead of a local

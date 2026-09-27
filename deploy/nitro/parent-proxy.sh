@@ -210,7 +210,7 @@ echo "  [4] OUTBOUND HTTPS:    vsock:${VSOCK_HTTPS_PORT} → allowlisted endpoin
 echo ""
 echo "  Test:"
 echo "    curl http://localhost:${LISTEN_PORT}/health"
-echo "    curl http://localhost:${LISTEN_PORT}/attestation/status"
+echo "    curl http://localhost:${LISTEN_PORT}/health"
 echo ""
 
 # ---------------------------------------------------------------------------

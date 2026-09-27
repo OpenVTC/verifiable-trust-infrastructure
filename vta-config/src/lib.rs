@@ -91,6 +91,24 @@ pub struct PolicyConfig {
     pub require_consent: (),
 }
 
+/// Reject `tee.embed_in_did` with what replaced it. Reaching this function is
+/// the error: `#[serde(default)]` covers the key's absence.
+#[cfg(feature = "tee")]
+fn refuse_retired_embed_in_did<'de, D>(_: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Err(serde::de::Error::custom(RETIRED_EMBED_IN_DID))
+}
+
+#[cfg(feature = "tee")]
+const RETIRED_EMBED_IN_DID: &str = "`tee.embed_in_did` has been retired. It added a `TeeAttestation` \
+     service to the VTA's DID document pointing at the REST route `/attestation/report`, which \
+     no longer exists: attestation is the `vta/attestation/{status,report,config-report}` Trust \
+     Tasks, reached over the transports the DID document already advertises, and a verifier \
+     learns a VTA is attested from `vta/attestation/status` or `trust-task-discovery`. Delete \
+     the key (or unset VTA_TEE_EMBED_IN_DID).";
+
 /// Reject `[[policy.require_consent]]` with the migration the operator needs.
 ///
 /// Only ever called when the key is present — `#[serde(default)]` covers its
@@ -536,9 +554,22 @@ pub struct TeeConfig {
     /// Enforcement mode: required, optional, disabled, simulated.
     #[serde(default)]
     pub mode: TeeMode,
-    /// Whether to embed attestation info as a DID document service.
-    #[serde(default)]
-    pub embed_in_did: bool,
+    /// Retired: `tee.embed_in_did`.
+    ///
+    /// Present only to **refuse** a config that still sets it. It added a
+    /// `TeeAttestation` service to the VTA's DID document pointing at the REST
+    /// route `/attestation/report`, which is gone: attestation is the
+    /// `vta/attestation/*` Trust Tasks, reached over the transports the
+    /// document already advertises. Ignoring the key would leave an operator
+    /// believing the document still says something it no longer does.
+    ///
+    /// Absent (the only accepted state) deserializes to `()` via `default`.
+    #[serde(
+        default,
+        deserialize_with = "refuse_retired_embed_in_did",
+        skip_serializing
+    )]
+    pub embed_in_did: (),
     /// Attestation report cache TTL in seconds (generation is expensive).
     #[serde(default = "default_attestation_cache_ttl")]
     pub attestation_cache_ttl: u64,
@@ -809,7 +840,7 @@ impl Default for TeeConfig {
     fn default() -> Self {
         Self {
             mode: TeeMode::default(),
-            embed_in_did: false,
+            embed_in_did: (),
             attestation_cache_ttl: default_attestation_cache_ttl(),
             kms: None,
             storage_key_salt: default_storage_key_salt(),
@@ -1254,10 +1285,8 @@ impl AppConfig {
                     }
                 };
             }
-            if let Ok(val) = std::env::var("VTA_TEE_EMBED_IN_DID") {
-                config.tee.embed_in_did = val
-                    .parse()
-                    .map_err(|e| AppError::Config(format!("invalid VTA_TEE_EMBED_IN_DID: {e}")))?;
+            if std::env::var_os("VTA_TEE_EMBED_IN_DID").is_some() {
+                return Err(AppError::Config(RETIRED_EMBED_IN_DID.into()));
             }
             if let Ok(val) = std::env::var("VTA_TEE_ATTESTATION_CACHE_TTL") {
                 config.tee.attestation_cache_ttl = val.parse().map_err(|e| {
@@ -1382,6 +1411,19 @@ mod validate_tests {
         let err = toml::from_str::<AppConfig>("[server]\ntrust_xff = true\n")
             .expect_err("retired trust_xff key must be rejected");
         assert!(format!("{err}").contains("trust_xff_cidrs"), "{err}");
+    }
+
+    /// `tee.embed_in_did` is refused, not ignored: the `TeeAttestation` service
+    /// it added pointed at a REST route that no longer exists, and an operator
+    /// who kept the key would believe the DID document still said something.
+    #[cfg(feature = "tee")]
+    #[test]
+    fn retired_embed_in_did_is_refused() {
+        let err = toml::from_str::<AppConfig>("[tee]\nembed_in_did = true\n")
+            .expect_err("retired embed_in_did key must be rejected");
+        assert!(format!("{err}").contains("vta/attestation"), "{err}");
+        // Absent is the one accepted state.
+        cfg("[tee]\nmode = \"simulated\"\n");
     }
 
     #[test]

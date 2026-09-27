@@ -87,12 +87,23 @@ storage, and signed enclave images.
 > > the enclave returned — in particular that `tee.kms.key_arn` is the tenant's own
 > > key, not one the parent controls.
 >
-> Use **`POST /attestation/config-report`** with a fresh caller nonce:
+> Ask for **`vta/attestation/config-report/0.1`** with a fresh nonce of your own.
+> It is a public Trust Task: no session, no ACL entry, no request proof — over
+> TSP, DIDComm, or anonymously over HTTPS as here. The VTA requires `issuedAt`
+> and `recipient` on every document.
 >
 > ```bash
-> curl -s https://<vta>/attestation/config-report \
->   -H 'content-type: application/json' -d '{"nonce":"<hex>"}'
-> # → { configDigestSha384, configView (base64), nonce, teeType,
+> VTA_DID='<the VTA DID>'
+> NONCE=$(openssl rand -hex 32)   # keep it: the evidence must bind exactly this
+> curl -s https://<vta>/trust-tasks -H 'content-type: application/json' -d "{
+>   \"id\": \"urn:uuid:$(uuidgen | tr 'A-Z' 'a-z')\",
+>   \"type\": \"https://trusttasks.org/spec/vta/attestation/config-report/0.1\",
+>   \"recipient\": \"$VTA_DID\",
+>   \"issuedAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+>   \"payload\": { \"nonce\": \"$NONCE\" }
+> }"
+> # → the VTA's signed `…/config-report/0.1#response`; its payload is
+> #   { configDigestSha384, configView (base64), nonce, teeType,
 > #     evidence (base64 COSE_Sign1), generatedAt }
 > ```
 >
@@ -561,8 +572,8 @@ docker build -f Dockerfile.nitro \
 | Available on REST | Available on DIDComm |
 |---|---|
 | `GET /health` | Key management (create, list, get, revoke, secrets) |
-| `GET,POST /attestation/report` | ACL management (CRUD) |
-| `GET /attestation/status` | Config management |
+| `POST /trust-tasks` — the public `vta/attestation/*` reads | ACL management (CRUD) |
+| | Config management |
 | `POST /auth/challenge` | Credential generation |
 | `POST /auth/` | Context management |
 | `POST /auth/refresh` | Seed rotation |
@@ -1373,13 +1384,17 @@ No mnemonic export is possible on subsequent boots (no entropy exists).
 curl http://localhost:8443/health
 # → {"status":"ok","version":"0.1.2","tee_status":{"tee_type":"nitro","detected":true}}
 
-# TEE attestation
-curl http://localhost:8443/attestation/status
-
-# Fresh attestation report
-curl -X POST http://localhost:8443/attestation/report \
-    -H 'Content-Type: application/json' \
-    -d '{"nonce":"deadbeef0123456789abcdef01234567"}'
+# TEE attestation and a fresh report are public Trust Tasks on /trust-tasks
+# (vta/attestation/status/0.1, vta/attestation/report/0.1). The report binds a
+# 32-byte nonce of your own; the VTA requires issuedAt and recipient.
+VTA_DID='<the VTA DID>'
+curl -s -X POST http://localhost:8443/trust-tasks -H 'Content-Type: application/json' -d "{
+  \"id\": \"urn:uuid:$(uuidgen | tr 'A-Z' 'a-z')\",
+  \"type\": \"https://trusttasks.org/spec/vta/attestation/report/0.1\",
+  \"recipient\": \"$VTA_DID\",
+  \"issuedAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+  \"payload\": { \"nonce\": \"$(openssl rand -hex 32)\" }
+}"
 ```
 
 ## Troubleshooting
@@ -1546,7 +1561,6 @@ nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512 --enclave-ci
 
 # 5. Verify the new image works
 curl http://localhost:8443/health
-curl http://localhost:8443/attestation/status
 
 # 6. Lock down: remove the old PCR0 from the policy
 ./deploy/nitro/setup-kms-policy.sh \

@@ -16,7 +16,6 @@ pub mod audit;
 /// `descriptor_deps_from_app_state` below), and the deployment glue — how a
 /// restored seed is committed — in `crate::restore`.
 pub use vta_backup::ops as backup;
-pub mod cache;
 pub mod config;
 pub mod contexts;
 pub mod credential_exchange;

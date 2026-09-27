@@ -1220,6 +1220,16 @@ select {
  * apart before either is read. Severity is the daemon's own `Severity`, never
  * inferred from the wording. */
 
+/* A step-up answer code, or an invite command, for pasting into a terminal:
+   one unbroken token, so it wraps anywhere rather than overflowing. */
+.answer-code {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  word-break: break-all;
+  resize: none;
+}
+
 .finding-list {
   list-style: none;
   margin: 0;

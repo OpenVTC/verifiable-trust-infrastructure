@@ -38,108 +38,68 @@ Both are exposed via three surfaces: REST, DIDComm, and `vta-sdk`'s
 - **`rotate-keys`** is the explicit "rotate everything" entry point.
   Same effective state as `update` with a freshly rebuilt doc.
 
-## REST
+## Trust Tasks
 
-### Update
+Both operations are Trust Tasks keyed on the DID, reached the same way over
+TSP, DIDComm or HTTPS (`POST /trust-tasks`):
 
-```http
-POST /contexts/{ctx_id}/dids/{scid}/update
-Authorization: Bearer <admin token for ctx_id>
-Content-Type: application/json
-```
+- `https://trusttasks.org/spec/vta/webvh/dids/update/1.0`
+- `https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0`
+- `https://trusttasks.org/spec/vta/webvh/dids/realign-keys/1.0` — the repair
+  that renames a DID's key records onto the verification-method ids its
+  published document declares (`dryRun` returns the plan without writing).
 
-Body:
+The earlier `POST /contexts/{ctx_id}/dids/{scid}/{update,rotate-keys}` and
+`POST /webvh/dids/{did}/realign-keys` routes, and the `did-management/1.0`
+`update-did-webvh` / `rotate-did-webvh-keys` messages, are removed.
 
-```json
-{
-  "document":           { "id": "did:webvh:...", "@context": [...], ... } | null,
-  "pre_rotation_count": 2 | null,
-  "witnesses":          { "threshold": 1, "witnesses": [{ "id": "z6Mk..." }] } | null,
-  "watchers":           ["https://watcher.example.com"] | null,
-  "ttl":                3600 | null,
-  "label":              "rotate after audit" | null,
-  "expectedVersionId":  "2-zMk..." | null
-}
-```
-
-Response `200`:
+### Update payload
 
 ```json
 {
-  "did":                       "did:webvh:Q.../host:slug",
-  "new_version_id":            "3-zMk...",
-  "new_scid":                  "Q...",
-  "new_log_entry":             "{\"versionId\":\"3-...\",...}",
-  "update_keys_count":         1,
-  "pre_rotation_key_count":    2
+  "did":                "did:webvh:Q...:host:slug",
+  "document":           { "id": "did:webvh:...", "@context": [...], ... },
+  "preRotationCount":   2,
+  "witnesses":          { "threshold": 1, "witnesses": [{ "id": "z6Mk..." }] },
+  "watchers":           ["https://watcher.example.com"],
+  "ttl":                3600,
+  "label":              "rotate after audit",
+  "expectedVersionId":  "2-zMk..."
 }
 ```
 
-Error mapping:
+Every member but `did` is optional.
 
-| Status | Cause |
-|---|---|
-| 400 | Invalid document (id mismatch / missing required fields), invalid witness DID, invalid watcher URL |
-| 404 | Unknown SCID OR caller is not admin in the DID's context (collapsed for cross-context privacy) |
-| 409 | Optimistic-concurrency mismatch — DID was updated by another caller between load and write; retry |
-| 500 | Library error, persistence error, publish error |
-
-### Rotate keys
-
-```http
-POST /contexts/{ctx_id}/dids/{scid}/rotate-keys
-Authorization: Bearer <admin token for ctx_id>
-Content-Type: application/json
-```
-
-Body:
+### Rotate-keys payload
 
 ```json
 {
-  "pre_rotation_count": 2 | null,
-  "label":              "scheduled key rotation" | null
+  "did":              "did:webvh:Q...:host:slug",
+  "preRotationCount": 2,
+  "label":            "scheduled key rotation"
 }
 ```
 
-Response: same `UpdateDidWebvhResultBody` shape as the update endpoint.
+### Response
 
-### `curl` example
-
-```bash
-# Update — toggle pre-rotation off
-curl -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"pre_rotation_count": 0}' \
-  https://vta.example.com/contexts/primary/dids/Q.../update
-
-# Rotate keys
-curl -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"label": "Q3 scheduled rotation"}' \
-  https://vta.example.com/contexts/primary/dids/Q.../rotate-keys
-```
-
-## DIDComm
-
-Two new message types extend `https://firstperson.network/protocols/did-management/1.0`:
-
-- `update-did-webvh` / `update-did-webvh-result`
-- `rotate-did-webvh-keys` / `rotate-did-webvh-keys-result`
-
-Body shape (envelope wrapping the same fields as the REST body):
+Both answer the same body:
 
 ```json
 {
-  "context_id": "primary",
-  "scid":       "Q...",
-  "body":       { ... UpdateDidWebvhBody ... }
+  "did":                 "did:webvh:Q...:host:slug",
+  "newVersionId":        "3-zMk...",
+  "newScid":             "Q...",
+  "newLogEntry":         "{\"versionId\":\"3-...\",...}",
+  "updateKeysCount":     1,
+  "preRotationKeyCount": 2
 }
 ```
 
-Result body identical to REST. Errors surface as `problem-report` with
-the same semantic mapping as the HTTP status codes above.
+Refusals: `malformedRequest` for an invalid document (id mismatch, missing
+required fields), witness DID or watcher URL; `taskFailed` with
+`details.reason` `not_found` for an unknown DID or one outside the caller's
+context (collapsed for cross-context privacy), and with `conflict` when
+`expectedVersionId` no longer matches, so retry against the new head.
 
 ## SDK
 
@@ -150,9 +110,8 @@ use vta_sdk::protocols::did_management::update::{
 };
 
 // Update
-let result = client.update_did_webvh(
-    "primary",
-    "Q...",
+let result = client.update_did_webvh_by_did(
+    "did:webvh:Q...:host:slug",
     UpdateDidWebvhBody {
         pre_rotation_count: Some(0),
         ..Default::default()
@@ -160,9 +119,8 @@ let result = client.update_did_webvh(
 ).await?;
 
 // Rotate keys
-let result = client.rotate_did_webvh_keys(
-    "primary",
-    "Q...",
+let result = client.rotate_did_webvh_keys_by_did(
+    "did:webvh:Q...:host:slug",
     RotateDidWebvhKeysBody {
         label: Some("scheduled".into()),
         ..Default::default()

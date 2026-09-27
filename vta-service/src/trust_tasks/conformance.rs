@@ -3065,6 +3065,56 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ));
     }
 
+    // ─── vta/attestation/{status,report,config-report} (public, tee-gated) ─
+    //
+    // The handlers build each response through the generated type; these pin
+    // that the shapes they emit — the registry's `sev-snp` spelling, RFC 3339
+    // `generatedAt`, the 64-hex nonce — are the published ones.
+    #[cfg(feature = "tee")]
+    {
+        let nonce = "8f14e45fceea167a5a36dedd4bea2543a1f0b1c2d3e4f5a6b7c8d9e0f1a2b3c4";
+        t.push((
+            uris::TASK_ATTESTATION_STATUS_0_1,
+            checked!(
+                specs::vta::attestation::status::v0_1::Payload,
+                specs::vta::attestation::status::v0_1::Response,
+                json!({}),
+                json!({ "teeType": "sev-snp", "detected": true, "platformVersion": "3" })
+            ),
+        ));
+        t.push((
+            uris::TASK_ATTESTATION_REPORT_0_1,
+            checked!(
+                specs::vta::attestation::report::v0_1::Payload,
+                specs::vta::attestation::report::v0_1::Response,
+                json!({ "nonce": nonce }),
+                json!({
+                    "teeType": "nitro",
+                    "evidence": "hEShATgioFkRXqlpbW9kdWxlX2lk",
+                    "nonce": nonce,
+                    "vtaDid": "did:webvh:QmExampleScid:vta.example.com",
+                    "generatedAt": "2026-09-26T12:00:00Z",
+                })
+            ),
+        ));
+        t.push((
+            uris::TASK_ATTESTATION_CONFIG_REPORT_0_1,
+            checked!(
+                specs::vta::attestation::config_report::v0_1::Payload,
+                specs::vta::attestation::config_report::v0_1::Response,
+                json!({ "nonce": nonce }),
+                json!({
+                    "configDigestSha384": "OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb",
+                    "configView": "eyJ0ZWUiOnt9fQ==",
+                    "nonce": nonce,
+                    "teeType": "nitro",
+                    "evidence": "hEShATgioFkRXqlpbW9kdWxlX2lk",
+                    "generatedAt": "2026-09-26T12:00:00Z",
+                })
+            ),
+        ));
+    }
+
     // ─── vta/webvh/dids/update (webvh-gated like its dispatch arm) ─
     #[cfg(feature = "webvh")]
     {
@@ -4581,7 +4631,7 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
         // Typed explicitly: without it the array literal takes its element type
         // from the first entry, and each `parses::<T>` is a distinct fn item
         // rather than the `ParseFn` pointer the alias expects.
-        let services: [(&'static str, ReqParts, RespParts); 8] = [
+        let services: [(&'static str, ReqParts, RespParts); 10] = [
             (
                 uris::TASK_SERVICES_LIST_1_0,
                 (
@@ -4678,6 +4728,37 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                 (
                     json!({ "mediatorDid": "did:web:old-mediator.example" }),
                     parses::<svc::drain::cancel::v1_0::Response>,
+                ),
+            ),
+            (
+                // 1.1 adds the mediator drain window: a DIDComm replacement
+                // held open two days for correspondents on the old route.
+                uris::TASK_SERVICES_UPDATE_1_1,
+                (
+                    json!({ "service": "didcomm", "config": { "mediatorDid": "did:web:mediator.example" },
+                            "drainTtlSecs": 172_800 }),
+                    parses::<svc::update::v1_1::Payload>,
+                    validates::<svc::update::v1_1::Payload>,
+                ),
+                (
+                    json!({ "result": mutation_result() }),
+                    parses::<svc::update::v1_1::Response>,
+                ),
+            ),
+            (
+                uris::TASK_SERVICES_REPORT_0_1,
+                (
+                    json!({ "since": "2026-09-19T00:00:00Z" }),
+                    parses::<svc::report::v0_1::Payload>,
+                    validates::<svc::report::v0_1::Payload>,
+                ),
+                (
+                    json!({ "since": "2026-09-19T00:00:00Z", "until": "2026-09-26T12:00:00Z",
+                            "mediators": [{ "mediatorDid": "did:web:old-mediator.example", "inboundCount": 3,
+                                            "firstSeen": "2026-09-19T08:00:00Z", "lastSeen": "2026-09-24T17:40:00Z" }],
+                            "senders": [{ "senderDid": "did:key:z6MkLagging", "lastSeenMediator": "did:web:old-mediator.example",
+                                          "lastSeenAt": "2026-09-24T17:40:00Z" }] }),
+                    parses::<svc::report::v0_1::Response>,
                 ),
             ),
         ];
