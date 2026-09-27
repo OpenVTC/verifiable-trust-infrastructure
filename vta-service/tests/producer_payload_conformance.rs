@@ -299,6 +299,146 @@ async fn every_optional_argument_unset_still_builds_a_conforming_payload() {
         })
         .await,
     );
+
+    // ── services (vta/services/*) ────────────────────────────────────
+    //
+    // These were bespoke REST routes until the SDK moved onto the Trust Tasks;
+    // each builds its `config` by hand and inserts `drainTtlSecs` only when
+    // asked, which is exactly the shape this census exists for.
+    use vta_sdk::protocol::services as svc;
+    use vta_sdk::protocol::{
+        DisableDidcommRequest, DrainCancelRequest, EnableDidcommRequest, UpdateDidcommRequest,
+    };
+    let mediator = "did:web:mediator.example.com";
+    let url = "https://vta.example.com";
+    assert_conforms(&captured(|c| async move { drop(c.list_services().await) }).await);
+    assert_conforms(&captured(|c| async move { drop(c.didcomm_status().await) }).await);
+    assert_conforms(&captured(|c| async move { drop(c.list_drain().await) }).await);
+    assert_conforms(&captured(|c| async move { drop(c.mediator_report(None, None).await) }).await);
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.mediator_report(Some("2026-09-01T00:00:00Z"), Some("2026-09-02T00:00:00Z"))
+                    .await,
+            )
+        })
+        .await,
+    );
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.drain_cancel(DrainCancelRequest {
+                    mediator_did: mediator.into(),
+                })
+                .await,
+            )
+        })
+        .await,
+    );
+    assert_conforms(
+        &captured(
+            |c| async move { drop(c.enable_didcomm(EnableDidcommRequest::new(mediator)).await) },
+        )
+        .await,
+    );
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.enable_didcomm(
+                    EnableDidcommRequest::new(mediator)
+                        .force(true)
+                        .handshake_timeout_secs(5),
+                )
+                .await,
+            )
+        })
+        .await,
+    );
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.update_didcomm(UpdateDidcommRequest::new(mediator, 7200))
+                    .await,
+            )
+        })
+        .await,
+    );
+    assert_conforms(
+        &captured(
+            |c| async move { drop(c.disable_didcomm(DisableDidcommRequest::new(3600)).await) },
+        )
+        .await,
+    );
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.enable_rest(svc::EnableRestRequest { url: url.into() })
+                    .await,
+            )
+        })
+        .await,
+    );
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.update_rest(svc::UpdateRestRequest { url: url.into() })
+                    .await,
+            )
+        })
+        .await,
+    );
+    assert_conforms(
+        &captured(|c| async move { drop(c.disable_rest(svc::DisableRestRequest {}).await) }).await,
+    );
+    assert_conforms(
+        &captured(|c| async move { drop(c.rollback_rest(svc::RollbackRestRequest {}).await) })
+            .await,
+    );
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.enable_tsp(svc::EnableTspRequest {
+                    mediator_did: mediator.into(),
+                })
+                .await,
+            )
+        })
+        .await,
+    );
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.update_tsp(svc::UpdateTspRequest {
+                    mediator_did: mediator.into(),
+                })
+                .await,
+            )
+        })
+        .await,
+    );
+    assert_conforms(
+        &captured(|c| async move { drop(c.disable_tsp(svc::DisableTspRequest {}).await) }).await,
+    );
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.enable_webauthn(svc::EnableWebauthnRequest { url: url.into() })
+                    .await,
+            )
+        })
+        .await,
+    );
+    assert_conforms(
+        &captured(|c| async move {
+            drop(
+                c.rollback_didcomm(svc::RollbackDidcommRequest {
+                    drain_ttl_secs: None,
+                })
+                .await,
+            )
+        })
+        .await,
+    );
 }
 
 /// An [`UNPUBLISHED`] entry names a task that really has no schema *today*.

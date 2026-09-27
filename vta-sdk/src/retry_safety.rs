@@ -176,6 +176,8 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_SERVICES_GET_1_0, ReadOnly),
     (trust_tasks::TASK_SERVICES_ENABLE_1_0, Keyed),
     (trust_tasks::TASK_SERVICES_UPDATE_1_0, Keyed),
+    (trust_tasks::TASK_SERVICES_UPDATE_1_1, Keyed),
+    (trust_tasks::TASK_SERVICES_REPORT_0_1, ReadOnly),
     // Disable schedules a drain, and a repeat inside the window would restart
     // it — extending the life of a mediator the operator is decommissioning.
     (trust_tasks::TASK_SERVICES_DISABLE_1_0, Keyed),

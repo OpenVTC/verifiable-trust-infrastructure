@@ -1195,26 +1195,18 @@ impl RevokeAclQuery {
     }
 }
 
-/// Canonical `acl/revoke/0.1` request, as the signed document carries it.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct RevokeRequest {
-    pub subject: String,
-    #[serde(default)]
-    pub scopes: Option<Vec<String>>,
-    #[serde(default)]
-    pub reason: Option<String>,
-    /// Accepted and ignored (SPEC §4.5.1).
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub ext: Option<serde_json::Value>,
-}
-
-/// Canonical `acl/revoke/0.1` response: the entry the maintainer now holds —
-/// `null` after a full removal, the reduced entry after a scope reduction.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct AclRevokeResponse {
-    pub entry: Option<AclEntryResponse>,
+/// The generated `acl/revoke/0.1` response for the entry the maintainer now
+/// holds — `None` after a full removal, the reduced entry after a scope
+/// reduction. Built through the wire form, which is the representation the
+/// VTC's entry and the published one agree on (the spine's conformance tests
+/// hold them to it).
+fn revoke_response(
+    entry: Option<AclEntryResponse>,
+) -> Result<vta_sdk::openapi::AclRevoke01Response, TaskError> {
+    serde_json::to_value(&entry)
+        .and_then(|entry| serde_json::from_value(serde_json::json!({ "entry": entry })))
+        .map(vta_sdk::openapi::AclRevoke01Response)
+        .map_err(|e| AppError::Internal(format!("acl/revoke response: {e}")).into())
 }
 
 /// DELETE /acl/{did} — revoke: remove the entry, or reduce its scopes
@@ -1224,7 +1216,7 @@ pub struct AclRevokeResponse {
     security(("bearer_jwt" = [])),
     params(("did" = String, Path, description = "Subject DID"), RevokeAclQuery),
     responses(
-        (status = 200, description = "Entry revoked: `entry` is null after a removal, the reduced entry after a scope reduction", body = AclRevokeResponse),
+        (status = 200, description = "Entry revoked: `entry` is null after a removal, the reduced entry after a scope reduction", body = vta_sdk::openapi::AclRevoke01Response),
         (status = 400, description = "`scopes` present but empty"),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin, or does not administer every context the entry acts in"),
@@ -1241,7 +1233,7 @@ pub async fn delete_acl(
     State(state): State<AppState>,
     Path(did): Path<String>,
     Query(query): Query<RevokeAclQuery>,
-) -> Result<Json<AclRevokeResponse>, TaskError> {
+) -> Result<Json<vta_sdk::openapi::AclRevoke01Response>, TaskError> {
     let scopes = query.scopes_list()?;
     revoke_entry(
         &state,
@@ -1267,7 +1259,7 @@ pub(crate) async fn revoke_entry(
     did: &str,
     scopes: Option<&[String]>,
     reason: Option<&str>,
-) -> Result<AclRevokeResponse, TaskError> {
+) -> Result<vta_sdk::openapi::AclRevoke01Response, TaskError> {
     use trust_tasks_rs::specs::acl::revoke::v0_1::error_codes;
     let did = did.to_string();
 
@@ -1376,9 +1368,7 @@ pub(crate) async fn revoke_entry(
             reason = reason.unwrap_or(""),
             "ACL scopes reduced",
         );
-        return Ok(AclRevokeResponse {
-            entry: Some(AclEntryResponse::from(entry)),
-        });
+        return revoke_response(Some(AclEntryResponse::from(entry)));
     }
 
     // Revoking the ACL of a **member** would orphan their member row.
@@ -1463,7 +1453,7 @@ pub(crate) async fn revoke_entry(
         reason = reason.unwrap_or(""),
         "ACL entry revoked",
     );
-    Ok(AclRevokeResponse { entry: None })
+    revoke_response(None)
 }
 
 /// Translate a `VtcAclEntry` into the `vti_common::acl::AclEntry`
