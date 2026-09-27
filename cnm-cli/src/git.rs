@@ -7,9 +7,13 @@
 //!   key and authorized by *that DID's git rights* in the VTC's records. A
 //!   community administrator's role binds namespaces and nothing more: to
 //!   grant, this DID must hold a right that carries the authority.
-//! - **Listings** (`namespace list`, `repos`, `view --admin`) are the
-//!   administrator's REST reads and authenticate with an admin session, like
-//!   `cnm vetting`.
+//!   They reach the VTC over TSP when it advertises it, else DIDComm, else as
+//!   a signed document over HTTPS (`--transport` pins one), through the
+//!   connect helper `cnm backup` shares ([`vtc_target::connect_for_tasks`]).
+//! - **Listings** (`namespace list`, `repos`, `view --admin`,
+//!   `break-glass-list`) are the administrator's REST reads and authenticate
+//!   with an admin session, like `cnm vetting`: they are console projections
+//!   with no `git-ns/*` Trust Task to send.
 //!
 //! A refusal is reported by its specification code with the fix, where there
 //! is one — `git-ns:lastOwner` names the grant that makes the revoke possible.
@@ -20,6 +24,8 @@ use vta_cli_common::duration::parse_duration_secs;
 use vta_cli_common::render::{BOLD, DIM, RESET, bin_name, is_json_output, print_json};
 use vtc_client::git_ns::{specs, task_error};
 use vtc_client::{HolderKey, VtcClient, VtcError};
+
+use vta_sdk::session::TransportChoice;
 
 use crate::auth;
 use crate::vtc::{self as vtc_target, VtcTarget};
@@ -1213,9 +1219,126 @@ fn ratify_command(record: &Value) -> String {
     )
 }
 
-pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) -> CliResult {
-    // Signed commands need no session; listings do.
-    let anon = || VtcClient::anonymous(&target.base, &target.did);
+/// Run one `cnm git` command.
+///
+/// Every signed command is a `git-ns/*` Trust Task, and they all go the one
+/// way, through the connect helper `cnm backup` shares ([`vtc_target::connect_for_tasks`]):
+/// over TSP when the VTC advertises it, else DIDComm, else a signed document
+/// over HTTPS — `transport` (`--transport`) pins one. The session is closed on
+/// every path out.
+///
+/// The administrator's listings (`namespace list`, `repos`, `view --admin`,
+/// `break-glass-list`) are console projections no `git-ns/*` specification
+/// defines, so there is no Trust Task to send: they stay the admin session's
+/// reads over HTTPS.
+pub async fn run(
+    command: GitCommands,
+    keyring_key: &str,
+    target: &VtcTarget,
+    transport: TransportChoice,
+) -> CliResult {
+    match command {
+        GitCommands::Namespace {
+            command: NamespaceCommands::List,
+        } => {
+            let vtc = vtc_target::connect(keyring_key, target).await?;
+            let v = vtc.client.git_ns_namespaces().await?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            for ns in v["namespaces"].as_array().into_iter().flatten() {
+                println!(
+                    "{BOLD}{}{RESET}  {}  {} {}  admins: {}  repos: {}",
+                    ns["resource"].as_str().unwrap_or_default(),
+                    ns["id"].as_str().unwrap_or_default(),
+                    ns["mode"].as_str().unwrap_or_default(),
+                    ns["state"].as_str().unwrap_or_default(),
+                    ns["admins"].as_array().map_or(0, Vec::len),
+                    ns["repoCount"],
+                );
+            }
+            Ok(())
+        }
+        GitCommands::Repos { namespace } => {
+            let vtc = vtc_target::connect(keyring_key, target).await?;
+            let v = vtc.client.git_ns_repos(namespace.as_deref()).await?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            for r in v["repos"].as_array().into_iter().flatten() {
+                println!(
+                    "{BOLD}{}{RESET}  {}  owners: {}  sync: {}",
+                    r["resource"].as_str().unwrap_or_default(),
+                    r["state"].as_str().unwrap_or_default(),
+                    r["owners"].as_array().map_or(0, Vec::len),
+                    r["syncState"].as_str().unwrap_or_default(),
+                );
+            }
+            Ok(())
+        }
+        GitCommands::View {
+            resource,
+            admin: true,
+        } => {
+            let vtc = vtc_target::connect(keyring_key, target).await?;
+            let v = vtc.client.git_ns_admin_view(resource.as_deref()).await?;
+            show(&v)
+        }
+        GitCommands::BreakGlassList { namespace } => {
+            let vtc = vtc_target::connect(keyring_key, target).await?;
+            let v = vtc
+                .client
+                .git_ns_break_glass_list(namespace.as_deref())
+                .await?;
+            if is_json_output() {
+                return Ok(print_json(&v)?);
+            }
+            let items = v["items"].as_array().cloned().unwrap_or_default();
+            if items.is_empty() {
+                println!("No break-glass records.");
+            }
+            for it in &items {
+                println!(
+                    "{BOLD}{}{RESET}  {}  {}  {} — {}",
+                    terminal_safe(it["state"].as_str().unwrap_or_default()),
+                    terminal_safe(it["resource"].as_str().unwrap_or_default()),
+                    terminal_safe(it["right"].as_str().unwrap_or_default()),
+                    terminal_safe(it["subject"].as_str().unwrap_or_default()),
+                    terminal_safe(
+                        it.pointer("/breakGlass/justification")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                    ),
+                );
+                if it["state"] != "ratified" {
+                    println!("    ratify: {}", ratify_command(it));
+                    println!(
+                        "    revoke: {} git revoke --subject {} --right {} --resource {}",
+                        shell_word(bin_name()),
+                        shell_word(it["subject"].as_str().unwrap_or_default()),
+                        shell_word(it["right"].as_str().unwrap_or_default()),
+                        shell_word(it["resource"].as_str().unwrap_or_default()),
+                    );
+                }
+            }
+            Ok(())
+        }
+        command => {
+            let vtc = vtc_target::connect_for_tasks(keyring_key, target, transport).await?;
+            let outcome = run_task(command, &vtc.client, keyring_key, target).await;
+            vtc.client.shutdown().await;
+            outcome
+        }
+    }
+}
+
+/// A signed command, over `client` — whichever transport it was built for.
+async fn run_task(
+    command: GitCommands,
+    client: &VtcClient,
+    keyring_key: &str,
+    target: &VtcTarget,
+) -> CliResult {
     match command {
         GitCommands::Namespace { command } => match command {
             NamespaceCommands::Bind { forge, owner, mode } => {
@@ -1225,7 +1348,6 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                     ModeArg::Manual => "manual",
                 };
                 let (forge, owner) = (forge.to_lowercase(), owner.to_lowercase());
-                let client = anon();
                 let resp = announce_then(
                     &mut std::io::stderr(),
                     &bind_notice(&forge, &owner),
@@ -1251,49 +1373,14 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             }
             NamespaceCommands::Unbind { namespace } => {
                 let (did, key) = signing_key(keyring_key)?;
-                let resp = anon()
+                let resp = client
                     .git_ns_unbind(&namespace, &key)
                     .await
                     .map_err(|e| explain(e, &did))?;
                 show(&resp)
             }
-            NamespaceCommands::List => {
-                let vtc = vtc_target::connect(keyring_key, target).await?;
-                let v = vtc.client.git_ns_namespaces().await?;
-                if is_json_output() {
-                    return Ok(print_json(&v)?);
-                }
-                for ns in v["namespaces"].as_array().into_iter().flatten() {
-                    println!(
-                        "{BOLD}{}{RESET}  {}  {} {}  admins: {}  repos: {}",
-                        ns["resource"].as_str().unwrap_or_default(),
-                        ns["id"].as_str().unwrap_or_default(),
-                        ns["mode"].as_str().unwrap_or_default(),
-                        ns["state"].as_str().unwrap_or_default(),
-                        ns["admins"].as_array().map_or(0, Vec::len),
-                        ns["repoCount"],
-                    );
-                }
-                Ok(())
-            }
+            NamespaceCommands::List => unreachable!("an admin read, answered in `run`"),
         },
-        GitCommands::Repos { namespace } => {
-            let vtc = vtc_target::connect(keyring_key, target).await?;
-            let v = vtc.client.git_ns_repos(namespace.as_deref()).await?;
-            if is_json_output() {
-                return Ok(print_json(&v)?);
-            }
-            for r in v["repos"].as_array().into_iter().flatten() {
-                println!(
-                    "{BOLD}{}{RESET}  {}  owners: {}  sync: {}",
-                    r["resource"].as_str().unwrap_or_default(),
-                    r["state"].as_str().unwrap_or_default(),
-                    r["owners"].as_array().map_or(0, Vec::len),
-                    r["syncState"].as_str().unwrap_or_default(),
-                );
-            }
-            Ok(())
-        }
         GitCommands::Grant {
             subject,
             right,
@@ -1318,7 +1405,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             }
             let payload: specs::right::grant::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that grant is not well formed: {e}"))?;
-            let resp = anon()
+            let resp = client
                 .git_ns_grant(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
@@ -1342,7 +1429,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             }
             let payload: specs::right::revoke::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that revocation is not well formed: {e}"))?;
-            let resp = anon()
+            let resp = client
                 .git_ns_revoke(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
@@ -1375,7 +1462,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             }
             let payload: specs::repo::create::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that repository is not well formed: {e}"))?;
-            let resp = anon()
+            let resp = client
                 .git_ns_create_repo(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
@@ -1401,7 +1488,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
         GitCommands::Transfer { resource, to } => {
             let to = did_arg("--to", &to)?;
             let (did, key) = signing_key(keyring_key)?;
-            let resp = anon()
+            let resp = client
                 .git_ns_transfer(&resource.to_lowercase(), &to, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
@@ -1409,18 +1496,21 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
         }
         GitCommands::Archive { resource } => {
             let (did, key) = signing_key(keyring_key)?;
-            let resp = anon()
+            let resp = client
                 .git_ns_archive(&resource.to_lowercase(), &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
             show(&resp)
+        }
+        GitCommands::Repos { .. } | GitCommands::BreakGlassList { .. } => {
+            unreachable!("an admin read, answered in `run`")
         }
         GitCommands::Adopt { resource, owners } => {
             for o in &owners {
                 did_arg("--owner", o)?;
             }
             let (did, key) = signing_key(keyring_key)?;
-            let resp = anon()
+            let resp = client
                 .git_ns_adopt(&resource.to_lowercase(), &owners, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
@@ -1428,12 +1518,10 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
         }
         GitCommands::View { resource, admin } => {
             if admin {
-                let vtc = vtc_target::connect(keyring_key, target).await?;
-                let v = vtc.client.git_ns_admin_view(resource.as_deref()).await?;
-                return show(&v);
+                unreachable!("an admin read, answered in `run`");
             }
             let (did, key) = signing_key(keyring_key)?;
-            let resp = anon()
+            let resp = client
                 .git_ns_view_v4(resource.as_deref(), &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
@@ -1518,7 +1606,6 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             let code = dialoguer::Password::new()
                 .with_prompt("Claim code (the administrator sent it separately)")
                 .interact()?;
-            let client = anon();
             let type_uri = vtc_client::git_ns::STEP_UP_PASSKEY_REDEEM_START_TYPE;
             let payload = json!({ "token": token, "claimCode": code.trim() });
             let doc = client.git_ns_sign(type_uri, &payload, &key).await?;
@@ -1567,7 +1654,6 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             });
             let payload: specs::right::break_glass::v0_1::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that break-glass is not well formed: {e}"))?;
-            let client = anon();
             let type_uri = vtc_client::git_ns::GIT_NS_BREAK_GLASS_TYPE;
             let doc = client.git_ns_sign(type_uri, &payload, &key).await?;
             eprintln!(
@@ -1575,7 +1661,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                      told, with your justification, and the grant stays flagged until one of \
                      them ratifies or revokes it.{RESET}"
             );
-            let v = send_with_step_up(&client, &target.base, type_uri, &doc, &did, &key).await?;
+            let v = send_with_step_up(client, &target.base, type_uri, &doc, &did, &key).await?;
             show(&v)
         }
         GitCommands::Ratify {
@@ -1598,7 +1684,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             }
             let payload: specs::right::ratify::v0_1::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that ratification is not well formed: {e}"))?;
-            let resp = anon()
+            let resp = client
                 .git_ns_ratify(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
@@ -1611,7 +1697,6 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             no_wait,
         } => {
             let (did, key) = signing_key(keyring_key)?;
-            let client = anon();
             let json_mode = is_json_output();
             if list {
                 let resp = client
@@ -1686,13 +1771,12 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
                     "{DIM}Waiting for the forge to confirm (Ctrl-C stops waiting; the link \
                      continues){RESET}"
                 );
-                follow_link(&client, &key, &did, &link_id, deadline).await?
+                follow_link(client, &key, &did, &link_id, deadline).await?
             };
             finish_link(&mut std::io::stdout(), json_mode, &v, &did, &link_id)
         }
         GitCommands::Unlink { forge, account_id } => {
             let (did, key) = signing_key(keyring_key)?;
-            let client = anon();
             let forge = forge.to_lowercase();
             // Name the account being unlinked: the one linked now, unless the
             // operator named it. Either way the request carries the guard.
@@ -1734,45 +1818,6 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             println!("{}", unlink_line(&v, &did));
             Ok(())
         }
-        GitCommands::BreakGlassList { namespace } => {
-            let vtc = vtc_target::connect(keyring_key, target).await?;
-            let v = vtc
-                .client
-                .git_ns_break_glass_list(namespace.as_deref())
-                .await?;
-            if is_json_output() {
-                return Ok(print_json(&v)?);
-            }
-            let items = v["items"].as_array().cloned().unwrap_or_default();
-            if items.is_empty() {
-                println!("No break-glass records.");
-            }
-            for it in &items {
-                println!(
-                    "{BOLD}{}{RESET}  {}  {}  {} — {}",
-                    terminal_safe(it["state"].as_str().unwrap_or_default()),
-                    terminal_safe(it["resource"].as_str().unwrap_or_default()),
-                    terminal_safe(it["right"].as_str().unwrap_or_default()),
-                    terminal_safe(it["subject"].as_str().unwrap_or_default()),
-                    terminal_safe(
-                        it.pointer("/breakGlass/justification")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                    ),
-                );
-                if it["state"] != "ratified" {
-                    println!("    ratify: {}", ratify_command(it));
-                    println!(
-                        "    revoke: {} git revoke --subject {} --right {} --resource {}",
-                        shell_word(bin_name()),
-                        shell_word(it["subject"].as_str().unwrap_or_default()),
-                        shell_word(it["right"].as_str().unwrap_or_default()),
-                        shell_word(it["resource"].as_str().unwrap_or_default()),
-                    );
-                }
-            }
-            Ok(())
-        }
         GitCommands::Drift {
             command:
                 DriftCommands::Resolve {
@@ -1802,7 +1847,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
             )?;
             let payload: specs::drift::resolve::v0_3::Payload = serde_json::from_value(payload)
                 .map_err(|e| format!("that resolution is not well formed: {e}"))?;
-            let resp = anon()
+            let resp = client
                 .git_ns_drift_resolve_v3(&payload, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
@@ -1810,7 +1855,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
         }
         GitCommands::Reproject { resource, reason } => {
             let (did, key) = signing_key(keyring_key)?;
-            let resp = anon()
+            let resp = client
                 .git_ns_reproject(&resource.to_lowercase(), reason.as_deref(), &key)
                 .await
                 .map_err(|e| explain(e, &did))?;
@@ -1839,7 +1884,7 @@ pub async fn run(command: GitCommands, keyring_key: &str, target: &VtcTarget) ->
         } => {
             let subject = did_arg("--subject", &subject)?;
             let (did, key) = signing_key(keyring_key)?;
-            let resp = anon()
+            let resp = client
                 .git_ns_reseat(&namespace, &subject, &statement, &key)
                 .await
                 .map_err(|e| explain(e, &did))?;

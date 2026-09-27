@@ -85,7 +85,8 @@ struct Cli {
     /// Force a transport instead of auto-selecting. Auto prefers TSP, then
     /// DIDComm, then REST. `tsp` / `didcomm` pin a mediator transport and fail
     /// rather than fall back; `rest` skips both — the recovery path when a
-    /// mediator is unreachable.
+    /// mediator is unreachable. Applies to the VTA and to the Trust Tasks
+    /// `cnm git` sends the VTC.
     #[arg(long, value_enum, default_value_t = TransportOpt::Auto, global = true)]
     transport: TransportOpt,
 
@@ -1475,7 +1476,7 @@ async fn main() {
         }
         Commands::Git { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
-                Ok((key, target)) => git::run(command, &key, &target).await,
+                Ok((key, target)) => git::run(command, &key, &target, cli.transport.into()).await,
                 Err(e) => Err(e),
             }
         }
