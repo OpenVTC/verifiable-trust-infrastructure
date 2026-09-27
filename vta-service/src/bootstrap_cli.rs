@@ -1242,6 +1242,7 @@ pub async fn run_context_reprovision(
                 &state.contexts_ks,
                 &state.seed_store,
                 &state.audit_sink,
+                &state.acl_ks,
                 &auth,
                 CreateKeyParams {
                     internal: false,

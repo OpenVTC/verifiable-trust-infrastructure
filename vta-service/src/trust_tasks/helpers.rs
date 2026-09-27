@@ -648,7 +648,7 @@ pub(super) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
 /// below, which compares it against a real `reject_with`. When the framework
 /// bumps the version, that test fails rather than this service silently
 /// speaking two dialects again — which is exactly how this bump was caught.
-fn framework_error_type_uri() -> TypeUri {
+pub(crate) fn framework_error_type_uri() -> TypeUri {
     "https://trusttasks.org/spec/trust-task-error/0.5"
         .parse()
         .expect("framework error Type URI parses")

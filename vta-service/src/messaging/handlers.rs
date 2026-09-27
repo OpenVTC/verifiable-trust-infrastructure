@@ -120,6 +120,15 @@ pub async fn handle_trust_task(
     // `axum::Response` to re-extract the JSON. The self-describing document
     // (its own `type` + status `code`) carries the result; the HTTP status the
     // core attaches is dropped on the DIDComm wire.
+    //
+    // An empty body is the spine saying "nothing goes back": an inbound
+    // trust-task *error* is terminal, and a response delivered to its waiter
+    // answers nothing. Parsing it would fail, and `finish` would turn that into
+    // an `internal-error` problem-report sent to the peer — answering an error
+    // with an error, the loop the spine's silence exists to prevent.
+    if response.body.is_empty() {
+        return Ok(None);
+    }
     let doc: serde_json::Value = serde_json::from_slice(&response.body).map_err(handler_err)?;
 
     // The reply is itself a trust-task envelope; the service sets `thid`

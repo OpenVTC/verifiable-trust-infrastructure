@@ -120,6 +120,10 @@ pub(crate) mod wire_v0_2;
 /// `messaging::handlers::handle_trust_task`) can name `crate::trust_tasks::
 /// TrustTaskOutcome`.
 pub(crate) use helpers::TrustTaskOutcome;
+/// The one `trust-task-error` version this service emits — named by the
+/// transport tests that assert a refusal is one (Keyring VTI-27).
+#[cfg(test)]
+pub(crate) use helpers::framework_error_type_uri;
 /// Only the TSP binding refuses a payload whose *carriage* is wrong while its
 /// document would have parsed — so this is gated with its one consumer. Without
 /// the gate the default build re-exports something nothing uses, which is a

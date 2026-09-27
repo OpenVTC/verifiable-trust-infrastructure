@@ -622,7 +622,7 @@ async fn application_role_cannot_access_admin_endpoints() {
     let token = ctx
         .auth_token("did:key:z6MkApp", "application", vec!["ctx1".into()])
         .await;
-    // POST /keys requires admin
+    // POST /keys requires the key-mint capability, which `application` does not carry
     let (status, _) = app
         .request(post_auth(
             "/keys",
