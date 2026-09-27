@@ -102,9 +102,8 @@ impl super::VtaClient {
     /// A client whose Trust-Task surface is answered in-process by `sink`.
     ///
     /// The sink is consulted *ahead of* the transport, so only the Trust-Task
-    /// surface is intercepted. The REST routes and the DIDComm
-    /// protocol-message surface ([`rpc`](super::VtaClient::rpc)) fall through
-    /// to the transport underneath, which is a REST client pointed at an
+    /// surface is intercepted. Anything else (the few genuinely-REST routes)
+    /// falls through to the transport underneath, which is a REST client pointed at an
     /// unroutable address — reaching one from a loopback client is a test bug,
     /// and it should fail rather than quietly succeed against something real.
     #[must_use]

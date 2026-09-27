@@ -2,7 +2,7 @@
 
 use super::{
     AddWebvhServerRequest, CreateDidWebvhRequest, GetDidLogResponse, UpdateWebvhServerRequest,
-    VtaClient, encode_path_segment,
+    VtaClient,
 };
 use crate::error::VtaError;
 
@@ -41,12 +41,12 @@ impl VtaClient {
         .await
     }
 
-    /// Fetch the registered hosting server's `/api/me/domains` view
-    /// (caller-scoped subset of hosting domains, with the system
+    /// Fetch the registered hosting server's `did-management/me/domains`
+    /// view (caller-scoped subset of hosting domains, with the system
     /// default flagged). Used by `pnm did-mgmt list-domains` and the
     /// interactive `--domain` prompt in `create-did` /
-    /// `register-did`. The VTA relays the call after authenticating
-    /// to the server with its own credentials.
+    /// `register-did`. The VTA asks the server with a Trust Task signed
+    /// by its own operational key.
     pub async fn list_webvh_server_domains(
         &self,
         server_id: &str,
@@ -329,80 +329,6 @@ impl VtaClient {
             .map_err(|e| VtaError::Protocol(format!("webvh/dids/rotate-keys response decode: {e}")))
     }
 
-    /// Apply a generic update to an existing webvh DID.
-    ///
-    /// `ctx_id` is the context the DID lives in; `scid` is the
-    /// stable component of the DID (e.g. the `Q...` segment of
-    /// `did:webvh:Q...:host:slug`). REST path:
-    /// `POST /contexts/{ctx_id}/dids/{scid}/update`.
-    #[deprecated(
-        since = "0.20.32",
-        note = "rides the legacy DIDComm protocol message, which has no TSP dispatcher — \
-                use `update_did_webvh_by_did`, the canonical `webvh/dids/update/1.0` form"
-    )]
-    pub async fn update_did_webvh(
-        &self,
-        ctx_id: &str,
-        scid: &str,
-        body: crate::protocols::did_management::update::UpdateDidWebvhBody,
-    ) -> Result<crate::protocols::did_management::update::UpdateDidWebvhResultBody, VtaError> {
-        self.rpc(
-            did_management::UPDATE_DID_WEBVH,
-            serde_json::json!({
-                "context_id": ctx_id,
-                "scid": scid,
-                "body": &body,
-            }),
-            did_management::UPDATE_DID_WEBVH_RESULT,
-            60,
-            |c, url| {
-                c.post(format!(
-                    "{url}/contexts/{}/dids/{}/update",
-                    encode_path_segment(ctx_id),
-                    encode_path_segment(scid)
-                ))
-                .json(&body)
-            },
-        )
-        .await
-    }
-
-    /// Rotate every verificationMethod's keys on a webvh DID. Auth
-    /// keys + pre-rotation rotate as a consequence of the resulting
-    /// document update.
-    #[deprecated(
-        since = "0.20.32",
-        note = "rides the legacy DIDComm protocol message, which has no TSP dispatcher — \
-                use `rotate_did_webvh_keys_by_did`, the canonical \
-                `webvh/dids/rotate-keys/1.0` form"
-    )]
-    pub async fn rotate_did_webvh_keys(
-        &self,
-        ctx_id: &str,
-        scid: &str,
-        body: crate::protocols::did_management::update::RotateDidWebvhKeysBody,
-    ) -> Result<crate::protocols::did_management::update::UpdateDidWebvhResultBody, VtaError> {
-        self.rpc(
-            did_management::ROTATE_DID_WEBVH_KEYS,
-            serde_json::json!({
-                "context_id": ctx_id,
-                "scid": scid,
-                "body": &body,
-            }),
-            did_management::ROTATE_DID_WEBVH_KEYS_RESULT,
-            60,
-            |c, url| {
-                c.post(format!(
-                    "{url}/contexts/{}/dids/{}/rotate-keys",
-                    encode_path_segment(ctx_id),
-                    encode_path_segment(scid)
-                ))
-                .json(&body)
-            },
-        )
-        .await
-    }
-
     /// Realign a DID's key records with the verification methods its published
     /// document carries — the repair for a DID minted before create read its
     /// own document.
@@ -410,32 +336,29 @@ impl VtaClient {
     /// `dry_run` returns the plan without writing, which is what an operator
     /// should read first: this moves key records.
     ///
-    /// **REST-only, deliberately.** The agent computes every target name from
-    /// the DID's own log, so there is nothing for a caller to supply and
-    /// nothing a wire format would carry beyond the DID — and a repair of local
-    /// key custody is an operator standing at their own agent, not a party
-    /// addressing it over DIDComm. `POST /webvh/dids/{did}/realign-keys`.
+    /// The `webvh/dids/realign-keys/1.0` Trust Task, over whichever transport
+    /// the client holds. The agent computes every target name from the DID's
+    /// own log, so the DID and `dry_run` are the whole request.
     pub async fn realign_did_webvh_keys(
         &self,
         did: &str,
         dry_run: bool,
     ) -> Result<did_management::realign::RealignDidKeysResultBody, VtaError> {
-        let super::Transport::Rest {
-            client,
-            base_url,
-            auth,
-        } = &self.transport
-        else {
-            return Err(VtaError::Validation(
-                "realigning key records is REST-only; point the CLI at the agent's REST URL".into(),
-            ));
-        };
-        let req = client.post(format!(
-            "{base_url}/webvh/dids/{}/realign-keys?dry_run={dry_run}",
-            encode_path_segment(did)
-        ));
-        let resp = Self::send_authed(client, base_url, auth, req).await?;
-        Self::handle_response(resp).await
+        let payload = serde_json::to_value(did_management::realign::RealignDidKeysBody {
+            did: did.to_string(),
+            dry_run,
+        })
+        .map_err(|e| VtaError::Protocol(format!("webvh/dids/realign-keys payload: {e}")))?;
+        let response = self
+            .dispatch_trust_task(
+                crate::trust_tasks::TASK_WEBVH_DIDS_REALIGN_KEYS_1_0,
+                payload,
+                60,
+            )
+            .await?;
+        serde_json::from_value(response).map_err(|e| {
+            VtaError::Protocol(format!("webvh/dids/realign-keys response decode: {e}"))
+        })
     }
 
     // ── Agent names ───────────────────────────────────────────────────

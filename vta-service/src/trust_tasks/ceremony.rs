@@ -123,7 +123,6 @@ pub(crate) async fn may_attempt_ceremony(
 /// Only the intrinsic-sender transports need this — REST authenticates on a JWT
 /// the caller had to obtain first, so there is no pre-auth routing decision to
 /// make there.
-#[cfg(any(feature = "didcomm", feature = "tsp"))]
 pub(crate) fn peek_type_uri(body: &[u8]) -> Option<String> {
     #[derive(serde::Deserialize)]
     struct TypeOnly {

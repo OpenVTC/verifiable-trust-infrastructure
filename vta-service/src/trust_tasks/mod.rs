@@ -175,8 +175,12 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration — requires `webvh`.
     vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
-    // The mnemonic export — requires `tee`.
+    // The attestation slice — requires `tee`: the mnemonic export and the
+    // three public reads.
     vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_0_1,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1,
     // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
@@ -200,7 +204,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // PR #139 ("PR 1 of N") as the shared vocabulary for the
     // cross-repo did-management migration (vta-sdk + vta-service +
     // affinidi-webvh-service all reference these). They are
-    // **outbound producer URIs** — VTA's `webvh_didcomm.rs` sends
+    // **outbound producer URIs** — VTA's `webvh_host.rs` sends
     // requests with these URIs to did-hosting, then matches
     // `<uri>#response` on the way back. They are not consumed by any
     // vta-service inbound dispatcher arm, so the parity harness
@@ -270,9 +274,9 @@ const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
     // else. The reduction plan's §D suggestion of a top-level `backup/*` was
     // not taken — the family is agent lifecycle, and `vta/` is where the rest
     // of it lives.)
-    // ─ vta/attestation/* (REST-routed, unauthenticated) — keep-and-spec.
-    "https://trusttasks.org/spec/vta/attestation/status/1.0",
-    "https://trusttasks.org/spec/vta/attestation/report/1.0",
+    // (vta/attestation/{status,report} were here until
+    // trustoverip/dtgwg-trust-tasks-tf#654 specified them, with config-report,
+    // as `…/0.1`; trust-tasks-rs 0.23.2.)
     // ─ vta/webvh/** — two-ends-of-one-wire decision pending (plan §B).
     //   `dids/update` is published; the rest are not.
     // ─ Vault archival lifecycle (#540) — generalise with a store
@@ -416,10 +420,37 @@ macro_rules! dispatch_table {
 /// rather than axum's text/plain default. The route mount caps body
 /// size separately (the workspace-wide 1 MB cap applies).
 pub async fn dispatch_trust_task(
-    auth: AuthClaims,
+    auth: Option<AuthClaims>,
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
+    // A caller with no credential may send only a public task
+    // (`vta_sdk::trust_tasks::PUBLIC_URIS`), which it runs on a claim that
+    // reaches nothing. A caller who presents a credential has it verified by
+    // the extractor, and a bad one is refused there — never downgraded to
+    // anonymous. The route sits behind the unauthenticated limiter for exactly
+    // the requests this lets through anonymously (`rate_limit::apply_anonymous`).
+    let auth = match auth {
+        Some(auth) => auth,
+        None => {
+            let type_uri = ceremony::peek_type_uri(&body);
+            match type_uri.as_deref() {
+                Some(uri) if is_public_task(uri) => {
+                    if body.len() > PUBLIC_TASK_BODY_LIMIT {
+                        return Err(AppError::Validation(format!(
+                            "an anonymous request is limited to {PUBLIC_TASK_BODY_LIMIT} bytes"
+                        )));
+                    }
+                    anonymous_claims()
+                }
+                _ => {
+                    return Err(AppError::Unauthorized(
+                        "this task needs a session: authenticate, or send a public task".into(),
+                    ));
+                }
+            }
+        }
+    };
     // REST is hop-by-hop by construction: TLS terminates at whatever the
     // operator put in front of this process, and the plaintext exists there.
     Ok(transport::with_binding(
@@ -433,6 +464,30 @@ pub async fn dispatch_trust_task(
     )
     .await
     .into_response())
+}
+
+/// The largest body an anonymous caller may send: the cap the other
+/// unauthenticated routes carry (`routes::UNAUTH_BODY_SIZE`). The route sits on
+/// the authenticated router, whose cap is the global one, so the public path
+/// enforces its own.
+const PUBLIC_TASK_BODY_LIMIT: usize = 64 * 1024;
+
+/// Does this Type URI name a task any caller may send with no identity?
+/// See [`vta_sdk::trust_tasks::PUBLIC_URIS`].
+pub(crate) fn is_public_task(type_uri: &str) -> bool {
+    vta_sdk::trust_tasks::PUBLIC_URIS.contains(&type_uri)
+}
+
+/// The claim a public task runs on when its caller has no identity here: no
+/// role that reaches anything, no contexts. `did` is empty — there is nobody
+/// to attribute the request to, and a placeholder would read as one.
+pub(crate) fn anonymous_claims() -> AuthClaims {
+    AuthClaims {
+        did: String::new(),
+        role: crate::acl::Role::Monitor,
+        allowed_contexts: Vec::new(),
+        ..Default::default()
+    }
 }
 
 /// Transport-agnostic trust-task dispatch core.
@@ -1027,6 +1082,14 @@ pub(crate) async fn bind_document_to_sender(
             reason: format!("not a Trust Task document: {e}"),
         })?;
     if doc.proof.is_none() {
+        // A public task's specification declares the request proof OPTIONAL,
+        // and it is accepted unsigned over HTTPS; refusing the same document
+        // over DIDComm or TSP would make the requirement depend on the
+        // transport, which VTI-OPS-021 forbids. A proof that IS attached is
+        // still verified and bound below.
+        if is_public_task(&doc.type_uri.to_string()) {
+            return Ok(());
+        }
         return Err(RejectReason::ProofRequired);
     }
     let signer =
@@ -2188,10 +2251,21 @@ dispatch_table! {
     // `vta/contexts/secrets`, for the same reason — the act is disclosure.
     vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1 => keys::handle_export_secret
         [ None Secret false ],
-    // ─── Attestation slice (the dispatched one; end-to-end only) ─
+    // ─── Attestation slice ──────────────────────────────────────
+    // The mnemonic export (end-to-end only) and the three public reads, which
+    // any caller may send with no identity (`vta_sdk::trust_tasks::PUBLIC_URIS`).
     #[cfg(feature = "tee")]
     vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0 => attestation::handle_mnemonic_export
         [ Mutating Secret false ],
+    #[cfg(feature = "tee")]
+    vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1 => attestation::handle_status
+        [ None Metadata false ],
+    #[cfg(feature = "tee")]
+    vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_0_1 => attestation::handle_report
+        [ None Metadata false ],
+    #[cfg(feature = "tee")]
+    vta_sdk::trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1 => attestation::handle_config_report
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1 => keys::handle_sign
         [ None None true ],
     vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1 => keys::handle_derive_and_sign
@@ -2705,6 +2779,54 @@ mod tests {
     use trust_tasks_rs::TrustTask;
 
     use super::*;
+
+    /// **The public exception stays narrow.** A task in
+    /// `vta_sdk::trust_tasks::PUBLIC_URIS` runs for a caller with no identity —
+    /// anonymously over HTTPS, and **unsigned** over DIDComm and TSP, where every
+    /// other document must carry a proof bound to its sender
+    /// ([`bind_document_to_sender`]). That is sound only for a task whose own
+    /// specification makes the request proof optional and which changes and
+    /// discloses nothing: a public fact, answered in this agent's signed
+    /// response. This census fails the moment a task that is not one is added to
+    /// the list — which would hand an unauthenticated caller a privileged task.
+    #[test]
+    fn every_public_task_is_proof_optional_and_read_only() {
+        assert!(
+            !vta_sdk::trust_tasks::PUBLIC_URIS.is_empty(),
+            "no public tasks — the census is vacuous"
+        );
+        for uri in vta_sdk::trust_tasks::PUBLIC_URIS {
+            let policy = trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .unwrap_or_else(|| panic!("{uri} is public but has no published specification"));
+            assert!(
+                !policy.is_proof_required,
+                "{uri} is public, but its specification requires a request proof: a caller \
+                 with no identity cannot send it, so it does not belong in PUBLIC_URIS"
+            );
+            // The dispatch class is this service's own statement of what the
+            // handler does — what the PDP reads — and so the one that has to be
+            // harmless. Only a build that dispatches the task has a class for it.
+            #[cfg(feature = "tee")]
+            {
+                let class = class_for(uri)
+                    .unwrap_or_else(|| panic!("{uri} is public but not dispatched here"));
+                assert_eq!(
+                    class.side_effects,
+                    crate::policy::SideEffectLevel::None,
+                    "{uri} is public but changes state"
+                );
+                assert_ne!(
+                    class.exposure.discloses,
+                    crate::policy::Discloses::Secret,
+                    "{uri} is public but discloses secret material"
+                );
+                assert!(
+                    !class.exposure.acts_as_subject,
+                    "{uri} is public but acts as its subject"
+                );
+            }
+        }
+    }
 
     /// **A success response carries this agent's proof.**
     ///
@@ -5691,6 +5813,29 @@ mod didcomm_sender_binding {
         let body = document(&victim.did, None, &vta_did).await;
         let reply = over_didcomm(&state, &victim.did, &body).await;
         assert_eq!(code(&reply), Some("proofRequired"), "{reply}");
+    }
+
+    /// The one exception, and a narrow one: a public task (proof OPTIONAL in its
+    /// specification, read-only — see `every_public_task_is_proof_optional_and_
+    /// read_only`) is not refused for want of a proof over DIDComm, because it is
+    /// accepted unsigned over HTTPS and VTI-OPS-021 forbids the requirement to
+    /// depend on the transport. (In a build without `tee` the task is then not
+    /// dispatched; what this pins is only that the proof gate let it through.)
+    #[tokio::test]
+    async fn an_unsigned_public_task_is_not_refused_for_its_missing_proof() {
+        let (state, _dir, victim, _attacker, vta_did) = setup().await;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
+            "issuer": victim.did,
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {},
+        }))
+        .unwrap();
+        let reply = over_didcomm(&state, &victim.did, &body).await;
+        assert_ne!(code(&reply), Some("proofRequired"), "{reply}");
+        assert_ne!(code(&reply), Some("permissionDenied"), "{reply}");
     }
 
     /// The forged-sender shape: the sender claims the victim, the document is

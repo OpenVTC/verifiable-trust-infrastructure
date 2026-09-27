@@ -321,7 +321,7 @@ pub async fn list_agent_names(
     auth: &AuthClaims,
     did: &str,
     vta_did: Option<&str>,
-) -> Result<(String, Vec<crate::webvh_client::AgentNameEntryWire>), UpdateDidWebvhError> {
+) -> Result<(String, Vec<crate::webvh_host::AgentNameEntry>), UpdateDidWebvhError> {
     let (record, server, domain) = hosted_agent_name_context(deps, auth, did).await?;
     let vta_did = vta_did.ok_or_else(|| {
         UpdateDidWebvhError::Library("no VTA DID configured for hosting auth".to_string())
@@ -352,7 +352,7 @@ pub async fn check_agent_name(
     did: &str,
     name: &str,
     vta_did: Option<&str>,
-) -> Result<crate::webvh_client::AgentNameAvailabilityWire, UpdateDidWebvhError> {
+) -> Result<crate::webvh_host::AgentNameAvailability, UpdateDidWebvhError> {
     let (_record, server, domain) = hosted_agent_name_context(deps, auth, did).await?;
     let vta_did = vta_did.ok_or_else(|| {
         UpdateDidWebvhError::Library("no VTA DID configured for hosting auth".to_string())
@@ -1357,13 +1357,7 @@ async fn run_update(
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("store_did: {e}")))?;
 
     // 13. Publish the new log to the hosting server for non-serverless
-    //     DIDs. Uses the auth-cache orchestration helper which:
-    //       - loads the VTA's signing identity for the daemon REST
-    //         auth handshake (no-op for DIDComm transport),
-    //       - reads `server-auth:{id}` under the per-server async
-    //         mutex; refreshes or re-authenticates if stale,
-    //       - publishes with one-shot 401 retry (token revoked
-    //         mid-window).
+    //     DIDs, as a signed `did/register/0.1` Trust Task.
     //
     //     Local state is already committed, so a publish failure
     //     surfaces as `Publish` (HTTP 500) but doesn't undo the

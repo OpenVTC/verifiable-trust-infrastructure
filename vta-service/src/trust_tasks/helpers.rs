@@ -419,7 +419,7 @@ pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> Trust
 /// size bound.
 /// Reject with a code the task's own specification declares
 /// (`<slug>:<local>`, SPEC §8.5), from its generated `error_codes`.
-#[cfg_attr(not(feature = "webvh"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "webvh", feature = "tee")), allow(dead_code))]
 pub(super) fn reject_declared(
     doc: &TrustTask<Value>,
     code: trust_tasks_rs::DeclaredErrorCode,

@@ -35,11 +35,11 @@ use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, extract_problem_report};
 /// is the VTA's own DID that lacks rights on the host. A 401 would make the
 /// CLI print a misleading "token may be expired" hint (see the
 /// `e.p.msg.forbidden` note in the workspace CLAUDE.md).
-/// `pub(crate)` so the envelope-binding client in `webvh_didcomm` maps the
-/// *inner* document's problem report through the same table. On the envelope
-/// binding the DIDComm `type` is always `ENVELOPE_TYPE`, so error detection
-/// necessarily moves inside the body — but the code→status mapping must not
-/// fork, or the same host rejection would surface as a different HTTP status
+/// A problem report can still arrive ahead of a Trust-Task envelope (an
+/// unroutable message never reaches the far side's dispatcher). Inside the
+/// envelope a refusal is a `trust-task-error` document, read by its caller
+/// (e.g. `webvh_host::host_refusal`) — but the code→status mapping here must
+/// not fork, or the same host rejection would surface as a different HTTP status
 /// depending on which framing carried it.
 pub(crate) fn problem_report_to_app_error(code: &str, comment: &str) -> AppError {
     let detail = format!("remote peer rejected the request: {comment} [{code}]");

@@ -1457,10 +1457,9 @@ pub const TASK_PASSKEY_VMS_REVOKE_0_1: &str =
 // ─── Provision-integration (spec/vta/provision-integration/*) ───────────
 //
 // Feature-gated: handler requires `webvh` (DID-doc mutation + log
-// entries). The legacy REST handler is at
-// `POST /bootstrap/provision-integration`; the trust-task envelope
-// carries the same request/response shapes the SDK already exports
-// under `vta_sdk::provision_integration::http`.
+// entries). The trust-task envelope carries the request/response shapes
+// the SDK exports under `vta_sdk::provision_integration::http`; there is
+// no REST route.
 
 /// `provision/integration/0.3` — submit a VP-framed `BootstrapRequest` plus
 /// provisioning options to the VTA; receive a sealed `TemplateBootstrap` bundle
@@ -1885,24 +1884,30 @@ pub const TASK_BACKUP_PUT_CHUNK_1_0: &str = "https://trusttasks.org/spec/vta/bac
 
 // ─── Attestation slice (spec/vta/attestation/*) ──────────────────────────
 //
-// TEE-feature-gated and DELIBERATELY UNAUTHENTICATED on the wire
-// (the existing legacy `/attestation/status` + `/attestation/report`
-// REST routes don't take `AuthClaims`). Operators rely on TEE proofs
-// being publicly verifiable. These URIs live on the REST_ROUTED
-// allowlist for the parity harness; the dispatcher never sees them.
+// TEE-feature-gated. The three reads are **public**: a verifier asks before it
+// trusts the VTA, often holding no key the VTA knows, so they need no session,
+// no ACL entry and no request proof — see [`PUBLIC_URIS`]. What makes a report
+// the verifier's own is its nonce, bound into the evidence; the VTA signs every
+// response with its `authentication` key. Dispatched on the spine like every
+// other task, over TSP, DIDComm and HTTPS alike; they used to be REST-only
+// routes (`/attestation/{status,report,config-report}`) and a DIDComm arm
+// nothing sent to.
 
-/// `spec/vta/attestation/status/1.0` — return the VTA's TEE detection
-/// status (`tee_present`, attestation provider, etc.). No request
-/// body. Unauthenticated. TEE-feature-gated; returns
-/// `tee_attestation_error` when the binary lacks the `tee` feature.
-pub const TASK_ATTESTATION_STATUS_1_0: &str =
-    "https://trusttasks.org/spec/vta/attestation/status/1.0";
+/// `spec/vta/attestation/status/0.1` — which TEE the VTA detected at boot.
+/// Public. TEE-feature-gated.
+pub const TASK_ATTESTATION_STATUS_0_1: &str =
+    <trust_tasks_rs::specs::vta::attestation::status::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/attestation/report/1.0` — produce a fresh attestation
-/// report with a client-supplied nonce. Unauthenticated.
-/// TEE-feature-gated.
-pub const TASK_ATTESTATION_REPORT_1_0: &str =
-    "https://trusttasks.org/spec/vta/attestation/report/1.0";
+/// `spec/vta/attestation/report/0.1` — fresh evidence binding the verifier's
+/// 32-byte nonce and the VTA's DID. Public. TEE-feature-gated.
+pub const TASK_ATTESTATION_REPORT_0_1: &str =
+    <trust_tasks_rs::specs::vta::attestation::report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/attestation/config-report/0.1` — fresh evidence binding the
+/// verifier's nonce and the SHA-384 of the secret-free view of the config the
+/// enclave booted. Public. TEE-feature-gated.
+pub const TASK_ATTESTATION_CONFIG_REPORT_0_1: &str =
+    <trust_tasks_rs::specs::vta::attestation::config_report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/attestation/mnemonic-export/1.0` — release a TEE VTA's BIP-39 seed
 /// mnemonic once, inside the first-boot export window, **sealed** to the
@@ -1910,7 +1915,7 @@ pub const TASK_ATTESTATION_REPORT_1_0: &str =
 /// `BootstrapRequest`; response:
 /// [`crate::protocols::attestation_management::MnemonicExportResultBody`]).
 ///
-/// Unlike its two siblings this one is authenticated and dispatched: super
+/// Unlike the public attestation reads this one is authenticated: super
 /// admin holding `key-export`, and **only over an end-to-end channel** (DIDComm
 /// authcrypt or TSP). Over Trust Tasks on HTTPS, and on the REST route it
 /// replaces (`POST /attestation/mnemonic`), it is refused with
@@ -2218,10 +2223,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_BACKUP_FINALIZE_IMPORT_1_1,
     TASK_BACKUP_GET_CHUNK_1_0,
     TASK_BACKUP_PUT_CHUNK_1_0,
-    // Attestation slice (REST-routed, unauthenticated)
-    TASK_ATTESTATION_STATUS_1_0,
-    TASK_ATTESTATION_REPORT_1_0,
-    // … and the one dispatched, end-to-end-only attestation task
+    // Attestation slice: three public reads …
+    TASK_ATTESTATION_STATUS_0_1,
+    TASK_ATTESTATION_REPORT_0_1,
+    TASK_ATTESTATION_CONFIG_REPORT_0_1,
+    // … and the authenticated, end-to-end-only mnemonic export
     TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
     // Consent slice
     TASK_CONSENT_REQUEST_1_0,
@@ -2312,11 +2318,11 @@ pub const ALL_URIS: &[&str] = &[
 
 /// The subset of [`ALL_URIS`] served by **dedicated REST routes** rather than
 /// the `/trust-tasks` dispatcher: pre-login auth (challenge / authenticate /
-/// refresh), passkey-login, and TEE attestation.
+/// refresh) and passkey-login.
 ///
 /// These are **not** reachable through the generic dispatcher
 /// ([`crate::client::VtaClient::dispatch_trust_task`]) — pre-login auth has no
-/// session to carry, and attestation is unauthenticated/public. A generic
+/// session to carry. A generic
 /// "invoke any operation" surface (e.g. an MCP `vta_call` gateway) should
 /// exclude them; use [`dispatch_routed_uris`].
 ///
@@ -2331,8 +2337,18 @@ pub const REST_ROUTED_URIS: &[&str] = &[
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_2,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
-    TASK_ATTESTATION_STATUS_1_0,
-    TASK_ATTESTATION_REPORT_1_0,
+];
+
+/// Tasks a caller may send with **no identity at all**: no session, no ACL
+/// entry, no request proof. The VTA dispatches them on a zero-authority claim
+/// over every transport — anonymously over HTTPS (behind the unauthenticated
+/// rate limiter), and from a sender its ACL does not know over DIDComm and TSP.
+/// Their specifications declare the request proof OPTIONAL and answer a public
+/// fact; a proof, when one is attached, must still verify and bind.
+pub const PUBLIC_URIS: &[&str] = &[
+    TASK_ATTESTATION_STATUS_0_1,
+    TASK_ATTESTATION_REPORT_0_1,
+    TASK_ATTESTATION_CONFIG_REPORT_0_1,
 ];
 
 /// The operations reachable through the generic `/trust-tasks` dispatcher —
@@ -2360,9 +2376,10 @@ mod tests {
             assert!(ALL_URIS.contains(u), "REST_ROUTED uri not in ALL_URIS: {u}");
         }
         let dispatch = dispatch_routed_uris();
-        // Pre-login auth + attestation are excluded …
+        // Pre-login auth is excluded …
         assert!(!dispatch.contains(&TASK_AUTH_CHALLENGE_0_1));
-        assert!(!dispatch.contains(&TASK_ATTESTATION_STATUS_1_0));
+        // … the public attestation reads are dispatched, not REST-routed …
+        assert!(dispatch.contains(&TASK_ATTESTATION_STATUS_0_1));
         // … but dispatched auth + management ops remain reachable.
         assert!(dispatch.contains(&TASK_AUTH_WHOAMI_0_1));
         assert!(dispatch.contains(&TASK_AUTH_SESSIONS_LIST_0_1));

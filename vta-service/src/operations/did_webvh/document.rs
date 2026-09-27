@@ -390,22 +390,10 @@ fn build_did_document_inner(
         }
     }
 
-    // Add TeeAttestation service when TEE is active and embed_in_did is enabled
-    #[cfg(feature = "tee")]
-    if config.tee.embed_in_did
-        && let Some(ref public_url) = config.public_url
-    {
-        let services = did_document
-            .as_object_mut()
-            .unwrap()
-            .entry("service")
-            .or_insert_with(|| json!([]));
-        services.as_array_mut().unwrap().push(json!({
-            "id": "{DID}#tee-attestation",
-            "type": "TeeAttestation",
-            "serviceEndpoint": format!("{}/attestation/report", public_url.trim_end_matches('/'))
-        }));
-    }
+    // No `TeeAttestation` service: it pointed at the REST route
+    // `/attestation/report`, which is gone. Attestation is the
+    // `vta/attestation/*` Trust Tasks, reached over the transports above, and a
+    // verifier learns this VTA is attested by asking `vta/attestation/status`.
 
     // `service[]` order is what tells a resolver which transport to
     // prefer (TSP > DIDComm > REST > WebAuthn — runtime-service-

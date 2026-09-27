@@ -19,7 +19,7 @@
 //!
 //! The printed JSON is exactly what the consumer would hand to
 //! `pnm bootstrap provision-request` (offline file path) or what the
-//! SDK would POST to `/bootstrap/provision-integration` (REST path).
+//! SDK would send as the `provision/integration/0.3` Trust Task.
 
 use chrono::Duration;
 use vta_sdk::provision_integration::{

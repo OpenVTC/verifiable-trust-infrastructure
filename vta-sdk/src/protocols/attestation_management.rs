@@ -1,15 +1,11 @@
-//! DIDComm protocol types for TEE attestation management.
-
-/// Request TEE detection status.
-pub const GET_TEE_STATUS: &str = "https://firstperson.network/vta/1.0/attestation/status";
-/// Response with TEE detection status.
-pub const GET_TEE_STATUS_RESULT: &str =
-    "https://firstperson.network/vta/1.0/attestation/status-result";
-
-/// Request a fresh attestation report (body includes nonce).
-pub const REQUEST_ATTESTATION: &str = "https://firstperson.network/vta/1.0/attestation/request";
-/// Response with attestation report.
-pub const ATTESTATION_RESULT: &str = "https://firstperson.network/vta/1.0/attestation/result";
+//! TEE attestation wire types.
+//!
+//! The attestation reads are Trust Tasks — `spec/vta/attestation/{status,
+//! report,config-report}/0.1`, generated under
+//! `trust_tasks_rs::specs::vta::attestation` — dispatched on the VTA's spine
+//! over every transport. The bespoke `firstperson.network/vta/1.0/attestation/*`
+//! DIDComm messages that used to sit here are gone: nothing sent them, and a
+//! bare protocol message is not a carriage the Trust Task bindings allow.
 
 /// Response to `spec/vta/attestation/mnemonic-export/1.0`
 /// ([`crate::trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0`]): a TEE VTA's

@@ -141,12 +141,11 @@ mod tests {
     }
 
     impl AutogenFixture {
-        async fn new(rest: bool, public_url: Option<&str>, embed: bool) -> Self {
+        async fn new(rest: bool, public_url: Option<&str>) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let mut config = test_app_config(dir.path().into());
             config.services.rest = rest;
             config.public_url = public_url.map(str::to_owned);
-            config.tee.embed_in_did = embed;
             config.tee.kms = Some(
                 serde_json::from_value(serde_json::json!({
                     "region": "ap-southeast-1",
@@ -206,28 +205,18 @@ mod tests {
 
     #[tokio::test]
     async fn tee_generated_log_supports_bootstrap_rest_discovery() {
-        for (rest, url, embed, expected) in [
-            (true, Some(PUBLIC_URL), true, Some(PUBLIC_URL)),
-            (true, Some(PUBLIC_URL), false, Some(PUBLIC_URL)),
+        for (rest, url, expected) in [
+            (true, Some(PUBLIC_URL), Some(PUBLIC_URL)),
             (
                 true,
                 Some("  https://api.example.com:8443/vta/  "),
-                false,
                 Some("https://api.example.com:8443/vta/"),
             ),
-            // Same padded value with the attestation service on: both
-            // endpoints must read the trimmed URL, not one each way.
-            (
-                true,
-                Some("  https://api.example.com:8443/vta/  "),
-                true,
-                Some("https://api.example.com:8443/vta/"),
-            ),
-            (false, Some(PUBLIC_URL), true, None),
-            (true, None, false, None),
-            (true, Some("  "), false, None),
+            (false, Some(PUBLIC_URL), None),
+            (true, None, None),
+            (true, Some("  "), None),
         ] {
-            let fx = AutogenFixture::new(rest, url, embed).await;
+            let fx = AutogenFixture::new(rest, url).await;
             let log = fx.log().await;
             let doc = verified_document(&log);
             assert_eq!(doc["id"].as_str(), fx.config.vta_did.as_deref());
@@ -262,15 +251,13 @@ mod tests {
 
     #[tokio::test]
     async fn tee_existing_identity_rest_repair_appends_signed_update() {
-        use crate::operations::did_webvh::{
-            UpdateDidWebvhOptions, WebvhAuthLocks, WebvhDeps, update_did_webvh,
-        };
+        use crate::operations::did_webvh::{UpdateDidWebvhOptions, WebvhDeps, update_did_webvh};
         use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
         use std::sync::Arc;
 
         // Generate the legacy no-REST shape by leaving public_url unset.
         // Never edit a signed genesis to construct (or repair) this fixture.
-        let mut fx = AutogenFixture::new(true, None, false).await;
+        let mut fx = AutogenFixture::new(true, None).await;
         let genesis = fx.log().await;
         let original = verified_document(&genesis);
         assert!(
@@ -297,7 +284,6 @@ mod tests {
             .await
             .unwrap();
         let bridge = Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
-        let locks = WebvhAuthLocks::new();
         let audit = vta_audit::shared_keyspace_sink(fx.keyspace(crate::keyspaces::AUDIT));
         let deps = WebvhDeps {
             keys_ks: &fx.keyspace(crate::keyspaces::KEYS),
@@ -309,9 +295,7 @@ mod tests {
             seed_store: &fx.seed,
             did_resolver: &resolver,
             didcomm_bridge: &bridge,
-            auth_locks: &locks,
             // Offline: no mediator socket to lend, so the seam cannot choose
-            // TSP. Same reason as the `auth_locks` note above.
             #[cfg(feature = "tsp")]
             tsp: None,
         };

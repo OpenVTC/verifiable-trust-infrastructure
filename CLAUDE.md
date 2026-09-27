@@ -628,23 +628,21 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Producer returns**: HPKE-sealed `TemplateBootstrapPayload` (integration
   DID, private keys, `did.jsonl`, VC-issued admin authorization, VTA trust
   bundle) in armor with SHA-256 digest communicated out-of-band.
-- **Transports** (REST and DIDComm both support relayer ≠ holder):
+- **Transports** (every transport supports relayer ≠ holder):
   - **Offline file**: `vta bootstrap provision-request` / `provision-integration` / `open`.
-  - **PNM REST bridge**: `pnm bootstrap provision-request` →
-    `pnm bootstrap provision-integration` (authenticated, hits
-    `POST /bootstrap/provision-integration`). Supports
+  - **Online**: `pnm bootstrap provision-request` →
+    `pnm bootstrap provision-integration`, which sends the signed
+    `provision/integration/0.3` Trust Task over TSP, DIDComm or HTTPS
+    (`/trust-tasks`) — `VtaClient::provision_integration` is one
+    `dispatch_trust_task`. There is no REST route. Supports
     `--create-context` to create the target context inline when
     missing — same flag the offline `vta` CLI exposes. Wire
-    field `create_context: bool` on the request body, paired
-    with `context_created: bool` on the response so operators
+    field `createContext` on the request payload, paired
+    with `contextCreated` on the response so operators
     see whether the flag actually did something. Super-admin
     only (`operations::contexts::create_context`'s auth gate).
-  - **DIDComm**: same `pnm bootstrap provision-integration`
-    command when the client is on DIDComm transport. The
-    `provision-integration/1.0` message carries the VP and
-    receives the same sealed bundle. `VtaClient::
-    provision_integration` dispatches based on the
-    `Transport::Rest`/`Transport::DIDComm` variant.
+    A caller without the Admin role is refused before the target
+    context is looked up.
 - **Auth model** (both transports — onion layers):
   - **Outer**: bearer token (REST) / authcrypt sender (DIDComm)
     authenticates the *relayer*. ACL-gated.
@@ -851,8 +849,8 @@ new flow, update both this section and the relevant `docs/*.md`.
 ### Backup / restore
 - **What**: Encrypted full-state dump + restore, portable between plain,
   hardened and TEE VTAs in any direction.
-- **Endpoints**: `POST /backup/export`, `POST /backup/import`
-  (super-admin), and the descriptor Trust Tasks (`vta/backup/*`).
+- **Surface**: the descriptor Trust Tasks (`vta/backup/*`), super-admin,
+  over an end-to-end transport only. There is no inline REST route.
 - **Export** walks `vta_keyspaces::BACKED_UP` and dumps every row (format
   `vta-backup-v2`) — no per-keyspace collector, so listing a keyspace *is*
   backing it up. Rows in `ENVIRONMENT_BOUND_ROWS` (`keys ▸ tee:*`,
@@ -938,13 +936,12 @@ new flow, update both this section and the relevant `docs/*.md`.
   invocations targeting a multi-domain server *without*
   `--domain` get prompted to pick.
 - **Discovery**: `pnm did-mgmt dids list-domains --server <id>`
-  walks the server's `/api/me/domains` (proxied through the VTA
-  with VTA credentials) and prints the caller-scoped subset.
+  asks the server for `did-management/me/domains/0.1` (a Trust Task
+  the VTA signs and sends) and prints the caller-scoped subset.
   Use this to find legitimate `--domain` values for the same
   server before the first create / register.
-- **Code**: `vta-service/src/webvh_didcomm.rs`,
-  `vta-webvh/src/webvh_client.rs`,
-  `vta-service/src/operations/did_webvh/{mod,servers,auth_cache,register_server}.rs`,
+- **Code**: `vta-service/src/webvh_host.rs`,
+  `vta-service/src/operations/did_webvh/{mod,servers,host,register_server}.rs`,
   `vta-service/src/routes/did_webvh.rs::list_server_domains_handler`,
   `vta_sdk::client::VtaClient::list_webvh_server_domains`,
   `pnm-cli/src/commands/webvh.rs` (interactive prompt +
@@ -1290,8 +1287,7 @@ Rules that bite hardest in this workspace, with their known hotspots:
   vtc-service `send_to_member`); delivery-critical messages need an ack or an
   outbox record.
 - **R1.2 / R1.3 — no `reqwest::Client::new()`, no lock across an await.**
-  Known offenders being remediated: vta-sdk REST transports, `webvh_client`
-  (+ the auth-cache mutex held across its calls), the vault status-list fetch
+  Known offenders being remediated: vta-sdk REST transports, the vault status-list fetch
   (which must use the foreign-fetch profile — copy
   `vtc-service/src/recognition/verify.rs`).
 - **Retry has exactly one owner per failure domain.** The messaging delivery

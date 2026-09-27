@@ -180,7 +180,6 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
         "vta-sdk/src/protocols/vta_management/update_config.rs",
         "UpdateConfigResultBody",
     ), // config/patch/0.1
-    ("vta-service/src/routes/acl.rs", "SwapAclRequest"),      // acl/swap-key/0.1
     (
         "vta-service/src/trust_tasks/vault.rs",
         "VaultListResponseBody",
@@ -260,7 +259,7 @@ const PREDATES_GENERATED: &[(&str, &str)] = &[
 ];
 
 /// The size of [`PREDATES_GENERATED`], asserted so the list cannot grow quietly.
-const PREDATES_GENERATED_COUNT: usize = 69;
+const PREDATES_GENERATED_COUNT: usize = 68;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

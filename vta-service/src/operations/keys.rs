@@ -1413,6 +1413,30 @@ pub async fn set_key_exportability(
     Ok(record)
 }
 
+/// [`get_key_secret_internal`] for the test harness, which sits outside
+/// `operations` and so cannot mint an [`InternalAuthority`](super::internal_authority::InternalAuthority).
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn key_secret_for_test_support(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    audit: &vta_audit::SharedAuditSink,
+    key_id: &str,
+) -> Result<GetKeySecretResultBody, AppError> {
+    get_key_secret_internal(
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        seed_store,
+        audit,
+        super::internal_authority::InternalAuthority::new("test-support"),
+        key_id,
+        "test-support",
+    )
+    .await
+}
+
 /// Internal-authority variant of [`get_key_secret`] — the **use** surface,
 /// audited as `key.internal_use` — that bypasses the
 /// `auth.require_context` / `auth.is_super_admin` gates.

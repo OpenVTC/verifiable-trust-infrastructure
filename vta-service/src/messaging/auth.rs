@@ -72,6 +72,12 @@ pub async fn auth_for_trust_task_envelope(
         // configured holder identity, a presentation only to a trusted verifier
         // or after approval) and reads the proven sender only as the party to
         // answer — the claim reaches nothing.
+        // A public task (`vta_sdk::trust_tasks::PUBLIC_URIS`): anyone may ask,
+        // so a sender the ACL does not know gets the same zero-authority claim
+        // an anonymous HTTPS caller does.
+        Some(uri) if crate::trust_tasks::is_public_task(uri) => {
+            Ok(ceremony::ceremony_claims(sender_did))
+        }
         Some(uri) if crate::trust_tasks::credential_exchange::is_counterparty_task(uri) => {
             tracing::debug!(
                 sender = %sender_did,
@@ -422,6 +428,22 @@ mod tests {
                 .await
                 .unwrap_or_else(|e| panic!("{uri} from a counterparty must dispatch: {e:?}"));
             assert_eq!(claims.did, "did:key:zIssuer", "{uri}");
+            assert_eq!(claims.role, Role::Monitor, "{uri}");
+            assert!(claims.allowed_contexts.is_empty(), "{uri}");
+            assert!(!claims.is_super_admin(), "{uri}");
+        }
+    }
+
+    /// A public task (`vta_sdk::trust_tasks::PUBLIC_URIS`) is answered to anyone:
+    /// a sender the ACL has never heard of reaches it on a claim that reaches
+    /// nothing, as an anonymous HTTPS caller does.
+    #[tokio::test]
+    async fn a_public_task_from_an_unknown_sender_is_dispatched_with_no_authority() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        for uri in vta_sdk::trust_tasks::PUBLIC_URIS {
+            let claims = auth_for_trust_task_envelope(&state, "did:key:zVerifier", &envelope(uri))
+                .await
+                .unwrap_or_else(|e| panic!("{uri} is public: {e:?}"));
             assert_eq!(claims.role, Role::Monitor, "{uri}");
             assert!(claims.allowed_contexts.is_empty(), "{uri}");
             assert!(!claims.is_super_admin(), "{uri}");

@@ -194,7 +194,7 @@ pub struct TenantMessagingOverlay {
 }
 ```
 
-Note what is **absent** on purpose: `admin_did`, `mode`, `embed_in_did`,
+Note what is **absent** on purpose: `admin_did`, `mode`,
 `attestation_cache_ttl`, `allowed_did_methods`, `storage_key_salt`,
 `admin_context_id`, every `allow_*` bool, `resolver_url`, `server.*`,
 `log.*`, `store.*`, `services.*`, `policy.*`,
@@ -264,7 +264,7 @@ version of each is fail-*open*:
 | `tee.kms.allow_kms_reinit = false` | `messaging.mediator_did` |
 | `tee.kms.allow_unanchored = false` | `messaging.mediator_url` |
 | `tee.kms.allow_anchor_init = true` *(only if `anchor.table_name` also baked-required)* | `public_url` |
-| `tee.embed_in_did`, `tee.attestation_cache_ttl`, `tee.allowed_did_methods` | `vta_name` (optional) |
+| `tee.attestation_cache_ttl`, `tee.allowed_did_methods` | `vta_name` (optional) |
 | `tee.kms.admin_context_id` | `tee.kms.anchor.table_name` |
 | `resolver_url`, `server.*`, `store.*`, `log.*`, `services.*` | `tee.kms.anchor.writer_credential_ciphertext` (self-protecting — KMS-sealed) |
 | `policy.*`, `trusted_presentation_verifiers` | — |
