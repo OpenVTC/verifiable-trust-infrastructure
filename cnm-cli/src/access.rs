@@ -5,18 +5,22 @@
 //! — the list the admin console shows under *Access control*.
 //!
 //! Every verb is a canonical `acl/*` Trust Task, signed with this profile's own
-//! key and sent through [`vtc_client::VtcClient`]'s document path, so the same
-//! command works over whichever transport the client was built for. The VTC
-//! authorizes each from the signer's own ACL entry at the moment it runs.
+//! key. They reach the VTC over TSP when it advertises it, else DIDComm, else
+//! a signed document over HTTPS (`--transport` pins one), through the connect
+//! helper `cnm git` and `cnm backup` share
+//! ([`vtc_target::connect_for_tasks`]). The VTC authorizes each from the
+//! signer's own ACL entry at the moment it runs.
 
 use chrono::{DateTime, Utc};
 use clap::Subcommand;
 use serde_json::Value;
 use vta_cli_common::render::{DIM, GREEN, RESET, bin_name, is_json_output, print_json};
-use vtc_client::VtcError;
+use vta_sdk::session::TransportChoice;
 use vtc_client::acl::{AclGrant, AclListFilter, AclUpdate};
+use vtc_client::{HolderKey, VtcError};
 
-use crate::vtc::{self, Connected, VtcTarget};
+use crate::auth;
+use crate::vtc::{self as vtc_target, Connected, VtcTarget};
 
 type CliResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -115,9 +119,40 @@ pub enum AccessCommands {
     },
 }
 
-pub async fn run(command: AccessCommands, keyring_key: &str, target: &VtcTarget) -> CliResult {
-    let vtc = vtc::connect(keyring_key, target).await?;
-    let fail = |e: VtcError| access_error(&vtc, e);
+/// Run one `cnm access` command.
+///
+/// Every verb is an `acl/*` Trust Task, and they all go the one way, through
+/// the connect helper `cnm git` and `cnm backup` share
+/// ([`vtc_target::connect_for_tasks`]): over TSP when the VTC advertises it,
+/// else DIDComm, else a signed document over HTTPS — `transport`
+/// (`--transport`) pins one. The session is closed on every path out.
+pub async fn run(
+    command: AccessCommands,
+    keyring_key: &str,
+    target: &VtcTarget,
+    transport: TransportChoice,
+) -> CliResult {
+    let vtc = vtc_target::connect_for_tasks(keyring_key, target, transport).await?;
+    let outcome = run_command(command, &vtc, keyring_key).await;
+    vtc.client.shutdown().await;
+    outcome
+}
+
+/// This profile's key, as the signer of `acl/*` documents.
+fn signing_key(keyring_key: &str) -> CliResult<HolderKey> {
+    let session = auth::loaded_session(keyring_key).ok_or_else(|| {
+        format!(
+            "no stored identity for this community profile. Run `{} setup` first.",
+            bin_name()
+        )
+    })?;
+    HolderKey::from_did_key(&session.client_did, &session.private_key_multibase)
+        .map_err(|e| format!("this profile's key cannot sign: {e}").into())
+}
+
+async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str) -> CliResult {
+    let key = signing_key(keyring_key)?;
+    let fail = |e: VtcError| access_error(vtc, e);
     match command {
         AccessCommands::List {
             role,
@@ -132,7 +167,7 @@ pub async fn run(command: AccessCommands, keyring_key: &str, target: &VtcTarget)
                 subject_prefix,
                 ..Default::default()
             };
-            let entries = vtc.client.acl_list_all(&filter).await.map_err(fail)?;
+            let entries = vtc.client.acl_list_all(&filter, &key).await.map_err(fail)?;
             let values: Vec<Value> = entries
                 .iter()
                 .map(serde_json::to_value)
@@ -148,7 +183,7 @@ pub async fn run(command: AccessCommands, keyring_key: &str, target: &VtcTarget)
             }
         }
         AccessCommands::Show { subject } => {
-            let shown = vtc.client.acl_show(&subject).await.map_err(fail)?;
+            let shown = vtc.client.acl_show(&subject, &key).await.map_err(fail)?;
             report(&serde_json::to_value(&shown)?, "entry")?;
         }
         AccessCommands::Grant {
@@ -167,7 +202,7 @@ pub async fn run(command: AccessCommands, keyring_key: &str, target: &VtcTarget)
                 expires_at: expires.as_deref().map(expiry_from_now).transpose()?,
                 reason,
             };
-            let granted = vtc.client.acl_grant(&grant).await.map_err(fail)?;
+            let granted = vtc.client.acl_grant(&grant, &key).await.map_err(fail)?;
             report(&serde_json::to_value(&granted)?, "granted")?;
         }
         AccessCommands::Update {
@@ -198,7 +233,7 @@ pub async fn run(command: AccessCommands, keyring_key: &str, target: &VtcTarget)
                 },
                 reason,
             };
-            let updated = vtc.client.acl_update(&update).await.map_err(fail)?;
+            let updated = vtc.client.acl_update(&update, &key).await.map_err(fail)?;
             report(&serde_json::to_value(&updated)?, "updated")?;
         }
         AccessCommands::ChangeRole {
@@ -209,7 +244,7 @@ pub async fn run(command: AccessCommands, keyring_key: &str, target: &VtcTarget)
         } => {
             let changed = vtc
                 .client
-                .acl_change_role(&subject, &from_role, &to_role, reason.as_deref())
+                .acl_change_role(&subject, &from_role, &to_role, reason.as_deref(), &key)
                 .await
                 .map_err(fail)?;
             report(&serde_json::to_value(&changed)?, "role changed")?;
@@ -221,7 +256,7 @@ pub async fn run(command: AccessCommands, keyring_key: &str, target: &VtcTarget)
         } => {
             let revoked = vtc
                 .client
-                .acl_revoke(&subject, scopes.as_deref(), reason.as_deref())
+                .acl_revoke(&subject, scopes.as_deref(), reason.as_deref(), &key)
                 .await
                 .map_err(fail)?;
             let v = serde_json::to_value(&revoked)?;
