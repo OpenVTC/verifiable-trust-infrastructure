@@ -48,7 +48,6 @@ affinidi-messaging-mediator-tui = "0.4"
 affinidi-secrets-resolver = { workspace = true }
 async-trait = "0.1"
 ratatui = { workspace = true }
-dirs = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = "0.4"
 multibase = { workspace = true }

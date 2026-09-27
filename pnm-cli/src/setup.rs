@@ -456,12 +456,7 @@ fn detect_existing_state(config: &PnmConfig, slug: &str, keyring_key: &str) -> E
     // vta_did is None → pending, *if* the keyring agrees. If the
     // keyring has no pending entry, the config is orphaned — treat as
     // None so the caller re-mints cleanly.
-    match vta_sdk::session::SessionStore::new(
-        "pnm-cli",
-        crate::config::config_dir().expect("config dir"),
-    )
-    .loaded_session(keyring_key)
-    {
+    match crate::auth::store().loaded_session(keyring_key) {
         Some(info) if info.vta_did.is_none() => ExistingState::Pending {
             existing_did: info.client_did,
         },
@@ -488,10 +483,7 @@ fn require_pending(
         )
         .into());
     }
-    let store = vta_sdk::session::SessionStore::new(
-        "pnm-cli",
-        crate::config::config_dir().expect("config dir"),
-    );
+    let store = crate::auth::store();
     let info = store.loaded_session(keyring_key).ok_or_else(|| {
         format!(
             "'{slug}' is in pending state in config but the keyring entry is missing.\n\n\
