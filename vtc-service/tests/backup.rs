@@ -347,71 +347,39 @@ async fn excluding_the_audit_log_also_excludes_its_checkpoints() {
 }
 
 // ---------------------------------------------------------------------------
-// The bearer routes refuse: a backup moves only over DIDComm or TSP. The codes
+// There is no bearer route: a backup moves only over TSP or DIDComm. The codes
 // `vtc/backup/{export,import}/0.1` declare are covered on the Trust Task door
 // (`trust_tasks::backup_export_tests`, `trust_tasks::backup_tasks`).
 // ---------------------------------------------------------------------------
 
-async fn post_backup(
-    vtc: &TestVtc,
-    path: &str,
-    task: &str,
-    body: serde_json::Value,
-) -> (axum::http::StatusCode, serde_json::Value) {
+/// The inline `/v1/backup/{export,import}` routes are gone, not refused, so a
+/// super-admin's bearer request finds nothing to answer it.
+#[tokio::test]
+async fn the_inline_backup_routes_are_gone() {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
-    let token = vtc.admin_token().await;
-    let req = axum::http::Request::builder()
-        .method("POST")
-        .uri(path)
-        .header("content-type", "application/json")
-        .header("Trust-Task", task)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(axum::body::Body::from(body.to_string()))
-        .unwrap();
-    let res = vtc.router.clone().oneshot(req).await.unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
-    )
-}
-
-/// A super-admin with a valid envelope and its password is still refused over
-/// REST, for export and import alike, and nothing is imported.
-#[tokio::test]
-async fn backup_export_and_import_are_refused_over_rest() {
     let a = TestVtc::builder().vtc_did(VTC_DID).build().await;
-    let a_store = PlaintextSecretStore::new(a.data_dir());
-    a_store.set(b"signing-bundle").await.unwrap();
-    let envelope =
-        serde_json::to_value(export_backup(&a.state, &a_store, PW, false).await.unwrap()).unwrap();
-
-    let (status, body) = post_backup(
-        &a,
-        "/v1/backup/export",
-        "https://trusttasks.org/spec/vtc/backup/export/0.1",
-        serde_json::json!({ "password": PW }),
-    )
-    .await;
-    assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
-    // The refusal names what the export needs — an end-to-end transport —
-    // rather than a fixed ordering of the transports that provide one.
-    assert!(body.to_string().contains("end-to-end transport"), "{body}");
-
-    for confirm in [false, true] {
-        let (status, body) = post_backup(
-            &a,
-            "/v1/backup/import",
-            "https://trusttasks.org/spec/vtc/backup/import/0.1",
-            serde_json::json!({ "backup": envelope, "password": PW, "confirm": confirm }),
-        )
-        .await;
-        assert_eq!(
-            status,
-            axum::http::StatusCode::FORBIDDEN,
-            "confirm={confirm}: {body}"
+    let token = a.admin_token().await;
+    for path in ["/v1/backup/export", "/v1/backup/import"] {
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(
+                serde_json::json!({ "password": PW }).to_string(),
+            ))
+            .unwrap();
+        let res = a.router.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        // 405 where a GET route matches the same path: either way,
+        // nothing answers a POST.
+        assert!(
+            status == axum::http::StatusCode::NOT_FOUND
+                || status == axum::http::StatusCode::METHOD_NOT_ALLOWED,
+            "{path}: {status} {}",
+            String::from_utf8_lossy(&bytes)
         );
     }
 }

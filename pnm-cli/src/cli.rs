@@ -994,14 +994,6 @@ pub(crate) enum BackupCommands {
         /// Replace the output file if it already exists.
         #[arg(long)]
         force: bool,
-        /// Use the legacy inline backup export instead of the
-        /// descriptor-pattern trust-task flow.
-        ///
-        /// Works only over DIDComm: the VTA refuses a backup export over
-        /// REST or HTTPS Trust Tasks, because the sealing password would
-        /// exist in plaintext wherever TLS terminates.
-        #[arg(long)]
-        use_rest_legacy: bool,
     },
     /// Import VTA state from an encrypted backup file.
     ///
@@ -1018,14 +1010,6 @@ pub(crate) enum BackupCommands {
         /// a DID of its own. Without it a backup of another DID is refused.
         #[arg(long)]
         replace_identity: bool,
-        /// Use the legacy inline backup import instead of the
-        /// descriptor-pattern trust-task flow.
-        ///
-        /// Works only over DIDComm: the VTA refuses a backup import over
-        /// REST or HTTPS Trust Tasks, because the backup and its password
-        /// would exist in plaintext wherever TLS terminates.
-        #[arg(long)]
-        use_rest_legacy: bool,
     },
 }
 

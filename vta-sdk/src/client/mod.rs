@@ -139,9 +139,8 @@ pub(super) enum Transport {
         /// surface uses DIDComm.
         ///
         /// TSP is selected *per surface*, not per client: it carries Trust
-        /// Tasks, and the older DIDComm protocol-message surface
-        /// ([`VtaClient::rpc`]) has no TSP dispatcher behind it. So a client
-        /// that wants both keeps its DIDComm leg and adds this one, rather than
+        /// Tasks, and a client that holds both keeps its DIDComm leg (the
+        /// mediator's one socket per DID) and adds this one, rather than
         /// choosing between them.
         #[cfg(feature = "tsp")]
         tsp: Option<TspLeg>,
@@ -151,10 +150,9 @@ pub(super) enum Transport {
     /// Carries the **Trust-Task** surface only ([`VtaClient::rpc_tt`]). The
     /// VTA's TSP inbound dispatcher opens the binding envelope and hands the
     /// document to
-    /// `dispatch_trust_task_core`, so a trust task routes over TSP unchanged —
-    /// but the older DIDComm *protocol-message* surface ([`VtaClient::rpc`],
-    /// e.g. `key-management/1.0/sign-request`) has no TSP dispatcher behind it
-    /// and reports `UnsupportedTransport` naming DIDComm.
+    /// `dispatch_trust_task_core`, so a trust task routes over TSP unchanged.
+    /// Every client method is a Trust Task; the SDK sends no bare DIDComm
+    /// protocol messages any more.
     #[cfg(feature = "tsp")]
     Tsp {
         session: std::sync::Arc<crate::session::TspSession>,
@@ -319,7 +317,6 @@ mod acl;
 mod agent_devices;
 #[cfg(feature = "session")]
 mod auto_connect;
-mod backup;
 mod backup_chunked;
 mod backup_descriptors;
 pub use backup_chunked::{ChunkedDownload, ChunkedUpload, TransferProgress};
@@ -358,43 +355,6 @@ mod audit;
 pub use crate::session::TokenResult;
 #[cfg(feature = "session")]
 pub use auto_connect::{AutoConnect, ConnectedVta};
-
-/// Percent-encode characters that are unsafe inside a URL path segment.
-///
-/// `%` must be escaped first — re-ordering would double-escape any
-/// already-percent-encoded character.
-pub(super) fn encode_path_segment(s: &str) -> String {
-    s.replace('%', "%25")
-        .replace('#', "%23")
-        .replace('?', "%3F")
-        .replace('/', "%2F")
-}
-
-/// The error for a legacy DIDComm *protocol message* attempted over TSP.
-///
-/// TSP carries Trust Tasks; the VTA's TSP inbound dispatcher feeds every
-/// unpacked payload to `dispatch_trust_task_core` and has no handler for the
-/// older `key-management/1.0/*`-style protocol messages. Refusing here — rather
-/// than sending a frame the VTA would answer with an error, or silently doing
-/// nothing — names the transport that does serve the operation.
-#[cfg(feature = "tsp")]
-fn unsupported_over_tsp(msg_type: &str) -> VtaError {
-    VtaError::UnsupportedTransport(format!(
-        "'{msg_type}' is a REST-only operation: TSP carries only Trust Tasks. \
-         Reach this operation over REST:\n  <cli> --transport rest <command>"
-    ))
-}
-
-/// The DIDComm leg of [`VtaClient::rpc`]. The VTA serves only signed Trust
-/// Tasks over DIDComm; a bare protocol message would be refused as an
-/// unsupported type, so say what to do instead of sending it.
-#[cfg(feature = "session")]
-fn unsupported_over_didcomm(msg_type: &str) -> VtaError {
-    VtaError::UnsupportedTransport(format!(
-        "'{msg_type}' is a REST-only operation: over DIDComm the VTA serves only signed \
-         Trust Tasks. Reach this operation over REST:\n  <cli> --transport rest <command>"
-    ))
-}
 
 // ── REST helpers ────────────────────────────────────────────────────
 
@@ -960,11 +920,9 @@ impl VtaClient {
     /// - [`dispatch_trust_task`](Self::dispatch_trust_task) and everything built
     ///   on it (`rpc_tt`, the `device/*` and `vault/*` methods, the generic
     ///   trust-task escape hatch) routes over TSP.
-    /// - [`rpc`](Self::rpc) — the older DIDComm protocol-message surface
-    ///   (`import_key`, `update_webvh_server`, the legacy `backup/*` pair, …)
-    ///   — stays on DIDComm **unconditionally**. It has no TSP dispatcher behind
-    ///   it, so moving it would break it; that is why TSP is a per-surface
-    ///   choice and not a client-wide one.
+    /// - The DIDComm session itself stays: it holds the mediator's one socket
+    ///   per DID, and TSP receive arrives on it. The SDK sends no bare DIDComm
+    ///   protocol messages any more, so nothing else stays behind.
     ///
     /// # Cost
     ///
@@ -1223,9 +1181,9 @@ impl VtaClient {
         }
     }
 
-    /// Which transport carries the older DIDComm **protocol-message** surface
-    /// ([`rpc`](Self::rpc) — `import_key`, `update_webvh_server`, the legacy
-    /// `backup/*` pair, …).
+    /// Which transport would carry a DIDComm **protocol message**. The SDK sends
+    /// none any more (every client method is a Trust Task); this remains for
+    /// displays that report both surfaces.
     ///
     /// Never TSP: the VTA has no TSP dispatcher for these, so they report
     /// [`VtaError::UnsupportedTransport`] on a TSP-only client rather than being
@@ -1623,9 +1581,6 @@ impl VtaClient {
         Ok(resp)
     }
 
-    /// Dispatch an RPC call via REST (using `build_rest`) or DIDComm (using
-    /// `msg_type`/`body`/`result_type`), returning a deserialized response.
-    #[allow(unused_variables)]
     /// The DID this client sends as, when the transport has one.
     ///
     /// `None` over REST: a REST client authenticates with a bearer token, and
@@ -1641,35 +1596,7 @@ impl VtaClient {
         }
     }
 
-    pub(crate) async fn rpc<T: serde::de::DeserializeOwned>(
-        &self,
-        msg_type: &str,
-        body: serde_json::Value,
-        result_type: &str,
-        timeout: u64,
-        build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
-    ) -> Result<T, VtaError> {
-        match &self.transport {
-            Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                let req = build_rest(client, base_url);
-                let resp = Self::send_authed(client, base_url, auth, req).await?;
-                Self::handle_response(resp).await
-            }
-            #[cfg(feature = "session")]
-            Transport::DIDComm { .. } => {
-                let _ = (body, result_type, timeout);
-                Err(unsupported_over_didcomm(msg_type))
-            }
-            #[cfg(feature = "tsp")]
-            Transport::Tsp { .. } => Err(unsupported_over_tsp(msg_type)),
-        }
-    }
-
-    /// Like [`rpc`](Self::rpc), but the **DIDComm leg dispatches a Trust Task**
+    /// The **DIDComm leg dispatches a Trust Task**
     /// (binding envelope, `tt_uri`) instead of a raw protocol message, while the
     /// **REST leg keeps using the dedicated route** built by `build_rest`.
     ///
@@ -2042,8 +1969,7 @@ impl VtaClient {
                 ..
             } => {
                 // Per-surface routing: with a TSP leg attached, trust tasks go
-                // over TSP while `rpc` keeps using this same session's DIDComm
-                // leg. The document is byte-identical either way — the VTA's TSP
+                // over TSP while this session's DIDComm leg keeps the socket. The document is byte-identical either way — the VTA's TSP
                 // inbound dispatcher and its DIDComm envelope handler both feed
                 // `dispatch_trust_task_core`.
                 #[cfg(feature = "tsp")]
@@ -3195,49 +3121,6 @@ mod tests {
         let doc = serde_json::json!({ "id": "urn:uuid:1", "reason": "not authorized" });
         let err = VtaClient::extract_trust_task_payload(doc).expect_err("must be an error");
         assert!(err.to_string().contains("not authorized"), "{err}");
-    }
-
-    // ── encode_path_segment ─────────────────────────────────────────
-
-    #[test]
-    fn test_encode_hash_in_did_fragment() {
-        assert_eq!(
-            encode_path_segment("did:key:z6Mk123#z6Mk123"),
-            "did:key:z6Mk123%23z6Mk123"
-        );
-    }
-
-    #[test]
-    fn test_encode_question_mark() {
-        assert_eq!(encode_path_segment("foo?bar"), "foo%3Fbar");
-    }
-
-    #[test]
-    fn test_encode_percent_is_escaped_first() {
-        assert_eq!(encode_path_segment("100%#done"), "100%25%23done");
-    }
-
-    #[test]
-    fn test_encode_colon_preserved() {
-        assert_eq!(encode_path_segment("did:key:z6Mk"), "did:key:z6Mk");
-    }
-
-    #[test]
-    fn test_encode_plain_string_unchanged() {
-        assert_eq!(encode_path_segment("simple-id"), "simple-id");
-    }
-
-    #[test]
-    fn test_encode_multiple_hashes() {
-        assert_eq!(encode_path_segment("a#b#c"), "a%23b%23c");
-    }
-
-    #[test]
-    fn test_encode_slash_in_derivation_path() {
-        assert_eq!(
-            encode_path_segment("m/44'/0'/0'/0"),
-            "m%2F44'%2F0'%2F0'%2F0"
-        );
     }
 
     // ── VtaClient::new ──────────────────────────────────────────────
