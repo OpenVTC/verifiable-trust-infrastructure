@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 // Re-export shared config types
-pub use vti_common::config::{AuthConfig, LogConfig, LogFormat, MessagingConfig, StoreConfig};
+pub use vti_common::config::{
+    AuthConfig, FjallTuning, LogConfig, LogFormat, MessagingConfig, StoreConfig,
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
@@ -21,6 +23,13 @@ pub struct AppConfig {
     pub log: LogConfig,
     #[serde(default = "default_store_config")]
     pub store: StoreConfig,
+    /// Optional Fjall memory tuning (`[fjall]`) — the block cache, write
+    /// buffer and journal-size caps that keep the store's memory use
+    /// inside a pod's Kubernetes limit. Every field defaults to `None`
+    /// (fjall's own defaults, unchanged). See
+    /// [`vti_common::config::FjallTuning`].
+    #[serde(default)]
+    pub fjall: FjallTuning,
     pub messaging: Option<MessagingConfig>,
     #[serde(default)]
     pub auth: AuthConfig,
@@ -1144,6 +1153,11 @@ impl AppConfig {
         if let Ok(data_dir) = std::env::var("VTC_STORE_DATA_DIR") {
             config.store.data_dir = PathBuf::from(data_dir);
         }
+        // Fjall memory settings (STORAGE_FJALL_BLOCK_CACHE / _WRITE_BUFFER /
+        // _MAX_JOURNAL) — shared, unprefixed names; see
+        // `vti_common::config::apply_fjall_env_overrides`.
+        vti_common::config::apply_fjall_env_overrides(&mut config.fjall)
+            .map_err(AppError::Config)?;
 
         // Messaging env var overrides
         match (

@@ -359,7 +359,8 @@ async fn main() {
             init_tracing(&config);
             config.warn_unknown_keys(&unknown_keys);
 
-            let store = store::Store::open(&config.store).expect("failed to open store");
+            let store = store::Store::open_with(&config.store, &config.fjall)
+                .expect("failed to open store");
             let secret_store = create_secret_store(&config).expect("failed to create secret store");
 
             if let Err(e) = server::run(config, store, secret_store).await {

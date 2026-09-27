@@ -145,6 +145,7 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         server: Default::default(),
         log: Default::default(),
         store: StoreConfig { data_dir },
+        fjall: Default::default(),
         messaging: None,
         mediator_readiness: Default::default(),
         services: Default::default(),

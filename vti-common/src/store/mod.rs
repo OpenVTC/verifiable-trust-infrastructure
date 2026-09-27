@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::config::StoreConfig;
+use crate::config::{FjallTuning, StoreConfig};
 use crate::error::AppError;
 use fjall::{KeyspaceCreateOptions, PersistMode};
 use serde::Serialize;
@@ -75,9 +75,22 @@ pub enum Store {
 }
 
 impl Store {
-    /// Open a local fjall-backed store.
+    /// Open a local fjall-backed store, with fjall's own memory tuning
+    /// (block cache / write buffer / journal size — see [`FjallTuning`])
+    /// left at its defaults. Every pre-existing call site uses this.
     pub fn open(config: &StoreConfig) -> Result<Self, AppError> {
-        Ok(Store::Local(LocalStore::open(config)?))
+        Self::open_with(config, &FjallTuning::default())
+    }
+
+    /// [`Self::open`], applying `tuning`'s fjall memory settings. Only the
+    /// VTA's and VTC's real startup paths build a non-default
+    /// [`FjallTuning`] (their loaded config file, then an env var
+    /// override) and call this directly — everywhere else keeps calling
+    /// [`Self::open`], which is this with [`FjallTuning::default()`] (every
+    /// field unset), so nothing that already opened a store needed to
+    /// change.
+    pub fn open_with(config: &StoreConfig, tuning: &FjallTuning) -> Result<Self, AppError> {
+        Ok(Store::Local(LocalStore::open_with(config, tuning)?))
     }
 
     /// Connect to the parent's vsock storage proxy.
@@ -502,10 +515,55 @@ fn lock_writes(lock: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
 }
 
 impl LocalStore {
+    /// [`Store::open`] for the local backend directly — fjall's own
+    /// memory tuning left at its defaults.
     pub fn open(config: &StoreConfig) -> Result<Self, AppError> {
+        Self::open_with(config, &FjallTuning::default())
+    }
+
+    /// [`Store::open_with`] for the local backend directly. See there for
+    /// who calls this — everywhere else keeps calling [`Self::open`].
+    pub fn open_with(config: &StoreConfig, tuning: &FjallTuning) -> Result<Self, AppError> {
+        // Defense in depth: re-checked here regardless of how `tuning` was
+        // built (the config-file deserializer and `apply_fjall_env_overrides`
+        // both validate already, but a directly-constructed `FjallTuning` —
+        // a test fixture, a future caller — must never reach the asserting
+        // `Builder` calls below with a value fjall itself would panic on.
+        tuning.validate().map_err(AppError::Config)?;
+
         std::fs::create_dir_all(&config.data_dir).map_err(AppError::Io)?;
-        info!(path = %config.data_dir.display(), "opening store");
-        let db = fjall::Database::builder(&config.data_dir).open()?;
+
+        let mut builder = fjall::Database::builder(&config.data_dir);
+        if let Some(bytes) = tuning.block_cache {
+            builder = builder.cache_size(bytes);
+        }
+        if let Some(bytes) = tuning.max_journal {
+            builder = builder.max_journaling_size(bytes);
+        }
+        if let Some(bytes) = tuning.write_buffer {
+            // `Builder::max_write_buffer_size` is `#[doc(hidden)]` and
+            // `#[deprecated = "todo"]` upstream (fjall 3.1) — it is still
+            // the only way to cap the total memtable budget across every
+            // keyspace a process opens (see `KeyspaceCreateOptions::
+            // max_memtable_size`'s own doc, which points back at it), and
+            // it remains fully wired (`WriteBufferManager`, checked on
+            // every insert/remove). Re-check this note against fjall's
+            // changelog when bumping past 3.1 in case a replacement lands.
+            #[allow(deprecated)]
+            {
+                builder = builder.max_write_buffer_size(Some(bytes));
+            }
+        }
+
+        info!(
+            path = %config.data_dir.display(),
+            block_cache = %tuning.block_cache.map(crate::config::human_bytes).unwrap_or_else(|| "default".to_string()),
+            write_buffer = %tuning.write_buffer.map(crate::config::human_bytes).unwrap_or_else(|| "default".to_string()),
+            max_journal = %tuning.max_journal.map(crate::config::human_bytes).unwrap_or_else(|| "default".to_string()),
+            "opening store"
+        );
+
+        let db = builder.open()?;
         Ok(Self {
             db,
             write_locks: WriteLocks::default(),
@@ -1379,5 +1437,105 @@ mod tests {
             .unwrap()
             .with_encryption([0x55; 32]);
         assert!(enc.migrate_to_encrypted([0x55; 32]).await.is_err());
+    }
+
+    // =======================================================================
+    // Fjall memory settings (`FjallTuning` / STORAGE_FJALL_*)
+    // =======================================================================
+
+    /// `Store::open` — every pre-existing call site — must behave exactly
+    /// as it did before `open_with` existed: fjall's own default cache
+    /// capacity, no builder method called for write buffer or journal.
+    #[test]
+    fn open_leaves_fjalls_own_default_cache_capacity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let store = LocalStore::open(&config).expect("open");
+        // fjall's own built-in default (see `fjall::db_config::Config::new`).
+        assert_eq!(store.db.cache_capacity(), 32 * 1024 * 1024);
+    }
+
+    /// `open_with` given `FjallTuning::default()` is identical to `open` —
+    /// the shape `Store::open` is defined in terms of.
+    #[test]
+    fn open_with_default_tuning_matches_open() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let store = LocalStore::open_with(&config, &FjallTuning::default())
+            .expect("open_with default tuning");
+        assert_eq!(store.db.cache_capacity(), 32 * 1024 * 1024);
+    }
+
+    /// A configured block cache reaches fjall's `Database` unchanged —
+    /// the one setting fjall exposes a public getter for, so this is a
+    /// concrete, not just "it didn't panic", check that the value actually
+    /// took effect. `write_buffer` and `max_journal` are wired through the
+    /// identical `if let Some(bytes) = ... { builder = builder.method(bytes) }`
+    /// shape in `open_with`, and are exercised below by the
+    /// success/refusal boundary tests instead, since fjall does not expose
+    /// a getter for either configured maximum.
+    #[test]
+    fn configured_tuning_opens_and_the_block_cache_takes_effect() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let tuning = FjallTuning {
+            block_cache: Some(8 * 1024 * 1024),
+            write_buffer: Some(crate::config::MIN_WRITE_BUFFER_BYTES),
+            max_journal: Some(crate::config::MIN_MAX_JOURNAL_BYTES),
+        };
+        let store = LocalStore::open_with(&config, &tuning).expect("open_with configured tuning");
+        assert_eq!(store.db.cache_capacity(), 8 * 1024 * 1024);
+    }
+
+    /// A `FjallTuning` built by hand (bypassing the deserializer and
+    /// `apply_fjall_env_overrides`, both of which already validate) with a
+    /// below-floor value is still refused at `open_with` — the
+    /// `tuning.validate()` defense-in-depth check — naming the setting,
+    /// not a fjall panic.
+    #[test]
+    fn open_with_refuses_a_below_floor_setting_naming_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let tuning = FjallTuning {
+            block_cache: None,
+            write_buffer: None,
+            max_journal: Some(1024), // far under the 64 MiB floor
+        };
+        let Err(err) = LocalStore::open_with(&config, &tuning) else {
+            panic!("a below-floor max_journal must be refused");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("fjall.max_journal"),
+            "error must name the setting, got: {msg}"
+        );
+    }
+
+    /// Zero is refused with the same clear naming, not silently ignored.
+    #[test]
+    fn open_with_refuses_a_zero_setting_naming_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let tuning = FjallTuning {
+            block_cache: Some(0),
+            write_buffer: None,
+            max_journal: None,
+        };
+        let Err(err) = LocalStore::open_with(&config, &tuning) else {
+            panic!("a zero block_cache must be refused");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("fjall.block_cache"), "got: {msg}");
+        assert!(msg.contains("zero"), "got: {msg}");
     }
 }

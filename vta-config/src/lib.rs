@@ -153,6 +153,13 @@ pub struct AppConfig {
     pub log: LogConfig,
     #[serde(default = "default_store_config")]
     pub store: StoreConfig,
+    /// Optional Fjall memory tuning (`[fjall]`) — the block cache, write
+    /// buffer and journal-size caps that keep the store's memory use
+    /// inside a pod's Kubernetes limit. Every field defaults to `None`
+    /// (fjall's own defaults, unchanged). See
+    /// [`vti_common::config::FjallTuning`].
+    #[serde(default)]
+    pub fjall: vti_common::config::FjallTuning,
     pub messaging: Option<MessagingConfig>,
     /// Startup readiness gate + reconnect policy for the mediator DIDComm
     /// connection: wait until the VTA's own DID resolves over the network before
@@ -1048,6 +1055,9 @@ impl AppConfig {
                 "VTA_TEE_MODE",
                 "VTA_TEE_EMBED_IN_DID",
                 "VTA_TEE_ATTESTATION_CACHE_TTL",
+                "STORAGE_FJALL_BLOCK_CACHE",
+                "STORAGE_FJALL_WRITE_BUFFER",
+                "STORAGE_FJALL_MAX_JOURNAL",
             ];
             for var in &blocked_vars {
                 if std::env::var(var).is_ok() {
@@ -1100,6 +1110,11 @@ impl AppConfig {
         if let Ok(data_dir) = std::env::var("VTA_STORE_DATA_DIR") {
             config.store.data_dir = PathBuf::from(data_dir);
         }
+        // Fjall memory settings (STORAGE_FJALL_BLOCK_CACHE / _WRITE_BUFFER /
+        // _MAX_JOURNAL) — shared, unprefixed names; see
+        // `vti_common::config::apply_fjall_env_overrides`.
+        vti_common::config::apply_fjall_env_overrides(&mut config.fjall)
+            .map_err(AppError::Config)?;
 
         // Messaging
         match (
