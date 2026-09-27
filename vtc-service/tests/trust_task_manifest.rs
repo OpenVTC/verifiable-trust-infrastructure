@@ -486,7 +486,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        6,
+        4,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -534,7 +534,10 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          under that name. It exported no seed and no mnemonic; it was a per-key secret export \
          wearing the name of what it was migrated from, and moving it to the keys family is \
          what let it be specified honestly. The `vta/seeds/*` entries that remain are \
-         list and rotate, and the note still holds for them",
+         list and rotate, and the note still holds for them. \
+         6 -> 4 is the retirement of `vta/attestation/{status,report}/1.0`: the attestation \
+         reads are the canonical public `vta/attestation/{status,report}/0.1` tasks \
+         (dtgwg-trust-tasks-tf#654), and the unspecced 1.0 URIs are no longer bound",
     ),
 ];
 
