@@ -78,6 +78,9 @@ impl RetentionSweeper {
     /// - unrestricted-admin consent requests and grants past their life
     ///   (`task_consent_ks`), the same storage bound for
     ///   `crate::acl::admin_consent`.
+    /// - step-up passkey invites and redemption/revocation ceremonies past
+    ///   their life (`step_up_passkeys_ks`), the same storage bound for
+    ///   `crate::step_up_passkey`. The credentials themselves are kept.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         join_requests_ks: KeyspaceHandle,
@@ -85,6 +88,7 @@ impl RetentionSweeper {
         accepted_ids_ks: KeyspaceHandle,
         step_up_marks_ks: KeyspaceHandle,
         task_consent_ks: KeyspaceHandle,
+        step_up_passkeys_ks: KeyspaceHandle,
         backup_bundles_ks: KeyspaceHandle,
         backup_blob_dir: std::path::PathBuf,
         config: JoinRequestsConfig,
@@ -113,6 +117,7 @@ impl RetentionSweeper {
             }
             sweep_backup_bundles(&backup_bundles_ks, &backup_blob_dir).await;
             sweep_task_consent(&task_consent_ks).await;
+            sweep_step_up_passkeys(&step_up_passkeys_ks).await;
             loop {
                 tokio::select! {
                     _ = shutdown_rx.changed() => {
@@ -134,6 +139,7 @@ impl RetentionSweeper {
                         }
                         sweep_backup_bundles(&backup_bundles_ks, &backup_blob_dir).await;
                         sweep_task_consent(&task_consent_ks).await;
+                        sweep_step_up_passkeys(&step_up_passkeys_ks).await;
                     }
                 }
             }
@@ -160,6 +166,19 @@ async fn sweep_task_consent(ks: &KeyspaceHandle) {
             "retention sweep purged lapsed consent requests and grants"
         ),
         Err(e) => warn!(error = %e, "consent sweep failed"),
+    }
+}
+
+/// Drop lapsed step-up passkey invites and ceremonies. Its own pass for the
+/// same reason as [`sweep_backup_bundles`].
+async fn sweep_step_up_passkeys(ks: &KeyspaceHandle) {
+    match crate::step_up_passkey::sweep_expired(ks, Utc::now()).await {
+        Ok(0) => {}
+        Ok(n) => info!(
+            expired = n,
+            "retention sweep purged lapsed step-up passkey invites and ceremonies"
+        ),
+        Err(e) => warn!(error = %e, "step-up passkey sweep failed"),
     }
 }
 

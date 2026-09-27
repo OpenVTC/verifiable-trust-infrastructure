@@ -128,6 +128,9 @@ pub struct AppState {
     /// refused signed document, and the one-shot authorization a verified
     /// gesture leaves for its re-send. See [`crate::acl::bound_step_up`].
     pub step_up_marks_ks: KeyspaceHandle,
+    /// Members' step-up passkeys — see `crate::step_up_passkey`. Never read
+    /// by login or session step-up.
+    pub step_up_passkeys_ks: KeyspaceHandle,
     /// Unrestricted-admin consent requests and grants (VTI-APV-014). See
     /// `crate::acl::admin_consent`.
     pub task_consent_ks: KeyspaceHandle,
@@ -445,6 +448,7 @@ pub async fn run(
     let accepted_ids_ks = store.keyspace(keyspaces::ACCEPTED_IDS)?;
     let console_keys_ks = store.keyspace(keyspaces::CONSOLE_KEYS)?;
     let step_up_marks_ks = store.keyspace(keyspaces::STEP_UP_MARKS)?;
+    let step_up_passkeys_ks = store.keyspace(keyspaces::STEP_UP_PASSKEYS)?;
     let task_consent_ks = store.keyspace(keyspaces::TASK_CONSENT)?;
     let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
@@ -763,6 +767,7 @@ pub async fn run(
         accepted_ids_ks: accepted_ids_ks.clone(),
         console_keys_ks,
         step_up_marks_ks,
+        step_up_passkeys_ks,
         task_consent_ks,
         member_pushes_ks,
         tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
@@ -1236,6 +1241,7 @@ pub async fn run(
         state.accepted_ids_ks.clone(),
         state.step_up_marks_ks.clone(),
         state.task_consent_ks.clone(),
+        state.step_up_passkeys_ks.clone(),
         state.backup_bundles_ks.clone(),
         crate::trust_tasks::backup_tasks::blob_dir(&boot_cfg.store.data_dir),
         boot_cfg.join_requests.clone(),
