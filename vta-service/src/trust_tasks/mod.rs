@@ -1425,7 +1425,7 @@ mod lifecycle_mapping {}
 /// included, so the qualifying set here is all of them.
 pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
     trust_tasks_rs::FreshnessPolicy::default()
-        .with_max_age(chrono::TimeDelta::minutes(10))
+        .with_max_age(vti_common::trust_task::ACCEPTANCE_WINDOW)
         .requiring_issued_at()
 }
 

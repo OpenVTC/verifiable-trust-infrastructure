@@ -605,7 +605,7 @@ async fn dispatch_trust_task_validated(
 /// specifications this service binds declare the member REQUIRED in any case.
 fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
     trust_tasks_rs::FreshnessPolicy::default()
-        .with_max_age(chrono::TimeDelta::minutes(10))
+        .with_max_age(vti_common::trust_task::ACCEPTANCE_WINDOW)
         .requiring_issued_at()
 }
 

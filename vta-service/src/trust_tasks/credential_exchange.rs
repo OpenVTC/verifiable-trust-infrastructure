@@ -75,6 +75,8 @@ use crate::operations::credential_exchange::{
 use crate::server::AppState;
 
 use super::helpers::{acknowledge, app_error_to_reject, parse_payload, silence, success_response};
+#[cfg(any(feature = "didcomm", feature = "tsp"))]
+use super::idempotency::IDEMPOTENCY_KEY_MEMBER;
 
 /// How long a pushed exchange step may take to be delivered. A counterparty
 /// that misses one can ask again: an issuer re-offers, a verifier re-queries.
@@ -143,6 +145,15 @@ async fn push_step(
             vti_common::capability_client::build_document(&vta_did, recipient, type_uri, payload);
         doc.thread_id = Some(thread.to_string());
         let id = doc.id.clone();
+        // One key for every attempt at this step (VTI-OPS-064). The push
+        // engine issues a new attempt — a fresh `id` — when the step outlives
+        // its acceptance window, and a step whose repeat leaves a second
+        // artefact (`issue` deposits a credential, `request` asks for one) must
+        // then run once at the counterparty however many attempts reach it.
+        doc.extra.insert(
+            IDEMPOTENCY_KEY_MEMBER.to_string(),
+            Value::String(id.clone()),
+        );
         let mut doc_value = serde_json::to_value(&doc)
             .map_err(|e| AppError::Internal(format!("serialise {type_uri} document: {e}")))?;
         if !super::sign_outbound_request(state, &mut doc_value).await {

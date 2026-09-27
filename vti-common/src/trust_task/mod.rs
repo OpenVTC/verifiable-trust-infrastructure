@@ -40,6 +40,24 @@ use crate::error::AppError;
 /// can grep for header consumers without ambiguity.
 pub const HEADER_NAME: &str = "Trust-Task";
 
+/// How long after its `issuedAt` a VTI node accepts a Trust Task document for
+/// execution (VTI-OPS-024), before the clock-skew tolerance
+/// (`trust_tasks_rs::freshness::DEFAULT_SKEW`) is added.
+///
+/// One number, read by both consumers — the VTA's and the VTC's
+/// `freshness_policy`, where the reasoning for its size lives — and by the
+/// producer that has to live within it: the push engine
+/// ([`crate::trust_task_push`]) issues a new attempt rather than deliver a
+/// document every VTI consumer would refuse. Were the two numbers kept apart,
+/// widening the consumers' window would leave the engine re-issuing documents
+/// that were still acceptable, and narrowing it would leave the engine
+/// delivering ones that were not.
+///
+/// SPEC §7.2 (*Bounding the record*) makes this window and the retention of the
+/// duplicate-execution record one bound, and both consumers derive the record's
+/// retention from it; change it only as that one bound.
+pub const ACCEPTANCE_WINDOW: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
+
 /// A validated Trust-Task identifier.
 ///
 /// The workspace treats Trust-Task URLs as opaque — we don't enforce
