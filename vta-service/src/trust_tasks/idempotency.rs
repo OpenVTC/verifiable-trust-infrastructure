@@ -142,16 +142,25 @@ pub(crate) async fn claim(
 ) -> Claim {
     let type_uri = doc.type_uri.to_string();
 
-    // `None` is an unknown task — the dispatcher rejects it on the type URI in
-    // a moment, so there is nothing to claim. Not-keyed tasks are skipped
-    // because a repeat is harmless, so a record would cost a write and buy
-    // nothing.
-    let Some(safety) = retry_safety(&type_uri).filter(|s| s.needs_key()) else {
-        return Claim::Skip;
-    };
+    // Not-keyed tasks are skipped because a repeat is harmless, so a record
+    // would cost a write and buy nothing.
+    //
+    // A task the table does not classify is keyed (VTI-OPS-062: "an operation
+    // that is not classified MUST be treated as belonging to the third class").
+    // That is not only the unknown task the dispatcher is about to refuse —
+    // whose claim the refusal then releases — but every task served here that
+    // is not in the VTA's own catalogue: the credential-exchange steps a
+    // counterparty sends, `issue` among them, which deposits a second vault row
+    // when it runs twice. Their producers carry a key across every attempt at
+    // one step, new attempts included (`trust_task_push`), so skipping them
+    // here would perform each attempt.
     let Some(key) = key_of(doc) else {
         return Claim::Skip;
     };
+    let safety = retry_safety(&type_uri).unwrap_or(RetrySafety::Keyed);
+    if !safety.needs_key() {
+        return Claim::Skip;
+    }
 
     let store = IdempotencyStore::new(ks.clone());
     let principal = Principal::Did(actor.to_string()).hash();
@@ -307,6 +316,56 @@ mod tests {
             );
         }
         d
+    }
+
+    /// VTI-OPS-062: a task the catalogue does not classify is treated as keyed.
+    /// `credential-exchange/issue` is one — a counterparty task, served here
+    /// but not in `retry_safety` — and it deposits a vault row per execution,
+    /// so a second attempt at one `issue` under the same key (the push engine's
+    /// new attempt, past the acceptance window) must be answered, not run.
+    #[tokio::test]
+    async fn an_unclassified_task_carrying_a_key_is_performed_once_per_key() {
+        use vti_common::config::StoreConfig;
+        use vti_common::store::Store;
+
+        let issue = vta_sdk::protocols::credential_exchange::ISSUE;
+        assert!(
+            retry_safety(issue).is_none(),
+            "the premise: `issue` is not in the catalogue"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::IDEMPOTENCY).unwrap();
+        let payload = serde_json::json!({ "credential": "x" });
+        let first = doc_with(issue, payload.clone(), Some("urn:uuid:step-1"));
+
+        let Claim::Proceed { key, safety } = claim(&ks, "did:example:issuer", &first).await else {
+            panic!("the first attempt at an unclassified keyed task runs");
+        };
+        record_outcome(
+            &ks,
+            "did:example:issuer",
+            &key,
+            safety,
+            &TrustTaskOutcome {
+                status: axum::http::StatusCode::NO_CONTENT,
+                body: Vec::new(),
+            },
+        )
+        .await;
+
+        let mut second = doc_with(issue, payload, Some("urn:uuid:step-1"));
+        second.id = "urn:uuid:a-new-attempt".into();
+        assert!(
+            matches!(
+                claim(&ks, "did:example:issuer", &second).await,
+                Claim::Answer(_)
+            ),
+            "a new attempt under the same key is answered, not performed again"
+        );
     }
 
     #[test]

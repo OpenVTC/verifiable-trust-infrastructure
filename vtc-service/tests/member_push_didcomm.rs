@@ -345,3 +345,167 @@ async fn an_unrecognised_transport_falls_back_to_the_shared_mediator() {
         "in flight over DIDComm, not delivered by a transport it never offered"
     );
 }
+
+// ── Freshness: a push outlives the document it started with ─────────────
+
+/// A document as a push holds it once it has outlived its acceptance window:
+/// signed by the VTC, issued more than `ACCEPTANCE_WINDOW` ago, keyed.
+async fn stale_signed_document(mock: &MockVtcDidcomm, recipient: &str) -> Value {
+    let issued = chrono::Utc::now()
+        - vti_common::trust_task::ACCEPTANCE_WINDOW
+        - chrono::TimeDelta::minutes(5);
+    let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+    let mut doc = json!({
+        "id": id,
+        "type": "https://trusttasks.org/spec/vtc/members/removal-notice/0.1",
+        "issuer": mock.vtc_did(),
+        "recipient": recipient,
+        "issuedAt": issued.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "idempotencyKey": id,
+        "payload": { "note": "member push freshness test" },
+    });
+    mock.vtc
+        .state
+        .credential_signer
+        .as_ref()
+        .expect("the harness VTC has a signer")
+        .sign_operational_doc(&mut doc)
+        .await
+        .expect("sign the original");
+    doc
+}
+
+/// What the recipient must get instead of `original`: a new attempt (SPEC
+/// §8.4) — never the original re-signed under its own `id`, which a consumer
+/// that accepted it must refuse as `idConflict` — inside the window, in the
+/// original's thread, under the same idempotency key, signed again.
+fn assert_new_attempt_at(got: &Value, original: &Value) {
+    assert_ne!(got["id"], original["id"], "a fresh id: {got}");
+    assert_eq!(got["threadId"], original["id"], "in the original's thread");
+    assert_eq!(
+        got["idempotencyKey"], original["idempotencyKey"],
+        "one key across every attempt (VTI-OPS-064)"
+    );
+    assert_eq!(got["payload"], original["payload"]);
+    let issued: chrono::DateTime<chrono::Utc> = got["issuedAt"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .expect("an issuedAt");
+    assert!(
+        chrono::Utc::now() - issued < vti_common::trust_task::ACCEPTANCE_WINDOW,
+        "issued inside the window the recipient accepts: {issued}"
+    );
+    assert_eq!(
+        got["proof"]["proofPurpose"], "authentication",
+        "signed again, the way the original was"
+    );
+    assert_ne!(got["proof"], original["proof"]);
+}
+
+/// REST: a push whose document outlived its window — here, handed over that
+/// way — is delivered as a new attempt the recipient accepts, once.
+#[tokio::test]
+async fn a_rest_push_past_its_freshness_window_is_delivered_once_as_a_new_attempt() {
+    let mock = MockVtcDidcomm::start().await;
+    let (base, received) = trust_task_server().await;
+    let peer = mint_peer(vec![service("TrustTaskHTTPS", &base)]);
+    let original = stale_signed_document(&mock, &peer).await;
+
+    let id = member_push::push_trust_task(
+        &mock.vtc.state,
+        &peer,
+        original.clone(),
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("queued");
+    let outcome = settle(&mock, &id, Duration::from_secs(30))
+        .await
+        .expect("the push settled");
+    assert_eq!(outcome, (true, Protocol::Rest, "reply".to_string()));
+
+    let got = received.lock().await.clone();
+    assert_eq!(got.len(), 1, "delivered once: {got:?}");
+    assert_new_attempt_at(&got[0], &original);
+}
+
+/// DIDComm: the same, to a connected DIDComm member.
+#[tokio::test]
+async fn a_didcomm_push_past_its_freshness_window_is_delivered_once_as_a_new_attempt() {
+    init_tracing();
+    let mock = MockVtcDidcomm::start().await;
+    let member = mock.client.did().to_string();
+    let original = stale_signed_document(&mock, &member).await;
+
+    member_push::push_trust_task(
+        &mock.vtc.state,
+        &member,
+        original.clone(),
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("queued");
+    let got = mock
+        .client
+        .next_pushed_document(Duration::from_secs(30))
+        .await
+        .expect("the member received the push over DIDComm");
+    assert_new_attempt_at(&got, &original);
+    assert!(
+        mock.client
+            .next_pushed_document(Duration::from_secs(2))
+            .await
+            .is_none(),
+        "and received it once"
+    );
+}
+
+/// TSP: the same, to a live TSP peer.
+#[cfg(feature = "tsp")]
+#[tokio::test]
+async fn a_tsp_push_past_its_freshness_window_is_delivered_once_as_a_new_attempt() {
+    init_tracing();
+    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let peer = mock.connect_tsp_peer().await;
+    let original = stale_signed_document(&mock, peer.did()).await;
+
+    member_push::push_trust_task(
+        &mock.vtc.state,
+        peer.did(),
+        original.clone(),
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("queued");
+    let got = peer
+        .next_trust_task(Duration::from_secs(30))
+        .await
+        .expect("the peer received the push over TSP");
+    assert_new_attempt_at(&got, &original);
+    assert!(
+        peer.next_trust_task(Duration::from_secs(2)).await.is_none(),
+        "and received it once"
+    );
+    peer.shutdown().await;
+}
+
+/// A document still inside its window is sent as it is — the engine re-issues
+/// only what a consumer would refuse, so a fresh push is untouched and the
+/// recipient's replay record dedupes its copies by `id` as before.
+#[tokio::test]
+async fn a_push_inside_its_freshness_window_is_sent_unchanged() {
+    let mock = MockVtcDidcomm::start().await;
+    let (base, received) = trust_task_server().await;
+    let peer = mint_peer(vec![service("TrustTaskHTTPS", &base)]);
+    let mut doc = document(&peer);
+    doc["issuedAt"] = json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+
+    let id =
+        member_push::push_trust_task(&mock.vtc.state, &peer, doc.clone(), Duration::from_secs(60))
+            .await
+            .expect("queued");
+    settle(&mock, &id, Duration::from_secs(30))
+        .await
+        .expect("the push settled");
+    assert_eq!(received.lock().await.clone(), vec![doc]);
+}

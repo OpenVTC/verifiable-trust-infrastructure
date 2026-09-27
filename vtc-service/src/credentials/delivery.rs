@@ -190,6 +190,12 @@ pub(crate) async fn push_document(
         Thread::Reply(thread_id) => doc.thread_id = Some(thread_id.to_string()),
     }
     let id = doc.id.clone();
+    // One key for every attempt at this step (VTI-OPS-064): the push engine
+    // issues a new attempt — a fresh `id` — when the step outlives its
+    // acceptance window, and an `issue` delivered twice would otherwise leave
+    // the holder two copies of one credential.
+    doc.extra
+        .insert("idempotencyKey".to_string(), JsonValue::String(id.clone()));
     let mut doc_value = serde_json::to_value(&doc)
         .map_err(|e| AppError::Internal(format!("serialise {type_uri} document: {e}")))?;
     signer.sign_operational_doc(&mut doc_value).await?;

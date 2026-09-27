@@ -22,7 +22,7 @@ use serde_json::Value;
 use tracing::warn;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
-use vti_common::trust_task_push::{self, PushContext, PushMessaging};
+use vti_common::trust_task_push::{self, PushContext, PushMessaging, PushReissuer};
 
 use crate::server::AppState;
 
@@ -115,6 +115,23 @@ fn context<'a>(
         learned_tsp: Some(&state.tsp_reach),
         #[cfg(not(feature = "tsp"))]
         learned_tsp: None,
+        reissuer: Some(state),
+    }
+}
+
+/// The VTA signs a new attempt at a push as it signed the original: every push
+/// it originates is a request, under its operational key with `proofPurpose:
+/// authentication` ([`crate::trust_tasks::sign_outbound_request`]).
+#[async_trait::async_trait]
+impl PushReissuer for AppState {
+    async fn sign_new_attempt(&self, _previous: &Value, next: &mut Value) -> Result<(), AppError> {
+        if crate::trust_tasks::sign_outbound_request(self, next).await {
+            Ok(())
+        } else {
+            Err(AppError::Internal(
+                "a new attempt at the push could not be signed".into(),
+            ))
+        }
     }
 }
 

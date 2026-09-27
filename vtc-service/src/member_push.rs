@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::Value;
 use vta_sdk::protocol::matching::Protocol;
 use vti_common::error::AppError;
-use vti_common::trust_task_push::{self, PushContext, PushMessaging};
+use vti_common::trust_task_push::{self, PushContext, PushMessaging, PushReissuer};
 
 #[cfg(feature = "tsp")]
 pub use vti_common::trust_task_push::TspPushTransport;
@@ -34,6 +34,31 @@ fn context(state: &AppState) -> PushContext<'_> {
         }),
         tsp: cfg!(feature = "tsp"),
         learned_tsp: Some(&state.tsp_reach),
+        reissuer: Some(state),
+    }
+}
+
+/// The VTC signs a new attempt at a push as it signed the original. Its push
+/// sites sign two ways — a request under the operational key with `proofPurpose:
+/// authentication` (`sign_operational_doc`), and the granted notice with the
+/// signer's default purpose (`sign_doc`) — so the original's own proof says
+/// which.
+#[async_trait::async_trait]
+impl PushReissuer for AppState {
+    async fn sign_new_attempt(&self, previous: &Value, next: &mut Value) -> Result<(), AppError> {
+        let signer = self
+            .credential_signer
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
+        let purpose = previous
+            .get("proof")
+            .and_then(|p| p.get("proofPurpose"))
+            .and_then(Value::as_str);
+        if purpose == Some("authentication") {
+            signer.sign_operational_doc(next).await
+        } else {
+            signer.sign_doc(next).await
+        }
     }
 }
 

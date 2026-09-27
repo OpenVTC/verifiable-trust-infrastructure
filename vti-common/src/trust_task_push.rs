@@ -51,7 +51,55 @@
 //! Each attempt but the last gets at most [`ATTEMPT_WINDOW`]; the last gets
 //! what remains of the deadline. The recipient may receive a document more than
 //! once across transports; it deduplicates by the document `id`, which every
-//! attempt carries unchanged (VTI-TRN-043).
+//! resend of one document carries unchanged (VTI-TRN-043).
+//!
+//! # Freshness: a push outlives the document it started with
+//!
+//! A push's deadline runs to hours or days — thirty for a removal notice — but
+//! a VTI consumer accepts a document only for
+//! [`ACCEPTANCE_WINDOW`](crate::trust_task::ACCEPTANCE_WINDOW) after its
+//! `issuedAt`, plus its skew tolerance (VTI-OPS-024), and refuses anything
+//! older as `expired`. An attempt queued after that — an escalation an hour
+//! in, an attempt re-queued after a crash, a hop the mediator refused for
+//! twenty minutes, or a copy the recipient collected on reconnecting the next
+//! morning — would deliver a document the recipient refuses, and nothing here
+//! would learn of it.
+//!
+//! Re-signing the same document under the same `id` is not the fix. SPEC §8.4
+//! defines a retry as the bit-for-bit identical document, and §7.2 item 11
+//! requires a consumer that already accepted an `id` to refuse different
+//! content under it with `idConflict` — a re-stamped `issuedAt` and a new proof
+//! are different content. And no `expiresAt` helps: VTI consumers apply their
+//! window to `issuedAt` whatever `expiresAt` says, and cap the replay record at
+//! it, so that a producer cannot choose how long a consumer must remember it.
+//!
+//! So the engine issues a **new attempt** (SPEC §8.4, last paragraph) whenever
+//! it would otherwise put a document past its acceptance window on the wire:
+//! a fresh `id`, a fresh `issuedAt`, the node's proof again
+//! ([`PushReissuer`]), and everything else unchanged. The attempt stays in the
+//! original's thread — its `threadId`, or the original's `id` where the
+//! original opened the thread — so a reply correlates as it would have, and an
+//! `idempotencyKey` the original carried rides every attempt (VTI-OPS-064), so a
+//! consumer that keys the task performs it once however many attempts reach
+//! it. A task without a key is one whose repeat is harmless (VTI-OPS-060); a
+//! task whose repeat leaves a second artefact must carry one.
+//!
+//! Where it happens:
+//!
+//! - **Queuing** any attempt — the first, an escalation, a re-queue — with a
+//!   document already past the window.
+//! - **An attempt still waiting to be handed off** when its document crosses
+//!   the window: it is superseded by a new attempt on the same transport,
+//!   inside the same attempt window.
+//! - **A copy collected after the window** (a recipient that was offline):
+//!   collection is evidence the recipient is online now, and not that it
+//!   accepted what it collected, so a new attempt follows on the same
+//!   transport.
+//!
+//! What it cannot reach: a copy held by a mediator is sealed and out of this
+//! node's hands until the recipient collects it, so a recipient offline past
+//! the window receives one refused copy before the new attempt.
+//! [`MAX_REISSUES`] bounds how many new attempts one push may make.
 
 #[cfg(feature = "tsp")]
 use std::sync::Arc;
@@ -64,12 +112,13 @@ use affinidi_messaging_core::{
 use affinidi_messaging_delivery::MessagingService;
 use affinidi_messaging_delivery::{Delivery, OutboxState};
 use affinidi_tdk::messaging::ATM;
-use chrono::Utc;
+use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
+use trust_tasks_rs::freshness::DEFAULT_SKEW;
 use vta_sdk::protocol::matching::{
     DIDCOMM_SERVICE_TYPE, Protocol, ServiceCapabilities, TRUST_TASK_HTTPS_SERVICE_TYPE,
 };
@@ -77,6 +126,7 @@ use vta_sdk::protocol::matching::{
 use crate::capability_client::TRUST_TASK_ENVELOPE_TYPE;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
+use crate::trust_task::ACCEPTANCE_WINDOW;
 use crate::tsp_reach::TspReachability;
 
 /// What a node lends the push engine: the stores and handles that are its own.
@@ -99,6 +149,22 @@ pub struct PushContext<'a> {
     /// recipient whose document advertises no transport at all is reached
     /// over TSP first when it is fresh here. `None` learns nothing.
     pub learned_tsp: Option<&'a TspReachability>,
+    /// Signs the new attempts the engine issues when a push outlives its
+    /// document's acceptance window (see the module docs). `None` never
+    /// re-issues: a document past the window is still sent, and refused.
+    pub reissuer: Option<&'a dyn PushReissuer>,
+}
+
+/// A node's signature on a new attempt at a push (SPEC §8.4).
+///
+/// The engine builds the attempt ([`new_attempt`]); only the node holds the key
+/// that signed the original, so only the node can sign it again.
+#[async_trait::async_trait]
+pub trait PushReissuer: Send + Sync {
+    /// Attach this node's proof to `next`, a new attempt at `previous`.
+    /// `previous` still carries its own proof, so an implementation can sign
+    /// `next` the way `previous` was signed.
+    async fn sign_new_attempt(&self, previous: &Value, next: &mut Value) -> Result<(), AppError>;
 }
 
 /// The node's running messaging.
@@ -128,6 +194,13 @@ const ENQUEUE_GRACE: Duration = Duration::from_secs(30);
 /// its delivery rests on (VTI-TRN-041), before the sweep removes it.
 const FINISHED_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
+/// The most new attempts one push may issue (see the module docs). Each is a
+/// signature — a KMS decrypt on a TEE node — so a transport that refuses every
+/// hop for a thirty-day deadline must not re-sign every ten minutes for all of
+/// it. Enough for an hour of refused hops on two transports, and a late
+/// collection besides.
+pub const MAX_REISSUES: u32 = 12;
+
 /// Transport ids the TSP and REST transports are registered under.
 /// Kept at their original values so attempts queued before the move to
 /// `vti-common` still drain after an upgrade.
@@ -141,8 +214,13 @@ const RECORD_PREFIX: &str = "push:";
 struct PushRecord {
     id: String,
     recipient: String,
-    /// The signed Trust Task document, unchanged across attempts.
+    /// The signed Trust Task document every attempt sends: unchanged across
+    /// resends, and replaced only by a new attempt ([`new_attempt`]) once it is
+    /// past its acceptance window.
     document: Value,
+    /// How many new attempts this push has issued ([`MAX_REISSUES`]).
+    #[serde(default)]
+    reissues: u32,
     /// Transports still to try after the current one, in preference order.
     remaining: Vec<Protocol>,
     /// The transport of the attempt in flight.
@@ -184,6 +262,150 @@ fn record_key(id: &str) -> String {
 
 fn now_ms() -> u64 {
     Utc::now().timestamp_millis().max(0) as u64
+}
+
+// ─── freshness ───────────────────────────────────────────────────────────
+
+/// The document's `issuedAt`, when it carries a readable one.
+fn issued_at(doc: &Value) -> Option<DateTime<Utc>> {
+    doc.get("issuedAt")?.as_str()?.parse::<DateTime<Utc>>().ok()
+}
+
+/// Whether a VTI consumer has stopped accepting `doc` by `now`, before its skew
+/// tolerance: the point past which the engine will not put it on the wire
+/// again. A document with no readable `issuedAt` cannot be placed in any
+/// window, so it is never judged past one — it is sent as it is.
+fn past_acceptance(doc: &Value, now: DateTime<Utc>) -> bool {
+    issued_at(doc).is_some_and(|t| now >= t + ACCEPTANCE_WINDOW)
+}
+
+/// Whether every VTI consumer refuses `doc` at `now`, skew tolerance included.
+/// A copy collected past this point was refused, whatever the collection
+/// evidence says.
+fn refused_when_collected(doc: &Value, now: DateTime<Utc>) -> bool {
+    issued_at(doc).is_some_and(|t| now > t + ACCEPTANCE_WINDOW + DEFAULT_SKEW)
+}
+
+/// A **new attempt** at `previous` (SPEC §8.4): a fresh `id`, a fresh
+/// `issuedAt`, no `proof` — sign it before sending — and every other member
+/// unchanged, including any `idempotencyKey`, which every attempt at one
+/// logical operation must carry (VTI-OPS-064).
+///
+/// The attempt stays in `previous`'s thread. Where `previous` carried a
+/// `threadId` it is kept; where `previous` opened the thread, SPEC §4.9 names
+/// that thread by `previous`'s `id`, so the attempt carries that `id` as its
+/// `threadId`. Without it a new attempt would open a new exchange, and an
+/// answer keyed to the original — a presentation challenge committed to the
+/// original `id`, a reply the sender waits on — would never correlate.
+///
+/// `issuedAt` is whole seconds (VTI-KEY-107). Refused when `previous` states an
+/// `expiresAt` that has passed: the producer said the request lapses then, and
+/// a new attempt would override it.
+pub fn new_attempt(previous: &Value, now: DateTime<Utc>) -> Result<Value, AppError> {
+    let obj = previous
+        .as_object()
+        .ok_or_else(|| AppError::Validation("a Trust Task document is a JSON object".into()))?;
+    let previous_id = obj
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| AppError::Validation("the document carries no id".into()))?;
+    if let Some(expires_at) = obj
+        .get("expiresAt")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+        && expires_at <= now
+    {
+        return Err(AppError::Validation(format!(
+            "{previous_id} lapsed at its own expiresAt ({expires_at}); a new attempt would \
+             outlive what its producer asked"
+        )));
+    }
+    let mut next = obj.clone();
+    if !next.contains_key("threadId") {
+        next.insert("threadId".into(), Value::String(previous_id.to_string()));
+    }
+    next.insert(
+        "id".into(),
+        Value::String(format!("urn:uuid:{}", uuid::Uuid::new_v4())),
+    );
+    next.insert(
+        "issuedAt".into(),
+        Value::String(now.to_rfc3339_opts(SecondsFormat::Secs, true)),
+    );
+    next.remove("proof");
+    Ok(Value::Object(next))
+}
+
+/// Whether [`reissue`] could replace the push's document now — checked before a
+/// sweep sets out to, so a push that cannot re-issue (no signer, spent, or past
+/// its own `expiresAt`) waits quietly instead of warning every pass.
+fn may_reissue(ctx: &PushContext<'_>, record: &PushRecord, now: DateTime<Utc>) -> bool {
+    let lapsed = record
+        .document
+        .get("expiresAt")
+        .and_then(Value::as_str)
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+        .is_some_and(|t| t <= now);
+    ctx.reissuer.is_some() && record.reissues < MAX_REISSUES && !lapsed
+}
+
+/// Replace the push's document with a signed new attempt at it. `false` — and
+/// the document unchanged — when this node cannot sign one, the push has spent
+/// [`MAX_REISSUES`], or the document may not be re-issued; the caller then
+/// carries on with what it has, which is what the engine did before it could
+/// re-issue at all.
+async fn reissue(ctx: &PushContext<'_>, record: &mut PushRecord) -> bool {
+    let Some(signer) = ctx.reissuer else {
+        warn!(
+            push = %record.id,
+            recipient = %record.recipient,
+            "push document is past its acceptance window and this node cannot re-issue it; \
+             the recipient will refuse it as expired"
+        );
+        return false;
+    };
+    if record.reissues >= MAX_REISSUES {
+        warn!(
+            push = %record.id,
+            recipient = %record.recipient,
+            reissues = record.reissues,
+            "push has issued as many new attempts as it may; sending the document it has"
+        );
+        return false;
+    }
+    let mut next = match new_attempt(&record.document, Utc::now()) {
+        Ok(next) => next,
+        Err(e) => {
+            warn!(push = %record.id, error = %e, "cannot issue a new attempt at the push");
+            return false;
+        }
+    };
+    if let Err(e) = signer.sign_new_attempt(&record.document, &mut next).await {
+        warn!(push = %record.id, error = %e, "could not sign a new attempt at the push");
+        return false;
+    }
+    let previous = record
+        .document
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let next_id = next
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    record.document = next;
+    record.reissues += 1;
+    info!(
+        push = %record.id,
+        recipient = %record.recipient,
+        previous = %previous,
+        next = %next_id,
+        "push outlived its document's acceptance window; issued a new attempt"
+    );
+    true
 }
 
 /// What the recipient's DID document says it can be reached over.
@@ -408,11 +630,12 @@ pub async fn push_trust_task(
         deadline_ms: now_ms().saturating_add(deliver_by.as_millis() as u64),
         queued_at_ms: 0,
         outcome: None,
+        reissues: 0,
     };
     // An attempt that cannot even be queued moves straight on; only when no
     // transport will take it is the push refused.
     loop {
-        match queue_attempt(ctx, &mut record).await {
+        match queue_attempt(ctx, &mut record, None).await {
             Ok(()) => break,
             Err(e) if !record.remaining.is_empty() => {
                 warn!(
@@ -445,7 +668,24 @@ pub async fn outcome(
 }
 
 /// Queue the attempt `record.current`, and store the record.
-async fn queue_attempt(ctx: &PushContext<'_>, record: &mut PushRecord) -> Result<(), AppError> {
+///
+/// `window_end_ms` pins when the attempt's window closes, for an attempt that
+/// supersedes one on the same transport: the transport keeps the window it was
+/// given, rather than a fresh one each time its document is renewed — which,
+/// for a transport refusing every hop, would hold the push on it forever.
+/// `None` gives the attempt its share of what is left of the deadline.
+///
+/// A document already past its acceptance window is replaced by a new attempt
+/// first (see the module docs): whatever the reason this attempt is late, the
+/// document it would carry is one every VTI consumer refuses.
+async fn queue_attempt(
+    ctx: &PushContext<'_>,
+    record: &mut PushRecord,
+    window_end_ms: Option<u64>,
+) -> Result<(), AppError> {
+    if past_acceptance(&record.document, Utc::now()) {
+        reissue(ctx, record).await;
+    }
     let messaging = ctx.messaging;
     let now = now_ms();
     let remaining_ms = record.deadline_ms.saturating_sub(now).max(1_000);
@@ -454,7 +694,9 @@ async fn queue_attempt(ctx: &PushContext<'_>, record: &mut PushRecord) -> Result
     // to escalate: a 15-minute consent request tries each of three transports
     // for five minutes, where taking the whole deadline first would never
     // reach the second.
-    let window_ms = if record.remaining.is_empty() {
+    let window_ms = if let Some(end) = window_end_ms {
+        end.saturating_sub(now).max(1_000)
+    } else if record.remaining.is_empty() {
         remaining_ms
     } else {
         let share = remaining_ms / (record.remaining.len() as u64 + 1);
@@ -566,8 +808,38 @@ pub async fn sweep(ctx: &PushContext<'_>) -> Result<(), AppError> {
         // layer's own settle pass, so escalation is not held for it.
         let expired = entry.as_ref().is_some_and(|e| now >= e.deliver_by_ms);
         let observed = entry.as_ref().is_some_and(|e| e.outbox_observed);
+        let window_end_ms = entry.as_ref().map(|e| e.deliver_by_ms);
         let entry_state = entry.map(|e| e.state);
+        let clock = Utc::now();
         match entry_state {
+            // Collected, but only after every VTI consumer had stopped
+            // accepting the document: the recipient was offline past the
+            // window, is online now, and refused what it collected. Collection
+            // is evidence of the first and not of acceptance, so a new attempt
+            // follows on the transport the recipient just proved it reads.
+            Some(OutboxState::Delivered)
+                if record.current != Protocol::Rest
+                    && now < record.deadline_ms
+                    && refused_when_collected(&record.document, clock)
+                    && may_reissue(ctx, &record, clock) =>
+            {
+                warn!(
+                    push = %record.id,
+                    recipient = %record.recipient,
+                    via = %record.current,
+                    "push collected after its acceptance window closed; the recipient refused \
+                     it as expired, so a new attempt follows"
+                );
+                if reissue(ctx, &mut record).await {
+                    record.attempt += 1;
+                    if let Err(e) = queue_attempt(ctx, &mut record, None).await {
+                        warn!(push = %record.id, error = %e, "could not queue the new attempt");
+                        escalate(ctx, &mut record).await?;
+                    }
+                } else {
+                    finish(ctx, &mut record, true, "collected").await?;
+                }
+            }
             Some(OutboxState::Delivered) => {
                 finish(ctx, &mut record, true, "collected").await?;
             }
@@ -576,6 +848,29 @@ pub async fn sweep(ctx: &PushContext<'_>) -> Result<(), AppError> {
             Some(OutboxState::Sent) if record.current == Protocol::Rest => {
                 let _ = messaging.service.confirm(&record.attempt_key).await;
                 finish(ctx, &mut record, true, "reply").await?;
+            }
+            // Still waiting to be handed off — the mediator or the recipient's
+            // server has refused every hop so far — and its document has now
+            // crossed the acceptance window, so the hop that finally succeeds
+            // would carry a refused document. Superseded by a new attempt on
+            // the same transport, inside the same window.
+            //
+            // Not a `Sent` attempt: that copy is sealed and held by a mediator,
+            // out of this node's reach, and a copy per window for an offline
+            // recipient would fill the mediator's queue for them. The arm above
+            // picks it up when it is collected.
+            Some(OutboxState::Queued)
+                if !expired
+                    && past_acceptance(&record.document, clock)
+                    && may_reissue(ctx, &record, clock) =>
+            {
+                if reissue(ctx, &mut record).await {
+                    record.attempt += 1;
+                    if let Err(e) = queue_attempt(ctx, &mut record, window_end_ms).await {
+                        warn!(push = %record.id, error = %e, "could not queue the new attempt");
+                        escalate(ctx, &mut record).await?;
+                    }
+                }
             }
             Some(OutboxState::Queued | OutboxState::Sent) if !expired => {}
             // Not in the outbox. Just queued, and the entry is not written yet:
@@ -589,7 +884,7 @@ pub async fn sweep(ctx: &PushContext<'_>) -> Result<(), AppError> {
                     attempt = %record.attempt_key,
                     "push attempt was never queued; queuing it again"
                 );
-                if let Err(e) = queue_attempt(ctx, &mut record).await {
+                if let Err(e) = queue_attempt(ctx, &mut record, None).await {
                     warn!(push = %record.id, error = %e, "could not re-queue the push");
                     escalate(ctx, &mut record).await?;
                 }
@@ -648,7 +943,7 @@ async fn escalate(ctx: &PushContext<'_>, record: &mut PushRecord) -> Result<(), 
     record.remaining = next;
     record.current = record.remaining.remove(0);
     record.attempt += 1;
-    if let Err(e) = queue_attempt(ctx, record).await {
+    if let Err(e) = queue_attempt(ctx, record, None).await {
         warn!(recipient = %record.recipient, error = %e, "could not queue the escalated push");
         return finish(ctx, record, false, "none").await;
     }
@@ -1000,6 +1295,103 @@ mod tests {
             choose(&Reach::default(), &ours, true),
             vec![Protocol::Didcomm]
         );
+    }
+
+    fn signed_at(issued_at: DateTime<Utc>) -> Value {
+        json!({
+            "id": "urn:uuid:00000000-0000-0000-0000-000000000001",
+            "type": "https://trusttasks.org/spec/credential-exchange/issue/0.1",
+            "issuer": "did:example:vtc",
+            "recipient": "did:example:member",
+            "issuedAt": issued_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            "idempotencyKey": "urn:uuid:00000000-0000-0000-0000-000000000001",
+            "payload": { "credential": "x" },
+            "proof": { "type": "DataIntegrityProof", "proofPurpose": "authentication" },
+        })
+    }
+
+    /// The engine stops putting a document on the wire at the consumer's
+    /// window, and judges a collected copy refused only once the consumer's
+    /// skew tolerance has passed too.
+    #[test]
+    fn a_document_is_past_acceptance_at_the_window_and_refused_after_the_skew() {
+        // Whole seconds, as `issuedAt` is on the wire.
+        let issued = chrono::SubsecRound::trunc_subsecs(Utc::now() - ACCEPTANCE_WINDOW, 0);
+        let doc = signed_at(issued);
+        let at_window = issued + ACCEPTANCE_WINDOW;
+        assert!(!past_acceptance(
+            &doc,
+            at_window - chrono::TimeDelta::seconds(1)
+        ));
+        assert!(past_acceptance(&doc, at_window));
+        assert!(!refused_when_collected(&doc, at_window + DEFAULT_SKEW));
+        assert!(refused_when_collected(
+            &doc,
+            at_window + DEFAULT_SKEW + chrono::TimeDelta::seconds(1)
+        ));
+    }
+
+    /// A document with no `issuedAt` cannot be placed in any window, so it is
+    /// never replaced: the engine sends what it was given.
+    #[test]
+    fn a_document_without_an_issued_at_is_never_past_acceptance() {
+        let doc = json!({ "id": "urn:uuid:x", "type": "t", "payload": {} });
+        let far = Utc::now() + chrono::TimeDelta::days(365);
+        assert!(!past_acceptance(&doc, far));
+        assert!(!refused_when_collected(&doc, far));
+    }
+
+    /// SPEC §8.4: anything that changes the bytes is a new document and must
+    /// carry a fresh `id` — re-signing under the old one is the `idConflict`
+    /// case of §7.2 item 11. Everything else carries over, the key included
+    /// (VTI-OPS-064), and the proof is cleared for the node to sign again.
+    #[test]
+    fn a_new_attempt_has_a_fresh_id_and_issued_at_and_keeps_the_key_and_payload() {
+        let issued = Utc::now() - chrono::TimeDelta::hours(2);
+        let previous = signed_at(issued);
+        let now = Utc::now();
+        let next = new_attempt(&previous, now).expect("a new attempt");
+
+        assert_ne!(next["id"], previous["id"], "a fresh id");
+        assert!(next["id"].as_str().unwrap().starts_with("urn:uuid:"));
+        assert_eq!(
+            issued_at(&next).map(|t| t.timestamp()),
+            Some(now.timestamp()),
+            "a fresh issuedAt, in whole seconds"
+        );
+        assert!(!past_acceptance(&next, now));
+        assert!(
+            next.get("proof").is_none(),
+            "unsigned until the node signs it"
+        );
+        for member in ["type", "issuer", "recipient", "payload", "idempotencyKey"] {
+            assert_eq!(next[member], previous[member], "{member} carries over");
+        }
+    }
+
+    /// A new attempt stays in the original's thread: the original's own `id`
+    /// where it opened the thread, its `threadId` where it had one.
+    #[test]
+    fn a_new_attempt_stays_in_the_original_thread() {
+        let previous = signed_at(Utc::now() - chrono::TimeDelta::hours(1));
+        let next = new_attempt(&previous, Utc::now()).unwrap();
+        assert_eq!(next["threadId"], previous["id"]);
+
+        let again = new_attempt(&next, Utc::now()).unwrap();
+        assert_eq!(
+            again["threadId"], previous["id"],
+            "a second attempt stays in the same thread, not the first attempt's"
+        );
+    }
+
+    /// A producer that said its request lapses at `expiresAt` is not
+    /// overridden by a new attempt past it.
+    #[test]
+    fn a_document_past_its_own_expiry_is_not_re_issued() {
+        let now = Utc::now();
+        let mut previous = signed_at(now - chrono::TimeDelta::hours(1));
+        previous["expiresAt"] = json!((now - chrono::TimeDelta::minutes(1)).to_rfc3339());
+        assert!(new_attempt(&previous, now).is_err());
     }
 
     #[test]
