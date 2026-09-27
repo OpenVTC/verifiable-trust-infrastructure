@@ -2,6 +2,38 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-webvh-v0.2.25...vta-webvh-v0.3.0) — 2026-09-27
+
+
+### Added
+
+- **webvh**: Reach the DID hosting service with Trust Tasks only ([#1789](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1789))
+
+* feat(webvh)!: reach the DID hosting service with Trust Tasks only
+
+  Stage 2b of the webvh-service Trust Tasks plan (trust-tasks #661). The
+  VTA's REST client to the hosting service and WebvhTransport::Rest are
+  removed; one client, vta-service/src/webvh_host.rs, makes every call as a
+  Trust Task typed with the generated did-management bindings, over the
+  transport the seam picks (TSP > DIDComm > HTTPS POST {base}/trust-tasks).
+
+  - The HTTPS base defaults to {WebVHHosting origin}/api, where the hosting
+    service serves its binding; https:// only, or http:// to loopback.
+  - Every reply must carry the host's proof (SignedByRecipient), thread to
+    the request, be addressed to this VTA and have the asked-for type.
+    Refusals are read from trust-task-error documents by spec code;
+    did/problem-report is no longer read.
+  - servers/domains reads me/domains; reconcile and retire-orphan read the
+    paged did/list {records, total} and now work over Trust Tasks. A listing
+    that disagrees with its total is refused.
+  - The DID-auth handshake, the server-auth token cache, WebvhAuthLocks and
+    the WebVHHostingService alias are gone. vta-webvh is the store only.
+
+  The test hosting service is now a Trust-Task host that refuses unsigned
+  requests and signs its answers; a forged answer is refused.
+
+
+
 ## [0.2.25](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-webvh-v0.2.24...vta-webvh-v0.2.25) — 2026-09-26
 
 

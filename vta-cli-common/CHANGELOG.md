@@ -2,6 +2,149 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.25.0...vta-cli-common-v0.26.0) — 2026-09-27
+
+
+### Added
+
+- **vta**: Health, restore status, session revoke and the wrapping key are Trust Tasks ([#1790](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1790))
+
+* feat(vta)!: health, restore status, session revoke and the wrapping key are Trust Tasks
+
+  Four REST routes become spine-dispatched, signed Trust Tasks reachable over
+  TSP, DIDComm and HTTPS (`/trust-tasks`), from trust-tasks-rs 0.23.6, and the
+  routes are removed rather than deprecated.
+
+  vta/health/details/0.1 (replaces GET /health/details)
+  - Public: in `vta_sdk::trust_tasks::PUBLIC_URIS`, so an anonymous HTTPS caller
+    (on the unauthenticated limiter) and a DIDComm/TSP sender the ACL does not
+    know are answered; request proof optional, response signed.
+  - Returns only the fixed non-identifying flags the schema admits: status,
+    mediatorUrl/mediatorDid, teeStatus (as vta/attestation/status answers it,
+    `sev_snp` spelled `sev-snp`, absent without a provider), sealed,
+    storageEncrypted, tspEnabled. The same answer for every asker; never the
+    software version or the restore record.
+
+  vta/restore/status/0.1 (the version and restore half of GET /health/details)
+  - Administrators of the VTA only (any admin, scoped or not, read from the ACL
+    now rather than the token); anyone else is `permissionDenied` before any
+    restore state is read. Request proof required, response signed.
+  - Answers `version`, `restored`, and the VTI-VTA-051 `restore` record from
+    `keys ▸ restore:provenance` exactly when restored. The SDK refuses a reply in
+    which the two disagree. `pnm health` gains a Deployment section showing both
+    tasks' answers.
+
+  auth/revoke-session/0.2 (replaces GET /auth/sessions, DELETE
+  /auth/sessions/{id}, DELETE /auth/sessions?did=)
+  - Adds the `subject` form and implements `all: true` (0.1 refused it). A caller
+    may end another subject's sessions exactly when it could remove that
+    subject's ACL entry (VTI-SES-043, VTI-ACL-050, `may_manage_subject`); outside
+    that, `permissionDenied`, decided before the subject's sessions are read and
+    identical whether or not the subject exists. A named session outside the
+    caller's authority is answered as a missing one (`revokedCount: 0`).
+  - The payload is checked against its schema and the one-form rule is enforced
+    in the handler on the validated JSON, not left to the generated type: two
+    forms, none, or `all: false` are `malformedRequest`.
+  - Every revocation and refusal is audited with caller and subject; `reason`
+    goes to the audit detail.
+  - 0.1 is no longer served (every 0.1 payload is a valid 0.2 payload);
+    vta-mobile-core's builders move to 0.2. The hand-written
+    `RevokeSessionRequest`/`RevokeSessionResponse` are deleted in favour of the
+    generated types. Listing another subject's sessions has no replacement: no
+    published task enumerates them.
+
+  keys/import-wrapping-key/0.1 (replaces GET /keys/import/wrapping-key)
+  - The wrapping key is now an Ed25519 keypair returned as a `did:key`, with
+    `keyId` and `expiresAt`; only its X25519 counterpart is kept, in memory,
+    single-use, 60 seconds. Admin only, as keys/import. Response signed.
+  - `VtaClient::get_wrapping_key` returns the generated response and always
+    verifies the reply's proof (a client with no identity is refused, and
+    `trusting_unsigned_replies` does not apply to this task). `pnm keys import`
+    seals to the did:key's X25519. The sealed path over HTTPS works through the
+    task; the cleartext carrier stays refused there.
+
+- **cli**: Make pnm usable from a script ([#1753](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1753))
+
+* feat(cli)!: pipe gets json, terminal gets table
+
+- **services**: Service management is Trust Tasks only, over any transport ([#1782](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1782))
+
+* feat(services)!: service management is Trust Tasks only, over any transport
+
+  `pnm services …` (and every SDK caller) reached the VTA's service management
+  through bespoke REST routes — twenty `/services/*` plus `/mediators/*` — via
+  `VtaClient::rpc`, whose DIDComm and TSP arms answered `UnsupportedTransport`.
+  So the whole surface worked only over REST, although the VTA already served the
+  `vta/services/*` Trust Tasks. Under the rule that every remote API is a
+  spine-dispatched Trust Task reachable over TSP, DIDComm and HTTPS, the SDK now
+  dispatches the tasks and the REST routes are removed.
+
+  Spec gaps closed first (trustoverip/dtgwg-trust-tasks-tf#656, trust-tasks-rs
+  0.23.3):
+  - `vta/services/report/0.1` — the mediator-attribution report had no task.
+    Operator-only, request proof REQUIRED: it is a contact log of other parties'
+    DIDs. Served from the telemetry sink; `since` after `until` is the declared
+    `invalidWindow`.
+  - `vta/services/update/1.1` — adds `drainTtlSecs` for the mediated transports.
+    The REST route and `pnm services didcomm update --drain-ttl` carried an
+    operator-chosen drain; 1.0 could not, so moving to the task would have
+    silently dropped it. The handler honours it for DIDComm, raising a value
+    below the 1h floor to the floor over a request that arrived through the
+    mediator being replaced (the spec's MUST), refuses it for rest/webauthn, and
+    reports no `drainUntil` for tsp — this VTA has one mediator connection, which
+    a TSP update does not tear down, so there is nothing to drain.
+
+  SDK
+  - Every `services` method keeps its signature and return type, builds the spec
+    payload, dispatches over `rpc_tt`, and maps the generated response back.
+    `enable_didcomm` is no longer REST-only: a REST-only VTA receives it over
+    HTTPS on `/trust-tasks`. `didcomm_status` is `services/get`; the live
+    websocket state is not published state (`GET /health/details` has it).
+  - The producer census (`producer_payload_conformance`) now drives every
+    services method through the loopback and validates each payload against the
+    published schema; the wiremock REST-shape tests are gone with the routes.
+
+  Removed (breaking)
+  - `/services/*`, `/mediators/report`, `/mediators/drain/cancel` and their
+    deprecation-registry entries; the REST-auth tests for them (the same
+    super-admin gates are on the task handlers).
+  - Responses lose two cosmetic fields the task does not carry (the mediator
+    endpoint on enable/update); the CLI already printed them only when present.
+
+  VTC
+  - 0.23.3 publishes a generated `acl/revoke/0.1`, so the VTC's hand-written
+    `RevokeRequest` / `AclRevokeResponse` (which the generated-wire-types census
+    now names) are replaced by the generated payload on the spine and the
+    generated response, wrapped as `vta_sdk::openapi::AclRevoke01Response`, on
+    both the spine and `DELETE /v1/acl/{did}`. Behaviour is unchanged — the
+    declared `subjectNotPresent` / `lastAuthorityProtected` codes and the session
+    end on full removal. The console's `openapi.json` / `wire.ts` are regenerated
+    for the schema's new name.
+
+  Not closed here: `vta/services/rollback/1.0` has no drain member, so a DIDComm
+  rollback that lands on a drain transition takes the default window; and
+  per-transport mediators remain unbuilt, so advertising a TSP mediator the VTA is
+  not connected to is still possible.
+
+
+
+### Fixed
+
+- **cli**: Pnm keys import works over DIDComm and TSP ([#1784](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1784))
+
+`keys import` always fetched the VTA's wrapping key first, and that is a REST
+  route (`GET /keys/import/wrapping-key`), so on a DIDComm or TSP client the
+  command failed before it sent anything. The SDK's `import_key` already sends
+  `keys/import/0.1` on every transport, and the VTA accepts the cleartext
+  `privateKeyMultibase` carrier over a transport confidential end to end.
+
+  The CLI now picks the carrier from the client's Trust Task transport: multibase
+  over DIDComm and TSP, with no wrapping-key fetch; sealed to the wrapping key
+  over REST, where the VTA refuses a cleartext key (unchanged). A wrapping-key
+  Trust Task for HTTPS needs its own specification and is not part of this.
+
+
+
 ## [0.25.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-cli-common-v0.24.0...vta-cli-common-v0.25.0) — 2026-09-26
 
 
