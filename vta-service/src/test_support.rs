@@ -1191,6 +1191,39 @@ pub async fn build_provisionable_test_app() -> (axum::Router, TestAppContext) {
     .await
 }
 
+/// Answers a resolution with one of [`TestAppOptions::preseed_did_docs`]'
+/// documents, then declines (`None`) for every other DID, so the method's
+/// normal chain runs unchanged behind it.
+///
+/// `DIDCacheClient::add_did_document` only seeds the resolver's *cache* — it
+/// does not survive an eviction. A verifier that fails a proof against a
+/// cached document re-resolves the signer once, fresh, before refusing it
+/// (VTI-KEY-134), and a fresh resolution goes straight to the resolver chain,
+/// bypassing the cache entirely. Without a resolver here, that forced
+/// re-resolution of a stub DID like `webvh-host.test` cannot be satisfied —
+/// there is nothing at that address — and the caller sees a key-retrieval
+/// failure instead of the forged proof it meant to prove out. Prepending this
+/// resolver in front of the chain means the forced re-resolution finds the
+/// same document the cache would have, so a genuinely bad proof is refused as
+/// exactly that.
+#[derive(Clone)]
+struct PreseededDidResolver {
+    docs: Arc<std::collections::HashMap<String, affinidi_tdk::did_common::Document>>,
+}
+
+impl affinidi_did_resolver_cache_sdk::Resolver for PreseededDidResolver {
+    fn name(&self) -> &str {
+        "test-preseeded-docs"
+    }
+
+    fn resolve(
+        &self,
+        did: &affinidi_tdk::did_common::DID,
+    ) -> affinidi_did_resolver_cache_sdk::Resolution {
+        self.docs.get(&did.to_string()).cloned().map(Ok)
+    }
+}
+
 /// Backing builder for [`build_test_app`] / [`build_provisionable_test_app`].
 pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestAppContext) {
     use base64::Engine;
@@ -1331,15 +1364,43 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     // Build the DID resolver and pre-seed any caller-supplied documents into its
     // cache. `resolve()` is cache-first, so a seeded `did:webvh:<scid>:<domain>`
     // resolves in-process (no network) to its loopback `WebVHHosting` endpoint.
+    //
+    // The same documents also go in front of the resolver chain
+    // (`PreseededDidResolver`), not only the cache: a proof checked against a
+    // cached document that fails is re-resolved once, fresh, before it is
+    // refused (VTI-KEY-134), and a fresh resolution does not consult the
+    // cache. Without the chain entry, that forced re-resolution of a stub DID
+    // has nothing to answer it.
     let did_resolver = {
         let mut resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
             .await
             .ok();
         if let Some(client) = resolver.as_mut() {
+            let mut preseeded_docs = std::collections::HashMap::new();
             for (did, doc_json) in &opts.preseed_did_docs {
-                let doc = serde_json::from_value(doc_json.clone())
-                    .expect("preseed DID document must deserialize into a resolver Document");
-                client.add_did_document(did, doc).await;
+                let doc: affinidi_tdk::did_common::Document =
+                    serde_json::from_value(doc_json.clone())
+                        .expect("preseed DID document must deserialize into a resolver Document");
+                client.add_did_document(did, doc.clone()).await;
+                preseeded_docs.insert(did.clone(), doc);
+            }
+            if !preseeded_docs.is_empty() {
+                let preseeded_docs = Arc::new(preseeded_docs);
+                let methods: std::collections::HashSet<_> = preseeded_docs
+                    .keys()
+                    .filter_map(|did| did.parse::<affinidi_tdk::did_common::DID>().ok())
+                    .map(|did| affinidi_did_resolver_cache_sdk::MethodName::from(&did.method()))
+                    .collect();
+                for method in methods {
+                    client
+                        .prepend_resolver(
+                            method,
+                            Box::new(PreseededDidResolver {
+                                docs: preseeded_docs.clone(),
+                            }),
+                        )
+                        .expect("prepend the preseeded-doc resolver for a fresh test method");
+                }
             }
         }
         resolver
