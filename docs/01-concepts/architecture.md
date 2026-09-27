@@ -50,7 +50,6 @@ AppState
   sessions_ks      KeyspaceHandle                         "sessions" partition
   acl_ks           KeyspaceHandle                         "acl" partition
   contexts_ks      KeyspaceHandle                         "contexts" partition
-  cache_ks         KeyspaceHandle                         "cache" partition
   config           Arc<RwLock<AppConfig>>                 runtime-mutable config
   seed_store       Arc<dyn SeedStore>                     master-seed backend (keyring, KMS, …)
   did_resolver     Option<DIDCacheClient>                 DID resolution (None before setup)
@@ -121,7 +120,6 @@ vta-service/src/
     keys.rs        Key CRUD + signing oracle
     contexts.rs    Context CRUD
     acl.rs         ACL CRUD
-    cache.rs       Token cache (GET/PUT/DELETE)
     bootstrap.rs   Sealed-transfer + provision-integration endpoints
 ```
 
@@ -163,14 +161,6 @@ vta-service/src/
 | PATCH | /keys/{key_id} | Admin | Rename key (context access checked) |
 | GET | /keys/{key_id}/secret | Admin | Export private key material |
 | POST | /keys/{key_id}/sign | Auth | Sign payload (signing oracle) |
-
-### Cache
-
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| GET | /cache/{key} | Auth | Retrieve cached value |
-| PUT | /cache/{key} | Auth | Store value with TTL |
-| DELETE | /cache/{key} | Auth | Delete cached value |
 
 ### Contexts
 
@@ -228,7 +218,6 @@ All data lives in fjall keyspaces:
 | acl | `acl:{did}` | AclEntry (JSON) |
 | contexts | `ctx:{id}` | ContextRecord (JSON) |
 | contexts | `ctx_counter` | u32 (LE bytes) |
-| cache | `cache:{did}:{key}` | CacheEntry (JSON) |
 
 In TEE deployments the `Store` enum dispatches transparently to a
 `VsockStore` running on the parent EC2 instance instead of a local

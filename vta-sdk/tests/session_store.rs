@@ -632,8 +632,13 @@ async fn ensure_authenticated_rotation_leaves_the_temp_did_authoritative_on_fail
     let (temp_did, temp_pk) = did_key_from_seed(0x10);
     let (vta_did, _) = did_key_from_seed(0x20);
 
+    // The swap is the `acl/swap-key` Trust Task on every transport; over REST
+    // it posts to `/trust-tasks`.
     Mock::given(method("POST"))
-        .and(path("/acl/swap"))
+        .and(path("/trust-tasks"))
+        .and(wiremock::matchers::body_partial_json(serde_json::json!({
+            "type": "https://trusttasks.org/spec/acl/swap-key/0.1"
+        })))
         .respond_with(ResponseTemplate::new(403).set_body_string("no entry for the temp DID"))
         .mount(&server)
         .await;

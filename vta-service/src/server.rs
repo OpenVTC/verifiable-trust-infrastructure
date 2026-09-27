@@ -120,7 +120,6 @@ pub struct AppState {
     /// because that keyspace wraps under a seed-derived KEK; these must have
     /// no path back to the mnemonic.
     pub internal_ks: KeyspaceHandle,
-    pub cache_ks: KeyspaceHandle,
     /// Vault — third-party credentials the holder has stored on this VTA.
     /// M1 reads only; upsert/delete/sync/release land in M2+. Encrypted at
     /// rest like every other secret-bearing keyspace.
@@ -471,7 +470,6 @@ pub async fn build_app_state(
     let audit_key_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT_KEY)?);
     let imported_ks = apply_encryption(store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?);
     let internal_ks = apply_encryption(store.keyspace(crate::keyspaces::INTERNAL_KEYS)?);
-    let cache_ks = apply_encryption(store.keyspace(crate::keyspaces::CACHE)?);
     let vault_ks = apply_encryption(store.keyspace(crate::keyspaces::VAULT)?);
     // Persistent runtime state for service enable/disable. Encrypted because
     // a couple of bool records are cheap and the keyspace may grow.
@@ -590,7 +588,6 @@ pub async fn build_app_state(
         audit_sink,
         imported_ks,
         internal_ks,
-        cache_ks,
         vault_ks,
         service_state_ks,
         sealed_nonces_ks,

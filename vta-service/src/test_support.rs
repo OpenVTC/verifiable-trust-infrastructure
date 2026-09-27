@@ -1233,7 +1233,6 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         .expect("seed ctx1");
     }
     let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
-    let cache_ks = store.keyspace(crate::keyspaces::CACHE).unwrap();
     let vault_ks = store.keyspace(crate::keyspaces::VAULT).unwrap();
     let vault_ks_ctx = vault_ks.clone();
     let service_state_ks = store.keyspace(crate::keyspaces::SERVICE_STATE).unwrap();
@@ -1392,7 +1391,6 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         did_templates_ks,
         audit_ks,
         imported_ks,
-        cache_ks,
         vault_ks,
         consent_ks: store.keyspace(crate::keyspaces::CONSENT).unwrap(),
         consent_approvers_ks: store.keyspace(crate::keyspaces::CONSENT_APPROVERS).unwrap(),
