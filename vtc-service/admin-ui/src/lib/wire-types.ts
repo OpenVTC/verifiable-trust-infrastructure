@@ -219,11 +219,9 @@ export type GitNsPublishedRow = Schemas["GitNsPublishedRow"];
 export type GitNsRight = Schemas["GitNsViewV0_1Right"];
 export type GitNsForgeStatus = Schemas["GitNsForgeStatus"];
 export type GitNsStepOutcome = Schemas["GitNsStepOutcome"];
+export type GitNsLastCheck = Schemas["GitNsLastCheck"];
 export type GitNsAccountRow = Schemas["GitNsAccountRow"];
 export type GitNsAccountList = Schemas["GitNsAccountList"];
 export type GitNsActivity = Schemas["GitNsActivity"];
 export type GitNsActivityItem = Schemas["GitNsActivityItem"];
 export type GitNsBreakGlassMark = Schemas["GitNsBreakGlassMark"];
-export type GitNsBreakGlassItem = Schemas["GitNsBreakGlassItem"];
-export type GitNsBreakGlassList = Schemas["GitNsBreakGlassList"];
-

@@ -21,7 +21,6 @@
 
 import type {
   GitNsBootstrapStatus,
-  GitNsBreakGlassItem,
   GitNsBreakGlassMark,
   GitNsDriftItem,
   GitNsNamespaceRow,
@@ -957,6 +956,28 @@ export function isSelfGrant(viewer: string | null, subject: string, right: strin
 }
 
 export type BreakGlassState = "unratified" | "pending" | "ratified";
+
+/**
+ * One break-glass record, as the console lists it: a `git-ns/view/0.5`
+ * record carrying `breakGlass`, with the namespace it is in and its state
+ * now (`api.ts`, `breakGlassItems`). A console view model, not a wire shape.
+ */
+export interface GitNsBreakGlassItem {
+  /** The namespace's identifier; empty if the answer did not carry it. */
+  namespace: string;
+  /** The namespace's resource (`github.com/acme`). */
+  namespaceResource: string;
+  subject: string;
+  right: string;
+  resource: string;
+  grantedAt: string;
+  breakGlass: GitNsBreakGlassMark;
+  state: BreakGlassState;
+}
+
+export interface GitNsBreakGlassList {
+  items: GitNsBreakGlassItem[];
+}
 
 /** A break-glass mark's state now. `pending` — a policy delay has not run
  *  out, so the right confers nothing yet; `unratified` — live and flagged. */

@@ -2439,48 +2439,6 @@
         ]
       }
     },
-    "/v1/git-ns/break-glass": {
-      "get": {
-        "tags": [
-          "git-ns"
-        ],
-        "operationId": "gitNsBreakGlassList",
-        "parameters": [
-          {
-            "name": "namespace",
-            "in": "query",
-            "description": "Only this namespace (its identifier).",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Break-glass records in the namespaces the caller administers, unratified first",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitNsBreakGlassList"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "The caller administers no namespace (or not the one named)"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/git-ns/drift": {
       "get": {
         "tags": [
@@ -2543,37 +2501,6 @@
         ]
       }
     },
-    "/v1/git-ns/namespaces": {
-      "get": {
-        "tags": [
-          "git-ns"
-        ],
-        "operationId": "gitNsNamespacesList",
-        "responses": {
-          "200": {
-            "description": "Bound and pending namespaces",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitNsNamespaceList"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/git-ns/projection": {
       "get": {
         "tags": [
@@ -2596,48 +2523,6 @@
           },
           "403": {
             "description": "Caller is not a community administrator"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/git-ns/repos": {
-      "get": {
-        "tags": [
-          "git-ns"
-        ],
-        "operationId": "gitNsReposList",
-        "parameters": [
-          {
-            "name": "namespace",
-            "in": "query",
-            "description": "Only repositories in this namespace (its identifier).",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Recorded repositories",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitNsRepoList"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
           }
         },
         "security": [
@@ -2717,51 +2602,6 @@
                 }
               }
             }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not a community administrator"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/git-ns/view": {
-      "get": {
-        "tags": [
-          "git-ns"
-        ],
-        "operationId": "gitNsAdminView",
-        "parameters": [
-          {
-            "name": "resource",
-            "in": "query",
-            "description": "Narrow to this forge-qualified resource and everything it contains\n(`github.com/acme`, `github.com/acme/widgets`).",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Every namespace, repository and recorded right, reasons included",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitNsViewV0_1Response"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The resource is not a forge-qualified resource"
           },
           "401": {
             "description": "Missing or invalid bearer token"
@@ -8270,63 +8110,6 @@
           }
         }
       },
-      "GitNsBreakGlassItem": {
-        "type": "object",
-        "description": "One break-glass record.",
-        "required": [
-          "namespace",
-          "namespaceResource",
-          "subject",
-          "right",
-          "resource",
-          "grantedAt",
-          "breakGlass",
-          "state"
-        ],
-        "properties": {
-          "breakGlass": {
-            "$ref": "#/components/schemas/GitNsBreakGlassMark"
-          },
-          "grantedAt": {
-            "type": "string"
-          },
-          "namespace": {
-            "type": "string",
-            "description": "The namespace's identifier."
-          },
-          "namespaceResource": {
-            "type": "string",
-            "description": "The namespace's resource (`github.com/acme`)."
-          },
-          "resource": {
-            "type": "string"
-          },
-          "right": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string",
-            "description": "`unratified` — live, flagged, awaiting another administrator;\n`pending` — unratified and not yet in effect (a policy delay);\n`ratified` — an ordinary grant now, kept here as history."
-          },
-          "subject": {
-            "type": "string"
-          }
-        }
-      },
-      "GitNsBreakGlassList": {
-        "type": "object",
-        "required": [
-          "items"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/GitNsBreakGlassItem"
-            }
-          }
-        }
-      },
       "GitNsBreakGlassMark": {
         "type": "object",
         "description": "A record's `breakGlass` (`git-ns/_shared/0.4` `BreakGlass`).",
@@ -8591,6 +8374,29 @@
           "state": {
             "type": "string",
             "description": "`pending` | `accepted` | `succeeded` | `partial` | `failed` |\n`cancelled`."
+          }
+        }
+      },
+      "GitNsLastCheck": {
+        "type": "object",
+        "description": "The last verify-trust check run the bridge saw on a repository.",
+        "required": [
+          "conclusion",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "conclusion": {
+            "type": "string",
+            "description": "In the forge's words (`success`, `failure`)."
+          },
+          "sha": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -8883,11 +8689,15 @@
             "type": "string"
           },
           "lastCheck": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "The last verify-trust check the bridge saw (`{conclusion, at, sha?}`)."
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GitNsLastCheck",
+                "description": "The last verify-trust check run the bridge saw."
+              }
+            ]
           },
           "lastError": {
             "type": [

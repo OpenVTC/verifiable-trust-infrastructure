@@ -22,8 +22,11 @@
 //! [`step_up_request`] recover its code and details from the
 //! `trust-task-error` document whichever transport carried it.
 //!
-//! **Listings are the administrator's REST reads** (`/v1/git-ns/*`), which need
-//! an admin token and return the console's JSON.
+//! **Reads are signed Trust Tasks too**, and go the same way: a member's
+//! `git-ns/view`, and the administrator's reads — `git-ns/view/0.5` with
+//! `scope: administrator` or `breakGlass: true`, `git-ns/namespace/list/0.1`
+//! and `git-ns/repo/list/0.1` — which the VTC answers to a namespace's
+//! administrators only, from the signer's standing, never from a bearer token.
 //!
 //! The payload and response types are the specification's own, generated
 //! into `trust_tasks_rs::specs::git_ns` and re-exported here as [`specs`].
@@ -41,23 +44,37 @@ use specs::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
 use specs::drift::resolve::{v0_1 as drift_resolve, v0_3 as drift_resolve3};
-use specs::namespace::{bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 as unbind};
+use specs::namespace::{
+    bind::v0_1 as bind, list::v0_1 as namespace_list, reseat::v0_3 as reseat,
+    unbind::v0_1 as unbind,
+};
 
 /// `git-ns/namespace/reseat/0.3`, the only reseat version the VTC serves.
 pub const RESEAT_TYPE_URI: &str = <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 use specs::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
-    transfer::v0_1 as transfer,
+    list::v0_1 as repo_list, transfer::v0_1 as transfer,
 };
 use specs::right::{
     break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
     revoke::v0_3 as revoke,
 };
 use specs::roles::reproject::v0_1 as reproject;
-use specs::view::{v0_1 as view, v0_2 as view2, v0_4 as view4};
+use specs::view::{v0_1 as view, v0_2 as view2, v0_4 as view4, v0_5 as view5};
 
-/// The `Trust-Task` URL every git-namespace admin read is gated on.
+/// `git-ns/view/0.1`'s type URI.
 pub const GIT_NS_VIEW_TYPE: &str = <view::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `git-ns/view/0.5`: 0.4 plus `scope: administrator` and `breakGlass`.
+pub const GIT_NS_VIEW_V5_TYPE: &str = <view5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `git-ns/namespace/list/0.1`: the namespaces the signer administers.
+pub const GIT_NS_NAMESPACE_LIST_TYPE: &str =
+    <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `git-ns/repo/list/0.1`: the repositories in the namespaces the signer
+/// administers.
+pub const GIT_NS_REPO_LIST_TYPE: &str = <repo_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 impl VtcClient {
     /// Sign one `git-ns/*` document as `key` and send it; returns the
@@ -379,14 +396,59 @@ impl VtcClient {
         .await
     }
 
-    /// `GET /v1/git-ns/break-glass` — admin token: every break-glass record in
-    /// the namespaces the caller administers, unratified first.
-    pub async fn git_ns_break_glass_list(
+    /// `git-ns/view/0.5` — 0.4's answer, or with `administrator` every record
+    /// and reason in the namespaces `key`'s DID administers; with
+    /// `break_glass`, only break-glass records (ratified ones included). The
+    /// response is 0.4's.
+    pub async fn git_ns_view_v5(
+        &self,
+        resource: Option<&str>,
+        administrator: bool,
+        break_glass: bool,
+        key: &HolderKey,
+    ) -> Result<view4::Response, VtcError> {
+        let mut payload = serde_json::Map::new();
+        if let Some(r) = resource {
+            payload.insert("resource".into(), r.into());
+        }
+        if administrator {
+            payload.insert("scope".into(), "administrator".into());
+        }
+        if break_glass {
+            payload.insert("breakGlass".into(), true.into());
+        }
+        self.git_ns_task(GIT_NS_VIEW_V5_TYPE, &Value::Object(payload), key)
+            .await
+    }
+
+    /// `git-ns/namespace/list/0.1` — the namespaces `key`'s DID administers,
+    /// or only `namespace`, with admins, bridge, role map and forge status.
+    pub async fn git_ns_namespace_list(
         &self,
         namespace: Option<&str>,
+        key: &HolderKey,
     ) -> Result<Value, VtcError> {
-        let query: Vec<(&str, &str)> = namespace.map(|n| ("namespace", n)).into_iter().collect();
-        self.git_ns_get(&["git-ns", "break-glass"], &query).await
+        let payload = match namespace {
+            Some(n) => serde_json::json!({ "namespace": n }),
+            None => serde_json::json!({}),
+        };
+        self.git_ns_task(GIT_NS_NAMESPACE_LIST_TYPE, &payload, key)
+            .await
+    }
+
+    /// `git-ns/repo/list/0.1` — the repositories in the namespaces `key`'s DID
+    /// administers, or in `namespace` only, with owners, right counts,
+    /// bootstrap, sync and the bridge's report.
+    pub async fn git_ns_repo_list(
+        &self,
+        namespace: Option<&str>,
+        key: &HolderKey,
+    ) -> Result<Value, VtcError> {
+        let payload = match namespace {
+            Some(n) => serde_json::json!({ "namespace": n }),
+            None => serde_json::json!({}),
+        };
+        self.git_ns_task(GIT_NS_REPO_LIST_TYPE, &payload, key).await
     }
 
     /// `git-ns/view/0.1` — what `key`'s DID may see, as a member.
@@ -547,44 +609,6 @@ impl VtcClient {
             key,
         )
         .await
-    }
-
-    /// `GET /v1/git-ns/namespaces` — admin token. The console's JSON.
-    pub async fn git_ns_namespaces(&self) -> Result<Value, VtcError> {
-        self.git_ns_get(&["git-ns", "namespaces"], &[]).await
-    }
-
-    /// `GET /v1/git-ns/repos` — admin token, optionally one namespace.
-    pub async fn git_ns_repos(&self, namespace: Option<&str>) -> Result<Value, VtcError> {
-        let query: Vec<(&str, &str)> = namespace.map(|n| ("namespace", n)).into_iter().collect();
-        self.git_ns_get(&["git-ns", "repos"], &query).await
-    }
-
-    /// `GET /v1/git-ns/view` — admin token: every record and reason.
-    pub async fn git_ns_admin_view(&self, resource: Option<&str>) -> Result<Value, VtcError> {
-        let query: Vec<(&str, &str)> = resource.map(|r| ("resource", r)).into_iter().collect();
-        self.git_ns_get(&["git-ns", "view"], &query).await
-    }
-
-    async fn git_ns_get(
-        &self,
-        segments: &[&str],
-        query: &[(&str, &str)],
-    ) -> Result<Value, VtcError> {
-        let mut url = self.api_url(segments)?;
-        for (k, v) in query {
-            url.query_pairs_mut().append_pair(k, v);
-        }
-        let resp = self
-            .tt(reqwest::Method::GET, url, GIT_NS_VIEW_TYPE)?
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtcError::Http { status, body });
-        }
-        Ok(resp.json().await?)
     }
 }
 

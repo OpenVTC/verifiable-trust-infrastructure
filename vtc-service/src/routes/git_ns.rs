@@ -10,17 +10,12 @@
 //!
 //! Each route is gated on an admin session; the ones that disclose every
 //! grant's reason, every member's linked forge account or the published
-//! record set — `view`, `rights`, `rights/issued-by-departed`, `accounts`,
+//! record set — `rights`, `rights/issued-by-departed`, `accounts`,
 //! `projection` — on the community-administrator capability (a super-admin
-//! session, as `/audit` is), not on any context-scoped admin. `view` also carries the
-//! `git-ns/view/0.1` Trust-Task header, because its body is that task's
-//! response; the others are console projections no specification defines,
-//! and carry no Trust-Task URL rather than one whose response they do not
-//! match:
+//! session, as `/audit` is), not on any context-scoped admin. They are console
+//! projections no specification defines, and carry no Trust-Task URL rather
+//! than one whose response they do not match:
 //!
-//! - `GET /v1/git-ns/view`                         — `git-ns/view/0.1#response`, every record, every reason
-//! - `GET /v1/git-ns/namespaces`                   — bound and pending namespaces, with their admins and bridge
-//! - `GET /v1/git-ns/repos`                        — repositories, owners, bootstrap and sync status
 //! - `GET /v1/git-ns/rights`                       — recorded rights plus the v0.1 role-derived ones
 //! - `GET /v1/git-ns/rights/issued-by-departed`    — grants whose granter has left (design §5.4)
 //! - `GET /v1/git-ns/drift`                        — repositories whose forge differs from the projection
@@ -28,14 +23,16 @@
 //! - `GET /v1/git-ns/projection`                   — what is published to the Trust Registry
 //! - `GET /v1/git-ns/accounts`                     — members' linked forge accounts
 //!
+//! The administrator's view, the namespace and repository listings and the
+//! break-glass list are **not** here. They are signed Trust Tasks —
+//! `git-ns/view/0.5` (`scope: administrator`, `breakGlass: true`),
+//! `git-ns/namespace/list/0.1` and `git-ns/repo/list/0.1` — served on the
+//! document dispatcher over TSP, DIDComm and HTTPS alike
+//! ([`crate::git_ns::admin_reads`]), and answered to a namespace's
+//! administrators only, never to a bearer session.
+//!
 //! And one read that is not the community administrator's alone:
 //!
-//! - `GET /v1/git-ns/break-glass` — every break-glass record (`git-ns/right/break-glass/0.1`),
-//!   unratified first, for a community administrator (every namespace) or a
-//!   live `git.ns.admin` (their namespaces): the console's persistent banner
-//!   and its *Break-glass grants* list. Like `activity`, not the community
-//!   administrator's alone, because every administrator of a namespace must
-//!   see a break-glass in it (`break-glass/0.1`, *Visibility*).
 //! - `GET /v1/git-ns/activity` — rights changes, drift and bridge jobs in the
 //!   namespaces the caller administers (`git.ns.admin`), for any authenticated
 //!   session; a community administrator sees every namespace. The VTC issues
@@ -53,35 +50,17 @@ use axum::extract::{Query, State};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use vta_sdk::openapi::GitNsView01Response;
 use vti_common::auth::{AdminAuth, SuperAdminAuth};
 use vti_common::error::AppError;
 
 use crate::git_ns::bridge::{self, BridgeJob};
-use crate::git_ns::model::{RepoState, Resource, Right, RightRow, Scope};
+use crate::git_ns::model::{Resource, Right, RightRow};
 use crate::git_ns::ops::{now, standing};
 use crate::git_ns::store::Snapshot;
-use crate::git_ns::{lifecycle, projection, role_map, rules, view, wire};
+use crate::git_ns::{lifecycle, projection, rules, wire};
 use crate::server::AppState;
 
 // ── query parameters ────────────────────────────────────────────────────────
-
-#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
-#[serde(rename_all = "camelCase")]
-#[into_params(parameter_in = Query)]
-pub struct ResourceFilter {
-    /// Narrow to this forge-qualified resource and everything it contains
-    /// (`github.com/acme`, `github.com/acme/widgets`).
-    pub resource: Option<String>,
-}
-
-#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
-#[serde(rename_all = "camelCase")]
-#[into_params(parameter_in = Query)]
-pub struct RepoFilter {
-    /// Only repositories in this namespace (its identifier).
-    pub namespace: Option<String>,
-}
 
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 #[serde(rename_all = "camelCase")]
@@ -99,204 +78,6 @@ fn parse_filter(raw: Option<&str>) -> Result<Option<Resource>, AppError> {
 }
 
 // ── response bodies ─────────────────────────────────────────────────────────
-
-/// One namespace, as the console's Namespaces card shows it.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct GitNsNamespaceRow {
-    pub id: String,
-    pub forge: String,
-    pub owner: String,
-    /// `github.com/acme`.
-    pub resource: String,
-    /// `bridge` | `manual`.
-    pub mode: String,
-    /// `pending` | `bound`.
-    pub state: String,
-    /// `organization` | `user`, once the forge has said.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub owner_id: Option<String>,
-    /// The bridge that serves it (bridge mode).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bridge_did: Option<String>,
-    /// The administrator who bound it.
-    pub bound_by: String,
-    pub requested_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bound_at: Option<String>,
-    /// Its explicit `git.ns.admin` holders — every one of them can grant
-    /// anything in the namespace.
-    pub admins: Vec<String>,
-    pub repo_count: usize,
-    /// Bound, with no live admin: its last admin left or lapsed. Nobody can
-    /// grant in it until it is unbound and bound again.
-    pub headless: bool,
-    /// The bridge reported losing its access to the forge owner.
-    pub installation_removed: bool,
-    /// What the bridge last reported about its app and the owner's plan —
-    /// absent until it reports. Display only; it changes no decision.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub forge_status: Option<GitNsForgeStatus>,
-    /// The active policy's `role_drift` setting in effect: `report` or
-    /// `enforce`.
-    pub role_drift: String,
-    /// The active policy's `cascade_on_departure` setting in effect.
-    pub cascade_on_departure: bool,
-    /// The forge role each right projects to on a repository without a map
-    /// of its own, as the bridge serving the namespace reported it
-    /// (`git-ns/bridge/event/0.3` `roleMapReported`). Absent while it has not
-    /// reported: no map, the default included, is assumed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role_map: Option<GitNsRoleMap>,
-    /// `reported` — the bridge serving the namespace said so; `unknown` — it
-    /// has not reported since the namespace was bound or came to be served by
-    /// it (or it predates event 0.3). While unknown, drift adoption is
-    /// refused (`git-ns:roleMapUnknown`) and every role revert is weighed as
-    /// revoking `git.repo.own`.
-    pub role_map_source: String,
-    /// The `issuedAt` of the report held, on the bridge's clock.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role_map_reported_at: Option<String>,
-}
-
-/// Which forge role `git.repo.own`, `git.repo.maintain` and
-/// `git.commit.sign` project to — `none`, `read`, `triage`, `write`,
-/// `maintain` or `admin`, as the forge applies it. `git.ns.admin` projects to
-/// no forge role under any map.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct GitNsRoleMap {
-    pub own: String,
-    pub maintain: String,
-    pub commit: String,
-}
-
-impl From<crate::git_ns::role_map::RoleMap> for GitNsRoleMap {
-    fn from(m: crate::git_ns::role_map::RoleMap) -> Self {
-        GitNsRoleMap {
-            own: m.own.as_str().to_string(),
-            maintain: m.maintain.as_str().to_string(),
-            commit: m.commit.as_str().to_string(),
-        }
-    }
-}
-
-/// The bridge's report of its standing on a namespace's forge owner, carried
-/// in the `ext` member (`org.openvtc.git-ns`) of its results and events.
-/// Every field is absent until the bridge reports it.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct GitNsForgeStatus {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub installation_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_slug: Option<String>,
-    /// The app's manifest registration state, in the bridge's words.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub app_registration: Option<String>,
-    /// Permissions the app needs and the installation lacks.
-    pub missing_permissions: Vec<String>,
-    /// A new app version awaits the owner's approval of more permissions.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission_upgrade_pending: Option<bool>,
-    /// Organisation rulesets are available on the owner's plan.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub org_rulesets: Option<bool>,
-    /// The org ruleset's required workflow is in force (design §9).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required_workflow: Option<bool>,
-    /// The bridge can post the verify-trust check itself (fallback mode).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bridge_posted_check: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reported_at: Option<String>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct GitNsNamespaceList {
-    pub namespaces: Vec<GitNsNamespaceRow>,
-}
-
-/// Whether each step that turns commit trust on is in place.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct GitNsBootstrapStatus {
-    pub workflow: bool,
-    pub keyring: bool,
-    pub variables: bool,
-    pub required_check: bool,
-}
-
-/// One repository, as the console's Repos table shows it.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct GitNsRepoRow {
-    pub id: String,
-    pub namespace: String,
-    pub resource: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub forge_id: Option<String>,
-    /// `public` | `private`.
-    pub visibility: String,
-    /// `pendingCreate` | `active` | `archived` | `detached` | `orphaned` |
-    /// `unmanaged`.
-    pub state: String,
-    pub owners: Vec<String>,
-    pub maintainers: usize,
-    pub committers: usize,
-    pub bootstrap: GitNsBootstrapStatus,
-    /// `inSync` | `drift` | `pending` | `unchecked`.
-    pub sync_state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub checked_at: Option<String>,
-    pub drift_count: usize,
-    /// The step that failed on the last create or bootstrap.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failed_step: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_by: Option<String>,
-    pub created_at: String,
-    /// The guard actually in force against a pull request satisfying its own
-    /// check, as the bridge last reported it: `requiredWorkflow`,
-    /// `codeOwnerReview`, `bridgePostedCheck`, `protectedFiles` or `none`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub guard: Option<String>,
-    /// Per-step outcomes of the last create, bootstrap or inspect job.
-    pub steps: Vec<GitNsStepOutcome>,
-    /// The last verify-trust check the bridge saw (`{conclusion, at, sha?}`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
-    pub last_check: Option<Value>,
-    /// The forge role each right projects to on this repository, under the
-    /// bridge's reported map. Absent while the namespace's map is unknown
-    /// (`roleMapSource`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role_map: Option<GitNsRoleMap>,
-    /// The bridge last projected this repository's roles under an earlier
-    /// role map; a re-projection is queued and has not yet succeeded.
-    pub role_map_stale: bool,
-}
-
-/// One bootstrap step's outcome, as the bridge reported it.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct GitNsStepOutcome {
-    pub step: String,
-    /// `applied` | `unchanged` | `failed` | `skipped`.
-    pub outcome: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct GitNsRepoList {
-    pub repos: Vec<GitNsRepoRow>,
-}
 
 /// One git right, recorded or role-derived.
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -353,30 +134,6 @@ impl From<&crate::git_ns::model::BreakGlassMark> for GitNsBreakGlassMark {
             ratified_at: b.ratified_at.map(wire::timestamp),
         }
     }
-}
-
-/// One break-glass record.
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct GitNsBreakGlassItem {
-    /// The namespace's identifier.
-    pub namespace: String,
-    /// The namespace's resource (`github.com/acme`).
-    pub namespace_resource: String,
-    pub subject: String,
-    pub right: String,
-    pub resource: String,
-    pub granted_at: String,
-    pub break_glass: GitNsBreakGlassMark,
-    /// `unratified` — live, flagged, awaiting another administrator;
-    /// `pending` — unratified and not yet in effect (a policy delay);
-    /// `ratified` — an ordinary grant now, kept here as history.
-    pub state: String,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct GitNsBreakGlassList {
-    pub items: Vec<GitNsBreakGlassItem>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -474,184 +231,6 @@ pub struct GitNsProjection {
 }
 
 // ── handlers ────────────────────────────────────────────────────────────────
-
-#[utoipa::path(
-    get, path = "/git-ns/view",
-    operation_id = "gitNsAdminView", tag = "git-ns",
-    params(ResourceFilter),
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Every namespace, repository and recorded right, reasons included", body = GitNsView01Response),
-        (status = 400, description = "The resource is not a forge-qualified resource"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a community administrator"),
-    ),
-)]
-pub async fn admin_view(
-    _auth: SuperAdminAuth,
-    State(state): State<AppState>,
-    Query(q): Query<ResourceFilter>,
-) -> Result<Json<GitNsView01Response>, AppError> {
-    let filter = parse_filter(q.resource.as_deref())?;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
-    Ok(Json(GitNsView01Response(view::for_administrator(
-        &snap,
-        filter.as_ref(),
-    )?)))
-}
-
-#[utoipa::path(
-    get, path = "/git-ns/namespaces",
-    operation_id = "gitNsNamespacesList", tag = "git-ns",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Bound and pending namespaces", body = GitNsNamespaceList),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn namespaces_list(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<GitNsNamespaceList>, AppError> {
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
-    let t = now();
-    let headless = lifecycle::headless(&snap);
-    let settings = crate::git_ns::policy::active_settings(&state).await;
-    let role_drift = if settings.enforce_role_drift {
-        "enforce"
-    } else {
-        "report"
-    };
-    let namespaces = snap
-        .namespaces
-        .iter()
-        .map(|ns| {
-            let v = wire::namespace(ns);
-            let ns_map_source = role_map::source(ns);
-            GitNsNamespaceRow {
-                id: ns.id.clone(),
-                forge: ns.forge.clone(),
-                owner: ns.owner.clone(),
-                resource: ns.resource().to_string(),
-                mode: ns.mode.as_str().to_string(),
-                state: v["state"].as_str().unwrap_or_default().to_string(),
-                kind: ns.kind.map(|k| k.as_str().to_string()),
-                owner_id: ns.owner_id.clone(),
-                bridge_did: ns.bridge_did.clone(),
-                bound_by: ns.bound_by.clone(),
-                requested_at: wire::timestamp(ns.requested_at),
-                bound_at: ns.bound_at.map(wire::timestamp),
-                admins: rules::admins(&snap, &ns.id, t),
-                repo_count: snap
-                    .repos
-                    .iter()
-                    .filter(|r| r.namespace_id == ns.id)
-                    .count(),
-                headless: headless.contains(&ns.id),
-                installation_removed: ns.installation_removed,
-                forge_status: ns.forge_status.as_ref().map(|s| GitNsForgeStatus {
-                    installation_id: s.installation_id.clone(),
-                    app_name: s.app_name.clone(),
-                    app_slug: s.app_slug.clone(),
-                    app_registration: s.app_registration.clone(),
-                    missing_permissions: s.missing_permissions.clone(),
-                    permission_upgrade_pending: s.permission_upgrade_pending,
-                    org_rulesets: s.org_rulesets,
-                    required_workflow: s.required_workflow,
-                    bridge_posted_check: s.bridge_posted_check,
-                    reported_at: s.reported_at.map(wire::timestamp),
-                }),
-                role_drift: role_drift.to_string(),
-                cascade_on_departure: settings.cascade_on_departure,
-                role_map: role_map::for_namespace(ns).map(Into::into),
-                role_map_source: ns_map_source.as_str().to_string(),
-                role_map_reported_at: role_map::current_report(ns)
-                    .map(|r| wire::timestamp(r.issued_at)),
-            }
-        })
-        .collect();
-    Ok(Json(GitNsNamespaceList { namespaces }))
-}
-
-#[utoipa::path(
-    get, path = "/git-ns/repos",
-    operation_id = "gitNsReposList", tag = "git-ns",
-    params(RepoFilter),
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Recorded repositories", body = GitNsRepoList),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn repos_list(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Query(q): Query<RepoFilter>,
-) -> Result<Json<GitNsRepoList>, AppError> {
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
-    let t = now();
-    let mut repos: Vec<GitNsRepoRow> = snap
-        .repos
-        .iter()
-        .filter(|r| q.namespace.as_deref().is_none_or(|n| r.namespace_id == n))
-        .map(|r| {
-            let rows = snap.rows(&Scope::Repo(r.id.clone()));
-            let count = |right: Right| {
-                rows.iter()
-                    .filter(|x| x.right == right && x.is_live(t))
-                    .count()
-            };
-            GitNsRepoRow {
-                id: r.id.clone(),
-                namespace: r.namespace_id.clone(),
-                resource: r.resource.clone(),
-                forge_id: r.forge_id.clone(),
-                visibility: r.visibility.as_str().to_string(),
-                state: r.state.as_str().to_string(),
-                owners: rules::owners(&snap, &r.id, t),
-                maintainers: count(Right::RepoMaintain),
-                committers: count(Right::CommitSign),
-                bootstrap: GitNsBootstrapStatus {
-                    workflow: r.bootstrap.workflow,
-                    keyring: r.bootstrap.keyring,
-                    variables: r.bootstrap.variables,
-                    required_check: r.bootstrap.required_check,
-                },
-                sync_state: r.sync.state.as_str().to_string(),
-                checked_at: r.sync.checked_at.map(wire::timestamp),
-                drift_count: r.sync.drift.len(),
-                failed_step: r.failed_step.clone(),
-                last_error: r.last_error.clone(),
-                created_by: r.created_by.clone(),
-                created_at: wire::timestamp(r.created_at),
-                guard: r.forge_report.guard.clone(),
-                steps: r
-                    .forge_report
-                    .steps
-                    .iter()
-                    .map(|s| GitNsStepOutcome {
-                        step: s["step"].as_str().unwrap_or_default().to_string(),
-                        outcome: s["outcome"].as_str().unwrap_or_default().to_string(),
-                        detail: s.get("detail").and_then(Value::as_str).map(str::to_string),
-                    })
-                    .collect(),
-                last_check: r.forge_report.last_check.clone(),
-                role_map: snap
-                    .namespace(&r.namespace_id)
-                    .and_then(|ns| role_map::for_repo(ns, &r.resource))
-                    .map(Into::into),
-                role_map_stale: matches!(r.state, RepoState::Active | RepoState::Orphaned)
-                    && snap
-                        .namespace(&r.namespace_id)
-                        .is_some_and(|ns| role_map::is_stale(ns, &r.resource)),
-            }
-        })
-        .collect();
-    repos.sort_by(|a, b| a.resource.cmp(&b.resource));
-    Ok(Json(GitNsRepoList { repos }))
-}
 
 async fn member_cached(
     state: &AppState,
@@ -1030,110 +609,6 @@ pub struct GitNsActivityItem {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GitNsActivity {
     pub items: Vec<GitNsActivityItem>,
-}
-
-#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
-#[serde(rename_all = "camelCase")]
-#[into_params(parameter_in = Query)]
-pub struct BreakGlassFilter {
-    /// Only this namespace (its identifier).
-    pub namespace: Option<String>,
-}
-
-/// The namespaces `did` administers for break-glass purposes: every one for a
-/// community administrator; otherwise those they hold a live `git.ns.admin`
-/// on by explicit record. `None` when they administer none.
-async fn administered_namespaces(
-    state: &AppState,
-    snap: &Snapshot,
-    did: &str,
-) -> Result<(bool, std::collections::BTreeSet<String>), AppError> {
-    let t = now();
-    let caller = standing(state, did).await?;
-    let allowed = snap
-        .namespaces
-        .iter()
-        .filter(|n| {
-            caller.community_admin || rules::admins(snap, &n.id, t).iter().any(|a| a == did)
-        })
-        .map(|n| n.id.clone())
-        .collect();
-    Ok((caller.community_admin, allowed))
-}
-
-#[utoipa::path(
-    get, path = "/git-ns/break-glass",
-    operation_id = "gitNsBreakGlassList", tag = "git-ns",
-    params(BreakGlassFilter),
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Break-glass records in the namespaces the caller administers, unratified first", body = GitNsBreakGlassList),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "The caller administers no namespace (or not the one named)"),
-    ),
-)]
-pub async fn break_glass_list(
-    auth: vti_common::auth::AuthClaims,
-    State(state): State<AppState>,
-    Query(q): Query<BreakGlassFilter>,
-) -> Result<Json<GitNsBreakGlassList>, AppError> {
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
-    let t = now();
-    let (community_admin, mut allowed) = administered_namespaces(&state, &snap, &auth.did).await?;
-    if let Some(n) = &q.namespace {
-        if !allowed.contains(n) {
-            return Err(AppError::Forbidden(format!(
-                "you do not administer namespace `{n}`"
-            )));
-        }
-        allowed = std::iter::once(n.clone()).collect();
-    }
-    if allowed.is_empty() && !community_admin {
-        return Err(AppError::Forbidden(
-            "break-glass records are for the community's administrators and each namespace's \
-             admins; you are neither"
-                .into(),
-        ));
-    }
-    let mut items = Vec::new();
-    for (scope, set) in &snap.rights {
-        let (Some(ns), Some(res)) = (snap.scope_namespace(scope), snap.scope_resource(scope))
-        else {
-            continue;
-        };
-        if !allowed.contains(&ns.id) {
-            continue;
-        }
-        for row in set.rows.iter().filter(|r| r.is_recorded(t)) {
-            let Some(bg) = &row.break_glass else {
-                continue;
-            };
-            let state = if bg.ratified_by.is_some() {
-                "ratified"
-            } else if row.is_pending(t) {
-                "pending"
-            } else {
-                "unratified"
-            };
-            items.push(GitNsBreakGlassItem {
-                namespace: ns.id.clone(),
-                namespace_resource: ns.resource().to_string(),
-                subject: row.subject.clone(),
-                right: row.right.as_str().to_string(),
-                resource: res.to_string(),
-                granted_at: wire::timestamp(row.granted_at),
-                break_glass: bg.into(),
-                state: state.into(),
-            });
-        }
-    }
-    // Unratified and pending first, newest first within each.
-    items.sort_by(|a, b| {
-        (a.state == "ratified")
-            .cmp(&(b.state == "ratified"))
-            .then_with(|| b.break_glass.at.cmp(&a.break_glass.at))
-    });
-    Ok(Json(GitNsBreakGlassList { items }))
 }
 
 #[utoipa::path(

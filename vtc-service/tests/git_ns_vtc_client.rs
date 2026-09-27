@@ -4,7 +4,8 @@
 //! `POST /v1/trust-tasks` over HTTPS.
 //!
 //! The same calls, on the same client methods, must answer alike whichever
-//! transport the client was built for: a bind, a view that shows it, a refusal
+//! transport the client was built for: a bind, a view that shows it, the
+//! administrator's listings (`namespace/list`, `repo/list`, `view` 0.5), a refusal
 //! whose specification code survives the trip, and an unbind sent as a
 //! pre-signed document (the path a step-up retry takes). Over a session the
 //! document is bound to its sender, so a call whose key names another DID is
@@ -96,6 +97,39 @@ async fn bind_view_refuse_unbind(client: &VtcClient, key: &HolderKey, over: &str
         .await
         .unwrap_or_else(|e| panic!("view over {over}: {e}"));
     assert_eq!(listed(&view), ["github.com/acme"], "over {over}");
+
+    // The administrator's reads, signed and sent the same way.
+    let namespaces = client
+        .git_ns_namespace_list(None, key)
+        .await
+        .unwrap_or_else(|e| panic!("namespace/list over {over}: {e}"));
+    assert_eq!(
+        namespaces["namespaces"][0]["resource"], "github.com/acme",
+        "over {over}"
+    );
+    assert_eq!(
+        namespaces["namespaces"][0]["id"],
+        namespace.as_str(),
+        "over {over}"
+    );
+    let repos = client
+        .git_ns_repo_list(Some(&namespace), key)
+        .await
+        .unwrap_or_else(|e| panic!("repo/list over {over}: {e}"));
+    assert_eq!(repos["repos"], serde_json::json!([]), "over {over}");
+    let admin_view = client
+        .git_ns_view_v5(None, true, false, key)
+        .await
+        .unwrap_or_else(|e| panic!("view 0.5 (administrator) over {over}: {e}"));
+    assert_eq!(listed(&admin_view), ["github.com/acme"], "over {over}");
+    let break_glass = client
+        .git_ns_view_v5(None, true, true, key)
+        .await
+        .unwrap_or_else(|e| panic!("view 0.5 (break-glass) over {over}: {e}"));
+    assert!(
+        listed(&break_glass).is_empty(),
+        "over {over}: no break-glass, no namespace"
+    );
 
     // A refusal carries the specification's code on every transport.
     let again = client

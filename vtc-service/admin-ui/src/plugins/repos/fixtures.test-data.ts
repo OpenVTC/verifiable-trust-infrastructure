@@ -5,12 +5,14 @@
 import type {
   GitNsAccountRow,
   GitNsActivityItem,
-  GitNsBreakGlassItem,
   GitNsNamespaceRow,
   GitNsRepoRow,
   GitNsRightRow,
 } from "@/lib/wire-types";
 import { type MockRoute } from "@/test/render";
+
+import { TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW } from "./api";
+import type { GitNsBreakGlassItem } from "./model";
 
 export const VTC = "did:webvh:QmVtc:acme.dev";
 export const BRIDGE = "did:webvh:QmBridge:bridge.acme.dev";
@@ -245,15 +247,21 @@ export function gitNsRoutes(
     accounts?: GitNsAccountRow[];
     breakGlass?: GitNsBreakGlassItem[];
     breakGlassStatus?: number;
+    namespacesStatus?: number;
+    reposStatus?: number;
   } = {},
 ): MockRoute[] {
+  const namespaces = over.namespaces ?? [ACME, PERSONAL];
   return [
     ...(over.extra ?? []),
-    {
-      path: "/v1/git-ns/namespaces",
-      body: { namespaces: over.namespaces ?? [ACME, PERSONAL] },
-    },
-    { path: "/v1/git-ns/repos", body: { repos: over.repos ?? [DOCS, LEGACY, SANDBOX, WIDGETS] } },
+    signedReads({
+      namespaces,
+      repos: over.repos ?? [DOCS, LEGACY, SANDBOX, WIDGETS],
+      breakGlass: over.breakGlass ?? [],
+      breakGlassStatus: over.breakGlassStatus,
+      namespacesStatus: over.namespacesStatus,
+      reposStatus: over.reposStatus,
+    }),
     { path: "/v1/git-ns/rights", body: { rights: over.rights ?? RIGHTS } },
     {
       path: "/v1/git-ns/rights/issued-by-departed",
@@ -282,14 +290,6 @@ export function gitNsRoutes(
       },
     },
     { path: "/v1/git-ns/jobs", body: { jobs: [] } },
-    {
-      path: "/v1/git-ns/break-glass",
-      status: over.breakGlassStatus,
-      body:
-        over.breakGlassStatus === 403
-          ? { error: "you administer no namespace" }
-          : { items: over.breakGlass ?? [] },
-    },
     { path: "/v1/git-ns/accounts", body: { accounts: over.accounts ?? ACCOUNTS } },
     {
       path: "/v1/git-ns/activity",
@@ -343,4 +343,110 @@ export function gitNsRoutes(
     { path: "/v1/members", body: { items: MEMBERS } },
     { path: "/v1/acl", body: { entries: [], truncated: false } },
   ];
+}
+
+/** A `trust-task-error` document's payload, as `/v1/trust-tasks` answers one
+ *  (the reads look at nothing else). */
+function refusal(code: string, message: string) {
+  return { payload: { code, message } };
+}
+
+/**
+ * `POST /v1/trust-tasks` answering the administrator's signed reads —
+ * `git-ns/namespace/list`, `git-ns/repo/list` and `git-ns/view` 0.5 with
+ * `breakGlass: true` — from the fixtures. A status of 403 stands for "this
+ * caller administers nothing", which the daemon answers as the task's
+ * `notAdministrator` (HTTP 422); any other status is answered as given.
+ */
+export function signedReads(o: {
+  namespaces: GitNsNamespaceRow[];
+  repos: GitNsRepoRow[];
+  breakGlass: GitNsBreakGlassItem[];
+  breakGlassStatus?: number;
+  namespacesStatus?: number;
+  reposStatus?: number;
+}): MockRoute {
+  const typeOf = (body: unknown) => (body as { type?: string } | undefined)?.type;
+  const statusFor = (s: number | undefined) => (s === 403 ? 422 : (s ?? 200));
+  const refused = (s: number | undefined, task: string) =>
+    s === 403
+      ? refusal(`${task}:notAdministrator`, "you administer no namespace")
+      : refusal("internalError", "store unavailable");
+  return {
+    method: "POST",
+    path: "/v1/trust-tasks",
+    status: ({ body }) => {
+      switch (typeOf(body)) {
+        case TASK_NAMESPACE_LIST:
+          return statusFor(o.namespacesStatus);
+        case TASK_REPO_LIST:
+          return statusFor(o.reposStatus);
+        case TASK_VIEW:
+          return statusFor(o.breakGlassStatus);
+        default:
+          return 404;
+      }
+    },
+    body: ({ body }) => {
+      switch (typeOf(body)) {
+        case TASK_NAMESPACE_LIST:
+          return o.namespacesStatus && o.namespacesStatus !== 200
+            ? refused(o.namespacesStatus, "git-ns/namespace/list")
+            : { payload: { namespaces: o.namespaces } };
+        case TASK_REPO_LIST:
+          return o.reposStatus && o.reposStatus !== 200
+            ? refused(o.reposStatus, "git-ns/repo/list")
+            : { payload: { repos: o.repos } };
+        case TASK_VIEW:
+          return o.breakGlassStatus && o.breakGlassStatus !== 200
+            ? refused(o.breakGlassStatus, "git-ns/view")
+            : { payload: breakGlassView(o.namespaces, o.breakGlass) };
+        default:
+          return refusal("unsupportedType", `no mock for ${typeOf(body)}`);
+      }
+    },
+  };
+}
+
+/** A `git-ns/view/0.5` `breakGlass: true` answer holding these items. A
+ *  fixture item marked `ratified` or `pending` gets the mark that says so. */
+function breakGlassView(namespaces: GitNsNamespaceRow[], items: GitNsBreakGlassItem[]) {
+  return {
+    namespaces: namespaces.map((n) => ({
+      id: n.id,
+      forge: n.forge,
+      owner: n.owner,
+      mode: n.mode,
+      state: n.state,
+    })),
+    repos: [],
+    rights: items.map((i) => ({
+      subject: i.subject,
+      right: i.right,
+      resource: i.resource,
+      grantedBy: i.subject,
+      grantedAt: i.grantedAt,
+      breakGlass: {
+        ...i.breakGlass,
+        ...(i.state === "ratified" && !i.breakGlass.ratifiedBy
+          ? { ratifiedBy: BOB, ratifiedAt: "2026-09-25T09:00:00Z" }
+          : {}),
+        ...(i.state === "pending" && !i.breakGlass.effectiveAt
+          ? { effectiveAt: "2999-01-01T00:00:00Z" }
+          : {}),
+      },
+    })),
+    accounts: [],
+  };
+}
+
+/**
+ * Whether a recorded request changes anything: every request but a GET and
+ * the administrator's signed reads (`signedReads`). "Sends nothing" in these
+ * tests means no change was sent — the reads are sent on every render.
+ */
+export function isChange(r: { method: string; url: string; body: unknown }): boolean {
+  if (r.method === "GET") return false;
+  const type = (r.body as { type?: string } | undefined)?.type;
+  return !(r.url === "/v1/trust-tasks" && [TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW].includes(type ?? ""));
 }

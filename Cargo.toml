@@ -404,6 +404,13 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # not split the graph — and is pinned to match rather than left on the bare
 # `0.23` line.
 #
+# 0.23.4 raises it again: it is the first release carrying `git-ns/view/0.5`,
+# `git-ns/namespace/list/0.1` and `git-ns/repo/list/0.1`
+# (trustoverip/dtgwg-trust-tasks-tf#659), and `auth/passkey/admin-list/0.1`
+# (#658) — `vtc-service/src/git_ns/admin_reads.rs`'s hand-written stand-ins and
+# `trust_tasks::passkey_admin_list_v0_1` were written for the pre-0.23.4 gap
+# and are gone below this floor.
+#
 # 0.23.6 raises it for `vta/health/details` 0.1, `vta/restore/status` 0.1,
 # `auth/revoke-session` 0.2 and `keys/import-wrapping-key` 0.1 — the Trust
 # Tasks that replace `GET /health/details`, the `/auth/sessions` REST routes and

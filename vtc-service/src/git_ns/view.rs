@@ -13,6 +13,13 @@
 //!    implied), with `reason` only on those governed resources.
 //!
 //! A resource that matches nothing yields empty lists, not an error.
+//!
+//! `git-ns/view/0.5` adds the administrator's read (`scope: administrator`):
+//! every record in the namespaces the caller administers, reasons included —
+//! [`administrator_v5`] — and `breakGlass: true`, which narrows either answer
+//! to break-glass records ([`narrow_to_break_glass`]).
+
+use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::git_ns::view::v0_1 as view_wire;
@@ -43,7 +50,7 @@ fn related(filter: Option<&Resource>, r: &Resource) -> bool {
 
 /// Build the view as JSON in the specification's response shape.
 pub fn build(snap: &Snapshot, viewer: Viewer<'_>, filter: Option<&Resource>) -> Value {
-    build_with(snap, viewer, filter, Shape::default())
+    build_with(snap, viewer, filter, Shape::default(), None)
 }
 
 /// What a version of the view adds.
@@ -56,13 +63,19 @@ struct Shape {
     community_admin: bool,
 }
 
+/// `within`, when given, keeps the answer to those namespaces (by identifier):
+/// a namespace outside it, a repository recorded in another, and a right on
+/// either are left out — and so is a repository whose namespace is no longer
+/// bound, which is in no namespace at all.
 fn build_with(
     snap: &Snapshot,
     viewer: Viewer<'_>,
     filter: Option<&Resource>,
     shape: Shape,
+    within: Option<&BTreeSet<String>>,
 ) -> Value {
     let t = now();
+    let inside = |ns_id: &str| within.is_none_or(|w| w.contains(ns_id));
     let governs = |res: &Resource| match &viewer {
         Viewer::Administrator => true,
         Viewer::Member(did) => rules::governs(snap, did, res, t),
@@ -71,7 +84,7 @@ fn build_with(
     let namespaces: Vec<Value> = snap
         .namespaces
         .iter()
-        .filter(|n| related(filter, &n.resource()))
+        .filter(|n| related(filter, &n.resource()) && inside(&n.id))
         .map(wire::namespace)
         .collect();
 
@@ -80,6 +93,11 @@ fn build_with(
         let Some(res) = repo.resource() else {
             continue;
         };
+        if within.is_some()
+            && (!inside(&repo.namespace_id) || snap.namespace(&repo.namespace_id).is_none())
+        {
+            continue;
+        }
         if let Some(f) = filter
             && !f.contains(&res)
         {
@@ -109,6 +127,9 @@ fn build_with(
         let Some(res) = snap.scope_resource(scope) else {
             continue;
         };
+        if within.is_some() && !snap.scope_namespace(scope).is_some_and(|n| inside(&n.id)) {
+            continue;
+        }
         // "That resource and everything it contains" — a namespace-wide right
         // is not *on* a repository, so a repository filter leaves it out.
         if let Some(f) = filter
@@ -202,6 +223,18 @@ pub fn for_member_v4(
     filter: Option<&Resource>,
     member: Option<&crate::members::Member>,
 ) -> Result<trust_tasks_rs::specs::git_ns::view::v0_4::Response, AppError> {
+    wire::into(member_v4(snap, did, community_admin, filter, member))
+}
+
+/// `git-ns/view/0.4`'s answer, as JSON — also `git-ns/view/0.5`'s under
+/// `scope: member`.
+pub fn member_v4(
+    snap: &Snapshot,
+    did: &str,
+    community_admin: bool,
+    filter: Option<&Resource>,
+    member: Option<&crate::members::Member>,
+) -> Value {
     let mut v = build_with(
         snap,
         Viewer::Member(did),
@@ -210,15 +243,72 @@ pub fn for_member_v4(
             break_glass: true,
             community_admin,
         },
+        None,
     );
     v["accounts"] = Value::Array(linked_accounts_of(member, filter));
-    wire::into(v)
+    v
 }
 
-/// The administrator's view, as the generated response type.
-pub fn for_administrator(
+/// `git-ns/view/0.5` under `scope: administrator`, as JSON: every namespace in
+/// `within` (every one, and every repository whose namespace is no longer
+/// bound, when it is `None` — a community administrator), with every
+/// repository and every live or unratified break-glass record in them,
+/// reasons and `breakGlass` in full. `accounts` is still the caller's own.
+pub fn administrator_v5(
     snap: &Snapshot,
+    within: Option<&BTreeSet<String>>,
     filter: Option<&Resource>,
-) -> Result<view_wire::Response, AppError> {
-    wire::into(build(snap, Viewer::Administrator, filter))
+    member: Option<&crate::members::Member>,
+) -> Value {
+    let mut v = build_with(
+        snap,
+        Viewer::Administrator,
+        filter,
+        Shape {
+            break_glass: true,
+            community_admin: true,
+        },
+        within,
+    );
+    v["accounts"] = Value::Array(linked_accounts_of(member, filter));
+    v
+}
+
+/// `git-ns/view/0.5`'s `breakGlass: true`: keep only the records carrying
+/// `breakGlass`, and the namespaces and repositories that contain one.
+/// `accounts` is left as it is. It narrows and never widens: it can only drop
+/// what the answer already held.
+pub fn narrow_to_break_glass(v: &mut Value) {
+    let rights: Vec<Value> = v["rights"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r.get("breakGlass").is_some())
+        .cloned()
+        .collect();
+    let held: Vec<Resource> = rights
+        .iter()
+        .filter_map(|r| r["resource"].as_str())
+        .filter_map(|r| Resource::parse(r).ok())
+        .collect();
+    let keep_ns = |n: &Value| {
+        let (Some(forge), Some(owner)) = (n["forge"].as_str(), n["owner"].as_str()) else {
+            return false;
+        };
+        let ns = Resource::namespace(forge, owner);
+        held.iter().any(|r| ns.contains(r))
+    };
+    let keep_repo = |r: &Value| {
+        r["resource"]
+            .as_str()
+            .and_then(|s| Resource::parse(s).ok())
+            .is_some_and(|res| held.contains(&res))
+    };
+    if let Some(ns) = v["namespaces"].as_array_mut() {
+        ns.retain(keep_ns);
+    }
+    if let Some(repos) = v["repos"].as_array_mut() {
+        repos.retain(keep_repo);
+    }
+    v["rights"] = Value::Array(rights);
 }

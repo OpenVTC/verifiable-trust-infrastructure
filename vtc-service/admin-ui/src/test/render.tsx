@@ -20,7 +20,8 @@ export interface MockRoute {
   method?: string;
   /** Exact path (a query string is ignored), or a pattern over path + query. */
   path: string | RegExp;
-  status?: number;
+  /** The status, or a function of the request that returns it. */
+  status?: number | ((request: { url: string; body: unknown }) => number);
   /** The JSON answer, or a function of the request that returns it. */
   body?: object | ((request: { url: string; body: unknown }) => unknown);
 }
@@ -65,7 +66,9 @@ export function mockFetch(routes: MockRoute[]): RecordedRequest[] {
               body,
             })
           : route.body;
-      return json(payload ?? {}, route.status ?? 200);
+      const status =
+        typeof route.status === "function" ? route.status({ url, body }) : route.status;
+      return json(payload ?? {}, status ?? 200);
     }),
   );
   return requests;

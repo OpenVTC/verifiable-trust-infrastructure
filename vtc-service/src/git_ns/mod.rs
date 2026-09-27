@@ -26,6 +26,7 @@
 //! - **Rights are keyed by repository, not by name.** A rename on the forge
 //!   moves them; a new repository at the old name inherits nothing.
 
+pub mod admin_reads;
 pub mod break_glass;
 pub mod bridge;
 pub mod drift;

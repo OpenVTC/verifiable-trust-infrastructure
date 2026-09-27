@@ -75,7 +75,16 @@ use crate::server::AppState;
     // document and absent from its components — a dangling `$ref`, which
     // `no_dangling_refs` below fails on and `openapi-typescript` refuses to
     // generate from at all.
-    components(schemas(policies::read::PolicyStatusFilter)),
+    //
+    // And the `git-ns/*` administrator reads' response bodies, which no route
+    // returns — they are Trust Task responses on the document endpoint
+    // (`git_ns::admin_reads`) — but which the admin console's wire types are
+    // generated from, so no shape is written twice.
+    components(schemas(
+        policies::read::PolicyStatusFilter,
+        crate::git_ns::admin_reads::GitNsNamespaceList,
+        crate::git_ns::admin_reads::GitNsRepoList,
+    )),
 )]
 pub struct ApiDoc;
 
@@ -134,11 +143,6 @@ pub const MAX_BODY_SIZE: usize = 1024 * 1024;
 /// JWE / sealed-transfer envelope but small enough to reject 1 MB
 /// blob floods that the rate limiter alone cannot starve out.
 pub const UNAUTH_BODY_SIZE: usize = 64 * 1024;
-
-/// `git-ns/view/0.1` — the Trust-Task URL every git-namespace admin read is
-/// gated on, read off the generated payload type rather than written out.
-const GIT_NS_VIEW: &str =
-    <trust_tasks_rs::specs::git_ns::view::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Attach the static Trust-Task URL gate to a `routes!(...)` group in one call.
 ///
@@ -395,17 +399,18 @@ fn build_api_chain(
         // signed `git-ns/*` Trust Task, authorized by the signer's git rights,
         // on the document endpoint.
         //
-        // Only `view` answers with a specification's response, so only it is
-        // gated on a Trust-Task URL. The rest are console projections no
-        // specification defines; gating them on `git-ns/view/0.1` would claim
-        // a response shape they do not have (the conformance layer refuses
-        // exactly that), and binding a URI the registry does not publish is
-        // what `trust_task_manifest` refuses. They stay behind the admin
-        // session (and, for `activity`, any session, narrowed to the
-        // namespaces the caller administers).
-        .routes(tt(routes!(git_ns::admin_view), GIT_NS_VIEW))
-        .routes(routes!(git_ns::namespaces_list))
-        .routes(routes!(git_ns::repos_list))
+        // These are console projections no specification defines; gating them
+        // on a `git-ns/*` URL would claim a response shape they do not have
+        // (the conformance layer refuses exactly that), and binding a URI the
+        // registry does not publish is what `trust_task_manifest` refuses.
+        // They stay behind the admin session (and, for `activity`, any
+        // session, narrowed to the namespaces the caller administers).
+        //
+        // The administrator's view, the namespace and repository listings
+        // and the break-glass list have no route: they are the signed
+        // `git-ns/view/0.5`, `git-ns/namespace/list/0.1` and
+        // `git-ns/repo/list/0.1`, answered to a namespace's administrators
+        // on the document endpoint (`git_ns::admin_reads`).
         .routes(routes!(git_ns::rights_list))
         .routes(routes!(git_ns::issued_by_departed))
         .routes(routes!(git_ns::drift_list))
@@ -413,7 +418,6 @@ fn build_api_chain(
         .routes(routes!(git_ns::projection_show))
         .routes(routes!(git_ns::accounts_list))
         .routes(routes!(git_ns::activity))
-        .routes(routes!(git_ns::break_glass_list))
         // BitstringStatusList publication (M2.11). Trust-Task-
         // exempt — external verifiers don't carry our extension
         // header (same rationale as `did.jsonl`).

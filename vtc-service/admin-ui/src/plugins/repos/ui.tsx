@@ -112,7 +112,33 @@ export function formatDay(iso: string | null | undefined): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
 }
 
+/** The code of a signed read's refusal, where the answer was a
+ *  `trust-task-error` document. */
+function errorCode(err: unknown): string | undefined {
+  if (err && typeof err === "object" && "code" in err) {
+    const code = (err as { code: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return undefined;
+}
+
+/**
+ * The daemon refused an administrator's read (`git-ns/namespace/list`,
+ * `git-ns/repo/list`, `git-ns/view` with `scope: administrator`) because
+ * this DID administers no namespace it covers — or, from an older daemon's
+ * bearer view, a 403.
+ */
+export function isNotAdministrator(err: unknown): boolean {
+  return errorStatus(err) === 403 || (errorCode(err)?.endsWith(":notAdministrator") ?? false);
+}
+
 export function errorMessage(err: unknown): string {
+  if (err instanceof SigningUnavailableError) {
+    return "these reads are signed, and this browser cannot sign yet — enable console signing on the Console keys page";
+  }
+  if (errorCode(err)?.endsWith(":notAdministrator")) {
+    return "shown to a namespace's administrators — a community administrator, or git.ns.admin on the namespace — and this session's DID is neither";
+  }
   if (err && typeof err === "object" && "message" in err) {
     const message = (err as { message: unknown }).message;
     if (typeof message === "string" && message) return message;

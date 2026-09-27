@@ -431,9 +431,8 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
     // `auth/passkey/admin-list/0.1` was bound here ahead of its release and
-    // went back to zero with trust-tasks-rs 0.23.6, which indexes it. (The
-    // hand-written `trust_tasks::passkey_admin_list_v0_1` has yet to give way
-    // to the generated `auth::passkey::admin_list::v0_1`.)
+    // went back to zero once trust-tasks-rs indexed and generated it
+    // (`auth::passkey::admin_list::v0_1` replaced the hand-written stand-in).
     // `git-ns/bridge/job/0.4` and `git-ns/namespace/reseat/0.3` were sent
     // and served ahead of their release here, and went back to zero with
     // trust-tasks-rs 0.23, which generates both.
@@ -716,6 +715,10 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/repo/create/0.3",
     "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
     "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
+    // The administrator's reads, which replaced the console's bearer views.
+    "https://trusttasks.org/spec/git-ns/view/0.5",
+    "https://trusttasks.org/spec/git-ns/namespace/list/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/list/0.1",
 ];
 
 /// Document types the console sends that the *spine* dispatches rather than

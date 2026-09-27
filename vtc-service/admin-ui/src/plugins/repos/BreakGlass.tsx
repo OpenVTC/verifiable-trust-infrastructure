@@ -29,7 +29,8 @@ import { CopyButton } from "@/components/CopyButton";
 import { NamedDid } from "@/components/NamedDid";
 import { useNameBook } from "@/lib/names";
 import { useIsSuperAdmin, useViewerDid } from "@/lib/viewer";
-import type { GitNsBreakGlassItem, GitNsRight } from "@/lib/wire-types";
+import type { GitNsRight } from "@/lib/wire-types";
+import type { GitNsBreakGlassItem } from "./model";
 
 import { ratifyTask, revokeTask, type SignedTask } from "./actions";
 import { fetchBreakGlass, fetchRepos, fetchRights, gitNsKeys } from "./api";

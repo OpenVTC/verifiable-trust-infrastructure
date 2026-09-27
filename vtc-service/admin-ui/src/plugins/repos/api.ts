@@ -1,25 +1,33 @@
 // Repos admin API — the reads the Repos plugin renders.
 //
-// None of these is a specification's read. The one that is —
-// `GET /v1/git-ns/view`, gated on `git-ns/view/0.1` — is not used here: the
-// screens need the admin columns (admins, bootstrap, forge status) that only
-// the console projections carry. Those are projections no specification defines — namespaces with
-// their admins and forge status, repositories with bootstrap and guard,
-// rights, drift, jobs, the registry mirror, linked accounts, activity — so the
-// daemon mounts them behind the admin session with **no** Trust-Task binding
-// (`routes/mod.rs`: gating them on `git-ns/view/0.1` would claim a response
-// shape they do not have). They go through `getJsonExempt` for that reason,
-// which is the smell the helper is meant to be: each one is named here.
+// Two kinds of read, and the difference is who may make them.
+//
+// **The administrator's reads are signed Trust Tasks.** The namespaces, the
+// repositories and the break-glass records are `git-ns/namespace/list/0.1`,
+// `git-ns/repo/list/0.1` and `git-ns/view/0.5` (`scope: administrator`,
+// `breakGlass: true`), signed with this browser's console key and posted to
+// `/v1/trust-tasks` — the same documents `cnm git` sends over TSP or
+// DIDComm. The daemon answers them to a namespace's administrators only (the
+// community-administrator capability, or `git.ns.admin` on the namespace),
+// never on the strength of a session, so there is no bearer fallback: a
+// browser that cannot sign gets `SigningUnavailableError`, which the screens
+// turn into "enable console signing".
+//
+// **The rest are console projections** no specification defines — rights,
+// drift, jobs, the registry mirror, linked accounts, activity — which the
+// daemon mounts behind the admin session with **no** Trust-Task binding
+// (`routes/mod.rs`). They go through `getJsonExempt` for that reason, which is
+// the smell the helper is meant to be: each one is named here.
 //
 // Writes are not in this file. Every change is a signed `git-ns/*` Trust Task;
 // `actions.ts` builds them and sends them from this browser's console key
 // where one is enrolled.
 
-import { getJson, getJsonExempt } from "@/lib/api";
+import { getJson, getJsonExempt, postSignedRead } from "@/lib/api";
 import type {
   GitNsAccountList,
   GitNsActivity,
-  GitNsBreakGlassList,
+  GitNsBreakGlassMark,
   GitNsDepartedGrants,
   GitNsDriftList,
   GitNsJobList,
@@ -30,7 +38,30 @@ import type {
   MembersPage,
 } from "@/lib/wire-types";
 
+import type { GitNsBreakGlassItem, GitNsBreakGlassList } from "./model";
+import { breakGlassState } from "./model";
+
 const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
+
+// trust-tasks-rs 0.23.4 generates the Rust side of these
+// (`git_ns::admin_reads`, trustoverip/dtgwg-trust-tasks-tf#659). No
+// TypeScript binding is published, so the URIs and the view response shape
+// below stay hand-written here, matching the spec.
+export const TASK_NAMESPACE_LIST = "https://trusttasks.org/spec/git-ns/namespace/list/0.1";
+export const TASK_REPO_LIST = "https://trusttasks.org/spec/git-ns/repo/list/0.1";
+export const TASK_VIEW = "https://trusttasks.org/spec/git-ns/view/0.5";
+
+/** The parts of a `git-ns/view/0.5#response` the break-glass list reads. */
+interface GitNsViewAnswer {
+  namespaces: { id: string; forge: string; owner: string }[];
+  rights: {
+    subject: string;
+    right: string;
+    resource: string;
+    grantedAt: string;
+    breakGlass?: GitNsBreakGlassMark | null;
+  }[];
+}
 
 /** Query keys. Everything under `["git-ns"]` is refreshed together. */
 export const gitNsKeys = {
@@ -48,14 +79,16 @@ export const gitNsKeys = {
   breakGlass: ["git-ns", "break-glass"] as const,
 };
 
+/** The namespaces this administrator administers — every one, for a
+ *  community administrator (`git-ns/namespace/list/0.1`). */
 export const fetchNamespaces = (): Promise<GitNsNamespaceList> =>
-  getJsonExempt<GitNsNamespaceList>("/v1/git-ns/namespaces");
+  postSignedRead<GitNsNamespaceList>(TASK_NAMESPACE_LIST, {});
 
 /** Every repository. Filtering happens client-side: the overview shows every
  *  namespace's counts at once, and a per-namespace request would be one round
  *  trip per card for rows the next click needs anyway. */
 export const fetchRepos = (): Promise<GitNsRepoList> =>
-  getJsonExempt<GitNsRepoList>("/v1/git-ns/repos");
+  postSignedRead<GitNsRepoList>(TASK_REPO_LIST, {});
 
 /** Live rights, recorded and role-derived, across every namespace. */
 export const fetchRights = (): Promise<GitNsRightList> =>
@@ -95,14 +128,51 @@ export const fetchActivity = (namespace: string, limit = 100): Promise<GitNsActi
 /**
  * Break-glass records — self-granted elevated rights (`git-ns/right/break-glass`)
  * — in the namespaces the caller administers: every one for a community
- * administrator, those of their own namespaces for a namespace admin, and 403
- * for anyone else. Ratified ones included, as their history.
+ * administrator, those of their own namespaces for a namespace admin, and
+ * `git-ns/view:notAdministrator` for anyone else. Ratified ones included, as
+ * their history.
+ *
+ * `git-ns/view/0.5` with `scope: administrator` and `breakGlass: true`,
+ * shaped here into the list the screens render: each record with its
+ * namespace and its state, unratified and delayed first, newest first.
  *
  * Read by the shell's banner on every page as well as by the Repos list, so
  * it lives under `gitNsKeys.all` and refreshes with every change sent here.
  */
-export const fetchBreakGlass = (): Promise<GitNsBreakGlassList> =>
-  getJsonExempt<GitNsBreakGlassList>("/v1/git-ns/break-glass");
+export async function fetchBreakGlass(): Promise<GitNsBreakGlassList> {
+  const view = await postSignedRead<GitNsViewAnswer>(TASK_VIEW, {
+    scope: "administrator",
+    breakGlass: true,
+  });
+  return { items: breakGlassItems(view) };
+}
+
+/** A `breakGlass: true` view as break-glass items. */
+export function breakGlassItems(view: GitNsViewAnswer, now = Date.now()): GitNsBreakGlassItem[] {
+  const items: GitNsBreakGlassItem[] = [];
+  for (const r of view.rights ?? []) {
+    const mark = r.breakGlass;
+    const state = breakGlassState(mark, now);
+    if (!mark || !state) continue;
+    const nsResource = r.resource.split("/").slice(0, 2).join("/");
+    const ns = (view.namespaces ?? []).find((n) => `${n.forge}/${n.owner}` === nsResource);
+    items.push({
+      namespace: ns?.id ?? "",
+      namespaceResource: nsResource,
+      subject: r.subject,
+      right: r.right,
+      resource: r.resource,
+      grantedAt: r.grantedAt,
+      breakGlass: mark,
+      state,
+    });
+  }
+  return items.sort(
+    (a, b) =>
+      Number(a.state === "ratified") - Number(b.state === "ratified") ||
+      b.breakGlass.at.localeCompare(a.breakGlass.at),
+  );
+}
 
 /** The listing clamps a page to 200; asking for more returns 200 silently. */
 const MEMBERS_PAGE = 200;

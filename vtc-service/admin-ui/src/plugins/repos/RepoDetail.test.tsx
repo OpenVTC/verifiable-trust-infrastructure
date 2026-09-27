@@ -17,11 +17,14 @@ import {
   JUN,
   PERSONAL,
   RIGHTS,
+  signedReads,
   WIDGETS,
+  isChange,
 } from "./fixtures.test-data";
 
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
   signingAvailable: vi.fn(async () => false),
   postSignedTrustTask: vi.fn(),
 }));
@@ -138,7 +141,7 @@ describe("Repo detail", () => {
       payload: { subject: HANA, right: "git.repo.maintain", resource: WIDGETS.resource },
     });
     fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
-    expect(requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(requests.some(isChange)).toBe(false);
     expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 
@@ -266,7 +269,7 @@ describe("Repo detail", () => {
       },
     });
     fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
-    expect(requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(requests.some(isChange)).toBe(false);
     expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 
@@ -428,7 +431,7 @@ describe("Repo detail", () => {
       },
     });
     fireEvent.click(within(sign).getByRole("button", { name: "Close" }));
-    expect(requests.some((r) => r.method !== "GET")).toBe(false);
+    expect(requests.some(isChange)).toBe(false);
     expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 
@@ -677,14 +680,13 @@ describe("Repo detail", () => {
 
   it("shows a read failure as an error, not an empty repository", async () => {
     mockFetch([
-      { path: "/v1/git-ns/namespaces", body: { namespaces: [ACME] } },
-      { path: "/v1/git-ns/repos", status: 403, body: { error: "not an admin" } },
+      signedReads({ namespaces: [ACME], repos: [], breakGlass: [], reposStatus: 403 }),
       { path: "/v1/members", body: { items: [] } },
       { path: "/v1/acl", body: { entries: [], truncated: false } },
     ]);
     mount(WIDGETS.resource);
 
     expect(await screen.findByText(`${WIDGETS.resource} could not be read`)).toBeTruthy();
-    expect(screen.getByText("not an admin")).toBeTruthy();
+    expect(screen.getByText(/shown to a namespace's administrators/)).toBeTruthy();
   });
 });
