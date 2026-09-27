@@ -622,6 +622,19 @@ impl VtcClient {
 pub const GIT_NS_BREAK_GLASS_TYPE: &str =
     <break_glass::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// The type URI of `auth/step-up/approve-response/0.4`: the answer, signed by
+/// the actor with its `assertionMethod` key, to the operation-bound step-up a
+/// signed change can be refused for. The passkey assertion it carries is in
+/// addition to that proof, never instead of it.
+pub const STEP_UP_APPROVE_RESPONSE_TYPE: &str =
+    <trust_tasks_rs::specs::auth::step_up::approve_response::v0_4::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The type URI of `auth/passkey/enroll/redeem/start/0.1`: a member redeeming
+/// a community administrator's invite to enrol a step-up passkey, signed as
+/// the member the invite names.
+pub const STEP_UP_PASSKEY_REDEEM_START_TYPE: &str =
+    <trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// The `trust-task-error` document a refusal carries, whichever transport
 /// carried it: [`VtcError::Refused`] over a session, [`VtcError::Http`]'s body
 /// over HTTPS.

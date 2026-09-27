@@ -1243,6 +1243,88 @@ fn ai_agent_builtin_missing_mediator_did_errors() {
     );
 }
 
+// ─── push-gateway built-in ────────────────────────────────────────────
+//
+// The push wake-up gateway (`vti-push-gateway`): signing + key-agreement
+// methods and a DIDCommMessaging service, plus an optional TSPTransport
+// service naming the same mediator DID — same null-pruning `SERVICE_TSP`
+// slot as `vtc-host`, since the gateway now serves Trust Tasks over TSP,
+// DIDComm, and HTTPS and everything in this stack is transport-agnostic.
+
+fn push_gateway_fixture_vars() -> TemplateVars {
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:QmGW:push.example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkGWsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSGWka");
+    vars.insert_string("URL", "https://push.example.com");
+    vars
+}
+
+#[test]
+fn push_gateway_builtin_loads_and_validates() {
+    let tpl = load_embedded("push-gateway").expect("load_embedded");
+    assert_eq!(tpl.name, "push-gateway");
+    assert_eq!(tpl.kind, "push-gateway");
+    assert_eq!(tpl.methods, vec!["webvh", "web"]);
+    assert_eq!(tpl.required_vars, vec!["URL"]);
+    tpl.validate().expect("validate after load");
+}
+
+/// The pre-existing shape has to keep rendering unchanged: a gateway minted
+/// without a mediator advertises DIDComm alone. Regression guard for every
+/// push gateway provisioned before TSP was selectable.
+#[test]
+fn push_gateway_advertises_didcomm_alone_when_no_mediator_is_supplied() {
+    let tpl = load_embedded("push-gateway").unwrap();
+    let doc = tpl.render(&push_gateway_fixture_vars()).unwrap();
+    let services = doc["service"].as_array().expect("service is array");
+    assert_eq!(
+        services.len(),
+        1,
+        "expected only the DIDComm entry: {services:?}"
+    );
+    assert_eq!(services[0]["type"], json!(["DIDCommMessaging"]));
+    assert!(
+        !services.iter().any(|s| s.is_null()),
+        "the unselected TSP slot must prune entirely, not render as null: {services:#?}"
+    );
+}
+
+/// Opt-in TSP: the caller supplies `SERVICE_TSP` as the fully-resolved entry
+/// (built by `vta_sdk::did_templates::tsp_service`), and both transports are
+/// advertised, TSP first (canonical order), both naming the same mediator —
+/// one dual-protocol mediator, advertised twice under two service types.
+#[test]
+fn push_gateway_advertises_both_transports_when_mediator_is_supplied() {
+    let tpl = load_embedded("push-gateway").unwrap();
+    let mut vars = push_gateway_fixture_vars();
+    vars.insert(TSP_SERVICE_VAR, tsp_service(MEDIATOR).unwrap());
+
+    let doc = tpl.render(&vars).unwrap();
+    let services = doc["service"].as_array().expect("service is array");
+    assert_eq!(services.len(), 2, "tsp + didcomm: {services:?}");
+    assert_eq!(services[0]["type"], "TSPTransport");
+    assert_eq!(services[0]["serviceEndpoint"], MEDIATOR);
+    assert_eq!(services[0]["id"], "{DID}#tsp");
+    assert_eq!(services[1]["type"], json!(["DIDCommMessaging"]));
+}
+
+#[test]
+fn push_gateway_builtin_missing_url_errors() {
+    let tpl = load_embedded("push-gateway").unwrap();
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:QmGW:push.example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkGWsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSGWka");
+    // URL deliberately omitted.
+
+    let err = tpl.render(&vars).expect_err("URL is required");
+    assert!(
+        matches!(&err, TemplateError::MissingVars(m) if m.contains("URL")),
+        "got: {err}"
+    );
+}
+
 // ─── did-host-http-tsp built-in ──────────────────────────────────────
 //
 // TSP-only sibling of did-host-http-didcomm: advertises WebVHHosting +

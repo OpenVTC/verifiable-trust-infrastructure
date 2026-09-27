@@ -13,6 +13,7 @@ import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { useToast } from "@/lib/toast";
 import { Install } from "@/pages/Install";
+import { EnrolStepUpPage } from "@/pages/EnrolStepUp";
 import { Login } from "@/pages/Login";
 import { StepUpPage } from "@/pages/StepUp";
 
@@ -162,10 +163,23 @@ export default function App() {
     return <Install />;
   }
 
+  // Redeeming a step-up passkey invite needs no session: the invitee may be
+  // a member who is no console user at all.
+  if (pathname.startsWith("/enrol-step-up")) {
+    return <EnrolStepUpPage />;
+  }
   if (probe.isPending) {
     return <SignInLoading />;
   }
   if (!probe.data) {
+    // Nor does answering a bound step-up with a step-up passkey.
+    if (pathname.startsWith("/step-up")) {
+      return (
+        <main className="content">
+          <StepUpPage />
+        </main>
+      );
+    }
     return <Login />;
   }
 
