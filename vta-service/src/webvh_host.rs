@@ -426,13 +426,16 @@ impl<'a> WebvhHostClient<'a> {
     /// never end, is refused.
     pub async fn list_dids(&self, owner: &str) -> Result<Vec<HostedDidEntry>, AppError> {
         let mut out = Vec::new();
-        for page in 0..DID_LIST_MAX_PAGES {
+        for _ in 0..DID_LIST_MAX_PAGES {
+            // The next page starts after what was read, not at `page * limit`:
+            // a host may return fewer than `limit` records a page, and a fixed
+            // stride would skip the rest.
             let request: dm::did::list::v0_1::Payload = payload(
                 "did/list",
                 serde_json::json!({
                     "owner": owner,
                     "limit": DID_LIST_PAGE,
-                    "offset": page * DID_LIST_PAGE,
+                    "offset": out.len() as u64,
                 }),
             )?;
             let response = self.call(&request).await?;
@@ -448,18 +451,31 @@ impl<'a> WebvhHostClient<'a> {
 
 /// Add one `did/list` page to `out`. `Ok(true)` when the listing is complete,
 /// `Ok(false)` when there is more to read, and an error when the host's pages
-/// and its `total` disagree.
+/// and its `total` disagree, or a slot is listed twice (overlapping pages that
+/// add up to `total` would otherwise hide the slots they displaced).
 fn accumulate_did_page(
     out: &mut Vec<HostedDidEntry>,
     response: dm::did::list::v0_1::Response,
 ) -> Result<bool, AppError> {
     let got = response.records.len();
-    out.extend(response.records.into_iter().map(|r| HostedDidEntry {
-        mnemonic: r.mnemonic,
-        did_id: r.did_id,
-        domain: r.domain,
-        disabled: r.disabled.unwrap_or(false),
-    }));
+    let mut seen: std::collections::HashSet<(String, Option<String>)> = out
+        .iter()
+        .map(|e| (e.mnemonic.clone(), e.domain.clone()))
+        .collect();
+    for r in response.records {
+        if !seen.insert((r.mnemonic.clone(), r.domain.clone())) {
+            return Err(bad_gateway_error(format!(
+                "the DID hosting service listed the slot {} twice",
+                r.mnemonic
+            )));
+        }
+        out.push(HostedDidEntry {
+            mnemonic: r.mnemonic,
+            did_id: r.did_id,
+            domain: r.domain,
+            disabled: r.disabled.unwrap_or(false),
+        });
+    }
     let read = out.len() as u64;
     if read > response.total {
         return Err(bad_gateway_error(format!(
@@ -778,6 +794,10 @@ mod tests {
         assert!(!accumulate_did_page(&mut out, list_page(&["a"], 2)).unwrap());
         assert!(accumulate_did_page(&mut out, list_page(&[], 2)).is_err());
         assert!(accumulate_did_page(&mut Vec::new(), list_page(&["a", "b"], 1)).is_err());
+        // Overlapping pages that add up to the total still hide a slot.
+        let mut out = Vec::new();
+        assert!(!accumulate_did_page(&mut out, list_page(&["a", "b"], 3)).unwrap());
+        assert!(accumulate_did_page(&mut out, list_page(&["b"], 3)).is_err());
     }
 
     /// What goes on the wire is signed by the VTA's operational key.

@@ -1060,7 +1060,8 @@ pub(crate) enum WebvhCommands {
         /// Server identifier
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a WebVHHostingService endpoint)
+        /// Server DID (its DID document must advertise TSPTransport, DIDCommMessaging,
+        /// TrustTaskHTTPS, or WebVHHosting at an https:// origin)
         #[arg(long)]
         did: String,
         /// Human-readable label
@@ -1229,8 +1230,9 @@ pub(crate) enum WebvhCommands {
     },
     /// List hosting domains a server makes available to this VTA.
     ///
-    /// Walks the configured webvh server's `GET /api/me/domains`
-    /// endpoint and prints the caller-scoped subset. Use this to
+    /// Asks the configured webvh server with the
+    /// `did-management/me/domains` Trust Task and prints the
+    /// caller-scoped subset. Use this to
     /// discover legitimate `--domain` values for `pnm did-mgmt
     /// create-did` / `register-did` before the first call. The
     /// system default is flagged with `(default)`.
@@ -1413,8 +1415,9 @@ pub(crate) enum DidMgmtServerCommands {
         /// Server identifier (operator-chosen, must be unique).
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a
-        /// WebVHHostingService endpoint).
+        /// Server DID (its DID document must advertise TSPTransport,
+        /// DIDCommMessaging, TrustTaskHTTPS, or WebVHHosting at an
+        /// https:// origin).
         #[arg(long)]
         did: String,
         /// Human-readable label.
@@ -1636,8 +1639,8 @@ pub(crate) enum DidMgmtDidCommands {
     },
     /// List the hosting domains a registered server makes available.
     ///
-    /// Calls the server's `GET /api/me/domains` endpoint and prints
-    /// the caller-scoped subset. Use this to discover legitimate
+    /// Asks the server with the `did-management/me/domains` Trust
+    /// Task and prints the caller-scoped subset. Use this to discover legitimate
     /// `--domain` values for `pnm did-mgmt dids create` /
     /// `pnm did-mgmt dids register` before the first call. The
     /// system default is flagged with `(default)`.

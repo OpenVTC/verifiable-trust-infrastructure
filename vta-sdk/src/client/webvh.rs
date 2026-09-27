@@ -41,12 +41,12 @@ impl VtaClient {
         .await
     }
 
-    /// Fetch the registered hosting server's `/api/me/domains` view
-    /// (caller-scoped subset of hosting domains, with the system
+    /// Fetch the registered hosting server's `did-management/me/domains`
+    /// view (caller-scoped subset of hosting domains, with the system
     /// default flagged). Used by `pnm did-mgmt list-domains` and the
     /// interactive `--domain` prompt in `create-did` /
-    /// `register-did`. The VTA relays the call after authenticating
-    /// to the server with its own credentials.
+    /// `register-did`. The VTA asks the server with a Trust Task signed
+    /// by its own operational key.
     pub async fn list_webvh_server_domains(
         &self,
         server_id: &str,

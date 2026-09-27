@@ -436,9 +436,6 @@ pub const ENVIRONMENT_BOUND_ROWS: &[(&str, &str)] = &[
     (PERSONA, "pxi:"),
     (PERSONA, "pxf:"),
     (PERSONA, "pxfv"),
-    // Cached bearer tokens for DID-hosting daemons. Service-local secrets; a
-    // restored VTA re-authenticates on first use.
-    (WEBVH, "server-auth:"),
 ];
 
 /// Whether `key` in `keyspace` is an [`ENVIRONMENT_BOUND_ROWS`] row.
@@ -499,7 +496,6 @@ mod tests {
         assert!(is_environment_bound(KEYS, b"tee:vta_did"));
         assert!(is_environment_bound(KEYS, b"hardened:jwt_key"));
         assert!(is_environment_bound(PERSONA, b"pxi:abcd"));
-        assert!(is_environment_bound(WEBVH, b"server-auth:srv1"));
         // Same prefix, different keyspace: carried.
         assert!(!is_environment_bound(ACL, b"tee:mode-b"));
         // The agent's own rows are carried.
