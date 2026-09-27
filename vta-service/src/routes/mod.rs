@@ -6,7 +6,6 @@ mod auth;
 mod auth_portal;
 mod backup_blob;
 mod bootstrap;
-mod cache;
 mod config;
 mod contexts;
 mod did_templates;
@@ -414,20 +413,11 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         .routes(routes!(did_templates::render_context_handler))
         // ACL routes (flattened for consistency)
         .routes(routes!(acl::list_acl, acl::create_acl))
-        // Static segment registered before `/acl/{did}` so it isn't captured
-        // as a DID. Self-service key rotation (any authenticated caller).
-        .routes(routes!(acl::swap_acl))
         .routes(routes!(acl::get_acl, acl::update_acl, acl::delete_acl))
         .routes(routes!(acl::change_role))
         // Audit log routes
         .routes(routes!(audit::list_audit_logs))
-        .routes(routes!(audit::get_retention, audit::update_retention))
-        // Cache routes (token caching / key-value store)
-        .routes(routes!(
-            cache::get_cached,
-            cache::put_cached,
-            cache::delete_cached
-        ));
+        .routes(routes!(audit::get_retention, audit::update_retention));
 
     // TEE attestation routes (feature-gated). The unauthenticated ones
     // (`status`, `report`, `did-log`) live on the rate-limited `unauth`
@@ -691,7 +681,6 @@ mod cors_tests {
             "/acl/{did}",
             "/did-templates",
             "/audit/logs",
-            "/cache/{key}",
             "/config",
             "/vta/restart",
             "/backup/blob/{bundle_id}",

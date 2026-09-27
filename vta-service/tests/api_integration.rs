@@ -927,40 +927,48 @@ async fn a_rule_naming_one_task_does_not_gate_another() {
     );
 }
 
-/// Self-service key rotation is gated like any other task.
-///
-/// `/acl/swap` was the one gated REST route that never reached the shared gate:
-/// it carried the `RequireStepUp<AclSwapKeyOp>` extractor instead, because its
-/// floor had a non-escalation carve-out the gate has no concept of. Retiring the
-/// floors took the extractor, so the route had to be wired to the gate — this is
-/// the test that says it was, rather than left as the one ACL mutation a rule
-/// binds over trust tasks and silently not over REST.
+/// Self-service key rotation is gated like any other task: an `acl/swap-key`
+/// rule binds the Trust Task — the only way to swap a key now that `/acl/swap`
+/// is gone — before the handler reads the presentation.
 #[tokio::test]
 async fn swap_key_is_gated_by_the_rules() {
     // Signing app: the gate mints a signed approve-request (spec: proof REQUIRED).
     let (app, ctx) = TestApp::new_signing().await;
     ctx.enable_step_up_all().await;
-    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+    let admin = vta_service::test_support::test_admin_did().0;
+    let token = ctx.auth_token(&admin, "admin", vec![]).await;
 
     let (status, body) = app
         .request(post_auth(
-            "/acl/swap",
+            "/trust-tasks",
             &token,
-            json!({ "presentation": "not-a-real-vp" }),
+            signed_doc(
+                &ctx,
+                &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_0_1,
+                json!({
+                    "currentSubject": admin,
+                    "newSubject": "did:key:z6MkNewSubject",
+                    "linkProof": "not-a-real-vp",
+                }),
+            ),
         ))
         .await;
 
-    assert_eq!(
-        status,
-        StatusCode::FORBIDDEN,
-        "swap-key must be gated: {body}"
-    );
-    assert_eq!(body["error"], "auth:step_up_required");
-    // Gated *before* the handler, so the bogus presentation is never reached —
-    // the refusal is about the missing elevation, not about the VP.
     assert!(
-        body["approveRequest"]["payload"]["challenge"].is_string(),
-        "the 403 must carry the approve-request: {body}"
+        !status.is_success(),
+        "swap-key must be gated: {status} {body}"
+    );
+    // Gated *before* the handler, so the bogus link proof is never reached —
+    // the refusal is about the missing elevation, not about the VP.
+    let rendered = body.to_string();
+    assert!(
+        !rendered.contains("not-a-real-vp") && !rendered.contains("presentation"),
+        "the refusal must come from the gate, not the handler: {rendered}"
+    );
+    assert!(
+        rendered.contains("step") || rendered.contains("Step"),
+        "the refusal must be the step-up gate: {rendered}"
     );
 }
 
@@ -1165,36 +1173,40 @@ async fn the_inline_backup_routes_are_gone() {
     }
 }
 
-// ── Cache ──────────────────────────────────────────────────────────
+// ── Removed routes ─────────────────────────────────────────────────
 
+/// `/cache/{key}` (a key-value store no client used) and `/acl/swap` (whose
+/// Trust Task, `acl/swap-key/0.1`, is what every SDK transport sends) are gone.
 #[tokio::test]
-async fn cache_put_get_delete() {
+async fn the_cache_and_acl_swap_routes_are_gone() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
-
-    // PUT
-    let req = Request::builder()
-        .method("PUT")
-        .uri("/cache/test-key")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"value":"hello","ttl_secs":60}"#))
-        .unwrap();
-    let (status, _) = app.request(req).await;
-    assert!(status.is_success(), "PUT cache: {status}");
-
-    // GET
-    let (status, body) = app.request(get_auth("/cache/test-key", &token)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["value"], "hello");
-
-    // DELETE
-    let (status, _) = app.request(delete_auth("/cache/test-key", &token)).await;
-    assert!(status.is_success(), "DELETE cache: {status}");
-
-    // GET again → 404
-    let (status, _) = app.request(get_auth("/cache/test-key", &token)).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    for (status, path) in [
+        (
+            app.request(get_auth("/cache/k", &token)).await.0,
+            "GET /cache/k",
+        ),
+        (
+            app.request(delete_auth("/cache/k", &token)).await.0,
+            "DELETE /cache/k",
+        ),
+        (
+            app.request(post_auth(
+                "/acl/swap",
+                &token,
+                json!({ "presentation": "x" }),
+            ))
+            .await
+            .0,
+            "POST /acl/swap",
+        ),
+    ] {
+        // 405 where the GET-only public did-log catch-all matches the path.
+        assert!(
+            status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED,
+            "{path}: {status}"
+        );
+    }
 }
 
 // ── Audit ──────────────────────────────────────────────────────────
