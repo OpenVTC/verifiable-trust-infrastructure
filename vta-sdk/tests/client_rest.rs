@@ -186,26 +186,6 @@ async fn mount_json(
         .await
 }
 
-/// Mock a genuinely-REST route — one with no trust-task twin, which therefore
-/// keeps its bespoke method and path. Backup blob streaming and the
-/// deprecated legacy-`rpc` DID verbs are the whole set;
-/// anything else reaching for this helper is probably a task in disguise.
-async fn mount_rest_json(
-    server: &MockServer,
-    m: &str,
-    p: &str,
-    status: u16,
-    body: Value,
-) -> wiremock::MockGuard {
-    Mock::given(method(m))
-        .and(path(p))
-        .and(auth_match())
-        .respond_with(ResponseTemplate::new(status).set_body_json(body))
-        .expect(1)
-        .mount_as_scoped(server)
-        .await
-}
-
 async fn mount_status(server: &MockServer, _m: &str, _p: &str, status: u16) -> wiremock::MockGuard {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
