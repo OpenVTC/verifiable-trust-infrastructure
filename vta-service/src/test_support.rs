@@ -1378,10 +1378,9 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         if let Some(client) = resolver.as_mut() {
             let mut preseeded_docs = std::collections::HashMap::new();
             for (did, doc_json) in &opts.preseed_did_docs {
-                let doc: affinidi_tdk::did_common::Document = serde_json::from_value(
-                    doc_json.clone(),
-                )
-                .expect("preseed DID document must deserialize into a resolver Document");
+                let doc: affinidi_tdk::did_common::Document =
+                    serde_json::from_value(doc_json.clone())
+                        .expect("preseed DID document must deserialize into a resolver Document");
                 client.add_did_document(did, doc.clone()).await;
                 preseeded_docs.insert(did.clone(), doc);
             }
