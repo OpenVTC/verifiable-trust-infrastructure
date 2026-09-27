@@ -27,12 +27,12 @@ webvh = ["vta-keyspaces/webvh"]
 tee = ["vta-config/tee"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.28" }
+vti-common = { path = "../vti-common", version = "0.29" }
 # Nonce and bundle-id generation. Was reached through `aes_gcm::aead::OsRng`,
 # a re-export aes-gcm 0.11 dropped; this crate always needed a CSPRNG of its
 # own and was borrowing one from its cipher.
 rand = { workspace = true }
-vta-sdk = { path = "../vta-sdk", version = "0.55" }
+vta-sdk = { path = "../vta-sdk", version = "0.56" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.4" }
 vta-keys = { path = "../vta-keys", version = "0.8" }
 vta-config = { path = "../vta-config", version = "0.8" }

@@ -2,6 +2,55 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.56.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.55.0...vta-sdk-v0.56.0) — 2026-09-27
+
+
+### Added
+
+- **vta**: Serve vta/services/rollback/1.1, so a rollback carries its drain window ([#1798](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1798))
+
+* chore(deps): take trust-tasks 0.24, affinidi-tdk 0.20 and affinidi-messaging-sdk 0.30
+
+
+
+### Changed
+
+- **sdk**: One Trust Task surface — protocol_message_transport is gone ([#1793](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1793))
+
+The SDK sends no bare DIDComm protocol messages any more: every VtaClient
+  method is a Trust Task, and VtaClient::rpc went in #1783. The per-surface
+  split between Trust Tasks and protocol messages was vestigial, so its
+  reporting half goes with it.
+
+  - Remove VtaClient::protocol_message_transport (public API removal).
+    SurfaceTransport stays, reported by trust_task_transport().
+  - vta-mcp: the status document's transports object drops
+    `protocolMessages`; `trustTasks` remains.
+  - Drop the protocol_message_transport assertions from
+    tests/e2e/tests/tsp_dual_leg.rs, vta-sdk/tests/tsp_dual_leg_live.rs and
+    the client unit test.
+  - Rewrite the "TSP is selected per surface" rule in CLAUDE.md: there is one
+    surface, and a dual-transport client's DIDCommSession stays only as the
+    mediator's one socket per DID, carrying TSP receive. The one-socket rule
+    is unchanged. tsp-enablement.md §3.3a gains a note that the
+    protocol-message surface is gone; tsp.md, the TSP-vs-DIDComm note, the
+    SDK's session/client docs and the VTA router's module doc are updated to
+    match.
+
+  The passkey-VM REST routes (/did/verification-methods/passkey{,/challenge,
+  /{fragment}}) are now declared as the WebAuthn exception to "every remote
+  operation is a Trust Task": the browser driving the ceremony (the VTA auth
+  portal, examples/vta-auth-demo) holds only the bearer passkey-login issued
+  and no DID key to sign a Trust Task. The declaration is a new
+  REST_EXCEPTIONS table in vta_service::deprecation, naming each route's
+  vta/passkey-vms/* Trust Task twin and the reason. It is machine-checked:
+  every_rest_exception_names_a_live_route pins each row to a served route and
+  method with no Deprecation header, and a unit test refuses a route listed
+  both as an exception and as superseded. The routes, CLAUDE.md and
+  docs/02-vta/personal-ai-agents.md name the exception. No behaviour change.
+
+
+
 ## [0.55.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.54.0...vta-sdk-v0.55.0) — 2026-09-27
 
 

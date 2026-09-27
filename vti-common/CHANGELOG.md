@@ -2,6 +2,73 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.28.0...vti-common-v0.29.0) — 2026-09-27
+
+
+### Fixed
+
+- **push**: Re-issue a push as a new attempt once it outlives its freshness window ([#1799](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1799))
+
+The push engine (vti_common::trust_task_push) signed a document once and
+  sent the same bytes for the whole push deadline: within an attempt the
+  outbox retries the hop for up to an hour, escalation and the never-queued
+  re-queue resend record.document unchanged, and deadlines run to 24 h
+  (credential-exchange) or 30 days (removal notice). Both VTI consumers
+  refuse a document older than 10 min + 60 s skew as `expired`
+  (freshness_policy, issuedAt required), so any delivery after ~11 minutes
+  was silently refused at the far end, and a copy collected late by a
+  reconnecting recipient was even recorded "delivered".
+
+  Re-signing under the same id is ruled out by SPEC §4.3/§8.4: a re-stamped,
+  re-signed document is a different document under a reused id, which the
+  consumer's ReplayGuard (keyed on id + digest of the whole document, proof
+  included) refuses as idConflict. expiresAt cannot help either:
+  validate_freshness applies max_age to issuedAt regardless, and both
+  consumers cap the replay record at issuedAt + max_age + skew by design;
+  honouring a producer-chosen expiry would stretch an in-memory replay
+  record and widen replay exposure across restarts.
+
+  So the engine issues a SPEC §8.4 new attempt (trust_task_push::new_attempt:
+  fresh id, fresh whole-second issuedAt, re-signed by the node through the new
+  PushReissuer, kept in the original's thread, every other member including
+  idempotencyKey unchanged) wherever it would otherwise put a document past
+  its acceptance window on the wire: when queuing any attempt; when an attempt
+  still waiting for hand-off crosses the window (superseded on the same
+  transport, same window end); and when a copy is collected after the window
+  plus skew (the recipient is online now and refused what it collected).
+  A mediator-held copy is out of reach and not re-sent per window; bounded by
+  MAX_REISSUES. The window is now one constant, trust_task::ACCEPTANCE_WINDOW,
+  read by both consumers and the engine.
+
+  Duplicate execution across attempts is what idempotencyKey is for
+  (VTI-OPS-061/064): the credential-exchange push sites (VTA push_step, VTC
+  push_document) now carry a key, and the VTA consumer now keys tasks the
+  retry_safety catalogue does not classify, as VTI-OPS-062 requires; before,
+  it skipped every counterparty credential-exchange step. Replay exposure is
+  unchanged: same window, same replay record, and a byte-identical replay of
+  a new attempt is still refused by id.
+
+- **acl**: Offline provision-integration can write its admin grant again (VTI-ACL-053) ([#1792](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1792))
+
+`vta bootstrap provision-integration` runs offline as the synthesised
+  `cli:provision-integration` principal, and writes the integration's admin
+  grant through `operations::acl::create_acl`. #1738 made `create_acl` bound
+  every write by the caller's own stored entry and refuse a caller with none
+  (VTI-ACL-053). The CLI principal never has an entry, so every offline
+  first-time setup on vta-service 0.44.0 failed with:
+
+      provision-integration: forbidden: cli:provision-integration has no ACL
+      entry of its own, so there is no authority to bound this change by
+      (VTI-ACL-001, VTI-ACL-053)
+
+  The offline CLI is not a caller on the operation surface. It runs with the
+  node stopped, as the OS account that holds the store and the seed, and the
+  other offline writers (`vta acl create`, `vta import-did`) already store
+  entries directly with nothing more to answer to. The specification now says
+  so explicitly (dtgwg-vti-spec#46, "Offline writers" note under VTI-ACL-053).
+
+
+
 ## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.27.0...vti-common-v0.28.0) — 2026-09-27
 
 
