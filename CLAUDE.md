@@ -936,13 +936,12 @@ new flow, update both this section and the relevant `docs/*.md`.
   invocations targeting a multi-domain server *without*
   `--domain` get prompted to pick.
 - **Discovery**: `pnm did-mgmt dids list-domains --server <id>`
-  walks the server's `/api/me/domains` (proxied through the VTA
-  with VTA credentials) and prints the caller-scoped subset.
+  asks the server for `did-management/me/domains/0.1` (a Trust Task
+  the VTA signs and sends) and prints the caller-scoped subset.
   Use this to find legitimate `--domain` values for the same
   server before the first create / register.
-- **Code**: `vta-service/src/webvh_didcomm.rs`,
-  `vta-webvh/src/webvh_client.rs`,
-  `vta-service/src/operations/did_webvh/{mod,servers,auth_cache,register_server}.rs`,
+- **Code**: `vta-service/src/webvh_host.rs`,
+  `vta-service/src/operations/did_webvh/{mod,servers,host,register_server}.rs`,
   `vta-service/src/routes/did_webvh.rs::list_server_domains_handler`,
   `vta_sdk::client::VtaClient::list_webvh_server_domains`,
   `pnm-cli/src/commands/webvh.rs` (interactive prompt +
@@ -1288,8 +1287,7 @@ Rules that bite hardest in this workspace, with their known hotspots:
   vtc-service `send_to_member`); delivery-critical messages need an ack or an
   outbox record.
 - **R1.2 / R1.3 — no `reqwest::Client::new()`, no lock across an await.**
-  Known offenders being remediated: vta-sdk REST transports, `webvh_client`
-  (+ the auth-cache mutex held across its calls), the vault status-list fetch
+  Known offenders being remediated: vta-sdk REST transports, the vault status-list fetch
   (which must use the foreign-fetch profile — copy
   `vtc-service/src/recognition/verify.rs`).
 - **Retry has exactly one owner per failure domain.** The messaging delivery

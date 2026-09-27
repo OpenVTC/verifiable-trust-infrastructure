@@ -108,11 +108,6 @@ struct OfflineDeps {
     #[cfg(feature = "didcomm")]
     sweeper: Arc<DrainSweeper>,
     auth: AuthClaims,
-    /// Fresh per-invocation auth-locks. The offline CLI is a
-    /// single short-lived process; concurrent webvh ops aren't
-    /// possible here because the fjall store requires exclusive
-    /// access. A throwaway map suffices.
-    webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks,
 }
 
 impl OfflineDeps {
@@ -135,7 +130,6 @@ impl OfflineDeps {
             did_resolver: &self.did_resolver,
             didcomm_bridge: &self.didcomm_bridge,
             telemetry: &self.telemetry,
-            webvh_auth_locks: &self.webvh_auth_locks,
             #[cfg(feature = "didcomm")]
             registry: &self.registry,
             #[cfg(feature = "didcomm")]
@@ -234,7 +228,6 @@ async fn build_offline_deps(
         #[cfg(feature = "didcomm")]
         sweeper,
         auth,
-        webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
     })
 }
 

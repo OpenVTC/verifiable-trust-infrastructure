@@ -161,13 +161,10 @@ pub async fn register_did_with_server(
         .await?
         .ok_or_else(|| RegisterDidWithServerError::LogMissing(params.did.clone()))?;
 
-    // 4. Atomic claim-and-publish on the host via the auth-cache
-    //    helper. Single round-trip equivalent of `request_uri` +
-    //    `publish_did`, batched on the daemon so any in-flight
-    //    resolver hits either prior or new content (no empty-404
-    //    window). The helper handles the daemon REST auth handshake
-    //    + 401 retry; falls through to plain DIDComm transport when
-    //    the server DID advertises that.
+    // 4. Atomic claim-and-publish on the host (`did/register/0.1`).
+    //    Single round-trip equivalent of `request_uri` + `publish_did`,
+    //    batched on the host so any in-flight resolver hits either prior
+    //    or new content (no empty-404 window).
     //
     //    `WebVHURL::parse_did_url` returns `path` with leading and
     //    trailing slashes (`/glenn-vta/`). The host expects the path
@@ -398,7 +395,6 @@ mod tests {
         seed: &'a dyn crate::keys::seed_store::SeedStore,
         resolver: &'a DIDCacheClient,
         bridge: &'a Arc<DIDCommBridge>,
-        locks: &'a super::super::WebvhAuthLocks,
     ) -> super::super::WebvhDeps<'a> {
         super::super::WebvhDeps {
             // Registering a DID with a server never deletes one.
@@ -411,7 +407,6 @@ mod tests {
             seed_store: seed,
             did_resolver: resolver,
             didcomm_bridge: bridge,
-            auth_locks: locks,
             // Test scaffolding: no mediator socket.
             #[cfg(feature = "tsp")]
             tsp: None,
@@ -423,9 +418,8 @@ mod tests {
         let (_dir, webvh_ks, audit) = setup().await;
         let resolver = resolver().await;
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
-        let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
-        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge, &auth_locks);
+        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge);
         let err = register_did_with_server(
             &deps,
             &other_user(),
@@ -448,9 +442,8 @@ mod tests {
         let (_dir, webvh_ks, audit) = setup().await;
         let resolver = resolver().await;
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
-        let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
-        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge, &auth_locks);
+        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge);
         let err = register_did_with_server(
             &deps,
             &super_admin(),
@@ -478,9 +471,8 @@ mod tests {
 
         let resolver = resolver().await;
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
-        let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
-        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge, &auth_locks);
+        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge);
         let err = register_did_with_server(
             &deps,
             &super_admin(),
@@ -514,9 +506,8 @@ mod tests {
 
         let resolver = resolver().await;
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
-        let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
-        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge, &auth_locks);
+        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge);
         let err = register_did_with_server(
             &deps,
             &super_admin(),
@@ -548,9 +539,8 @@ mod tests {
 
         let resolver = resolver().await;
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
-        let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
-        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge, &auth_locks);
+        let deps = deps(&webvh_ks, &audit, &seed, &resolver, &bridge);
         let err = register_did_with_server(
             &deps,
             &super_admin(),
@@ -575,7 +565,7 @@ mod tests {
     /// edit changes the variant shape.
     ///
     /// Real end-to-end concurrent-call coverage lives at the
-    /// integration layer (would need two WebvhTransports racing the
+    /// integration layer (would need two host clients racing the
     /// same DID); the within-op snapshot mechanism itself is unit-
     /// tested in `super::concurrency::tests`.
     #[test]

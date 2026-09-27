@@ -107,14 +107,13 @@ pub mod trust_tasks;
 /// `webvh` cargo features gate the same code they did before, wired through to
 /// `vta-vault/bbs` and `vta-vault/webvh` in `Cargo.toml`.
 pub use vta_vault as vault;
-/// WebVH hosting infrastructure (DID-record store, hosting-server HTTP client,
-/// and its DID-auth handshake), extracted to the `vta-webvh` crate and
-/// re-exported so every `crate::{webvh_store,webvh_client,webvh_auth}::…` path
-/// is unchanged. `webvh_didcomm` stays here — it depends on `didcomm_bridge`.
+/// The WebVH DID-record store, extracted to the `vta-webvh` crate and
+/// re-exported so every `crate::webvh_store::…` path is unchanged.
 #[cfg(feature = "webvh")]
-pub use vta_webvh::{webvh_auth, webvh_client, webvh_store};
+pub use vta_webvh::webvh_store;
+/// The Trust-Task client to a DID hosting service.
 #[cfg(feature = "webvh")]
-pub mod webvh_didcomm;
+pub mod webvh_host;
 
 // `test_support` is gated internally on `any(test, feature = "test-support")`.
 // `#[cfg(...)]` here would hide the module from the test builds that

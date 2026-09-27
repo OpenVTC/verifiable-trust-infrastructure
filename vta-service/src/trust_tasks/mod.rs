@@ -204,7 +204,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // PR #139 ("PR 1 of N") as the shared vocabulary for the
     // cross-repo did-management migration (vta-sdk + vta-service +
     // affinidi-webvh-service all reference these). They are
-    // **outbound producer URIs** — VTA's `webvh_didcomm.rs` sends
+    // **outbound producer URIs** — VTA's `webvh_host.rs` sends
     // requests with these URIs to did-hosting, then matches
     // `<uri>#response` on the way back. They are not consumed by any
     // vta-service inbound dispatcher arm, so the parity harness

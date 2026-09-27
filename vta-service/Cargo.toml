@@ -192,9 +192,8 @@ vta-tee = { path = "../vta-tee", version = "0.5", optional = true }
 # Policy subsystem (regorus engine, default bundle, consent model), extracted
 # and re-exported as crate::policy.
 vta-policy = { path = "../vta-policy", version = "0.3" }
-# WebVH hosting infrastructure (webvh_store, webvh_client, webvh_auth),
-# extracted to its own crate and re-exported as crate::{webvh_store,
-# webvh_client, webvh_auth} behind this crate's `webvh` feature.
+# The local did:webvh store, extracted to its own crate and re-exported as
+# crate::webvh_store behind this crate's `webvh` feature.
 vta-webvh = { path = "../vta-webvh", version = "0.2", optional = true }
 vta-sdk = { path = "../vta-sdk", version = "0.54", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new

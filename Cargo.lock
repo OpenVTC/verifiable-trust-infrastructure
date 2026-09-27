@@ -11447,21 +11447,13 @@ dependencies = [
 name = "vta-webvh"
 version = "0.2.25"
 dependencies = [
- "affinidi-tdk",
  "chrono",
- "ed25519-dalek 3.0.0",
- "reqwest",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "tracing",
- "url",
  "vta-keyspaces",
  "vta-sdk",
  "vti-common",
- "wiremock",
- "zeroize",
 ]
 
 [[package]]

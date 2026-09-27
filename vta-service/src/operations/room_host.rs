@@ -36,7 +36,7 @@ use crate::operations::room_issuance::{SigningContext, VtaKeySigner};
 /// Build the Trust-Task document that carries `task` to a host.
 ///
 /// Extracted so the outbound shape is assertable without a live host — the same
-/// reason `webvh_didcomm::build_envelope_document` exists, and for the same
+/// reason `webvh_host::build_request_document` exists, and for the same
 /// class of bug: a malformed document is refused by the far side in words about
 /// the *payload*, and nothing local would have caught it.
 pub fn build_room_task(task: &str, host: &str, issuer: &str, payload: Value) -> Value {

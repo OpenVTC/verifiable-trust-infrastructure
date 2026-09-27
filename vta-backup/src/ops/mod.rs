@@ -1110,10 +1110,6 @@ pub(crate) mod tests {
             .insert_raw("hardened:jwt_key", vec![1u8; 32])
             .await
             .unwrap();
-        ts.webvh_ks
-            .insert_raw("server-auth:srv", b"token".to_vec())
-            .await
-            .unwrap();
         ts.keys_ks
             .insert_raw("path_counter:m/1'", 3u32.to_le_bytes().to_vec())
             .await
@@ -1136,7 +1132,7 @@ pub(crate) mod tests {
             .flat_map(|d| d.rows.iter().map(|(k, _)| BASE64.decode(k).unwrap()))
             .collect();
         assert!(keys.iter().any(|k| k == b"path_counter:m/1'"));
-        for bound in [&b"tee:vta_did"[..], b"hardened:jwt_key", b"server-auth:srv"] {
+        for bound in [&b"tee:vta_did"[..], b"hardened:jwt_key"] {
             assert!(
                 !keys.iter().any(|k| k == bound),
                 "{} must not be exported",

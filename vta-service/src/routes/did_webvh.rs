@@ -88,7 +88,7 @@ pub async fn list_servers_handler(
 }
 
 /// `GET /webvh/servers/:id/domains` — relay the registered hosting
-/// server's `/api/me/domains` view to the caller. Used by
+/// server's `did-management/me/domains` view to the caller. Used by
 /// `pnm did-mgmt list-domains` and by the interactive `--domain`
 /// prompt in `pnm did-mgmt dids create` / `register`. Authentication
 /// to the hosting server uses the VTA's own credentials.

@@ -47,7 +47,7 @@ pub const LIST_WEBVH_SERVERS_RESULT: &str =
 
 /// `pnm did-mgmt list-domains --server <id>` and the interactive
 /// domain prompt in `create-did` / `register-did` use this op to
-/// fetch the hosting server's caller-scoped `GET /api/me/domains`
+/// fetch the hosting server's caller-scoped `did-management/me/domains`
 /// view through the VTA.
 pub const LIST_WEBVH_SERVER_DOMAINS: &str =
     "https://firstperson.network/protocols/did-management/1.0/list-webvh-server-domains";
