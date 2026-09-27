@@ -165,18 +165,19 @@ When designing any new inter-component flow *or its authentication*, reach for
 TSP first, then DIDComm. Do **not** default to "a REST endpoint plus a bespoke
 signature/DID-resolution scheme" — that is a recurring mistake.
 
-**TSP is selected per *surface*, not per client, and rides one socket per DID.**
+**There is one client surface — Trust Tasks — and TSP rides one socket per DID.**
 Two rules that bite anything adopting TSP (see
 `docs/05-design-notes/tsp-enablement.md` §3.3a):
 
-- TSP carries the **Trust-Task** surface. The older DIDComm protocol-message
-  surface (`key-management/1.0/*`, `create_did_webvh`, `list_contexts`) has no
-  TSP dispatcher behind it, so a client on a dual-transport VTA is on TSP for
-  trust tasks *and* DIDComm for protocol messages, simultaneously. Choosing one
-  transport client-wide breaks the other surface — that is how
-  `TransportChoice::Auto` silently broke every `rpc` call the moment a VTA
-  advertised `#tsp` (#803). Read `VtaClient::{trust_task_transport,
-  protocol_message_transport}`; never render a single "transport" for a client.
+- Every `VtaClient` operation is a Trust Task, and TSP, DIDComm and HTTPS all
+  carry the same Trust-Task spine. The older bare-DIDComm protocol-message
+  surface (`key-management/1.0/*`, `create_did_webvh`, `list_contexts`) is gone
+  from both ends — the SDK sends none, and the VTA's DIDComm router serves only
+  the binding envelope plus plumbing (trust-ping, pickup status,
+  problem-report). A client's transport is `VtaClient::trust_task_transport`.
+  On a dual-transport VTA it reports TSP while the client still holds a
+  `DIDCommSession`: that session stays **only** as the mediator's one socket per
+  DID, on which TSP receive arrives — not as a second surface.
 - **The mediator permits one websocket per DID.** A node speaking both protocols
   multiplexes them on that socket; a second is evicted as `duplicate-channel`
   and the two reconnect loops duel. TSP send is an HTTP post and TSP receive
@@ -204,6 +205,16 @@ DIDComm, and treat its (e.g. did-signed) auth as the last-resort path. Concrete
 example — the push gateway: a `WakeHandle.gateway` carries an explicit protocol
 tag (a bare DID-vs-URL shape no longer disambiguates, since TSP VIDs are DIDs
 too).
+
+**Exceptions to "every remote operation is a Trust Task"** are foreign-protocol
+interfaces only — OAuth / WebAuthn ceremonies and DID resolution files — and a
+REST route kept for one is declared, not assumed. The passkey-VM enrolment
+routes (`/did/verification-methods/passkey{,/challenge,/{fragment}}`) are the
+WebAuthn exception: the browser driving the ceremony (the VTA auth portal,
+`examples/vta-auth-demo`) holds only the bearer passkey-login issued and no DID
+key to sign a Trust Task. DID-holding clients use the `vta/passkey-vms/*` twins.
+The declaration is a row in `vta_service::deprecation::REST_EXCEPTIONS`, pinned
+to a live route by `every_rest_exception_names_a_live_route`.
 
 ## Use DID templates, don't hand-roll DID shapes
 

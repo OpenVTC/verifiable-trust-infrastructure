@@ -213,6 +213,16 @@ chosen  = first protocol in [Tsp, Didcomm, Rest] present in BOTH ours and theirs
 
 ### 3.3a TSP is selected **per surface**, and rides one socket per DID (#803)
 
+> **Update — the protocol-message surface is gone.** Constraint (a) below is
+> historical. The SDK now sends no bare DIDComm protocol messages (every
+> `VtaClient` method is a Trust Task; `VtaClient::rpc` went in #1783), and the
+> VTA's DIDComm router serves only the Trust-Task binding envelope plus plumbing
+> (trust-ping, pickup status, problem-report). There is therefore one surface,
+> and `VtaClient::protocol_message_transport` has been removed;
+> `VtaClient::trust_task_transport` is the client's transport. Constraint (b) —
+> one socket per DID — stands unchanged: a dual-transport client keeps its
+> `DIDCommSession` purely as the carrier on which TSP receive arrives.
+
 Two constraints, discovered in implementation, that §3.2's "pick the highest
 protocol both parties advertise" does not by itself capture. Both are load-bearing
 for any consumer adopting TSP.

@@ -859,14 +859,13 @@ impl SessionStore {
     /// an indefinite hang with no output.
     ///
     /// Against a VTA advertising **both** TSP and DIDComm, `Auto` returns a
-    /// **dual** client: trust tasks over TSP, protocol messages over DIDComm,
-    /// on one mediator socket. TSP carries the Trust-Task surface only, so
-    /// there is no single client-wide transport choice that is correct.
+    /// DIDComm client with a TSP leg: Trust Tasks go over TSP, and the DIDComm
+    /// session stays open as the mediator's one socket per DID, on which TSP
+    /// receive arrives.
     ///
     /// [`TransportChoice::Tsp`] forces a TSP-*only* client: errors if the VTA
     /// advertises no `#tsp` service (naming what it *does* advertise), and
-    /// errors rather than falling back if the connect times out. Protocol-
-    /// message operations are unavailable on it by construction.
+    /// errors rather than falling back if the connect times out.
     ///
     /// [`TransportChoice::Didcomm`] forces DIDComm, ignoring an advertised
     /// `#tsp` — the recovery path when TSP is broken but the DIDComm mediator
@@ -1035,16 +1034,13 @@ impl SessionStore {
                 }
 
                 // Both transports advertised, and the operator did not force
-                // one: build a **dual** client — DIDComm for the protocol-
-                // message surface, TSP for the Trust-Task surface.
+                // one: build a DIDComm session and attach a TSP leg to it, so
+                // Trust Tasks go over TSP while the DIDComm session holds the
+                // mediator's one socket per DID (TSP receive arrives on it).
                 //
-                // Not "TSP instead of DIDComm". TSP carries Trust Tasks only;
-                // the VTA has no TSP dispatcher behind `key-management/1.0/*`,
-                // `create_did_webvh`, `list_contexts` and friends. Returning a
-                // TSP-only client here — which is what this arm used to do —
-                // therefore broke every one of those operations with
-                // `UnsupportedTransport` the moment a VTA started advertising
-                // `#tsp`. TSP is selected per surface, not per client.
+                // Not a standalone TSP session beside a DIDComm one: a second
+                // websocket for the same DID is evicted as `duplicate-channel`
+                // and the two reconnect loops duel (#803).
                 if let Some(didcomm) = didcomm_mediator_did.clone()
                     && transport != TransportChoice::Tsp
                 {
@@ -1090,15 +1086,14 @@ impl SessionStore {
                         Err(e) => {
                             // DIDComm is down but TSP may not be. Drop to the
                             // TSP-only client below rather than failing outright
-                            // — loudly, because that client cannot serve the
-                            // protocol-message surface at all.
+                            // — loudly, because the advertised DIDComm mediator
+                            // is unreachable.
                             warn!(
                                 vta_did = %vta_did,
                                 didcomm_mediator_did = %didcomm,
                                 error = %e,
                                 "the DIDComm mediator did not answer; falling back to a \
-                                 TSP-only client — key management, context and DID-minting \
-                                 operations will report UnsupportedTransport"
+                                 TSP-only client"
                             );
                         }
                     }
@@ -1970,13 +1965,10 @@ impl VtaEndpoint {
 pub enum TransportChoice {
     /// TSP when advertised, else DIDComm, else REST. The default.
     ///
-    /// **TSP is selected per surface, not per client.** Against a VTA
-    /// advertising both `#tsp` and `#vta-didcomm`, `Auto` returns a client whose
-    /// Trust-Task surface is on TSP and whose protocol-message surface
-    /// (`key-management/1.0/*`, `create_did_webvh`, `list_contexts`) is on
-    /// DIDComm — both legs live, one websocket. TSP carries Trust Tasks only, so
-    /// a TSP-*only* client would break every one of those operations; that is
-    /// what this used to return, and why it no longer does. See
+    /// Against a VTA advertising both `#tsp` and `#vta-didcomm`, `Auto`
+    /// returns a DIDComm client with a TSP leg: Trust Tasks (every client
+    /// operation) go over TSP, and the DIDComm session stays open as the
+    /// mediator's one socket per DID, on which TSP receive arrives. See
     /// [`VtaClient::trust_task_transport`](crate::client::VtaClient::trust_task_transport).
     ///
     /// A VTA advertising `#tsp` alone still yields a TSP-only client — there is
@@ -1987,11 +1979,6 @@ pub enum TransportChoice {
     /// — naming the transports the VTA *does* advertise — if it advertises no
     /// `#tsp` service, and errors rather than falling back if the TSP connect
     /// times out.
-    ///
-    /// Because it is TSP-only, protocol-message operations report
-    /// [`VtaError::UnsupportedTransport`](crate::error::VtaError::UnsupportedTransport)
-    /// naming `--transport didcomm`. Use [`Auto`](Self::Auto) for a client that
-    /// serves both surfaces.
     Tsp,
     /// Force DIDComm, ignoring an advertised `#tsp`. The recovery path when a
     /// VTA's TSP endpoint is broken but its DIDComm mediator is healthy;

@@ -76,10 +76,11 @@ Two paths:
 Building with `--features tsp` and no `didcomm` removes the DIDComm dispatcher
 outright, not just its advertisement. That means:
 
-- **No DIDComm protocol-message surface** (`key-management/1.0/*`,
-  `create_did_webvh`, `list_contexts`). Those never had a TSP dispatcher behind
-  them — TSP carries the *Trust-Task* surface — so on a TSP-only VTA they are
-  reachable over REST only.
+- **No DIDComm Trust-Task binding.** Every operation is a Trust Task, so a
+  TSP-only VTA serves all of them over TSP (and HTTPS); only DIDComm clients are
+  left out. (The older bare-DIDComm protocol-message surface —
+  `key-management/1.0/*`, `create_did_webvh`, `list_contexts` — is gone from
+  every build.)
 - **No drain machinery and no `services didcomm …` commands**, online or
   offline: drain is a DIDComm concept, and the ops behind those commands are
   compiled out. `services {rest,tsp,webauthn} …` are unaffected.

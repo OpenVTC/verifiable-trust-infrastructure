@@ -204,7 +204,7 @@ Restart the host, then ask for each in turn.
   "connected": true,
   "identity": { "mode": "did:key-didcomm", "agentDid": "did:key:zMcp…",
                 "dedicatedAgent": true },
-  "transports": { "trustTasks": "DIDComm", "protocolMessages": "DIDComm" },
+  "transports": { "trustTasks": "DIDComm" },
   "policy": { "summary": "confirm=sensitive deny=[vta/seeds/*,vta/backup/*]" },
   "calls": { "ok": 1, "errors": 0, "denied": 0, "declined": 0 }
 }

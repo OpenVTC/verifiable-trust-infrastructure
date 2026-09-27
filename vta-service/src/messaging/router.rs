@@ -3,8 +3,9 @@
 //! **D2 P2a cut-over**: this used to build an
 //! `affinidi-messaging-didcomm-service` `Router` (type-routed handler table +
 //! `MessagePolicy` middleware) wrapped in a `BridgeHandler`. That framework is
-//! gone. [`dispatch`] is now a plain `msg.typ` match that calls the same ~50
-//! handler functions directly — they are unchanged, taking
+//! gone. [`dispatch`] is now a plain `msg.typ` match: the Trust-Task binding
+//! envelope, plus plumbing (trust-ping, pickup status, problem-report). Every
+//! other type falls to `handle_unknown`. The handlers take
 //! `(HandlerContext, Message, Extension<T>)` from [`crate::messaging::shim`].
 //! The [`crate::server`] inbound loop drives it off
 //! [`affinidi_messaging_delivery::MessagingService::subscribe`].
