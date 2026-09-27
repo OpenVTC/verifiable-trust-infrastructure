@@ -980,48 +980,6 @@
         ]
       }
     },
-    "/v1/admin/step-up-passkeys": {
-      "get": {
-        "tags": [
-          "admin"
-        ],
-        "operationId": "stepUpPasskeyList",
-        "parameters": [
-          {
-            "name": "subject",
-            "in": "query",
-            "description": "Only this member's step-up passkeys.",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Members' step-up passkeys, newest first per member",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StepUpPasskeyList"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Not a community administrator"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/audit": {
       "get": {
         "tags": [
@@ -12513,62 +12471,6 @@
               "boolean",
               "null"
             ]
-          }
-        }
-      },
-      "StepUpPasskeyCredential": {
-        "type": "object",
-        "description": "What the console lists about a step-up passkey.",
-        "required": [
-          "credentialId",
-          "subject",
-          "invitedBy",
-          "registeredAt"
-        ],
-        "properties": {
-          "credentialId": {
-            "type": "string",
-            "description": "Credential id, hex."
-          },
-          "deviceLabel": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "invitedBy": {
-            "type": "string",
-            "description": "The administrator whose invite it came from."
-          },
-          "lastUsedAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time",
-            "description": "The last step-up it answered."
-          },
-          "registeredAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "subject": {
-            "type": "string",
-            "description": "The member it answers step-ups for."
-          }
-        }
-      },
-      "StepUpPasskeyList": {
-        "type": "object",
-        "required": [
-          "credentials"
-        ],
-        "properties": {
-          "credentials": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/StepUpPasskeyCredential"
-            }
           }
         }
       },

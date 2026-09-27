@@ -9,7 +9,8 @@
 // to that one document, and delivers the URL and the claim code to the member
 // **over two different channels**. The administrator also revokes one here
 // (`auth/passkey/revoke/{start,finish}/0.2`) — verifying with their own
-// passkey — when the member has lost it.
+// passkey — when the member has lost it. The list itself is
+// `auth/passkey/admin-list/0.1`, signed by this browser's console key.
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -97,7 +98,14 @@ export function StepUpPasskeysCard({ did }: { did: string }) {
         the glass.
       </p>
       {list.isPending && <p className="muted">Loading…</p>}
-      {list.error && <p className="muted">Could not load: {readErrorMessage(list.error)}</p>}
+      {list.error && (
+        <p className="muted">
+          Could not load:{" "}
+          {list.error instanceof SigningUnavailableError
+            ? "this browser holds no console signing key; enrol one under Settings first."
+            : readErrorMessage(list.error)}
+        </p>
+      )}
       {!list.isPending && !list.error && (
         <>
           {creds.length === 0 ? (
@@ -109,6 +117,9 @@ export function StepUpPasskeysCard({ did }: { did: string }) {
                   <th>Label</th>
                   <th>Enrolled</th>
                   <th>Last used</th>
+                  <th title="The authenticator's signature counter. One that goes backwards suggests a cloned authenticator.">
+                    Counter
+                  </th>
                   <th />
                 </tr>
               </thead>
@@ -120,6 +131,7 @@ export function StepUpPasskeysCard({ did }: { did: string }) {
                     </td>
                     <td>{formatDay(c.registeredAt)}</td>
                     <td>{c.lastUsedAt ? formatDay(c.lastUsedAt) : <span className="muted">never</span>}</td>
+                    <td>{c.signCount ?? <span className="muted">—</span>}</td>
                     <td>
                       <button
                         type="button"

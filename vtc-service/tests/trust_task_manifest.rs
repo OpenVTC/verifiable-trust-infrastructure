@@ -430,6 +430,20 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
+    // TODO(trust-tasks release carrying trust-tasks #658): goes back to zero,
+    // and the hand-written `trust_tasks::passkey_admin_list_v0_1` gives way to
+    // the generated `auth::passkey::admin_list::v0_1`.
+    //
+    // `auth/passkey/admin-list/0.1` — an administrator listing a member's
+    // step-up passkeys, authored upstream (trust-tasks #658) and served on the
+    // spine ahead of the `trust-tasks-rs` release that serves it. It replaces
+    // `GET /v1/admin/step-up-passkeys`, which carried no Trust-Task binding.
+    (
+        "https://trusttasks.org/spec/auth/passkey/admin-list/",
+        1,
+        "auth/passkey/admin-list 0.1 (trust-tasks #658) — authored upstream, \
+         awaiting the trust-tasks-rs release that serves it",
+    ),
     // `git-ns/bridge/job/0.4` and `git-ns/namespace/reseat/0.3` were sent
     // and served ahead of their release here, and went back to zero with
     // trust-tasks-rs 0.23, which generates both.
@@ -716,14 +730,15 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
 /// (`trust_tasks::handle_step_up_approve_response`), which the console sends
 /// when a break-glass is refused with `details.stepUpRequest`; and members'
 /// step-up passkeys (`trust_tasks::step_up_passkey_tasks`) — an
-/// administrator's invite and revocation, and the browser's finish of a
-/// redemption the member's `cnm` started.
+/// administrator's invite, revocation and listing, and the browser's finish
+/// of a redemption the member's `cnm` started.
 const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
     "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2",
     "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1",
     "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2",
     "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2",
+    "https://trusttasks.org/spec/auth/passkey/admin-list/0.1",
 ];
 
 #[test]

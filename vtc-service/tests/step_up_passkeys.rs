@@ -347,10 +347,35 @@ async fn an_unsigned_answer_is_refused_and_leaves_the_step_up_for_the_member() {
     h.mock.shutdown().await;
 }
 
-/// No REST route issues, redeems or revokes one: the spine is the only door.
+/// No REST route issues, redeems, revokes or lists one: the spine is the
+/// only door. The listing is `auth/passkey/admin-list/0.1`, and
+/// `GET /v1/admin/step-up-passkeys` is gone.
+///
+/// An unrouted `GET` is not a 404 here: it falls through to the router's
+/// catch-all, like any path nobody serves. So a `GET` must be answered
+/// exactly as a path that never existed is — never with the listing.
 #[tokio::test]
-async fn no_rest_route_issues_redeems_or_revokes_one() {
+async fn no_rest_route_issues_redeems_revokes_or_lists_one() {
     let h = harness().await;
+    let call = |method: &'static str, path: &'static str| {
+        let router = h.mock.vtc.router.clone();
+        async move {
+            let req = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("Content-Type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            let resp = router.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap_or_default().to_string());
+            let body = resp.into_body().collect().await.unwrap().to_bytes();
+            (status, content_type, body)
+        }
+    };
     for path in [
         "/v1/admin/step-up-passkeys/invites",
         "/v1/admin/step-up-passkeys/revoke/start",
@@ -358,20 +383,29 @@ async fn no_rest_route_issues_redeems_or_revokes_one() {
         "/v1/step-up-passkeys/redeem/start",
         "/v1/step-up-passkeys/redeem/finish",
     ] {
-        let req = Request::builder()
-            .method("POST")
-            .uri(path)
-            .header("Content-Type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap();
-        let resp = h.mock.vtc.router.clone().oneshot(req).await.unwrap();
+        let (status, _, _) = call("POST", path).await;
         assert!(
             matches!(
-                resp.status(),
+                status,
                 StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
             ),
-            "{path}: {}",
-            resp.status()
+            "{path}: {status}"
+        );
+    }
+    let never = call("GET", "/v1/admin/no-such-route-ever").await;
+    for path in [
+        "/v1/admin/step-up-passkeys",
+        "/v1/admin/step-up-passkeys?subject=did:key:z6Mkcarol",
+    ] {
+        let (status, content_type, body) = call("GET", path).await;
+        assert_eq!(
+            (status, &content_type),
+            (never.0, &never.1),
+            "{path} is answered as an unrouted path"
+        );
+        assert!(
+            !String::from_utf8_lossy(&body).contains("credentials"),
+            "{path} returned a listing"
         );
     }
     h.tsp.shutdown().await;

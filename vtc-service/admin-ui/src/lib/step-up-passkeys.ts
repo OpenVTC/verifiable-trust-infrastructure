@@ -18,9 +18,11 @@
 //   browser that made the passkey, unsigned — its authority is the ceremony
 //   the member's signed start opened;
 // - the administrator revokes with `auth/passkey/revoke/{start,finish}/0.2`,
-//   verifying with their own passkey.
+//   verifying with their own passkey;
+// - the administrator lists a member's with `auth/passkey/admin-list/0.1`,
+//   signed like every other step.
 
-import { getJsonExempt, postSignedTrustTask, postUnsignedTrustTask } from "./api";
+import { postSignedTrustTask, postUnsignedTrustTask } from "./api";
 import {
   base64urlToBuffer,
   decodePublicKeyOptions,
@@ -28,13 +30,32 @@ import {
   serializeRegistration,
   type JsonPublicKeyOptions,
 } from "./webauthn";
-import type { StepUpPasskeyList } from "./wire-types";
 
 export const INVITE_TASK = "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2";
 export const REDEEM_FINISH_TASK =
   "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1";
 export const REVOKE_START_TASK = "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2";
 export const REVOKE_FINISH_TASK = "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2";
+// TODO(trust-tasks release carrying trust-tasks #658): type the response from
+// the published `@openvtc/trust-tasks` binding.
+export const ADMIN_LIST_TASK = "https://trusttasks.org/spec/auth/passkey/admin-list/0.1";
+
+/** One credential in `auth/passkey/admin-list/0.1#response`: metadata only,
+ *  never key material. */
+export interface StepUpPasskeyCredential {
+  credentialId: string;
+  deviceLabel?: string;
+  registeredAt: string;
+  lastUsedAt?: string;
+  signCount?: number;
+}
+
+/** `auth/passkey/admin-list/0.1#response`. */
+export interface StepUpPasskeyList {
+  subject: string;
+  purpose: "stepUp";
+  credentials: StepUpPasskeyCredential[];
+}
 
 /** `auth/passkey/enroll/invite/0.2#response`. */
 export interface StepUpPasskeyInvite {
@@ -84,14 +105,14 @@ export const stepUpPasskeyKeys = {
   of: (subject: string) => ["step-up-passkeys", subject] as const,
 };
 
-/** A member's step-up passkeys. Community administrators only. No published
- *  task lists another subject's credentials (`auth/passkey/list` is the
- *  signer's own), so this read carries no Trust-Task binding, as the
- *  console-key listing does not. */
+/** A member's step-up passkeys, as `auth/passkey/admin-list/0.1` signed by
+ *  this browser's console key. An administrator with authority over the
+ *  member only; reading changes nothing. */
 export function fetchStepUpPasskeys(subject: string): Promise<StepUpPasskeyList> {
-  return getJsonExempt<StepUpPasskeyList>(
-    `/v1/admin/step-up-passkeys?subject=${encodeURIComponent(subject)}`,
-  );
+  return postSignedTrustTask<StepUpPasskeyList>(ADMIN_LIST_TASK, {
+    subject,
+    purpose: "stepUp",
+  });
 }
 
 /** The invite, signed by this browser's console key. The first send is
