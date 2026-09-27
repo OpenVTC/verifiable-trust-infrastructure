@@ -9,7 +9,7 @@
 //! in one row never aborts the rest, since the operator's most common
 //! reason to run `pnm health` is precisely to find the broken row.
 
-use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET, print_section};
+use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET, YELLOW, print_section};
 use vta_sdk::client::VtaClient;
 
 use crate::auth;
@@ -297,6 +297,31 @@ pub(crate) async fn run(
     // open account for a throwaway credential — exactly the litter
     // `vta_sdk::acl_setup`'s module docs say the SDK avoids.
     let session = auth::loaded_session(keyring_key).or(session);
+
+    // ── Deployment ─────────────────────────────────────────────────
+    // The VTA's own report on itself, over whichever transport it speaks:
+    // `vta/health/details` (the public flags) and `vta/restore/status` (version
+    // and restore record, administrators only). Both used to be one REST route,
+    // `GET /health/details`. The client is shut down before the mediator probe
+    // below, which opens its own socket for the same DID — the mediator allows
+    // one per DID.
+    if session.is_some() && (effective_rest_url.is_some() || advertises_messaging) {
+        print_section("Deployment");
+        match auth::connect(
+            url_override,
+            None,
+            vta_sdk::session::TransportChoice::Auto,
+            keyring_key,
+        )
+        .await
+        {
+            Ok(client) => {
+                print_deployment(&client).await;
+                client.shutdown().await;
+            }
+            Err(e) => println!("  {DIM}(could not connect: {e}){RESET}"),
+        }
+    }
 
     // ── Mediator + DIDComm pings ──────────────────────────────────
     report.section("mediator", "Mediator");
@@ -740,5 +765,114 @@ mod tests {
             first.get("detail").is_none(),
             "an absent detail must not appear as null: {first}"
         );
+    }
+}
+
+/// The "Deployment" rows: `vta/health/details/0.1` for everyone, then
+/// `vta/restore/status/0.1`, which answers only an administrator — anyone else
+/// gets a dim note rather than a failure, since not being an admin is not a
+/// health problem.
+async fn print_deployment(client: &VtaClient) {
+    let yes_no = |b: bool, yes: &str, no: &str| {
+        if b {
+            format!("{GREEN}{yes}{RESET}")
+        } else {
+            no.to_string()
+        }
+    };
+    match client.health_details().await {
+        Ok(h) => {
+            let h = serde_json::to_value(&h).unwrap_or_default();
+            let flag = |k: &str| h.get(k).and_then(serde_json::Value::as_bool) == Some(true);
+            println!(
+                "  {CYAN}{:<13}{RESET} {}",
+                "Sealed",
+                yes_no(flag("sealed"), "yes", "no")
+            );
+            println!(
+                "  {CYAN}{:<13}{RESET} {}",
+                "Storage",
+                yes_no(
+                    flag("storageEncrypted"),
+                    "encrypted at rest",
+                    "not encrypted"
+                )
+            );
+            println!(
+                "  {CYAN}{:<13}{RESET} {}",
+                "TSP",
+                yes_no(flag("tspEnabled"), "enabled", "disabled")
+            );
+            if let Some(tee) = h.get("teeStatus") {
+                let kind = tee.get("teeType").and_then(|v| v.as_str()).unwrap_or("?");
+                let detected = tee.get("detected").and_then(|v| v.as_bool()) == Some(true);
+                let version = tee
+                    .get("platformVersion")
+                    .and_then(|v| v.as_str())
+                    .map(|v| format!(" {DIM}({v}){RESET}"))
+                    .unwrap_or_default();
+                let state = if detected {
+                    format!("{GREEN}detected{RESET}")
+                } else {
+                    format!("{RED}configured but not detected{RESET}")
+                };
+                println!("  {CYAN}{:<13}{RESET} {kind}, {state}{version}", "TEE");
+            }
+        }
+        Err(e) => println!("  {CYAN}{:<13}{RESET} {RED}✗{RESET} {e}", "Health"),
+    }
+
+    match client.restore_status().await {
+        Ok(r) => {
+            println!("  {CYAN}{:<13}{RESET} {}", "Version", r.version.as_str());
+            let r = serde_json::to_value(&r).unwrap_or_default();
+            match r.get("restore") {
+                None => println!("  {CYAN}{:<13}{RESET} no", "Restored"),
+                Some(rec) => {
+                    let s = |k: &str| rec.get(k).and_then(|v| v.as_str()).unwrap_or("?");
+                    println!(
+                        "  {CYAN}{:<13}{RESET} {YELLOW}yes{RESET} — applied {}, staged by {}",
+                        "Restored",
+                        s("appliedAt"),
+                        s("stagedBy")
+                    );
+                    if let Some(src) = rec.get("sourceDid").and_then(|v| v.as_str()) {
+                        println!("                from {src}");
+                    }
+                    println!(
+                        "                {} → {}",
+                        rec.get("sourceEnvironment")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown"),
+                        s("targetEnvironment")
+                    );
+                    for key in rec
+                        .get("internalKeysLost")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str())
+                    {
+                        println!("                {YELLOW}lost{RESET} internal key {key}");
+                    }
+                    for did in rec
+                        .get("hostedDidsDetached")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_str())
+                    {
+                        println!(
+                            "                {YELLOW}detached{RESET} {did} — re-register: \
+                             pnm did-mgmt dids register --did {did} --server <id>"
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) if e.is_auth() => {
+            println!("  {DIM}(version and restore record are shown to administrators only){RESET}")
+        }
+        Err(e) => println!("  {CYAN}{:<13}{RESET} {RED}✗{RESET} {e}", "Restore"),
     }
 }

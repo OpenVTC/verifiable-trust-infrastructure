@@ -44,7 +44,8 @@ pnm backup import vta-backup.vtabak
 
 The import is committed, then **the VTA restarts itself** to apply it. The
 restore takes effect on that boot, not before; the store is untouched until then.
-Once it is back, `GET /health/details` reports `restored`: when, from which DID
+Once it is back, the `vta/restore/status/0.1` Trust Task (administrators only;
+`pnm health` shows it) reports `restored`: when, from which DID
 and kind of deployment, and anything that did not come back.
 
 ### Onto a freshly set-up VTA (disaster recovery)

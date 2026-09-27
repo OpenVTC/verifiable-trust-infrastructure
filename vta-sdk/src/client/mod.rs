@@ -2215,7 +2215,10 @@ impl VtaClient {
                 VtaError::Protocol(format!("reply is not a Trust-Task document: {e}"))
             })?;
 
-        if parsed.proof.is_none() && !self.require_signed_replies {
+        if parsed.proof.is_none()
+            && !self.require_signed_replies
+            && !Self::reply_proof_is_load_bearing(doc_type)
+        {
             return Ok(());
         }
 
@@ -2263,6 +2266,18 @@ impl VtaClient {
             )));
         }
         Ok(())
+    }
+
+    /// Replies whose proof is the whole point of the task, so an unsigned one
+    /// is refused even under [`trusting_unsigned_replies`](Self::trusting_unsigned_replies).
+    ///
+    /// `keys/import-wrapping-key`: a wrapping key an intermediary substituted
+    /// would read every private key sealed to it, and only the VTA's proof
+    /// detects the substitution (the task's own producer rule 2).
+    fn reply_proof_is_load_bearing(doc_type: &str) -> bool {
+        doc_type
+            .strip_suffix("#response")
+            .is_some_and(|uri| uri == crate::trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1)
     }
 
     /// Pull `payload` out of a framework trust-task response document. A success
@@ -2650,10 +2665,119 @@ impl VtaClient {
         }
     }
 
+    /// The VTA's public health flags — `vta/health/details/0.1`.
+    ///
+    /// Status, the mediator its messaging routes through, the TEE it detected,
+    /// whether it is sealed, whether its key store is encrypted at rest, and
+    /// whether it advertises TSP. A public task: the VTA answers it for any
+    /// caller, the same for everyone, over TSP, DIDComm or HTTPS — and never
+    /// with its software version or restore record, which are
+    /// [`restore_status`](Self::restore_status)'s.
+    ///
+    /// The answer is the VTA's signed claim about itself, verified against its
+    /// DID like every reply to a client with an identity. It is not
+    /// attestation: `teeStatus` is what the VTA says, and only an attestation
+    /// report verified against the vendor root says what code runs.
+    #[cfg(feature = "client")]
+    pub async fn health_details(
+        &self,
+    ) -> Result<trust_tasks_rs::specs::vta::health::details::v0_1::Response, VtaError> {
+        self.rpc_tt(
+            crate::trust_tasks::TASK_VTA_HEALTH_DETAILS_0_1,
+            serde_json::json!({}),
+            30,
+        )
+        .await
+    }
+
+    /// The VTA's software version and whether its state derives from a backup
+    /// restore — `vta/restore/status/0.1`, administrators of the VTA only.
+    ///
+    /// `restored` is always present; the VTI-VTA-051 `restore` record (when,
+    /// staged by whom, from which DID and kind of deployment, which internal
+    /// keys did not come back, which hosted DIDs need registering again) is
+    /// present exactly when it is `true`. A response in which the two disagree
+    /// is refused here as malformed, as the specification requires of a
+    /// producer.
+    #[cfg(feature = "client")]
+    pub async fn restore_status(
+        &self,
+    ) -> Result<trust_tasks_rs::specs::vta::restore::status::v0_1::Response, VtaError> {
+        let resp: trust_tasks_rs::specs::vta::restore::status::v0_1::Response = self
+            .rpc_tt(
+                crate::trust_tasks::TASK_VTA_RESTORE_STATUS_0_1,
+                serde_json::json!({}),
+                30,
+            )
+            .await?;
+        if resp.restored != resp.restore.is_some() {
+            return Err(VtaError::Protocol(format!(
+                "vta/restore/status: `restored` is {} but the `restore` record is {} — the \
+                 specification requires them to agree, so the answer is malformed",
+                resp.restored,
+                if resp.restore.is_some() {
+                    "present"
+                } else {
+                    "absent"
+                }
+            )));
+        }
+        Ok(resp)
+    }
+
+    // ── Sessions ───────────────────────────────────────────────────
+
+    /// Every active session the VTA holds for **this caller's own** subject —
+    /// `auth/sessions/list/0.1`.
+    #[cfg(feature = "client")]
+    pub async fn list_my_sessions(
+        &self,
+    ) -> Result<trust_tasks_rs::specs::auth::sessions::list::v0_1::Response, VtaError> {
+        self.rpc_tt(
+            crate::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1,
+            serde_json::json!({}),
+            30,
+        )
+        .await
+    }
+
+    /// End sessions — `auth/revoke-session/0.2`. Returns `revokedCount`, the
+    /// number of sessions this call invalidated; zero is a success (the
+    /// sessions were already gone, or a named session is not one this caller
+    /// may end — the VTA answers both the same way).
+    ///
+    /// Ending another subject's sessions needs the authority to withdraw that
+    /// subject's access (VTI-SES-043, VTI-ACL-050); a subject outside it is
+    /// refused with `permissionDenied`, the same whether or not the VTA knows
+    /// the subject. `reason` is recorded in the VTA's audit trail.
+    #[cfg(feature = "client")]
+    pub async fn revoke_sessions(
+        &self,
+        target: RevokeSessions<'_>,
+        reason: Option<&str>,
+    ) -> Result<u64, VtaError> {
+        let mut payload = match target {
+            RevokeSessions::Session(id) => serde_json::json!({ "sessionId": id }),
+            RevokeSessions::AllMine => serde_json::json!({ "all": true }),
+            RevokeSessions::Subject(did) => serde_json::json!({ "subject": did }),
+        };
+        if let Some(reason) = reason {
+            payload["reason"] = serde_json::Value::String(reason.to_string());
+        }
+        let resp: trust_tasks_rs::specs::auth::revoke_session::v0_2::Response = self
+            .rpc_tt(
+                crate::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
+                payload,
+                30,
+            )
+            .await?;
+        Ok(resp.revoked_count)
+    }
+
     // ── Discovery ──────────────────────────────────────────────────
 
     // `capabilities()` was removed in #1043 along with the task behind it. Its
-    // members each had a better home: `version` at `GET /health/details`,
+    // members each had a better home: `version` at `vta/restore/status/0.1`,
     // `webvhServers` at `list_webvh_servers()` (a strict superset, same auth),
     // and `features`/`services` at the DID document, which is authoritative for
     // what a party speaks. `didCreationModes` had no consumer at all.
@@ -2688,22 +2812,33 @@ impl VtaClient {
         .await
     }
 
-    /// Check whether the current auth token is valid by calling an authenticated endpoint.
+    /// Check whether the current auth token is valid.
     ///
-    /// Returns `true` if authenticated, `false` if the token is invalid/expired.
-    /// Returns an error only on network failures.
+    /// Asks `auth/whoami/0.1` — the task whose question this is — rather than
+    /// probing an endpoint and reading its status. (It used to probe
+    /// `GET /health/details`, which is gone: health details are now a public
+    /// task that answers any caller, so it could not tell a live token from
+    /// none.)
+    ///
+    /// Returns `true` if authenticated, `false` if the VTA refuses the caller
+    /// (token invalid or expired, or its authority withdrawn). Returns an error
+    /// only on other failures, such as the network.
     #[cfg(feature = "client")]
     pub async fn check_auth(&self) -> Result<bool, VtaError> {
         match &self.transport {
-            Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                let token = auth.lock().await.token.clone();
-                let req = client.get(format!("{base_url}/health/details"));
-                let resp = Self::with_auth_token(req, &token).send().await?;
-                Ok(resp.status().is_success())
+            Transport::Rest { .. } => {
+                match self
+                    .rpc_tt::<serde_json::Value>(
+                        crate::trust_tasks::TASK_AUTH_WHOAMI_0_1,
+                        serde_json::json!({}),
+                        30,
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(true),
+                    Err(e) if e.is_auth() => Ok(false),
+                    Err(e) => Err(e),
+                }
             }
             #[cfg(feature = "session")]
             Transport::DIDComm { .. } => {

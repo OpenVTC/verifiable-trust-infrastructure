@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use vta_sdk::protocols::key_management::sign::SigningDomain;
 
 use vta_sdk::protocols::key_management::{
@@ -485,36 +485,10 @@ pub async fn derive_and_sign_document_key(
 
 // ── Import key endpoints ─────────────────────────────────────────
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct WrappingKeyResponse {
-    pub kid: String,
-    pub kty: String,
-    pub crv: String,
-    pub x: String,
-}
-
-/// GET /keys/import/wrapping-key — get an ephemeral X25519 public key for REST key wrapping.
-#[utoipa::path(
-    get, path = "/keys/import/wrapping-key", tag = "keys",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Ephemeral wrapping public key", body = WrappingKeyResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn get_wrapping_key(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<WrappingKeyResponse>, AppError> {
-    let (kid, x) = state.wrapping_cache.generate().await;
-    Ok(Json(WrappingKeyResponse {
-        kid,
-        kty: "OKP".into(),
-        crv: "X25519".into(),
-        x,
-    }))
-}
+// The wrapping key is `keys/import-wrapping-key/0.1`, a Trust Task over every
+// transport; `GET /keys/import/wrapping-key` is gone. The key comes back as an
+// Ed25519 `did:key` in the VTA's signed response — seal to its X25519
+// counterpart.
 
 /// REST `POST /keys/import` request body.
 ///
@@ -533,9 +507,9 @@ pub async fn get_wrapping_key(
 ///
 /// Use one of:
 /// - `private_key_sealed` — armored sealed-transfer bundle
-///   ([`SealedPayloadV1::RawPrivateKey`]). Preferred. Fetch the
-///   ephemeral wrapping pubkey from `GET /keys/import/wrapping-key`,
-///   then seal locally and POST.
+///   ([`SealedPayloadV1::RawPrivateKey`]). Preferred. Fetch an
+///   ephemeral wrapping key with the `keys/import-wrapping-key/0.1` Trust
+///   Task, verify its proof, then seal to its X25519 counterpart and POST.
 /// - `private_key_jwe` — legacy ECDH-ES + A256GCM compact JWE,
 ///   wrapped against the same ephemeral key. Retained for in-flight
 ///   callers; new code should pick `private_key_sealed`.
@@ -617,8 +591,8 @@ pub async fn import_key(
         return Err(AppError::Validation(
             "one of private_key_sealed or private_key_jwe is required; raw \
              private_key_multibase over REST is not accepted (TLS-only \
-             confidentiality is insufficient — use the GET /keys/import/wrapping-key \
-             ECDH flow)"
+             confidentiality is insufficient — seal the key to a wrapping key from \
+             the keys/import-wrapping-key/0.1 Trust Task)"
                 .into(),
         ));
     };

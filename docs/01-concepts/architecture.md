@@ -129,7 +129,12 @@ vta-service/src/
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | /health | Status + version |
+| GET | /health | Status |
+
+The richer report is two Trust Tasks (over `POST /trust-tasks`, DIDComm or
+TSP): `vta/health/details/0.1` — public, the same non-identifying flags for
+every caller — and `vta/restore/status/0.1` — software version and the
+VTI-VTA-051 restore record, administrators only. `GET /health/details` is gone.
 
 ### Authentication
 
@@ -139,9 +144,13 @@ vta-service/src/
 | POST | /auth/ | None | Submit signed challenge, get tokens |
 | POST | /auth/refresh | None | Refresh access token |
 | POST | /auth/credentials | Manage | Generate did:key credential |
-| GET | /auth/sessions | Manage | List sessions of subjects the caller may manage (own + ACL entries it could remove; all for a super-admin) |
-| DELETE | /auth/sessions/{id} | Auth | Revoke a session: own, or of a subject the caller may manage |
-| DELETE | /auth/sessions?did=X | Admin | Revoke all sessions for a DID the caller may manage (never a super-admin's, for a scoped admin) |
+
+Sessions are Trust Tasks, not routes: `auth/sessions/list/0.1` lists the
+caller's own sessions, and `auth/revoke-session/0.2` ends one named session,
+every session of the caller (`all: true`), or every session of a `subject` the
+caller may manage — the check that governs removing that subject's ACL entry
+(VTI-SES-043, VTI-ACL-050), so a scoped admin never reaches a super-admin's.
+The `/auth/sessions` routes are gone.
 
 ### Configuration
 

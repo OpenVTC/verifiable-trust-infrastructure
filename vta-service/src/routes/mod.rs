@@ -345,8 +345,6 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     let router = router.merge(auth_portal_router);
 
     let router = router
-        .routes(routes!(auth::session_list, auth::revoke_sessions_by_did))
-        .routes(routes!(auth::revoke_session))
         .merge(trust_tasks)
         .routes(routes!(config::get_config, config::update_config))
         .routes(routes!(keys::list_keys, keys::create_key))
@@ -359,7 +357,6 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         .routes(routes!(keys::sign_with_key))
         .routes(routes!(keys::derive_and_sign_key))
         .routes(routes!(keys::derive_and_sign_document_key))
-        .routes(routes!(keys::get_wrapping_key))
         .routes(routes!(keys::import_key))
         .routes(routes!(keys::list_seeds))
         .routes(routes!(keys::rotate_seed))
@@ -491,16 +488,13 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     );
     let router = router.merge(backup_blob_router);
 
-    // Authenticated health details.
-    //
-    // `GET /capabilities` used to sit here too. It was removed in #1039: nothing
-    // consumed it — `VtaClient::capabilities` goes over `rpc_tt` like every
-    // other task — and a REST route running parallel to a Trust Task is exactly
-    // the shape #1020 removed everywhere else. Capability discovery is
-    // `spec/trust-task-discovery/0.1`; the VTA's deployment inventory is
-    // `spec/vta/discovery/capabilities/1.0`. Both reachable on every transport,
-    // including this one, via `POST <base>/trust-tasks`.
-    router.route("/health/details", get(health::health_details))
+    // `GET /health/details` used to sit here. It is now two Trust Tasks with
+    // fixed disclosure policies: `vta/health/details/0.1` (the public flags,
+    // any caller) and `vta/restore/status/0.1` (version + restore record,
+    // administrators only), both via `POST <base>/trust-tasks` like every other
+    // task. `GET /capabilities` went the same way in #1039: capability
+    // discovery is `spec/trust-task-discovery/0.1`.
+    router
 }
 
 /// The assembled OpenAPI 3.1 document describing the VTA REST surface.

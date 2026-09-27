@@ -13,8 +13,8 @@
 //! - `features` / `services` — the DID document is authoritative for which
 //!   protocols a party speaks, and these answered from `cfg!` flags and local
 //!   config respectively, either of which could contradict it (#1039).
-//! - `version` — `GET /health/details` already reports it, at the same auth
-//!   level and from the same `env!`.
+//! - `version` — `vta/restore/status/0.1` reports it, to administrators, from
+//!   the same `env!`.
 //! - `webvhServers` — `webvh/servers/list/1.0` returns a strict superset
 //!   (`{id, did, label, createdAt, updatedAt}` against `{id, label}`) at the
 //!   same auth level, and is what every production caller already used.

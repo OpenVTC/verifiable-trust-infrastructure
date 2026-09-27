@@ -188,8 +188,7 @@ pub async fn cmd_key_import(
     let req = match import_carrier(client.trust_task_transport()) {
         // DIDComm and TSP are confidential end to end, so `keys/import/0.1`
         // takes the cleartext multibase carrier there. There is no wrapping
-        // key to fetch: that route is REST, and fetching it would make a
-        // messaging client depend on a transport it never chose.
+        // key to fetch: it would add a round trip the channel does not need.
         ImportCarrier::Multibase => ImportKeyRequest {
             key_type,
             private_key_sealed: None,
@@ -200,20 +199,24 @@ pub async fn cmd_key_import(
         },
         // Over REST, TLS terminates wherever the operator terminates it, and
         // the VTA refuses a cleartext key (the April 2026 review, patch #9).
-        // The key is sealed to the VTA's ephemeral wrapping key instead. If the
-        // fetch fails, the cause is surfaced rather than downgraded to a
-        // request the server would refuse.
+        // The key is sealed to an ephemeral wrapping key from
+        // `keys/import-wrapping-key/0.1` — an Ed25519 did:key, sealed to its
+        // X25519 counterpart — instead. If the fetch fails, the cause is
+        // surfaced rather than downgraded to a request the server would refuse.
         ImportCarrier::Sealed => {
             let wrapping_key = client.get_wrapping_key().await.map_err(|e| {
                 format!(
-                    "failed to fetch ephemeral wrapping key from {}/keys/import/wrapping-key: {e} \
-                     — the VTA must support sealed-transfer key import (vta-sdk ≥ 0.8); \
-                     a cleartext key over REST is not accepted",
+                    "failed to fetch an ephemeral wrapping key (keys/import-wrapping-key/0.1) \
+                     from {}: {e} — a cleartext key over REST is not accepted",
                     client.endpoint_label()
                 )
             })?;
-            let sealed =
-                seal_private_key(&wrapping_key.x, &key_type, &private_key_multibase).await?;
+            let sealed = seal_private_key(
+                &wrapping_key.wrapping_key,
+                &key_type,
+                &private_key_multibase,
+            )
+            .await?;
             ImportKeyRequest {
                 key_type,
                 private_key_sealed: Some(sealed),
@@ -266,11 +269,12 @@ fn import_carrier(surface: vta_sdk::client::SurfaceTransport) -> ImportCarrier {
     }
 }
 
-/// Seal a multibase-encoded private key to the VTA's wrapping pubkey using
-/// HPKE via `vta_sdk::sealed_transfer`. Returns an armored bundle suitable
-/// for the `private_key_sealed` field of `ImportKeyRequest`.
+/// Seal a multibase-encoded private key to the VTA's wrapping key — an
+/// Ed25519 `did:key`, sealed to its X25519 counterpart — using HPKE via
+/// `vta_sdk::sealed_transfer`. Returns an armored bundle suitable for the
+/// `private_key_sealed` field of `ImportKeyRequest`.
 async fn seal_private_key(
-    vta_pub_b64: &str,
+    wrapping_did_key: &str,
     key_type: &KeyType,
     private_key_multibase: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -281,12 +285,9 @@ async fn seal_private_key(
         armor, generate_ed25519_keypair, seal_payload,
     };
 
-    // JWK `x` is base64url-no-pad; the server encodes with URL_SAFE_NO_PAD
-    // in wrapping.rs.
-    let vta_pub_bytes: [u8; 32] = B64URL
-        .decode(vta_pub_b64)?
-        .try_into()
-        .map_err(|_| "wrapping public key must be 32 bytes")?;
+    let vta_pub_bytes = affinidi_crypto::did_key::ed25519_pub_to_x25519_bytes(
+        &affinidi_crypto::did_key::did_key_to_ed25519_pub(wrapping_did_key)?,
+    )?;
 
     let (_, key_bytes) = multibase::decode(private_key_multibase)?;
 

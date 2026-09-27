@@ -172,7 +172,8 @@ The restore writes `keys ▸ restore:provenance` — when, from which DID and ki
 deployment, who committed it, what did not come back. The first boot with an
 audit sink records a `backup.restore.applied` row (the trail is part of what the
 restore replaced, so the restore cannot record itself), and
-`GET /health/details` reports `restored`.
+the administrator-only `vta/restore/status/0.1` Trust Task reports `restored`
+(it was `GET /health/details`, which answered any authenticated caller).
 
 ## 9. Not done
 

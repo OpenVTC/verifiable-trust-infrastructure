@@ -1,8 +1,6 @@
 use axum::Json;
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
@@ -13,10 +11,7 @@ use vta_sdk::protocols::auth::{AuthenticateResponse, ChallengeRequest};
 
 use crate::acl::check_acl;
 use crate::audit::audit;
-use crate::auth::session::{
-    Session, SessionState, delete_session, get_session, list_sessions, now_epoch, store_session,
-};
-use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
+use crate::auth::session::{Session, SessionState, get_session, now_epoch, store_session};
 use crate::error::AppError;
 use crate::server::AppState;
 use tracing::{info, warn};
@@ -438,210 +433,12 @@ async fn try_refresh_trust_task(
 
 // ---------- POST /auth/credentials ----------
 
-// ---------- GET /auth/sessions ----------
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct SessionSummary {
-    pub session_id: String,
-    pub did: String,
-    pub state: SessionState,
-    pub created_at: u64,
-    pub refresh_expires_at: Option<u64>,
-}
-
-impl From<Session> for SessionSummary {
-    fn from(s: Session) -> Self {
-        Self {
-            session_id: s.session_id,
-            did: s.did,
-            state: s.state,
-            created_at: s.created_at,
-            refresh_expires_at: s.refresh_expires_at,
-        }
-    }
-}
-
-/// Refuse a session operation on another subject, and audit the refusal
-/// (VTI-AUD-003, VTI-SES-041).
-async fn refuse_session_op(
-    state: &AppState,
-    auth: &AuthClaims,
-    action: &str,
-    resource: &str,
-    message: &str,
-) -> AppError {
-    warn!(
-        audit = true,
-        security_alert = true,
-        caller = %auth.did,
-        action,
-        resource,
-        "session operation on another subject refused"
-    );
-    crate::audit::record_with_detail_best_effort(
-        &state.audit_sink,
-        action,
-        &auth.did,
-        Some(resource),
-        "denied",
-        Some("rest"),
-        None,
-        Some(message),
-    )
-    .await;
-    AppError::Forbidden(message.to_string())
-}
-
-/// GET /auth/sessions — list active sessions. Auth: Admin or Initiator; the
-/// list holds only sessions of subjects the caller may manage (its own, and
-/// those whose ACL entry it could remove; everything for a super-admin).
-#[utoipa::path(
-    get, path = "/auth/sessions", tag = "auth",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Active sessions the caller may manage", body = [SessionSummary]),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin/initiator"),
-    ),
-)]
-pub async fn session_list(
-    ManageAuth(auth): ManageAuth,
-    State(state): State<AppState>,
-) -> Result<Json<Vec<SessionSummary>>, AppError> {
-    let all = list_sessions(&state.sessions_ks).await?;
-    // Session ids are bearer-adjacent and the subject list is a map of who is
-    // active on the VTA; a context-scoped caller sees only its own reach.
-    let mut decided: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
-    let mut summaries = Vec::new();
-    for s in all {
-        let allowed = match decided.get(&s.did) {
-            Some(a) => *a,
-            None => {
-                let a = crate::operations::acl::may_manage_subject(&state.acl_ks, &auth, &s.did)
-                    .await?;
-                decided.insert(s.did.clone(), a);
-                a
-            }
-        };
-        if allowed {
-            summaries.push(SessionSummary::from(s));
-        }
-    }
-    info!(caller = %auth.did, count = summaries.len(), "sessions listed");
-    Ok(Json(summaries))
-}
-
-// ---------- DELETE /auth/sessions/{session_id} ----------
-
-/// DELETE /auth/sessions/{session_id} — revoke a single session (own or admin). Auth: any authenticated user.
-#[utoipa::path(
-    delete, path = "/auth/sessions/{session_id}", tag = "auth",
-    security(("bearer_jwt" = [])),
-    params(("session_id" = String, Path, description = "Session identifier")),
-    responses(
-        (status = 204, description = "Session revoked"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Cannot revoke another user's session"),
-        (status = 404, description = "Session not found"),
-    ),
-)]
-pub async fn revoke_session(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-) -> Result<impl IntoResponse, AppError> {
-    let session = get_session(&state.sessions_ks, &session_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("session not found: {session_id}")))?;
-
-    // Allow if the caller owns the session or may manage its subject. The admin
-    // role alone was the old rule, and let any context's admin end anyone's
-    // session, a super-admin's included.
-    if !crate::operations::acl::may_manage_subject(&state.acl_ks, &auth, &session.did).await? {
-        return Err(refuse_session_op(
-            &state,
-            &auth,
-            "session.revoke",
-            &session_id,
-            "cannot revoke the session of a subject outside your authority",
-        )
-        .await);
-    }
-
-    delete_session(&state.sessions_ks, &session_id).await?;
-    info!(caller = %auth.did, session_id = %session_id, "session revoked");
-    audit!(
-        "session.revoke",
-        actor = &auth.did,
-        resource = &session_id,
-        outcome = "success"
-    );
-    Ok(StatusCode::NO_CONTENT)
-}
-
-// ---------- DELETE /auth/sessions?did=X ----------
-
-#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub struct RevokeByDidQuery {
-    pub did: String,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct RevokeByDidResponse {
-    pub revoked: u64,
-}
-
-/// DELETE /auth/sessions?did=X — revoke all sessions for a given DID
-/// (VTI-SES-043). Auth: Admin, and the DID must be a subject the caller may
-/// manage (its ACL entry is one the caller could remove; any DID for a
-/// super-admin).
-#[utoipa::path(
-    delete, path = "/auth/sessions", tag = "auth",
-    security(("bearer_jwt" = [])),
-    params(RevokeByDidQuery),
-    responses(
-        (status = 200, description = "Sessions revoked", body = RevokeByDidResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin, or the DID is outside its authority"),
-    ),
-)]
-pub async fn revoke_sessions_by_did(
-    AdminAuth(auth): AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<RevokeByDidQuery>,
-) -> Result<Json<RevokeByDidResponse>, AppError> {
-    if !crate::operations::acl::may_manage_subject(&state.acl_ks, &auth, &query.did).await? {
-        return Err(refuse_session_op(
-            &state,
-            &auth,
-            "session.revoke_by_did",
-            &query.did,
-            "cannot revoke the sessions of a subject outside your authority",
-        )
-        .await);
-    }
-    let all = list_sessions(&state.sessions_ks).await?;
-    let mut revoked = 0u64;
-
-    for session in all {
-        if session.did == query.did {
-            delete_session(&state.sessions_ks, &session.session_id).await?;
-            revoked += 1;
-        }
-    }
-
-    info!(caller = %auth.did, target_did = %query.did, revoked, "sessions revoked by DID");
-    audit!(
-        "session.revoke_by_did",
-        actor = &auth.did,
-        resource = &query.did,
-        outcome = "success"
-    );
-    Ok(Json(RevokeByDidResponse { revoked }))
-}
+// The session routes that sat here — `GET /auth/sessions`,
+// `DELETE /auth/sessions/{session_id}` and `DELETE /auth/sessions?did=` — are
+// Trust Tasks now, over every transport: `auth/sessions/list/0.1` (the caller's
+// own sessions) and `auth/revoke-session/0.2` (one session, all of the caller's,
+// or every session of a `subject` the caller may manage — VTI-SES-043,
+// VTI-ACL-050). See `trust_tasks::auth`.
 
 // ---------- Passkey login ----------
 //

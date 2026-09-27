@@ -10320,9 +10320,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.23.3"
+version = "0.23.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74a1f056369527be7c81cbee0c4fbceb55f8af196c61d5aaab713fcb8a9b6a58"
+checksum = "1c4dd274f1df2e45d554d51f4efdfc41d53e22cfa508776a20916fbc5674fb91"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11623,12 +11623,14 @@ dependencies = [
 name = "vti-e2e-tests"
 version = "0.6.0"
 dependencies = [
+ "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
  "affinidi-messaging-sdk",
  "affinidi-messaging-test-mediator",
  "affinidi-secrets-resolver",
  "affinidi-tdk",
+ "base64 0.23.1",
  "chrono",
  "ed25519-dalek 3.0.0",
  "multibase",

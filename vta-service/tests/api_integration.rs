@@ -28,12 +28,15 @@ use vta_service::test_support::{TestAppContext, build_provisionable_test_app, bu
 
 struct TestApp {
     router: axum::Router,
+    /// The VTA's DID — the `recipient` a hand-built Trust Task document names.
+    vta_did: String,
 }
 
 impl TestApp {
     async fn new() -> (Self, TestContext) {
         let (router, ctx) = build_test_app().await;
-        (Self { router }, TestContext { inner: ctx })
+        let vta_did = ctx.vta_did.clone();
+        (Self { router, vta_did }, TestContext { inner: ctx })
     }
 
     /// Like [`TestApp::new`] but with a real, self-resolving VTA signing
@@ -43,7 +46,8 @@ impl TestApp {
     /// cheap sentinel-DID app has no issuer key to sign with.
     async fn new_signing() -> (Self, TestContext) {
         let (router, ctx) = build_provisionable_test_app().await;
-        (Self { router }, TestContext { inner: ctx })
+        let vta_did = ctx.vta_did.clone();
+        (Self { router, vta_did }, TestContext { inner: ctx })
     }
 
     async fn request(&self, req: Request<Body>) -> (StatusCode, Value) {
@@ -482,33 +486,99 @@ async fn health_returns_ok_without_auth() {
     assert_eq!(body["status"], "ok");
 }
 
+/// `GET /health/details` is gone: the report is two Trust Tasks now.
 #[tokio::test]
-async fn health_details_requires_auth() {
-    let (app, _ctx) = TestApp::new().await;
-    let (status, _) = app.request(get("/health/details")).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn health_details_returns_version_with_auth() {
+async fn the_health_details_route_is_gone() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkTest", "admin", vec![]).await;
-    let (status, body) = app.request(get_auth("/health/details", &token)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["status"], "ok");
-    assert!(body["version"].is_string());
+    let (status, _) = app.request(get_auth("/health/details", &token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// Post an anonymous (no credential, unsigned) Trust Task to `/trust-tasks`.
+async fn post_anonymous(app: &TestApp, type_uri: &str, xff: &str) -> (StatusCode, Value) {
+    let doc = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": type_uri,
+        "recipient": app.vta_did,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": {},
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/trust-tasks")
+        .header("content-type", "application/json")
+        .header("x-forwarded-for", xff)
+        .body(Body::from(doc.to_string()))
+        .unwrap();
+    app.request(req).await
+}
+
+/// `vta/health/details/0.1` over HTTPS: public, so an anonymous caller is
+/// answered — with the fixed flags only, never the version.
+#[tokio::test]
+async fn health_details_task_answers_an_anonymous_https_caller() {
+    let (app, _ctx) = TestApp::new().await;
+    let (status, body) = post_anonymous(
+        &app,
+        vta_sdk::trust_tasks::TASK_VTA_HEALTH_DETAILS_0_1,
+        "192.0.2.21",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["payload"]["status"], "ok", "{body}");
     // TSP is off by default — health surfaces the advertised-transport state.
-    assert_eq!(body["tsp_enabled"], false);
+    assert_eq!(body["payload"]["tspEnabled"], false, "{body}");
+    assert!(body["payload"].get("version").is_none(), "{body}");
+    assert!(body["payload"].get("restored").is_none(), "{body}");
 }
 
 #[tokio::test]
-async fn health_details_reports_tsp_enabled_when_configured() {
+async fn health_details_task_reports_tsp_enabled_when_configured() {
     let (app, ctx) = TestApp::new().await;
     ctx.inner.config.write().await.services.tsp = true;
-    let token = ctx.auth_token("did:key:z6MkTest", "admin", vec![]).await;
-    let (status, body) = app.request(get_auth("/health/details", &token)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["tsp_enabled"], true);
+    let (status, body) = post_anonymous(
+        &app,
+        vta_sdk::trust_tasks::TASK_VTA_HEALTH_DETAILS_0_1,
+        "192.0.2.22",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["payload"]["tspEnabled"], true, "{body}");
+}
+
+/// `vta/restore/status/0.1` over HTTPS: an administrator's signed request is
+/// answered with the version; an anonymous one is refused before dispatch,
+/// because the task is not public.
+#[tokio::test]
+async fn restore_status_task_answers_an_administrator_over_https() {
+    let (app, ctx) = TestApp::new().await;
+    let admin = vta_service::test_support::test_admin_did().0;
+    ctx.create_acl(&admin, Role::Admin, vec![]).await;
+    let token = ctx.auth_token(&admin, "admin", vec![]).await;
+    let (status, body) = app
+        .request(post_auth(
+            "/trust-tasks",
+            &token,
+            signed_doc(
+                &ctx,
+                &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                vta_sdk::trust_tasks::TASK_VTA_RESTORE_STATUS_0_1,
+                json!({}),
+            ),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["payload"]["version"].is_string(), "{body}");
+    assert_eq!(body["payload"]["restored"], false, "{body}");
+
+    let (status, _) = post_anonymous(
+        &app,
+        vta_sdk::trust_tasks::TASK_VTA_RESTORE_STATUS_0_1,
+        "192.0.2.23",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 // ── Auth: missing/invalid token ────────────────────────────────────
@@ -1875,79 +1945,6 @@ async fn reader_cannot_sign() {
     );
 }
 
-/// VTI-SES-043 / VTI-ACL-050: a context-scoped admin enumerates and ends only
-/// the sessions of subjects it could remove from the ACL. The admin role alone
-/// used to reach every session on the VTA, a super-admin's included.
-#[tokio::test]
-async fn context_admin_reaches_only_sessions_it_may_manage() {
-    let (app, ctx) = TestApp::new().await;
-    ctx.create_acl("did:key:z6MkSuper", Role::Admin, vec![])
-        .await;
-    ctx.create_acl("did:key:z6MkTenantA", Role::Admin, vec!["ctx-a".into()])
-        .await;
-    ctx.create_acl("did:key:z6MkMemberA", Role::Reader, vec!["ctx-a".into()])
-        .await;
-    ctx.create_acl("did:key:z6MkMemberB", Role::Reader, vec!["ctx-b".into()])
-        .await;
-    let _super = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
-    let tenant = ctx
-        .auth_token("did:key:z6MkTenantA", "admin", vec!["ctx-a".into()])
-        .await;
-    let _a = ctx
-        .auth_token("did:key:z6MkMemberA", "reader", vec!["ctx-a".into()])
-        .await;
-    let _b = ctx
-        .auth_token("did:key:z6MkMemberB", "reader", vec!["ctx-b".into()])
-        .await;
-
-    // The list holds the tenant's own session and its member's, nothing else.
-    let (status, body) = app.request(get_auth("/auth/sessions", &tenant)).await;
-    assert_eq!(status, StatusCode::OK);
-    let mut dids: Vec<String> = body
-        .as_array()
-        .expect("a session array")
-        .iter()
-        .map(|s| s["did"].as_str().unwrap().to_string())
-        .collect();
-    dids.sort();
-    assert_eq!(dids, ["did:key:z6MkMemberA", "did:key:z6MkTenantA"]);
-
-    // Collective termination: refused for a super-admin and another context.
-    for target in ["did:key:z6MkSuper", "did:key:z6MkMemberB"] {
-        let (status, _) = app
-            .request(delete_auth(
-                &format!("/auth/sessions?did={target}"),
-                &tenant,
-            ))
-            .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{target}");
-    }
-    let (status, body) = app
-        .request(delete_auth(
-            "/auth/sessions?did=did:key:z6MkMemberA",
-            &tenant,
-        ))
-        .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["revoked"], 1);
-
-    // Single-session termination follows the same rule.
-    let super_session = vta_service::auth::session::list_sessions(ctx.sessions_ks())
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|s| s.did == "did:key:z6MkSuper")
-        .expect("the super-admin's session")
-        .session_id;
-    let (status, _) = app
-        .request(delete_auth(
-            &format!("/auth/sessions/{super_session}"),
-            &tenant,
-        ))
-        .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-}
-
 #[tokio::test]
 async fn reader_cannot_create_key() {
     let (app, ctx) = TestApp::new().await;
@@ -2300,11 +2297,12 @@ async fn keys_import_rejects_private_key_multibase_over_rest() {
 /// `POST /keys/import`, returning the new `key_id`.
 ///
 /// Mirrors what a real consumer does:
-/// 1. `GET /keys/import/wrapping-key` to fetch an ephemeral X25519
-///    pubkey + kid.
+/// 1. `keys/import-wrapping-key/0.1` over `POST /trust-tasks` for an
+///    ephemeral wrapping key — an Ed25519 `did:key` + `keyId`.
 /// 2. Build a [`SealedPayloadV1::RawPrivateKey`] around the test
 ///    key bytes.
-/// 3. `seal_payload` against the wrapping pubkey, ASCII-armor.
+/// 3. `seal_payload` against the wrapping key's X25519 counterpart,
+///    ASCII-armor.
 /// 4. `POST /keys/import` with `private_key_sealed`.
 ///
 /// The plaintext `private_key_multibase` REST path was removed —
@@ -2326,20 +2324,32 @@ async fn import_key_via_sealed_transfer(
         armor, generate_ed25519_keypair, seal_payload,
     };
 
-    // 1. Fetch the wrapping key.
+    // 1. Fetch the wrapping key. The request proof is RECOMMENDED, not
+    //    required; the bearer token authenticates the caller.
     let (status, body) = app
-        .request(get_auth("/keys/import/wrapping-key", token))
+        .request(post_auth(
+            "/trust-tasks",
+            token,
+            json!({
+                "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                "type": vta_sdk::trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+                "recipient": app.vta_did,
+                "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "payload": {},
+            }),
+        ))
         .await;
-    assert!(status.is_success(), "GET wrapping-key: {status} {body}");
-    let pub_b64 = body["x"]
+    assert!(
+        status.is_success(),
+        "keys/import-wrapping-key: {status} {body}"
+    );
+    let did_key = body["payload"]["wrappingKey"]
         .as_str()
-        .expect("wrapping-key response missing `x`")
-        .to_string();
-    let pub_bytes: [u8; 32] = BASE64
-        .decode(&pub_b64)
-        .expect("decode wrapping pubkey")
-        .try_into()
-        .expect("wrapping pubkey must be 32 bytes");
+        .expect("wrapping-key response missing `wrappingKey`");
+    let pub_bytes = affinidi_crypto::did_key::ed25519_pub_to_x25519_bytes(
+        &affinidi_crypto::did_key::did_key_to_ed25519_pub(did_key).expect("an Ed25519 did:key"),
+    )
+    .expect("a valid Ed25519 key");
 
     // 2. Build the sealed payload.
     let payload = SealedPayloadV1::RawPrivateKey(RawPrivateKey {

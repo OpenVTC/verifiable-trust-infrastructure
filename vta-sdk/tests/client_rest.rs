@@ -186,26 +186,6 @@ async fn mount_json(
         .await
 }
 
-/// Mock a genuinely-REST route — one with no trust-task twin, which therefore
-/// keeps its bespoke method and path. Backup blob streaming, the import
-/// wrapping key and the deprecated legacy-`rpc` DID verbs are the whole set;
-/// anything else reaching for this helper is probably a task in disguise.
-async fn mount_rest_json(
-    server: &MockServer,
-    m: &str,
-    p: &str,
-    status: u16,
-    body: Value,
-) -> wiremock::MockGuard {
-    Mock::given(method(m))
-        .and(path(p))
-        .and(auth_match())
-        .respond_with(ResponseTemplate::new(status).set_body_json(body))
-        .expect(1)
-        .mount_as_scoped(server)
-        .await
-}
-
 async fn mount_status(server: &MockServer, _m: &str, _p: &str, status: u16) -> wiremock::MockGuard {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
@@ -619,20 +599,49 @@ async fn rename_key_409_maps_to_conflict() {
 }
 
 #[tokio::test]
-async fn get_wrapping_key_returns_jwk() {
+async fn get_wrapping_key_returns_a_did_key() {
     let server = MockServer::start().await;
-    let _g = mount_rest_json(
+    let _g = mount_json(
         &server,
-        "GET",
-        "/keys/import/wrapping-key",
+        "POST",
+        "/trust-tasks",
         200,
-        json!({"kid": "k1", "kty": "OKP", "crv": "X25519", "x": "AAAA"}),
+        json!({
+            "wrappingKey": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+            "keyId": "k1",
+            "expiresAt": "2026-09-27T09:11:00Z"
+        }),
     )
     .await;
     let c = client(&server).await;
     let k = c.get_wrapping_key().await.unwrap();
-    assert_eq!(k.kid, "k1");
-    assert_eq!(k.crv, "X25519");
+    assert_eq!(k.key_id.as_str(), "k1");
+    assert!(k.wrapping_key.starts_with("did:key:z6Mk"));
+}
+
+/// keys/import-wrapping-key/0.1 producer rule 2: an unsigned wrapping key is
+/// refused even by a client that trusts unsigned replies elsewhere — an
+/// intermediary that can rewrite the reply could hand back its own key.
+#[tokio::test]
+async fn an_unsigned_wrapping_key_is_refused_even_when_unsigned_replies_are_trusted() {
+    let server = MockServer::start().await;
+    let unsigned = json!({
+        "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+        "type": format!("{}#response", vta_sdk::trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1),
+        "payload": {
+            "wrappingKey": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+            "keyId": "k1",
+            "expiresAt": "2026-09-27T09:11:00Z"
+        }
+    });
+    let _g = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(unsigned))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+    let c = client(&server).await.trusting_unsigned_replies();
+    assert!(c.get_wrapping_key().await.is_err());
 }
 
 #[tokio::test]
@@ -1891,15 +1900,27 @@ async fn render_context_did_template_unwraps_document() {
 // ── check_auth ──────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn check_auth_true_when_200() {
+async fn check_auth_true_when_whoami_answers() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/health/details"))
-        .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-        .expect(1)
-        .mount(&server)
-        .await;
+    let _g = mount_json(
+        &server,
+        "POST",
+        "/trust-tasks",
+        200,
+        json!({
+            "session": {
+                "id": "s1",
+                "subject": "did:key:z6MkSubject",
+                "issuedAt": "2026-09-27T09:00:00Z",
+                "expiresAt": "2026-09-27T09:15:00Z",
+                "amr": ["did"]
+            },
+            "roles": ["admin"],
+            "scopes": [],
+            "capabilities": []
+        }),
+    )
+    .await;
     let c = client(&server).await;
     assert!(c.check_auth().await.unwrap());
 }
@@ -1907,10 +1928,9 @@ async fn check_auth_true_when_200() {
 #[tokio::test]
 async fn check_auth_false_when_401() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/health/details"))
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
         .respond_with(ResponseTemplate::new(401).set_body_json(err_body("expired")))
-        .expect(1)
         .mount(&server)
         .await;
     let c = client(&server).await;

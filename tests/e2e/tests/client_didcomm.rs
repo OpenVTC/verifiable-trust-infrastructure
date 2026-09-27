@@ -1160,15 +1160,34 @@ async fn list_keys_unknown_problem_code_via_didcomm() {
 
 // ── Unsupported-transport branches ──────────────────────────────────
 
+/// The wrapping key is `keys/import-wrapping-key/0.1`, a Trust Task reachable
+/// over DIDComm too — it used to be REST-only and refused here as an
+/// unsupported transport.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn get_wrapping_key_returns_unsupported_transport_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|_, _| ResponderReply::Drop).await;
+async fn get_wrapping_key_dispatches_the_trust_task_via_didcomm() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(
+            msg_type,
+            body,
+            trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+        ) {
+            tt_ok(
+                trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+                json!({
+                    "wrappingKey": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+                    "keyId": "k1",
+                    "expiresAt": "2026-09-27T09:11:00Z",
+                }),
+            )
+        } else {
+            no_handler()
+        }
+    })
+    .await;
 
-    let err = client.get_wrapping_key().await.unwrap_err();
-    assert!(
-        matches!(err, VtaError::UnsupportedTransport(_)),
-        "got {err:?}"
-    );
+    let key = client.get_wrapping_key().await.expect("a wrapping key");
+    assert_eq!(key.key_id.as_str(), "k1");
+    assert!(key.wrapping_key.starts_with("did:key:z6Mk"));
 
     shutdown_all(client, responder, mediator).await;
 }
