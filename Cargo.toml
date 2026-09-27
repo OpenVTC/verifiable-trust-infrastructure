@@ -403,7 +403,12 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # 0.23.1 alongside it — still on `trust-tasks-rs = "^0.23"`, so the bump does
 # not split the graph — and is pinned to match rather than left on the bare
 # `0.23` line.
-trust-tasks-rs = { version = "0.23.3", default-features = false, features = [
+#
+# 0.23.6 raises it for `vta/health/details` 0.1, `vta/restore/status` 0.1,
+# `auth/revoke-session` 0.2 and `keys/import-wrapping-key` 0.1 — the Trust
+# Tasks that replace `GET /health/details`, the `/auth/sessions` REST routes and
+# `GET /keys/import/wrapping-key`.
+trust-tasks-rs = { version = "0.23.6", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

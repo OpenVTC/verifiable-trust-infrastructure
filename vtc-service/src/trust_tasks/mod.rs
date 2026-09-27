@@ -1334,7 +1334,7 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            51,
+            52,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1350,7 +1350,9 @@ mod spine_proof_tests {
              unsigned one is refused regardless) + the 3 step-up passkey tasks \
              that declare one (`auth/passkey/enroll/invite/0.2`, \
              `auth/passkey/revoke/start/0.2`, `revoke/finish/0.2`; `enroll/redeem/*` declares \
-             none, and `redeem/start`'s handler requires one regardless). \
+             none, and `redeem/start`'s handler requires one regardless) + \
+             `auth/passkey/admin-list/0.1`, which the registry indexes from \
+             trust-tasks-rs 0.23.4. \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries (its handler still requires the approver's \

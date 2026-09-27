@@ -53,9 +53,10 @@ specific to the HTTP/JWT authentication flow:
 - `POST /auth/challenge` — JWT challenge request
 - `POST /auth/` — JWT token issuance
 - `POST /auth/refresh` — JWT token refresh
-- `GET /auth/sessions` — JWT session listing
-- `DELETE /auth/sessions/{id}` — JWT session revocation
-- `DELETE /auth/sessions?did=X` — JWT session bulk revocation
+
+Session listing and revocation are not REST routes: they are the
+`auth/sessions/list/0.1` and `auth/revoke-session/0.2` Trust Tasks, reachable
+over DIDComm, TSP and HTTPS alike.
 
 ## Message Format
 
@@ -101,7 +102,6 @@ All protocol URIs are under `https://firstperson.network/protocols/`.
 | `.../get-key-secret` | `.../get-key-secret-result` | Admin | Export secret key material |
 | `.../sign-request` | `.../sign-result` | Auth + context | Sign payload (signing oracle) |
 | `.../import-key` | `.../import-key-result` | Admin | Import an external private key |
-| `.../get-wrapping-key` | `.../get-wrapping-key-result` | Admin | Get ephemeral wrapping key (REST only) |
 
 #### create-key
 
@@ -714,8 +714,6 @@ https://firstperson.network/protocols/key-management/1.0/sign-request
 https://firstperson.network/protocols/key-management/1.0/sign-result
 https://firstperson.network/protocols/key-management/1.0/import-key
 https://firstperson.network/protocols/key-management/1.0/import-key-result
-https://firstperson.network/protocols/key-management/1.0/get-wrapping-key
-https://firstperson.network/protocols/key-management/1.0/get-wrapping-key-result
 
 # Seed Management
 https://firstperson.network/protocols/seed-management/1.0/list-seeds

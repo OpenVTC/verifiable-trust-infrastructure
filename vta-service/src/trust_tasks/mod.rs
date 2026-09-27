@@ -71,6 +71,7 @@ mod credentials;
 mod device;
 mod did_templates;
 mod discovery;
+mod health;
 mod helpers;
 mod idempotency;
 mod keys;
@@ -1974,7 +1975,7 @@ impl DispatchAudit {
         //
         // The handlers' action vocabulary is hand-chosen and does not follow
         // the URI: `acl/grant/0.1` audits as `acl.create`, `keys/create/0.1` as
-        // `key.create`, `auth/revoke-session/0.1` as `session.revoke`. There is
+        // `key.create`, `auth/revoke-session/0.2` as `session.revoke`. There is
         // no derivation, so matching it would need a table keyed by URI — 84
         // entries that go stale invisibly the first time someone adds a task.
         //
@@ -2085,7 +2086,7 @@ pub(crate) fn reject_trust_task(body: &[u8], reason: RejectReason) -> TrustTaskO
 // them.
 dispatch_table! {
     // ─── Auth slice (authenticated operations) ───────────────────
-    vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1 => auth::handle_revoke_session
+    vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2 => auth::handle_revoke_session
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1 => auth::handle_whoami
         [ None Metadata false ],
@@ -2234,6 +2235,8 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_KEYS_IMPORT_0_1 => keys::handle_import
         [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1 => keys::handle_import_wrapping_key
+        [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_SHOW_0_1 => keys::handle_get
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_RENAME_0_1 => keys::handle_rename
@@ -2251,6 +2254,14 @@ dispatch_table! {
     // `vta/contexts/secrets`, for the same reason — the act is disclosure.
     vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1 => keys::handle_export_secret
         [ None Secret false ],
+    // ─── Health + restore slice ─────────────────────────────────
+    // The public flags (any caller, `vta_sdk::trust_tasks::PUBLIC_URIS`) and
+    // the administrator-only version + restore record. They replace
+    // `GET /health/details`.
+    vta_sdk::trust_tasks::TASK_VTA_HEALTH_DETAILS_0_1 => health::handle_health_details
+        [ None Metadata false ],
+    vta_sdk::trust_tasks::TASK_VTA_RESTORE_STATUS_0_1 => health::handle_restore_status
+        [ None Metadata false ],
     // ─── Attestation slice ──────────────────────────────────────
     // The mnemonic export (end-to-end only) and the three public reads, which
     // any caller may send with no identity (`vta_sdk::trust_tasks::PUBLIC_URIS`).
@@ -3241,7 +3252,7 @@ mod tests {
         let _ = vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_1;
-        let _ = vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1;
+        let _ = vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1;
@@ -4445,39 +4456,61 @@ mod response_coverage {
     // needs a provisioned integration rather than a seeded row. That belongs
     // with the provision-integration tests.
 
-    /// `all: true` is a legal document, refused as unsupported — not malformed.
-    ///
-    /// `auth/revoke-session/0.1` is `sessionId` **XOR** `all`. This VTA
-    /// implements only the named-session arm, and its request type used to
-    /// require `sessionId`, so a conforming client sending `{"all": true}` got
-    /// `malformedRequest` — which tells the client its *shape* is wrong when
-    /// the shape was fine. An unimplemented option deserves to be named.
+    /// `auth/revoke-session/0.2`: `all: true` ends every session of the caller
+    /// and counts them; `all: false` targets nothing and is `malformedRequest`,
+    /// as the specification requires — it stays schema-valid only because 0.1
+    /// admitted it.
     #[tokio::test]
-    async fn revoke_all_is_refused_as_unsupported_not_malformed() {
+    async fn revoke_all_ends_the_callers_sessions_and_all_false_is_malformed() {
         let (state, _dir) = build_signing_test_app_state().await;
         let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
-        let body = signed_body(
-            t::TASK_AUTH_REVOKE_SESSION_0_1,
-            &vta_did,
-            json!({ "all": true }),
-        );
-        let outcome = super::dispatch_trust_task_core(
-            &state,
-            &crate::test_support::super_admin_claims(),
-            &body,
-            transport::TransportConfidentiality::HopByHop,
-        )
-        .await;
-        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        let caller = crate::test_support::test_admin_did().0;
+        for n in 0..2 {
+            let session = crate::auth::session::Session {
+                session_id: format!("sess-all-{n}"),
+                did: caller.clone(),
+                challenge: String::new(),
+                state: crate::auth::session::SessionState::Authenticated,
+                created_at: crate::auth::session::now_epoch(),
+                last_seen: crate::auth::session::now_epoch(),
+                refresh_token: None,
+                refresh_expires_at: None,
+                tee_attested: false,
+                amr: vec!["did".into()],
+                acr: "aal1".into(),
+                acr_expires_at: None,
+                token_id: None,
+                session_pubkey_b58btc: None,
+            };
+            crate::auth::session::store_session(&state.sessions_ks, &session)
+                .await
+                .expect("store session");
+        }
+
+        let dispatch = |payload: Value| {
+            let body = signed_body(t::TASK_AUTH_REVOKE_SESSION_0_2, &vta_did, payload);
+            let state = state.clone();
+            async move {
+                let outcome = super::dispatch_trust_task_core(
+                    &state,
+                    &crate::test_support::super_admin_claims(),
+                    &body,
+                    transport::TransportConfidentiality::HopByHop,
+                )
+                .await;
+                serde_json::from_slice::<Value>(&outcome.body).expect("a response document")
+            }
+        };
+
+        let doc = dispatch(json!({ "all": false })).await;
+        assert_eq!(doc["payload"]["code"], "malformedRequest", "{doc}");
+
+        let doc = dispatch(json!({ "all": true, "reason": "device-lost" })).await;
+        assert_eq!(doc["payload"]["revokedCount"], 2, "{doc}");
+        let doc = dispatch(json!({ "all": true })).await;
         assert_eq!(
-            doc["payload"]["code"], "taskFailed",
-            "a legal document must not be called malformed: {doc}"
-        );
-        assert!(
-            doc["payload"]["message"]
-                .as_str()
-                .is_some_and(|m| m.contains("revoke_all_unsupported")),
-            "the refusal must name the option it cannot honour: {doc}"
+            doc["payload"]["revokedCount"], 0,
+            "a repeat converges on zero, a success: {doc}"
         );
     }
 
@@ -4505,10 +4538,8 @@ mod response_coverage {
         .await;
 
         ok(&state, t::TASK_MESSAGING_PING_0_1, json!({})).await;
-        // `auth/revoke-session` is not covered for a success response: it needs
-        // a real session row, and `all: true` is a legal document this VTA
-        // refuses by design (it revokes one named session). The refusal path is
-        // asserted in `revoke_all_is_refused_as_unsupported_not_malformed`.
+        // `auth/revoke-session` has its own test with real session rows:
+        // `revoke_all_ends_the_callers_sessions_and_all_false_is_malformed`.
     }
 
     /// Issue then revoke, chained: revoke needs an id only an issue produces.

@@ -879,7 +879,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   `ext["org.openvtc"].replaceIdentity`) — disaster recovery onto a fresh VTA,
   which always has a DID of its own. VTI-VTA-051: provenance in
   `keys ▸ restore:provenance`, a `backup.restore.applied` audit row, and
-  `restored` on `GET /health/details`.
+  the `vta/restore/status/0.1` Trust Task (administrators only; `pnm health`
+  shows it). The public `vta/health/details/0.1` never carries it.
 - **Code**: `vta-backup/src/{ops/mod.rs,restore.rs}`,
   `vta-support/src/restore_stage.rs`, `vta-service/src/restore.rs`,
   `vta-tee/src/kms_bootstrap.rs` (`seal_restored_secrets`,

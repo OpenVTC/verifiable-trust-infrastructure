@@ -430,20 +430,10 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
-    // TODO(trust-tasks release carrying trust-tasks #658): goes back to zero,
-    // and the hand-written `trust_tasks::passkey_admin_list_v0_1` gives way to
-    // the generated `auth::passkey::admin_list::v0_1`.
-    //
-    // `auth/passkey/admin-list/0.1` — an administrator listing a member's
-    // step-up passkeys, authored upstream (trust-tasks #658) and served on the
-    // spine ahead of the `trust-tasks-rs` release that serves it. It replaces
-    // `GET /v1/admin/step-up-passkeys`, which carried no Trust-Task binding.
-    (
-        "https://trusttasks.org/spec/auth/passkey/admin-list/",
-        1,
-        "auth/passkey/admin-list 0.1 (trust-tasks #658) — authored upstream, \
-         awaiting the trust-tasks-rs release that serves it",
-    ),
+    // `auth/passkey/admin-list/0.1` was bound here ahead of its release and
+    // went back to zero with trust-tasks-rs 0.23.6, which indexes it. (The
+    // hand-written `trust_tasks::passkey_admin_list_v0_1` has yet to give way
+    // to the generated `auth::passkey::admin_list::v0_1`.)
     // `git-ns/bridge/job/0.4` and `git-ns/namespace/reseat/0.3` were sent
     // and served ahead of their release here, and went back to zero with
     // trust-tasks-rs 0.23, which generates both.

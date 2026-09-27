@@ -1,17 +1,19 @@
-//! Integration test for `auth/revoke-session/0.1` — signing a session out over
-//! the trust-task dispatcher (bearer-authed).
+//! Integration test for `auth/revoke-session/0.2` — ending sessions over the
+//! trust-task dispatcher (bearer-authed, signed).
 //!
 //! The interesting behaviour is not the happy path; it is what the caller is
-//! told when nothing is revoked. The spec pulls in two directions at once:
-//! `revokedCount: 0` is a documented success ("the named sessionId was already
-//! revoked", and producers "SHOULD treat zero as 'the post-state is what you
-//! asked for', not as an error"), while the `notOwner` error code carries "The
-//! auth service MUST NOT reveal whether the session exists at all when the
-//! producer is not its owner."
+//! told when nothing is revoked. 0.2 settles what 0.1 left in conflict: a
+//! session that is not there and a session outside the caller's authority must
+//! be answered identically (consumer rule 2), and this VTA answers both with
+//! the RECOMMENDED `revokedCount: 0`. The `subject` form refuses a subject
+//! outside the caller's authority with `permissionDenied`, the same whether or
+//! not the VTA knows the subject (rule 4). These tests pin both: same status,
+//! same payload, byte for byte.
 //!
-//! Both hold only if a session that is not there and a session that is not
-//! yours answer identically. These tests pin that: same status, same payload,
-//! byte for byte.
+//! The authority rule is VTI-SES-043 / VTI-ACL-050: a caller may end another
+//! subject's sessions exactly when it could remove that subject's ACL entry.
+//! [`context_admin_reaches_only_sessions_it_may_manage`] is the port of the
+//! test that held it over the removed `/auth/sessions` REST routes.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -22,7 +24,7 @@ use tower::ServiceExt;
 use vta_service::test_support::{TestAppContext, build_test_app};
 use vti_common::auth::session::{Session, SessionState, get_session, now_epoch, store_session};
 
-/// The caller's signing seed. `auth/revoke-session/0.1` declares `proof`
+/// The caller's signing seed. `auth/revoke-session/0.2` declares `proof`
 /// REQUIRED, so the DID and the key behind it have to come from one place —
 /// item 6 rejects a document whose issuer disagrees with the identity its token
 /// authenticates.
@@ -74,7 +76,7 @@ async fn revoke(
     let token = ctx.jwt_keys.encode(&claims).unwrap();
     let mut typed: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
         "id": format!("urn:uuid:{doc_id}"),
-        "type": "https://trusttasks.org/spec/auth/revoke-session/0.1",
+        "type": vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": &caller(),
         "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
@@ -217,4 +219,286 @@ async fn an_admin_revokes_another_subjects_session() {
             .unwrap()
             .is_none()
     );
+}
+
+// ── the subject form, and the authority rule (VTI-SES-043 / VTI-ACL-050) ─────
+
+/// Post `payload` as a Trust Task of `type_uri`, signed as `seed`'s DID and
+/// carried on `token` (a session of that same DID — the VTA acts on a document
+/// only when its issuer is the authenticated caller).
+async fn post_signed(
+    router: &axum::Router,
+    ctx: &TestAppContext,
+    token: &str,
+    seed: u8,
+    type_uri: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let (did, _) = vta_service::test_support::did_for_seed(seed);
+    let mut typed: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": type_uri,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issuer": did,
+        "recipient": ctx.vta_did,
+        "payload": payload,
+    }))
+    .expect("envelope deserialises");
+    vta_service::test_support::sign_as(seed, &mut typed);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/trust-tasks")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&typed).unwrap()))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// Every live session row of `did`.
+async fn sessions_of(ctx: &TestAppContext, did: &str) -> Vec<String> {
+    vti_common::auth::session::list_sessions(&ctx.sessions_ks)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|s| s.did == did)
+        .map(|s| s.session_id)
+        .collect()
+}
+
+const SUPER: u8 = 0x71;
+const TENANT: u8 = 0x72;
+const MEMBER_A: u8 = 0x73;
+const MEMBER_B: u8 = 0x74;
+
+fn did(seed: u8) -> String {
+    vta_service::test_support::did_for_seed(seed).0
+}
+
+/// VTI-SES-043 / VTI-ACL-050, ported from the removed `/auth/sessions` REST
+/// routes to `auth/sessions/list/0.1` + `auth/revoke-session/0.2`: a
+/// context-scoped admin ends only the sessions of subjects it could remove
+/// from the ACL. The admin role alone used to reach every session on the VTA,
+/// a super-admin's included.
+///
+/// One difference from the REST original, by specification: the list is the
+/// caller's own sessions only, whatever its role — `auth/sessions/list/0.1`
+/// enumerates "every active session the auth service holds for the producer's
+/// subject", and no published task enumerates another subject's.
+#[tokio::test]
+async fn context_admin_reaches_only_sessions_it_may_manage() {
+    let (router, ctx) = build_test_app().await;
+    let _super = ctx.mint_token(&did(SUPER), "admin", vec![]).await;
+    let tenant = ctx
+        .mint_token(&did(TENANT), "admin", vec!["ctx-a".into()])
+        .await;
+    let _a = ctx
+        .mint_token(&did(MEMBER_A), "reader", vec!["ctx-a".into()])
+        .await;
+    let _b = ctx
+        .mint_token(&did(MEMBER_B), "reader", vec!["ctx-b".into()])
+        .await;
+    // `mint_token` writes sessions with no `amr`, which the session schema
+    // (`amr` minItems 1) refuses in a sessions/list answer. Real sessions carry
+    // the method they were authenticated with.
+    for subject in [did(SUPER), did(TENANT), did(MEMBER_A), did(MEMBER_B)] {
+        for id in sessions_of(&ctx, &subject).await {
+            let mut s = get_session(&ctx.sessions_ks, &id).await.unwrap().unwrap();
+            s.amr = vec!["did".into()];
+            store_session(&ctx.sessions_ks, &s).await.unwrap();
+        }
+    }
+
+    // The list holds the tenant's own session, and nobody else's.
+    let (status, body) = post_signed(
+        &router,
+        &ctx,
+        &tenant,
+        TENANT,
+        vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let subjects: Vec<&str> = body["payload"]["sessions"]
+        .as_array()
+        .expect("a session array")
+        .iter()
+        .map(|s| s["subject"].as_str().unwrap())
+        .collect();
+    assert_eq!(subjects, [did(TENANT).as_str()], "{body}");
+
+    // Collective termination: refused for a super-admin and for another
+    // context's member — and a subject the VTA has never heard of is refused
+    // in exactly the same words (consumer rule 4).
+    let mut refusals = Vec::new();
+    for target in [
+        did(SUPER),
+        did(MEMBER_B),
+        "did:key:z6MkNobodyKnowsThisOne".into(),
+    ] {
+        let (status, body) = post_signed(
+            &router,
+            &ctx,
+            &tenant,
+            TENANT,
+            vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
+            json!({ "subject": target }),
+        )
+        .await;
+        assert_eq!(
+            body["payload"]["code"], "permissionDenied",
+            "{target}: {body}"
+        );
+        // Everything but `inResponseTo`, which names this request.
+        let mut payload = body["payload"].clone();
+        payload.as_object_mut().unwrap().remove("inResponseTo");
+        refusals.push((status, payload));
+    }
+    assert!(
+        refusals.windows(2).all(|w| w[0] == w[1]),
+        "a refusal must not disclose whether the subject exists: {refusals:#?}"
+    );
+    assert_eq!(sessions_of(&ctx, &did(SUPER)).await.len(), 1);
+    assert_eq!(sessions_of(&ctx, &did(MEMBER_B)).await.len(), 1);
+
+    // Its own context's member is within reach.
+    let (status, body) = post_signed(
+        &router,
+        &ctx,
+        &tenant,
+        TENANT,
+        vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
+        json!({ "subject": did(MEMBER_A), "reason": "access-withdrawn" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["payload"]["revokedCount"], 1, "{body}");
+    assert!(sessions_of(&ctx, &did(MEMBER_A)).await.is_empty());
+
+    // Single-session termination follows the same rule — answered as a
+    // missing session, and the super-admin's session is untouched.
+    let super_session = sessions_of(&ctx, &did(SUPER)).await.remove(0);
+    let (status, body) = post_signed(
+        &router,
+        &ctx,
+        &tenant,
+        TENANT,
+        vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
+        json!({ "sessionId": super_session }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["payload"]["revokedCount"], 0, "{body}");
+    assert_eq!(sessions_of(&ctx, &did(SUPER)).await, [super_session]);
+}
+
+/// A super-admin reaches any subject, including one with no ACL entry at all —
+/// which belongs to no context, so only unrestricted authority reaches it.
+#[tokio::test]
+async fn a_super_admin_ends_every_session_of_any_subject() {
+    let (router, ctx) = build_test_app().await;
+    let admin = ctx.mint_token(&did(SUPER), "admin", vec![]).await;
+    seed_session(&ctx, "sess-orphan-1", STRANGER).await;
+    seed_session(&ctx, "sess-orphan-2", STRANGER).await;
+
+    let (status, body) = post_signed(
+        &router,
+        &ctx,
+        &admin,
+        SUPER,
+        vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
+        json!({ "subject": STRANGER }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["payload"]["revokedCount"], 2, "{body}");
+    assert!(sessions_of(&ctx, STRANGER).await.is_empty());
+}
+
+/// `subject` naming the caller is `all: true`: ownership is the authority, so
+/// even a reader may sign itself out everywhere.
+#[tokio::test]
+async fn a_reader_signs_itself_out_everywhere() {
+    let (router, ctx) = build_test_app().await;
+    let token = ctx
+        .mint_token(&did(MEMBER_A), "reader", vec!["ctx-a".into()])
+        .await;
+    seed_session(&ctx, "sess-laptop", &did(MEMBER_A)).await;
+
+    let (status, body) = post_signed(
+        &router,
+        &ctx,
+        &token,
+        MEMBER_A,
+        vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
+        json!({ "subject": did(MEMBER_A) }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["payload"]["revokedCount"], 2, "{body}");
+    assert!(sessions_of(&ctx, &did(MEMBER_A)).await.is_empty());
+}
+
+/// 0.1 is not served any more: 0.2 accepts every 0.1 payload, so a client
+/// moves by changing the URI, and there is no second version to keep in step.
+#[tokio::test]
+async fn revoke_session_0_1_is_not_served() {
+    let (router, ctx) = build_test_app().await;
+    let token = ctx.mint_token(&did(SUPER), "admin", vec![]).await;
+    let (_, body) = post_signed(
+        &router,
+        &ctx,
+        &token,
+        SUPER,
+        "https://trusttasks.org/spec/auth/revoke-session/0.1",
+        json!({ "all": true }),
+    )
+    .await;
+    assert!(
+        body["type"]
+            .as_str()
+            .is_some_and(|t| t.contains("trust-task-error")),
+        "{body}"
+    );
+    assert_eq!(sessions_of(&ctx, &did(SUPER)).await.len(), 1);
+}
+
+/// Exactly one form (producer rule 2). Two forms at once, or none, is
+/// `malformedRequest` — refused before anything is revoked, over the wire.
+#[tokio::test]
+async fn two_forms_at_once_or_no_form_is_malformed() {
+    let (router, ctx) = build_test_app().await;
+    let token = ctx.mint_token(&did(SUPER), "admin", vec![]).await;
+    seed_session(&ctx, "sess-kept", STRANGER).await;
+    for payload in [
+        json!({ "sessionId": "sess-kept", "all": true }),
+        json!({ "sessionId": "sess-kept", "subject": STRANGER }),
+        json!({ "all": true, "subject": STRANGER }),
+        json!({ "sessionId": "sess-kept", "all": true, "subject": STRANGER }),
+        json!({}),
+        json!({ "reason": "no target at all" }),
+    ] {
+        let (_, body) = post_signed(
+            &router,
+            &ctx,
+            &token,
+            SUPER,
+            vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
+            payload.clone(),
+        )
+        .await;
+        assert_eq!(
+            body["payload"]["code"], "malformedRequest",
+            "{payload}: {body}"
+        );
+    }
+    assert_eq!(sessions_of(&ctx, STRANGER).await.len(), 1);
+    assert_eq!(sessions_of(&ctx, &did(SUPER)).await.len(), 1);
 }

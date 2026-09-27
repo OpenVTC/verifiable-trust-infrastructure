@@ -68,10 +68,12 @@ pub fn superseded(route: &'static str, successor: &'static str) -> HeaderMap {
 // folded add and update into that one task.
 //
 // A route absent from this table is absent on purpose: `/auth`, `/bootstrap`,
-// `/backup` blob streaming, `/keys/import/wrapping-key`, `/metrics` and
-// `/.well-known` are genuinely REST and are not going anywhere. `/services/*`
-// was the last block here; its routes are removed, and service management is
-// the `vta/services/*` Trust Tasks only.
+// `/backup` blob streaming, `/metrics` and `/.well-known` are genuinely REST
+// and are not going anywhere. (`/keys/import/wrapping-key` was listed here as
+// REST too; it is the `keys/import-wrapping-key/0.1` Trust Task now, and the
+// route is removed rather than superseded.) `/services/*` was the last block
+// here; its routes are removed, and service management is the `vta/services/*`
+// Trust Tasks only.
 /// The table, for tests that need to assert on its contents.
 pub fn superseded_table() -> &'static [(&'static str, &'static str, &'static str, &'static str)] {
     SUPERSEDED

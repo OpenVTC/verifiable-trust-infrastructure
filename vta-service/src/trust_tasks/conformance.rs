@@ -124,7 +124,6 @@ use vta_sdk::protocols::audit_management::list::{
 use vta_sdk::protocols::audit_management::verify::{
     AuditChainBreak, AuditChainReport, VTA_EXT_KEY, VtaVerifyExt,
 };
-use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse};
 use vta_sdk::protocols::consent_management::{
     ConsentApproverListBody, ConsentApproverSetBody, ConsentDecisionBody, ConsentListBody,
     ConsentRequestBody, ConsentRevokeBody,
@@ -561,15 +560,15 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ),
         // ─── auth ────────────────────────────────────────────────
         (
-            uris::TASK_AUTH_REVOKE_SESSION_0_1,
+            uris::TASK_AUTH_REVOKE_SESSION_0_2,
             checked!(
-                specs::auth::revoke_session::v0_1::Payload,
-                specs::auth::revoke_session::v0_1::Response,
-                to_v(RevokeSessionRequest {
-                    all: None,
-                    session_id: Some("sess-1".into()),
+                specs::auth::revoke_session::v0_2::Payload,
+                specs::auth::revoke_session::v0_2::Response,
+                json!({
+                    "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "reason": "access-withdrawn"
                 }),
-                to_v(RevokeSessionResponse { revoked_count: 1 })
+                json!({ "revokedCount": 3 })
             ),
         ),
         (
@@ -1023,6 +1022,58 @@ fn table() -> Vec<(&'static str, Conformance)> {
                     context_id: Some("app".into()),
                 }),
                 to_v(CreateKeyResponseBody { key: key_result() })
+            ),
+        ),
+        (
+            uris::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+            checked!(
+                specs::keys::import_wrapping_key::v0_1::Payload,
+                specs::keys::import_wrapping_key::v0_1::Response,
+                json!({}),
+                json!({
+                    "wrappingKey": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+                    "keyId": "5f2c0a9e-1b7d-4c3e-8f6a-2d9b0e4c7a18",
+                    "expiresAt": "2026-09-27T09:11:00Z"
+                })
+            ),
+        ),
+        // ─── health + restore ────────────────────────────────────
+        (
+            uris::TASK_VTA_HEALTH_DETAILS_0_1,
+            checked!(
+                specs::vta::health::details::v0_1::Payload,
+                specs::vta::health::details::v0_1::Response,
+                json!({}),
+                json!({
+                    "status": "ok",
+                    "mediatorUrl": "https://mediator.example.com",
+                    "mediatorDid": "did:web:mediator.example.com",
+                    "teeStatus": { "teeType": "sev-snp", "detected": true },
+                    "sealed": true,
+                    "storageEncrypted": true,
+                    "tspEnabled": true
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_RESTORE_STATUS_0_1,
+            checked!(
+                specs::vta::restore::status::v0_1::Payload,
+                specs::vta::restore::status::v0_1::Response,
+                json!({}),
+                json!({
+                    "version": "0.40.0",
+                    "restored": true,
+                    "restore": {
+                        "appliedAt": "2026-09-26T08:15:02Z",
+                        "stagedAt": "2026-09-26T08:14:40Z",
+                        "stagedBy": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                        "sourceDid": "did:webvh:QmOldScid:vta-old.example.com",
+                        "sourceEnvironment": "hardened",
+                        "targetEnvironment": "tee",
+                        "internalKeysLost": ["audit-checkpoint-signer"]
+                    }
+                })
             ),
         ),
         (

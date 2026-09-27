@@ -75,10 +75,13 @@ pub const TASK_AUTH_AUTHENTICATE_0_1: &str = "https://trusttasks.org/spec/auth/a
 /// token. Scope-monotonic.
 pub const TASK_AUTH_REFRESH_0_1: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
 
-/// `spec/auth/revoke-session/0.1` — revoke a session by id (or every
-/// session for the producer's subject).
-pub const TASK_AUTH_REVOKE_SESSION_0_1: &str =
-    "https://trusttasks.org/spec/auth/revoke-session/0.1";
+/// `spec/auth/revoke-session/0.2` — end one named session, every session of
+/// the caller (`all: true`), or every session of a `subject` the caller may
+/// manage in the ACL (VTI-SES-043 / VTI-ACL-050). Supersedes 0.1, which had no
+/// way to name another subject; 0.1 is no longer served — every 0.1 payload is
+/// a valid 0.2 payload, so a client moves by changing the URI.
+pub const TASK_AUTH_REVOKE_SESSION_0_2: &str =
+    <trust_tasks_rs::specs::auth::revoke_session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/auth/whoami/0.1` — introspect the caller's current session: the
 /// live `acr`/`amr` (reflecting any step-up since the token was minted) plus
@@ -403,6 +406,16 @@ pub const TASK_WEBVH_SERVERS_DOMAINS_0_1: &str =
 /// admissible only where it was. Refusing unconditionally is the reading that
 /// cannot leak a key; sealed and JWE carriers work on every transport.
 pub const TASK_KEYS_IMPORT_0_1: &str = "https://trusttasks.org/spec/keys/import/0.1";
+
+/// `spec/keys/import-wrapping-key/0.1` — a fresh, single-use, 60-second
+/// wrapping key to seal a private key to before sending it in
+/// [`TASK_KEYS_IMPORT_0_1`]'s `privateKeySealed` carrier. The key comes back as
+/// an Ed25519 `did:key`; seal to its X25519 counterpart. The response is the
+/// VTA's signed document, and a client **must** verify it before sealing — an
+/// unverified wrapping key is one the transport's intermediary may have chosen.
+/// Replaces `GET /keys/import/wrapping-key`.
+pub const TASK_KEYS_IMPORT_WRAPPING_KEY_0_1: &str =
+    <trust_tasks_rs::specs::keys::import_wrapping_key::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/keys/rename/1.0` — rename a key's identifier.
 /// Payload: [`crate::protocols::key_management::rename::RenameKeyBody`].
@@ -1909,6 +1922,28 @@ pub const TASK_ATTESTATION_REPORT_0_1: &str =
 pub const TASK_ATTESTATION_CONFIG_REPORT_0_1: &str =
     <trust_tasks_rs::specs::vta::attestation::config_report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+// ─── Health + restore slice (spec/vta/{health,restore}/*) ──────────────
+//
+// Two tasks with fixed disclosure policies rather than one whose answer varies
+// with who asked: the public flags anyone may read, and the version + restore
+// record only an administrator may. They replace `GET /health/details`, which
+// answered all of it to any authenticated caller.
+
+/// `spec/vta/health/details/0.1` — the VTA's public health flags: status,
+/// mediator, TEE status, seal and storage-encryption state, TSP advertisement.
+/// **Public** ([`PUBLIC_URIS`]): the same answer for every asker, never the
+/// software version or the restore record. The response is the VTA's signed
+/// document.
+pub const TASK_VTA_HEALTH_DETAILS_0_1: &str =
+    <trust_tasks_rs::specs::vta::health::details::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/restore/status/0.1` — the VTA's software version and whether its
+/// state derives from a backup restore, with the VTI-VTA-051 restore record
+/// when it does. Administrators of the VTA only; the request proof is
+/// REQUIRED.
+pub const TASK_VTA_RESTORE_STATUS_0_1: &str =
+    <trust_tasks_rs::specs::vta::restore::status::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/attestation/mnemonic-export/1.0` — release a TEE VTA's BIP-39 seed
 /// mnemonic once, inside the first-boot export window, **sealed** to the
 /// requester's ephemeral `did:key` (payload: a sealed-transfer
@@ -2042,7 +2077,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_CHALLENGE_0_1,
     TASK_AUTH_AUTHENTICATE_0_1,
     TASK_AUTH_REFRESH_0_1,
-    TASK_AUTH_REVOKE_SESSION_0_1,
+    TASK_AUTH_REVOKE_SESSION_0_2,
     TASK_AUTH_WHOAMI_0_1,
     TASK_AUTH_SESSIONS_LIST_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_1,
@@ -2087,6 +2122,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_KEYS_LIST_0_1,
     TASK_KEYS_CREATE_0_1,
     TASK_KEYS_IMPORT_0_1,
+    TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
     TASK_KEYS_SHOW_0_1,
     TASK_KEYS_RENAME_0_1,
     TASK_KEYS_REVOKE_0_1,
@@ -2223,6 +2259,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_BACKUP_FINALIZE_IMPORT_1_1,
     TASK_BACKUP_GET_CHUNK_1_0,
     TASK_BACKUP_PUT_CHUNK_1_0,
+    // Health + restore slice
+    TASK_VTA_HEALTH_DETAILS_0_1,
+    TASK_VTA_RESTORE_STATUS_0_1,
     // Attestation slice: three public reads …
     TASK_ATTESTATION_STATUS_0_1,
     TASK_ATTESTATION_REPORT_0_1,
@@ -2346,6 +2385,7 @@ pub const REST_ROUTED_URIS: &[&str] = &[
 /// Their specifications declare the request proof OPTIONAL and answer a public
 /// fact; a proof, when one is attached, must still verify and bind.
 pub const PUBLIC_URIS: &[&str] = &[
+    TASK_VTA_HEALTH_DETAILS_0_1,
     TASK_ATTESTATION_STATUS_0_1,
     TASK_ATTESTATION_REPORT_0_1,
     TASK_ATTESTATION_CONFIG_REPORT_0_1,

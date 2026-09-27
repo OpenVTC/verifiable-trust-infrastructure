@@ -489,7 +489,8 @@ Consequences for the send-seam work:
 
 ### 8.2 Health checks
 
-- `vta-service/src/routes/health.rs::health_details` and
+- `vta-service/src/trust_tasks/health.rs::handle_health_details` (the
+  `vta/health/details/0.1` Trust Task, formerly `GET /health/details`) and
   `vtc-service/src/routes/health.rs::diagnostics`: surface TSP listener status +
   endpoint alongside mediator URL/DID.
 - `pnm-cli/src/commands/health.rs`: add a **TSP connectivity probe** parallel to the

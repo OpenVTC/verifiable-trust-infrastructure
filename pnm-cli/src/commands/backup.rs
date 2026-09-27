@@ -274,7 +274,9 @@ async fn cmd_backup_import_descriptor(
 
 fn print_restart_notice() {
     println!("  The VTA is restarting to apply the restore.");
-    println!("  Once it is back, `GET /health/details` reports the restore it came from.");
+    println!(
+        "  Once it is back, `pnm health` reports the restore it came from (vta/restore/status)."
+    );
     println!("  You may need to re-authenticate if the VTA DID changed.");
 }
 

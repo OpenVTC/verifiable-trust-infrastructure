@@ -119,6 +119,10 @@ All routes except `/health` and `/auth/*` require a valid JWT bearer token (`Aut
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
 
+Health details are Trust Tasks: `vta/health/details/0.1` (public flags, any
+caller) and `vta/restore/status/0.1` (version and restore record,
+administrators only).
+
 ### Authentication
 
 | Method | Path | Description |
@@ -127,9 +131,9 @@ All routes except `/health` and `/auth/*` require a valid JWT bearer token (`Aut
 | `POST` | `/auth/` | Authenticate with a signed challenge response |
 | `POST` | `/auth/refresh` | Refresh an access token |
 | `POST` | `/auth/credentials` | Generate credentials |
-| `GET` | `/auth/sessions` | List active sessions |
-| `DELETE` | `/auth/sessions` | Revoke all sessions for a DID |
-| `DELETE` | `/auth/sessions/{session_id}` | Revoke a specific session |
+
+Sessions are the `auth/sessions/list/0.1` and `auth/revoke-session/0.2` Trust
+Tasks; the ephemeral key-import wrapping key is `keys/import-wrapping-key/0.1`.
 
 ### Keys
 
