@@ -328,18 +328,31 @@ pub fn build_revoke_session(
     reason: Option<String>,
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
-    let payload = revoke_session::Payload::Variant0(revoke_session::PayloadVariant0::Variant0 {
-        session_id: revoke_session::PayloadVariant0Variant0SessionId::try_from(session_id)
-            .map_err(conv)?,
-        // `reason` is a bounded newtype as of the 0.17 registry, not a bare
-        // `String`. Parsing it here fails on the device that would otherwise
-        // sign a document the auth service must reject.
-        reason: reason
-            .map(revoke_session::PayloadVariant0Variant0Reason::try_from)
-            .transpose()
-            .map_err(conv)?,
-        ext: None,
-    });
+    // 0.24's generated `revoke_session::v0_2::Payload` is a single flat,
+    // `#[non_exhaustive]` permissive struct (every member `Option`) rather
+    // than the old one-of-two-variants enum: the schema's "exactly one of
+    // `sessionId`, `all`, `subject`" constraint is no longer encoded in the
+    // Rust type, only in the JSON Schema the auth service validates the raw
+    // payload against. Building through `builder()` (rather than a struct
+    // literal, which `#[non_exhaustive]` refuses outside this crate) and
+    // leaving the other members unset is what keeps this call one of the
+    // schema's valid shapes.
+    let payload: revoke_session::Payload = revoke_session::Payload::builder()
+        .session_id(Some(
+            // `reason` and `sessionId` are bounded newtypes as of the 0.17
+            // registry, not bare `String`s. Parsing them here fails on the
+            // device that would otherwise sign a document the auth service
+            // must reject.
+            revoke_session::PayloadSessionId::try_from(session_id).map_err(conv)?,
+        ))
+        .reason(
+            reason
+                .map(revoke_session::PayloadReason::try_from)
+                .transpose()
+                .map_err(conv)?,
+        )
+        .try_into()
+        .map_err(conv)?;
     let mut doc = envelope_doc(&env, payload)?;
     attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
     serialize(&doc)
@@ -355,14 +368,18 @@ pub fn build_revoke_all_sessions(
     reason: Option<String>,
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
-    let payload = revoke_session::Payload::Variant1(revoke_session::PayloadVariant1::Variant1 {
-        all: true,
-        reason: reason
-            .map(revoke_session::PayloadVariant1Variant1Reason::try_from)
-            .transpose()
-            .map_err(conv)?,
-        ext: None,
-    });
+    // See the comment in `build_revoke_session`: 0.24's `Payload` is one flat,
+    // `#[non_exhaustive]` permissive struct now, not an enum of variants.
+    let payload: revoke_session::Payload = revoke_session::Payload::builder()
+        .all(Some(true))
+        .reason(
+            reason
+                .map(revoke_session::PayloadReason::try_from)
+                .transpose()
+                .map_err(conv)?,
+        )
+        .try_into()
+        .map_err(conv)?;
     let mut doc = envelope_doc(&env, payload)?;
     attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
     serialize(&doc)
