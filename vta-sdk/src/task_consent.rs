@@ -353,33 +353,47 @@ mod tests {
     /// A request signed as an assertion — a valid proof, by the right node, to
     /// the right approver — is still refused: a consent request is signed
     /// under `authentication`.
+    ///
+    /// Signs by hand for `assertionMethod` rather than through
+    /// `build_signed_with`/`sign_in_place_with`, which now (correctly, for a
+    /// `task-consent/request` — an operational document, not one of the
+    /// registry's attestation types) always picks `authentication` itself.
+    /// The adversarial case this test exists for needs the wrong purpose on
+    /// purpose.
     #[cfg(feature = "client")]
     #[tokio::test]
     async fn a_request_signed_as_an_assertion_is_refused() {
+        use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+        use affinidi_secrets_resolver::secrets::Secret;
+
         let seed = [0x7a; 32];
         let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
         let node = format!(
             "did:key:{}",
             crate::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
         );
-        let mut secret = vec![0x80, 0x26];
-        secret.extend_from_slice(&seed);
-        let key = crate::trust_task_sign::HolderKey::from_did_key(
-            &node,
-            multibase::encode(multibase::Base::Base58Btc, &secret),
-        )
-        .unwrap();
+        let vm = crate::trust_task_sign::did_key_to_vm(&node).unwrap();
         let approver = "did:example:approver";
-        // `build_signed_with` signs under assertionMethod.
-        let signed = crate::trust_task_sign::build_signed_with(
+
+        let mut doc = crate::trust_task_sign::build_unsigned(
             REQUEST_TYPE,
             serde_json::json!({}),
-            &key,
+            &node,
             approver,
+        )
+        .unwrap();
+        let mut signer = Secret::generate_ed25519(Some(&vm), Some(&seed));
+        signer.id = vm;
+        let signing_doc = serde_json::to_value(&doc).unwrap();
+        let di_proof = DataIntegrityProof::sign(
+            &signing_doc,
+            &signer,
+            SignOptions::new().with_proof_purpose("assertionMethod"),
         )
         .await
         .unwrap();
-        let raw: Value = serde_json::from_str(&signed).unwrap();
+        doc.proof = Some(serde_json::from_value(serde_json::to_value(&di_proof).unwrap()).unwrap());
+        let raw: Value = serde_json::to_value(&doc).unwrap();
         assert_eq!(raw["proof"]["proofPurpose"], "assertionMethod");
 
         let refused = ConsentRequest::new(raw)
