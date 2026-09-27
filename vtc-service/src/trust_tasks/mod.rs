@@ -74,10 +74,6 @@ pub(crate) mod backup_tasks;
 // The operations are `crate::step_up_passkey`'s; this is their only door.
 pub(crate) mod step_up_passkey_tasks;
 
-// `auth/passkey/admin-list/0.1`, hand-written until the trust-tasks-rs release
-// that generates it (trust-tasks #658).
-pub(crate) mod passkey_admin_list_v0_1;
-
 // The integration tests' soft WebAuthn authenticator, for the spine tests that
 // drive a real passkey ceremony.
 #[cfg(test)]
@@ -1334,7 +1330,7 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            51,
+            52,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1347,10 +1343,11 @@ mod spine_proof_tests {
              credential-exchange steps a holder sends (`request`, `present`) + \
              `acl/update` and `acl/revoke` (`acl/show` and `acl/list` declare no \
              proof; their handlers authorize from the signer's ACL row, so an \
-             unsigned one is refused regardless) + the 3 step-up passkey tasks \
+             unsigned one is refused regardless) + the 4 step-up passkey tasks \
              that declare one (`auth/passkey/enroll/invite/0.2`, \
-             `auth/passkey/revoke/start/0.2`, `revoke/finish/0.2`; `enroll/redeem/*` declares \
-             none, and `redeem/start`'s handler requires one regardless). \
+             `auth/passkey/revoke/start/0.2`, `revoke/finish/0.2`, and — new since \
+             trust-tasks-rs 0.23.4 generates it — `admin-list/0.1`; `enroll/redeem/*` \
+             declares none, and `redeem/start`'s handler requires one regardless). \
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries (its handler still requires the approver's \

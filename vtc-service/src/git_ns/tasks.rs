@@ -123,9 +123,8 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_view)
         .on_async(handle_view_v2)
         .on_async(handle_view_v4)
-        // TODO(trust-tasks release carrying trust-tasks #659): the three
-        // administrator reads are registered under hand-written stand-in
-        // payload types (`super::admin_reads`), until the generated ones ship.
+        // The three administrator reads (`super::admin_reads`), on the
+        // generated payload types (trust-tasks-rs 0.23.4, trust-tasks #659).
         .on_async(handle_view_v5)
         .on_async(handle_namespace_list)
         .on_async(handle_repo_list)

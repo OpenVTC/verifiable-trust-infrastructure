@@ -6080,14 +6080,26 @@ async fn view_0_4_shows_an_unratified_break_glass_to_every_administrator_it_conc
     // The console list: the community administrator and Carol's co-admin read
     // it; a plain member session is refused.
     let bg = json!({ "scope": "administrator", "breakGlass": true });
-    let body = ok(&send_v(&f.vtc.state, &dana, view_v0_5::TYPE_URI, bg.clone()).await);
+    let body = ok(&send_v(
+        &f.vtc.state,
+        &dana,
+        <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        bg.clone(),
+    )
+    .await);
     assert!(
         body["rights"][0]["breakGlass"]["ratifiedBy"].is_null(),
         "{body}"
     );
     assert_eq!(body["namespaces"][0]["owner"], "acme");
-    let out = send_v(&f.vtc.state, &f.bob, view_v0_5::TYPE_URI, bg).await;
-    assert_eq!(code(&out), view_v0_5::error_codes::NOT_ADMINISTRATOR);
+    let out = send_v(
+        &f.vtc.state,
+        &f.bob,
+        <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+        bg,
+    )
+    .await;
+    assert_eq!(code(&out), view_v0_5::error_codes::NOT_ADMINISTRATOR.code);
     let (status, body) = get(&f, &f.admin.did, vec![], "/git-ns/rights").await;
     assert_eq!(status, 200);
     assert!(
@@ -6474,7 +6486,7 @@ async fn adopt_is_refused_after_binding_until_the_bridge_reports_its_map() {
     let body = ok(&send_v(
         &f.vtc.state,
         &f.admin,
-        namespace_list_v0_1::TYPE_URI,
+        <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         json!({}),
     )
     .await);
@@ -7076,7 +7088,7 @@ async fn namespace_list_answers_each_administrator_the_namespaces_they_administe
             &f,
             t,
             &f.admin,
-            namespace_list_v0_1::TYPE_URI,
+            <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             true,
         )
@@ -7106,7 +7118,7 @@ async fn namespace_list_answers_each_administrator_the_namespaces_they_administe
             &f,
             t,
             &f.carol,
-            namespace_list_v0_1::TYPE_URI,
+            <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             true,
         )
@@ -7120,7 +7132,7 @@ async fn namespace_list_answers_each_administrator_the_namespaces_they_administe
             &f,
             t,
             &f.carol,
-            namespace_list_v0_1::TYPE_URI,
+            <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({ "namespace": acme }),
             true,
         )
@@ -7140,10 +7152,18 @@ async fn namespace_list_refuses_a_caller_who_administers_nothing() {
         two_namespaces(&f).await;
         // Bob holds a commit right, and a stranger nothing at all.
         for who in [&f.bob, &f.stranger] {
-            let out = read_over(&f, t, who, namespace_list_v0_1::TYPE_URI, json!({}), true).await;
+            let out = read_over(
+                &f,
+                t,
+                who,
+                <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                json!({}),
+                true,
+            )
+            .await;
             assert_eq!(
                 code(&out),
-                namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR,
+                namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
                 "{t:?}"
             );
         }
@@ -7160,14 +7180,14 @@ async fn namespace_list_refuses_a_namespace_admin_outside_their_namespace() {
                 &f,
                 t,
                 &f.carol,
-                namespace_list_v0_1::TYPE_URI,
+                <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
                 json!({ "namespace": named }),
                 true,
             )
             .await;
             assert_eq!(
                 code(&out),
-                namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR,
+                namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
                 "{t:?}: {named} — an unknown namespace is answered as one not administered"
             );
         }
@@ -7183,7 +7203,7 @@ async fn namespace_list_refuses_an_unsigned_document() {
             &f,
             t,
             &f.admin,
-            namespace_list_v0_1::TYPE_URI,
+            <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({}),
             false,
         )
@@ -7199,7 +7219,15 @@ async fn repo_list_answers_each_administrator_the_repositories_they_administer()
     for t in TRANSPORTS {
         let f = fixture().await;
         let (acme, other) = two_namespaces(&f).await;
-        let all = ok(&read_over(&f, t, &f.admin, repo_list_v0_1::TYPE_URI, json!({}), true).await);
+        let all = ok(&read_over(
+            &f,
+            t,
+            &f.admin,
+            <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            json!({}),
+            true,
+        )
+        .await);
         assert_eq!(
             resources(&all, "repos", "resource"),
             ["github.com/acme/widgets", "github.com/other/hidden"],
@@ -7213,7 +7241,15 @@ async fn repo_list_answers_each_administrator_the_repositories_they_administer()
         );
         assert_eq!(widgets["steps"], json!([]));
 
-        let mine = ok(&read_over(&f, t, &f.carol, repo_list_v0_1::TYPE_URI, json!({}), true).await);
+        let mine = ok(&read_over(
+            &f,
+            t,
+            &f.carol,
+            <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            json!({}),
+            true,
+        )
+        .await);
         assert_eq!(
             resources(&mine, "repos", "resource"),
             ["github.com/acme/widgets"],
@@ -7224,7 +7260,7 @@ async fn repo_list_answers_each_administrator_the_repositories_they_administer()
             &f,
             t,
             &f.admin,
-            repo_list_v0_1::TYPE_URI,
+            <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({ "namespace": other }),
             true,
         )
@@ -7243,10 +7279,18 @@ async fn repo_list_refuses_a_caller_who_administers_nothing() {
         let f = fixture().await;
         two_namespaces(&f).await;
         for who in [&f.bob, &f.stranger] {
-            let out = read_over(&f, t, who, repo_list_v0_1::TYPE_URI, json!({}), true).await;
+            let out = read_over(
+                &f,
+                t,
+                who,
+                <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                json!({}),
+                true,
+            )
+            .await;
             assert_eq!(
                 code(&out),
-                repo_list_v0_1::error_codes::NOT_ADMINISTRATOR,
+                repo_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
                 "{t:?}"
             );
         }
@@ -7262,14 +7306,14 @@ async fn repo_list_refuses_a_namespace_admin_outside_their_namespace() {
             &f,
             t,
             &f.carol,
-            repo_list_v0_1::TYPE_URI,
+            <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({ "namespace": other }),
             true,
         )
         .await;
         assert_eq!(
             code(&out),
-            repo_list_v0_1::error_codes::NOT_ADMINISTRATOR,
+            repo_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
             "{t:?}"
         );
     }
@@ -7280,7 +7324,15 @@ async fn repo_list_refuses_an_unsigned_document() {
     for t in TRANSPORTS {
         let f = fixture().await;
         two_namespaces(&f).await;
-        let out = read_over(&f, t, &f.admin, repo_list_v0_1::TYPE_URI, json!({}), false).await;
+        let out = read_over(
+            &f,
+            t,
+            &f.admin,
+            <repo_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            json!({}),
+            false,
+        )
+        .await;
         assert_eq!(code(&out), "proofRequired", "{t:?}");
     }
 }
@@ -7298,7 +7350,7 @@ async fn view_0_5_administrator_scope_answers_every_record_and_reason_in_the_adm
             &f,
             t,
             &f.admin,
-            view_v0_5::TYPE_URI,
+            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             admin_scope.clone(),
             true,
         )
@@ -7319,7 +7371,15 @@ async fn view_0_5_administrator_scope_answers_every_record_and_reason_in_the_adm
             "{t:?}: reasons go to administrators"
         );
 
-        let carols = ok(&read_over(&f, t, &f.carol, view_v0_5::TYPE_URI, admin_scope, true).await);
+        let carols = ok(&read_over(
+            &f,
+            t,
+            &f.carol,
+            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            admin_scope,
+            true,
+        )
+        .await);
         let ns: Vec<String> = carols["namespaces"]
             .as_array()
             .unwrap()
@@ -7348,7 +7408,15 @@ async fn view_0_5_administrator_scope_answers_every_record_and_reason_in_the_adm
         );
 
         // The default scope is 0.4's member view, unchanged.
-        let member = ok(&read_over(&f, t, &f.bob, view_v0_5::TYPE_URI, json!({}), true).await);
+        let member = ok(&read_over(
+            &f,
+            t,
+            &f.bob,
+            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            json!({}),
+            true,
+        )
+        .await);
         assert_eq!(member["accounts"], json!([]));
     }
 }
@@ -7362,18 +7430,26 @@ async fn view_0_5_administrator_scope_refuses_a_member_who_administers_nothing()
             &f,
             t,
             &f.bob,
-            view_v0_5::TYPE_URI,
+            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({ "scope": "administrator" }),
             true,
         )
         .await;
         assert_eq!(
             code(&out),
-            view_v0_5::error_codes::NOT_ADMINISTRATOR,
+            view_v0_5::error_codes::NOT_ADMINISTRATOR.code,
             "{t:?}"
         );
         // A non-member has no view at all.
-        let out = read_over(&f, t, &f.stranger, view_v0_5::TYPE_URI, json!({}), true).await;
+        let out = read_over(
+            &f,
+            t,
+            &f.stranger,
+            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            json!({}),
+            true,
+        )
+        .await;
         assert_eq!(code(&out), "permissionDenied", "{t:?}");
     }
 }
@@ -7392,14 +7468,14 @@ async fn view_0_5_administrator_scope_refuses_a_namespace_admin_outside_their_na
                 &f,
                 t,
                 &f.carol,
-                view_v0_5::TYPE_URI,
+                <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
                 json!({ "scope": "administrator", "resource": resource }),
                 true,
             )
             .await;
             assert_eq!(
                 code(&out),
-                view_v0_5::error_codes::NOT_ADMINISTRATOR,
+                view_v0_5::error_codes::NOT_ADMINISTRATOR.code,
                 "{t:?}: {resource}"
             );
         }
@@ -7415,7 +7491,7 @@ async fn view_0_5_refuses_an_unsigned_document() {
             &f,
             t,
             &f.admin,
-            view_v0_5::TYPE_URI,
+            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             json!({ "scope": "administrator" }),
             false,
         )
@@ -7438,7 +7514,15 @@ async fn view_0_5_break_glass_lists_only_break_glass_records_to_their_administra
         ok(&break_glass(&f, &dana, "git.repo.create", "github.com/acme").await);
         let q = json!({ "scope": "administrator", "breakGlass": true });
         for who in [&f.admin, &f.carol] {
-            let v = ok(&read_over(&f, t, who, view_v0_5::TYPE_URI, q.clone(), true).await);
+            let v = ok(&read_over(
+                &f,
+                t,
+                who,
+                <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                q.clone(),
+                true,
+            )
+            .await);
             let rights = v["rights"].as_array().unwrap();
             assert_eq!(rights.len(), 1, "{t:?}: {rights:?}");
             assert_eq!(rights[0]["subject"], dana.did.as_str());
@@ -7446,10 +7530,18 @@ async fn view_0_5_break_glass_lists_only_break_glass_records_to_their_administra
             assert_eq!(v["namespaces"].as_array().unwrap().len(), 1, "{t:?}");
             assert_eq!(v["repos"], json!([]), "{t:?}: the record is namespace-wide");
         }
-        let out = read_over(&f, t, &f.bob, view_v0_5::TYPE_URI, q, true).await;
+        let out = read_over(
+            &f,
+            t,
+            &f.bob,
+            <view_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            q,
+            true,
+        )
+        .await;
         assert_eq!(
             code(&out),
-            view_v0_5::error_codes::NOT_ADMINISTRATOR,
+            view_v0_5::error_codes::NOT_ADMINISTRATOR.code,
             "{t:?}"
         );
     }
@@ -7481,7 +7573,7 @@ async fn namespace_list_signed_by_a_console_key_answers_its_administrator() {
         &f,
         JoinTransport::Rest,
         &console,
-        namespace_list_v0_1::TYPE_URI,
+        <namespace_list_v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         json!({}),
         true,
     )

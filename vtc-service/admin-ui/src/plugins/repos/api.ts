@@ -43,8 +43,10 @@ import { breakGlassState } from "./model";
 
 const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
 
-// TODO(trust-tasks release carrying trust-tasks #659): take these URIs and
-// the view response type from the published `@openvtc/trust-tasks` binding.
+// trust-tasks-rs 0.23.4 generates the Rust side of these
+// (`git_ns::admin_reads`, trustoverip/dtgwg-trust-tasks-tf#659). No
+// TypeScript binding is published, so the URIs and the view response shape
+// below stay hand-written here, matching the spec.
 export const TASK_NAMESPACE_LIST = "https://trusttasks.org/spec/git-ns/namespace/list/0.1";
 export const TASK_REPO_LIST = "https://trusttasks.org/spec/git-ns/repo/list/0.1";
 export const TASK_VIEW = "https://trusttasks.org/spec/git-ns/view/0.5";

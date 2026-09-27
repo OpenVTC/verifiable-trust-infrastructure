@@ -25,150 +25,33 @@
 //! names one they do not administer or one that does not exist, is refused
 //! with the task's `notAdministrator`, the same way in all three cases.
 //!
-//! # Stand-ins
+//! # Generated types
 //!
-//! TODO(trust-tasks release carrying trust-tasks #659): replace the three
-//! `*_v0_*` modules below with the generated
+//! `view_v0_5`, `namespace_list_v0_1` and `repo_list_v0_1` are the generated
 //! `trust_tasks_rs::specs::git_ns::{view::v0_5, namespace::list::v0_1,
-//! repo::list::v0_1}` (their `Payload`s, `Response`s and `error_codes`), drop
-//! the `spec/git-ns/` entry from `UNPUBLISHED_CANONICAL_OK` in
-//! `tests/trust_task_manifest.rs`, and type the console's reads from the
-//! published `@openvtc/trust-tasks` binding. Until then this build's registry
-//! cannot declare the proof requirement to the spine, so every handler refuses
-//! an unsigned document itself (`super::tasks::signer`), and each stand-in
-//! declares it on its own `Payload` impl as well.
+//! repo::list::v0_1}` modules (trust-tasks-rs 0.23.4, trustoverip/dtgwg-trust-tasks-tf#659):
+//! their `Payload`s already declare the proof REQUIRED, so the dispatch spine
+//! refuses an unsigned document before a handler runs — no handler-level
+//! refusal is needed here. `namespace_list` and `repo_list` still build the
+//! console's own `GitNsNamespaceRow`/`GitNsRepoRow` rows (registered as
+//! OpenAPI components below, for the admin-ui's generated wire types) and
+//! convert them into the generated `Response` through [`wire::into`], the same
+//! way `view_v5` already did for 0.4.
 
 use std::collections::BTreeSet;
 
 use serde::Serialize;
 use serde_json::Value;
+pub(crate) use trust_tasks_rs::specs::git_ns::namespace::list::v0_1 as namespace_list_v0_1;
+pub(crate) use trust_tasks_rs::specs::git_ns::repo::list::v0_1 as repo_list_v0_1;
 use trust_tasks_rs::specs::git_ns::view::v0_4 as view4;
+pub(crate) use trust_tasks_rs::specs::git_ns::view::v0_5 as view_v0_5;
 
 use super::model::{RepoState, Resource, Right, Scope};
 use super::ops::{self, OpError, OpResult, declared, now};
 use super::store::Snapshot;
 use super::{lifecycle, role_map, rules, view, wire};
 use crate::server::AppState;
-
-/// The framework `Ext` rule on a stand-in payload: at least one member, each
-/// key a reverse-DNS namespace — what the generated `Ext` newtype checks.
-type Ext = view4::Ext;
-
-/// `git-ns/view/0.5`. Hand-written until trust-tasks-rs publishes #659.
-pub mod view_v0_5 {
-    use serde::{Deserialize, Serialize};
-
-    /// The bare type URI.
-    pub const TYPE_URI: &str = "https://trusttasks.org/spec/git-ns/view/0.5";
-
-    /// The codes the specification declares.
-    pub mod error_codes {
-        /// `scope: administrator`, and the caller administers no namespace
-        /// within `resource` — answered alike for one that does not exist.
-        pub const NOT_ADMINISTRATOR: &str = "git-ns/view:notAdministrator";
-    }
-
-    /// `scope`: which entitlement answers.
-    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub enum Scope {
-        #[default]
-        Member,
-        Administrator,
-    }
-
-    /// The request payload: 0.4's, plus `scope` and `breakGlass`.
-    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct Payload {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub resource: Option<super::view4::Resource>,
-        #[serde(default)]
-        pub scope: Scope,
-        #[serde(default)]
-        pub break_glass: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<super::Ext>,
-    }
-
-    impl trust_tasks_rs::Payload for Payload {
-        const TYPE_URI: &'static str = TYPE_URI;
-        const IS_PROOF_REQUIRED: bool = true;
-        const IS_RECIPIENT_REQUIRED: bool = true;
-    }
-
-    /// The response is 0.4's, unchanged.
-    pub type Response = super::view4::Response;
-}
-
-/// `git-ns/namespace/list/0.1`. Hand-written until trust-tasks-rs publishes
-/// #659.
-pub mod namespace_list_v0_1 {
-    use serde::{Deserialize, Serialize};
-
-    /// The bare type URI.
-    pub const TYPE_URI: &str = "https://trusttasks.org/spec/git-ns/namespace/list/0.1";
-
-    /// The codes the specification declares.
-    pub mod error_codes {
-        /// The caller administers no namespace, or not the one named, or it
-        /// does not exist.
-        pub const NOT_ADMINISTRATOR: &str = "git-ns/namespace/list:notAdministrator";
-    }
-
-    /// The request payload.
-    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct Payload {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub namespace: Option<super::view4::NamespaceId>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<super::Ext>,
-    }
-
-    impl trust_tasks_rs::Payload for Payload {
-        const TYPE_URI: &'static str = TYPE_URI;
-        const IS_PROOF_REQUIRED: bool = true;
-        const IS_RECIPIENT_REQUIRED: bool = true;
-    }
-
-    /// The response payload.
-    pub type Response = super::GitNsNamespaceList;
-}
-
-/// `git-ns/repo/list/0.1`. Hand-written until trust-tasks-rs publishes #659.
-pub mod repo_list_v0_1 {
-    use serde::{Deserialize, Serialize};
-
-    /// The bare type URI.
-    pub const TYPE_URI: &str = "https://trusttasks.org/spec/git-ns/repo/list/0.1";
-
-    /// The codes the specification declares.
-    pub mod error_codes {
-        /// The caller administers no namespace, or not the one named, or it
-        /// does not exist.
-        pub const NOT_ADMINISTRATOR: &str = "git-ns/repo/list:notAdministrator";
-    }
-
-    /// The request payload.
-    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    pub struct Payload {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub namespace: Option<super::view4::NamespaceId>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pub ext: Option<super::Ext>,
-    }
-
-    impl trust_tasks_rs::Payload for Payload {
-        const TYPE_URI: &'static str = TYPE_URI;
-        const IS_PROOF_REQUIRED: bool = true;
-        const IS_RECIPIENT_REQUIRED: bool = true;
-    }
-
-    /// The response payload.
-    pub type Response = super::GitNsRepoList;
-}
 
 // ── response bodies ─────────────────────────────────────────────────────────
 //
@@ -471,14 +354,14 @@ pub(crate) async fn namespace_list(
     state: &AppState,
     actor: &str,
     p: namespace_list_v0_1::Payload,
-) -> OpResult<GitNsNamespaceList> {
+) -> OpResult<namespace_list_v0_1::Response> {
     let snap = Snapshot::load(&state.git_ns.ks).await?;
     let admin = administered(state, &snap, actor).await?;
     let named = p.namespace.map(String::from);
     let covered = covered(
         &admin,
         named.as_deref(),
-        namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR,
+        namespace_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
     )?;
     let t = now();
     let headless = lifecycle::headless(&snap);
@@ -546,7 +429,10 @@ pub(crate) async fn namespace_list(
         })
         .collect();
     namespaces.sort_by(|a, b| a.resource.cmp(&b.resource));
-    Ok(GitNsNamespaceList { namespaces })
+    let list = GitNsNamespaceList { namespaces };
+    Ok(wire::into(
+        serde_json::to_value(&list).map_err(vti_common::error::AppError::from)?,
+    )?)
 }
 
 // ── git-ns/repo/list/0.1 ────────────────────────────────────────────────────
@@ -556,14 +442,14 @@ pub(crate) async fn repo_list(
     state: &AppState,
     actor: &str,
     p: repo_list_v0_1::Payload,
-) -> OpResult<GitNsRepoList> {
+) -> OpResult<repo_list_v0_1::Response> {
     let snap = Snapshot::load(&state.git_ns.ks).await?;
     let admin = administered(state, &snap, actor).await?;
     let named = p.namespace.map(String::from);
     let covered = covered(
         &admin,
         named.as_deref(),
-        repo_list_v0_1::error_codes::NOT_ADMINISTRATOR,
+        repo_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
     )?;
     // A community administrator's whole listing also carries the repositories
     // an unbound namespace left behind: nobody else administers those.
@@ -639,7 +525,10 @@ pub(crate) async fn repo_list(
         })
         .collect();
     repos.sort_by(|a, b| a.resource.cmp(&b.resource));
-    Ok(GitNsRepoList { repos })
+    let list = GitNsRepoList { repos };
+    Ok(wire::into(
+        serde_json::to_value(&list).map_err(vti_common::error::AppError::from)?,
+    )?)
 }
 
 /// The bridge's `lastCheck` report, as the specification's `LastCheck` — or
@@ -662,7 +551,7 @@ pub(crate) async fn view_v5(
     state: &AppState,
     actor: &str,
     p: view_v0_5::Payload,
-) -> OpResult<view_v0_5::Response> {
+) -> OpResult<view4::Response> {
     let standing = ops::standing(state, actor).await?;
     if !standing.member {
         return Err(OpError::PermissionDenied(
@@ -675,15 +564,8 @@ pub(crate) async fn view_v5(
     };
     let snap = Snapshot::load(&state.git_ns.ks).await?;
     let member = crate::members::get_member(&state.members_ks, actor).await?;
-    let mut v = match p.scope {
-        view_v0_5::Scope::Member => view::member_v4(
-            &snap,
-            actor,
-            standing.community_admin,
-            filter.as_ref(),
-            member.as_ref(),
-        ),
-        view_v0_5::Scope::Administrator => {
+    let mut v = match p.scope.unwrap_or(view_v0_5::PayloadScope::Member) {
+        view_v0_5::PayloadScope::Administrator => {
             let admin = administered(state, &snap, actor).await?;
             let within = if admin.community_admin {
                 None
@@ -699,7 +581,7 @@ pub(crate) async fn view_v5(
                     .any(|n| admin.namespaces.contains(&n.id) && related(&n.resource()));
                 if !any {
                     return Err(declared(
-                        view_v0_5::error_codes::NOT_ADMINISTRATOR,
+                        view_v0_5::error_codes::NOT_ADMINISTRATOR.code,
                         "scope: administrator answers for the namespaces you administer, and you \
                          administer none within this resource",
                     ));
@@ -708,8 +590,18 @@ pub(crate) async fn view_v5(
             };
             view::administrator_v5(&snap, within.as_ref(), filter.as_ref(), member.as_ref())
         }
+        // `member` (the schema's default), and any future variant this build
+        // does not know: the narrowest reading, never administrator scope by
+        // default.
+        _ => view::member_v4(
+            &snap,
+            actor,
+            standing.community_admin,
+            filter.as_ref(),
+            member.as_ref(),
+        ),
     };
-    if p.break_glass {
+    if p.break_glass.unwrap_or(false) {
         view::narrow_to_break_glass(&mut v);
     }
     Ok(wire::into(v)?)

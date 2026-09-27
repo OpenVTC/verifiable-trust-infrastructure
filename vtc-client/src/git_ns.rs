@@ -44,43 +44,37 @@ use specs::account::{
     link::v0_1 as link, link_status::v0_1 as link_status, unlink::v0_1 as unlink,
 };
 use specs::drift::resolve::{v0_1 as drift_resolve, v0_3 as drift_resolve3};
-use specs::namespace::{bind::v0_1 as bind, reseat::v0_3 as reseat, unbind::v0_1 as unbind};
+use specs::namespace::{
+    bind::v0_1 as bind, list::v0_1 as namespace_list, reseat::v0_3 as reseat,
+    unbind::v0_1 as unbind,
+};
 
 /// `git-ns/namespace/reseat/0.3`, the only reseat version the VTC serves.
 pub const RESEAT_TYPE_URI: &str = <reseat::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 use specs::repo::{
     adopt::v0_1 as adopt, archive::v0_1 as archive, create::v0_3 as create,
-    transfer::v0_1 as transfer,
+    list::v0_1 as repo_list, transfer::v0_1 as transfer,
 };
 use specs::right::{
     break_glass::v0_1 as break_glass, grant::v0_3 as grant, ratify::v0_1 as ratify,
     revoke::v0_3 as revoke,
 };
 use specs::roles::reproject::v0_1 as reproject;
-use specs::view::{v0_1 as view, v0_2 as view2, v0_4 as view4};
+use specs::view::{v0_1 as view, v0_2 as view2, v0_4 as view4, v0_5 as view5};
 
 /// `git-ns/view/0.1`'s type URI.
 pub const GIT_NS_VIEW_TYPE: &str = <view::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `git-ns/view/0.5`: 0.4 plus `scope: administrator` and `breakGlass`.
-///
-/// TODO(trust-tasks release carrying trust-tasks #659): read it off the
-/// generated `specs::view::v0_5::Payload`.
-pub const GIT_NS_VIEW_V5_TYPE: &str = "https://trusttasks.org/spec/git-ns/view/0.5";
+pub const GIT_NS_VIEW_V5_TYPE: &str = <view5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `git-ns/namespace/list/0.1`: the namespaces the signer administers.
-///
-/// TODO(trust-tasks release carrying trust-tasks #659): read it off the
-/// generated `specs::namespace::list::v0_1::Payload`, and type the response.
 pub const GIT_NS_NAMESPACE_LIST_TYPE: &str =
-    "https://trusttasks.org/spec/git-ns/namespace/list/0.1";
+    <namespace_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `git-ns/repo/list/0.1`: the repositories in the namespaces the signer
 /// administers.
-///
-/// TODO(trust-tasks release carrying trust-tasks #659): read it off the
-/// generated `specs::repo::list::v0_1::Payload`, and type the response.
-pub const GIT_NS_REPO_LIST_TYPE: &str = "https://trusttasks.org/spec/git-ns/repo/list/0.1";
+pub const GIT_NS_REPO_LIST_TYPE: &str = <repo_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 impl VtcClient {
     /// Sign one `git-ns/*` document as `key` and send it; returns the

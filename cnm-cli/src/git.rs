@@ -1685,7 +1685,6 @@ async fn run_task(
             let code = dialoguer::Password::new()
                 .with_prompt("Claim code (the administrator sent it separately)")
                 .interact()?;
-            let client = anon();
             let type_uri = vtc_client::git_ns::STEP_UP_PASSKEY_REDEEM_START_TYPE;
             let payload = json!({ "token": token, "claimCode": code.trim() });
             let doc = client.git_ns_sign(type_uri, &payload, &key).await?;
@@ -1741,7 +1740,7 @@ async fn run_task(
                      told, with your justification, and the grant stays flagged until one of \
                      them ratifies or revokes it.{RESET}"
             );
-            let v = send_with_step_up(&client, &target.base, type_uri, &doc, &did, &key).await?;
+            let v = send_with_step_up(client, &target.base, type_uri, &doc, &did, &key).await?;
             show(&v)
         }
         GitCommands::Ratify {

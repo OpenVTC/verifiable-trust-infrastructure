@@ -561,10 +561,10 @@ same way in each case. An unsigned document is refused `proofRequired`.
 | `git-ns/view/0.5` (`scope: administrator`) | every record and reason in the administered namespaces (0.4's response shape) | `cnm git view --admin` |
 | `git-ns/view/0.5` (`breakGlass: true`) | only break-glass records, ratified ones included, and the namespaces holding them | `cnm git break-glass-list` |
 
-These specifications (trustoverip/dtgwg-trust-tasks-tf#659) are served ahead
-of their `trust-tasks-rs` release on hand-written stand-ins; each handler
-refuses an unsigned document itself until the registry can declare the
-proof requirement to the spine.
+These specifications (trustoverip/dtgwg-trust-tasks-tf#659) are the generated
+`trust_tasks_rs::specs::git_ns::{view::v0_5, namespace::list::v0_1,
+repo::list::v0_1}` (trust-tasks-rs 0.23.4), which declare the proof REQUIRED;
+the dispatch spine refuses an unsigned document before a handler runs.
 
 ### Console projections
 

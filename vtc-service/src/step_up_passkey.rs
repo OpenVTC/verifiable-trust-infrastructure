@@ -64,6 +64,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
+use trust_tasks_rs::specs::auth::passkey::admin_list::v0_1 as admin_list;
 use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2 as invite;
 use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
 use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
@@ -86,7 +87,6 @@ use crate::auth::session::now_epoch;
 use crate::error::TaskError;
 use crate::install::claim_secret;
 use crate::server::AppState;
-use crate::trust_tasks::passkey_admin_list_v0_1 as admin_list;
 
 /// Wrong claim codes an invite survives. On the fifth it is invalidated
 /// (`redeem/start` 0.1, step 2).
@@ -314,7 +314,7 @@ pub async fn admin_list(
     let subject = payload.subject.as_str();
     let unknown = || {
         TaskError::declared(
-            codes::SUBJECT_UNKNOWN,
+            codes::SUBJECT_UNKNOWN.code,
             AppError::NotFound("no such member within your authority".into()),
         )
     };
@@ -331,9 +331,9 @@ pub async fn admin_list(
     if !within {
         return Err(unknown());
     }
-    if payload.purpose != admin_list::Purpose::StepUp {
+    if payload.purpose != admin_list::PayloadPurpose::StepUp {
         return Err(TaskError::declared(
-            codes::PURPOSE_NOT_SUPPORTED,
+            codes::PURPOSE_NOT_SUPPORTED.code,
             AppError::Forbidden(
                 "this community lists only members' step-up passkeys to administrators; a \
                  session passkey is listed to its owner (auth/passkey/list)"
@@ -348,7 +348,7 @@ pub async fn admin_list(
                 .is_some();
         return Err(if known {
             TaskError::declared(
-                codes::SUBJECT_NOT_MEMBER,
+                codes::SUBJECT_NOT_MEMBER.code,
                 AppError::Forbidden(
                     "the subject is not a current member; their step-up passkeys answer nothing"
                         .into(),
@@ -373,7 +373,6 @@ pub async fn admin_list(
             Some((cred_hex(p), n))
         })
         .collect();
-    let rfc3339 = |t: DateTime<Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let mut metas = Vec::new();
     for (_, v) in ks.prefix_iter_raw(b"meta:".to_vec()).await? {
         if let Ok(meta) = serde_json::from_slice::<CredentialMeta>(&v)
@@ -385,20 +384,33 @@ pub async fn admin_list(
     // Newest first, as the specification asks: one enrolled a moment ago by
     // someone else shows at the top rather than under the legitimate ones.
     metas.sort_by_key(|m| std::cmp::Reverse(m.registered_at));
-    let credentials = metas
+    // Built as JSON, not the generated `ListedCredential`/`Response` structs
+    // directly: their members are validated newtypes (`registeredAt` a
+    // `DateTime<Utc>`, `credentialId` a non-empty string, …), and this is the
+    // one place that already holds those shapes as plain `String`/`DateTime`
+    // — the same route `git_ns::wire` takes for its own generated responses.
+    let credentials: Vec<Value> = metas
         .into_iter()
-        .map(|m| admin_list::ListedCredential {
-            sign_count: counters.get(&m.credential_id).copied(),
-            credential_id: m.credential_id,
-            device_label: m.device_label,
-            registered_at: rfc3339(m.registered_at),
-            last_used_at: m.last_used_at.map(rfc3339),
+        .map(|m| {
+            let sign_count = counters.get(&m.credential_id).copied();
+            json!({
+                "credentialId": m.credential_id,
+                "deviceLabel": m.device_label,
+                "registeredAt": m.registered_at,
+                "lastUsedAt": m.last_used_at,
+                "signCount": sign_count,
+            })
         })
         .collect();
-    Ok(admin_list::Response {
-        subject: subject.to_string(),
-        purpose: admin_list::Purpose::StepUp,
-        credentials,
+    let response = json!({
+        "subject": subject,
+        "purpose": "stepUp",
+        "credentials": credentials,
+    });
+    serde_json::from_value(response).map_err(|e| {
+        TaskError::from(AppError::Internal(format!(
+            "auth/passkey/admin-list response: {e}"
+        )))
     })
 }
 

@@ -18,6 +18,7 @@
 //! | `admin-list` | an administrator with authority over the member — community-wide, or scoped to a context the member's entry names | their ACL row |
 
 use serde_json::Value;
+use trust_tasks_rs::specs::auth::passkey::admin_list::v0_1 as admin_list;
 use trust_tasks_rs::specs::auth::passkey::enroll::invite::v0_2 as invite;
 use trust_tasks_rs::specs::auth::passkey::enroll::redeem::finish::v0_1 as redeem_finish;
 use trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1 as redeem_start;
@@ -29,7 +30,6 @@ use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, reject_with, reject_with_code, success_response,
     task_error_to_reject,
 };
-use super::passkey_admin_list_v0_1 as admin_list;
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
 use crate::server::AppState;
 
@@ -42,9 +42,7 @@ pub(crate) const REVOKE_START_TYPE: &str =
     <revoke_start::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 pub(crate) const REVOKE_FINISH_TYPE: &str =
     <revoke_finish::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-/// TODO(trust-tasks release carrying trust-tasks #658): use the generated
-/// `admin_list::v0_1` type URI.
-pub(crate) const ADMIN_LIST_TYPE: &str = admin_list::TYPE_URI;
+pub(crate) const ADMIN_LIST_TYPE: &str = <admin_list::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Exactly what [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[
@@ -222,10 +220,9 @@ async fn handle_revoke_finish(
 }
 
 /// `auth/passkey/admin-list/0.1`: an administrator lists one member's step-up
-/// passkeys. The specification requires a proof; this build's registry does
-/// not publish it yet, so the spine cannot enforce that and this handler does
-/// (TODO(trust-tasks release carrying trust-tasks #658): the spine's policy
-/// check then refuses it first, with the same code).
+/// passkeys. The specification declares its proof REQUIRED, and the spine's
+/// policy check (`dispatch_trust_task_validated`, off the published registry)
+/// refuses an unsigned document before this handler runs.
 ///
 /// A signer that does not resolve to an administrator — no ACL row, an
 /// expired one, or a role other than admin — is `notAdministrator`, decided
@@ -235,9 +232,6 @@ async fn handle_admin_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if ctx.verified_signer.is_none() {
-        return reject_with(&doc, RejectReason::ProofRequired);
-    }
     let actor = match admin_signer(state, ctx, &doc).await {
         Ok(a) => a,
         // A storage failure is not a refusal of standing.
@@ -245,22 +239,15 @@ async fn handle_admin_list(
         Err(_) => {
             return reject_with_code(
                 &doc,
-                super::helpers::extended_code(admin_list::error_codes::NOT_ADMINISTRATOR),
+                super::helpers::extended_code(admin_list::error_codes::NOT_ADMINISTRATOR.code),
                 "only an administrator lists a member's passkeys",
                 None,
             );
         }
     };
-    let payload = match admin_list::Payload::parse(&doc.payload) {
+    let payload: admin_list::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
-        Err(reason) => {
-            return reject_with(
-                &doc,
-                RejectReason::MalformedRequest {
-                    reason: format!("payload: {reason}"),
-                },
-            );
-        }
+        Err(reject) => return reject,
     };
     match crate::step_up_passkey::admin_list(state, &actor, &payload).await {
         Ok(response) => success_response(&doc, response),
@@ -1115,13 +1102,17 @@ mod tests {
     }
 
     /// The listing's credentials, checked against the published response
-    /// shape (the stand-in's `deny_unknown_fields` is the schema's
-    /// `additionalProperties: false`).
+    /// shape (the generated `Response`'s `deny_unknown_fields` is the
+    /// schema's `additionalProperties: false`).
     fn listed(out: &TrustTaskOutcome, what: &str) -> Vec<admin_list::ListedCredential> {
         let payload = ok(out, what);
         let response: admin_list::Response =
             serde_json::from_value(payload).unwrap_or_else(|e| panic!("{what}: {e}"));
-        assert_eq!(response.purpose, admin_list::Purpose::StepUp, "{what}");
+        assert_eq!(
+            response.purpose,
+            admin_list::ResponsePurpose::StepUp,
+            "{what}"
+        );
         response.credentials
     }
 
@@ -1150,8 +1141,11 @@ mod tests {
             let listed_now = listed(&out, "the listing");
             assert_eq!(listed_now.len(), 1, "{t:?}");
             let c = &listed_now[0];
-            assert_eq!(c.credential_id, cred);
-            assert_eq!(c.device_label.as_deref(), Some("Carol's laptop"));
+            assert_eq!(c.credential_id.as_str(), cred);
+            assert_eq!(
+                c.device_label.as_deref().map(String::as_str),
+                Some("Carol's laptop")
+            );
             assert!(c.last_used_at.is_none(), "never used yet");
             let enrolled_count = c.sign_count.expect("the counter is disclosed");
             // Nothing but metadata: no public key, no user handle, no ceremony.
@@ -1175,7 +1169,11 @@ mod tests {
             // No side effects: listing again answers the same, and wrote no
             // audit row.
             let again = send(&fix, t, &fix.admin, ADMIN_LIST_TYPE, list_of(&member)).await;
-            assert_eq!(listed(&again, "again"), listed_now, "{t:?}");
+            assert_eq!(
+                serde_json::to_value(listed(&again, "again")).unwrap(),
+                serde_json::to_value(&listed_now).unwrap(),
+                "{t:?}"
+            );
             assert_eq!(audited_stages(&fix).await, ["invited", "registered"]);
 
             // A use shows up: last used, and the counter moved.
@@ -1208,7 +1206,7 @@ mod tests {
             let out = send(&fix, t, &scoped, ADMIN_LIST_TYPE, list_of(&member)).await;
             let got = listed(&out, "a scoped administrator in the member's context");
             assert_eq!(got.len(), 1, "{t:?}");
-            assert_eq!(got[0].credential_id, cred);
+            assert_eq!(got[0].credential_id.as_str(), cred);
         }
     }
 
@@ -1222,7 +1220,7 @@ mod tests {
                 (&fix.other, "another member"),
             ] {
                 let out = send(&fix, t, from, ADMIN_LIST_TYPE, list_of(&member)).await;
-                assert_code(&out, admin_list::error_codes::NOT_ADMINISTRATOR, what);
+                assert_code(&out, admin_list::error_codes::NOT_ADMINISTRATOR.code, what);
             }
             // Decided before the subject: a non-administrator asking about
             // nobody gets the same answer.
@@ -1236,14 +1234,14 @@ mod tests {
             .await;
             assert_code(
                 &out,
-                admin_list::error_codes::NOT_ADMINISTRATOR,
+                admin_list::error_codes::NOT_ADMINISTRATOR.code,
                 "no oracle",
             );
             let stranger = Party::new();
             let out = send(&fix, t, &stranger, ADMIN_LIST_TYPE, list_of(&member)).await;
             assert_code(
                 &out,
-                admin_list::error_codes::NOT_ADMINISTRATOR,
+                admin_list::error_codes::NOT_ADMINISTRATOR.code,
                 "no ACL row",
             );
         }
@@ -1265,7 +1263,7 @@ mod tests {
             let outside = send(&fix, t, &scoped, ADMIN_LIST_TYPE, list_of(&member)).await;
             assert_code(
                 &outside,
-                admin_list::error_codes::SUBJECT_UNKNOWN,
+                admin_list::error_codes::SUBJECT_UNKNOWN.code,
                 "a member in another context",
             );
             let nobody = send(
@@ -1278,7 +1276,7 @@ mod tests {
             .await;
             assert_code(
                 &nobody,
-                admin_list::error_codes::SUBJECT_UNKNOWN,
+                admin_list::error_codes::SUBJECT_UNKNOWN.code,
                 "nobody at all",
             );
             // Neither later code is ever an answer about them.
@@ -1292,7 +1290,7 @@ mod tests {
             .await;
             assert_code(
                 &session,
-                admin_list::error_codes::SUBJECT_UNKNOWN,
+                admin_list::error_codes::SUBJECT_UNKNOWN.code,
                 "authority before purpose",
             );
         }
@@ -1311,7 +1309,11 @@ mod tests {
                 list_of("did:key:z6MkNotAMember"),
             )
             .await;
-            assert_code(&out, admin_list::error_codes::SUBJECT_UNKNOWN, "unknown");
+            assert_code(
+                &out,
+                admin_list::error_codes::SUBJECT_UNKNOWN.code,
+                "unknown",
+            );
 
             let out = send(
                 &fix,
@@ -1323,7 +1325,7 @@ mod tests {
             .await;
             assert_code(
                 &out,
-                admin_list::error_codes::PURPOSE_NOT_SUPPORTED,
+                admin_list::error_codes::PURPOSE_NOT_SUPPORTED.code,
                 "session credentials are their owner's to list",
             );
 
@@ -1342,7 +1344,7 @@ mod tests {
             .await;
             assert_code(
                 &out,
-                admin_list::error_codes::SUBJECT_NOT_MEMBER,
+                admin_list::error_codes::SUBJECT_NOT_MEMBER.code,
                 "a member who has left",
             );
 
