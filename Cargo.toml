@@ -403,7 +403,7 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # 0.23.1 alongside it — still on `trust-tasks-rs = "^0.23"`, so the bump does
 # not split the graph — and is pinned to match rather than left on the bare
 # `0.23` line.
-trust-tasks-rs = { version = "0.23.1", default-features = false, features = [
+trust-tasks-rs = { version = "0.23.3", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

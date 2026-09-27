@@ -2121,8 +2121,10 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_SERVICES_ENABLE_1_0 => services::handle_enable
         [ Mutating None false ],
+    // 1.0 and 1.1 share the handler: 1.1 only adds the optional drain window.
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0 => services::handle_update
+    vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_0 | vta_sdk::trust_tasks::TASK_SERVICES_UPDATE_1_1
+        => services::handle_update
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_SERVICES_DISABLE_1_0 => services::handle_disable
@@ -2136,6 +2138,10 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0 => services::handle_drain_cancel
         [ Destructive None false ],
+    // A contact log of other parties' DIDs — metadata, read-only.
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_SERVICES_REPORT_0_1 => services::handle_report
+        [ None Metadata false ],
     // ─── Contexts slice ──────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0 => contexts::handle_list
         [ None Metadata false ],

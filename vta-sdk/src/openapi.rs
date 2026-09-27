@@ -48,6 +48,7 @@ use utoipa::openapi::schema::{
 use utoipa::openapi::{Ref, RefOr};
 
 use crate::protocols::vetting::vetters;
+use trust_tasks_rs::specs::acl::revoke as acl_revoke;
 use trust_tasks_rs::specs::credential_exchange;
 use trust_tasks_rs::specs::did_management::did::register;
 use trust_tasks_rs::specs::git_ns::view as git_ns_view;
@@ -123,6 +124,8 @@ macro_rules! spec_types {
 }
 
 spec_types! {
+    /// `acl/revoke/0.1#response` — also the body of a VTC's `DELETE /v1/acl/{did}`.
+    AclRevoke01Response(acl_revoke::v0_1::Response);
     /// `vtc/invitations/deliver/0.1` payload.
     InvitationDeliver01Payload(invitation_deliver::v0_1::Payload);
     /// `vtc/invitations/deliver/0.1#response`.
