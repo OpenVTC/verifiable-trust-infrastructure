@@ -177,7 +177,12 @@ template without explicit scope is **context → global → builtin**:
     methods and a `DIDCommMessaging` service so devices, VTAs, and mediators
     can authcrypt `push/*` Trust Tasks (register / provision / wake) to it.
     Requires `URL` (the gateway's DIDComm endpoint). Provisioned like the
-    mediator; implements the push wake-up binding.
+    mediator; implements the push wake-up binding. The gateway also serves
+    Trust Tasks over TSP and HTTPS, so it can optionally advertise a
+    `TSPTransport` service naming the same mediator DID — supply
+    `SERVICE_TSP`, built by `vta_sdk::did_templates::tsp_service(mediator_did)`,
+    same null-pruning slot and shape as `vtc-host`'s messaging transports.
+    Omit it and the gateway advertises DIDComm alone, unchanged from before.
   - `vta-admin` — did:key admin DID for provision-integration admin rollover.
   - `vtc-host` — Verifiable Trust Community (VTC) service identity. Mints
     the did:webvh under which a `vtc-service` binary operates and advertises

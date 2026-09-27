@@ -226,3 +226,8 @@ export type GitNsActivityItem = Schemas["GitNsActivityItem"];
 export type GitNsBreakGlassMark = Schemas["GitNsBreakGlassMark"];
 export type GitNsBreakGlassItem = Schemas["GitNsBreakGlassItem"];
 export type GitNsBreakGlassList = Schemas["GitNsBreakGlassList"];
+
+// Members' step-up passkeys: the console's listing. Issuing, redeeming and
+// revoking one are Trust Tasks, typed in `step-up-passkeys.ts`.
+export type StepUpPasskeyCredential = Schemas["StepUpPasskeyCredential"];
+export type StepUpPasskeyList = Schemas["StepUpPasskeyList"];

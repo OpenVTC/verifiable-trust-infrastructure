@@ -11097,6 +11097,7 @@ version = "0.6.18"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
+ "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
  "affinidi-secrets-resolver",
@@ -11111,7 +11112,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing-subscriber",
- "trust-tasks-proof",
  "trust-tasks-rs",
  "uniffi",
  "vta-sdk",

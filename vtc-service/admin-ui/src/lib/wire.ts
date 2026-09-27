@@ -300,6 +300,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/step-up-passkeys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["stepUpPasskeyList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/audit": {
         parameters: {
             query?: never;
@@ -5912,6 +5928,26 @@ export interface components {
             field: string;
             truthy?: boolean | null;
         };
+        /** @description What the console lists about a step-up passkey. */
+        StepUpPasskeyCredential: {
+            /** @description Credential id, hex. */
+            credentialId: string;
+            deviceLabel?: string | null;
+            /** @description The administrator whose invite it came from. */
+            invitedBy: string;
+            /**
+             * Format: date-time
+             * @description The last step-up it answered.
+             */
+            lastUsedAt?: string | null;
+            /** Format: date-time */
+            registeredAt: string;
+            /** @description The member it answers step-ups for. */
+            subject: string;
+        };
+        StepUpPasskeyList: {
+            credentials: components["schemas"]["StepUpPasskeyCredential"][];
+        };
         /**
          * @description One answer an applicant gave to the manifest's `requestedAttributes`: a
          *     claim type and its value, as they sent it.
@@ -7802,6 +7838,36 @@ export interface operations {
             };
             /** @description credential_id not registered for this admin */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    stepUpPasskeyList: {
+        parameters: {
+            query?: {
+                /** @description Only this member's step-up passkeys. */
+                subject?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Members' step-up passkeys, newest first per member */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StepUpPasskeyList"];
+                };
+            };
+            /** @description Not a community administrator */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
