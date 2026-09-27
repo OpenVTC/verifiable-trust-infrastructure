@@ -23,9 +23,8 @@
 //!    same connection.
 //! 3. `request_tsp` correlates its own reply, and an unrelated push is parked for
 //!    `receive_next_tsp` rather than eaten.
-//! 4. A `VtaClient` with the leg attached reports TSP for trust tasks and
-//!    DIDComm for protocol messages — the per-surface model, not a third
-//!    client-wide transport.
+//! 4. A `VtaClient` with the leg attached reports TSP for its Trust Tasks —
+//!    every client operation — while the DIDComm session stays as the socket.
 //! 5. Attaching a *separate* TSP session for a DID on the mediator it is already
 //!    connected to is refused: the defect is unrepresentable through the API.
 //!
@@ -164,9 +163,8 @@ async fn a_didcomm_session_receives_tsp_on_its_own_socket() {
 /// Both legs, one session, one socket: a DIDComm send and a TSP send from the
 /// same connection.
 ///
-/// This is the property that makes per-surface routing possible — `rpc` on
-/// DIDComm and `dispatch_trust_task` on TSP without the two fighting over the
-/// DID's single websocket slot.
+/// This is the property that lets a DIDComm session carry TSP — DIDComm and
+/// TSP frames without the two fighting over the DID's single websocket slot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_session_carries_both_protocols() {
     common::init_tracing();
@@ -334,14 +332,11 @@ async fn request_tsp_correlates_its_reply_and_parks_the_push() {
     assert_eq!(doc_id(&push), "urn:uuid:unrelated-push");
 }
 
-/// The per-surface model at the `VtaClient` level: trust tasks on TSP, protocol
-/// messages on DIDComm, on one client.
-///
-/// A single "which transport is this client on" answer is wrong by construction
-/// — TSP carries Trust Tasks only, so selecting it client-wide would break
-/// `key-management/1.0/*`, `create_did_webvh` and `list_contexts`.
+/// At the `VtaClient` level: attaching the TSP leg moves the client's Trust
+/// Tasks — every operation it has — to TSP, while the DIDComm session stays as
+/// the socket.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_client_reports_tsp_for_trust_tasks_and_didcomm_for_protocol_messages() {
+async fn a_client_with_the_leg_reports_tsp_for_trust_tasks() {
     common::init_tracing();
 
     let (client_did, client_priv) = did_key_from_seed(0x77);
@@ -376,11 +371,6 @@ async fn a_client_reports_tsp_for_trust_tasks_and_didcomm_for_protocol_messages(
         client.trust_task_transport(),
         SurfaceTransport::Tsp,
         "trust tasks must move to TSP"
-    );
-    assert_eq!(
-        client.protocol_message_transport(),
-        SurfaceTransport::Didcomm,
-        "protocol messages must stay on DIDComm — TSP has no dispatcher for them"
     );
 
     // Attaching a *separate* TSP session for this DID on the mediator it is

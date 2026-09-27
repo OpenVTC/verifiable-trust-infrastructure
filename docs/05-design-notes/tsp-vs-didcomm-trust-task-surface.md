@@ -76,7 +76,10 @@ Two constraints from the existing direction bound the answer:
    relitigate that.
 2. **Do not fork transport per-surface within one deployment.** TSP already
    carries only Trust Tasks while DIDComm carries protocol messages on the same
-   socket; that split is load-bearing and understood. Adding "…except Trust
+   socket; that split is load-bearing and understood. (Since superseded: the
+   protocol-message surface has been retired, so there is one Trust-Task
+   surface and the DIDComm session remains only as TSP's socket — see
+   `tsp-enablement.md` §3.3a.) Adding "…except Trust
    Tasks go back to DIDComm when the mediator count is one" is a third rule that
    fragments the stack and is exactly the kind of special-case that breeds the
    next silent-drop bug.

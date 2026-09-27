@@ -69,7 +69,9 @@ pub fn superseded(route: &'static str, successor: &'static str) -> HeaderMap {
 //
 // A route absent from this table is absent on purpose: `/auth`, `/bootstrap`,
 // `/backup` blob streaming, `/metrics` and `/.well-known` are genuinely REST
-// and are not going anywhere. (`/keys/import/wrapping-key` was listed here as
+// and are not going anywhere. So are the passkey-VM enrolment routes, which are
+// the WebAuthn exception and carry a row in `REST_EXCEPTIONS` below rather
+// than here. (`/keys/import/wrapping-key` was listed here as
 // REST too; it is the `keys/import-wrapping-key/0.1` Trust Task now, and the
 // route is removed rather than superseded.) `/services/*` was the last block
 // here; its routes are removed, and service management is the `vta/services/*`
@@ -420,6 +422,82 @@ const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
         "/trust-tasks",
     ),
 ];
+
+// ─── REST routes kept on purpose ───────────────────────────────────────────
+
+/// A REST route that stays REST because the protocol it serves is not one a
+/// Trust Task can carry, and so has no successor to be superseded by.
+///
+/// The standing rule is that every remote operation is a Trust Task, carried
+/// over TSP, DIDComm or HTTPS. The only transport restriction it permits is a
+/// foreign-protocol interface: OAuth / WebAuthn ceremonies and DID resolution
+/// files. A row here is that exception made explicit, with the reason beside
+/// it, so a route that looks like an unconverted legacy route can be told
+/// apart from one that is REST by design.
+#[derive(Debug, Clone, Copy)]
+pub struct RestException {
+    /// HTTP method, upper-case.
+    pub method: &'static str,
+    /// The route's axum `MatchedPath` pattern.
+    pub path: &'static str,
+    /// The foreign protocol that makes the route REST.
+    pub protocol: &'static str,
+    /// The Trust Task a DID-holding client uses for the same operation, when
+    /// one exists. The route is kept for the caller that cannot sign one.
+    pub twin: Option<&'static str>,
+    /// Why this route cannot be a Trust Task, in one line.
+    pub reason: &'static str,
+}
+
+/// Why the passkey-VM routes stay REST.
+const PASSKEY_VM_REASON: &str = "passkey enrolment is a WebAuthn ceremony driven from a browser \
+     (the VTA auth portal, examples/vta-auth-demo) that holds only the bearer token \
+     passkey-login issued, and no DID key with which to sign a Trust Task";
+
+/// The REST exceptions.
+///
+/// Pinned two ways: `every_rest_exception_names_a_live_route`
+/// (`tests/api_integration.rs`) fails when a row outlives its route, and
+/// `no_route_is_both_an_exception_and_superseded` below fails when a route is
+/// declared both REST-by-design and on its way out.
+///
+/// Only the WebAuthn exception is tabulated so far; the other genuinely-REST
+/// families are named in prose above the superseded-route table.
+const REST_EXCEPTIONS: &[RestException] = &[
+    RestException {
+        method: "POST",
+        path: "/did/verification-methods/passkey/challenge",
+        protocol: "WebAuthn",
+        twin: Some(trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1),
+        reason: PASSKEY_VM_REASON,
+    },
+    RestException {
+        method: "POST",
+        path: "/did/verification-methods/passkey",
+        protocol: "WebAuthn",
+        twin: Some(trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1),
+        reason: PASSKEY_VM_REASON,
+    },
+    RestException {
+        method: "GET",
+        path: "/did/verification-methods/passkey",
+        protocol: "WebAuthn",
+        twin: Some(trust_tasks::TASK_PASSKEY_VMS_LIST_0_1),
+        reason: PASSKEY_VM_REASON,
+    },
+    RestException {
+        method: "DELETE",
+        path: "/did/verification-methods/passkey/{fragment}",
+        protocol: "WebAuthn",
+        twin: Some(trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1),
+        reason: PASSKEY_VM_REASON,
+    },
+];
+
+/// The REST-exception table, for tests that assert on its contents.
+pub fn rest_exceptions_table() -> &'static [RestException] {
+    REST_EXCEPTIONS
+}
 
 /// Middleware: tag any response served by a superseded REST route.
 ///
@@ -829,5 +907,45 @@ mod superseded_task_tests {
         let before = seen.len();
         seen.dedup();
         assert_eq!(before, seen.len(), "a URI is listed more than once");
+    }
+}
+
+#[cfg(test)]
+mod rest_exception_tests {
+    use super::*;
+
+    #[test]
+    fn no_route_is_both_an_exception_and_superseded() {
+        // A row in both tables would say "REST by design" and "migrate away"
+        // about the same route, and `mark_superseded` would stamp a
+        // `Deprecation` header on a route that is not going anywhere.
+        for e in REST_EXCEPTIONS {
+            assert!(
+                !SUPERSEDED
+                    .iter()
+                    .any(|(m, p, _, _)| *m == e.method && *p == e.path),
+                "`{} {}` is listed as a REST exception and as superseded",
+                e.method,
+                e.path
+            );
+        }
+    }
+
+    #[test]
+    fn every_exception_says_why() {
+        for e in REST_EXCEPTIONS {
+            assert!(
+                !e.protocol.is_empty(),
+                "`{} {}` names no protocol",
+                e.method,
+                e.path
+            );
+            assert!(
+                !e.reason.is_empty(),
+                "`{} {}` gives no reason",
+                e.method,
+                e.path
+            );
+        }
     }
 }

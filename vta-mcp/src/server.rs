@@ -1027,7 +1027,6 @@ impl VtaMcp {
         let transports = match self.agent.as_ref().map(|a| a.client()) {
             Some(client) => json!({
                 "trustTasks": client.trust_task_transport().to_string(),
-                "protocolMessages": client.protocol_message_transport().to_string(),
             }),
             None => Value::Null,
         };

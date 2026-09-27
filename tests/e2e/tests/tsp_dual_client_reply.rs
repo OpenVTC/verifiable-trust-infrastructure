@@ -82,7 +82,7 @@ async fn a_multiplexed_dual_client_receives_the_vta_trust_task_reply() {
     .await
     .expect("dual DIDComm+TSP client connects and forms its §7.2.2 relationship");
 
-    // Per-surface transport: trust tasks on TSP, protocol messages on DIDComm.
+    // Trust Tasks ride the TSP leg; the DIDComm session is only its socket.
     // If this were DIDComm the grant would never touch the leg under test.
     assert_eq!(client.trust_task_transport(), SurfaceTransport::Tsp);
 

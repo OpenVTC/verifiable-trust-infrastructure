@@ -283,11 +283,7 @@ impl VtaClient {
     /// Apply a generic update to an existing webvh DID, identified by the DID
     /// itself.
     ///
-    /// Sends canonical `webvh/dids/update/1.0` on **every** transport, so this
-    /// is the only form of the call that works over TSP: TSP carries the
-    /// Trust-Task surface and nothing else, and the legacy protocol message
-    /// [`update_did_webvh`](Self::update_did_webvh) has no dispatcher behind it
-    /// there.
+    /// Sends canonical `webvh/dids/update/1.0` on **every** transport.
     ///
     /// The canonical task keys on the DID, not `(context_id, scid)` — which is
     /// what kept this call on the legacy message after #861. Callers already
