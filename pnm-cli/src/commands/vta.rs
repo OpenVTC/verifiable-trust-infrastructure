@@ -183,7 +183,7 @@ pub(crate) async fn run_offline(
                 }
                 Err(e) => {
                     eprintln!("Error: {e}");
-                    std::process::exit(crate::exit::FAILURE);
+                    std::process::exit(crate::exit::CONFIG);
                 }
             }
             true

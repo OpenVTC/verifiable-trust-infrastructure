@@ -3,11 +3,12 @@ use vta_sdk::session::{SessionStore, TokenStatus};
 
 pub use vta_sdk::session::SessionInfo;
 
-const SERVICE_NAME: &str = "pnm-cli";
-
-fn store() -> SessionStore {
+/// The session store for this profile. Under `PNM_HOME` both the directory
+/// and the keyring service are the profile's own, so it cannot read or
+/// overwrite a credential in the real profile.
+pub(crate) fn store() -> SessionStore {
     SessionStore::new(
-        SERVICE_NAME,
+        &vta_sdk::agent_connect::pnm_service_name(),
         crate::config::config_dir().expect("could not determine config directory"),
     )
 }

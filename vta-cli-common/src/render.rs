@@ -204,13 +204,39 @@ pub fn color_enabled() -> bool {
 
 // ── ANSI constants ──────────────────────────────────────────────────
 
-pub const BOLD: &str = "\x1b[1m";
-pub const DIM: &str = "\x1b[2m";
-pub const GREEN: &str = "\x1b[32m";
-pub const RED: &str = "\x1b[31m";
-pub const CYAN: &str = "\x1b[36m";
-pub const YELLOW: &str = "\x1b[33m";
-pub const RESET: &str = "\x1b[0m";
+/// An ANSI escape that writes itself only while [`color_enabled`].
+///
+/// Every `{GREEN}…{RESET}` in a format string goes through `Display`, so
+/// gating here is what makes `NO_COLOR` (and a non-terminal) reach the
+/// hundreds of hand-coloured lines, not only the table renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ansi(&'static str);
+
+impl Ansi {
+    /// The raw escape sequence, whatever the colour setting.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        self.0
+    }
+}
+
+impl std::fmt::Display for Ansi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if color_enabled() {
+            f.write_str(self.0)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub const BOLD: Ansi = Ansi("\x1b[1m");
+pub const DIM: Ansi = Ansi("\x1b[2m");
+pub const GREEN: Ansi = Ansi("\x1b[32m");
+pub const RED: Ansi = Ansi("\x1b[31m");
+pub const CYAN: Ansi = Ansi("\x1b[36m");
+pub const YELLOW: Ansi = Ansi("\x1b[33m");
+pub const RESET: Ansi = Ansi("\x1b[0m");
 
 // ── Error reporting ─────────────────────────────────────────────────
 

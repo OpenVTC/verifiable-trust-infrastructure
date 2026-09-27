@@ -82,29 +82,16 @@ async fn main() {
         std::process::exit(exit::USAGE);
     }
 
-    // PNM_HOME isolates a whole profile — config, sessions, pending setups
-    // and bootstrap secrets. It is implemented by pointing the platform
-    // lookups at it rather than by threading a path through every store,
-    // so nothing can be left behind in the real profile by a store that
-    // was not updated. Surrounding tooling already sets HOME and
-    // XDG_CONFIG_HOME alongside PNM_HOME to get this effect by hand.
-    if let Some(home) = std::env::var_os("PNM_HOME")
-        && !home.is_empty()
+    // PNM_HOME isolates a whole profile: config, sessions, pending setups and
+    // bootstrap secrets are rooted in it (`config::config_dir`) and the
+    // keyring service carries a digest of it (`auth::store`). Resolved here
+    // only to fail early and clearly on an unusable path, rather than on the
+    // first store that touches it.
+    if vta_sdk::agent_connect::pnm_home().is_some()
+        && let Err(e) = config::config_dir()
     {
-        let config = std::path::Path::new(&home).join(".config");
-        if let Err(e) = std::fs::create_dir_all(&config) {
-            eprintln!(
-                "Error: PNM_HOME={} could not be created: {e}",
-                home.to_string_lossy()
-            );
-            std::process::exit(exit::CONFIG);
-        }
-        // SAFETY: set on the main thread, before any store, keyring or
-        // worker task has read HOME or XDG_CONFIG_HOME.
-        unsafe {
-            std::env::set_var("HOME", &home);
-            std::env::set_var("XDG_CONFIG_HOME", &config);
-        }
+        eprintln!("Error: PNM_HOME is not usable as a profile directory: {e}");
+        std::process::exit(exit::CONFIG);
     }
 
     let cli = Cli::parse();
@@ -220,7 +207,7 @@ async fn main() {
             let result = commands::setup::run(&mut pnm_config, setup_cmd, name, overwrite).await;
             if let Err(e) = result {
                 vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(exit::FAILURE);
+                std::process::exit(exit_code_for(e.as_ref()));
             }
             return;
         }
@@ -232,7 +219,7 @@ async fn main() {
                 Some(Ok(())) => return,
                 Some(Err(e)) => {
                     vta_cli_common::render::print_cli_error(e.as_ref());
-                    std::process::exit(exit::FAILURE);
+                    std::process::exit(exit_code_for(e.as_ref()));
                 }
                 None => {
                     command = Commands::Bootstrap { command: bs_cmd };
@@ -245,7 +232,7 @@ async fn main() {
             } else {
                 if let Err(e) = commands::did_templates::run_offline(&dt_cmd) {
                     vta_cli_common::render::print_cli_error(e.as_ref());
-                    std::process::exit(exit::FAILURE);
+                    std::process::exit(exit_code_for(e.as_ref()));
                 }
                 return;
             }
@@ -267,7 +254,7 @@ async fn main() {
             // `~/.config/pnm/config.toml`. No VTA round-trip.
             if let Err(e) = commands::config::run_resolver_url(&mut pnm_config, url, unset).await {
                 vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(exit::FAILURE);
+                std::process::exit(exit_code_for(e.as_ref()));
             }
             return;
         }
@@ -281,9 +268,11 @@ async fn main() {
     // into it.
     let (slug, vta_config) = match config::resolve_vta(vta_override.as_deref(), &pnm_config) {
         Ok((slug, cfg)) => (slug, cfg.clone()),
+        // No VTA configured, or the one named is not in this profile: the
+        // profile cannot serve the command, which is a configuration fault.
         Err(e) => {
             eprintln!("Error: {e}");
-            std::process::exit(exit::FAILURE);
+            std::process::exit(exit::CONFIG);
         }
     };
     let keyring_key = config::vta_keyring_key(&slug);
@@ -316,7 +305,7 @@ async fn main() {
             Ok(c) => c,
             Err(e) => {
                 vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(exit::FAILURE);
+                std::process::exit(exit_code_for(e.as_ref()));
             }
         }
     } else {
