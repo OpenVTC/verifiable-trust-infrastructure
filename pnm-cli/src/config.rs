@@ -42,15 +42,32 @@ pub struct VtaConfig {
     pub mediator_did: Option<String>,
 }
 
-/// Returns `~/.config/pnm/`, creating it if it doesn't exist.
+/// Returns the profile directory — `$PNM_HOME` when set, otherwise
+/// `dirs::config_dir()/pnm` — creating it if it doesn't exist.
+///
+/// Every store (config, file-backed sessions, pending setups, bootstrap
+/// secrets) is rooted here, and the keyring service follows `PNM_HOME` too
+/// (see [`crate::auth`]), so a `PNM_HOME` profile shares nothing with the
+/// real one.
 pub fn config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let dir = dirs::config_dir()
-        .ok_or("could not determine config directory")?
-        .join("pnm");
+    let dir = vta_sdk::agent_connect::pnm_profile_dir()?;
     if !dir.exists() {
-        std::fs::create_dir_all(&dir)?;
+        create_private_dir(&dir)?;
     }
     Ok(dir)
+}
+
+/// Create `dir` (and its parents) readable by the owner only: it holds
+/// session and bootstrap secrets.
+fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
 }
 
 /// Returns `~/.config/pnm/config.toml`.

@@ -4,8 +4,7 @@
 //! `did.jsonl` logs to. Each entry is a `WebvhServerRecord` keyed by a
 //! short operator-chosen id (`"prod"`, `"staging"`) pointing at the
 //! server's DID. Resolution of the DID → transport endpoint is done
-//! lazily at publish/fetch time by the `WebvhTransport` in the parent
-//! module.
+//! lazily at publish/fetch time by `webvh_host::WebvhHostClient`.
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use chrono::Utc;
@@ -105,17 +104,10 @@ pub async fn list_webvh_servers(
     Ok(ListWebvhServersResultBody { servers })
 }
 
-/// Authenticate to the registered hosting server and relay its
-/// `/api/me/domains` view to the caller. Used by
-/// `pnm did-mgmt list-domains` and the interactive `--domain`
-/// prompt in `create-did` / `register-did`.
-///
-/// Only the REST transport is supported today — the v0.8
-/// `did-management/me/domains/...` task is REST-only on the
-/// hosting server side. For a server reached through the outbound
-/// seam we return an empty list and a `None` default so the CLI falls
-/// back to the server-side resolution chain rather than blocking the
-/// user.
+/// Relay the registered hosting server's `did-management/me/domains/0.1`
+/// view to the caller: the domains this VTA may mint into, and the default.
+/// Used by `pnm did-mgmt list-domains` and the interactive `--domain` prompt in
+/// `create-did` / `register-did`.
 pub async fn list_webvh_server_domains(
     deps: &crate::operations::did_webvh::WebvhDeps<'_>,
     auth: &AuthClaims,
@@ -140,67 +132,27 @@ pub async fn list_webvh_server_domains(
         )
     })?;
 
-    let identity = crate::operations::did_webvh::auth_cache::load_vta_webvh_signing_identity(
-        deps.keys_ks,
-        deps.imported_ks,
-        deps.contexts_ks,
-        deps.seed_store,
-        deps.audit,
-        vta_did_value,
-    )
-    .await?;
-    let auth_ctx = crate::operations::did_webvh::auth_cache::AuthContext {
-        webvh_ks: deps.webvh_ks,
-        identity: &identity,
-        locks: deps.auth_locks,
-    };
-
-    let transport = crate::operations::did_webvh::WebvhTransport::from_server_authenticated(
-        &server,
-        deps.did_resolver,
-        deps.didcomm_bridge,
-        &auth_ctx,
-        #[cfg(feature = "tsp")]
-        deps.tsp.clone(),
-    )
-    .await?;
-    let entries = match transport {
-        crate::operations::did_webvh::WebvhTransport::Rest(c) => {
-            let resp = c.list_my_domains().await?;
-            ListWebvhServerDomainsResultBody {
-                domains: resp
-                    .domains
-                    .into_iter()
-                    .map(|d| WebvhServerDomainEntry {
-                        name: d.name,
-                        default_domain: d.default_domain,
-                        status: d.status,
-                        label: d.label,
-                        // The host speaks Unix seconds; the canonical
-                        // DomainEntry speaks RFC 3339. An unrepresentable
-                        // timestamp becomes absent rather than epoch-zero,
-                        // which would read as "created in 1970".
-                        created_at: d.created_at.and_then(|secs| {
-                            chrono::DateTime::from_timestamp(secs as i64, 0)
-                                .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-                        }),
-                    })
-                    .collect(),
-                default: resp.default,
-            }
-        }
-        crate::operations::did_webvh::WebvhTransport::TrustTask { .. } => {
-            // A server reached through the seam has no `me/domains` op in the
-            // v0.8 surface — that is a legacy WebVH REST verb, not a Trust
-            // Task — so the CLI falls back to the server's resolution chain.
-            ListWebvhServerDomainsResultBody {
-                domains: vec![],
-                default: None,
-            }
-        }
+    let resp =
+        crate::operations::did_webvh::my_domains_on_server(deps, vta_did_value, &server).await?;
+    let entries = ListWebvhServerDomainsResultBody {
+        domains: resp
+            .domains
+            .into_iter()
+            .map(|d| WebvhServerDomainEntry {
+                name: d.name,
+                default_domain: d.default_domain.unwrap_or(false),
+                // The generated enum displays as the spec's string.
+                status: d.status.to_string(),
+                label: d.label,
+                created_at: Some(
+                    d.created_at
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                ),
+            })
+            .collect(),
+        default: resp.default,
     };
     info!(
-        channel = "rest",
         caller = %auth.did,
         server_id = %server_id,
         count = entries.domains.len(),
@@ -256,46 +208,8 @@ pub async fn reconcile_webvh_server_dids(
         )
     })?;
 
-    let identity = crate::operations::did_webvh::auth_cache::load_vta_webvh_signing_identity(
-        deps.keys_ks,
-        deps.imported_ks,
-        deps.contexts_ks,
-        deps.seed_store,
-        deps.audit,
-        vta_did_value,
-    )
-    .await?;
-    let auth_ctx = crate::operations::did_webvh::auth_cache::AuthContext {
-        webvh_ks: deps.webvh_ks,
-        identity: &identity,
-        locks: deps.auth_locks,
-    };
-    let transport = crate::operations::did_webvh::WebvhTransport::from_server_authenticated(
-        &server,
-        deps.did_resolver,
-        deps.didcomm_bridge,
-        &auth_ctx,
-        #[cfg(feature = "tsp")]
-        deps.tsp.clone(),
-    )
-    .await?;
-
-    let hosted = match transport {
-        crate::operations::did_webvh::WebvhTransport::Rest(c) => {
-            c.list_dids_for_owner(vta_did_value).await?
-        }
-        crate::operations::did_webvh::WebvhTransport::TrustTask { .. } => {
-            // Refuse rather than answer "nothing to report". `/api/dids` is
-            // REST-only on the host, and an empty diff here would read as
-            // "checked, all clean" — the one wrong answer this operation can
-            // give, because it is the answer an operator stops looking after.
-            return Err(AppError::Validation(format!(
-                "server `{server_id}` advertises no legacy WebVH REST endpoint, and the \
-                 host's DID listing is REST-only — this VTA cannot reconcile against it. \
-                 Register a REST endpoint for the server to use this command."
-            )));
-        }
-    };
+    let hosted =
+        crate::operations::did_webvh::list_dids_on_server(deps, vta_did_value, &server).await?;
 
     let all_local = webvh_store::list_dids(deps.webvh_ks).await?;
     let report = diff_host_against_local(&hosted, &all_local, &server.id, server_id);
@@ -319,7 +233,7 @@ pub async fn reconcile_webvh_server_dids(
 /// practice — separate parameters only so the filter cannot silently read the
 /// caller's raw argument instead of the resolved server's id.
 fn diff_host_against_local(
-    hosted: &[crate::webvh_client::HostedDidEntry],
+    hosted: &[crate::webvh_host::HostedDidEntry],
     all_local: &[vta_sdk::webvh::WebvhDidRecord],
     server_key: &str,
     server_label: &str,
@@ -402,7 +316,7 @@ pub async fn remove_webvh_server(
 ///
 /// Accepts any of the types listed in
 /// [`super::transport::SUPPORTED_TYPES_HUMAN`]. Delegates to
-/// [`super::transport::resolve_server_transport`] so the accepted-types
+/// [`super::transport::resolve_host_reach`] so the accepted-types
 /// set is defined in exactly one place — adding or removing a type
 /// changes both validation and runtime selection together.
 pub(super) async fn validate_server_did(
@@ -413,7 +327,7 @@ pub(super) async fn validate_server_did(
         AppError::Validation(format!("failed to resolve server DID {server_did}: {e}"))
     })?;
 
-    if super::transport::resolve_server_transport(&resolved.doc.service).is_none() {
+    if super::transport::resolve_host_reach(&resolved.doc.service).is_none() {
         return Err(AppError::Validation(format!(
             "server DID {server_did} has no supported webvh endpoint (expected: {})",
             super::transport::SUPPORTED_TYPES_HUMAN,
@@ -426,7 +340,7 @@ pub(super) async fn validate_server_did(
 #[cfg(test)]
 mod reconcile_tests {
     use super::*;
-    use crate::webvh_client::HostedDidEntry;
+    use crate::webvh_host::HostedDidEntry;
     use vta_sdk::webvh::WebvhDidRecord;
 
     fn hosted(mnemonic: &str, did: Option<&str>) -> HostedDidEntry {
@@ -435,7 +349,6 @@ mod reconcile_tests {
             did_id: did.map(str::to_string),
             domain: Some("webvh.example".into()),
             disabled: false,
-            updated_at: 0,
         }
     }
 
@@ -728,45 +641,9 @@ pub async fn retire_orphan_slot(
         )
     })?;
 
-    let identity = crate::operations::did_webvh::auth_cache::load_vta_webvh_signing_identity(
-        deps.keys_ks,
-        deps.imported_ks,
-        deps.contexts_ks,
-        deps.seed_store,
-        deps.audit,
-        vta_did_value,
-    )
-    .await?;
-    let auth_ctx = crate::operations::did_webvh::auth_cache::AuthContext {
-        webvh_ks: deps.webvh_ks,
-        identity: &identity,
-        locks: deps.auth_locks,
-    };
-    let transport = crate::operations::did_webvh::WebvhTransport::from_server_authenticated(
-        &server,
-        deps.did_resolver,
-        deps.didcomm_bridge,
-        &auth_ctx,
-        #[cfg(feature = "tsp")]
-        deps.tsp.clone(),
-    )
-    .await?;
-
-    let client = match transport {
-        crate::operations::did_webvh::WebvhTransport::Rest(c) => c,
-        crate::operations::did_webvh::WebvhTransport::TrustTask { .. } => {
-            // Same refusal reconcile gives, and for the same reason: the
-            // listing is REST-only, and without it orphanhood is unproven.
-            return Ok(Err(RetireOrphanRefusal::ListingUnavailable {
-                server_id: body.server_id.clone(),
-                detail: "the host's DID listing is REST-only and this server \
-                         advertises no legacy WebVH REST endpoint"
-                    .to_string(),
-            }));
-        }
-    };
-
-    let hosted = match client.list_dids_for_owner(vta_did_value).await {
+    let client =
+        crate::operations::did_webvh::host::host_client(deps, vta_did_value, &server).await?;
+    let hosted = match client.list_dids(vta_did_value).await {
         Ok(h) => h,
         Err(e) => {
             return Ok(Err(RetireOrphanRefusal::ListingUnavailable {
@@ -836,7 +713,7 @@ pub async fn retire_orphan_slot(
 #[cfg(test)]
 mod retire_orphan_tests {
     use super::*;
-    use crate::webvh_client::HostedDidEntry;
+    use crate::webvh_host::HostedDidEntry;
     use vta_sdk::webvh::WebvhDidRecord;
 
     const SERVER: &str = "primary-host";
@@ -847,7 +724,6 @@ mod retire_orphan_tests {
             did_id: did.map(str::to_string),
             domain: Some("webvh.example".into()),
             disabled: false,
-            updated_at: 0,
         }
     }
 

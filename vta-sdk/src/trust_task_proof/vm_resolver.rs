@@ -49,6 +49,29 @@ use affinidi_secrets_resolver::secrets::KeyType;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
+/// Marks a [`DataIntegrityError::Resolver`] that means the signer's key could
+/// not be *retrieved*: no resolver is configured for the method, or the DID
+/// did not resolve. Every other `Resolver` refusal — a key not listed under the
+/// proof's purpose, a controller mismatch, a malformed or unsupported method —
+/// is a verdict on the proof itself, and must stay an invalid proof.
+///
+/// `DataIntegrityError` is upstream and has no variant for this, so the
+/// distinction rides on a prefix that only [`unretrievable`] writes and only
+/// [`is_unretrievable`] reads.
+const UNRETRIEVABLE: &str = "the signer's key could not be retrieved: ";
+
+/// A refusal meaning the signer's key could not be retrieved (see
+/// [`UNRETRIEVABLE`]).
+fn unretrievable(detail: impl std::fmt::Display) -> DataIntegrityError {
+    DataIntegrityError::Resolver(format!("{UNRETRIEVABLE}{detail}"))
+}
+
+/// Whether `e` means the signer's key could not be retrieved, as opposed to
+/// the proof being wrong.
+pub(crate) fn is_unretrievable(e: &DataIntegrityError) -> bool {
+    matches!(e, DataIntegrityError::Resolver(msg) if msg.starts_with(UNRETRIEVABLE))
+}
+
 /// Resolves a Trust Task proof's `verificationMethod` to its public key.
 ///
 /// `did:key` resolves locally through the upstream multicodec decoder, so every
@@ -174,16 +197,15 @@ impl TrustTaskVmResolver {
         }
 
         let resolver = self.resolver.as_ref().ok_or_else(|| {
-            DataIntegrityError::Resolver(
+            unretrievable(
                 "resolving this verificationMethod needs a DID resolver, but this verifier is \
-                 configured for did:key only"
-                    .to_string(),
+                 configured for did:key only",
             )
         })?;
         // VTI-KEY-134: a cached document that does not define the method is
         // re-resolved once, fresh, before the method is refused.
         let resolved = resolve_for_vm(resolver, base_did, vm).await.map_err(|e| {
-            DataIntegrityError::Resolver(format!(
+            unretrievable(format_args!(
                 "the verificationMethod's DID did not resolve: {e}"
             ))
         })?;

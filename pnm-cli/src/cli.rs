@@ -793,8 +793,9 @@ pub(crate) enum BootstrapCommands {
         #[arg(long)]
         out: std::path::PathBuf,
     },
-    /// Bridge a VP-framed BootstrapRequest to `POST /bootstrap/provision-integration`
-    /// on the configured VTA, writing the returned armored sealed bundle to disk.
+    /// Send a VP-framed BootstrapRequest to the configured VTA as the
+    /// `provision/integration` Trust Task, writing the returned armored sealed
+    /// bundle to disk.
     ///
     /// Mirrors the offline `vta bootstrap provision-integration` command;
     /// the difference is purely the transport — the VTA runs the same
@@ -993,14 +994,6 @@ pub(crate) enum BackupCommands {
         /// Replace the output file if it already exists.
         #[arg(long)]
         force: bool,
-        /// Use the legacy inline backup export instead of the
-        /// descriptor-pattern trust-task flow.
-        ///
-        /// Works only over DIDComm: the VTA refuses a backup export over
-        /// REST or HTTPS Trust Tasks, because the sealing password would
-        /// exist in plaintext wherever TLS terminates.
-        #[arg(long)]
-        use_rest_legacy: bool,
     },
     /// Import VTA state from an encrypted backup file.
     ///
@@ -1017,14 +1010,6 @@ pub(crate) enum BackupCommands {
         /// a DID of its own. Without it a backup of another DID is refused.
         #[arg(long)]
         replace_identity: bool,
-        /// Use the legacy inline backup import instead of the
-        /// descriptor-pattern trust-task flow.
-        ///
-        /// Works only over DIDComm: the VTA refuses a backup import over
-        /// REST or HTTPS Trust Tasks, because the backup and its password
-        /// would exist in plaintext wherever TLS terminates.
-        #[arg(long)]
-        use_rest_legacy: bool,
     },
 }
 
@@ -1075,7 +1060,8 @@ pub(crate) enum WebvhCommands {
         /// Server identifier
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a WebVHHostingService endpoint)
+        /// Server DID (its DID document must advertise TSPTransport, DIDCommMessaging,
+        /// TrustTaskHTTPS, or WebVHHosting at an https:// origin)
         #[arg(long)]
         did: String,
         /// Human-readable label
@@ -1244,8 +1230,9 @@ pub(crate) enum WebvhCommands {
     },
     /// List hosting domains a server makes available to this VTA.
     ///
-    /// Walks the configured webvh server's `GET /api/me/domains`
-    /// endpoint and prints the caller-scoped subset. Use this to
+    /// Asks the configured webvh server with the
+    /// `did-management/me/domains` Trust Task and prints the
+    /// caller-scoped subset. Use this to
     /// discover legitimate `--domain` values for `pnm did-mgmt
     /// create-did` / `register-did` before the first call. The
     /// system default is flagged with `(default)`.
@@ -1428,8 +1415,9 @@ pub(crate) enum DidMgmtServerCommands {
         /// Server identifier (operator-chosen, must be unique).
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a
-        /// WebVHHostingService endpoint).
+        /// Server DID (its DID document must advertise TSPTransport,
+        /// DIDCommMessaging, TrustTaskHTTPS, or WebVHHosting at an
+        /// https:// origin).
         #[arg(long)]
         did: String,
         /// Human-readable label.
@@ -1651,8 +1639,8 @@ pub(crate) enum DidMgmtDidCommands {
     },
     /// List the hosting domains a registered server makes available.
     ///
-    /// Calls the server's `GET /api/me/domains` endpoint and prints
-    /// the caller-scoped subset. Use this to discover legitimate
+    /// Asks the server with the `did-management/me/domains` Trust
+    /// Task and prints the caller-scoped subset. Use this to discover legitimate
     /// `--domain` values for `pnm did-mgmt dids create` /
     /// `pnm did-mgmt dids register` before the first call. The
     /// system default is flagged with `(default)`.
@@ -2307,8 +2295,10 @@ pub(crate) enum AclCommands {
     /// Create an ACL entry.
     ///
     /// Not idempotent — errors with 409 Conflict if an entry already exists
-    /// for the given DID. To change a role or context list on an existing
-    /// entry use `pnm acl update`. To revoke access use `pnm acl delete`.
+    /// for the given DID. To change an existing entry's role use `pnm acl
+    /// change-role`, which carries the compare-and-swap `pnm acl update`
+    /// refuses to do without. For its context list and everything else, use
+    /// `pnm acl update`. To revoke access use `pnm acl delete`.
     Create {
         /// DID to grant access to
         #[arg(long)]
@@ -2379,7 +2369,6 @@ pub(crate) enum AclCommands {
         #[arg(long, value_delimiter = ',')]
         capabilities: Option<Vec<String>>,
     },
-    /// Update an ACL entry
     /// Change a subject's role, guarded by a compare-and-swap.
     ///
     /// `--from` is the role you believe they hold. If another admin has
@@ -2399,6 +2388,11 @@ pub(crate) enum AclCommands {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Change an ACL entry's label, contexts, expiry or approve-authority.
+    ///
+    /// Not the role — that needs `pnm acl change-role` and its
+    /// compare-and-swap. Passing `--role` here is refused rather than
+    /// silently ignored.
     Update {
         /// DID of the entry to update
         did: String,
@@ -3229,12 +3223,20 @@ where
     })
 }
 
+/// Print the PNM banner.
+///
+/// Only called when stderr is a terminal — a human is watching. Piped or
+/// redirected, it is six lines of noise in front of whatever the caller
+/// actually wanted, so the caller never sees it. Colour is dropped when
+/// `NO_COLOR` is set; the block glyphs are text, not escapes, so the logo
+/// still reads.
 pub(crate) fn print_banner() {
-    let cyan = "\x1b[36m";
-    let magenta = "\x1b[35m";
-    let yellow = "\x1b[33m";
-    let dim = "\x1b[2m";
-    let reset = "\x1b[0m";
+    let color = std::env::var_os("NO_COLOR").is_none();
+    let (cyan, magenta, yellow, dim, reset) = if color {
+        ("\x1b[36m", "\x1b[35m", "\x1b[33m", "\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "", "", "", "")
+    };
 
     eprintln!(
         r#"
@@ -3265,7 +3267,7 @@ pub(crate) fn install_force_exit_handler() {
             }
             if SHUTDOWN_REQUESTED.swap(true, Ordering::SeqCst) {
                 eprintln!("\nForcing exit.");
-                std::process::exit(130);
+                std::process::exit(crate::exit::INTERRUPTED);
             }
             eprintln!("\nShutting down — press Ctrl-C again to force exit.");
         }

@@ -1,11 +1,9 @@
 //! P1.1 — single `AppState` construction; `VtaState` shares the same Arcs.
 //!
 //! Before P1.1 the DIDComm router state (`VtaState`) was built with its *own*
-//! `WebvhAuthLocks::new()` and its own `Arc<RwLock<AppConfig>>`, so the
-//! per-server webvh auth-cache lock didn't serialize across transports and a
-//! `PATCH /config` on the REST side left DIDComm reading stale config. These
-//! tests pin the fix: `VtaState` is derived from the canonical `AppState`, so
-//! both transports share one config `RwLock`, one `WebvhAuthLocks`, one
+//! `Arc<RwLock<AppConfig>>`, so a `PATCH /config` on the REST side left DIDComm
+//! reading stale config. These tests pin the fix: `VtaState` is derived from
+//! the canonical `AppState`, so both transports share one config `RwLock`, one
 //! mediator registry, one drain sweeper, one telemetry sink, and one DIDComm
 //! bridge.
 
@@ -98,15 +96,10 @@ async fn vta_state_shares_shared_components() {
 
 /// Drift guard for the `VtaState` constructor: the only place `VtaState` is
 /// built in the running server is `From<&AppState>`. If someone reintroduces a
-/// hand-rolled `VtaState { .. }` literal with its own `WebvhAuthLocks::new()` /
-/// `RwLock::new(config)` (the original P1.1 divergence bug), this fails.
+/// hand-rolled `VtaState { .. }` literal with its own `RwLock::new(config)` (the original P1.1 divergence bug), this fails.
 #[test]
 fn router_does_not_reconstruct_divergent_state() {
     let src = include_str!("../src/messaging/router.rs");
-    assert!(
-        !src.contains("WebvhAuthLocks::new()"),
-        "router.rs must not mint its own WebvhAuthLocks — share AppState's (P1.1)"
-    );
     assert!(
         !src.contains("RwLock::new("),
         "router.rs must not mint its own config RwLock — share AppState's (P1.1)"

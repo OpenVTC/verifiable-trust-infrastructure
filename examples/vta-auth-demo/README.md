@@ -12,7 +12,7 @@ server and click around.
 | 2 | Bootstrap auth (paste JWT)                | (purely client-side; needed when there's no passkey VM yet) | implemented |
 | 3 | Enrol a passkey VM                        | `POST /did/verification-methods/passkey/challenge` + browser WebAuthn API + `POST /did/verification-methods/passkey` | implemented |
 | 4 | Passkey login (DID-VM-resolved WebAuthn)  | `POST /auth/passkey-login/start` + browser WebAuthn API + `POST /auth/passkey-login/finish` | implemented |
-| 5 | Session inspection + revoke               | `GET /auth/sessions`, `DELETE /auth/sessions/{id}`    | implemented |
+| 5 | Session inspection + revoke               | `auth/sessions/list/0.1`, `auth/revoke-session/0.2` Trust Tasks | implemented (unsigned — see Step 5) |
 | 6 | Trust-task dispatch                       | `POST /api/trust-tasks` with bearer auth              | implemented |
 | 7 | DIDComm primitives smoke-test             | (purely client-side; resolve + pack against any DID)  | implemented |
 | 8 | DIDComm-packed `/auth/` + refresh end-to-end | `POST /auth/challenge` + `POST /auth/` + `POST /auth/refresh` | implemented |
@@ -123,9 +123,14 @@ needed.
    - On success the session panel (Step 5) appears with the new JWT.
 
 5. **Step 5 — Session inspection**:
-   - "List active sessions" shows every session this caller can see.
-   - "Revoke current session" deletes the JWT's session row;
-     subsequent calls return 401.
+   - "List active sessions" sends `auth/sessions/list/0.1`: the caller's own
+     sessions (no task lists anyone else's).
+   - "Revoke current session" sends `auth/revoke-session/0.2` with the JWT's
+     `sessionId`; once it answers `revokedCount: 1`, subsequent calls return
+     401.
+   - Both tasks require a request proof, and this demo holds only a bearer
+     token, so a VTA enforcing the specification answers `proofRequired`. The
+     request and response are shown either way; `pnm` signs them.
    - "Sign out" clears local demo state without touching the VTA.
 
 6. **Step 6 — Trust-task dispatch**:

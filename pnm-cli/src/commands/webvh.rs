@@ -198,7 +198,7 @@ async fn cmd_reconcile(
     Ok(())
 }
 
-/// Fetch the server's `/api/me/domains` view and print it as a
+/// Fetch the server's `did-management/me/domains` view (through the VTA) and print it as a
 /// short table. Used by the dedicated `list-domains` subcommand.
 async fn cmd_list_domains(
     client: &VtaClient,

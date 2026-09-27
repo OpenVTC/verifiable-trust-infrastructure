@@ -31,6 +31,9 @@
 //!   falls back to the bearer route for them, even against a VTC too old to
 //!   serve the document. A client built from a token alone
 //!   ([`VtcClient::with_token`]) holds no key and uses the bearer routes.
+//! - The `git-ns/*` family ([`git_ns`]) is signed with the [`HolderKey`] the
+//!   caller passes, and goes over the session when there is one — whose
+//!   identity that key must be — otherwise posted to `POST {base}/trust-tasks`.
 //! - The rest are gated on a bearer token *and* a per-route `Trust-Task`
 //!   header, which is a URL-shaped surface; a session-only client answers them
 //!   with [`VtcError::NoRestTransport`] rather than failing obscurely.
@@ -330,6 +333,18 @@ pub enum VtcError {
     /// bound, …). Caught before anything is sent.
     #[error("invalid request payload: {0}")]
     InvalidPayload(String),
+    /// The VTC refused a Trust Task sent over a DIDComm or TSP session.
+    ///
+    /// Carries the `trust-task-error` document as the VTC wrote it — the
+    /// session counterpart of [`Http`](Self::Http)'s body on the document
+    /// endpoint — so a caller reads the specification's `code` and the
+    /// refusal's `details` (an inline step-up request, say) the same way
+    /// whichever transport carried the task.
+    #[error("the VTC refused the request: {document}")]
+    Refused {
+        /// The `trust-task-error` document, serialized.
+        document: String,
+    },
 }
 
 /// A single member of the community, as returned by `GET /members`. Mirrors the
@@ -531,6 +546,11 @@ pub struct VtcClient {
     /// otherwise own a second, drifting copy of.
     #[cfg(feature = "didcomm")]
     documents: Option<vta_sdk::client::VtaClient>,
+    /// The DID the session in [`documents`](Self::documents) is attributed
+    /// to: the sender the VTC sees, and so the only DID a document sent on
+    /// it may be signed as.
+    #[cfg(feature = "didcomm")]
+    session_did: Option<String>,
 }
 
 /// Written by hand rather than derived, for two reasons.
@@ -592,6 +612,8 @@ impl VtcClient {
             signer: Some(signer),
             #[cfg(feature = "didcomm")]
             documents: None,
+            #[cfg(feature = "didcomm")]
+            session_did: None,
         })
     }
 
@@ -606,6 +628,8 @@ impl VtcClient {
             signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
+            #[cfg(feature = "didcomm")]
+            session_did: None,
         }
     }
 
@@ -629,6 +653,8 @@ impl VtcClient {
             signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
+            #[cfg(feature = "didcomm")]
+            session_did: None,
         }
     }
 
@@ -664,7 +690,7 @@ impl VtcClient {
         )
         .await
         .map_err(|e| VtcError::Session(e.to_string()))?;
-        Ok(Self::over_session(documents, vtc_did, rest_url))
+        Ok(Self::over_session(documents, client_did, vtc_did, rest_url))
     }
 
     /// The same, over **TSP**, for a community that advertises `#tsp`.
@@ -692,7 +718,7 @@ impl VtcClient {
         )
         .await
         .map_err(|e| VtcError::Session(e.to_string()))?;
-        Ok(Self::over_session(documents, vtc_did, rest_url))
+        Ok(Self::over_session(documents, client_did, vtc_did, rest_url))
     }
 
     /// Wrap a connected session. One place to build the pairing, so a further
@@ -700,6 +726,7 @@ impl VtcClient {
     #[cfg(feature = "didcomm")]
     fn over_session(
         documents: vta_sdk::client::VtaClient,
+        client_did: &str,
         vtc_did: &str,
         rest_url: Option<&str>,
     ) -> Self {
@@ -713,6 +740,7 @@ impl VtcClient {
             token: None,
             signer: None,
             documents: Some(documents),
+            session_did: Some(client_did.to_string()),
         }
     }
 
@@ -2208,6 +2236,8 @@ mod tests {
             signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
+            #[cfg(feature = "didcomm")]
+            session_did: None,
         };
         let err = client
             .tt(reqwest::Method::GET, "http://x/members", task::MEMBERS_LIST)
@@ -2278,6 +2308,8 @@ mod tests {
             signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
+            #[cfg(feature = "didcomm")]
+            session_did: None,
         };
         // The token guard returns before any network I/O.
         let err = client.list_members(None).await;
@@ -2331,6 +2363,8 @@ mod tests {
             signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
+            #[cfg(feature = "didcomm")]
+            session_did: None,
         };
         assert!(matches!(
             client.list_join_requests(Some("pending")).await,
@@ -2371,6 +2405,8 @@ mod tests {
             signer: None,
             #[cfg(feature = "didcomm")]
             documents: None,
+            #[cfg(feature = "didcomm")]
+            session_did: None,
         };
         assert!(matches!(
             client.list_policies().await,

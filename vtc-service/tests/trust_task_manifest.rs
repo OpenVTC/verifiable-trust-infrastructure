@@ -430,20 +430,10 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
-    // TODO(trust-tasks release carrying trust-tasks #658): goes back to zero,
-    // and the hand-written `trust_tasks::passkey_admin_list_v0_1` gives way to
-    // the generated `auth::passkey::admin_list::v0_1`.
-    //
-    // `auth/passkey/admin-list/0.1` — an administrator listing a member's
-    // step-up passkeys, authored upstream (trust-tasks #658) and served on the
-    // spine ahead of the `trust-tasks-rs` release that serves it. It replaces
-    // `GET /v1/admin/step-up-passkeys`, which carried no Trust-Task binding.
-    (
-        "https://trusttasks.org/spec/auth/passkey/admin-list/",
-        1,
-        "auth/passkey/admin-list 0.1 (trust-tasks #658) — authored upstream, \
-         awaiting the trust-tasks-rs release that serves it",
-    ),
+    // `auth/passkey/admin-list/0.1` was bound here ahead of its release and
+    // went back to zero with trust-tasks-rs 0.23.6, which indexes it. (The
+    // hand-written `trust_tasks::passkey_admin_list_v0_1` has yet to give way
+    // to the generated `auth::passkey::admin_list::v0_1`.)
     // `git-ns/bridge/job/0.4` and `git-ns/namespace/reseat/0.3` were sent
     // and served ahead of their release here, and went back to zero with
     // trust-tasks-rs 0.23, which generates both.
@@ -486,7 +476,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        6,
+        4,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -534,7 +524,10 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          under that name. It exported no seed and no mnemonic; it was a per-key secret export \
          wearing the name of what it was migrated from, and moving it to the keys family is \
          what let it be specified honestly. The `vta/seeds/*` entries that remain are \
-         list and rotate, and the note still holds for them",
+         list and rotate, and the note still holds for them. \
+         6 -> 4 is the retirement of `vta/attestation/{status,report}/1.0`: the attestation \
+         reads are the canonical public `vta/attestation/{status,report}/0.1` tasks \
+         (dtgwg-trust-tasks-tf#654), and the unspecced 1.0 URIs are no longer bound",
     ),
 ];
 

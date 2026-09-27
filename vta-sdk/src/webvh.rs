@@ -3,24 +3,10 @@ use serde::{Deserialize, Serialize};
 
 /// Operator-visible metadata for a registered webvh hosting server.
 ///
-/// **Public surface — never carry secret material.** Bearer tokens,
-/// refresh tokens, and token-expiry timestamps for the daemon REST
-/// auth flow live in a separate service-internal record
-/// (`vta_service::webvh_store::WebvhServerAuthRecord`, keyspace prefix
-/// `server-auth:`), not on this type. The split keeps tokens out of:
-///
-/// - REST `GET /webvh/servers` list responses,
-/// - DIDComm `webvh.servers.list` results,
-/// - Backup export payloads,
-/// - Any future SDK consumer that reads `WebvhServerRecord`.
-///
-/// Legacy records on disk may still carry `access_token` /
-/// `access_expires_at` / `refresh_token` fields embedded inline.
-/// Serde's default behaviour ignores unknown fields, so those
-/// legacy records deserialize cleanly into the new shape — the
-/// embedded tokens are silently dropped on read. The VTA's restore
-/// path explicitly wipes the `server-auth:` keyspace so a backup
-/// from another VTA can't replay stale tokens here.
+/// **Public surface — never carry secret material.** It appears in list
+/// responses, backup exports and SDK results. A VTA holds no credential for a
+/// hosting server: every request it sends is a Trust Task carrying its own
+/// proof.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]

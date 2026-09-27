@@ -186,41 +186,6 @@ async fn mount_json(
         .await
 }
 
-/// Mock a genuinely-REST route — one with no trust-task twin, which therefore
-/// keeps its bespoke method and path. Backup blob streaming, the import
-/// wrapping key and the deprecated legacy-`rpc` DID verbs are the whole set;
-/// anything else reaching for this helper is probably a task in disguise.
-async fn mount_rest_json(
-    server: &MockServer,
-    m: &str,
-    p: &str,
-    status: u16,
-    body: Value,
-) -> wiremock::MockGuard {
-    Mock::given(method(m))
-        .and(path(p))
-        .and(auth_match())
-        .respond_with(ResponseTemplate::new(status).set_body_json(body))
-        .expect(1)
-        .mount_as_scoped(server)
-        .await
-}
-
-async fn mount_rest_status(
-    server: &MockServer,
-    m: &str,
-    p: &str,
-    status: u16,
-) -> wiremock::MockGuard {
-    Mock::given(method(m))
-        .and(path(p))
-        .and(auth_match())
-        .respond_with(ResponseTemplate::new(status).set_body_json(err_body("bad")))
-        .expect(1)
-        .mount_as_scoped(server)
-        .await
-}
-
 async fn mount_status(server: &MockServer, _m: &str, _p: &str, status: u16) -> wiremock::MockGuard {
     Mock::given(method("POST"))
         .and(path("/trust-tasks"))
@@ -440,38 +405,6 @@ async fn update_config_reports_identity_as_rejected() {
 
 // ── Backup ──────────────────────────────────────────────────────────
 
-#[allow(deprecated)] // pins the inline path until rollout step 6 removes it
-#[tokio::test]
-async fn backup_export_returns_envelope() {
-    let server = MockServer::start().await;
-    let envelope = json!({
-        "version": 1,
-        "format": "vtabak/v1",
-        "created_at": "2026-05-05T12:00:00Z",
-        "source_version": "0.5.0",
-        "kdf": {"algorithm": "argon2id", "salt": "AAAA", "m_cost": 65536, "t_cost": 3, "p_cost": 4},
-        "encryption": {"algorithm": "AES-256-GCM", "nonce": "AAAA"},
-        "includes_audit": false,
-        "ciphertext": "AAAA"
-    });
-    let _g = mount_rest_json(&server, "POST", "/backup/export", 200, envelope).await;
-    let c = client(&server).await;
-    let env = c.backup_export("hunter2hunter2", false).await.unwrap();
-    assert_eq!(env.version, 1);
-    assert!(!env.includes_audit);
-}
-
-#[allow(deprecated)] // pins the inline path until rollout step 6 removes it
-#[tokio::test]
-async fn backup_export_403_maps_to_forbidden() {
-    let server = MockServer::start().await;
-    let _g = mount_rest_status(&server, "POST", "/backup/export", 403).await;
-    let c = client(&server).await;
-    let err = c.backup_export("pw", false).await.unwrap_err();
-    assert!(matches!(err, VtaError::Forbidden(_)));
-    assert!(err.is_auth());
-}
-
 // ── Keys ────────────────────────────────────────────────────────────
 
 /// One record in the canonical `keys/_shared/0.1/key-record` shape — camelCase,
@@ -666,20 +599,49 @@ async fn rename_key_409_maps_to_conflict() {
 }
 
 #[tokio::test]
-async fn get_wrapping_key_returns_jwk() {
+async fn get_wrapping_key_returns_a_did_key() {
     let server = MockServer::start().await;
-    let _g = mount_rest_json(
+    let _g = mount_json(
         &server,
-        "GET",
-        "/keys/import/wrapping-key",
+        "POST",
+        "/trust-tasks",
         200,
-        json!({"kid": "k1", "kty": "OKP", "crv": "X25519", "x": "AAAA"}),
+        json!({
+            "wrappingKey": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+            "keyId": "k1",
+            "expiresAt": "2026-09-27T09:11:00Z"
+        }),
     )
     .await;
     let c = client(&server).await;
     let k = c.get_wrapping_key().await.unwrap();
-    assert_eq!(k.kid, "k1");
-    assert_eq!(k.crv, "X25519");
+    assert_eq!(k.key_id.as_str(), "k1");
+    assert!(k.wrapping_key.starts_with("did:key:z6Mk"));
+}
+
+/// keys/import-wrapping-key/0.1 producer rule 2: an unsigned wrapping key is
+/// refused even by a client that trusts unsigned replies elsewhere — an
+/// intermediary that can rewrite the reply could hand back its own key.
+#[tokio::test]
+async fn an_unsigned_wrapping_key_is_refused_even_when_unsigned_replies_are_trusted() {
+    let server = MockServer::start().await;
+    let unsigned = json!({
+        "id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+        "type": format!("{}#response", vta_sdk::trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1),
+        "payload": {
+            "wrappingKey": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+            "keyId": "k1",
+            "expiresAt": "2026-09-27T09:11:00Z"
+        }
+    });
+    let _g = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(unsigned))
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+    let c = client(&server).await.trusting_unsigned_replies();
+    assert!(c.get_wrapping_key().await.is_err());
 }
 
 #[tokio::test]
@@ -1511,63 +1473,88 @@ async fn update_did_webvh_by_did_sends_the_canonical_task() {
     assert_eq!(r.new_version_id, "2-z");
 }
 
-#[allow(deprecated)] // pins the legacy route until the method is removed
+/// Key rotation keys on the DID and rides `/trust-tasks`, like update.
 #[tokio::test]
-async fn update_did_webvh_posts_to_context_path() {
+async fn rotate_did_webvh_keys_by_did_sends_the_canonical_task() {
     let server = MockServer::start().await;
-    let _g = mount_rest_json(
-        &server,
-        "POST",
-        "/contexts/primary/dids/Qabc/update",
-        200,
-        json!({
-            "did": "did:webvh:Qabc",
-            "new_version_id": "2-z",
-            "new_scid": "Qabc",
-            "new_log_entry": "{}",
-            "update_keys_count": 1,
-            "pre_rotation_key_count": 0
-        }),
-    )
-    .await;
-    let c = client(&server).await;
-    let body = vta_sdk::protocols::did_management::update::UpdateDidWebvhBody {
-        document: Some(json!({"id": "did:webvh:Qabc"})),
-        ..Default::default()
-    };
-    let r = c.update_did_webvh("primary", "Qabc", body).await.unwrap();
-    assert_eq!(r.new_version_id, "2-z");
-}
+    let _g = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .and(wiremock::matchers::body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0",
+            "payload": { "did": "did:webvh:Qabc:host:slug", "preRotationCount": 2 },
+        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_response_typed(
+                    "https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0#response",
+                    json!({
+                        "did": "did:webvh:Qabc:host:slug",
+                        "newVersionId": "3-z",
+                        "newScid": "Qabc",
+                        "newLogEntry": "{}",
+                        "updateKeysCount": 1,
+                        "preRotationKeyCount": 2
+                    }),
+                )
+                .await,
+            ),
+        )
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
 
-#[allow(deprecated)] // pins the legacy route until the method is removed
-#[tokio::test]
-async fn rotate_did_webvh_keys_posts() {
-    let server = MockServer::start().await;
-    let _g = mount_rest_json(
-        &server,
-        "POST",
-        "/contexts/primary/dids/Qabc/rotate-keys",
-        200,
-        json!({
-            "did": "did:webvh:Qabc",
-            "new_version_id": "3-z",
-            "new_scid": "Qabc",
-            "new_log_entry": "{}",
-            "update_keys_count": 1,
-            "pre_rotation_key_count": 2
-        }),
-    )
-    .await;
     let c = client(&server).await;
     let body = vta_sdk::protocols::did_management::update::RotateDidWebvhKeysBody {
         pre_rotation_count: Some(2),
         label: Some("scheduled".into()),
     };
     let r = c
-        .rotate_did_webvh_keys("primary", "Qabc", body)
+        .rotate_did_webvh_keys_by_did("did:webvh:Qabc:host:slug", body)
         .await
         .unwrap();
     assert_eq!(r.pre_rotation_key_count, 2);
+}
+
+/// Realigning key records is `webvh/dids/realign-keys/1.0`, not a REST-only
+/// route: a REST client posts it to `/trust-tasks` like any other task.
+#[tokio::test]
+async fn realign_did_webvh_keys_sends_the_canonical_task() {
+    let server = MockServer::start().await;
+    let _g = Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
+        .and(auth_match())
+        .and(wiremock::matchers::body_partial_json(json!({
+            "type": "https://trusttasks.org/spec/vta/webvh/dids/realign-keys/1.0",
+            "payload": { "did": "did:webvh:Qabc:host:slug", "dryRun": true },
+        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                signed_response_typed(
+                    "https://trusttasks.org/spec/vta/webvh/dids/realign-keys/1.0#response",
+                    json!({
+                        "did": "did:webvh:Qabc:host:slug",
+                        "moved": [],
+                        "alreadyAligned": ["#key-0"],
+                        "unmatched": [],
+                        "nextFragmentId": 1,
+                        "dryRun": true
+                    }),
+                )
+                .await,
+            ),
+        )
+        .expect(1)
+        .mount_as_scoped(&server)
+        .await;
+
+    let c = client(&server).await;
+    let r = c
+        .realign_did_webvh_keys("did:webvh:Qabc:host:slug", true)
+        .await
+        .unwrap();
+    assert!(r.dry_run);
+    assert_eq!(r.already_aligned, vec!["#key-0".to_string()]);
 }
 
 // ── Audit ───────────────────────────────────────────────────────────
@@ -1913,15 +1900,27 @@ async fn render_context_did_template_unwraps_document() {
 // ── check_auth ──────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn check_auth_true_when_200() {
+async fn check_auth_true_when_whoami_answers() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/health/details"))
-        .and(auth_match())
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-        .expect(1)
-        .mount(&server)
-        .await;
+    let _g = mount_json(
+        &server,
+        "POST",
+        "/trust-tasks",
+        200,
+        json!({
+            "session": {
+                "id": "s1",
+                "subject": "did:key:z6MkSubject",
+                "issuedAt": "2026-09-27T09:00:00Z",
+                "expiresAt": "2026-09-27T09:15:00Z",
+                "amr": ["did"]
+            },
+            "roles": ["admin"],
+            "scopes": [],
+            "capabilities": []
+        }),
+    )
+    .await;
     let c = client(&server).await;
     assert!(c.check_auth().await.unwrap());
 }
@@ -1929,10 +1928,9 @@ async fn check_auth_true_when_200() {
 #[tokio::test]
 async fn check_auth_false_when_401() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/health/details"))
+    Mock::given(method("POST"))
+        .and(path("/trust-tasks"))
         .respond_with(ResponseTemplate::new(401).set_body_json(err_body("expired")))
-        .expect(1)
         .mount(&server)
         .await;
     let c = client(&server).await;

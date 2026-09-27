@@ -107,7 +107,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // replacement — locked out until re-auth. The one auth task that genuinely
     // needs the key.
     (trust_tasks::TASK_AUTH_REFRESH_0_1, Keyed),
-    (trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1, RetrySafe),
+    // Converges: a repeat finds the sessions already gone and answers
+    // `revokedCount: 0`, which the spec makes a success.
+    (trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2, RetrySafe),
     (trust_tasks::TASK_AUTH_WHOAMI_0_1, ReadOnly),
     (trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1, RetrySafe),
@@ -192,6 +194,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // reply mints a second key nobody references.
     (trust_tasks::TASK_KEYS_CREATE_0_1, Keyed),
     (trust_tasks::TASK_KEYS_IMPORT_0_1, Keyed),
+    // A repeat mints a second wrapping key, held only in memory, single-use,
+    // gone in 60 seconds: the inert, self-expiring duplicate `RetrySafe` names.
+    (trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1, RetrySafe),
     (trust_tasks::TASK_KEYS_SHOW_0_1, ReadOnly),
     (trust_tasks::TASK_KEYS_RENAME_0_1, RetrySafe),
     (trust_tasks::TASK_KEYS_REVOKE_0_1, RetrySafe),
@@ -427,9 +432,15 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // Idempotent per index by construction — the manifest fixes each index's
     // bytes before any arrive, so a repeat stores nothing new (`stored: false`).
     (trust_tasks::TASK_BACKUP_PUT_CHUNK_1_0, RetrySafe),
+    // ── Health + restore ────────────────────────────────────────────────
+    (trust_tasks::TASK_VTA_HEALTH_DETAILS_0_1, ReadOnly),
+    (trust_tasks::TASK_VTA_RESTORE_STATUS_0_1, ReadOnly),
     // ── Attestation ─────────────────────────────────────────────────────
-    (trust_tasks::TASK_ATTESTATION_STATUS_1_0, ReadOnly),
-    (trust_tasks::TASK_ATTESTATION_REPORT_1_0, ReadOnly),
+    (trust_tasks::TASK_ATTESTATION_STATUS_0_1, ReadOnly),
+    // A fresh quote per request, but no state changes: a repeat with the same
+    // nonce yields equivalent evidence for the same verifier.
+    (trust_tasks::TASK_ATTESTATION_REPORT_0_1, ReadOnly),
+    (trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1, ReadOnly),
     // One-time: a repeat is refused once the entropy is gone, and the reply is
     // the (sealed) root mnemonic, which never sits in the dedup store.
     (

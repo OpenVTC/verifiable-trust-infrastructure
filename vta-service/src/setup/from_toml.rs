@@ -1962,11 +1962,6 @@ async fn create_simple_webvh_did(
         is_vta_identity,
     };
 
-    // Setup wizard: no shared AppState, so create a local per-server
-    // auth-lock registry. This path is serverless (mints from a URL),
-    // so it won't authenticate to a hosting server, but the deps bundle
-    // requires the field.
-    let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
     let deps = operations::did_webvh::CreateDidWebvhDeps {
         keys_ks,
         imported_ks,
@@ -1978,10 +1973,8 @@ async fn create_simple_webvh_did(
         config,
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
-        auth_locks: &auth_locks,
         acl_ks: None,
         // Offline: no mediator socket to lend, so the seam cannot choose
-        // TSP. Same reason as the `auth_locks` note above.
         #[cfg(feature = "tsp")]
         tsp: None,
     };

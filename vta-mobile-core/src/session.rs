@@ -47,7 +47,7 @@
 use chrono::DateTime;
 use trust_tasks_rs::specs::auth::{
     authenticate::v0_1 as authenticate, challenge::v0_1 as challenge, refresh::v0_1 as refresh,
-    revoke_session::v0_1 as revoke_session, whoami::v0_1 as whoami,
+    revoke_session::v0_2 as revoke_session, whoami::v0_1 as whoami,
 };
 use trust_tasks_rs::specs::messaging::ping::v0_1 as ping;
 use trust_tasks_rs::{Payload, TrustTask};
@@ -317,7 +317,7 @@ pub fn build_messaging_ping(
     serialize(&doc)
 }
 
-/// Build a signed `auth/revoke-session/0.1` that invalidates one named session.
+/// Build a signed `auth/revoke-session/0.2` that invalidates one named session.
 /// `reason` is an optional audit-log rationale (e.g. `"logout"`, `"device-lost"`,
 /// `"key-rotation"`). `auth/revoke-session` is `IS_PROOF_REQUIRED == true`, so
 /// the holder-signed proof (via `signer`) authorizes the revocation.
@@ -328,23 +328,24 @@ pub fn build_revoke_session(
     reason: Option<String>,
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
-    let payload = revoke_session::Payload::Variant0 {
-        session_id: revoke_session::PayloadVariant0SessionId::try_from(session_id).map_err(conv)?,
+    let payload = revoke_session::Payload::Variant0(revoke_session::PayloadVariant0::Variant0 {
+        session_id: revoke_session::PayloadVariant0Variant0SessionId::try_from(session_id)
+            .map_err(conv)?,
         // `reason` is a bounded newtype as of the 0.17 registry, not a bare
         // `String`. Parsing it here fails on the device that would otherwise
         // sign a document the auth service must reject.
         reason: reason
-            .map(revoke_session::PayloadVariant0Reason::try_from)
+            .map(revoke_session::PayloadVariant0Variant0Reason::try_from)
             .transpose()
             .map_err(conv)?,
         ext: None,
-    };
+    });
     let mut doc = envelope_doc(&env, payload)?;
     attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
     serialize(&doc)
 }
 
-/// Build a signed `auth/revoke-session/0.1` that invalidates **every** session
+/// Build a signed `auth/revoke-session/0.2` that invalidates **every** session
 /// the auth service holds for the holder (e.g. "log out everywhere"). `reason`
 /// is an optional audit-log rationale. Holder-signed, as
 /// [`build_revoke_session`].
@@ -354,20 +355,20 @@ pub fn build_revoke_all_sessions(
     reason: Option<String>,
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
-    let payload = revoke_session::Payload::Variant1 {
+    let payload = revoke_session::Payload::Variant1(revoke_session::PayloadVariant1::Variant1 {
         all: true,
         reason: reason
-            .map(revoke_session::PayloadVariant1Reason::try_from)
+            .map(revoke_session::PayloadVariant1Variant1Reason::try_from)
             .transpose()
             .map_err(conv)?,
         ext: None,
-    };
+    });
     let mut doc = envelope_doc(&env, payload)?;
     attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
     serialize(&doc)
 }
 
-/// Parse an `auth/revoke-session/0.1#response` — the number of sessions
+/// Parse an `auth/revoke-session/0.2#response` — the number of sessions
 /// invalidated. Zero is a valid outcome (e.g. the session was already revoked).
 #[uniffi::export]
 pub fn parse_revoke_session_response(json: String) -> Result<u64, FfiError> {
@@ -772,7 +773,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             v["type"],
-            "https://trusttasks.org/spec/auth/revoke-session/0.1"
+            "https://trusttasks.org/spec/auth/revoke-session/0.2"
         );
         assert_eq!(v["payload"]["sessionId"], "sess-1");
         assert_eq!(v["payload"]["reason"], "logout");
@@ -866,7 +867,7 @@ mod tests {
     fn parses_revoke_session_response_count() {
         let json = r#"{
           "id": "rv-1",
-          "type": "https://trusttasks.org/spec/auth/revoke-session/0.1#response",
+          "type": "https://trusttasks.org/spec/auth/revoke-session/0.2#response",
           "issuer": "did:web:vta.example",
           "recipient": "did:key:zHolder",
           "payload": { "revokedCount": 3 }

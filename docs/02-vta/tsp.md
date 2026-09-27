@@ -68,8 +68,8 @@ Two paths:
   Choosing it here puts `#tsp` in the DID document from log v1, rather than
   adding it in a later log entry.
 
-`pnm services list` shows TSP on/off + its mediator; `GET /health/details`
-reports `tsp_enabled`.
+`pnm services list` shows TSP on/off + its mediator; the public
+`vta/health/details/0.1` Trust Task (and so `pnm health`) reports `tspEnabled`.
 
 ### What a TSP-only build does not have
 

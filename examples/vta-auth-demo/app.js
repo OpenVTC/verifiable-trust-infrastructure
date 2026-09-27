@@ -9,7 +9,8 @@
 //      → compute publicKeyMultibase from the SPKI → POST submit.
 //   4. Passkey login — POST start → navigator.credentials.get() →
 //      POST finish → JWT.
-//   5. Session inspection + revoke — GET /auth/sessions, DELETE one.
+//   5. Session inspection + revoke — the auth/sessions/list/0.1 and
+//      auth/revoke-session/0.2 Trust Tasks (the REST session routes are gone).
 //   6. Trust-task dispatch — POST /api/trust-tasks with a typed
 //      envelope.
 //
@@ -632,14 +633,25 @@ function clearAuth() {
 els.signOut.addEventListener("click", clearAuth);
 
 // ─── Session list + revoke ────────────────────────────────────────────
+//
+// Trust Tasks, through the same POST path as Step 6. Both declare their
+// request proof REQUIRED, and this demo holds only a bearer token — no key to
+// sign with — so a VTA enforcing the specification answers `proofRequired`.
+// The request/response pair is shown either way; sign with `pnm` for the real
+// thing.
+
+const TASK_SESSIONS_LIST = "https://trusttasks.org/spec/auth/sessions/list/0.1";
+const TASK_REVOKE_SESSION = "https://trusttasks.org/spec/auth/revoke-session/0.2";
 
 els.listSessions.addEventListener("click", async () => {
   clearOutput(els.sessionsOutput);
   try {
-    const sessions = await vtaFetch("/auth/sessions", {
-      headers: { authorization: `Bearer ${state.accessToken}` },
-    });
-    setOutput(els.sessionsOutput, asJson(sessions), "ok");
+    const { envelope, resp } = await postTrustTask(TASK_SESSIONS_LIST, {});
+    setOutput(
+      els.sessionsOutput,
+      `Request:\n${asJson(envelope)}\n\nResponse:\n${asJson(resp)}`,
+      "ok",
+    );
   } catch (e) {
     setOutput(els.sessionsOutput, e.message, "err");
   }
@@ -653,11 +665,16 @@ els.revokeCurrent.addEventListener("click", async () => {
   if (!confirm(`Revoke session ${state.currentSessionId}?`)) return;
   clearOutput(els.sessionsOutput);
   try {
-    await vtaFetch(`/auth/sessions/${state.currentSessionId}`, {
-      method: "DELETE",
-      headers: { authorization: `Bearer ${state.accessToken}` },
+    const { envelope, resp } = await postTrustTask(TASK_REVOKE_SESSION, {
+      sessionId: state.currentSessionId,
+      reason: "logout",
     });
-    setOutput(els.sessionsOutput, "Current session revoked. Token will no longer authenticate.", "ok");
+    setOutput(
+      els.sessionsOutput,
+      `Request:\n${asJson(envelope)}\n\nResponse:\n${asJson(resp)}\n\n` +
+        "revokedCount 1: the token will no longer authenticate.",
+      "ok",
+    );
     // Don't fully clearAuth() so the operator can see the 401 by
     // re-trying — that's an educational side-effect of the demo.
   } catch (e) {
@@ -666,6 +683,26 @@ els.revokeCurrent.addEventListener("click", async () => {
 });
 
 // ─── Trust-task dispatch ──────────────────────────────────────────────
+
+// POST a Trust Task document to the VTA's HTTPS binding on the bearer
+// session. `issuedAt` is required: the VTA bounds its replay record by it.
+async function postTrustTask(type, payload) {
+  const envelope = {
+    id: `urn:uuid:${crypto.randomUUID()}`,
+    type,
+    issuedAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    payload,
+  };
+  const resp = await vtaFetch("/trust-tasks", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${state.accessToken}`,
+    },
+    body: JSON.stringify(envelope),
+  });
+  return { envelope, resp };
+}
 
 function populateUriDropdown() {
   els.taskUri.innerHTML = "";
@@ -695,18 +732,8 @@ els.sendTask.addEventListener("click", async () => {
     setOutput(els.taskOutput, `Payload is not valid JSON: ${e.message}`, "err");
     return;
   }
-  const id = `urn:uuid:${crypto.randomUUID()}`;
-  const envelope = { id, type, payload };
-
   try {
-    const resp = await vtaFetch("/api/trust-tasks", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${state.accessToken}`,
-      },
-      body: JSON.stringify(envelope),
-    });
+    const { envelope, resp } = await postTrustTask(type, payload);
     setOutput(
       els.taskOutput,
       `Request:\n${asJson(envelope)}\n\nResponse:\n${asJson(resp)}`,

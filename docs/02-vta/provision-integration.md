@@ -450,7 +450,8 @@ pnm bootstrap provision-integration \
     --out        mediator-bundle.armor
 ```
 
-Thin HTTP client around `POST /bootstrap/provision-integration`. PNM
+Sends the signed `provision/integration/0.3` Trust Task over the
+session's transport (TSP, DIDComm, or HTTPS on `/trust-tasks`). PNM
 authenticates to the VTA with the operator's session; the VTA does
 the provisioning server-side using the same library function the
 offline CLI uses. The returned armored bundle is identical.
@@ -1066,20 +1067,23 @@ pnm bootstrap provision-integration \
     [--assertion <did-signed|pinned-only>]
 ```
 
-Thin HTTP client around `POST /bootstrap/provision-integration`. PNM
-authenticates to the VTA with the operator's session.
+Sends the `provision/integration/0.3` Trust Task. PNM authenticates to
+the VTA with the operator's session.
 
-### HTTP endpoint
+### Trust Task
 
 ```
-POST /bootstrap/provision-integration
-Authorization: <PNM session token>
-Body:  { request: <VP JSON>, context: <id>, assertion: <variant> }
-Response: { bundle: <armor string>, digest: <sha256 hex>, summary: {...} }
+type:     https://trusttasks.org/spec/provision/integration/0.3
+payload:  { request: <VP JSON>, context: <id>, assertion: <variant>, ... }
+response: { bundle: <armor string>, digestMultibase: <digest>, summary: {...} }
 ```
 
-ACL: `require_admin` scoped to the target context. Super-admin passes
-through. If the caller is context-admin but the request's
+Over TSP, DIDComm, or HTTPS (`POST /trust-tasks`); the earlier
+`POST /bootstrap/provision-integration` route is removed.
+
+ACL: the Admin role first (a non-admin is refused before the target
+context is looked up), then admin scoped to the target context.
+Super-admin passes through. If the caller is context-admin but the request's
 `context_hint` disagrees with `context`, reject (don't silently
 normalize).
 

@@ -228,12 +228,23 @@ pub struct ImportKeyResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct WrappingKeyResponse {
-    pub kid: String,
-    pub kty: String,
-    pub crv: String,
-    pub x: String,
+/// What [`super::VtaClient::get_wrapping_key`] returns: the generated
+/// `keys/import-wrapping-key/0.1` response — `wrappingKey` (an Ed25519
+/// `did:key`; seal to its X25519 counterpart), `keyId` and `expiresAt`.
+pub type WrappingKeyResponse = trust_tasks_rs::specs::keys::import_wrapping_key::v0_1::Response;
+
+/// Which sessions [`super::VtaClient::revoke_sessions`] ends — the three forms
+/// of `auth/revoke-session/0.2`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeSessions<'a> {
+    /// One named session.
+    Session(&'a str),
+    /// Every session of the caller itself — sign out everywhere, this client's
+    /// own session included.
+    AllMine,
+    /// Every session of this subject. The caller's own DID, or a subject whose
+    /// access it could withdraw.
+    Subject(&'a str),
 }
 
 // ── Context types ───────────────────────────────────────────────────

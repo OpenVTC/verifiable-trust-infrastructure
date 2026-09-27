@@ -120,7 +120,6 @@ pub struct AppState {
     /// because that keyspace wraps under a seed-derived KEK; these must have
     /// no path back to the mnemonic.
     pub internal_ks: KeyspaceHandle,
-    pub cache_ks: KeyspaceHandle,
     /// Vault — third-party credentials the holder has stored on this VTA.
     /// M1 reads only; upsert/delete/sync/release land in M2+. Encrypted at
     /// rest like every other secret-bearing keyspace.
@@ -231,13 +230,6 @@ pub struct AppState {
     /// active/drain state machine.
     #[cfg(all(feature = "webvh", feature = "didcomm"))]
     pub mediator_registry: Arc<crate::messaging::registry::MediatorListenerRegistry>,
-    /// Per-webvh-server async mutex registry for serializing
-    /// daemon-REST auth-cache read-modify-writes. Two concurrent
-    /// operations against the same server can't both refresh and
-    /// last-writer-wins; locks are keyed by server id so unrelated
-    /// servers don't contend.
-    #[cfg(feature = "webvh")]
-    pub webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks,
     /// Per-mediator TTL sweeper. Arms a `tokio::time::sleep_until`
     /// task per drain entry; on expiry, calls
     /// `record_expiries_persisted` and signals upstream listener
@@ -383,7 +375,7 @@ impl AuthState for AppState {
 ///
 /// Injecting these (rather than letting `run()` assemble its own `AppState`
 /// literal) keeps `build_app_state` the single `AppState` constructor — one
-/// `WebvhAuthLocks::new()`, one config `RwLock`, one `init_auth` — so the REST
+/// config `RwLock`, one `init_auth` — so the REST
 /// and DIDComm transports can't diverge (P1.1).
 /// **`#[non_exhaustive]` for the same reason [`AppState`] carries it** (#1024),
 /// and the gap that motivated adding it here was found the same way: a field
@@ -471,7 +463,6 @@ pub async fn build_app_state(
     let audit_key_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT_KEY)?);
     let imported_ks = apply_encryption(store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?);
     let internal_ks = apply_encryption(store.keyspace(crate::keyspaces::INTERNAL_KEYS)?);
-    let cache_ks = apply_encryption(store.keyspace(crate::keyspaces::CACHE)?);
     let vault_ks = apply_encryption(store.keyspace(crate::keyspaces::VAULT)?);
     // Persistent runtime state for service enable/disable. Encrypted because
     // a couple of bool records are cheap and the keyspace may grow.
@@ -590,7 +581,6 @@ pub async fn build_app_state(
         audit_sink,
         imported_ks,
         internal_ks,
-        cache_ks,
         vault_ks,
         service_state_ks,
         sealed_nonces_ks,
@@ -621,8 +611,6 @@ pub async fn build_app_state(
         mediator_registry,
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
         drain_sweeper,
-        #[cfg(feature = "webvh")]
-        webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
         telemetry,
         wrapping_cache: crate::keys::wrapping::WrappingKeyCache::new(),
         mdoc_trust,

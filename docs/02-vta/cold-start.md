@@ -365,8 +365,9 @@ Two transports, same operation:
   physically there. Uses `vta bootstrap provision-integration`.
 - **Online via PNM** — when the operator is on a workstation with an
   authenticated PNM session, `pnm bootstrap provision-integration`
-  bridges to the VTA's `POST /bootstrap/provision-integration` endpoint.
-  Same shared library function runs on the VTA regardless of transport.
+  sends the `provision/integration/0.3` Trust Task over whichever
+  transport the session holds. Same shared library function runs on the
+  VTA regardless of transport.
 
 Full design: [`../02-vta/provision-integration.md`].
 

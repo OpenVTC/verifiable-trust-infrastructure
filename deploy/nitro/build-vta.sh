@@ -310,7 +310,6 @@ data_dir = "/var/lib/vta/data"
 
 [tee]
 mode = "required"
-embed_in_did = true
 attestation_cache_ttl = 300
 storage_key_salt = "vta-tee-storage-v1"
 

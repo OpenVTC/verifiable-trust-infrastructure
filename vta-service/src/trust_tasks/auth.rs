@@ -1,6 +1,7 @@
 //! Auth-slice trust-task handlers.
 //!
-//! Only `revoke-session/1.0` is dispatched here. Pre-authentication
+//! `revoke-session/0.2`, `whoami/0.1` and `sessions/list/0.1` are dispatched
+//! here. Pre-authentication
 //! operations (challenge, authenticate, refresh, passkey-login) cannot
 //! pass `AuthClaims` and so live on dedicated unauth REST routes in
 //! `routes::auth` — see the `REST_ROUTED` allowlist in the parity
@@ -8,8 +9,9 @@
 
 use super::helpers::TrustTaskOutcome;
 use serde_json::{Value, json};
+use trust_tasks_rs::specs::auth::revoke_session::v0_2 as revoke_session_spec;
 use trust_tasks_rs::{RejectReason, TrustTask};
-use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse, epoch_to_rfc3339};
+use vta_sdk::protocols::auth::epoch_to_rfc3339;
 
 use crate::acl::{check_acl_entry, effective_capabilities};
 use crate::audit::audit;
@@ -17,89 +19,144 @@ use crate::auth::AuthClaims;
 use crate::auth::session::{SessionState, delete_session, get_session, list_sessions, now_epoch};
 use crate::server::AppState;
 
-use super::helpers::{app_error_to_reject, reject_with, success_response};
+use super::helpers::{app_error_to_reject, parse_payload, reject_with, success_response};
 
-/// Handler for `spec/vta/auth/revoke-session/1.0`.
+/// What an `auth/revoke-session/0.2` document targets — exactly one of the
+/// three forms the specification's `oneOf` admits.
+enum RevokeTarget {
+    /// One named session.
+    Session(String),
+    /// Every session of this subject: `all: true` (the caller itself) or
+    /// `subject`.
+    Subject(String),
+}
+
+/// Read the target and reason off the payload **as received**.
 ///
-/// Parses the request payload, looks up the session, authorises the caller
-/// (session owner OR `Role::Admin`), deletes the session, and answers with
+/// The payload is first checked against the published schema
+/// (`ValidatedPayload::validate_value`), and the one-form rule is then enforced
+/// here, on that validated JSON — not left to the generated Rust type, which
+/// (from trust-tasks-rs 0.24) models the three forms as independent optional
+/// members and so cannot say "exactly one". The spine validates the payload
+/// before dispatch too; this handler does not rely on it.
+///
+/// `Err` is the `malformedRequest` reason: a payload the schema refuses, two
+/// forms or none, or `all: false`, which 0.2 keeps schema-valid only because
+/// 0.1 admitted it and which targets nothing.
+fn revoke_target(payload: &Value, caller: &str) -> Result<(RevokeTarget, Option<String>), String> {
+    use trust_tasks_rs::validate::ValidatedPayload as _;
+    revoke_session_spec::Payload::validate_value(payload)
+        .map_err(|e| format!("revoke-session payload: {e}"))?;
+    let obj = payload
+        .as_object()
+        .ok_or_else(|| "revoke-session payload must be an object".to_string())?;
+    let forms = ["sessionId", "all", "subject"]
+        .iter()
+        .filter(|k| obj.contains_key(**k))
+        .count();
+    if forms != 1 {
+        return Err(
+            "revoke-session takes exactly one of `sessionId`, `all` or `subject`".to_string(),
+        );
+    }
+    let reason = obj
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let target = if let Some(id) = obj.get("sessionId").and_then(Value::as_str) {
+        RevokeTarget::Session(id.to_string())
+    } else if let Some(all) = obj.get("all").and_then(Value::as_bool) {
+        if !all {
+            return Err(
+                "`all: false` targets nothing; send `all: true`, `sessionId` or `subject`"
+                    .to_string(),
+            );
+        }
+        RevokeTarget::Subject(caller.to_string())
+    } else if let Some(subject) = obj.get("subject").and_then(Value::as_str) {
+        RevokeTarget::Subject(subject.to_string())
+    } else {
+        // Unreachable once the schema has passed (each member is typed), but
+        // a wrong type is a malformed request, not a panic.
+        return Err(
+            "revoke-session: `sessionId` and `subject` are strings, `all` a boolean".into(),
+        );
+    };
+    Ok((target, reason))
+}
+
+/// Handler for `spec/auth/revoke-session/0.2`.
+///
+/// Ends one named session (`sessionId`), every session of the caller
+/// (`all: true`), or every session of a named `subject`, and answers
 /// `revokedCount` — the number of sessions this call invalidated.
 ///
-/// **`revokedCount: 0` is a success, and it is deliberately ambiguous.** The
-/// spec asks for both things at once. The response schema says "Zero is a valid
-/// outcome (e.g. the named sessionId was already revoked)" and the prose adds
-/// that producers "SHOULD treat zero as 'the post-state is what you asked for',
-/// not as an error" — so a retry of a revoke that already happened must
-/// succeed. `vta-sdk`'s own `retry_safety` table agrees: this task is
-/// `RetrySafe`. Separately, the `notOwner` error code carries "The auth service
-/// MUST NOT reveal whether the session exists at all when the producer is not
-/// its owner."
+/// # Whose sessions a caller may end (VTI-SES-043, VTI-ACL-050)
 ///
-/// Those two only hold together if a session the caller may not touch and a
-/// session that is not there answer identically. So both return zero, and this
-/// handler never emits `notOwner`: emitting it *only* when the session exists
-/// is exactly the disclosure the code's own definition forbids. The count stays
-/// literally true either way — zero sessions were invalidated by this call. The
-/// refusal is still recorded in the audit trail, which is not the caller's to
-/// read.
+/// Its own, always. Anyone else's exactly when it could withdraw that
+/// subject's access: [`crate::operations::acl::may_manage_subject`], the rule
+/// `acl/revoke` applies to the subject's entry. Holding the admin role is not
+/// enough on its own — a context admin cannot end a super-admin's sessions, nor
+/// those of a subject in a context it does not administer, and a subject with
+/// no ACL entry belongs to no context, so only a super-admin reaches it.
 ///
-/// This diverges from `routes::auth::revoke_session` (the legacy
-/// `DELETE /auth/sessions/{session_id}` REST handler), which 404s on a missing
-/// session. That is the conventional REST answer for a missing resource and is
-/// in its published OpenAPI responses; it is not governed by this task's
-/// `revokedCount` schema. Same audit event key (`session.revoke`), same
-/// authorisation rule.
+/// # What a refusal discloses
+///
+/// - `subject` outside the caller's authority is `permissionDenied`, and the
+///   check runs **before** the subject's sessions are looked at, so the answer
+///   is the same whether or not this agent knows the subject or holds sessions
+///   for it (consumer rule 4).
+/// - `sessionId` of a session outside the caller's authority is answered as a
+///   missing one: `revokedCount: 0`, which the spec RECOMMENDS because it makes
+///   a retried revocation succeed (consumer rule 2). Emitting anything
+///   different *only* when the session exists is exactly the disclosure the
+///   rule forbids.
+///
+/// Every revocation and every refusal is recorded in the audit trail with both
+/// the caller and the targeted subject (consumer rule 7); the trail is not the
+/// caller's to read.
+///
+/// 0.1 is not served: every 0.1 payload is a valid 0.2 payload, and 0.1 had no
+/// way to name another subject.
 pub(super) async fn handle_revoke_session(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // 1. Parse the payload.
-    let req: RevokeSessionRequest = match serde_json::from_value(doc.payload.clone()) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::MalformedRequest {
-                    reason: format!("revoke-session payload parse: {e}"),
-                },
-            );
+    let (target, reason) = match revoke_target(&doc.payload, &auth.did) {
+        Ok(t) => t,
+        Err(reason) => {
+            return reject_with(&doc, RejectReason::MalformedRequest { reason });
         }
     };
-
-    // 2. Look up the session.
-    // `sessionId` XOR `all`, per the specification's `oneOf`. Both arms are
-    // legal documents; only one of them is a thing this VTA can do.
-    let session_id = match (&req.session_id, req.all.unwrap_or(false)) {
-        (Some(id), false) => id.clone(),
-        (None, true) => {
-            return reject_with(
-                &doc,
-                RejectReason::TaskFailed {
-                    reason: "auth:revoke_all_unsupported — this maintainer revokes one named \
-                             session; resend with `sessionId`"
-                        .to_string(),
-                    details: None,
-                },
-            );
+    // And through the generated type, so the payload is one it admits.
+    if let Err(resp) = parse_payload::<revoke_session_spec::Payload>(&doc) {
+        return resp;
+    }
+    match target {
+        RevokeTarget::Session(session_id) => {
+            revoke_one(state, auth, &doc, &session_id, reason.as_deref()).await
         }
-        // Both or neither: the `oneOf` refuses it, and so does this.
-        _ => {
-            return reject_with(
-                &doc,
-                RejectReason::MalformedRequest {
-                    reason: "revoke-session takes exactly one of `sessionId` or `all`".to_string(),
-                },
-            );
+        RevokeTarget::Subject(subject) => {
+            revoke_subject(state, auth, &doc, &subject, reason.as_deref()).await
         }
-    };
+    }
+}
 
-    let session = match get_session(&state.sessions_ks, &session_id).await {
+/// The `sessionId` form.
+async fn revoke_one(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    session_id: &str,
+    reason: Option<&str>,
+) -> TrustTaskOutcome {
+    let session = match get_session(&state.sessions_ks, session_id).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!(error = %e, "session lookup failed in revoke-session");
             return reject_with(
-                &doc,
+                doc,
                 RejectReason::InternalError {
                     reason: format!("session lookup: {e}"),
                 },
@@ -107,18 +164,13 @@ pub(super) async fn handle_revoke_session(
         }
     };
 
-    // 3. Authorise: the caller owns the session or may manage its subject
-    //    (`operations::acl::may_manage_subject`, the rule `acl/delete` applies
-    //    to the subject's entry). Same rule as the legacy REST handler. The
-    //    admin role alone was the old rule, and let any context's admin end
-    //    anyone's session, a super-admin's included. A session that is not the
-    //    caller's to end and one that does not exist take the same arm, so
-    //    the caller cannot tell them apart — see this function's doc comment.
+    // A session that is not the caller's to end and one that does not exist
+    // take the same arm, so the caller cannot tell them apart.
     let permitted = match &session {
         Some(s) => {
             match crate::operations::acl::may_manage_subject(&state.acl_ks, auth, &s.did).await {
                 Ok(p) => p,
-                Err(e) => return app_error_to_reject(&doc, e),
+                Err(e) => return app_error_to_reject(doc, e),
             }
         }
         None => false,
@@ -130,80 +182,188 @@ pub(super) async fn handle_revoke_session(
         tracing::warn!(
             caller = %auth.did,
             session_id = %session_id,
-            "revoke-session: no session revoked (absent, or not the caller's)"
+            "revoke-session: no session revoked (absent, or outside the caller's authority)"
         );
         audit!(
             "session.revoke",
             actor = &auth.did,
-            resource = &session_id,
+            resource = session_id,
             outcome = "no-op"
         );
         // A real session outside the caller's authority is a refusal, and
-        // refusals are recorded durably (VTI-AUD-003). The trail is not the
-        // caller's to read, so this discloses nothing to it.
-        if session.is_some() {
+        // refusals are recorded durably (VTI-AUD-003), naming its subject.
+        if let Some(s) = &session {
             crate::audit::record_with_detail_best_effort(
                 &state.audit_sink,
                 "session.revoke",
                 &auth.did,
-                Some(&session_id),
+                Some(session_id),
                 "denied",
                 Some(super::helpers::TRANSPORT_TRUST_TASK),
                 None,
-                Some("session belongs to a subject outside the caller's authority"),
+                Some(&format!(
+                    "session of {} is outside the caller's authority",
+                    s.did
+                )),
             )
             .await;
         }
-        return success_response(&doc, RevokeSessionResponse { revoked_count: 0 });
+        return success_response(doc, json!({ "revokedCount": 0 }));
     }
+    let subject = session.map(|s| s.did).unwrap_or_default();
 
-    // 4. Delete.
-    if let Err(e) = delete_session(&state.sessions_ks, &session_id).await {
+    if let Err(e) = delete_session(&state.sessions_ks, session_id).await {
         tracing::error!(error = %e, session_id = %session_id, "session delete failed");
         return reject_with(
-            &doc,
+            doc,
             RejectReason::InternalError {
                 reason: format!("session delete: {e}"),
             },
         );
     }
 
-    // 5. Audit — both forms, and they are not redundant.
-    //
-    // The `audit!` macro emits a tracing event on the `audit` target: a log
-    // line. It does NOT reach the `AuditSink`, so nothing it records appears in
-    // `audit/list` or in an operator's external sink. Ending a session is a
-    // change to who can act, and it belongs in the queryable trail, so the
-    // sink-routed `record_with_detail` is what actually satisfies that.
+    // Both forms, and they are not redundant: `audit!` is a log line on the
+    // `audit` target and never reaches the `AuditSink`; ending a session is a
+    // change to who can act, so it belongs in the queryable trail too.
     audit!(
         "session.revoke",
         actor = &auth.did,
-        resource = &session_id,
+        resource = session_id,
         outcome = "success"
     );
+    record_revocation(
+        state,
+        auth,
+        "session.revoke",
+        session_id,
+        &subject,
+        1,
+        reason,
+    )
+    .await;
+    tracing::info!(caller = %auth.did, session_id = %session_id, "session revoked via trust-task");
+
+    success_response(doc, json!({ "revokedCount": 1 }))
+}
+
+/// The `all: true` and `subject` forms.
+async fn revoke_subject(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    subject: &str,
+    reason: Option<&str>,
+) -> TrustTaskOutcome {
+    // Authority first, before anything about the subject's sessions is read,
+    // so the refusal is identical whether or not it has any.
+    let permitted =
+        match crate::operations::acl::may_manage_subject(&state.acl_ks, auth, subject).await {
+            Ok(p) => p,
+            Err(e) => return app_error_to_reject(doc, e),
+        };
+    if !permitted {
+        tracing::warn!(
+            audit = true,
+            security_alert = true,
+            caller = %auth.did,
+            subject,
+            "revoke-session refused: the subject is outside the caller's authority"
+        );
+        crate::audit::record_with_detail_best_effort(
+            &state.audit_sink,
+            "session.revoke_by_did",
+            &auth.did,
+            Some(subject),
+            "denied",
+            Some(super::helpers::TRANSPORT_TRUST_TASK),
+            None,
+            Some("the subject is outside the caller's authority"),
+        )
+        .await;
+        return reject_with(
+            doc,
+            RejectReason::PermissionDenied {
+                reason: "the named subject is outside your authority".into(),
+            },
+        );
+    }
+
+    let sessions = match list_sessions(&state.sessions_ks).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "session list failed in revoke-session");
+            return reject_with(
+                doc,
+                RejectReason::InternalError {
+                    reason: format!("session list: {e}"),
+                },
+            );
+        }
+    };
+    let mut revoked = 0u64;
+    for session in sessions.into_iter().filter(|s| s.did == subject) {
+        if let Err(e) = delete_session(&state.sessions_ks, &session.session_id).await {
+            tracing::error!(error = %e, "session delete failed in revoke-session");
+            return reject_with(
+                doc,
+                RejectReason::InternalError {
+                    reason: format!("session delete: {e}"),
+                },
+            );
+        }
+        revoked += 1;
+    }
+
+    audit!(
+        "session.revoke_by_did",
+        actor = &auth.did,
+        resource = subject,
+        outcome = "success"
+    );
+    record_revocation(
+        state,
+        auth,
+        "session.revoke_by_did",
+        subject,
+        subject,
+        revoked,
+        reason,
+    )
+    .await;
+    tracing::info!(caller = %auth.did, subject, revoked, "sessions revoked via trust-task");
+
+    success_response(doc, json!({ "revokedCount": revoked }))
+}
+
+/// The durable audit row for a revocation: who acted, on whose sessions, how
+/// many, and the caller's stated reason.
+async fn record_revocation(
+    state: &AppState,
+    auth: &AuthClaims,
+    action: &str,
+    resource: &str,
+    subject: &str,
+    revoked: u64,
+    reason: Option<&str>,
+) {
+    let detail = match reason {
+        Some(r) => format!("subject {subject}; {revoked} session(s); reason: {r}"),
+        None => format!("subject {subject}; {revoked} session(s)"),
+    };
     if let Err(e) = crate::audit::record_with_detail(
         &state.audit_sink,
-        "session.revoke",
+        action,
         &auth.did,
-        Some(&session_id),
+        Some(resource),
         "success",
         Some(super::helpers::TRANSPORT_TRUST_TASK),
         None,
-        None,
+        Some(&detail),
     )
     .await
     {
-        tracing::warn!(error = %e, "audit record failed for session.revoke");
+        tracing::warn!(error = %e, "audit record failed for {action}");
     }
-    tracing::info!(
-        caller = %auth.did,
-        session_id = %session_id,
-        "session revoked via trust-task"
-    );
-
-    // 6. Build the success response document. `revokedCount` is 1: this handler
-    // revokes exactly the one named session.
-    success_response(&doc, RevokeSessionResponse { revoked_count: 1 })
 }
 
 /// Handler for `spec/auth/whoami/0.1`.
@@ -312,8 +472,9 @@ pub(super) async fn handle_whoami(
 ///
 /// Enumerates every **active** session the VTA holds for the *caller's own*
 /// subject — the self-service multi-device view, companion to whoami. Scoped to
-/// `auth.did` (a caller only sees their own sessions); this is distinct from
-/// the admin `GET /auth/sessions` REST route, which lists every session.
+/// `auth.did`: a caller only ever sees its own sessions, whatever its role. (An
+/// administrator ends another subject's sessions with `auth/revoke-session/0.2`
+/// `subject`; there is no task that enumerates them.)
 /// Bearer-authed like the other dispatcher auth ops; read-only.
 pub(super) async fn handle_sessions_list(
     state: &AppState,
@@ -367,4 +528,39 @@ pub(super) async fn handle_sessions_list(
         outcome = "success"
     );
     success_response(&doc, json!({ "sessions": sessions }))
+}
+
+#[cfg(test)]
+mod revoke_form_tests {
+    use serde_json::{Value, json};
+    use trust_tasks_rs::TrustTask;
+
+    /// The handler holds the one-form rule itself, not only the spine's schema
+    /// check in front of it: called directly with a document the schema would
+    /// refuse, it still answers `malformedRequest` and revokes nothing.
+    #[tokio::test]
+    async fn the_handler_refuses_two_forms_or_none_on_its_own() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let claims = crate::test_support::super_admin_claims();
+        for payload in [
+            json!({ "sessionId": "s-1", "all": true }),
+            json!({ "sessionId": "s-1", "subject": "did:key:z6MkOther" }),
+            json!({ "all": true, "subject": "did:key:z6MkOther" }),
+            json!({}),
+            json!({ "all": false }),
+        ] {
+            let doc: TrustTask<Value> = serde_json::from_value(json!({
+                "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                "type": vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
+                "payload": payload.clone(),
+            }))
+            .unwrap();
+            let out = super::handle_revoke_session(&state, &claims, doc).await;
+            let body: Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(
+                body["payload"]["code"], "malformedRequest",
+                "{payload}: {body}"
+            );
+        }
+    }
 }

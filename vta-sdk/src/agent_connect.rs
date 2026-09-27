@@ -57,6 +57,57 @@ use crate::session::{SessionStore, TransportChoice};
 /// Default service name the `pnm` CLI stores its sessions under.
 pub const DEFAULT_SERVICE_NAME: &str = "pnm-cli";
 
+/// The environment variable that relocates a whole `pnm` profile: config,
+/// sessions, pending setups and bootstrap secrets.
+pub const PNM_HOME_ENV: &str = "PNM_HOME";
+
+/// The `PNM_HOME` this process was started with, if set and non-empty.
+pub fn pnm_home() -> Option<PathBuf> {
+    std::env::var_os(PNM_HOME_ENV)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Where `pnm` keeps its profile: `$PNM_HOME` when set, otherwise
+/// `dirs::config_dir()/pnm` (see [`default_sessions_dir`] for why not XDG).
+pub fn pnm_profile_dir() -> Result<PathBuf, VtaError> {
+    match pnm_home() {
+        Some(home) => Ok(home),
+        None => default_sessions_dir(),
+    }
+}
+
+/// The keyring service `pnm` stores its sessions under.
+///
+/// Moving the profile directory is not enough to isolate it. With the
+/// platform credential store, a session lives under *(service, key)*, and
+/// both are the same in every profile (`pnm-cli`, `vta:<slug>`). A
+/// `PNM_HOME` profile with a VTA named like one in the real profile would
+/// read, overwrite and on `vta delete` erase the real profile's credential.
+/// So under `PNM_HOME` the service carries a digest of the profile's path.
+/// A digest rather than the path, so the keychain does not record where
+/// profiles live.
+pub fn pnm_service_name() -> String {
+    service_name_for(pnm_home().as_deref())
+}
+
+fn service_name_for(home: Option<&std::path::Path>) -> String {
+    use sha2::{Digest, Sha256};
+    let Some(home) = home else {
+        return DEFAULT_SERVICE_NAME.to_string();
+    };
+    // The same profile must map to the same service however it is spelled
+    // (relative, trailing slash, through a symlink).
+    let absolute = std::fs::canonicalize(home)
+        .or_else(|_| std::path::absolute(home))
+        .unwrap_or_else(|_| home.to_path_buf())
+        .components()
+        .collect::<PathBuf>();
+    let digest = Sha256::digest(absolute.as_os_str().as_encoded_bytes());
+    let short: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+    format!("{DEFAULT_SERVICE_NAME}:{short}")
+}
+
 /// Prefix `pnm` stores its VTA sessions under. `cnm` uses `community:` for the
 /// same reason; neither session backend adds one for you.
 const PNM_SESSION_PREFIX: &str = "vta:";
@@ -359,14 +410,11 @@ impl AgentConnect {
                 Ok(client)
             }
             ConnectMode::Session { key } => {
-                let service = self
-                    .service_name
-                    .as_deref()
-                    .unwrap_or(DEFAULT_SERVICE_NAME)
-                    .to_string();
+                // Unset, both follow `pnm` — including its `PNM_HOME`.
+                let service = self.service_name.clone().unwrap_or_else(pnm_service_name);
                 let dir = match &self.sessions_dir {
                     Some(d) => d.clone(),
-                    None => default_sessions_dir()?,
+                    None => pnm_profile_dir()?,
                 };
                 SessionStore::new(&service, dir)
                     .connect_with_transport(&key, self.url.as_deref(), None, self.transport)
@@ -586,6 +634,28 @@ mod tests {
         assert_eq!(
             dir.parent().expect("parent"),
             dirs::config_dir().expect("config dir")
+        );
+    }
+
+    #[test]
+    fn a_pnm_home_profile_has_its_own_keyring_service() {
+        assert_eq!(service_name_for(None), DEFAULT_SERVICE_NAME);
+        let a = service_name_for(Some(std::path::Path::new("/tmp/pnm-home-a")));
+        let b = service_name_for(Some(std::path::Path::new("/tmp/pnm-home-b")));
+        assert_ne!(
+            a, DEFAULT_SERVICE_NAME,
+            "must not share the real profile's service"
+        );
+        assert_ne!(a, b, "two profiles must not share a service");
+        assert!(a.starts_with("pnm-cli:"), "{a}");
+        assert!(
+            !a.contains("pnm-home-a"),
+            "the path must not be recorded: {a}"
+        );
+        assert_eq!(
+            a,
+            service_name_for(Some(std::path::Path::new("/tmp/pnm-home-a/"))),
+            "the same profile maps to the same service however it is spelled"
         );
     }
 

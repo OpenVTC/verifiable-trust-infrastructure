@@ -1102,7 +1102,6 @@ pub async fn run_context_delete(
         let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
         let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
             Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
         let deps = crate::operations::did_webvh::WebvhDeps {
             delete_cascade: Some(crate::operations::did_webvh::DeleteCascadeDeps {
                 acl_ks: &acl_ks,
@@ -1117,7 +1116,6 @@ pub async fn run_context_delete(
             seed_store: &*seed_store,
             did_resolver: &did_resolver,
             didcomm_bridge: &no_bridge,
-            auth_locks: &auth_locks,
             // Offline: no mediator socket to lend, so the seam falls to
             // DIDComm. Same reason as `webvh_cli`.
             #[cfg(feature = "tsp")]

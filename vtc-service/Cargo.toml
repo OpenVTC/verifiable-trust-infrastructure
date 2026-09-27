@@ -229,7 +229,7 @@ affinidi-messaging-didcomm = "0.15.9"
 # mediator-side twin of the client-side failure this crate's TSP work is about.
 # Always on (not conditioned on this crate's `tsp`): the harness is test-only,
 # and a mediator that can route TSP is harmless to the DIDComm suite.
-affinidi-messaging-test-mediator = { version = "0.11", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.12", optional = true, features = [
     "tsp",
 ] }
 tokio-util = { workspace = true, features = ["rt"] }
@@ -335,8 +335,9 @@ vtc-service = { path = ".", features = ["test-support", "didcomm-harness"] }
 # failure: the client was silently broken on every route because nothing ever
 # ran the pair together. Dev-only, and `vtc-client` does not depend on
 # `vtc-service`, so there is no cycle.
-# `didcomm`: `tests/backup_didcomm.rs` drives the backup over a live session.
-vtc-client = { path = "../vtc-client", features = ["didcomm"] }
+# `didcomm`: `tests/backup_didcomm.rs` drives the backup over a live session;
+# `tsp`: `tests/git_ns_vtc_client.rs` drives the git-ns calls over TSP too.
+vtc-client = { path = "../vtc-client", features = ["tsp"] }
 tempfile = "3"
 # Integration tests under `tests/` exercise the route stack via
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.

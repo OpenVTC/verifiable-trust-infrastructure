@@ -6,10 +6,21 @@
 //! **Changes are signed Trust Tasks.** A grant, a revoke, a bind or an
 //! adoption is authorized by the *signer's* git rights, which the VTC reads
 //! from its own records when the document arrives — not by a bearer token. So
-//! these methods take a [`HolderKey`], sign the document with it, and post it
-//! to the document endpoint; they never read `self.token`. A community
+//! these methods take a [`HolderKey`] and never read `self.token`. A community
 //! administrator's session does not stand in for a git right: an administrator
 //! who holds none grants nothing.
+//!
+//! They go the way every Trust Task this client sends goes: over the DIDComm
+//! or TSP session when the client holds one ([`VtcClient::connect_tsp`],
+//! [`VtcClient::connect_didcomm`]), otherwise signed with the key and posted to
+//! `POST {base}/trust-tasks`. The document is the same on every transport —
+//! signed, addressed to the community, and bound to its sender: over a session
+//! the VTC takes it only when its proof, its `issuer` and the envelope's
+//! sender are one DID, so the key must be the session's own identity, and a
+//! call whose key names another DID is refused here before anything is sent.
+//! A refusal reads the same either way — [`task_error`] and
+//! [`step_up_request`] recover its code and details from the
+//! `trust-task-error` document whichever transport carried it.
 //!
 //! **Listings are the administrator's REST reads** (`/v1/git-ns/*`), which need
 //! an admin token and return the console's JSON.
@@ -52,25 +63,38 @@ impl VtcClient {
     /// Sign one `git-ns/*` document as `key` and send it; returns the
     /// response document's payload.
     ///
-    /// A refusal comes back as [`VtcError::Http`] whose body is the
-    /// `trust-task-error` document, so a caller can read its `code` — the
-    /// specification's (`git-ns:lastOwner`, `git-ns:escalation`, …).
+    /// Over the client's session when it holds one — `key` must then be the
+    /// session's identity — otherwise signed with `key` and posted to the
+    /// document endpoint.
+    ///
+    /// A refusal carries the `trust-task-error` document — as
+    /// [`VtcError::Refused`] over a session, as [`VtcError::Http`]'s body over
+    /// HTTPS — so a caller can read its `code`, the specification's
+    /// (`git-ns:lastOwner`, `git-ns:escalation`, …), with [`task_error`].
     pub async fn git_ns_task<P: Serialize, R: DeserializeOwned>(
         &self,
         type_uri: &str,
         payload: &P,
         key: &HolderKey,
     ) -> Result<R, VtcError> {
+        #[cfg(feature = "didcomm")]
+        if self.documents.is_some() {
+            let payload = serde_json::to_value(payload)
+                .map_err(|e| VtcError::Url(format!("serialise {type_uri} payload: {e}")))?;
+            return self
+                .git_ns_over_session(type_uri, payload, key.holder_did())
+                .await;
+        }
         let doc = self.git_ns_sign(type_uri, payload, key).await?;
-        self.git_ns_send_signed(type_uri, &doc).await
+        self.git_ns_post_signed(type_uri, &doc).await
     }
 
     /// Sign one `git-ns/*` document as `key`, without sending it — for a task
     /// that may be refused for want of an operation-bound step-up, where the
-    /// **identical** document must be sent again once the gesture is recorded
-    /// (the gesture is bound to its digest; a re-signed document has a new
-    /// `id` and `issuedAt`, but the same payload, so either works — sending
-    /// the same one keeps the audit trail to one document).
+    /// same operation must be sent again once the gesture is recorded (the
+    /// gesture is bound to the payload's digest; a re-signed document has a
+    /// new `id` and `issuedAt`, but the same payload, so either works —
+    /// sending the same one over HTTPS keeps the audit trail to one document).
     pub async fn git_ns_sign<P: Serialize>(
         &self,
         type_uri: &str,
@@ -86,7 +110,86 @@ impl VtcClient {
 
     /// Send a document [`Self::git_ns_sign`] produced; returns the response
     /// document's payload.
+    ///
+    /// Over HTTPS the document is posted as it stands. Over a session its
+    /// payload goes in the document the session signs — the same DID, which
+    /// must be the one `doc` names as `issuer`, addressed to the same
+    /// community, so it is the same operation with the same payload digest.
     pub async fn git_ns_send_signed<R: DeserializeOwned>(
+        &self,
+        type_uri: &str,
+        doc: &str,
+    ) -> Result<R, VtcError> {
+        #[cfg(feature = "didcomm")]
+        if self.documents.is_some() {
+            let parsed: Value = serde_json::from_str(doc)
+                .map_err(|e| VtcError::InvalidPayload(format!("not a Trust Task document: {e}")))?;
+            let member = |name: &str| parsed.get(name).and_then(Value::as_str);
+            if member("type") != Some(type_uri) {
+                return Err(VtcError::InvalidPayload(format!(
+                    "the document is not a {type_uri} document"
+                )));
+            }
+            if member("recipient") != Some(self.vtc_did.as_str()) {
+                return Err(VtcError::InvalidPayload(format!(
+                    "the document is not addressed to {}",
+                    self.vtc_did
+                )));
+            }
+            let issuer = member("issuer")
+                .ok_or_else(|| VtcError::InvalidPayload("the document names no issuer".into()))?
+                .to_string();
+            let payload = parsed.get("payload").cloned().unwrap_or(Value::Null);
+            return self.git_ns_over_session(type_uri, payload, &issuer).await;
+        }
+        self.git_ns_post_signed(type_uri, doc).await
+    }
+
+    /// One `git-ns/*` task over the client's session, attributed to
+    /// `signer_did`.
+    ///
+    /// The session signs the document as its own DID and the VTC binds that
+    /// proof to the envelope's sender, so a task meant to be signed as any
+    /// other DID cannot go this way: it is refused here, before anything is
+    /// sent, rather than arrive attributed to the wrong member.
+    #[cfg(feature = "didcomm")]
+    async fn git_ns_over_session<R: DeserializeOwned>(
+        &self,
+        type_uri: &str,
+        payload: Value,
+        signer_did: &str,
+    ) -> Result<R, VtcError> {
+        let (Some(documents), Some(session_did)) = (&self.documents, &self.session_did) else {
+            return Err(VtcError::Session("this client holds no session".into()));
+        };
+        let base = |d: &str| d.split('#').next().unwrap_or(d).to_string();
+        if base(signer_did) != base(session_did) {
+            return Err(VtcError::Signing(format!(
+                "{type_uri} is to be signed as {signer_did}, but this client's session is                  {session_did}; over a session the VTC accepts a document only from the DID                  that signed it"
+            )));
+        }
+        let reply = documents
+            .dispatch_trust_task_document(type_uri, payload, crate::SESSION_TIMEOUT_SECS)
+            .await
+            .map_err(|e| VtcError::Session(e.to_string()))?;
+        let refused = reply
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.starts_with("https://trusttasks.org/spec/trust-task-error/"));
+        if refused {
+            return Err(VtcError::Refused {
+                document: reply.to_string(),
+            });
+        }
+        let payload = reply.get("payload").cloned().unwrap_or(Value::Null);
+        serde_json::from_value(payload).map_err(|e| VtcError::Http {
+            status: 200,
+            body: format!("{type_uri} response does not fit its schema: {e}"),
+        })
+    }
+
+    /// POST a signed `git-ns/*` document to the document endpoint.
+    async fn git_ns_post_signed<R: DeserializeOwned>(
         &self,
         type_uri: &str,
         doc: &str,
@@ -502,24 +605,31 @@ pub const STEP_UP_APPROVE_RESPONSE_TYPE: &str =
 pub const STEP_UP_PASSKEY_REDEEM_START_TYPE: &str =
     <trust_tasks_rs::specs::auth::passkey::enroll::redeem::start::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// The inline `auth/step-up/approve-request` a refusal carries as
-/// `details.stepUpRequest`, when it is one: the operation needs a passkey
-/// gesture bound to it before the same document is sent again.
-pub fn step_up_request(err: &VtcError) -> Option<Value> {
-    let VtcError::Http { body, .. } = err else {
-        return None;
+/// The `trust-task-error` document a refusal carries, whichever transport
+/// carried it: [`VtcError::Refused`] over a session, [`VtcError::Http`]'s body
+/// over HTTPS.
+fn refusal_document(err: &VtcError) -> Option<Value> {
+    let text = match err {
+        VtcError::Http { body, .. } => body,
+        VtcError::Refused { document } => document,
+        _ => return None,
     };
-    let doc: Value = serde_json::from_str(body).ok()?;
-    doc.pointer("/payload/details/stepUpRequest").cloned()
+    serde_json::from_str(text).ok()
 }
 
-/// The `code` and `message` of a `trust-task-error` document carried in a
-/// [`VtcError::Http`] body, when it is one.
+/// The inline `auth/step-up/approve-request` a refusal carries as
+/// `details.stepUpRequest`, when it is one: the operation needs a passkey
+/// gesture bound to it before the same operation is sent again.
+pub fn step_up_request(err: &VtcError) -> Option<Value> {
+    refusal_document(err)?
+        .pointer("/payload/details/stepUpRequest")
+        .cloned()
+}
+
+/// The `code` and `message` of the `trust-task-error` document a refusal
+/// carries, on any transport, when it is one.
 pub fn task_error(err: &VtcError) -> Option<(String, String)> {
-    let VtcError::Http { body, .. } = err else {
-        return None;
-    };
-    let doc: Value = serde_json::from_str(body).ok()?;
+    let doc = refusal_document(err)?;
     let code = doc.pointer("/payload/code")?.as_str()?.to_string();
     let message = doc
         .pointer("/payload/message")
@@ -527,4 +637,46 @@ pub fn task_error(err: &VtcError) -> Option<(String, String)> {
         .unwrap_or_default()
         .to_string();
     Some((code, message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refusal(code: &str) -> String {
+        serde_json::json!({
+            "type": "https://trusttasks.org/spec/trust-task-error/0.1",
+            "payload": {
+                "code": code,
+                "message": "no",
+                "details": { "stepUpRequest": { "boundTo": "sha-256:abc" } },
+            },
+        })
+        .to_string()
+    }
+
+    /// A refusal reads the same whichever transport carried it: the code and
+    /// the inline step-up request come off a session's `Refused` document as
+    /// they do off the document endpoint's body.
+    #[test]
+    fn a_refusal_reads_alike_over_a_session_and_over_https() {
+        let over_session = VtcError::Refused {
+            document: refusal("git-ns:lastOwner"),
+        };
+        let over_https = VtcError::Http {
+            status: 403,
+            body: refusal("git-ns:lastOwner"),
+        };
+        for err in [&over_session, &over_https] {
+            assert_eq!(
+                task_error(err),
+                Some(("git-ns:lastOwner".to_string(), "no".to_string()))
+            );
+            assert_eq!(
+                step_up_request(err).and_then(|r| r["boundTo"].as_str().map(str::to_string)),
+                Some("sha-256:abc".to_string())
+            );
+        }
+        assert_eq!(task_error(&VtcError::Session("down".into())), None);
+    }
 }

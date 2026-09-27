@@ -332,6 +332,50 @@ where
     router.layer(axum::middleware::from_fn_with_state(state, enforce))
 }
 
+/// As [`apply`], but charging only requests that present **no** credential
+/// (`vti_common::auth::presents_credential`). For an endpoint that serves both
+/// authenticated callers — whose gate is their credential, and who must stay
+/// off the limiter — and anonymous ones.
+///
+/// The credential test is the extractor's own, so a request cannot dodge the
+/// limiter with a junk header and still be served anonymously: what this lets
+/// through uncharged is either authenticated or refused by the extractor.
+pub(super) fn apply_anonymous<S>(
+    router: OpenApiRouter<S>,
+    limiter: Limiter,
+    trust_xff_cidrs: &[IpNetwork],
+    source: &QuotaSource,
+) -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    let initial = match source {
+        QuotaSource::Fixed(limits) => limits.quota(limiter),
+        QuotaSource::Live(_) => RateLimits::default().quota(limiter),
+    };
+    let state = Arc::new(LimiterState {
+        limiter,
+        extractor: TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()),
+        source: source.clone(),
+        buckets: StdRwLock::new(Buckets::new(initial)),
+    });
+    router.layer(axum::middleware::from_fn_with_state(
+        state,
+        enforce_anonymous,
+    ))
+}
+
+async fn enforce_anonymous(
+    state: State<Arc<LimiterState>>,
+    req: Request,
+    next: Next,
+) -> Response<Body> {
+    if vti_common::auth::extractor::presents_credential(req.headers()) {
+        return next.run(req).await;
+    }
+    enforce(state, req, next).await
+}
+
 async fn enforce(
     State(state): State<Arc<LimiterState>>,
     req: Request,
