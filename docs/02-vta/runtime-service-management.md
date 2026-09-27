@@ -88,10 +88,11 @@ won't need them; the `pnm` CLI is the canonical interface.
 
 **Trust Tasks** (super-admin; over TSP, DIDComm, or HTTPS on `/trust-tasks`):
 - `vta/services/list/1.0`, `vta/services/get/1.0` — what is advertised
-- `vta/services/{enable,disable,rollback}/1.0` and `vta/services/update/1.1`
-  — `{ service, config }`, one task per verb across `rest`, `didcomm`, `tsp`
-  and `webauthn`; `update/1.1` adds `drainTtlSecs` for the mediated
-  transports
+- `vta/services/{enable,disable}/1.0`, `vta/services/update/1.1` and
+  `vta/services/rollback/1.1` — `{ service, config }`, one task per verb
+  across `rest`, `didcomm`, `tsp` and `webauthn`; `update/1.1` and
+  `rollback/1.1` add `drainTtlSecs` for the mediated transports
+  (`pnm services didcomm rollback --drain-ttl` carries it)
 - `vta/services/drain/{list,cancel}/1.0` — the drain set
 - `vta/services/report/0.1` — per-mediator traffic and sender attribution
 
