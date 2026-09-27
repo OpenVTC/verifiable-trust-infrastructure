@@ -2358,7 +2358,8 @@ async fn main() {
 
             init_tracing(&config);
 
-            let store = store::Store::open(&config.store).expect("failed to open store");
+            let store = store::Store::open_with(&config.store, &config.fjall)
+                .expect("failed to open store");
             let seed_store: Arc<dyn keys::seed_store::SeedStore> =
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
 

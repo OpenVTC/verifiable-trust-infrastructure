@@ -37,6 +37,7 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
         store: StoreConfig {
             data_dir: std::path::PathBuf::from("data/test"),
         },
+        fjall: Default::default(),
         messaging: None,
         auth: Default::default(),
         audit_checkpoints: Default::default(),

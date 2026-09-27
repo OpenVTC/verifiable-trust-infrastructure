@@ -316,6 +316,54 @@ starts. Setup accounts for this:
   derived from the original. Choose `"delete"` if you genuinely want to
   start over.
 
+## Fjall memory settings
+
+The on-disk store (fjall) grows three memory-backed pools with the data
+set: a block cache for reads, buffered writes across every keyspace the
+process opens, and the write-ahead journal it replays at startup. Left
+at fjall's own defaults, none of these are aware of a Kubernetes pod's
+memory `limits` — a VTA under sustained write load can be OOMKilled by
+its own storage layer even though the request path looks fine.
+
+Three optional settings cap them, in a `[fjall]` table in `config.toml`
+(a sibling of `[store]`) or, equivalently, as environment variables — the
+**same three names for the VTA and the VTC**, since this is a pod-level
+setting, not a per-service one:
+
+| Config key            | Env var                      | fjall knob                                         | Default (unset) |
+|------------------------|-------------------------------|-----------------------------------------------------|------------------|
+| `fjall.block_cache`   | `STORAGE_FJALL_BLOCK_CACHE`  | `Database::builder(..).cache_size(..)`             | 32 MiB           |
+| `fjall.write_buffer`  | `STORAGE_FJALL_WRITE_BUFFER` | `Database::builder(..).max_write_buffer_size(..)`  | unbounded        |
+| `fjall.max_journal`   | `STORAGE_FJALL_MAX_JOURNAL`  | `Database::builder(..).max_journaling_size(..)`    | 512 MiB          |
+
+Each value is a byte size — a plain integer, or a number with a binary
+(`KiB`/`MiB`/`GiB`/`TiB`) or decimal (`KB`/`MB`/`GB`/`TB`/`B`) suffix,
+e.g. `"64MiB"`, `"512MB"`, `"1GiB"`. All three are optional; leaving them
+unset keeps today's behaviour unchanged, byte for byte. An env var
+overrides whatever the config file set. An invalid, zero, or absurdly
+small value — fjall itself refuses a write buffer under 1 MiB or a
+journal under 64 MiB — fails startup with an error naming the setting;
+nothing is ever silently clamped or ignored. The effective values are
+logged once when the store opens.
+
+```toml
+[store]
+data_dir = "/srv/vta/data"
+
+[fjall]
+block_cache  = "64MiB"
+write_buffer = "32MiB"
+max_journal  = "128MiB"
+```
+
+**Sizing against the pod's memory limit.** Budget roughly
+`block_cache + write_buffer + max_journal` plus headroom for the rest of
+the process (connections, in-flight requests, the DID cache) — a common
+starting point is to keep that sum at 40–60% of the container's memory
+`limit` and leave the remainder for everything else. Startup's journal
+replay briefly holds close to `max_journal` in memory, so a limit set
+right at the steady-state sum above can still OOM on a restart.
+
 ## Validation and errors
 
 The wizard validates the file in two phases:

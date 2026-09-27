@@ -149,3 +149,17 @@ For the store itself, the two K8s-native choices are:
 
 Once phase 2 has run, the VTC Deployment starts normally with the written
 `config.toml`; `create_secret_store` honours the same `backend` at boot.
+
+### Fjall memory settings
+
+The VTC's on-disk store is fjall, same as the VTA's, and takes the same
+three optional settings to keep its block cache, buffered writes and
+startup journal replay within the pod's memory `limit` — a `[fjall]`
+table in `config.toml`, or the `STORAGE_FJALL_BLOCK_CACHE` /
+`STORAGE_FJALL_WRITE_BUFFER` / `STORAGE_FJALL_MAX_JOURNAL` env vars
+(identical names for both services — this is a pod-level setting, not a
+per-service one; an env var overrides the file). All three are optional
+and default to fjall's own behaviour when unset. See
+[the VTA doc](../02-vta/non-interactive-setup.md#fjall-memory-settings)
+for the full table, accepted byte-size formats, and sizing guidance
+against a pod's memory limit — it applies unchanged here.

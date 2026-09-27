@@ -1207,6 +1207,7 @@ pub async fn apply_inputs(
         store: StoreConfig {
             data_dir: inputs.data_dir.clone(),
         },
+        fjall: Default::default(),
         services: inputs.services.clone(),
         messaging: messaging.clone(),
         mediator_readiness: Default::default(),
@@ -1785,6 +1786,7 @@ fn scratch_config_for_seed_store(
         server: ServerConfig::default(),
         log: LogConfig::default(),
         store: StoreConfig { data_dir },
+        fjall: Default::default(),
         services: ServicesConfig::default(),
         messaging: None,
         mediator_readiness: Default::default(),
