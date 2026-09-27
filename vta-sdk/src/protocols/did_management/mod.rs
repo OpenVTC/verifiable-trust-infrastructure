@@ -64,16 +64,6 @@ pub const REMOVE_WEBVH_SERVER: &str =
 pub const REMOVE_WEBVH_SERVER_RESULT: &str =
     "https://firstperson.network/protocols/did-management/1.0/remove-webvh-server-result";
 
-pub const UPDATE_DID_WEBVH: &str =
-    "https://firstperson.network/protocols/did-management/1.0/update-did-webvh";
-pub const UPDATE_DID_WEBVH_RESULT: &str =
-    "https://firstperson.network/protocols/did-management/1.0/update-did-webvh-result";
-
-pub const ROTATE_DID_WEBVH_KEYS: &str =
-    "https://firstperson.network/protocols/did-management/1.0/rotate-did-webvh-keys";
-pub const ROTATE_DID_WEBVH_KEYS_RESULT: &str =
-    "https://firstperson.network/protocols/did-management/1.0/rotate-did-webvh-keys-result";
-
 /// Promote a serverless WebVH DID to a server-managed one. Pushes
 /// the existing local log to a registered host without re-issuing
 /// the DID identifier. See `vta-service/src/operations/did_webvh/

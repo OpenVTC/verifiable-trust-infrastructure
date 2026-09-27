@@ -1139,86 +1139,29 @@ async fn restart_requires_super_admin() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
-// ── Backup requires super admin ────────────────────────────────────
+// ── Backup is Trust Tasks only ─────────────────────────────────────
 
+/// The inline `/backup/{export,import}` routes are gone, not refused: a backup
+/// moves only as the `vta/backup/*` Trust Tasks over an end-to-end transport
+/// (VTI-VTA-003), so REST has no handler to answer with.
 #[tokio::test]
-async fn backup_export_requires_super_admin() {
-    let (app, ctx) = TestApp::new().await;
-
-    // Scoped admin → forbidden
-    let token = ctx
-        .auth_token("did:key:z6MkScoped", "admin", vec!["ctx1".into()])
-        .await;
-    let (status, _) = app
-        .request(post_auth(
-            "/backup/export",
-            &token,
-            json!({"password": "test-password-12!!", "include_audit": false}),
-        ))
-        .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-}
-
-/// A backup is never exported over REST, even to a super-admin with the
-/// key-export capability: the sealing password would exist in plaintext
-/// wherever TLS terminates.
-#[tokio::test]
-async fn backup_export_is_refused_over_rest() {
+async fn the_inline_backup_routes_are_gone() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
-    let (status, body) = app
-        .request(post_auth(
-            "/backup/export",
-            &token,
-            json!({"password": "test-password-12!!", "include_audit": false}),
-        ))
-        .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert!(body.to_string().contains("REST"), "{body}");
-}
-
-/// A backup envelope minted in process — the REST route no longer exports.
-async fn export_envelope(ctx: &TestContext, password: &str) -> Value {
-    let state = &ctx.inner.state;
-    let config = state.config.read().await;
-    let envelope = vta_service::operations::backup::export_backup(
-        &state.backup_access().target(),
-        &*state.seed_store,
-        &config,
-        &vta_service::test_support::super_admin_claims(),
-        password,
-        false,
-    )
-    .await
-    .expect("export");
-    serde_json::to_value(envelope).unwrap()
-}
-
-/// A backup is never imported over REST, even a valid one with its right
-/// password, to a super-admin: the backup and its password together are every
-/// key it holds, and both would exist in plaintext wherever TLS terminates.
-#[tokio::test]
-async fn backup_import_is_refused_over_rest() {
-    let (app, ctx) = TestApp::new().await;
-    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
-
-    let envelope = export_envelope(&ctx, "test-password-12!!").await;
-    assert_eq!(envelope["format"], "vta-backup-v2");
-
-    for confirm in [false, true] {
+    for path in ["/backup/export", "/backup/import"] {
         let (status, body) = app
             .request(post_auth(
-                "/backup/import",
+                path,
                 &token,
-                json!({
-                    "backup": envelope,
-                    "password": "test-password-12!!",
-                    "confirm": confirm
-                }),
+                json!({"password": "test-password-12!!"}),
             ))
             .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "confirm={confirm}: {body}");
-        assert!(body.to_string().contains("REST"), "{body}");
+        // 405 where the GET-only public did-log catch-all matches the path:
+        // either way, nothing answers a POST.
+        assert!(
+            status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED,
+            "{path}: {status} {body}"
+        );
     }
 }
 
@@ -3345,68 +3288,89 @@ async fn sign_sample_bootstrap_request() -> vta_sdk::provision_integration::Boot
     .expect("sign sample VP")
 }
 
+/// Send `provision/integration/0.3` over REST as the test admin, whose bearer
+/// carries `role` in `contexts`. The `/bootstrap/provision-integration` route is
+/// gone; `/trust-tasks` is the same dispatcher TSP and DIDComm reach.
+#[cfg(feature = "webvh")]
+async fn provision_task(
+    app: &TestApp,
+    ctx: &TestContext,
+    role: &str,
+    contexts: Vec<String>,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let token = ctx
+        .auth_token(
+            &vta_service::test_support::test_admin_did().0,
+            role,
+            contexts,
+        )
+        .await;
+    app.request(post_auth(
+        "/trust-tasks",
+        &token,
+        signed_doc(
+            ctx,
+            &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
+            payload,
+        ),
+    ))
+    .await
+}
+
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_requires_auth() {
-    // No Bearer token → the AdminAuth extractor rejects before any
-    // validation runs.
-    let (app, _ctx) = TestApp::new().await;
+    // No bearer token: refused before any validation runs.
+    let (app, ctx) = TestApp::new().await;
     let vp = sign_sample_bootstrap_request().await;
-    let body = json!({
-        "request": vp,
-        "context": "prod-mediator",
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/bootstrap/provision-integration")
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_vec(&body).unwrap()))
-        .unwrap();
-    let (status, _) = app.request(req).await;
+    let doc = signed_doc(
+        &ctx,
+        &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_3,
+        json!({ "request": vp, "context": "prod-mediator" }),
+    );
+    let (status, _) = app.request(post_unauth("/trust-tasks", doc)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_rejects_non_admin_token() {
-    // Caller authenticates as role "reader" — AdminAuth must reject.
+    // The relayer authenticates as a reader: not an admin in the context.
     let (app, ctx) = TestApp::new().await;
-    let token = ctx
-        .auth_token("did:key:z6MkReader", "reader", vec!["prod-mediator".into()])
-        .await;
     let vp = sign_sample_bootstrap_request().await;
-    let body = json!({
-        "request": vp,
-        "context": "prod-mediator",
-    });
-    let (status, _) = app
-        .request(post_auth("/bootstrap/provision-integration", &token, body))
-        .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = provision_task(
+        &app,
+        &ctx,
+        "reader",
+        vec!["prod-mediator".into()],
+        json!({ "request": vp, "context": "prod-mediator" }),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    assert_eq!(body["payload"]["code"], "permissionDenied", "{body}");
 }
 
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_rejects_tampered_vp() {
-    // Admin token + structurally valid body, but the VP's nonce has
-    // been mutated after signing — the handler calls `.verify()` on
-    // the request and returns 400.
+    // The VP's nonce is mutated after signing, so its proof no longer covers
+    // the bytes: the holder layer refuses it however the relayer is authorised.
     let (app, ctx) = TestApp::new().await;
-    let token = ctx
-        .auth_token("did:key:z6MkAdmin", "admin", vec!["prod-mediator".into()])
-        .await;
     let mut vp = sign_sample_bootstrap_request().await;
-    // Swap the nonce — same length, different bytes → signature
-    // over the mutated body is now invalid.
     vp.nonce = "BBBBBBBBBBBBBBBBBBBBBB".to_string();
-    let body = json!({
-        "request": vp,
-        "context": "prod-mediator",
-    });
-    let (status, _) = app
-        .request(post_auth("/bootstrap/provision-integration", &token, body))
-        .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = provision_task(
+        &app,
+        &ctx,
+        "admin",
+        vec!["prod-mediator".into()],
+        json!({ "request": vp, "context": "prod-mediator" }),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    assert_eq!(body["payload"]["code"], "malformedRequest", "{body}");
 }
 
 /// Sign a `provision/integration/0.1`-shape VP: `ask.type` PascalCase
@@ -3471,28 +3435,27 @@ async fn sign_pascalcase_bootstrap_request() -> Value {
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_accepts_a_v0_1_pascalcase_holder() {
-    // A holder on vta-sdk < 0.21.11 signs `ask.type` as PascalCase. The
-    // route must verify the proof against the bytes as posted; if it
-    // instead re-serialises the typed struct it re-emits the 0.2
-    // `templateBootstrap` tag and the holder's own valid signature is
-    // rejected as a forgery.
+    // A holder on vta-sdk < 0.21.11 signs `ask.type` as PascalCase. The handler
+    // must verify the proof against the bytes as received; re-serialising the
+    // typed struct would re-emit the 0.2 `templateBootstrap` tag and reject the
+    // holder's own valid signature as a forgery.
     //
-    // Asserted as the absence of a *proof* failure rather than a 200:
-    // provisioning proper needs template + context state this fixture
-    // app doesn't stand up, so it legitimately fails further in. What
-    // must never come back is "signature invalid".
+    // Asserted as the absence of a *proof* failure rather than success:
+    // provisioning proper needs template + context state this fixture app does
+    // not stand up, so it legitimately fails further in.
     let (app, ctx) = TestApp::new().await;
-    let token = ctx
-        .auth_token("did:key:z6MkAdmin", "admin", vec!["prod-mediator".into()])
-        .await;
-    let body = json!({
-        "request": sign_pascalcase_bootstrap_request().await,
-        "context": "prod-mediator",
-    });
-    let (_status, err) = app
-        .request(post_auth("/bootstrap/provision-integration", &token, body))
-        .await;
-    let err = err.to_string();
+    let (_status, body) = provision_task(
+        &app,
+        &ctx,
+        "admin",
+        vec!["prod-mediator".into()],
+        json!({
+            "request": sign_pascalcase_bootstrap_request().await,
+            "context": "prod-mediator",
+        }),
+    )
+    .await;
+    let err = body.to_string();
     assert!(
         !err.contains("signature invalid") && !err.contains("verify BootstrapRequest"),
         "0.1-cased holder must clear proof verification, got {err}"
@@ -3502,28 +3465,40 @@ async fn provision_integration_accepts_a_v0_1_pascalcase_holder() {
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn provision_integration_rejects_unknown_field_in_body() {
-    // `deny_unknown_fields` on BootstrapRequest (item 22 hardening)
-    // kicks in at deserialize time for any field the verifier doesn't
-    // know about. The handler surfaces this as a Deserialize error
-    // → 400 via axum's default JSON extractor rejection.
+    // `deny_unknown_fields` on BootstrapRequest (item 22 hardening): a member
+    // the verifier does not know is refused, not ignored.
     let (app, ctx) = TestApp::new().await;
-    let token = ctx
-        .auth_token("did:key:z6MkAdmin", "admin", vec!["prod-mediator".into()])
-        .await;
     let mut vp_value =
         serde_json::to_value(sign_sample_bootstrap_request().await).expect("serialize VP");
-    // Inject an attacker-chosen field — item-22 guard must reject.
     vp_value["smugglerField"] = json!("malicious");
-    let body = json!({
-        "request": vp_value,
-        "context": "prod-mediator",
-    });
-    let (status, _) = app
-        .request(post_auth("/bootstrap/provision-integration", &token, body))
+    let (status, body) = provision_task(
+        &app,
+        &ctx,
+        "admin",
+        vec!["prod-mediator".into()],
+        json!({ "request": vp_value, "context": "prod-mediator" }),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    assert_eq!(body["payload"]["code"], "malformedRequest", "{body}");
+}
+
+/// The REST route is gone: `provision/integration` is a Trust Task only.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn the_provision_integration_rest_route_is_gone() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+    let (status, body) = app
+        .request(post_auth(
+            "/bootstrap/provision-integration",
+            &token,
+            json!({}),
+        ))
         .await;
     assert!(
-        status == StatusCode::BAD_REQUEST || status == StatusCode::UNPROCESSABLE_ENTITY,
-        "expected 4xx rejection for unknown field, got {status}"
+        status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED,
+        "{status} {body}"
     );
 }
 
@@ -3613,21 +3588,58 @@ async fn create_test_webvh_did(
     (token, scid, did)
 }
 
+/// Send a `webvh/dids/*` Trust Task over REST, signed by the test admin (who
+/// holds the bearer too, since the spine binds the document to its sender).
+/// The REST routes these tests once drove are gone; `/trust-tasks` is the
+/// same dispatcher TSP and DIDComm reach.
+#[cfg(feature = "webvh")]
+async fn webvh_task(
+    app: &TestApp,
+    ctx: &TestContext,
+    type_uri: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let token = ctx
+        .auth_token(
+            &vta_service::test_support::test_admin_did().0,
+            "admin",
+            vec![],
+        )
+        .await;
+    app.request(post_auth(
+        "/trust-tasks",
+        &token,
+        signed_doc(
+            ctx,
+            &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            type_uri,
+            payload,
+        ),
+    ))
+    .await
+}
+
+#[cfg(feature = "webvh")]
+const TASK_UPDATE: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
+#[cfg(feature = "webvh")]
+const TASK_ROTATE: &str = "https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0";
+
 #[cfg(feature = "webvh")]
 #[tokio::test]
-async fn update_did_webvh_metadata_only_succeeds() {
+async fn webvh_dids_update_metadata_only_succeeds() {
     let (app, ctx) = TestApp::new().await;
-    let (token, scid, did) = create_test_webvh_did(&app, &ctx, "update-meta").await;
+    let (_token, _scid, did) = create_test_webvh_did(&app, &ctx, "update-meta").await;
 
     // Toggle pre-rotation off — metadata-only change.
-    let (status, body) = app
-        .request(post_auth(
-            &format!("/contexts/update-meta/dids/{scid}/update"),
-            &token,
-            json!({ "pre_rotation_count": 0 }),
-        ))
-        .await;
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE,
+        json!({ "did": did, "preRotationCount": 0 }),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "update: {status} {body}");
+    let body = &body["payload"];
     assert_eq!(body["did"], did);
     assert_eq!(body["preRotationKeyCount"], 0);
     assert!(body["newVersionId"].as_str().unwrap().starts_with("2-"));
@@ -3636,21 +3648,9 @@ async fn update_did_webvh_metadata_only_succeeds() {
 
 #[cfg(feature = "webvh")]
 #[tokio::test]
-async fn update_did_webvh_with_new_document_rotates_keys() {
+async fn webvh_dids_update_with_new_document_rotates_keys() {
     let (app, ctx) = TestApp::new().await;
-    let (token, scid, did) = create_test_webvh_did(&app, &ctx, "update-doc").await;
-
-    // Fetch current doc so we can hand back a valid (id-matching) one.
-    let (status, get_body) = app
-        .request(post_auth(
-            &format!("/webvh/dids/{}/log", urlencoding::encode(&did)),
-            &token,
-            json!({}),
-        ))
-        .await;
-    // Fall back: get the current entry by parsing it from the create
-    // response's `log_entry`. Simpler than fetching.
-    let _ = (status, get_body);
+    let (_token, _scid, did) = create_test_webvh_did(&app, &ctx, "update-doc").await;
 
     let new_doc = json!({
         "@context": ["https://www.w3.org/ns/did/v1"],
@@ -3662,14 +3662,15 @@ async fn update_did_webvh_with_new_document_rotates_keys() {
             "publicKeyMultibase": "z6MkExternalPubForTest"
         }]
     });
-    let (status, body) = app
-        .request(post_auth(
-            &format!("/contexts/update-doc/dids/{scid}/update"),
-            &token,
-            json!({ "document": new_doc }),
-        ))
-        .await;
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE,
+        json!({ "did": did, "document": new_doc }),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "update with doc: {status} {body}");
+    let body = &body["payload"];
     assert_eq!(
         body["updateKeysCount"], 1,
         "auth keys rotated to 1 fresh key"
@@ -3679,43 +3680,46 @@ async fn update_did_webvh_with_new_document_rotates_keys() {
 
 #[cfg(feature = "webvh")]
 #[tokio::test]
-async fn rotate_did_webvh_keys_advances_fragment_ids() {
+async fn webvh_dids_rotate_keys_advances_fragment_ids() {
     let (app, ctx) = TestApp::new().await;
-    let (token, scid, _did) = create_test_webvh_did(&app, &ctx, "rotate-frags").await;
+    let (_token, _scid, did) = create_test_webvh_did(&app, &ctx, "rotate-frags").await;
 
-    let (status, body) = app
-        .request(post_auth(
-            &format!("/contexts/rotate-frags/dids/{scid}/rotate-keys"),
-            &token,
-            json!({ "label": "test rotation" }),
-        ))
-        .await;
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_ROTATE,
+        json!({ "did": did, "label": "test rotation" }),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "rotate-keys: {status} {body}");
+    let body = &body["payload"];
     assert!(body["newVersionId"].as_str().unwrap().starts_with("2-"));
     assert_eq!(body["updateKeysCount"], 1);
 }
 
 #[cfg(feature = "webvh")]
 #[tokio::test]
-async fn update_did_webvh_unknown_scid_returns_404() {
+async fn webvh_dids_update_unknown_did_is_refused() {
     let (app, ctx) = TestApp::new().await;
-    let token = setup_webvh_context(&app, &ctx, "not-here").await;
+    let _ = setup_webvh_context(&app, &ctx, "not-here").await;
 
-    let (status, _body) = app
-        .request(post_auth(
-            "/contexts/not-here/dids/Qnonexistent/update",
-            &token,
-            json!({ "pre_rotation_count": 0 }),
-        ))
-        .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE,
+        json!({ "did": "did:webvh:Qnonexistent:example.com", "preRotationCount": 0 }),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    assert_eq!(body["payload"]["code"], "taskFailed", "{body}");
+    assert_eq!(body["payload"]["details"]["reason"], "not_found", "{body}");
 }
 
 #[cfg(feature = "webvh")]
 #[tokio::test]
-async fn update_did_webvh_invalid_document_returns_400() {
+async fn webvh_dids_update_invalid_document_is_refused() {
     let (app, ctx) = TestApp::new().await;
-    let (token, scid, _did) = create_test_webvh_did(&app, &ctx, "bad-doc").await;
+    let (_token, _scid, did) = create_test_webvh_did(&app, &ctx, "bad-doc").await;
 
     // id mismatch — caller can't rename a DID via update
     let bad_doc = json!({
@@ -3723,14 +3727,40 @@ async fn update_did_webvh_invalid_document_returns_400() {
         "id": "did:webvh:totally-different",
         "verificationMethod": []
     });
-    let (status, _body) = app
-        .request(post_auth(
-            &format!("/contexts/bad-doc/dids/{scid}/update"),
-            &token,
-            json!({ "document": bad_doc }),
-        ))
-        .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = webvh_task(
+        &app,
+        &ctx,
+        TASK_UPDATE,
+        json!({ "did": did, "document": bad_doc }),
+    )
+    .await;
+    assert!(!status.is_success(), "{status} {body}");
+    assert!(
+        body.to_string().contains("malformedRequest"),
+        "{status} {body}"
+    );
+}
+
+/// The `(context, scid)` routes and the realign route are gone: their Trust
+/// Tasks above are the only way in, on every transport.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn the_legacy_webvh_update_routes_are_gone() {
+    let (app, ctx) = TestApp::new().await;
+    let (token, scid, did) = create_test_webvh_did(&app, &ctx, "gone").await;
+    for path in [
+        format!("/contexts/gone/dids/{scid}/update"),
+        format!("/contexts/gone/dids/{scid}/rotate-keys"),
+        format!("/webvh/dids/{}/realign-keys", urlencoding::encode(&did)),
+    ] {
+        let (status, body) = app.request(post_auth(&path, &token, json!({}))).await;
+        // 405 where the GET-only public did-log catch-all matches the path:
+        // either way, nothing answers a POST.
+        assert!(
+            status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED,
+            "{path}: {status} {body}"
+        );
+    }
 }
 
 // ── DIDComm protocol management (Phase 3 vertical) ────────────────

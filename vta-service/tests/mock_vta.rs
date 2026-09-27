@@ -307,7 +307,6 @@ async fn create_did_webvh_refuses_a_host_answer_not_signed_by_the_host() {
 /// advanced the key counter and the DID looped forever.
 #[cfg(feature = "webvh")]
 #[tokio::test]
-#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
@@ -342,7 +341,6 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
         .await
         .expect("create server-managed DID against the stub host");
     let did = create.did;
-    let scid = create.scid;
 
     let confirmed = |did: &str| {
         let did = did.to_string();
@@ -356,7 +354,6 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
     // Drive *document* updates (the "Edit DID" case), which rotate the update
     // key — the exact path that burned a key index on every failed publish.
     let update = |label: &str| {
-        let scid = scid.clone();
         let did = did.clone();
         let client = &client;
         let body = UpdateDidWebvhBody {
@@ -373,7 +370,7 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
             label: Some(label.into()),
             ..Default::default()
         };
-        async move { client.update_did_webvh("ctx1", &scid, body).await }
+        async move { client.update_did_webvh_by_did(&did, body).await }
     };
 
     // A first update lands normally and confirms a published version.
@@ -430,7 +427,6 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
 /// pins the other side.
 #[cfg(feature = "webvh")]
 #[tokio::test]
-#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
@@ -465,7 +461,6 @@ async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
         .await
         .expect("create server-managed DID against the stub host");
     let did = create.did;
-    let scid = create.scid;
 
     let confirmed = |did: &str| {
         let did = did.to_string();
@@ -477,7 +472,6 @@ async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
         }
     };
     let update = |label: &str, expected: Option<String>| {
-        let scid = scid.clone();
         let did = did.clone();
         let client = &client;
         let body = UpdateDidWebvhBody {
@@ -495,7 +489,7 @@ async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
             expected_version_id: expected,
             ..Default::default()
         };
-        async move { client.update_did_webvh("ctx1", &scid, body).await }
+        async move { client.update_did_webvh_by_did(&did, body).await }
     };
 
     update("u1", None).await.expect("first update succeeds");
@@ -539,7 +533,6 @@ async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
 /// would have quietly deleted the optimistic-concurrency guarantee.
 #[cfg(feature = "webvh")]
 #[tokio::test]
-#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_stale_caller_still_conflicts() {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
@@ -574,7 +567,6 @@ async fn a_stale_caller_still_conflicts() {
         .await
         .expect("create server-managed DID against the stub host");
     let did = create.did;
-    let scid = create.scid;
 
     let confirmed = |did: &str| {
         let did = did.to_string();
@@ -586,7 +578,6 @@ async fn a_stale_caller_still_conflicts() {
         }
     };
     let update = |label: &str, expected: Option<String>| {
-        let scid = scid.clone();
         let did = did.clone();
         let client = &client;
         let body = UpdateDidWebvhBody {
@@ -604,7 +595,7 @@ async fn a_stale_caller_still_conflicts() {
             expected_version_id: expected,
             ..Default::default()
         };
-        async move { client.update_did_webvh("ctx1", &scid, body).await }
+        async move { client.update_did_webvh_by_did(&did, body).await }
     };
 
     update("u1", None).await.expect("first update succeeds");
@@ -642,7 +633,6 @@ async fn a_stale_caller_still_conflicts() {
 /// update fails at signing and loops.
 #[cfg(feature = "webvh")]
 #[tokio::test]
-#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_superseded_signing_key_is_recovered_from_the_seed() {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
@@ -680,7 +670,6 @@ async fn a_superseded_signing_key_is_recovered_from_the_seed() {
     let scid = create.scid.clone();
 
     let doc_update = |label: &str| {
-        let scid = scid.clone();
         let did = did.clone();
         let client = &client;
         let body = UpdateDidWebvhBody {
@@ -697,7 +686,7 @@ async fn a_superseded_signing_key_is_recovered_from_the_seed() {
             label: Some(label.into()),
             ..Default::default()
         };
-        async move { client.update_did_webvh("ctx1", &scid, body).await }
+        async move { client.update_did_webvh_by_did(&did, body).await }
     };
 
     // v2: a document update rotates the update key; v2's handle is now active.

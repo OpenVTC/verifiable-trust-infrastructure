@@ -707,16 +707,13 @@ pub async fn run_connect(
 /// is currently using (REST or DIDComm), writing the returned
 /// armored bundle to disk.
 ///
-/// The VTA runs the same shared library fn for both transports and
-/// the offline `vta bootstrap provision-integration` CLI; the only
-/// difference between paths is the wire form of the request /
-/// response. `VtaClient::provision_integration` dispatches:
-/// - REST → `POST /bootstrap/provision-integration` with the
-///   bearer token from the open session.
-/// - DIDComm → `provision-integration/1.0` message over the open
-///   authcrypt session. The VTA enforces that the DIDComm sender
-///   DID matches the VP holder before issuing the bundle
-///   (privilege-laundering guard).
+/// The VTA runs the same shared library fn for every transport and
+/// the offline `vta bootstrap provision-integration` CLI.
+/// `VtaClient::provision_integration` sends the signed
+/// `provision/integration/0.3` Trust Task over whichever transport the
+/// open session holds (TSP, DIDComm, or HTTPS on `/trust-tasks`). The
+/// relayer (this session) and the VP holder may differ: the bundle is
+/// sealed to the holder, so the relayer cannot open it.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_provision_integration(
     client: &vta_sdk::client::VtaClient,

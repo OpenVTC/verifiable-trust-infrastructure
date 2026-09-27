@@ -11,10 +11,9 @@
 //! VTA (enforced by
 //! `crate::operations::provision_integration::ensure_target_context_or_create`).
 //!
-//! Mirrors the legacy REST `POST /bootstrap/provision-integration`
-//! handler byte-for-byte (the sealed armored bundle is the payload
-//! of the response, per the URI-registry's "sealed armor is
-//! payload-of" decision).
+//! The only way in: the REST `POST /bootstrap/provision-integration` route
+//! is removed. The sealed armored bundle is the payload of the response, per
+//! the URI-registry's "sealed armor is payload-of" decision.
 
 #![cfg(feature = "webvh")]
 
@@ -47,6 +46,14 @@ pub(super) async fn handle_request(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
+    // Only an admin relays a provisioning request, and a caller who is not one
+    // is refused before anything about the target context is looked up — so a
+    // reader cannot learn which contexts exist from the refusal. The REST route
+    // this task replaced made the same check up front (its `AdminAuth`); the
+    // admin-*in-this-context* check still runs inside the operation.
+    if let Err(e) = auth.require_admin() {
+        return app_error_to_reject(&doc, e);
+    }
     let req: ProvisionIntegrationRequest = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

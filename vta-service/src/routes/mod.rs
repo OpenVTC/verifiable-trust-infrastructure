@@ -4,7 +4,6 @@ mod attestation;
 mod audit;
 mod auth;
 mod auth_portal;
-mod backup;
 mod backup_blob;
 mod bootstrap;
 mod cache;
@@ -324,17 +323,12 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     let auth_portal_router =
         OpenApiRouter::new().route("/auth/portal", get(auth_portal::portal_handler));
 
-    // Authenticated provision-integration (context-admin gated). Kept
-    // separate from `unauth` so the rate-limiter doesn't apply — the
-    // endpoint already hard-gates on `AdminAuth`.
-    #[cfg(feature = "webvh")]
-    let auth_provision = OpenApiRouter::new().routes(routes!(bootstrap::provision_integration));
+    // `provision/integration` is a Trust Task only (TSP, DIDComm, or HTTPS on
+    // `/trust-tasks`); its `/bootstrap/provision-integration` route is gone.
 
     let router = OpenApiRouter::with_openapi(ApiDoc::openapi())
         .merge(unauth)
         .merge(did_log);
-    #[cfg(feature = "webvh")]
-    let router = router.merge(auth_provision);
     let router = router.merge(auth_portal_router);
 
     let router = router
@@ -476,9 +470,6 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         ))
         .routes(routes!(did_webvh::get_did_log_handler))
         .routes(routes!(did_webvh::register_did_with_server_handler))
-        .routes(routes!(did_webvh::update_did_handler))
-        .routes(routes!(did_webvh::rotate_did_keys_handler))
-        .routes(routes!(did_webvh::realign_did_keys_handler))
         // Passkey-as-verificationMethod enrolment. See
         // `docs/02-vta/passkey-verification-methods.md` (forthcoming).
         // First-time enrolment expects a short-lived enrolment-scope
@@ -494,9 +485,7 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
     // VTA management routes
     let router = router
         .routes(routes!(vta::restart))
-        .routes(routes!(vta::metrics))
-        .routes(routes!(backup::export))
-        .routes(routes!(backup::import));
+        .routes(routes!(vta::metrics));
 
     // Backup-descriptor blob endpoints. NOT JWT-gated — the
     // `X-Backup-Token` header IS the credential (one-shot for
@@ -705,7 +694,6 @@ mod cors_tests {
             "/cache/{key}",
             "/config",
             "/vta/restart",
-            "/backup/export",
             "/backup/blob/{bundle_id}",
             // webvh (default feature) groups. (Service management is the
             // `vta/services/*` Trust Tasks, with no REST paths to document.)
@@ -717,10 +705,12 @@ mod cors_tests {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
         }
         // The full surface should be substantial — guard against a regression
-        // that silently drops the bulk of the routes.
+        // that silently drops the bulk of the routes. The REST surface shrinks
+        // on purpose as routes move onto Trust Tasks, so this is a floor
+        // against a bulk loss, not a count to keep constant.
         assert!(
-            paths.len() >= 60,
-            "expected the documented surface to be >= 60 paths, got {}",
+            paths.len() >= 40,
+            "expected the documented surface to be >= 40 paths, got {}",
             paths.len()
         );
     }

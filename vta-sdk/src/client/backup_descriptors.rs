@@ -35,9 +35,6 @@
 //! Neither path falls back to the other. A DIDComm client's optional
 //! `rest_url` is not evidence that the VTA advertises REST, so it is never
 //! used to reach the blob endpoint behind the transport the client chose.
-//! The legacy inline protocol message ([`VtaClient::backup_export`]) is not
-//! a substitute either: its reply carries the whole envelope and is refused
-//! by a mediator's 1 MiB message limit for any real VTA.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;

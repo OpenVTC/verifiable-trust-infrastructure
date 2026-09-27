@@ -1457,10 +1457,9 @@ pub const TASK_PASSKEY_VMS_REVOKE_0_1: &str =
 // ─── Provision-integration (spec/vta/provision-integration/*) ───────────
 //
 // Feature-gated: handler requires `webvh` (DID-doc mutation + log
-// entries). The legacy REST handler is at
-// `POST /bootstrap/provision-integration`; the trust-task envelope
-// carries the same request/response shapes the SDK already exports
-// under `vta_sdk::provision_integration::http`.
+// entries). The trust-task envelope carries the request/response shapes
+// the SDK exports under `vta_sdk::provision_integration::http`; there is
+// no REST route.
 
 /// `provision/integration/0.3` — submit a VP-framed `BootstrapRequest` plus
 /// provisioning options to the VTA; receive a sealed `TemplateBootstrap` bundle

@@ -159,8 +159,8 @@ sign.
 ## 7. Identity replacement
 
 Restoring a backup of DID *A* onto a VTA running as DID *B* is refused unless the
-operator says `--replace-identity` (`ImportRequest::replace_identity`,
-`ext["org.openvtc"].replaceIdentity` on the Trust Task). Disaster recovery needs
+operator says `--replace-identity` (`ext["org.openvtc"].replaceIdentity` on
+the Trust Task). Disaster recovery needs
 it — `vta setup` mints a DID, and an enclave with a DID template mints one at
 first boot, so a fresh target always has an identity of its own. When it is
 used, hosted-DID registrations are detached (they belong to the source's

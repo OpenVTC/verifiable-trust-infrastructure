@@ -200,17 +200,15 @@ vta-service/src/
 
 ### Backup
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | /backup/export | Admin | Export encrypted backup |
-| POST | /backup/import | Admin | Import encrypted backup |
+A backup is the `vta/backup/*` Trust Tasks (super-admin, over TSP or DIDComm)
+plus `GET|POST /backup/blob/{id}` for the bytes. There is no inline
+export/import route.
 
 ### Bootstrap
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | /bootstrap/request | None (rate-limited) | TEE Mode B sealed first-boot |
-| POST | /bootstrap/provision-integration | Admin | Template-driven integration bootstrap |
 | GET | /did/{did}/log | None (rate-limited) | Public webvh `did.jsonl` retrieval |
 
 Auth levels: **Auth** = any valid JWT, **Manage** = Admin or

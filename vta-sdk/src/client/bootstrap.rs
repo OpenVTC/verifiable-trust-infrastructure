@@ -1,11 +1,9 @@
 //! Bootstrap / provision-integration methods on [`VtaClient`].
 
 use super::VtaClient;
-// `Transport` + `VtaError` are only used by `provision_integration`, which is
-// gated on the `provision-integration` feature — gate the imports to match so
-// they aren't reported unused in builds without it (e.g. `client,session`).
-#[cfg(feature = "provision-integration")]
-use super::Transport;
+// `VtaError` is only used by `provision_integration`, which is gated on the
+// `provision-integration` feature — gate the import to match so it isn't
+// reported unused in builds without it (e.g. `client,session`).
 #[cfg(feature = "provision-integration")]
 use crate::error::VtaError;
 
@@ -13,72 +11,27 @@ impl VtaClient {
     /// Bridge a VP-framed bootstrap request to the VTA and receive
     /// the sealed bundle.
     ///
-    /// Works over both transports:
-    /// - **REST**: `POST /bootstrap/provision-integration`.
-    /// - **DIDComm**: the `provision/integration` Trust Task, signed by
-    ///   this client's identity, in the DIDComm binding envelope. The
-    ///   VTA-side handler is the same shared library function as REST.
-    ///
-    /// In DIDComm mode, the session's `client_did` must already
-    /// hold admin role in the target context's ACL. Sender and VP
-    /// holder may legitimately differ — the air-gap onboarding flow
-    /// relies on this, since the bundle is HPKE-sealed to the VP
-    /// holder's X25519 derivation and the relayer can't decrypt it.
+    /// The `provision/integration` Trust Task, signed by this client's
+    /// identity, over whichever transport the client holds — TSP, DIDComm, or
+    /// HTTPS on `/trust-tasks`. The caller must hold admin in the target
+    /// context's ACL. Sender and VP holder may legitimately differ — the
+    /// air-gap onboarding flow relies on this, since the bundle is HPKE-sealed
+    /// to the VP holder's X25519 derivation and the relayer can't decrypt it.
     #[cfg(feature = "provision-integration")]
     pub async fn provision_integration(
         &self,
         req: crate::provision_integration::http::ProvisionIntegrationRequest,
     ) -> Result<crate::provision_integration::http::ProvisionIntegrationResponse, VtaError> {
-        match &self.transport {
-            Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                Self::ensure_token_valid(client, base_url, auth).await?;
-                let token = auth.lock().await.token.clone();
-                let http_req = client
-                    .post(format!("{base_url}/bootstrap/provision-integration"))
-                    .json(&req);
-                let resp = Self::with_auth_token(http_req, &token).send().await?;
-                Self::handle_response(resp).await
-            }
-            #[cfg(feature = "session")]
-            Transport::DIDComm { session, .. } => {
-                let relayer_key = self
-                    .identity
-                    .as_ref()
-                    .ok_or_else(|| {
-                        VtaError::Protocol(
-                            "provision-integration over DIDComm needs a client identity to sign \
-                             the request with"
-                                .into(),
-                        )
-                    })?
-                    .holder_key()
-                    .map_err(|e| VtaError::Protocol(format!("this client cannot sign: {e}")))?;
-                crate::provision_integration::didcomm::provision_integration_didcomm(
-                    session,
-                    &relayer_key,
-                    req.request,
-                    req.context,
-                    req.assertion,
-                    req.vc_validity_seconds,
-                    req.create_context,
-                    crate::protocols::provision_integration_management::ProvisionSpecVersion::CURRENT,
-                )
-                .await
-            }
-            // `provision_integration_didcomm` speaks the DIDComm
-            // `provision-integration/1.0` message, which has no TSP binding
-            // yet. Refuse plainly rather than send a frame the VTA cannot
-            // dispatch — the sealed bundle is too important to fail obscurely.
-            #[cfg(feature = "tsp")]
-            Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
-                "provision-integration has no TSP binding yet; relay it over REST or \
-                 DIDComm:\n  <cli> --transport didcomm bootstrap provision-integration …"
-                    .into(),
-            )),
-        }
+        use crate::protocols::provision_integration_management::{
+            ProvisionSpecVersion, request_body_for_version,
+        };
+        // Generous: the VTA mints keys, renders the template, builds the webvh
+        // log and seals the bundle before it answers.
+        const TIMEOUT_SECS: u64 = 60;
+        let uri = ProvisionSpecVersion::CURRENT.request_uri();
+        let body = request_body_for_version(&req, uri).map_err(VtaError::from)?;
+        let payload = self.dispatch_trust_task(uri, body, TIMEOUT_SECS).await?;
+        serde_json::from_value(payload)
+            .map_err(|e| VtaError::Protocol(format!("`{uri}` response decode: {e}")))
     }
 }
