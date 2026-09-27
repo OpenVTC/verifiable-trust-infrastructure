@@ -335,8 +335,9 @@ vtc-service = { path = ".", features = ["test-support", "didcomm-harness"] }
 # failure: the client was silently broken on every route because nothing ever
 # ran the pair together. Dev-only, and `vtc-client` does not depend on
 # `vtc-service`, so there is no cycle.
-# `didcomm`: `tests/backup_didcomm.rs` drives the backup over a live session.
-vtc-client = { path = "../vtc-client", features = ["didcomm"] }
+# `didcomm`: `tests/backup_didcomm.rs` drives the backup over a live session;
+# `tsp`: `tests/git_ns_vtc_client.rs` drives the git-ns calls over TSP too.
+vtc-client = { path = "../vtc-client", features = ["tsp"] }
 tempfile = "3"
 # Integration tests under `tests/` exercise the route stack via
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.

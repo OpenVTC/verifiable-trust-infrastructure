@@ -1907,6 +1907,62 @@ impl VtaClient {
     ) -> Result<serde_json::Value, VtaError> {
         Self::check_payload_conforms(type_uri, &payload)?;
 
+        // Ahead of the transport: a loopback client answers the Trust-Task
+        // surface in-process. See `client::loopback`.
+        #[cfg(feature = "test-loopback")]
+        if let Some(sink) = &self.loopback {
+            return sink.dispatch(type_uri, &payload);
+        }
+
+        let reply = self.exchange_trust_task(type_uri, payload, timeout).await?;
+        Self::extract_trust_task_payload(reply)
+    }
+
+    /// [`dispatch_trust_task`](Self::dispatch_trust_task), answering the
+    /// **whole reply document** rather than its payload — the `#response`
+    /// document, or the `trust-task-error` document when the peer refused.
+    ///
+    /// For a caller that must read a refusal as the peer wrote it: a
+    /// specification's extended `code`, or the `details` a refusal carries for
+    /// the caller to act on (an inline step-up request, say). The typed
+    /// [`VtaError`] that `dispatch_trust_task` makes of a refusal keeps the
+    /// code and message and drops the rest.
+    ///
+    /// The request is the same document on every transport, signed by this
+    /// client's identity. A `#response` document is verified exactly as
+    /// `dispatch_trust_task` verifies it; a `trust-task-error` document is
+    /// returned as received (as `dispatch_trust_task` reads one unverified).
+    /// Transport failures and a reply that is not a Trust Task document are
+    /// still errors.
+    pub async fn dispatch_trust_task_document(
+        &self,
+        type_uri: &str,
+        payload: serde_json::Value,
+        timeout: u64,
+    ) -> Result<serde_json::Value, VtaError> {
+        Self::check_payload_conforms(type_uri, &payload)?;
+
+        #[cfg(feature = "test-loopback")]
+        if let Some(sink) = &self.loopback {
+            let payload = sink.dispatch(type_uri, &payload)?;
+            return Ok(serde_json::json!({
+                "type": format!("{type_uri}#response"),
+                "payload": payload,
+            }));
+        }
+
+        self.exchange_trust_task(type_uri, payload, timeout).await
+    }
+
+    /// Sign `payload` as a `type_uri` document, send it on this client's
+    /// transport, and answer the reply document — verified when it is a
+    /// `#response`, as received when it is a `trust-task-error`.
+    async fn exchange_trust_task(
+        &self,
+        type_uri: &str,
+        payload: serde_json::Value,
+        timeout: u64,
+    ) -> Result<serde_json::Value, VtaError> {
         // Raise the budget to clear the VTA's own worst case when this is a
         // task it answers by calling a third party (`budget::RELAYS_ONWARD`).
         //
@@ -1923,13 +1979,6 @@ impl VtaClient {
         // saw a bare timeout and no diagnosis. Every other webvh verb carried
         // the same latent inversion at 30s or 60s.
         let timeout = crate::budget::client_budget_secs(type_uri, timeout);
-
-        // Ahead of the transport: a loopback client answers the Trust-Task
-        // surface in-process. See `client::loopback`.
-        #[cfg(feature = "test-loopback")]
-        if let Some(sink) = &self.loopback {
-            return sink.dispatch(type_uri, &payload);
-        }
 
         let doc = self.signed_task_document(type_uri, payload).await?;
         match &self.transport {
@@ -1978,11 +2027,14 @@ impl VtaClient {
                     {
                         return Err(err);
                     }
+                    // A refusal document is the reply: the caller reads it (the
+                    // payload extraction makes the same typed error of it that
+                    // was made here before).
                     if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text)
                         && let Some(payload) = doc.get("payload")
-                        && let Some(err) = Self::trust_task_error(payload)
+                        && Self::trust_task_error(payload).is_some()
                     {
-                        return Err(err);
+                        return Ok(doc);
                     }
                     if status == reqwest::StatusCode::CONFLICT {
                         return Err(VtaError::Conflict(text));
@@ -1993,7 +2045,7 @@ impl VtaClient {
                     ));
                 }
                 let response_doc: serde_json::Value = resp.json().await?;
-                self.finish_reply(response_doc).await
+                self.verified_reply(response_doc).await
             }
             // The whole typed VTA surface over TSP. The VTA's inbound
             // dispatcher opens the TSP binding envelope and hands the document
@@ -2031,7 +2083,7 @@ impl VtaClient {
                         .await
                         .map_err(|e| VtaError::TspTransport(e.to_string()));
                 }
-                self.finish_reply(Self::decode_trust_task_reply(&reply?)?)
+                self.verified_reply(Self::decode_trust_task_reply(&reply?)?)
                     .await
             }
             #[cfg(feature = "session")]
@@ -2096,7 +2148,7 @@ impl VtaClient {
                         }
                     };
                     return self
-                        .finish_reply(Self::decode_trust_task_reply(&reply)?)
+                        .verified_reply(Self::decode_trust_task_reply(&reply)?)
                         .await;
                 }
 
@@ -2105,7 +2157,7 @@ impl VtaClient {
                 let response_doc = session
                     .send_and_wait_trust_task(TRUST_TASK_ENVELOPE_TYPE, doc, timeout)
                     .await?;
-                self.finish_reply(response_doc).await
+                self.verified_reply(response_doc).await
             }
         }
     }
@@ -2181,7 +2233,7 @@ impl VtaClient {
         self
     }
 
-    /// Verify the reply, then read it.
+    /// Verify the reply and hand it back for the caller to read.
     ///
     /// # Why a client verifies at all
     ///
@@ -2215,9 +2267,9 @@ impl VtaClient {
     /// RECOMMENDED rather than REQUIRED (SPEC §8.1), so demanding one would make
     /// every conforming refusal unreadable. A refusal confers nothing, which is
     /// why the framework asks less of it.
-    async fn finish_reply(&self, doc: serde_json::Value) -> Result<serde_json::Value, VtaError> {
+    async fn verified_reply(&self, doc: serde_json::Value) -> Result<serde_json::Value, VtaError> {
         self.verify_reply(&doc).await?;
-        Self::extract_trust_task_payload(doc)
+        Ok(doc)
     }
 
     async fn verify_reply(&self, doc: &serde_json::Value) -> Result<(), VtaError> {
