@@ -543,3 +543,125 @@ mod tests {
         );
     }
 }
+
+/// Keyring VTI-09 and VTI-27, over the TSP binding — the same answers the
+/// DIDComm binding gives (`router::keyring_vti_09_27`), because both hand the
+/// document to one spine.
+#[cfg(test)]
+mod keyring_vti_09_27 {
+    use super::*;
+    use crate::acl::{AclEntry, Role, store_acl_entry};
+    use crate::auth::session::now_epoch;
+    use crate::test_support::{build_signing_test_app_state, did_for_seed, sign_as};
+    use serde_json::{Value, json};
+
+    const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+
+    /// Send `document` wrapped in the TSP binding envelope from `sender` and
+    /// return the document inside the reply's envelope.
+    async fn send(app_state: &AppState, sender: &str, document: &Value) -> Value {
+        let reply = dispatch_one(
+            app_state,
+            &wrap_envelope(document.to_string().as_bytes()),
+            sender,
+        )
+        .await;
+        let envelope: Value = serde_json::from_slice(&reply).expect("reply is JSON");
+        assert_eq!(
+            envelope["type"].as_str(),
+            Some(trust_tasks_tsp::ENVELOPE_TYPE),
+            "a refusal rides the binding envelope: {envelope}"
+        );
+        envelope["document"].clone()
+    }
+
+    fn signed_request(seed: u8, type_uri: &str) -> Value {
+        let (did, _) = did_for_seed(seed);
+        // The SDK's own builder, as a producer builds one; the recipient is
+        // never reached, because the ACL refuses first.
+        let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+            type_uri,
+            json!({}),
+            &did,
+            "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        )
+        .expect("a well-formed document");
+        sign_as(seed, &mut doc);
+        serde_json::to_value(doc).expect("serialise")
+    }
+
+    /// The document is this service's `trust-task-error`, signed; returns its
+    /// code and message.
+    fn a_signed_trust_task_error(doc: &Value) -> (String, String) {
+        assert_eq!(
+            doc["type"].as_str(),
+            Some(
+                crate::trust_tasks::framework_error_type_uri()
+                    .to_string()
+                    .as_str()
+            ),
+            "{doc}"
+        );
+        assert!(doc.get("proof").is_some(), "the refusal is signed: {doc}");
+        (
+            doc["payload"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            doc["payload"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    }
+
+    /// VTI-09: a bare payload inside the envelope is refused as malformed,
+    /// naming the missing `id`, for an ACL'd sender and a stranger alike.
+    #[tokio::test]
+    async fn vti_09_a_bare_payload_over_tsp_is_refused_as_malformed() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        let (admin, _) = did_for_seed(0x71);
+        store_acl_entry(
+            &app_state.acl_ks,
+            &AclEntry::new(&admin, Role::Admin, "test"),
+        )
+        .await
+        .unwrap();
+        let (stranger, _) = did_for_seed(0x72);
+
+        for sender in [&admin, &stranger] {
+            let doc = send(&app_state, sender, &json!({ "contextId": "ctx1" })).await;
+            let (code, message) = a_signed_trust_task_error(&doc);
+            assert_eq!(code, "malformedRequest", "{sender}: {message}");
+            assert!(
+                message.contains("missing field `id`"),
+                "{sender}: {message}"
+            );
+        }
+    }
+
+    /// VTI-27: no ACL entry, or a lapsed one, is `permissionDenied` in a signed
+    /// `trust-task-error` threaded to the request.
+    #[tokio::test]
+    async fn vti_27_an_acl_refusal_over_tsp_is_a_signed_trust_task_error() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        let (lapsed, _) = did_for_seed(0x74);
+        store_acl_entry(
+            &app_state.acl_ks,
+            &AclEntry::new(&lapsed, Role::Admin, "test")
+                .with_created_at(now_epoch().saturating_sub(7200))
+                .with_expires_at(Some(now_epoch().saturating_sub(60))),
+        )
+        .await
+        .unwrap();
+
+        for seed in [0x73u8, 0x74] {
+            let (sender, _) = did_for_seed(seed);
+            let request = signed_request(seed, KEYS_LIST);
+            let doc = send(&app_state, &sender, &request).await;
+            let (code, message) = a_signed_trust_task_error(&doc);
+            assert_eq!(code, "permissionDenied", "{sender}: {message}");
+            assert_eq!(doc["threadId"], request["id"], "{sender}");
+        }
+    }
+}

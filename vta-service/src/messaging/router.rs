@@ -439,3 +439,177 @@ mod envelope_only_carriage {
         );
     }
 }
+
+/// Keyring VTI-09 and VTI-27, over the DIDComm binding.
+///
+/// - **VTI-09**: a bare payload as the envelope body is refused with the same
+///   `malformedRequest` the VTC gives (`body did not parse as a Trust Task
+///   document: missing field `id``) — the VTA is not the lenient one.
+/// - **VTI-27**: a sender the ACL does not accept is answered with a signed
+///   `trust-task-error` in the binding envelope, never a problem-report, so a
+///   client keyed on the envelope type cannot read the refusal as a success.
+#[cfg(all(test, feature = "didcomm"))]
+mod keyring_vti_09_27 {
+    use super::*;
+    use crate::acl::{AclEntry, Role, store_acl_entry};
+    use crate::auth::session::now_epoch;
+    use serde_json::{Value, json};
+    use trust_tasks_didcomm::ENVELOPE_TYPE;
+
+    const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+
+    /// Send `body` as the DIDComm envelope body from `sender`, through the
+    /// router the inbound loop calls, and return the reply.
+    async fn send(app_state: &AppState, sender: &str, body: Value) -> DIDCommResponse {
+        let vta_state = Arc::new(VtaState::from(app_state));
+        let msg = Message::build(
+            format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            ENVELOPE_TYPE.to_string(),
+            body,
+        )
+        .from(sender.to_string())
+        .finalize();
+        let ctx = HandlerContext {
+            sender_did: Some(sender.to_string()),
+        };
+        dispatch(msg, ctx, vta_state, app_state.clone())
+            .await
+            .expect("an enveloped Trust Task is always answered")
+    }
+
+    /// A signed request document from the identity `seed` names.
+    fn signed_request(seed: u8, type_uri: &str) -> Value {
+        let (did, _) = crate::test_support::did_for_seed(seed);
+        // The SDK's own builder, as a producer builds one; the recipient is
+        // never reached, because the ACL refuses first.
+        let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+            type_uri,
+            json!({}),
+            &did,
+            "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        )
+        .expect("a well-formed document");
+        crate::test_support::sign_as(seed, &mut doc);
+        serde_json::to_value(doc).expect("serialise")
+    }
+
+    /// The reply is a `trust-task-error` (this service's one version of it)
+    /// carried in the binding envelope and signed by the VTA; returns its code
+    /// and message.
+    fn a_signed_trust_task_error(reply: &DIDCommResponse) -> (String, String) {
+        assert_eq!(
+            reply.type_, ENVELOPE_TYPE,
+            "a refusal of an enveloped Trust Task rides the envelope, not a problem-report: {:?}",
+            reply.body
+        );
+        let doc = &reply.body;
+        assert_eq!(
+            doc["type"].as_str(),
+            Some(
+                crate::trust_tasks::framework_error_type_uri()
+                    .to_string()
+                    .as_str()
+            ),
+            "{doc}"
+        );
+        assert!(doc.get("proof").is_some(), "the refusal is signed: {doc}");
+        (
+            doc["payload"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            doc["payload"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    }
+
+    /// VTI-09: a bare `keys/list` payload in the envelope is refused as
+    /// malformed — whether or not the sender holds an ACL entry, so it is the
+    /// document requirement refusing it, not the ACL.
+    #[tokio::test]
+    async fn vti_09_a_bare_payload_over_didcomm_is_refused_as_malformed() {
+        let (app_state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let (admin, _) = crate::test_support::did_for_seed(0x61);
+        store_acl_entry(
+            &app_state.acl_ks,
+            &AclEntry::new(&admin, Role::Admin, "test"),
+        )
+        .await
+        .unwrap();
+        let (stranger, _) = crate::test_support::did_for_seed(0x62);
+
+        for sender in [&admin, &stranger] {
+            let reply = send(&app_state, sender, json!({ "contextId": "ctx1" })).await;
+            let (code, message) = a_signed_trust_task_error(&reply);
+            assert_eq!(code, "malformedRequest", "{sender}: {message}");
+            assert!(
+                message.contains("missing field `id`"),
+                "{sender}: the refusal names what is missing, as the VTC's does: {message}"
+            );
+        }
+    }
+
+    /// VTI-27: a signed request from a DID with no ACL entry, and from one
+    /// whose grant has lapsed, is answered `permissionDenied` in a signed
+    /// `trust-task-error`, threaded to the request.
+    #[tokio::test]
+    async fn vti_27_an_acl_refusal_over_didcomm_is_a_signed_trust_task_error() {
+        let (app_state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let (lapsed, _) = crate::test_support::did_for_seed(0x64);
+        store_acl_entry(
+            &app_state.acl_ks,
+            &AclEntry::new(&lapsed, Role::Admin, "test")
+                .with_created_at(now_epoch().saturating_sub(7200))
+                .with_expires_at(Some(now_epoch().saturating_sub(60))),
+        )
+        .await
+        .unwrap();
+
+        for seed in [0x63u8, 0x64] {
+            let (sender, _) = crate::test_support::did_for_seed(seed);
+            let request = signed_request(seed, KEYS_LIST);
+            let reply = send(&app_state, &sender, request.clone()).await;
+            let (code, message) = a_signed_trust_task_error(&reply);
+            assert_eq!(code, "permissionDenied", "{sender}: {message}");
+            assert_eq!(
+                reply.body["threadId"], request["id"],
+                "{sender}: the refusal threads to the request it refuses"
+            );
+        }
+    }
+
+    /// VTI-27's other direction: an inbound `trust-task-error` is terminal and
+    /// gets no reply at all over DIDComm. The spine answers it with an empty
+    /// body, which the handler used to fail to parse — and `finish` turned that
+    /// into an `internal-error` problem-report sent back to the peer.
+    #[tokio::test]
+    async fn vti_27_an_inbound_trust_task_error_over_didcomm_is_not_answered() {
+        let (app_state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_state = Arc::new(VtaState::from(&app_state));
+        let (peer, _) = crate::test_support::did_for_seed(0x65);
+        let error = json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "threadId": "urn:uuid:11111111-1111-1111-1111-111111111111",
+            "type": crate::trust_tasks::framework_error_type_uri().to_string(),
+            "payload": { "code": "permissionDenied", "message": "no" },
+        });
+        let msg = Message::build(
+            format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            ENVELOPE_TYPE.to_string(),
+            error,
+        )
+        .from(peer.clone())
+        .finalize();
+        let ctx = HandlerContext {
+            sender_did: Some(peer),
+        };
+        let reply = dispatch(msg, ctx, vta_state, app_state.clone()).await;
+        assert!(
+            reply.is_none(),
+            "an inbound error is never answered: {:?}",
+            reply.map(|r| (r.type_, r.body))
+        );
+    }
+}

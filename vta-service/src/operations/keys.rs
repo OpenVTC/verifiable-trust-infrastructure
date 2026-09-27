@@ -147,10 +147,16 @@ pub async fn create_key(
     contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     audit: &vta_audit::SharedAuditSink,
+    acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     params: CreateKeyParams,
     channel: &str,
 ) -> Result<CreateKeyResultBody, AppError> {
+    // `KeyMint` decides *whether* (Keyring VTI-23); the context resolution
+    // below decides *where*. First, so a refused caller learns nothing about
+    // which contexts or key ids exist.
+    ensure_may_mint_key(acl_ks, auth, "keys/create").await?;
+
     // Caller-supplied key_ids must stay in the plain-identifier class.
     // VM-shaped ids (`did:...#key-0`) are minted by internal paths only
     // — an API caller who could take one would shadow another DID's
@@ -863,6 +869,37 @@ pub(crate) async fn ensure_may_sign(
     }
     Err(AppError::Forbidden(format!(
         "{what} denied: {} does not carry the sign capability",
+        auth.did
+    )))
+}
+
+/// The key-creation gate: the caller must hold [`Capability::KeyMint`].
+///
+/// `key-mint` is the capability that gates "creating new keys within scope"
+/// (VTI spec Appendix C.2), and VTI-ACL-030 makes the entry's effective set —
+/// the role's ceiling narrowed by its own list — what decides. `keys/create`
+/// used to check the admin *role* instead, at both of its surfaces (the Trust
+/// Task handler and `POST /keys`), which was wrong in both directions: an
+/// `initiator`, whose ceiling carries `KeyMint`, was refused (Keyring VTI-23 —
+/// a least-privilege manager could not mint a persona's keys), and an admin
+/// narrowed without `key-mint` was let through.
+///
+/// Here, in the operation, for the reason [`ensure_may_export`] gives: a
+/// transport added later cannot be wired without it. `webvh/dids/create`
+/// applies the same capability (`did_webvh::ensure_may_mint`); the context
+/// check in [`create_key`] still bounds *where*, and key custody still refuses
+/// a caller-chosen derivation path to anyone but a super-admin.
+pub(crate) async fn ensure_may_mint_key(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    what: &str,
+) -> Result<(), AppError> {
+    let entry = entry_for_capability_gate(acl_ks, auth, what, "key-mint").await?;
+    if entry_or_role_has(entry.as_ref(), auth, Capability::KeyMint) {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "{what} denied: {} does not carry the key-mint capability",
         auth.did
     )))
 }
@@ -2270,6 +2307,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &super_admin,
             CreateKeyParams {
                 internal: false,
@@ -2291,6 +2329,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &tenant,
             CreateKeyParams {
                 internal: false,
@@ -2419,6 +2458,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -2440,6 +2480,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -2482,6 +2523,7 @@ mod tests {
                 &h.contexts_ks,
                 &h.seed_store,
                 &h.audit,
+                &h.acl_ks,
                 &auth,
                 CreateKeyParams {
                     internal: false,
@@ -2573,6 +2615,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -2640,6 +2683,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -2675,6 +2719,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -2711,6 +2756,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -2960,6 +3006,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -3037,6 +3084,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -3088,6 +3136,7 @@ mod tests {
                 &h.contexts_ks,
                 &h.seed_store,
                 &h.audit,
+                &h.acl_ks,
                 &admin,
                 CreateKeyParams {
                     internal: false,
@@ -3221,6 +3270,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -3286,6 +3336,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -3383,6 +3434,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -3439,6 +3491,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -3490,6 +3543,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -3577,6 +3631,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -3660,6 +3715,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &h.super_admin_auth(),
             CreateKeyParams {
                 internal: false,
@@ -3688,6 +3744,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &h.super_admin_auth(),
             CreateKeyParams {
                 internal: true,
@@ -4094,6 +4151,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &h.super_admin_auth(),
             CreateKeyParams {
                 internal: true,
@@ -4541,6 +4599,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &h.super_admin_auth(),
             CreateKeyParams {
                 internal: false,
@@ -4590,6 +4649,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &h.super_admin_auth(),
             CreateKeyParams {
                 internal: false,
@@ -4674,5 +4734,164 @@ mod tests {
             matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
             "{err:?}"
         );
+    }
+
+    // ── Keyring VTI-23: a manager's operations need a capability, not a role ──
+    //
+    // "Every operation a manager needs requires the admin role." Minting a key
+    // is `key-mint`, which an `initiator` holds; releasing one is `key-export`
+    // (VTI-VTA-003), which only an admin derives — an initiator acts as a key
+    // through the signing oracle instead (VTI-VTA-002).
+
+    /// A caller on `role` scoped to `test-ctx`, with its ACL entry stored so
+    /// the gates read the entry, as they do for every live caller.
+    async fn scoped_caller(
+        h: &TestHarness,
+        did: &str,
+        role: Role,
+        capabilities: Vec<Capability>,
+    ) -> AuthClaims {
+        let auth = AuthClaims {
+            did: did.to_string(),
+            role: role.clone(),
+            allowed_contexts: vec!["test-ctx".to_string()],
+            session_id: format!("{did}-session"),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        vti_common::acl::store_acl_entry(
+            &h.acl_ks,
+            &vti_common::acl::AclEntry::new(did, role, "did:key:zRoot")
+                .with_contexts(auth.allowed_contexts.clone())
+                .with_capabilities(capabilities),
+        )
+        .await
+        .expect("store the caller's entry");
+        auth
+    }
+
+    async fn create_as(
+        h: &TestHarness,
+        auth: &AuthClaims,
+        context_id: &str,
+    ) -> Result<CreateKeyResultBody, AppError> {
+        create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.acl_ks,
+            auth,
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: None,
+                mnemonic: None,
+                label: Some("persona".into()),
+                context_id: Some(context_id.to_string()),
+            },
+            "test",
+        )
+        .await
+    }
+
+    /// An `initiator` carries `key-mint`, so it creates a key in its own
+    /// context. Before, `keys/create` demanded the admin role on both of its
+    /// surfaces.
+    #[tokio::test]
+    async fn vti_23_an_initiator_holding_key_mint_creates_a_key_in_its_context() {
+        let h = TestHarness::new().await;
+        let auth = scoped_caller(&h, "did:key:zManager", Role::Initiator, vec![]).await;
+        let key = create_as(&h, &auth, "test-ctx")
+            .await
+            .expect("an initiator derives key-mint");
+        let record: KeyRecord = h
+            .keys_ks
+            .get(keys::store_key(&key.key_id))
+            .await
+            .unwrap()
+            .expect("the key exists");
+        assert_eq!(record.context_id.as_deref(), Some("test-ctx"));
+    }
+
+    /// `key-mint` decides whether; the context scope still decides where.
+    #[tokio::test]
+    async fn vti_23_key_mint_does_not_reach_outside_the_callers_context() {
+        let h = TestHarness::new().await;
+        create_context(&h.contexts_ks, "other-ctx", "Other")
+            .await
+            .expect("create context");
+        let auth = scoped_caller(&h, "did:key:zManager", Role::Initiator, vec![]).await;
+        let err = create_as(&h, &auth, "other-ctx")
+            .await
+            .expect_err("another context is out of reach");
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
+    /// The entry is read: an admin narrowed without `key-mint` is refused — the
+    /// role check let it through — and so is a role whose ceiling lacks it.
+    #[tokio::test]
+    async fn vti_23_key_create_is_refused_without_key_mint() {
+        let h = TestHarness::new().await;
+        let narrowed = scoped_caller(
+            &h,
+            "did:key:zNarrowedAdmin",
+            Role::Admin,
+            vec![Capability::Sign],
+        )
+        .await;
+        let reader = scoped_caller(&h, "did:key:zReader", Role::Reader, vec![]).await;
+        for auth in [narrowed, reader] {
+            let err = create_as(&h, &auth, "test-ctx")
+                .await
+                .expect_err("no key-mint, no key");
+            assert!(
+                matches!(&err, AppError::Forbidden(m) if m.contains("key-mint")),
+                "{}: {err:?}",
+                auth.did
+            );
+        }
+    }
+
+    /// A caller holding `key-export` — an admin of the key's context — takes a
+    /// key from its context over an end-to-end channel.
+    #[tokio::test]
+    async fn vti_23_a_holder_of_key_export_exports_a_key_in_its_context() {
+        let h = TestHarness::new().await;
+        let record = mint_derived(&h, "k-persona").await;
+        let auth = scoped_caller(&h, "did:key:zCtxAdmin", Role::Admin, vec![]).await;
+        let out = export(
+            &h,
+            &h.audit,
+            &auth,
+            "k-persona",
+            ExportChannel::EndToEnd("didcomm"),
+        )
+        .await
+        .expect("an admin of the key's context holds key-export");
+        assert_eq!(out.key_id, record.key_id);
+    }
+
+    /// An `initiator` holds `sign` and not `key-export`, so it is refused on
+    /// every channel, at the gate, naming the capability rather than a role.
+    #[tokio::test]
+    async fn vti_23_an_initiator_is_refused_export_at_the_key_export_gate() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-persona").await;
+        let auth = scoped_caller(&h, "did:key:zManager", Role::Initiator, vec![]).await;
+        for channel in every_channel() {
+            let err = export(&h, &h.audit, &auth, "k-persona", channel)
+                .await
+                .expect_err("an initiator does not carry key-export");
+            assert!(
+                matches!(&err, AppError::Forbidden(m)
+                    if m.contains("key-export") && !m.contains("admin role required")),
+                "{channel:?}: {err:?}"
+            );
+        }
     }
 }

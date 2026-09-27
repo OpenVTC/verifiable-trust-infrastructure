@@ -21,7 +21,7 @@
 //! | `webvh/servers/update/1.0`          | super-admin |
 //! | `webvh/servers/remove/1.0`          | super-admin |
 //! | `webvh/dids/list/1.0`               | any authed  |
-//! | `webvh/dids/create/1.0`             | admin       |
+//! | `webvh/dids/create/1.0`             | `key-mint`  |
 //! | `webvh/dids/get/1.0`                | any authed  |
 //! | `webvh/dids/get-log/1.0`            | any authed  |
 //! | `webvh/dids/delete/1.0`             | admin       |
@@ -200,7 +200,8 @@ pub(super) async fn handle_dids_list(
     }
 }
 
-/// `webvh/dids/create/1.0` — mint a new DID. Admin role on target context.
+/// `webvh/dids/create/1.0` — mint a new DID. The `key-mint` capability, in the
+/// target context (Keyring VTI-23; gated in `create_did_webvh`).
 pub(super) async fn handle_dids_create(
     state: &AppState,
     auth: &AuthClaims,

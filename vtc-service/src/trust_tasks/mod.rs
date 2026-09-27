@@ -1290,6 +1290,42 @@ mod spine_proof_tests {
         }
     }
 
+    /// Keyring VTI-09: a bare payload — no document around it — is refused as
+    /// `malformedRequest`, naming the missing `id`, on every transport. This is
+    /// the answer the VTA gives too (`vta-service`'s `keyring_vti_09_27`
+    /// tests); the finding was that the two disagreed.
+    #[tokio::test]
+    async fn vti_09_a_bare_payload_is_refused_as_malformed_on_every_transport() {
+        let tv = build_test_vtc().await;
+        let h = holder();
+        let body = serde_json::to_vec(&json!({ "requestId": "urn:uuid:bare" })).unwrap();
+
+        for ctx in [
+            JoinAuthCtx::rest(),
+            JoinAuthCtx::didcomm(h.did.clone()),
+            JoinAuthCtx {
+                transport: JoinTransport::Tsp,
+                sender_did: Some(h.did.clone()),
+                verified_signer: None,
+            },
+        ] {
+            let transport = ctx.transport.as_str();
+            let out = dispatch_trust_task_core(&tv.state, &ctx, &body).await;
+            let doc: Value = serde_json::from_slice(&out.body).expect("an error document");
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("malformedRequest"),
+                "{transport}: {doc}"
+            );
+            assert!(
+                doc.pointer("/payload/message")
+                    .and_then(Value::as_str)
+                    .is_some_and(|m| m.contains("missing field `id`")),
+                "{transport}: {doc}"
+            );
+        }
+    }
+
     /// The rooms family, where the requirement was already enforced by the
     /// arms in `dispatch_typed` before the spine took it on. Kept because the
     /// arms' guard is now belt to the spine's brace, and a specification that

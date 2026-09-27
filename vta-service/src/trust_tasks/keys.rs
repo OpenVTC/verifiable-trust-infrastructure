@@ -57,15 +57,13 @@ pub(super) async fn handle_list(
     }
 }
 
-/// Handler for `keys/create/0.1`. Admin only.
+/// Handler for `keys/create/0.1`. Gated on `KeyMint` in the operation
+/// (`operations::keys::ensure_may_mint_key`), not on a role (Keyring VTI-23).
 pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let req: CreateKeyBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -76,6 +74,7 @@ pub(super) async fn handle_create(
         &state.contexts_ks,
         &state.seed_store,
         &state.audit_sink,
+        &state.acl_ks,
         auth,
         operations::keys::CreateKeyParams {
             internal: req.internal.unwrap_or(false),

@@ -522,6 +522,82 @@ fn inbound_gate(message: &ReceivedMessage) -> InboundGate {
     }
 }
 
+/// The reply to a DIDComm frame [`inbound_gate`] refused.
+///
+/// # A Trust Task is refused in its own vocabulary (Keyring VTI-27)
+///
+/// A frame the gate turns away never reaches the router, so it never reaches
+/// the Trust-Task spine either — and this used to answer every such frame with a
+/// DIDComm problem-report, including a Trust Task in the binding envelope. A
+/// conformant Trust-Task client reads the envelope type of its reply; a
+/// problem-report is not an envelope, so a client keyed on it saw no error at
+/// all, only the absence of a result. Every other refusal of a Trust Task —
+/// the ACL's, the proof binding's, the handler's — is a signed
+/// `trust-task-error` in the envelope, so this one is too: `permissionDenied`,
+/// because an unauthenticated sender is a sender with no standing.
+///
+/// A problem-report stays the answer for everything that is not a Trust Task
+/// in the envelope: there is no document to answer in kind.
+///
+/// An inbound *error* document is terminal and gets nothing, whatever the
+/// gate decided — the same rule `accept_from_proven_sender` applies, and for
+/// the same reason: answering an error with an error is how one failure becomes
+/// an exchange that only a mediator's rate limit ends.
+#[cfg(feature = "didcomm")]
+async fn gate_refusal(
+    gate: &InboundGate,
+    msg: &Message,
+    app_state: &AppState,
+) -> Option<DIDCommResponse> {
+    let (why, report): (&str, fn(&str) -> ProblemReport) = match gate {
+        InboundGate::NotEncrypted => ("DIDComm message must be encrypted", |m| {
+            ProblemReport::bad_request(m)
+        }),
+        InboundGate::Unauthenticated => (
+            "DIDComm message must be authenticated (authcrypt) with a non-anonymous sender",
+            |m| ProblemReport::unauthorized(m),
+        ),
+        InboundGate::Authenticated(_) => return None,
+    };
+
+    if msg.typ != trust_tasks_didcomm::ENVELOPE_TYPE {
+        return Some(DIDCommResponse::problem_report(report(why)));
+    }
+    if matches!(
+        vta_sdk::inbound::classify(&msg.body),
+        vta_sdk::inbound::Inbound::Error
+    ) {
+        warn!(
+            reason = why,
+            "refused an inbound trust-task error at the DIDComm gate — terminal, not answered"
+        );
+        return None;
+    }
+
+    let body = serde_json::to_vec(&msg.body).unwrap_or_default();
+    let outcome = crate::trust_tasks::sign_response(
+        app_state,
+        crate::trust_tasks::reject_trust_task(
+            &body,
+            trust_tasks_rs::RejectReason::PermissionDenied {
+                reason: why.to_string(),
+            },
+        ),
+    )
+    .await;
+    match serde_json::from_slice::<serde_json::Value>(&outcome.body) {
+        Ok(doc) => {
+            Some(DIDCommResponse::new(trust_tasks_didcomm::ENVELOPE_TYPE, doc).thid(msg.id.clone()))
+        }
+        // A refusal this service built itself always parses; if it somehow did
+        // not, a problem-report beats silence.
+        Err(e) => {
+            warn!(error = %e, "could not read back a gate refusal document");
+            Some(DIDCommResponse::problem_report(report(why)))
+        }
+    }
+}
+
 /// DIDComm inbound: rehydrate, stamp the verified sender, gate encryption,
 /// dispatch, pack + send the reply.
 #[cfg(feature = "didcomm")]
@@ -562,14 +638,9 @@ async fn handle_didcomm(
     // [`inbound_gate`] for the full rationale (enforced for ALL message types,
     // no discovery exemption).
     let reply = match &gate {
-        InboundGate::NotEncrypted => Some(DIDCommResponse::problem_report(
-            ProblemReport::bad_request("DIDComm message must be encrypted"),
-        )),
-        InboundGate::Unauthenticated => Some(DIDCommResponse::problem_report(
-            ProblemReport::unauthorized(
-                "DIDComm message must be authenticated (authcrypt) with a non-anonymous sender",
-            ),
-        )),
+        InboundGate::NotEncrypted | InboundGate::Unauthenticated => {
+            gate_refusal(&gate, &msg, app_state).await
+        }
         InboundGate::Authenticated(_) => {
             let ctx = crate::messaging::shim::HandlerContext {
                 sender_did: auth_sender.clone(),
@@ -891,6 +962,123 @@ mod frame_order_tests {
         assert_eq!(
             frame_order(&inbound(Protocol::DIDComm)),
             FrameOrder::Unordered
+        );
+    }
+}
+
+/// Keyring VTI-27 at the DIDComm gate: a frame refused for its transport
+/// authentication — anoncrypt, a forged sender, plaintext — never reaches the
+/// router, so it used to be answered with a problem-report even when it carried
+/// a Trust Task in the binding envelope.
+#[cfg(all(test, feature = "didcomm"))]
+mod keyring_vti_27_gate {
+    use super::{InboundGate, gate_refusal};
+    use crate::test_support::build_signing_test_app_state;
+    use affinidi_messaging_didcomm::Message;
+    use serde_json::{Value, json};
+    use trust_tasks_didcomm::ENVELOPE_TYPE;
+
+    fn message(typ: &str, body: Value) -> Message {
+        Message::build(
+            format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            typ.to_string(),
+            body,
+        )
+        .finalize()
+    }
+
+    fn request() -> Value {
+        json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": "https://trusttasks.org/spec/keys/list/0.1",
+            "issuer": "did:key:z6MkForgedSender",
+            "payload": {},
+        })
+    }
+
+    /// An enveloped request refused at the gate is a signed `permissionDenied`
+    /// `trust-task-error` in the envelope, threaded to the message — for both
+    /// gate refusals.
+    #[tokio::test]
+    async fn vti_27_a_gate_refused_trust_task_is_a_signed_trust_task_error() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        for gate in [InboundGate::Unauthenticated, InboundGate::NotEncrypted] {
+            let req = request();
+            let msg = message(ENVELOPE_TYPE, req.clone());
+            let reply = gate_refusal(&gate, &msg, &app_state)
+                .await
+                .expect("a refused request is answered");
+            assert_eq!(reply.type_, ENVELOPE_TYPE, "{gate:?}: {:?}", reply.body);
+            assert_eq!(reply.thid.as_deref(), Some(msg.id.as_str()), "{gate:?}");
+            let doc = &reply.body;
+            assert_eq!(
+                doc["type"].as_str(),
+                Some(
+                    crate::trust_tasks::framework_error_type_uri()
+                        .to_string()
+                        .as_str()
+                ),
+                "{gate:?}: {doc}"
+            );
+            assert_eq!(
+                doc["payload"]["code"], "permissionDenied",
+                "{gate:?}: {doc}"
+            );
+            assert_eq!(doc["threadId"], req["id"], "{gate:?}: {doc}");
+            assert!(doc.get("proof").is_some(), "{gate:?}: unsigned: {doc}");
+        }
+    }
+
+    /// Anything that is not a Trust Task in the envelope keeps the
+    /// problem-report: there is no document to answer in kind.
+    #[tokio::test]
+    async fn a_gate_refused_non_trust_task_is_still_a_problem_report() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        for (gate, code) in [
+            (InboundGate::Unauthenticated, "e.p.msg.unauthorized"),
+            (InboundGate::NotEncrypted, "e.p.msg.bad-request"),
+        ] {
+            let msg = message("https://didcomm.org/trust-ping/2.0/ping", json!({}));
+            let reply = gate_refusal(&gate, &msg, &app_state)
+                .await
+                .expect("answered");
+            assert_eq!(reply.type_, vta_sdk::protocols::PROBLEM_REPORT_TYPE);
+            assert_eq!(reply.body["code"], code, "{gate:?}");
+        }
+    }
+
+    /// An inbound error is terminal: refused at the gate or not, it is never
+    /// answered, or two peers trade errors until a rate limit stops them.
+    #[tokio::test]
+    async fn a_gate_refused_trust_task_error_is_not_answered() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        let error = json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "threadId": "urn:uuid:11111111-1111-1111-1111-111111111111",
+            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "payload": { "code": "permissionDenied", "message": "no" },
+        });
+        let msg = message(ENVELOPE_TYPE, error);
+        assert!(
+            gate_refusal(&InboundGate::Unauthenticated, &msg, &app_state)
+                .await
+                .is_none()
+        );
+    }
+
+    /// An authenticated frame is not the gate's to answer.
+    #[tokio::test]
+    async fn an_authenticated_frame_gets_no_gate_refusal() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        let msg = message(ENVELOPE_TYPE, request());
+        assert!(
+            gate_refusal(
+                &InboundGate::Authenticated("did:key:z6MkSender".into()),
+                &msg,
+                &app_state
+            )
+            .await
+            .is_none()
         );
     }
 }

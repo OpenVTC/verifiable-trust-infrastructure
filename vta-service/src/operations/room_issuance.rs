@@ -277,6 +277,7 @@ mod tests {
             &ts.contexts_ks,
             &seed,
             &ts.audit,
+            &ts.acl_ks,
             &auth,
             crate::operations::keys::CreateKeyParams {
                 key_type: vta_keys::KeyType::Ed25519,

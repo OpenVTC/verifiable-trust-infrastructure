@@ -56,7 +56,8 @@ impl std::fmt::Debug for CreateKeyRequest {
     }
 }
 
-/// POST /keys — create a new key record. Auth: Admin or Initiator. Context-scoped.
+/// POST /keys — create a new key record. Auth: the `key-mint` capability,
+/// checked in the operation (Keyring VTI-23). Context-scoped.
 #[utoipa::path(
     post, path = "/keys", tag = "keys",
     security(("bearer_jwt" = [])),
@@ -64,11 +65,11 @@ impl std::fmt::Debug for CreateKeyRequest {
     responses(
         (status = 201, description = "Key created", body = CreateKeyResponseBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin/initiator"),
+        (status = 403, description = "Caller does not carry the key-mint capability"),
     ),
 )]
 pub async fn create_key(
-    auth: AdminAuth,
+    auth: AuthClaims,
     State(state): State<AppState>,
     Json(req): Json<CreateKeyRequest>,
 ) -> Result<(StatusCode, Json<CreateKeyResponseBody>), AppError> {
@@ -78,7 +79,8 @@ pub async fn create_key(
         &state.contexts_ks,
         &state.seed_store,
         &state.audit_sink,
-        &auth.0,
+        &state.acl_ks,
+        &auth,
         operations::keys::CreateKeyParams {
             internal: req.internal.unwrap_or(false),
             key_type: req.key_type,
