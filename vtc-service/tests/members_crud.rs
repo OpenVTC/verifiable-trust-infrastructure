@@ -50,6 +50,11 @@ fn rest_error_code(body: &Value) -> &str {
     body["code"].as_str().unwrap_or_default()
 }
 
+/// The error code carried by a `trust-task-error` payload.
+fn tt_error_code(payload: &Value) -> &str {
+    payload["code"].as_str().unwrap_or_default()
+}
+
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
 const REMOVED_TASK: &str = "https://trusttasks.org/spec/vtc/members/removed/0.1";
@@ -1007,11 +1012,11 @@ async fn the_purge_task_answers_with_the_codes_its_spec_declares() {
 
     let (status, body) = purge(&fix, &admin, "did:key:zNeverHere").await;
     assert!(!status.is_success(), "{body}");
-    assert_eq!(body["code"], PURGE_ERR_NOT_FOUND, "{body}");
+    assert_eq!(tt_error_code(&body), PURGE_ERR_NOT_FOUND, "{body}");
 
     let (status, body) = purge(&fix, &admin, &admin.did).await;
     assert!(!status.is_success(), "{body}");
-    assert_eq!(body["code"], PURGE_ERR_LAST_ADMINISTRATOR, "{body}");
+    assert_eq!(tt_error_code(&body), PURGE_ERR_LAST_ADMINISTRATOR, "{body}");
     assert!(
         get_acl_entry(&fix.acl_ks, &admin.did)
             .await

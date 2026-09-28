@@ -477,6 +477,11 @@ const PROFILE_UPDATE_ERR_VALIDATION_FAILED: &str =
     trust_tasks_rs::specs::vtc::community::profile::update::v0_1::error_codes::VALIDATION_FAILED
         .code;
 
+/// The error code carried by a `trust-task-error` payload.
+fn tt_error_code(payload: &Value) -> &str {
+    payload["code"].as_str().unwrap_or_default()
+}
+
 /// A field that fails validation — a `logoUrl` that is not http(s) — is
 /// `validationFailed`, and the stored profile is untouched.
 #[tokio::test]
@@ -488,7 +493,8 @@ async fn a_profile_field_failing_validation_is_the_declared_validation_failed() 
     let (status, payload) = update(&fix, &admin, json!({ "logoUrl": "javascript:alert(1)" })).await;
     assert!(status.is_client_error(), "{status}: {payload}");
     assert_eq!(
-        payload["code"], PROFILE_UPDATE_ERR_VALIDATION_FAILED,
+        tt_error_code(&payload),
+        PROFILE_UPDATE_ERR_VALIDATION_FAILED,
         "{payload}"
     );
 
