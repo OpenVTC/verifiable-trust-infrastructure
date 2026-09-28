@@ -117,7 +117,9 @@ fn translate(
             body.clone(),
             ok,
         ),
-        ("POST", ["vetting", "vetters"]) => (VETTER_GRANT.into(), body.clone(), StatusCode::CREATED),
+        ("POST", ["vetting", "vetters"]) => {
+            (VETTER_GRANT.into(), body.clone(), StatusCode::CREATED)
+        }
         ("POST", ["vetting", "vetters", "show"]) => (VETTER_SHOW.into(), body.clone(), ok),
         ("GET", ["community", "profile"]) => (t("community/profile/show/0.1"), json!({}), ok),
         ("GET", ["ceremonies"]) => (t("ceremonies/list/0.1"), json!({}), ok),

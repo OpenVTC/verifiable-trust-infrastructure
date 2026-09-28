@@ -1293,13 +1293,11 @@ mod openapi_tests {
         let paths = &spec.paths.paths;
         // A representative path (all nested under /v1) from each major group.
         for p in [
-            "/v1/audit/verify",
             "/v1/auth/challenge",
             "/v1/admin/passkeys",
-            "/v1/members",
-            "/v1/members/{did}",
-            "/v1/join-requests",
-            "/v1/policies",
+            "/v1/members/{did}/relationships",
+            "/v1/join-requests/{id}/vetting",
+            "/v1/vetting/vetters",
             "/v1/rooms",
             "/v1/credentials/endorsements",
             "/v1/schemas",
@@ -1358,13 +1356,23 @@ mod openapi_tests {
             "/v1/invitations/{id}",
             "/v1/invitations/deliver",
             "/v1/endorsement-types",
+            "/v1/members",
+            "/v1/members/{did}",
+            "/v1/members/{did}/credentials",
+            "/v1/join-requests",
+            "/v1/join-requests/{id}/decide",
+            "/v1/policies",
+            "/v1/policies/{id}",
+            "/v1/policies/{id}/activate",
+            "/v1/admin/did/register",
+            "/v1/audit/verify",
+            "/v1/vetting/vetters/show",
         ] {
             assert!(!paths.contains_key(p), "{p} is a signed document only");
         }
         let item = |p: &str| paths.get(p).unwrap_or_else(|| panic!("{p} is documented"));
-        assert!(item("/v1/members/{did}").get.is_none());
         assert!(item("/v1/members/{did}/personhood").post.is_none());
-        assert!(item("/v1/join-requests").post.is_none());
+        assert!(item("/v1/vetting/vetters").post.is_none());
     }
 
     // ── Route-posture backstop (P2.6) ──────────────────────────────────────

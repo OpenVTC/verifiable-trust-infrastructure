@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use vti_rooms_dtg::test_support::Party;
 
 use common::signed::{
-    admin, bearer_route_served_as, call, error_code, party_with_role, payload,
-    post, seed_role, unsigned,
+    admin, bearer_route_served_as, call, error_code, party_with_role, payload, post, seed_role,
+    unsigned,
 };
 use vtc_service::acl::VtcRole;
 use vtc_service::members::{Member, store_member};

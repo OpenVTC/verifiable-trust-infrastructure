@@ -18,8 +18,8 @@ use tower::ServiceExt;
 
 use vtc_client::VtcClient;
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
-use vti_rooms_dtg::test_support::Party;
 use vtc_service::test_support::{MockVtc, TestVtc};
+use vti_rooms_dtg::test_support::Party;
 
 const TASK: &str = "https://trusttasks.org/spec/did-management/did/register/0.1";
 const HOST: &str = "vtc.example.com";

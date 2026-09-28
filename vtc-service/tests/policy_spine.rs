@@ -265,10 +265,13 @@ async fn the_bearer_routes_are_gone() {
     assert!(!bearer_route_served_as(&vtc, "POST", "/v1/policies", UPSERT).await);
     assert!(!bearer_route_served_as(&vtc, "GET", &format!("/v1/policies/{id}"), GET).await);
     assert!(
-        !bearer_route_served_as(&vtc, "POST", &format!("/v1/policies/{id}/activate"), ACTIVATE)
-            .await
+        !bearer_route_served_as(
+            &vtc,
+            "POST",
+            &format!("/v1/policies/{id}/activate"),
+            ACTIVATE
+        )
+        .await
     );
-    assert!(
-        !bearer_route_served_as(&vtc, "POST", "/v1/admin/did/register", DID_REGISTER).await
-    );
+    assert!(!bearer_route_served_as(&vtc, "POST", "/v1/admin/did/register", DID_REGISTER).await);
 }

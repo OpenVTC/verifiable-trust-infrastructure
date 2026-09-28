@@ -28,9 +28,7 @@ use crate::acl::VtcRole;
 use crate::ceremony::execute;
 use crate::ceremony::{EffectOutcome, EffectPlan};
 use crate::error::TaskError;
-use crate::join::{
-    JoinDecision, JoinRequest, JoinStatus, get_join_request, store_join_request,
-};
+use crate::join::{JoinDecision, JoinRequest, JoinStatus, get_join_request, store_join_request};
 use crate::server::AppState;
 
 const REJECT_REASON_MAX: usize = 1024;

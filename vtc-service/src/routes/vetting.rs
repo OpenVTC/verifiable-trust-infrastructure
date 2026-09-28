@@ -30,9 +30,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 use vta_sdk::openapi::VetterResend01Response;
-use vta_sdk::protocols::vetting::{
-    AutoGrantConfig, AutoGrantStatus, VetterGrantListResponse,
-};
+use vta_sdk::protocols::vetting::{AutoGrantConfig, AutoGrantStatus, VetterGrantListResponse};
 use vti_common::auth::{AdminAuth, AuthClaims};
 use vti_common::error::AppError;
 

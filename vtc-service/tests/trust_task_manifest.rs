@@ -730,6 +730,12 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
 /// of a redemption the member's `cnm` started; and the admin verbs whose REST
 /// routes are gone.
 const SPINE_DOCUMENT_TYPES: &[&str] = &[
+    // Their bearer routes stayed for `vtc-client`; the console already signed
+    // them, and now nothing else binds them either.
+    "https://trusttasks.org/spec/vtc/join-requests/decide/0.1",
+    "https://trusttasks.org/spec/vtc/members/admin-remove/0.1",
+    "https://trusttasks.org/spec/vtc/members/credentials/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1",
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
     "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2",
     "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1",

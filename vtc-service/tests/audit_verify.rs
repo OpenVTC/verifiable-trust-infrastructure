@@ -13,9 +13,9 @@ use tower::ServiceExt;
 
 mod common;
 
-use vti_rooms_dtg::test_support::Party;
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
+use vti_rooms_dtg::test_support::Party;
 
 const VERIFY_TASK: &str = "https://trusttasks.org/spec/audit/verify/0.1";
 const PROFILE_TASK: &str = "https://trusttasks.org/spec/vtc/community/profile/update/0.1";
