@@ -1,8 +1,14 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AutoGrantPanel } from "@/plugins/vetting/AutoGrantPanel";
-import { type MockRoute, mockFetch, renderWithProviders } from "@/test/render";
+import { type MockRoute, mockFetch, renderWithProviders, taskRoute } from "@/test/render";
+
+// Signed reads reach the fetch table unsigned; there is no console key here.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+}));
 
 const STATUS = {
   enabled: false,
@@ -18,7 +24,7 @@ const STATUS = {
 
 const ROUTES: MockRoute[] = [
   { path: "/v1/vetting/auto-grant", body: STATUS },
-  { path: "/v1/policies/active", body: { bindings: [] } },
+  taskRoute("https://trusttasks.org/spec/policy/active/0.1", { bindings: [] }),
   {
     method: "PUT",
     path: "/v1/vetting/auto-grant",

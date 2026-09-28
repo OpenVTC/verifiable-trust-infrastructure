@@ -808,15 +808,10 @@ fn build_api_chain(
         // Trust-Task descriptor) — the holder answers with a
         // `credential-exchange/present` Trust Task, over any transport.
         .routes(routes!(join_requests::present::send_query))
-        // Policies (Phase 2 M2.3). Three POST endpoints, three
-        // Trust Tasks. `upload` mints + persists; `activate` flips
-        // the per-purpose active pointer; `test` evaluates a stored
-        // policy without mutating state.
-        // Each verb now carries its own canonical task. `test` stays
-        // on its openvtc URI: canonical `policy/evaluate` runs the
-        // matching policy set through the standard `decision` rule,
-        // while `test` evaluates an operator-chosen Rego query against
-        // one stored module — a different verb, not a rename.
+        // Policies. Every verb is served on the spine
+        // (`trust_tasks::policy_tasks`); these four bearer routes stay while
+        // `vtc-client` calls them. `policy/active` and `vtc/policies/test`
+        // have no route.
         .routes(tt(
             routes!(policies::read::list_policies),
             "https://trusttasks.org/spec/policy/list/0.2",
@@ -834,20 +829,12 @@ fn build_api_chain(
             "https://trusttasks.org/spec/policy/upsert/0.2",
         ))
         .routes(tt(
-            routes!(policies::read::active_policies),
-            "https://trusttasks.org/spec/policy/active/0.1",
-        ))
-        .routes(tt(
             routes!(policies::read::show_policy),
             "https://trusttasks.org/spec/policy/get/0.1",
         ))
         .routes(tt(
             routes!(policies::admin::activate),
             "https://trusttasks.org/spec/policy/activate/0.1",
-        ))
-        .routes(tt(
-            routes!(policies::admin::test),
-            "https://trusttasks.org/spec/vtc/policies/test/0.1",
         ));
 
     // Phase 5 M5.5 — public-website management routes. The

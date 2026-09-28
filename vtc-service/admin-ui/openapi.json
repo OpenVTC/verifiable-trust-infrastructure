@@ -2428,57 +2428,6 @@
         ]
       }
     },
-    "/v1/policies/active": {
-      "get": {
-        "tags": [
-          "policies"
-        ],
-        "operationId": "active_policies",
-        "parameters": [
-          {
-            "name": "purpose",
-            "in": "query",
-            "description": "Narrow to a single decision slot.",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PolicyPurpose"
-            }
-          },
-          {
-            "name": "contextId",
-            "in": "query",
-            "description": "Not implemented — a VTC is not context-partitioned. Refused\nrather than ignored, so a caller never reads a community-wide\nbinding as one scoped to their context.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Active policy bindings",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ActiveBindingsResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/policies/{id}": {
       "get": {
         "tags": [
@@ -2548,62 +2497,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ActivateResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "404": {
-            "description": "Policy not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/policies/{id}/test": {
-      "post": {
-        "tags": [
-          "policies"
-        ],
-        "summary": "Evaluate a stored policy against a caller-supplied input.\n**Does not activate** the policy and does not mutate any state\nbeyond log lines. Used by operators to dry-run a candidate\nupload before flipping the active pointer.",
-        "operationId": "test",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Policy revision id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TestBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Policy evaluation result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TestResponse"
                 }
               }
             }
@@ -3865,37 +3758,6 @@
           },
           "purpose": {
             "$ref": "#/components/schemas/PolicyPurpose"
-          }
-        }
-      },
-      "ActiveBinding": {
-        "type": "object",
-        "description": "One activation binding. `contextId` is omitted throughout: a VTC is\na single community and does not partition its policy set per trust\ncontext, so every binding is community-wide.",
-        "required": [
-          "purpose",
-          "policy"
-        ],
-        "properties": {
-          "policy": {
-            "$ref": "#/components/schemas/PolicyModuleResponse"
-          },
-          "purpose": {
-            "type": "string"
-          }
-        }
-      },
-      "ActiveBindingsResponse": {
-        "type": "object",
-        "description": "Canonical `policy/active` response: the `(contextId, purpose) →\nmodule` bindings currently in force.",
-        "required": [
-          "bindings"
-        ],
-        "properties": {
-          "bindings": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ActiveBinding"
-            }
           }
         }
       },
@@ -9956,48 +9818,6 @@
           "systemd",
           "kubernetes"
         ]
-      },
-      "TestBody": {
-        "type": "object",
-        "required": [
-          "query",
-          "input"
-        ],
-        "properties": {
-          "input": {
-            "$ref": "#/components/schemas/Value",
-            "description": "JSON document fed to the policy as `input`. Mirrors the\nshape M2.6 / M2.7 will pass in production."
-          },
-          "query": {
-            "type": "string",
-            "description": "Rego query to evaluate against the candidate policy\n(e.g. `\"data.vtc.join.allow\"`). Caller chooses the query so\n`test` can be used to probe any rule in the module, not\njust `allow`."
-          }
-        }
-      },
-      "TestResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "purpose",
-          "sha256",
-          "result"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "purpose": {
-            "$ref": "#/components/schemas/PolicyPurpose"
-          },
-          "result": {
-            "$ref": "#/components/schemas/Value",
-            "description": "Raw regorus `QueryResults` JSON. Same shape M2.6 / M2.7\nwill pluck `result[0].expressions[0].value` from when they\nwire policy evaluation into the membership flows."
-          },
-          "sha256": {
-            "type": "string"
-          }
-        }
       },
       "TokenBundle": {
         "type": "object",

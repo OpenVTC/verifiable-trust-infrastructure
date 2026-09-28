@@ -17,7 +17,6 @@ use vtc_service::test_support::TestVtc;
 const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const LIST: &str = "https://trusttasks.org/spec/policy/list/0.2";
 const GET: &str = "https://trusttasks.org/spec/policy/get/0.1";
-const ACTIVE: &str = "https://trusttasks.org/spec/policy/active/0.1";
 const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 
 const JOIN_POLICY: &str = "package vtc.join\nimport rego.v1\ndefault allow := true\n";
@@ -238,17 +237,6 @@ async fn activate_exposes_the_binding_via_policy_active() {
         "canonical names it `activated`: {act}"
     );
     assert_eq!(act["purpose"], "join");
-
-    // The binding is now readable as a canonical ActiveBinding.
-    let (status, body) = call(&fix, "GET", "/v1/policies/active", ACTIVE, None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let b = body["bindings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|b| b["purpose"] == "join")
-        .expect("join binding");
-    assert_eq!(b["policy"]["id"], id);
 }
 
 #[tokio::test]
@@ -257,7 +245,6 @@ async fn unsupported_list_and_active_filters_are_refused() {
     for (uri, task) in [
         ("/v1/policies?contextId=ctx-a", LIST),
         ("/v1/policies?enabledOnly=true", LIST),
-        ("/v1/policies/active?contextId=ctx-a", ACTIVE),
     ] {
         let (status, body) = call(&fix, "GET", uri, task, None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");

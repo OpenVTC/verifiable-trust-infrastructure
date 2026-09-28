@@ -74,6 +74,8 @@ pub(crate) mod admin_tasks;
 // The administrator's community verbs: roster, join queue, graph, directory,
 // recognition, and invitation credentials.
 pub(crate) mod community_tasks;
+// The community's policy log and its self-hosted DID log.
+pub(crate) mod policy_tasks;
 
 // The member-facing verbs that were HTTPS REST only: renewal, DID rotation,
 // personhood revocation, the relationship graph's member verbs and the
@@ -303,7 +305,7 @@ async fn dispatch_trust_task_validated(
 ) -> TrustTaskOutcome {
     // 0. The size the document's type accepts — decided before anything in it
     //    is parsed, on every transport (`size`).
-    if let Err(refused) = size::check(body) {
+    if let Err(refused) = size::check(state, body).await {
         return refused;
     }
 
@@ -874,6 +876,13 @@ async fn dispatch_typed(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("admin_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
+        uri if policy_tasks::URIS.contains(&uri) => {
+            match policy_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("policy_tasks::URIS names {uri}, which it does not route"),
             }
         }
         uri if community_tasks::URIS.contains(&uri) => {
@@ -1457,7 +1466,7 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            73,
+            75,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1491,7 +1500,10 @@ mod spine_proof_tests {
              unsigned one in their handlers regardless) + the 3 invitation verbs \
              `community_tasks` moved that declare one (`vtc/invitations/{{issue,revoke,deliver}}`; \
              the community reads declare none and their handlers refuse an unsigned \
-             one regardless); got {required:?}"
+             one regardless) + the 2 policy verbs `policy_tasks` moved that declare one \
+             (`policy/{{upsert,activate}}`; the policy reads, `vtc/policies/test` and \
+             `did-management/did/register` declare none as a request requirement, and \
+             their handlers refuse an unsigned one regardless); got {required:?}"
         );
     }
 
@@ -1931,6 +1943,16 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_tasks::INVITATIONS_LIST_TYPE,
     community_tasks::INVITATIONS_REVOKE_TYPE,
     community_tasks::INVITATIONS_DELIVER_TYPE,
+    // The policy log and the community's own DID log. `policy/{list,get,
+    // upsert,activate}` and `did/register` keep their routes while `vtc-client`
+    // calls them.
+    policy_tasks::POLICY_LIST_TYPE,
+    policy_tasks::POLICY_GET_TYPE,
+    policy_tasks::POLICY_ACTIVE_TYPE,
+    policy_tasks::POLICY_UPSERT_TYPE,
+    policy_tasks::POLICY_ACTIVATE_TYPE,
+    policy_tasks::POLICY_TEST_TYPE,
+    policy_tasks::DID_REGISTER_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -4196,6 +4218,13 @@ mod tests {
             community_tasks::INVITATIONS_LIST_TYPE,
             community_tasks::INVITATIONS_REVOKE_TYPE,
             community_tasks::INVITATIONS_DELIVER_TYPE,
+            policy_tasks::POLICY_LIST_TYPE,
+            policy_tasks::POLICY_GET_TYPE,
+            policy_tasks::POLICY_ACTIVE_TYPE,
+            policy_tasks::POLICY_UPSERT_TYPE,
+            policy_tasks::POLICY_ACTIVATE_TYPE,
+            policy_tasks::POLICY_TEST_TYPE,
+            policy_tasks::DID_REGISTER_TYPE,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.

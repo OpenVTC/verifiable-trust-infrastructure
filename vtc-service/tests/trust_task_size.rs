@@ -2,8 +2,9 @@
 //!
 //! Each Trust Task type declares its largest document
 //! (`vtc_service::trust_tasks::size`, 64 KiB unless its specification needs
-//! more, in force only once the type is served). A document over its type's
-//! limit is refused before it is parsed, with a framework `trust-task-error`;
+//! more, in force only once the type is served, and only for an issuer with
+//! standing). A document over its limit is refused before it is parsed, with a
+//! framework `trust-task-error`;
 //! the HTTPS door's own body cap is the largest any served type accepts, and
 //! the rest of the unauthenticated chain keeps its 64 KiB cap.
 
@@ -52,22 +53,37 @@ async fn post_with(
     (status, serde_json::from_slice(&bytes).ok())
 }
 
-/// No type this build declares a raised limit for is served yet
-/// (`policy/upsert`, `did/register`), so the HTTPS door admits no more than the
-/// default: a body over it is refused before it is buffered, whatever type it
-/// claims. The spine's own refusal — the one TSP and DIDComm meet — is pinned
-/// in `trust_tasks::size`.
+/// The HTTPS door buffers no more than the largest limit any served type
+/// accepts (`did/register`'s 1 MiB): a body over it is refused before it is
+/// buffered, whatever type it claims.
 #[tokio::test]
 async fn the_https_door_buffers_no_more_than_the_largest_served_type_accepts() {
     let vtc = TestVtc::builder().build().await;
     for (type_uri, len) in [
-        (MEMBERS_UPDATE, 64 * KIB + 1),
-        (POLICY_UPSERT, 128 * KIB),
         (MEMBERS_UPDATE, 1024 * KIB + 1),
+        (POLICY_UPSERT, 1024 * KIB + 1),
     ] {
         let (status, _) = post(&vtc, "/v1/trust-tasks", document_of(type_uri, len)).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{type_uri} at {len}");
     }
+}
+
+/// Below the door's cap the spine decides. A raised type's document from no
+/// known issuer — this one names none — is held to the default, and refused
+/// for its size before it is parsed further.
+#[tokio::test]
+async fn a_raised_type_from_no_known_issuer_is_held_to_the_default() {
+    let vtc = TestVtc::builder().build().await;
+    let (status, doc) = post(
+        &vtc,
+        "/v1/trust-tasks",
+        document_of(POLICY_UPSERT, 128 * KIB),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let payload = &doc.expect("a trust-task-error document")["payload"];
+    assert_eq!(payload["code"], "malformedRequest", "{payload}");
+    assert_eq!(payload["details"]["maxBytes"], 64 * KIB, "{payload}");
 }
 
 #[tokio::test]

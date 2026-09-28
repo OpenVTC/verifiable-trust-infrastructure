@@ -140,9 +140,14 @@ export type AuditListResponse = Schemas["AuditListResponse"];
 // ── Policies ────────────────────────────────────────────────────────────
 export type PolicyRow = Schemas["PolicyModuleResponse"];
 export type PoliciesPage = Schemas["PolicyListResponse"];
-export type ActiveBindingsResponse = Schemas["ActiveBindingsResponse"];
 export type PolicyUpsertResponse = Schemas["UploadResponse"];
-export type PolicyTestResponse = Schemas["TestResponse"];
+/** `vtc/policies/test/0.1`'s response, now served only as a signed document. */
+export interface PolicyTestResponse {
+  id: string;
+  purpose: string;
+  sha256: string;
+  result: { result?: { expressions?: { value?: unknown }[] }[] };
+}
 /**
  * What a policy decides.
  *

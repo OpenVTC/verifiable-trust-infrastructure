@@ -779,6 +779,12 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/invitations/list/0.1",
     "https://trusttasks.org/spec/vtc/invitations/revoke/0.1",
     "https://trusttasks.org/spec/vtc/invitations/deliver/0.1",
+    // The policy log (`trust_tasks::policy_tasks`).
+    "https://trusttasks.org/spec/policy/list/0.2",
+    "https://trusttasks.org/spec/policy/active/0.1",
+    "https://trusttasks.org/spec/policy/upsert/0.2",
+    "https://trusttasks.org/spec/policy/activate/0.1",
+    "https://trusttasks.org/spec/vtc/policies/test/0.1",
 ];
 
 #[test]

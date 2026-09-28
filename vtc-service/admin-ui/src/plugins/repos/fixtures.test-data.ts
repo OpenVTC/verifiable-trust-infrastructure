@@ -15,6 +15,9 @@ import { MEMBERS_LIST_TASK, type MockRoute } from "@/test/render";
 import { TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW } from "./api";
 import type { GitNsBreakGlassItem } from "./model";
 
+/** `policy/active/0.1`, the one policy read the Repos plugin makes. */
+export const POLICY_ACTIVE_TASK = "https://trusttasks.org/spec/policy/active/0.1";
+
 export const VTC = "did:webvh:QmVtc:acme.dev";
 export const BRIDGE = "did:webvh:QmBridge:bridge.acme.dev";
 export const ALICE = "did:webvh:QmAlice:alice.dev";
@@ -304,24 +307,6 @@ export function gitNsRoutes(
         ],
       },
     },
-    {
-      path: "/v1/policies/active",
-      body: {
-        bindings: [
-          {
-            purpose: "gitNamespace",
-            policy: {
-              id: "p1",
-              name: "git_ns",
-              module: "",
-              version: 3,
-              createdAt: "2026-08-01T00:00:00Z",
-              updatedAt: "2026-08-01T00:00:00Z",
-            },
-          },
-        ],
-      },
-    },
   ];
 }
 
@@ -367,6 +352,7 @@ export function signedReads(o: {
             : 200;
         case ACL_LIST_TASK:
         case MEMBERS_LIST_TASK:
+        case POLICY_ACTIVE_TASK:
           return 200;
         default:
           return 404;
@@ -397,6 +383,25 @@ export function signedReads(o: {
         // person picker.
         case MEMBERS_LIST_TASK:
           return { payload: { items: MEMBERS } };
+        // The git namespace policy the overview links to.
+        case POLICY_ACTIVE_TASK:
+          return {
+            payload: {
+              bindings: [
+                {
+                  purpose: "gitNamespace",
+                  policy: {
+                    id: "p1",
+                    name: "git_ns",
+                    module: "",
+                    version: 3,
+                    createdAt: "2026-08-01T00:00:00Z",
+                    updatedAt: "2026-08-01T00:00:00Z",
+                  },
+                },
+              ],
+            },
+          };
         default:
           return refusal("unsupportedType", `no mock for ${typeOf(body)}`);
       }
@@ -511,8 +516,13 @@ export function isSignedRead(r: { url: string; body: unknown }): boolean {
   const type = (r.body as { type?: string } | undefined)?.type;
   return (
     r.url === "/v1/trust-tasks" &&
-    [TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW, ACL_LIST_TASK, MEMBERS_LIST_TASK].includes(
-      type ?? "",
-    )
+    [
+      TASK_NAMESPACE_LIST,
+      TASK_REPO_LIST,
+      TASK_VIEW,
+      ACL_LIST_TASK,
+      MEMBERS_LIST_TASK,
+      POLICY_ACTIVE_TASK,
+    ].includes(type ?? "")
   );
 }

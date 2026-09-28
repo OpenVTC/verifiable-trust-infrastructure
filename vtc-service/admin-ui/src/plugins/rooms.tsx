@@ -62,7 +62,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { DoorOpen, RefreshCw } from "lucide-react";
 
-import { getJsonExempt, postJson } from "@/lib/api";
+import { getJsonExempt, postSignedRead } from "@/lib/api";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { formatEpoch, shorten } from "@/lib/format";
 import { NamedDid } from "@/components/NamedDid";
@@ -110,22 +110,19 @@ async function fetchRooms(): Promise<HostedRoom[]> {
  * already know.
  */
 async function probeTier(policyId: string, tier: Tier): Promise<PolicyTestResponse> {
-  return postJson<PolicyTestResponse>(
-    `/v1/policies/${policyId}/test`,
-    {
-      query: DECISION_QUERY,
-      input: {
-        now: new Date().toISOString(),
-        actor: { did: "did:example:a-member-of-this-community", member: true },
-        room: {
-          roomId: "did:example:a-room",
-          visibility: tier,
-          ownerDid: "did:example:a-member-of-this-community",
-        },
+  return postSignedRead<PolicyTestResponse>(TRUST_TASK_TEST, {
+    id: policyId,
+    query: DECISION_QUERY,
+    input: {
+      now: new Date().toISOString(),
+      actor: { did: "did:example:a-member-of-this-community", member: true },
+      room: {
+        roomId: "did:example:a-room",
+        visibility: tier,
+        ownerDid: "did:example:a-member-of-this-community",
       },
     },
-    { trustTask: TRUST_TASK_TEST },
-  );
+  });
 }
 
 interface Verdict {

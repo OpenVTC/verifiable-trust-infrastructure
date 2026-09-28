@@ -89,7 +89,19 @@ pub async fn register(
     State(state): State<AppState>,
     Json(body): Json<DidRegister01Payload>,
 ) -> Result<Json<DidRegister01Response>, AppError> {
-    let payload = body.into_inner();
+    register_inner(&state, &auth.0.did, body.into_inner())
+        .await
+        .map(|r| Json(r.into()))
+}
+
+/// Install the delivered log as `actor` — `did-management/did/register/0.1`,
+/// on the route and the spine alike. The caller has already established that
+/// `actor` is an unrestricted administrator.
+pub(crate) async fn register_inner(
+    state: &AppState,
+    actor: &str,
+    payload: trust_tasks_rs::specs::did_management::did::register::v0_1::Payload,
+) -> Result<Response, AppError> {
     if payload.method.as_str() != "webvh" {
         return Err(AppError::Validation(format!(
             "did-management/did/register:invalidLog: a community self-hosts a did:webvh log; \
@@ -152,7 +164,7 @@ pub async fn register(
         if let Some(writer) = state.audit_writer.as_ref() {
             writer
                 .write(
-                    &auth.0.did,
+                    actor,
                     None,
                     AuditEvent::CommunityDidLogInstalled(CommunityDidLogInstalledData {
                         did: did.clone(),
@@ -200,11 +212,10 @@ pub async fn register(
         .disabled(Some(false))
         .try_into()
         .map_err(|e| AppError::Internal(format!("build DidRecord: {e}")))?;
-    let response: Response = Response::builder()
+    Response::builder()
         .record(record)
         .try_into()
-        .map_err(|e| AppError::Internal(format!("build register response: {e}")))?;
-    Ok(Json(response.into()))
+        .map_err(|e| AppError::Internal(format!("build register response: {e}")))
 }
 
 #[cfg(test)]
