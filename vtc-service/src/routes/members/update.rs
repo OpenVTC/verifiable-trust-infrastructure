@@ -129,9 +129,9 @@ pub(crate) async fn update_member_inner(
         return Err(TaskError::declared(
             UPDATE_ERR_ADMIN_ROLE_FORBIDDEN,
             AppError::Validation(format!(
-                "`role: admin` is not a metadata update; promote with acl/change-role — \
-                 PATCH /v1/acl/{did} {{\"fromRole\": \"<current role>\", \"toRole\": \"admin\"}}, \
-                 which requires a fresh passkey step-up"
+                "`role: admin` is not a metadata update; promote {did} with the signed \
+                 acl/change-role {{\"fromRole\": \"<current role>\", \"toRole\": \"admin\"}}, \
+                 which requires a passkey gesture"
             )),
         ));
     }

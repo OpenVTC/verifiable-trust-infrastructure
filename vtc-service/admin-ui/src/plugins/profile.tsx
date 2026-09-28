@@ -1,21 +1,22 @@
-// Community profile plugin — GET + PUT /v1/community/profile.
+// Community profile plugin — read over GET /v1/community/profile, edited as a
+// signed `vtc/community/profile/update/0.1` document.
 //
 // Read-only fields (community_did, created_at) render as plain
 // text. Editable fields (name, description, language, contact
 // email, public url, logo url) are inputs in a single form. The
-// form tracks "dirty" state and only PUTs fields that changed.
+// form tracks "dirty" state and only sends fields that changed.
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Field } from "@/components/Field";
-import { getJson, putJson } from "@/lib/api";
+import { getJson, postSignedTrustTask } from "@/lib/api";
 import { CommunityBrandingCard } from "@/plugins/vetting/BrandingCard";
 import { JoinDiscoveryCard } from "@/plugins/community/JoinDiscoveryCard";
 
 const TRUST_TASK =
   "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
-// PUT carries the update task — GET and PUT are separate Trust Tasks.
+// The edit is a signed document; the profile has no REST write.
 const TRUST_TASK_UPDATE =
   "https://trusttasks.org/spec/vtc/community/profile/update/0.1";
 
@@ -58,12 +59,10 @@ async function getProfile(): Promise<Profile> {
 }
 
 async function putProfile(body: ProfileUpdateRequest): Promise<unknown> {
-  // PUT returns `{ profile, fieldsChanged }` (nested). We don't read
-  // it — `onSuccess` invalidates the query, which refetches via
-  // `getProfile` and seeds the form from the unwrapped profile.
-  return putJson<unknown>("/v1/community/profile", body, {
-    trustTask: TRUST_TASK_UPDATE,
-  });
+  // The response is `{ profile, fieldsChanged }`. We don't read it —
+  // `onSuccess` invalidates the query, which refetches via `getProfile` and
+  // seeds the form from the unwrapped profile.
+  return postSignedTrustTask<unknown>(TRUST_TASK_UPDATE, body);
 }
 
 export function Profile() {

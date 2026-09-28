@@ -31,8 +31,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 use vta_sdk::openapi::{
-    VetterGrant01Payload, VetterGrant01Response, VetterList01Payload, VetterList01Response,
-    VetterResend01Response, VetterShow01Payload, VetterShow01Response,
+    VetterGrant01Payload, VetterGrant01Response, VetterResend01Response, VetterShow01Payload,
+    VetterShow01Response,
 };
 use vta_sdk::protocols::vetting::{
     AutoGrantConfig, AutoGrantStatus, VetterGrantListResponse, read_checked,
@@ -120,38 +120,6 @@ pub async fn resend_vetter(
         vetters::resend_as_admin(&state, &auth.did, &member_did)
             .await?
             .into(),
-    ))
-}
-
-/// The public vetter listing, as applicants see it.
-///
-/// The body and the answer are `vtc/vetting/vetters/list/0.1`'s, and both go
-/// through [`crate::vetting::profiles::list`], so the console previews exactly
-/// what `POST /v1/trust-tasks` returns to an applicant with the same filters.
-#[utoipa::path(
-    post, path = "/vetting/vetters/list",
-    operation_id = "vettingVetterListing", tag = "vetting",
-    security(("bearer_jwt" = [])),
-    request_body = VetterList01Payload,
-    responses(
-        (status = 200, description = "A page of listed vetters", body = VetterList01Response),
-        (status = 400, description = "A filter breaks its bounds, or the cursor was issued for other filters"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_listed_vetters(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    // Read as JSON, then checked against the published schema before parsing:
-    // the body is `vtc/vetting/vetters/list/0.1`'s payload, as documented above.
-    Json(body): Json<serde_json::Value>,
-) -> Result<Json<VetterList01Response>, AppError> {
-    let body: VetterList01Payload = read_checked(&body)
-        .map(VetterList01Payload)
-        .map_err(|e| AppError::Validation(e.to_string()))?;
-    Ok(Json(
-        crate::vetting::profiles::list(&state, &body).await?.into(),
     ))
 }
 

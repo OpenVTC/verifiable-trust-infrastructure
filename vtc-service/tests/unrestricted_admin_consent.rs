@@ -600,30 +600,6 @@ async fn bearer(
     )
 }
 
-/// VTI-APV-002: the bearer route reaches the same decision. A stepped-up
-/// session is not enough; another admin's consent is.
-#[tokio::test]
-async fn vti_apv_002_the_bearer_route_needs_consent_too() {
-    let fix = fixture().await;
-    let requester = admin(&fix).await;
-    let approver = admin(&fix).await;
-    let subject = Party::new();
-    let token = stepped_up_token(&fix, &requester.did).await;
-    let body = grant_unrestricted(&subject.did);
-
-    let (status, refusal) = bearer(&fix, "POST", "/v1/acl", GRANT, &token, body.clone()).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
-    assert_eq!(refusal["error"], "auth:consent_required", "{refusal}");
-    assert!(entry(&fix, &subject.did).await.is_none());
-
-    let (status, ack) = decide(&fix, &approver, &refusal, "approve").await;
-    assert_eq!(status, StatusCode::OK, "{ack}");
-
-    let (status, reply) = bearer(&fix, "POST", "/v1/acl", GRANT, &token, body).await;
-    assert_eq!(status, StatusCode::CREATED, "{reply}");
-    assert!(entry(&fix, &subject.did).await.unwrap().is_super_admin());
-}
-
 async fn patch_threshold(fix: &Fixture, token: &str, n: u64) -> Value {
     let (status, reply) = bearer(
         fix,
@@ -643,8 +619,8 @@ async fn patch_threshold(fix: &Fixture, token: &str, n: u64) -> Value {
 /// reload.
 #[tokio::test]
 async fn vti_apv_009_an_unmeetable_threshold_is_refused_when_written() {
-    let fix = fixture().await;
-    let requester = admin(&fix).await;
+    let mut fix = fixture().await;
+    let requester = admin_with_passkey(&mut fix).await;
     let first = admin(&fix).await;
     let token = stepped_up_token(&fix, &requester.did).await;
 
@@ -664,25 +640,24 @@ async fn vti_apv_009_an_unmeetable_threshold_is_refused_when_written() {
     assert_eq!(reply["applied"][0], THRESHOLD_KEY, "{reply}");
 
     let subject = Party::new();
-    let body = grant_unrestricted(&subject.did);
-    let (_, refusal) = bearer(&fix, "POST", "/v1/acl", GRANT, &token, body.clone()).await;
-    assert_eq!(refusal["minApprovals"], 2, "{refusal}");
+    let grant = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
+    let (_, refusal) = post(&fix, &grant).await;
+    make_gesture(&mut fix, &requester, &refusal).await;
+    let (_, refusal) = post(&fix, &grant).await;
+    let details = consent_required(&refusal);
+    assert_eq!(details["minApprovals"], 2, "{refusal}");
 
-    let (_, ack) = decide(&fix, &first, &refusal, "approve").await;
+    let (_, ack) = decide(&fix, &first, &details, "approve").await;
     assert_eq!(ack["status"], "pending", "{ack}");
     assert_eq!(ack["approvals"], 1);
     assert_eq!(ack["needed"], 2);
-    let (status, _) = bearer(&fix, "POST", "/v1/acl", GRANT, &token, body.clone()).await;
-    assert_eq!(
-        status,
-        StatusCode::FORBIDDEN,
-        "one approval of two is not enough"
-    );
+    let (status, _) = post(&fix, &grant).await;
+    assert!(!status.is_success(), "one approval of two is not enough");
 
-    let (_, ack) = decide(&fix, &second, &refusal, "approve").await;
+    let (_, ack) = decide(&fix, &second, &details, "approve").await;
     assert_eq!(ack["status"], "granted", "{ack}");
-    let (status, reply) = bearer(&fix, "POST", "/v1/acl", GRANT, &token, body).await;
-    assert_eq!(status, StatusCode::CREATED, "{reply}");
+    let (status, reply) = post(&fix, &grant).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
 }
 
 // ─── attrition (VTI-APV-009): ending an unrestricted admin ─────────────────
@@ -707,32 +682,16 @@ async fn three_admins_threshold_two(fix: &Fixture) -> (Party, Party, Party, Stri
 #[tokio::test]
 async fn vti_apv_009_a_revoke_that_would_strand_the_threshold_is_refused() {
     let fix = fixture().await;
-    let (_a, _b, c, token) = three_admins_threshold_two(&fix).await;
+    let (a, _b, c, token) = three_admins_threshold_two(&fix).await;
 
-    let (status, body) = bearer(
-        &fix,
-        "DELETE",
-        &format!("/v1/acl/{}", c.did),
-        REVOKE,
-        &token,
-        Value::Null,
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = post(&fix, &signed(&a, REVOKE, json!({ "subject": c.did })).await).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     let message = body.to_string();
     assert!(message.contains("config/patch"), "names the fix: {message}");
     assert!(entry(&fix, &c.did).await.is_some(), "nothing removed");
 
     patch_threshold(&fix, &token, 1).await;
-    let (status, body) = bearer(
-        &fix,
-        "DELETE",
-        &format!("/v1/acl/{}", c.did),
-        REVOKE,
-        &token,
-        Value::Null,
-    )
-    .await;
+    let (status, body) = post(&fix, &signed(&a, REVOKE, json!({ "subject": c.did })).await).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
@@ -743,16 +702,7 @@ async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
     let fix = fixture().await;
     let a = admin(&fix).await;
     let b = admin(&fix).await;
-    let token = stepped_up_token(&fix, &a.did).await;
-    let (status, body) = bearer(
-        &fix,
-        "DELETE",
-        &format!("/v1/acl/{}", b.did),
-        REVOKE,
-        &token,
-        Value::Null,
-    )
-    .await;
+    let (status, body) = post(&fix, &signed(&a, REVOKE, json!({ "subject": b.did })).await).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
@@ -761,18 +711,18 @@ async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
 #[tokio::test]
 async fn vti_apv_009_narrowing_an_unrestricted_admin_is_attrition() {
     let fix = fixture().await;
-    let (_a, _b, c, token) = three_admins_threshold_two(&fix).await;
+    let (a, _b, c, token) = three_admins_threshold_two(&fix).await;
     let narrow = json!({ "entry": { "subject": c.did, "role": "admin", "scopes": ["ctx-a"] } });
 
-    let (status, body) = bearer(&fix, "POST", "/v1/acl", GRANT, &token, narrow.clone()).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = post(&fix, &signed(&a, GRANT, narrow.clone()).await).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert!(
         entry(&fix, &c.did).await.unwrap().is_super_admin(),
         "unchanged"
     );
 
     patch_threshold(&fix, &token, 1).await;
-    let (status, body) = bearer(&fix, "POST", "/v1/acl", GRANT, &token, narrow).await;
+    let (status, body) = post(&fix, &signed(&a, GRANT, narrow).await).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(!entry(&fix, &c.did).await.unwrap().is_super_admin());
 }
@@ -781,17 +731,10 @@ async fn vti_apv_009_narrowing_an_unrestricted_admin_is_attrition() {
 #[tokio::test]
 async fn vti_apv_009_demoting_an_unrestricted_admin_is_attrition() {
     let fix = fixture().await;
-    let (_a, _b, c, token) = three_admins_threshold_two(&fix).await;
-    let (status, body) = bearer(
-        &fix,
-        "PATCH",
-        &format!("/v1/acl/{}", c.did),
-        CHANGE_ROLE,
-        &token,
-        json!({ "fromRole": "admin", "toRole": "member" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (a, _b, c, _token) = three_admins_threshold_two(&fix).await;
+    let demote = json!({ "subject": c.did, "fromRole": "admin", "toRole": "member" });
+    let (status, body) = post(&fix, &signed(&a, CHANGE_ROLE, demote).await).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(entry(&fix, &c.did).await.unwrap().role, VtcRole::Admin);
 }
 
@@ -814,16 +757,8 @@ async fn the_last_unrestricted_admin_cannot_step_down_behind_a_scoped_one() {
     )
     .await
     .unwrap();
-    let token = stepped_up_token(&fix, &a.did).await;
-    let (status, body) = bearer(
-        &fix,
-        "PATCH",
-        &format!("/v1/acl/{}", a.did),
-        CHANGE_ROLE,
-        &token,
-        json!({ "fromRole": "admin", "toRole": "member" }),
-    )
-    .await;
+    let demote = json!({ "subject": a.did, "fromRole": "admin", "toRole": "member" });
+    let (status, body) = post(&fix, &signed(&a, CHANGE_ROLE, demote).await).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(body.to_string().contains("VTI-ACL-052"), "{body}");
     assert!(entry(&fix, &a.did).await.unwrap().is_super_admin());

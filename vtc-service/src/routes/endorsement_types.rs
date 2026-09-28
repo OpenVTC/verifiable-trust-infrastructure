@@ -35,8 +35,7 @@
 //! URIs from colliding with the keyspace prefix discipline.
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Query, State};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -47,7 +46,6 @@ use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated};
 
 use trust_tasks_rs::specs::vtc::endorsement_types::delete::v0_1::Response as DeleteTaskResponse;
-use vta_sdk::openapi::EndorsementTypeDelete01Response;
 
 use crate::endorsement_types::{
     EndorsementType, RESERVED_TYPE_URIS, TYPE_URI_MAX_BYTES, delete_type, get_type, list_types,
@@ -103,36 +101,6 @@ pub struct RegisterBody {
     pub claim_schema: Option<JsonValue>,
     #[serde(default)]
     pub description: Option<String>,
-}
-
-/// POST /endorsement-types — register an endorsement type. Auth: Admin.
-///
-/// **Transitional bearer-token path (#1641).**
-/// `vtc/endorsement-types/register/0.1` declares `proof` REQUIRED, and the
-/// authoritative binding is the signed Trust Task document at
-/// `POST /v1/trust-tasks`, where the proof authenticates the administrator and
-/// their authority is read from their ACL entry. This route authenticates by
-/// bearer JWT and verifies no document proof; the admin console uses it only
-/// from a browser with no console signing key enrolled, and it is removed once
-/// every client signs.
-#[utoipa::path(
-    post, path = "/endorsement-types",
-    operation_id = "endorsementTypeRegister", tag = "endorsement-types",
-    security(("bearer_jwt" = [])),
-    request_body = RegisterBody,
-    responses(
-        (status = 201, description = "Endorsement type registered", body = RegisterResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn register(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<RegisterBody>,
-) -> Result<(StatusCode, Json<RegisterResponse>), TaskError> {
-    let response = register_inner(&state, &auth.0.did, body).await?;
-    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// The largest `claimSchema` a registration accepts, measured serialised.
@@ -334,56 +302,6 @@ pub async fn list(
 }
 
 // ─── Delete ──────────────────────────────────────────────
-
-/// The response is the **generated** `vtc/endorsement-types/delete/0.1`
-/// type, not a local restatement of it.
-///
-/// A hand-written `{ typeUri }` lived here until the census in
-/// `vta-sdk/tests/generated_wire_types_census.rs` named it. It had been
-/// invisible to that census only because it carried no doc comment
-/// saying which task it restated — giving it one, while renaming it out
-/// of a three-way `DeleteResponse` collision, is what surfaced a
-/// violation that predated the rename.
-///
-/// `utoipa::ToSchema` cannot be derived on a foreign type, so the handler
-/// returns [`EndorsementTypeDelete01Response`] — the `spec_types!` newtype
-/// whose schema is rendered from the specification's own — wrapping the
-/// generated value rather than describing the shape a second time.
-///
-/// Returning the wrapper, not the bare generated type, is what
-/// `openapi_response_census` requires: the `body =` annotation and the
-/// handler's return type must name the same thing, because that annotation
-/// is what generates the console's `wire.ts` and a mismatch ships a console
-/// reading a shape the daemon never sends.
-///
-/// **Transitional bearer-token path (#1641).**
-/// `vtc/endorsement-types/delete/0.1` declares `proof` REQUIRED, and the
-/// authoritative binding is the signed Trust Task document at
-/// `POST /v1/trust-tasks`, where the proof authenticates the administrator and
-/// their authority is read from their ACL entry. This route authenticates by
-/// bearer JWT and verifies no document proof; the admin console uses it only
-/// from a browser with no console signing key enrolled, and it is removed once
-/// every client signs.
-#[utoipa::path(
-    delete, path = "/endorsement-types/{type_uri}",
-    operation_id = "endorsementTypeDelete", tag = "endorsement-types",
-    security(("bearer_jwt" = [])),
-    params(("type_uri" = String, Path, description = "Endorsement type URI")),
-    responses(
-        (status = 200, description = "Endorsement type deleted", body = EndorsementTypeDelete01Response),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Endorsement type not found"),
-    ),
-)]
-pub async fn delete(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Path(type_uri): Path<String>,
-) -> Result<(StatusCode, Json<EndorsementTypeDelete01Response>), TaskError> {
-    let body = delete_inner(&state, &auth.0.did, type_uri).await?;
-    Ok((StatusCode::OK, Json(body.into())))
-}
 
 /// The deletion, independent of the door it arrived through — the bearer
 /// route above and the signed `vtc/endorsement-types/delete/0.1` document

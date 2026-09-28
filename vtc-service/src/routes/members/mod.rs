@@ -9,9 +9,9 @@
 //!   (`vtc/members/credentials/0.1`, see `credentials.rs`).
 //! - `PATCH /v1/members/{did}` — profile fields and non-admin role
 //!   changes. `role: admin` is refused here with the task's declared
-//!   `adminRoleForbidden`; promotion is `acl/change-role/0.1`
-//!   (`PATCH /v1/acl/{did}`), behind the live step-up elevation the
-//!   role-change ceremony's host invariant demands. See `update.rs`.
+//!   `adminRoleForbidden`; promotion is the signed `acl/change-role/0.1`,
+//!   behind the passkey gesture the role-change ceremony's host invariant
+//!   demands. See `update.rs`.
 //!
 //! The fused `POST /v1/members/{did}/promote-to-admin/{start,finish}`
 //! pair is **gone**: it ran a second implementation of passkey UV

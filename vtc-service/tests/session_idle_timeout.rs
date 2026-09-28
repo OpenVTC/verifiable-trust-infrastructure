@@ -36,7 +36,7 @@ use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
 const ADMIN_DID: &str = "did:key:z6MkAdminIdle";
-const ACL_TRUST_TASK: &str = "https://trusttasks.org/spec/acl/list/0.1";
+const CONFIG_SHOW_TASK: &str = "https://trusttasks.org/spec/config/show/0.1";
 const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
 
 struct Fixture {
@@ -147,9 +147,9 @@ async fn a_cookie_request_records_activity() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/acl")
+        .uri("/v1/admin/config")
         .header("cookie", format!("{ADMIN_SESSION_COOKIE}={access}"))
-        .header("trust-task", ACL_TRUST_TASK)
+        .header("trust-task", CONFIG_SHOW_TASK)
         .body(Body::empty())
         .unwrap();
     let (status, body) = send(&fix.router, req).await;
@@ -184,9 +184,9 @@ async fn a_bearer_request_does_not_record_activity() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/acl")
+        .uri("/v1/admin/config")
         .header("authorization", format!("Bearer {access}"))
-        .header("trust-task", ACL_TRUST_TASK)
+        .header("trust-task", CONFIG_SHOW_TASK)
         .body(Body::empty())
         .unwrap();
     let (status, body) = send(&fix.router, req).await;

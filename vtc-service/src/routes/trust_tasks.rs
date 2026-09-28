@@ -11,7 +11,9 @@
 //! `eddsa-jcs-2022` proof.
 //!
 //! This mirrors the VTA's `POST /api/trust-tasks`. It rides the governed
-//! (rate-limited, 64 KiB) unauth chain.
+//! (rate-limited) unauth chain. Each document type has its own size limit,
+//! checked before the document is parsed
+//! ([`crate::trust_tasks::size`]).
 //!
 //! ## "Unauthenticated" is about the transport, not about authority
 //!
@@ -56,7 +58,7 @@ use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core};
     ),
     responses(
         (status = 200, description = "Trust Task #response document"),
-        (status = 400, description = "Malformed document / payload (trust-task-error)"),
+        (status = 400, description = "Malformed document / payload, or a document larger than its type accepts (trust-task-error)"),
         (status = 403, description = "Holder auth / VIC verification failed (trust-task-error)"),
         (status = 422, description = "Task failed, e.g. duplicate request (trust-task-error)"),
     ),

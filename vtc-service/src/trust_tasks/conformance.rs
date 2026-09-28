@@ -1252,7 +1252,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::personhood::assert::v0_1::Payload,
             s::members::personhood::assert::v0_1::Response,
-            // `AssertBody` — routes/members/personhood.rs:196.
+            // The payload the spine's assert handler reads.
             json!({ "did": DID, "presentation": { "type": ["VerifiablePresentation"] } }),
             // `AssertResponse` — routes/members/personhood.rs:206.
             //

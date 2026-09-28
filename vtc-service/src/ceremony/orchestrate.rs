@@ -260,7 +260,7 @@ async fn run_role_change(
         Verdict::Deny(d) if d.code == super::Invariant::SelfPromotion.code() => {
             return Err(AppError::Forbidden(
                 "you cannot promote yourself; admin elevation requires a separate admin \
-                 caller to run acl/change-role (PATCH /v1/acl/<your-did>) for you"
+                 caller to run acl/change-role for you"
                     .into(),
             ));
         }
@@ -301,7 +301,7 @@ async fn run_role_change(
             StepUpSource::Session { op: None } => {
                 return Err(AppError::Forbidden(format!(
                     "promoting {subject_did} to unrestricted admin needs another admin's consent, \
-                     which only acl/change-role (PATCH /v1/acl/{subject_did}) can carry"
+                     which only acl/change-role can carry"
                 )));
             }
             StepUpSource::BoundTo { type_uri, payload } => {

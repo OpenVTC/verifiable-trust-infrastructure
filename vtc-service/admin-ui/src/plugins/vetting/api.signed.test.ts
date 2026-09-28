@@ -1,7 +1,6 @@
-// The endorsement-type writes go through the signed door when this browser
-// holds a console key, and over the bearer route when it does not (#1641
-// batch 4). `StatementTypesCard.test.tsx` covers the bearer fallback, which is
-// what a test browser with no key takes; these hold the other branch.
+// The endorsement-type writes are signed documents, with no bearer route.
+// These hold what goes on the wire, signed by a real console key;
+// `StatementTypesCard.test.tsx` drives the card through the unsigned stand-in.
 
 import { afterEach, describe, expect, it } from "vitest";
 

@@ -446,7 +446,14 @@ pub(crate) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
     let reject = RejectReason::MalformedRequest {
         reason: format!("body did not parse as a Trust Task document: {reason}"),
     };
-    let payload: ErrorPayload = reject.into();
+    unrouted_error_response(reject.into())
+}
+
+/// A refusal of a body that was never parsed into a document — so there is no
+/// request to reject *from*: no issuer to name, no thread and no ceremony to
+/// carry forward. [`body_parse_error_response`] and the per-type size gate
+/// ([`super::size`]) are the two callers.
+pub(crate) fn unrouted_error_response(payload: ErrorPayload) -> TrustTaskOutcome {
     let type_uri: TypeUri = framework_error_type_uri();
     let err = ErrorResponse {
         id: format!("urn:uuid:{}", Uuid::new_v4()),

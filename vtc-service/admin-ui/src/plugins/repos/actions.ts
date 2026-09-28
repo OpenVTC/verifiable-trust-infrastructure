@@ -5,8 +5,7 @@
 // Every change to a git right is a `git-ns/*` Trust Task whose proof is
 // REQUIRED, authorized by *the signer's own git rights* resolved from the
 // VTC's records — not by an admin session. The daemon mounts no bearer door
-// for any of them (`routes/git_ns.rs`), so there is nothing to fall back to
-// the way `signedOrBearer` falls back for the admin member verbs.
+// for any of them (`routes/git_ns.rs`), so there is nothing to fall back to.
 //
 // **From this browser**, where it has an enrolled console signing key
 // (#1684/#1692/#1695): `sendTask` signs the document with that key and posts

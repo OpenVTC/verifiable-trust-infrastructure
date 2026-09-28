@@ -3,6 +3,7 @@
 // that refuses a self-grant and offers the glass instead, and the passkey
 // step-up the VTC asks for before it records one.
 
+import { ACL_LIST_TASK } from "@/lib/acl";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -116,7 +117,9 @@ describe("the break-glass read", () => {
     const requests = mockFetch(gitNsRoutes({ breakGlass: [ALICE_BREAK_GLASS] }));
     renderWithProviders(<BreakGlassBanner />, { whoami: signedInAs(HANA) });
     await screen.findByRole("alert");
-    const read = requests.find((r) => r.url === "/v1/trust-tasks");
+    const read = requests.find(
+      (r) => r.url === "/v1/trust-tasks" && (r.body as { type?: string }).type !== ACL_LIST_TASK,
+    );
     expect(read?.body).toEqual({
       type: "https://trusttasks.org/spec/git-ns/view/0.5",
       payload: { scope: "administrator", breakGlass: true },

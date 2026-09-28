@@ -179,30 +179,6 @@ pub struct ChallengeResponse {
     pub ext: JsonValue,
 }
 
-/// POST /members/{did}/personhood/challenge — mint a personhood challenge.
-/// Auth: any authenticated session.
-#[utoipa::path(
-    post, path = "/members/{did}/personhood/challenge",
-    operation_id = "personhoodChallenge", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(("did" = String, Path, description = "Member DID")),
-    responses(
-        (status = 200, description = "Personhood challenge minted", body = ChallengeResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 404, description = "Member not found"),
-    ),
-)]
-pub async fn challenge(
-    _auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(member_did): Path<String>,
-) -> Result<(StatusCode, Json<ChallengeResponse>), TaskError> {
-    Ok((
-        StatusCode::OK,
-        Json(challenge_inner(&state, &member_did).await?),
-    ))
-}
-
 /// Mint a personhood challenge for `member_did`.
 ///
 /// Transport-free so both front ends share one implementation: the REST
@@ -261,14 +237,6 @@ pub(crate) async fn challenge_inner(
 // Assert endpoint
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct AssertBody {
-    /// W3C Verifiable Presentation. `holder` must equal the
-    /// path-DID; `proof.challenge` must equal a fresh challenge
-    /// id from `POST .../personhood/challenge`.
-    pub presentation: JsonValue,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
@@ -277,32 +245,6 @@ pub struct AssertResponse {
     pub personhood: bool,
     pub vmc: JsonValue,
     pub role_vec: JsonValue,
-}
-
-/// POST /members/{did}/personhood — assert personhood via a VP.
-/// Auth: any authenticated session.
-#[utoipa::path(
-    post, path = "/members/{did}/personhood", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(("did" = String, Path, description = "Member DID")),
-    request_body = AssertBody,
-    responses(
-        (status = 200, description = "Personhood asserted", body = AssertResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Personhood proof invalid / policy denied"),
-        (status = 404, description = "Member not found"),
-    ),
-)]
-pub async fn assert(
-    _auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(member_did): Path<String>,
-    Json(body): Json<AssertBody>,
-) -> Result<(StatusCode, Json<AssertResponse>), TaskError> {
-    Ok((
-        StatusCode::OK,
-        Json(assert_inner(&state, &member_did, &body.presentation).await?),
-    ))
 }
 
 /// Verify a personhood presentation and, if the active policy allows it,

@@ -12,13 +12,11 @@
 //! Every handler here is the same shape: authority from the **verified
 //! signer's ACL row**, read now ([`super::admin_signer`]); the payload held to
 //! its published schema ([`super::parse_spec_payload`]); then the one shared
-//! operation in [`crate::routes::acl`], which the bearer route calls too. No
-//! check lives in this file that the REST adapter does not also reach, and
-//! none lives in the adapter that this file does not.
+//! operation in [`crate::routes::acl`]. The ACL has no REST route: this is the
+//! only door, on every transport.
 //!
-//! What differs by door is only where a passkey gesture is read from: a live
-//! session on REST, a gesture **bound to this document's payload** here
-//! ([`settle_signed_gate`]).
+//! A passkey gesture is one **bound to this document's payload**
+//! ([`settle_signed_gate`]), never a session's.
 
 use serde_json::Value;
 use trust_tasks_rs::specs::acl::{

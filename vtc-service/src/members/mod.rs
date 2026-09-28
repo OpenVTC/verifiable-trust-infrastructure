@@ -76,7 +76,7 @@ pub struct Member {
     /// `publish_on_join`).
     #[serde(default)]
     pub publish_consent: bool,
-    /// Member-controlled preference for `DELETE /v1/members/me`
+    /// Member-controlled preference for `vtc/members/self-remove`
     /// disposition handling (spec §10.2).
     #[serde(default = "Disposition::default_preference")]
     pub departure_preference: Disposition,

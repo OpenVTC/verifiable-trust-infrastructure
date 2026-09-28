@@ -14,7 +14,7 @@ import {
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ArrowRight, Inbox } from "lucide-react";
 
-import { getJson, postJson } from "@/lib/api";
+import { getJson, postSignedTrustTask } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
@@ -65,25 +65,26 @@ async function fetchJoinRequest(id: string): Promise<JoinRequestRow> {
   return body.request;
 }
 
-// One decision endpoint (`decide/0.1`) carries both outcomes as
-// `{ decision, reason? }` — the approve/reject task pair is retired.
+// One decision task (`decide/0.1`) carries both outcomes as
+// `{ id, decision, reason? }`, sent as a signed document.
 async function approve(id: string): Promise<DecideResponse> {
-  return postJson<DecideResponse>(
-    `/v1/join-requests/${id}/decide`,
-    { decision: "approved" },
-    { trustTask: TRUST_TASK_DECIDE },
-  );
+  return postSignedTrustTask<DecideResponse>(TRUST_TASK_DECIDE, {
+    id,
+    decision: "approved",
+  });
 }
 
 async function reject(args: {
   id: string;
   reason: string;
 }): Promise<DecideResponse> {
-  return postJson<DecideResponse>(
-    `/v1/join-requests/${args.id}/decide`,
-    { decision: "rejected", reason: args.reason || null },
-    { trustTask: TRUST_TASK_DECIDE },
-  );
+  // `reason` is omitted rather than sent as `null`: the schema types it as an
+  // optional string.
+  return postSignedTrustTask<DecideResponse>(TRUST_TASK_DECIDE, {
+    id: args.id,
+    decision: "rejected",
+    ...(args.reason ? { reason: args.reason } : {}),
+  });
 }
 
 

@@ -217,8 +217,8 @@ pub async fn create_invite(
         Some(_) => {
             return Err(AppError::Conflict(format!(
                 "did {} already has a non-admin ACL grant; revoke it first \
-                 (DELETE /v1/acl/entries/{}) before inviting",
-                req.did, req.did
+                 (acl/revoke) before inviting",
+                req.did
             ))
             .into());
         }

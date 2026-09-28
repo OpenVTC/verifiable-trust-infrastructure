@@ -19,6 +19,8 @@ use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::session::{Session, SessionState, store_session};
 use vti_common::store::KeyspaceHandle;
 
+use vti_rooms_dtg::test_support::Party;
+
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use vtc_service::members::{Member, store_member};
 use vtc_service::test_support::TestVtc;
@@ -230,6 +232,47 @@ async fn seed_member(fix: &Fixture, did: &str, role: VtcRole) {
         .unwrap();
 }
 
+/// A super-admin (Admin, no contexts) with a real key, to sign as.
+async fn super_admin(fix: &Fixture) -> Party {
+    let who = Party::new();
+    seed_member(fix, &who.did, VtcRole::Admin).await;
+    who
+}
+
+/// `vtc/members/purge/0.1` for `did`, signed by `from`; the reply's status
+/// and payload. The purge has no REST route.
+async fn purge(fix: &Fixture, from: &Party, did: &str) -> (StatusCode, Value) {
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        PURGE_TASK,
+        json!({ "did": did }),
+        &from.did,
+        vtc_service::test_support::TEST_VTC_DID,
+    )
+    .unwrap();
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+        .unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .unwrap();
+    let res = fix
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/trust-tasks")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let doc: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, doc["payload"].clone())
+}
+
 async fn send(
     router: &axum::Router,
     method: &str,
@@ -365,17 +408,10 @@ async fn list_removed_returns_tombstoned_members_and_purge_deletes_them() {
     assert_eq!(removed[0]["did"], "did:key:zGone");
     assert_eq!(removed[0]["status"], "removed");
 
-    // Purge it (admin token is super-admin: Admin role + no contexts).
-    let (status, _) = send(
-        &fix.router,
-        "DELETE",
-        "/v1/members/did:key:zGone/purge",
-        PURGE_TASK,
-        Some(&fix.admin_token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    // Purge it, signed by a super-admin (Admin role + no contexts).
+    let admin = super_admin(&fix).await;
+    let (status, body) = purge(&fix, &admin, "did:key:zGone").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // Now the removed list is empty — the row is gone for good.
     let (_, body) = send(
@@ -959,41 +995,25 @@ async fn removing_a_did_with_no_rows_at_all_is_still_not_found() {
 }
 
 /// `purge/0.1` declares both refusals: nothing to purge, and a purge that
-/// would leave the community with no administrator. Statuses unchanged (404,
-/// 409).
+/// would leave the community with no administrator.
 #[tokio::test]
 async fn the_purge_task_answers_with_the_codes_its_spec_declares() {
     let fix = build_fixture().await;
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        "/v1/members/did:key:zNeverHere/purge",
-        PURGE_TASK,
-        Some(&fix.admin_token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
-    assert_eq!(rest_error_code(&body), PURGE_ERR_NOT_FOUND, "{body}");
+    // The signer is made the community's only administrator.
+    vtc_service::acl::delete_acl_entry(&fix.acl_ks, ADMIN_DID)
+        .await
+        .unwrap();
+    let admin = super_admin(&fix).await;
 
-    // The fixture's admin is the community's only one.
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        &format!("/v1/members/{ADMIN_DID}/purge"),
-        PURGE_TASK,
-        Some(&fix.admin_token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(
-        rest_error_code(&body),
-        PURGE_ERR_LAST_ADMINISTRATOR,
-        "{body}"
-    );
+    let (status, body) = purge(&fix, &admin, "did:key:zNeverHere").await;
+    assert!(!status.is_success(), "{body}");
+    assert_eq!(body["code"], PURGE_ERR_NOT_FOUND, "{body}");
+
+    let (status, body) = purge(&fix, &admin, &admin.did).await;
+    assert!(!status.is_success(), "{body}");
+    assert_eq!(body["code"], PURGE_ERR_LAST_ADMINISTRATOR, "{body}");
     assert!(
-        get_acl_entry(&fix.acl_ks, ADMIN_DID)
+        get_acl_entry(&fix.acl_ks, &admin.did)
             .await
             .unwrap()
             .is_some(),

@@ -24,6 +24,40 @@ export interface MockRoute {
   status?: number | ((request: { url: string; body: unknown }) => number);
   /** The JSON answer, or a function of the request that returns it. */
   body?: object | ((request: { url: string; body: unknown }) => unknown);
+  /** Match only a document of this `type` (for `POST /v1/trust-tasks`). */
+  task?: string;
+}
+
+/**
+ * `POST /v1/trust-tasks` answering documents of `task`: `answer` is the
+ * `#response` payload, or a function of the request's payload returning it.
+ * Pair with `vi.mock("@/lib/api", …)` installing `@/test/signed-read`, so the
+ * console's signed calls reach this table without a key in the test browser.
+ */
+export function taskRoute(
+  task: string,
+  answer: object | ((payload: unknown) => unknown),
+  status?: number,
+): MockRoute {
+  return {
+    method: "POST",
+    path: "/v1/trust-tasks",
+    task,
+    status,
+    body: ({ body }) => ({
+      payload:
+        typeof answer === "function"
+          ? answer((body as { payload?: unknown } | undefined)?.payload)
+          : answer,
+    }),
+  };
+}
+
+/** The `payloads` of every document of `task` a test sent. */
+export function sentPayloads(requests: RecordedRequest[], task: string): unknown[] {
+  return requests
+    .filter((r) => r.url === "/v1/trust-tasks" && (r.body as { type?: string })?.type === task)
+    .map((r) => (r.body as { payload?: unknown }).payload);
 }
 
 export interface RecordedRequest {
@@ -54,7 +88,8 @@ export function mockFetch(routes: MockRoute[]): RecordedRequest[] {
           (r.method ?? "GET") === method &&
           (typeof r.path === "string"
             ? url.split("?")[0] === r.path
-            : r.path.test(url)),
+            : r.path.test(url)) &&
+          (r.task === undefined || (body as { type?: string } | undefined)?.type === r.task),
       );
       if (!route) {
         return json({ error: `no mock for ${method} ${url}` }, 404);
@@ -84,7 +119,7 @@ function json(body: unknown, status: number): Response {
 /** Members and ACL answers for `useNameBook`, which most panels call. */
 export const NAME_BOOK_ROUTES: MockRoute[] = [
   { path: "/v1/members", body: { items: [] } },
-  { path: "/v1/acl", body: { entries: [], truncated: false } },
+  taskRoute("https://trusttasks.org/spec/acl/list/0.1", { entries: [], truncated: false }),
 ];
 
 /**
