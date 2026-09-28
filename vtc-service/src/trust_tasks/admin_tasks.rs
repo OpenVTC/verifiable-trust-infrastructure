@@ -8,8 +8,9 @@
 //! | `vtc/registry/sync-jobs/{list,retry,discard}/0.1` | an administrator | `Admin` |
 //! | `vtc/registry/records/list/0.1` | an administrator | `Admin` |
 //! | `audit/list/0.1`, `audit/verify/0.1` | an unrestricted administrator | `Admin`, no context scope |
-//! | `config/{show,patch,reload,restart}/0.1` | an administrator | `Admin` |
-//! | `vtc/admin/invites/{list,revoke}/0.1` | an administrator | `Admin` |
+//! | `config/show/0.1` | an administrator | `Admin` |
+//! | `config/{patch,reload,restart}/0.1` | an unrestricted administrator | `Admin`, no context scope: the configuration is the whole community's, and it holds the unrestricted-admin consent threshold |
+//! | `vtc/admin/invites/{list,revoke}/0.1` | an unrestricted administrator | `Admin`, no context scope: an admin invite confers unrestricted authority, so only an unrestricted admin manages them |
 //! | `vtc/admin/invites/create/0.1` | an unrestricted administrator | `Admin`, no context scope; writing the invitee's unrestricted entry also takes the inviter's passkey gesture bound to this invite, and another unrestricted admin's consent |
 //! | `auth/sessions/list/0.1` | any member | their own sessions, and those of every subject whose access they could withdraw |
 //! | `auth/revoke-session/0.2` | any member | the same rule |
@@ -330,7 +331,7 @@ async fn handle_config_patch(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, payload) = match admin_with::<config_patch::Payload>(state, ctx, &doc).await {
+    let (actor, payload) = match super_admin_with::<config_patch::Payload>(state, ctx, &doc).await {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -348,7 +349,7 @@ async fn handle_config_reload(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, _) = match admin_with::<config_reload::Payload>(state, ctx, &doc).await {
+    let (actor, _) = match super_admin_with::<config_reload::Payload>(state, ctx, &doc).await {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -363,7 +364,7 @@ async fn handle_config_restart(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, _) = match admin_with::<config_restart::Payload>(state, ctx, &doc).await {
+    let (actor, _) = match super_admin_with::<config_restart::Payload>(state, ctx, &doc).await {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -380,7 +381,7 @@ async fn handle_invites_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = admin_with::<invite_list::Payload>(state, ctx, &doc).await {
+    if let Err(reject) = super_admin_with::<invite_list::Payload>(state, ctx, &doc).await {
         return reject;
     }
     match crate::routes::admin::invites::list_invites(state).await {
@@ -412,8 +413,13 @@ async fn handle_invites_create(
         .as_u64()
         .is_some_and(|ttl| ttl > crate::routes::admin::invites::MAX_TTL_SECONDS)
     {
-        if let Err(reject) = admin_signer(state, ctx, &doc).await {
-            return reject;
+        match admin_signer(state, ctx, &doc).await {
+            Err(reject) => return reject,
+            Ok(actor) => {
+                if let Err(e) = actor.require_super_admin() {
+                    return app_error_to_reject(&doc, &e);
+                }
+            }
         }
         return task_error_to_reject(
             &doc,
@@ -426,7 +432,8 @@ async fn handle_invites_create(
             ),
         );
     }
-    let (actor, _checked) = match admin_with::<invite_create::Payload>(state, ctx, &doc).await {
+    let (actor, _checked) = match super_admin_with::<invite_create::Payload>(state, ctx, &doc).await
+    {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -482,7 +489,8 @@ async fn handle_invites_revoke(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, payload) = match admin_with::<invite_revoke::Payload>(state, ctx, &doc).await {
+    let (actor, payload) = match super_admin_with::<invite_revoke::Payload>(state, ctx, &doc).await
+    {
         Ok(p) => p,
         Err(reject) => return reject,
     };

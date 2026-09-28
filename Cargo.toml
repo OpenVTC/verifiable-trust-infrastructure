@@ -442,11 +442,17 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # VTI nodes advertise (VTI-TRN-047, `vti_common::trust_task::discovery`).
 # `trust-tasks-capability-client` published its own 0.24.4 alongside it, still
 # on `trust-tasks-rs = "^0.24"`, and is pinned to match.
-trust-tasks-rs = { version = "0.24.4", default-features = false, features = [
+#
+# 0.24.6 raises it again: it is the first release carrying
+# `vta/contexts/update-did/1.1` (trust-tasks #684), whose nullable `did` is how
+# a context's DID is cleared. Below it `TASK_CONTEXTS_UPDATE_DID_1_1` does not
+# compile, and the dispatch spine has no schema to hold `did: null` to.
+# `trust-tasks-capability-client` is pinned to match, as before.
+trust-tasks-rs = { version = "0.24.6", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.24.4"
+trust-tasks-capability-client = "0.24.6"
 trust-tasks-https = { version = "0.24", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
@@ -707,4 +713,5 @@ type_complexity = "allow"
 # ever reports one, the fix is the same choice we faced here: patch it (fast,
 # and it will break again on the next minor bump) or cut the dependency edge
 # upstream (slower, permanent).
+
 

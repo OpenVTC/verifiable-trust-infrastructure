@@ -590,6 +590,38 @@ async fn export_requires_admin_role() {
     assert_eq!(tt_error_code(&body), "permissionDenied", "{body}");
 }
 
+/// An import writes the same community-wide overrides `config/patch` does, so
+/// an administrator scoped to some contexts is refused it — preview included —
+/// and nothing is written.
+#[tokio::test]
+async fn import_refuses_a_context_admin() {
+    let fix = build_signed(true).await;
+    let scoped = Party::new();
+    common::signed::seed_role(
+        &fix.vtc,
+        &scoped.did,
+        vtc_service::acl::VtcRole::Admin,
+        &["ctx-a"],
+    )
+    .await;
+    for confirm in [false, true] {
+        let (_, body) = import_signed(
+            &fix,
+            &scoped,
+            confirm,
+            document_with_overrides(json!({ "log.level": "trace" })),
+        )
+        .await;
+        assert_eq!(tt_error_code(&body), "permissionDenied", "{body}");
+    }
+    let store = vtc_service::config_store::ConfigStore::new(fix.state.config_ks.clone());
+    assert_eq!(
+        store.get("log.level").await.unwrap(),
+        None,
+        "nothing is written"
+    );
+}
+
 /// The signed door is the only one: the bearer route is gone, not merely
 /// undocumented, so a bearer-token call finds nothing to answer it.
 #[tokio::test]

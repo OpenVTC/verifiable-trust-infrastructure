@@ -2232,7 +2232,9 @@ async fn delete_blockers(
         if ctx.did.as_deref() == Some(did) && !options.contexts_being_deleted.contains(&ctx.id) {
             let id = &ctx.id;
             blockers.push(format!(
-                "context `{id}` acts as this DID — reassign it first:                  `pnm contexts update {id} --did <new-did>`"
+                "context `{id}` acts as this DID — reassign it first: \
+                 `pnm contexts update-did {id} <new-did>`, or leave the context with \
+                 no DID: `pnm contexts update-did {id} --clear`"
             ));
         }
     }
