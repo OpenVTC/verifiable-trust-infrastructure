@@ -116,9 +116,12 @@ function json(body: unknown, status: number): Response {
   });
 }
 
+/** `vtc/members/list/0.1`, which the name book and the member pickers read. */
+export const MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/members/list/0.1";
+
 /** Members and ACL answers for `useNameBook`, which most panels call. */
 export const NAME_BOOK_ROUTES: MockRoute[] = [
-  { path: "/v1/members", body: { items: [] } },
+  taskRoute(MEMBERS_LIST_TASK, { items: [] }),
   taskRoute("https://trusttasks.org/spec/acl/list/0.1", { entries: [], truncated: false }),
 ];
 

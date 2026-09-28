@@ -2062,18 +2062,7 @@ fn build_graph(
 /// Edges are pairs, not individual credentials: each carries the VRCs published
 /// between its two endpoints and a `complete` flag saying whether both
 /// directions are present. See the module comment above for why.
-#[utoipa::path(
-    get, path = "/relationships/graph", tag = "relationships",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Relationship graph", body = RelationshipsGraph),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn graph(
-    _auth: crate::auth::AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<RelationshipsGraph>, AppError> {
+pub(crate) async fn graph(state: &AppState) -> Result<RelationshipsGraph, AppError> {
     let now = Utc::now();
     let rels = crate::relationships::list_all(&state.relationships_ks).await?;
 
@@ -2094,7 +2083,7 @@ pub async fn graph(
         _ => Vec::new(),
     };
 
-    Ok(Json(build_graph(rels, memberships, now)))
+    Ok(build_graph(rels, memberships, now))
 }
 
 #[cfg(test)]

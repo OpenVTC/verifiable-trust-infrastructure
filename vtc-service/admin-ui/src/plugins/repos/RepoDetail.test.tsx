@@ -669,7 +669,6 @@ describe("Repo detail", () => {
   it("shows a read failure as an error, not an empty repository", async () => {
     mockFetch([
       signedReads({ namespaces: [ACME], repos: [], breakGlass: [], reposStatus: 403 }),
-      { path: "/v1/members", body: { items: [] } },
       { path: "/v1/acl", body: { entries: [], truncated: false } },
     ]);
     mount(WIDGETS.resource);

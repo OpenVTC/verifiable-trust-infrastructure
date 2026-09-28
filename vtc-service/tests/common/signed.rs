@@ -69,6 +69,18 @@ pub async fn signed(from: &Party, type_uri: &str, payload: Value) -> Value {
     serde_json::to_value(doc).expect("a document serialises")
 }
 
+/// The document `from` would send to `recipient`, signed by its key.
+pub async fn signed_to(from: &Party, recipient: &str, type_uri: &str, payload: Value) -> Value {
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(type_uri, payload, &from.did, recipient)
+        .expect("build the document");
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+        .expect("a did:key names its own verification method");
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .expect("sign the document");
+    serde_json::to_value(doc).expect("a document serialises")
+}
+
 /// Post `doc` to `POST /v1/trust-tasks`.
 ///
 /// Each call comes from an address of its own. The document endpoint sits
@@ -108,7 +120,15 @@ pub async fn call(
     type_uri: &str,
     payload: Value,
 ) -> (StatusCode, Value) {
-    let (status, doc) = post(vtc, &signed(from, type_uri, payload).await).await;
+    let recipient = vtc
+        .state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .unwrap_or_else(|| TEST_VTC_DID.to_string());
+    let (status, doc) = post(vtc, &signed_to(from, &recipient, type_uri, payload).await).await;
     if doc["type"].as_str() == Some(format!("{type_uri}#response").as_str()) {
         assert_conforms(type_uri, &doc);
     }
@@ -154,6 +174,34 @@ pub async fn bearer_route_served(vtc: &TestVtc, method: &str, path: &str) -> boo
     let res = vtc.router.clone().oneshot(req).await.unwrap();
     let status = res.status();
     if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
+        return false;
+    }
+    res.headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/json"))
+}
+
+/// As [`bearer_route_served`], carrying `task` as the `Trust-Task` header the
+/// route used to bind — so a mount that still serves another method on the
+/// same path answers with its method router (`405`) or its task gate (`415`)
+/// rather than a missing-header refusal, and neither reads as served.
+pub async fn bearer_route_served_as(vtc: &TestVtc, method: &str, path: &str, task: &str) -> bool {
+    let token = vtc.admin_token().await;
+    let req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Trust-Task", task)
+        .header("Content-Type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let res = vtc.router.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    if matches!(
+        status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED | StatusCode::UNSUPPORTED_MEDIA_TYPE
+    ) {
         return false;
     }
     res.headers()

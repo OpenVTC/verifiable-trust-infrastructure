@@ -17,7 +17,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 
-import { getJson, postJson } from "@/lib/api";
+import { postJson, postSignedRead } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso } from "@/lib/format";
 import {
@@ -73,10 +73,10 @@ interface JoinRequestsPage {
 }
 
 async function fetchPendingCount(): Promise<number> {
-  const page = await getJson<JoinRequestsPage>(
-    "/v1/join-requests?status=pending&limit=50",
-    { trustTask: TRUST_TASK_JOIN_REQUESTS },
-  );
+  const page = await postSignedRead<JoinRequestsPage>(TRUST_TASK_JOIN_REQUESTS, {
+    status: "pending",
+    limit: 50,
+  });
   return page.totalEstimate ?? page.items.length;
 }
 

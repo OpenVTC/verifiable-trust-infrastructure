@@ -14,7 +14,6 @@
 import {
   deleteJson,
   deleteJsonExempt,
-  getJson,
   getJsonExempt,
   postJson,
   postJsonExempt,
@@ -119,12 +118,10 @@ export async function fetchActiveMembers(): Promise<MemberRow[]> {
   const members: MemberRow[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_MEMBER_PAGES; page++) {
-    const q = new URLSearchParams({ limit: "200" });
-    if (cursor) q.set("cursor", cursor);
-    const body: MembersPage = await getJson<MembersPage>(
-      `/v1/members?${q.toString()}`,
-      { trustTask: TASK_MEMBERS_LIST },
-    );
+    const body: MembersPage = await postSignedRead<MembersPage>(TASK_MEMBERS_LIST, {
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    });
     members.push(...body.items);
     cursor = body.nextCursor ?? null;
     if (!cursor) break;
@@ -179,10 +176,10 @@ export interface PendingWithVetting {
  * of pending requests is checked one by one — bounded at 50 reads.
  */
 export async function fetchPendingWithVetting(): Promise<PendingWithVetting> {
-  const page = await getJson<JoinRequestsPage>(
-    "/v1/join-requests?status=pending&limit=50",
-    { trustTask: TASK_JOIN_REQUESTS_LIST },
-  );
+  const page = await postSignedRead<JoinRequestsPage>(TASK_JOIN_REQUESTS_LIST, {
+    status: "pending",
+    limit: 50,
+  });
   const withFacts = await Promise.all(
     page.items.map((r) =>
       fetchJoinRequestVetting(r.id).then(
@@ -241,11 +238,9 @@ export async function fetchEndorsementTypes(): Promise<EndorsementType[]> {
   const types: EndorsementType[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_TYPE_PAGES; page++) {
-    const q = new URLSearchParams({ limit: "200" });
-    if (cursor) q.set("cursor", cursor);
-    const body: EndorsementTypesPage = await getJson<EndorsementTypesPage>(
-      `/v1/endorsement-types?${q.toString()}`,
-      { trustTask: TASK_ENDORSEMENT_TYPE_LIST, requires: ["items"] },
+    const body: EndorsementTypesPage = await postSignedRead<EndorsementTypesPage>(
+      TASK_ENDORSEMENT_TYPE_LIST,
+      { limit: 200, ...(cursor ? { cursor } : {}) },
     );
     types.push(...body.items);
     cursor = body.nextCursor ?? null;

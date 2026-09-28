@@ -3,12 +3,20 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { VetterGrantRow } from "@/lib/wire-types";
 import { VettersPanel } from "@/plugins/vetting/VettersPanel";
-import { type MockRoute, mockFetch, renderWithProviders, sentPayloads, taskRoute } from "@/test/render";
+import {
+  MEMBERS_LIST_TASK,
+  type MockRoute,
+  mockFetch,
+  renderWithProviders,
+  sentPayloads,
+  taskRoute,
+} from "@/test/render";
 
 // Naming a vetter is a signed document; the test browser holds no key, so it
 // goes through the unsigned stand-in to the `mockFetch` table.
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
   postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
 }));
 
@@ -69,10 +77,7 @@ function routes(extra: MockRoute[] = []): MockRoute[] {
       path: "/v1/vetting/auto-grant",
       body: { enabled: false, sweepMinutes: 60, validitySeconds: 31_536_000 },
     },
-    {
-      path: "/v1/members",
-      body: { items: [member(CAROL, "Carol"), member(ERIN, "Erin")] },
-    },
+    taskRoute(MEMBERS_LIST_TASK, { items: [member(CAROL, "Carol"), member(ERIN, "Erin")] }),
     { path: "/v1/acl", body: { entries: [], truncated: false } },
     ...extra,
   ];

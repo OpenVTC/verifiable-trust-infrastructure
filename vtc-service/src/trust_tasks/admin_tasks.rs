@@ -163,7 +163,7 @@ where
 /// [`admin_signer`] resolves one, or any other signer holding a live ACL row,
 /// who may manage only their own sessions. A signer the community holds no
 /// entry for is refused, as the bearer session it would need was.
-async fn session_actor(
+pub(super) async fn member_signer(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
@@ -509,7 +509,7 @@ async fn handle_sessions_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match session_actor(state, ctx, &doc).await {
+    let actor = match member_signer(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -532,7 +532,7 @@ async fn handle_revoke_session(
 ) -> TrustTaskOutcome {
     use crate::routes::auth::RevokeTarget;
 
-    let actor = match session_actor(state, ctx, &doc).await {
+    let actor = match member_signer(state, ctx, &doc).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };

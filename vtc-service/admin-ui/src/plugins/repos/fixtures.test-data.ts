@@ -10,7 +10,7 @@ import type {
   GitNsRightRow,
 } from "@/lib/wire-types";
 import { ACL_LIST_TASK } from "@/lib/acl";
-import { type MockRoute } from "@/test/render";
+import { MEMBERS_LIST_TASK, type MockRoute } from "@/test/render";
 
 import { TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW } from "./api";
 import type { GitNsBreakGlassItem } from "./model";
@@ -322,7 +322,6 @@ export function gitNsRoutes(
         ],
       },
     },
-    { path: "/v1/members", body: { items: MEMBERS } },
   ];
 }
 
@@ -367,6 +366,7 @@ export function signedReads(o: {
             ? statusFor(o.breakGlassStatus)
             : 200;
         case ACL_LIST_TASK:
+        case MEMBERS_LIST_TASK:
           return 200;
         default:
           return 404;
@@ -393,6 +393,10 @@ export function signedReads(o: {
         // The console's name book reads the ACL on every render.
         case ACL_LIST_TASK:
           return { payload: { entries: [], truncated: false } };
+        // The member listing (`vtc/members/list`): the name book and the
+        // person picker.
+        case MEMBERS_LIST_TASK:
+          return { payload: { items: MEMBERS } };
         default:
           return refusal("unsupportedType", `no mock for ${typeOf(body)}`);
       }
@@ -507,6 +511,8 @@ export function isSignedRead(r: { url: string; body: unknown }): boolean {
   const type = (r.body as { type?: string } | undefined)?.type;
   return (
     r.url === "/v1/trust-tasks" &&
-    [TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW, ACL_LIST_TASK].includes(type ?? "")
+    [TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW, ACL_LIST_TASK, MEMBERS_LIST_TASK].includes(
+      type ?? "",
+    )
   );
 }

@@ -5,6 +5,8 @@
 //! extractor → handler → community keyspace — through
 //! `Router::oneshot`.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -69,60 +71,47 @@ async fn seed_profile(fix: &Fixture) -> CommunityProfile {
 
 // ──────────────────────── GET ────────────────────────
 
-#[tokio::test]
-async fn get_returns_404_when_not_initialised() {
-    let fix = build().await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+/// `vtc/community/profile/show/0.1`, signed by `from`: the reply's status and
+/// document.
+async fn show(fix: &Fixture, from: &Party) -> (StatusCode, Value) {
+    let doc = common::signed::signed(from, PROFILE_TASK, json!({})).await;
+    common::signed::post(&fix.vtc, &doc).await
 }
 
 #[tokio::test]
-async fn get_returns_profile_when_initialised() {
+async fn show_is_not_found_when_not_initialised() {
+    let fix = build().await;
+    let admin = signer(&fix, VtcRole::Admin).await;
+    let (_, doc) = show(&fix, &admin).await;
+    assert_eq!(doc["payload"]["code"], "taskFailed", "{doc}");
+    assert_eq!(doc["payload"]["details"]["reason"], "not_found", "{doc}");
+}
+
+#[tokio::test]
+async fn show_returns_profile_when_initialised() {
     let fix = build().await;
     seed_profile(&fix).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    // Any entry may read it, as any session could.
+    let member = signer(&fix, VtcRole::Member).await;
+    let (status, doc) = show(&fix, &member).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    common::signed::assert_conforms(PROFILE_TASK, &doc);
     // `show` nests the profile under `profile` (#1094).
-    let body = &body["profile"];
+    let body = &doc["payload"]["profile"];
     assert_eq!(body["name"], "Example Community");
     assert_eq!(body["communityDid"], "did:webvh:vtc.example.com:abc");
     assert_eq!(body["language"], "en");
-    // M3.2: registryStatus surfaces on the GET response. No
-    // registry URL configured → reads `degraded`.
+    // M3.2: registryStatus surfaces on the response. No registry URL
+    // configured → reads `degraded`.
     assert_eq!(body["registryStatus"], "degraded");
 }
 
 #[tokio::test]
-async fn get_requires_authentication() {
+async fn show_requires_a_known_signer() {
     let fix = build().await;
     seed_profile(&fix).await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, doc) = show(&fix, &Party::new()).await;
+    assert_eq!(doc["payload"]["code"], "permissionDenied", "{doc}");
 }
 
 // ──────────────────────── Update (signed document) ────────────────────────
@@ -447,25 +436,6 @@ async fn public_profile_returns_404_when_not_initialised() {
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, _body) = body_value(resp).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-}
-
-// ──────────────────────── Trust-Task gate ────────────────────────
-
-#[tokio::test]
-async fn get_with_wrong_trust_task_returns_415() {
-    let fix = build().await;
-    seed_profile(&fix).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", "https://trusttasks.org/spec/acl/list/0.1")
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
 // ---------------------------------------------------------------------------

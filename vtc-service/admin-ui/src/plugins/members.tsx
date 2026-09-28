@@ -51,7 +51,6 @@ import {
   fetchMemberRelationships,
   fetchRelationshipsGraph,
   getJson,
-  postJson,
   postSignedRead,
   postSignedTrustTask,
   type MemberRelationship,
@@ -169,20 +168,15 @@ async function fetchMembers(params: {
   role: string | null;
   limit: number;
 }): Promise<MembersPage> {
-  const q = new URLSearchParams();
-  if (params.cursor) q.set("cursor", params.cursor);
-  if (params.role) q.set("role", params.role);
-  q.set("limit", String(params.limit));
-  return getJson<MembersPage>(`/v1/members?${q.toString()}`, {
-    trustTask: TRUST_TASK_LIST,
+  return postSignedRead<MembersPage>(TRUST_TASK_LIST, {
+    limit: params.limit,
+    ...(params.cursor ? { cursor: params.cursor } : {}),
+    ...(params.role ? { role: params.role } : {}),
   });
 }
 
 async function fetchMember(did: string): Promise<MemberRow> {
-  const body = await getJson<MemberEnvelope>(
-    `/v1/members/${encodeURIComponent(did)}`,
-    { trustTask: TRUST_TASK_SHOW },
-  );
+  const body = await postSignedRead<MemberEnvelope>(TRUST_TASK_SHOW, { did });
   return body.member;
 }
 
@@ -197,11 +191,7 @@ async function fetchMemberCredentials(did: string): Promise<MemberCredentials> {
  * community half of the pair). The member answers asynchronously over the
  * `members/vmc/1.0` DIDComm surface; this only dispatches the request. */
 async function requestMemberVmc(did: string): Promise<RequestVmcResponse> {
-  return postJson<RequestVmcResponse>(
-    `/v1/members/${encodeURIComponent(did)}/request-vmc`,
-    {},
-    { trustTask: TRUST_TASK_REQUEST_VMC },
-  );
+  return postSignedTrustTask<RequestVmcResponse>(TRUST_TASK_REQUEST_VMC, { memberDid: did });
 }
 
 async function promoteToAdmin(args: {
@@ -235,9 +225,7 @@ async function adminRemove(args: {
 }
 
 async function fetchRemovedMembers(): Promise<RemovedMemberRow[]> {
-  const body = await getJson<RemovedMembersResponse>("/v1/members/removed", {
-    trustTask: TRUST_TASK_REMOVED,
-  });
+  const body = await postSignedRead<RemovedMembersResponse>(TRUST_TASK_REMOVED, {});
   return body.removed;
 }
 

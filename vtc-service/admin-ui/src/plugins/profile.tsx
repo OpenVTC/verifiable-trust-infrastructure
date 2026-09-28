@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Field } from "@/components/Field";
-import { getJson, postSignedTrustTask } from "@/lib/api";
+import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import { CommunityBrandingCard } from "@/plugins/vetting/BrandingCard";
 import { JoinDiscoveryCard } from "@/plugins/community/JoinDiscoveryCard";
 
@@ -52,9 +52,7 @@ interface ProfileResponse {
 }
 
 async function getProfile(): Promise<Profile> {
-  const body = await getJson<ProfileResponse>("/v1/community/profile", {
-    trustTask: TRUST_TASK,
-  });
+  const body = await postSignedRead<ProfileResponse>(TRUST_TASK, {});
   return body.profile;
 }
 

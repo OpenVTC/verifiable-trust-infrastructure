@@ -795,9 +795,7 @@ export const issueInvitation = (
   const body: Record<string, unknown> = { subjectDid };
   if (validityDays !== undefined) body.validityDays = validityDays;
   if (role) body.role = role;
-  return postJson<IssueInvitationResponse>("/v1/invitations", body, {
-    trustTask: ISSUE_INVITATION_TASK,
-  });
+  return postSignedTrustTask<IssueInvitationResponse>(ISSUE_INVITATION_TASK, body);
 };
 
 const REVOKE_INVITATION_TASK =
@@ -814,20 +812,17 @@ export interface InvitationListItem {
 }
 
 /** List issued invitations (newest first). Its own Trust Task: listing the
- * registry and minting a bearer credential are different contracts, even
- * though GET and POST share the /invitations path. */
+ * registry and minting a bearer credential are different contracts. */
 export const listInvitations = (): Promise<{ invitations: InvitationListItem[] }> =>
-  getJson<{ invitations: InvitationListItem[] }>("/v1/invitations", {
-    trustTask: LIST_INVITATIONS_TASK,
-  });
+  postSignedRead<{ invitations: InvitationListItem[] }>(LIST_INVITATIONS_TASK, {});
 
 /** Revoke an outstanding invitation by VIC id (flips its revocation bit). */
 export const revokeInvitation = (
   id: string,
 ): Promise<{ id: string; revokedAt: string; newlyRevoked: boolean }> =>
-  deleteJson<{ id: string; revokedAt: string; newlyRevoked: boolean }>(
-    `/v1/invitations/${encodeURIComponent(id)}`,
-    { trustTask: REVOKE_INVITATION_TASK },
+  postSignedTrustTask<{ id: string; revokedAt: string; newlyRevoked: boolean }>(
+    REVOKE_INVITATION_TASK,
+    { id },
   );
 
 const DELIVER_INVITATION_TASK =
@@ -851,11 +846,7 @@ export const deliverInvitation = (
   id: string,
   channel: DeliverChannel,
 ): Promise<DeliverInvitationResponse> =>
-  postJson<DeliverInvitationResponse>(
-    "/v1/invitations/deliver",
-    { id, channel },
-    { trustTask: DELIVER_INVITATION_TASK },
-  );
+  postSignedTrustTask<DeliverInvitationResponse>(DELIVER_INVITATION_TASK, { id, channel });
 
 const RELATIONSHIPS_GRAPH_TASK =
   "https://trusttasks.org/spec/vtc/relationships/graph/0.2";
@@ -903,9 +894,7 @@ export interface RelationshipsGraph {
  * relationship (VRC pairs) alike, for the connections-graph view.
  * Admin-gated. */
 export const fetchRelationshipsGraph = (): Promise<RelationshipsGraph> =>
-  getJson<RelationshipsGraph>("/v1/relationships/graph", {
-    trustTask: RELATIONSHIPS_GRAPH_TASK,
-  });
+  postSignedRead<RelationshipsGraph>(RELATIONSHIPS_GRAPH_TASK, {});
 
 const MEMBER_RELATIONSHIPS_TASK =
   "https://trusttasks.org/spec/vtc/relationships/list/0.2";
@@ -947,10 +936,7 @@ export interface RecognitionCheck {
 /** Ask whether this community recognises (trusts) a foreign issuer/community
  * DID — the operator's per-DID window into the recognition graph. */
 export const checkRecognition = (did: string): Promise<RecognitionCheck> =>
-  getJson<RecognitionCheck>(
-    `/v1/recognition/check?did=${encodeURIComponent(did)}`,
-    { trustTask: RECOGNITION_CHECK_TASK },
-  );
+  postSignedRead<RecognitionCheck>(RECOGNITION_CHECK_TASK, { did });
 
 /** Probe: returns the whoami response when signed in, null when not. */
 export async function probeSession(): Promise<WhoamiResponse | null> {

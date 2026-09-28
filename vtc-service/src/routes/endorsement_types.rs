@@ -34,14 +34,11 @@
 //! fjall key — keeps colons and slashes in operator-supplied
 //! URIs from colliding with the keyspace prefix discipline.
 
-use axum::Json;
-use axum::extract::{Query, State};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
 use vti_common::audit::{AuditEvent, EndorsementTypeDeletedData, EndorsementTypeRegisteredData};
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated};
 
@@ -262,22 +259,12 @@ pub struct ListQuery {
     pub limit: Option<usize>,
 }
 
-#[utoipa::path(
-    get, path = "/endorsement-types",
-    operation_id = "endorsementTypeList", tag = "endorsement-types",
-    security(("bearer_jwt" = [])),
-    params(ListQuery),
-    responses(
-        (status = 200, description = "Paginated list of endorsement types", body = Paginated<EndorsementType>),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<ListQuery>,
-) -> Result<Json<Paginated<EndorsementType>>, AppError> {
+/// `vtc/endorsement-types/list/0.1`. A signed document served by the spine
+/// (`trust_tasks::community_tasks`).
+pub(crate) async fn list(
+    state: &AppState,
+    query: ListQuery,
+) -> Result<Paginated<EndorsementType>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, LIST_MAX_LIMIT);
     let audit_key = state
         .audit_writer
@@ -298,7 +285,7 @@ pub async fn list(
         limit,
     )
     .await?;
-    Ok(Json(page))
+    Ok(page)
 }
 
 // ─── Delete ──────────────────────────────────────────────
