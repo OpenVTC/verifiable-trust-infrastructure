@@ -1357,8 +1357,11 @@ fn secrets_choice_to_config(choice: SecretsBackendChoice) -> SecretsConfig {
             config.secret = Some(String::new());
         }
         SecretsBackendChoice::Plaintext => {
-            // No fields to populate — the plaintext store reads
-            // from `store.data_dir`.
+            // The store reads from `store.data_dir`, so no fields to
+            // populate — but the selector must be explicit. Left `None`,
+            // `create_secret_store` walks its implicit chain and picks the
+            // keyring whenever it is compiled in, ignoring this choice.
+            config.backend = Some(crate::config::SecretBackend::Plaintext);
         }
     }
     config
@@ -1959,6 +1962,15 @@ mod tests {
         };
         let config = secrets_choice_to_config(choice);
         assert_eq!(config.keyring_service, "custom-name");
+    }
+
+    #[test]
+    fn secrets_choice_to_config_pins_plaintext_backend() {
+        let config = secrets_choice_to_config(SecretsBackendChoice::Plaintext);
+        assert_eq!(
+            config.backend,
+            Some(crate::config::SecretBackend::Plaintext)
+        );
     }
 
     #[test]
