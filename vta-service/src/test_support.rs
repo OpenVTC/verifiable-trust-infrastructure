@@ -1526,6 +1526,14 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         tsp_recovery: std::sync::Arc::new(affinidi_messaging_sdk::RecoveryCoordinator::new(
             affinidi_messaging_sdk::BackoffPolicy::default(),
         )),
+        #[cfg(feature = "tsp")]
+        tsp_relationships: vti_common::relationship_store::build_relationship_store(
+            store
+                .keyspace(crate::keyspaces::RELATIONSHIPS)
+                .expect("relationships keyspace"),
+        ),
+        #[cfg(feature = "tsp")]
+        tsp_idle_reinvites: Default::default(),
         jwt_keys: Some(jwt_keys.clone()),
         atm: transport.atm.or(opts.atm),
         tee: None,
@@ -3156,6 +3164,91 @@ mod transport_harness_tests {
             "and it settled as a success — the relationship recovered and the reply arrived"
         );
         assert_eq!(metrics.give_ups, 0, "a recovered peer is not given up on");
+
+        peer.stop().await;
+        mock.shutdown().await;
+    }
+
+    /// An idle relationship is re-asserted before the send rather than trusted,
+    /// and the reply stamps it active again (`TSP_IDLE_REESTABLISH_MS`, D5).
+    ///
+    /// The peer here kept its half, which is the case the re-invite must not
+    /// break: a peer that still holds the relationship re-accepts (D2) and
+    /// answers the request that travelled with the invite. The case the
+    /// re-invite exists for — a peer that lost its half — then costs nothing
+    /// extra either, because the invite goes first; what would otherwise have
+    /// happened there is the silent drop and a full reply window before D6.
+    #[tokio::test]
+    async fn an_idle_relationship_is_reinvited_with_the_request_and_restamped() {
+        use affinidi_messaging_sdk::protocols::tsp::{RelationshipState, RelationshipStore as _};
+
+        let mock = MockVta::start_with_transports().await;
+        let peer = AnsweringPeer::spawn(&mock, 0x9d).await;
+        let tsp = crate::operations::outbound::TspSender::from_app_state(&mock.ctx.state)
+            .expect("a mediator-connected VTA has a TSP transport")
+            // Room for a real round trip, as in the answering-peer D6 test.
+            .with_reply_timeout(std::time::Duration::from_secs(30));
+        let store = mock.ctx.state.tsp_relationships.clone();
+        let our = mock.vta_did().to_string();
+        let now_ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_millis() as u64
+        };
+
+        // Established, but last heard from two hours ago.
+        store
+            .set(&our, peer.did(), RelationshipState::Bidirectional)
+            .await
+            .expect("seed the relationship");
+        store
+            .touch(&our, peer.did(), now_ms() - 2 * 60 * 60 * 1000)
+            .await
+            .expect("age the relationship");
+        assert!(
+            tsp.idle_reestablish_due(peer.did()).await,
+            "a relationship idle past the threshold is re-invited"
+        );
+
+        let thread = "urn:uuid:idle-reinvite-req-1";
+        let request = trust_tasks_rs::TrustTask::new(
+            thread,
+            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+                .parse::<trust_tasks_rs::TypeUri>()
+                .expect("acl/grant/0.1 is a valid Type URI"),
+            serde_json::json!({}),
+        );
+        let framed = vta_sdk::tsp_binding::wrap_envelope(
+            &serde_json::to_vec(&request).expect("serialise the request"),
+        );
+
+        let out = tsp.first_attempt(peer.did(), None, thread, &framed).await;
+        assert!(
+            matches!(out, crate::operations::outbound::TspAttempt::Reply(_)),
+            "a peer that kept its half re-accepts and answers the request sent with \
+             the invite — {}",
+            peer.report()
+        );
+
+        let stamped = store
+            .last_active(&our, peer.did())
+            .await
+            .expect("read the stamp")
+            .expect("a reply stamps the relationship");
+        assert!(
+            now_ms().saturating_sub(stamped) < 60_000,
+            "the stamp is the reply's, not the aged one"
+        );
+        assert!(
+            !tsp.idle_reestablish_due(peer.did()).await,
+            "a freshly active relationship is trusted on the next send"
+        );
+        assert_eq!(
+            tsp.recovery().metrics().attempts,
+            0,
+            "a proactive re-invite is not a D6 recovery and is not counted as one"
+        );
 
         peer.stop().await;
         mock.shutdown().await;
