@@ -1596,8 +1596,8 @@ async fn admin_query_send_prepares_a_dcql_query_and_issues_a_challenge() {
         .await
         .expect("store accepts criterion");
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "POST",
         "/v1/join-requests/query",
         "x",
@@ -1633,8 +1633,8 @@ async fn admin_query_send_prepares_a_dcql_query_and_issues_a_challenge() {
 #[tokio::test]
 async fn admin_query_send_404s_an_unknown_criterion() {
     let fix = build_fixture().await;
-    let (status, _body) = send(
-        &fix.router,
+    let (status, _body) = send_as_admin(
+        &fix,
         "POST",
         "/v1/join-requests/query",
         "x",
@@ -1649,8 +1649,8 @@ async fn admin_query_send_404s_an_unknown_criterion() {
 #[tokio::test]
 async fn admin_query_send_requires_admin() {
     let fix = build_fixture().await;
-    let (status, _body) = send(
-        &fix.router,
+    let (status, _body) = send_as_admin(
+        &fix,
         "POST",
         "/v1/join-requests/query",
         "x",
@@ -3184,10 +3184,12 @@ async fn admins_see_the_vetting_facts_and_the_withdrawals_that_touch_a_membershi
     assert_eq!(verdict_effect(&body), "allow", "{body}");
     let request_id = body["payload"]["requestId"].as_str().unwrap().to_string();
 
-    let (status, facts) = admin_rest(
+    let (status, facts) = send_as_admin(
         &fix,
         "GET",
         &format!("/v1/join-requests/{request_id}/vetting"),
+        "x",
+        Some(&fix.admin_token),
         None,
     )
     .await;
@@ -3221,10 +3223,12 @@ async fn admins_see_the_vetting_facts_and_the_withdrawals_that_touch_a_membershi
     assert_eq!(notice["affectedMembers"], json!([applicant.clone()]));
     assert_eq!(notice["affectedJoinRequests"], json!([request_id.clone()]));
 
-    let (_, facts) = admin_rest(
+    let (_, facts) = send_as_admin(
         &fix,
         "GET",
         &format!("/v1/join-requests/{request_id}/vetting"),
+        "x",
+        Some(&fix.admin_token),
         None,
     )
     .await;
@@ -3242,10 +3246,12 @@ async fn admins_see_the_vetting_facts_and_the_withdrawals_that_touch_a_membershi
     );
     assert!(under_review.under_review);
 
-    let (status, _) = admin_rest(
+    let (status, _) = send_as_admin(
         &fix,
         "GET",
         &format!("/v1/join-requests/{}/vetting", Uuid::new_v4()),
+        "x",
+        Some(&fix.admin_token),
         None,
     )
     .await;

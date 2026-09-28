@@ -11,16 +11,7 @@
 // branding — so they go through the `*Exempt` helpers instead of borrowing a
 // task URI that names something else.
 
-import {
-  deleteJson,
-  deleteJsonExempt,
-  getJsonExempt,
-  postJson,
-  postJsonExempt,
-  postSignedRead,
-  postSignedTrustTask,
-  putJsonExempt,
-} from "@/lib/api";
+import { deleteJson, postJson, postSignedRead, postSignedTrustTask } from "@/lib/api";
 import type {
   AcceptsCriterion,
   AutoGrantConfig,
@@ -38,13 +29,11 @@ import type {
   MembersPage,
   RegisterAcceptsBody,
   RegisterEndorsementTypeBody,
-  VetterGrantList,
   VetterGrantResponse,
   VetterGrantRow,
   VetterListBody,
   VetterListResponse,
   VetterResendResponse,
-  VettingRevocationList,
   VettingRevocationRow,
 } from "@/lib/wire-types";
 
@@ -65,6 +54,35 @@ const TASK_ENDORSEMENT_TYPE_DELETE =
   "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 const TASK_JOIN_REQUESTS_LIST =
   "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+const TASK_GRANTS_LIST = "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1";
+const TASK_AUTO_GRANT_SHOW = "https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1";
+const TASK_AUTO_GRANT_UPDATE = "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1";
+const TASK_REVOCATIONS_LIST = "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1";
+const TASK_JOIN_VETTING_SHOW = "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1";
+const TASK_BRANDING_SHOW = "https://trusttasks.org/spec/vtc/community/branding/show/0.1";
+const TASK_BRANDING_UPDATE = "https://trusttasks.org/spec/vtc/community/branding/update/0.1";
+const TASK_ACCEPTS_LIST = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.1";
+const TASK_ACCEPTS_REGISTER = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
+const TASK_ACCEPTS_DELETE = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
+
+/** How many pages of a signed listing the console reads before it stops. */
+const MAX_LIST_PAGES = 20;
+
+/** Every item of a paged signed listing (`{ items, nextCursor? }`). */
+async function allItems<T>(task: string): Promise<T[]> {
+  const out: T[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_LIST_PAGES; page++) {
+    const body: { items: T[]; nextCursor?: string | null } = await postSignedRead(task, {
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+    });
+    out.push(...body.items);
+    cursor = body.nextCursor ?? null;
+    if (!cursor) break;
+  }
+  return out;
+}
 export const TASK_MANIFEST_V0_2 =
   "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2";
 
@@ -86,10 +104,8 @@ export const vettingKeys = {
 
 // ── Grants ──────────────────────────────────────────────────────────────
 
-export async function fetchGrants(): Promise<VetterGrantRow[]> {
-  const body = await getJsonExempt<VetterGrantList>("/v1/vetting/vetters");
-  return body.vetters;
-}
+export const fetchGrants = (): Promise<VetterGrantRow[]> =>
+  allItems<VetterGrantRow>(TASK_GRANTS_LIST);
 
 export const grantVetter = (args: {
   memberDid: string;
@@ -137,31 +153,25 @@ export const fetchListing = (body: VetterListBody): Promise<VetterListResponse> 
 
 // ── Automatic grants, withdrawals, join-request facts, branding ─────────
 
-export const fetchAutoGrant = (): Promise<AutoGrantStatus> =>
-  getJsonExempt<AutoGrantStatus>("/v1/vetting/auto-grant");
+export const fetchAutoGrant = async (): Promise<AutoGrantStatus> =>
+  (await postSignedRead<{ autoGrant: AutoGrantStatus }>(TASK_AUTO_GRANT_SHOW, {})).autoGrant;
 
-export const saveAutoGrant = (config: AutoGrantConfig): Promise<AutoGrantStatus> =>
-  putJsonExempt<AutoGrantStatus>("/v1/vetting/auto-grant", config);
+export const saveAutoGrant = async (config: AutoGrantConfig): Promise<AutoGrantStatus> =>
+  (await postSignedTrustTask<{ autoGrant: AutoGrantStatus }>(TASK_AUTO_GRANT_UPDATE, config))
+    .autoGrant;
 
-export async function fetchRevocations(): Promise<VettingRevocationRow[]> {
-  const body = await getJsonExempt<VettingRevocationList>(
-    "/v1/vetting/revocations",
-  );
-  return body.revocations;
-}
+export const fetchRevocations = (): Promise<VettingRevocationRow[]> =>
+  allItems<VettingRevocationRow>(TASK_REVOCATIONS_LIST);
 
-export const fetchJoinRequestVetting = (
-  id: string,
-): Promise<JoinRequestVettingResponse> =>
-  getJsonExempt<JoinRequestVettingResponse>(
-    `/v1/join-requests/${encodeURIComponent(id)}/vetting`,
-  );
+export const fetchJoinRequestVetting = (id: string): Promise<JoinRequestVettingResponse> =>
+  postSignedRead<JoinRequestVettingResponse>(TASK_JOIN_VETTING_SHOW, { id });
 
-export const fetchBranding = (): Promise<CommunityBranding> =>
-  getJsonExempt<CommunityBranding>("/v1/community/branding");
+export const fetchBranding = async (): Promise<CommunityBranding> =>
+  (await postSignedRead<{ branding: CommunityBranding }>(TASK_BRANDING_SHOW, {})).branding;
 
-export const saveBranding = (branding: CommunityBranding): Promise<CommunityBranding> =>
-  putJsonExempt<CommunityBranding>("/v1/community/branding", branding);
+export const saveBranding = async (branding: CommunityBranding): Promise<CommunityBranding> =>
+  (await postSignedTrustTask<{ branding: CommunityBranding }>(TASK_BRANDING_UPDATE, { branding }))
+    .branding;
 
 export interface PendingWithVetting {
   /** Pending join requests on the first page that carry vetting facts. */
@@ -215,7 +225,7 @@ export const fetchManifest = (): Promise<JoinManifest> =>
 // here rather than a shortcut.
 
 export const fetchCriteria = (): Promise<AcceptsCriterion[]> =>
-  getJsonExempt<AcceptsCriterion[]>("/v1/schemas/accepts");
+  allItems<AcceptsCriterion>(TASK_ACCEPTS_LIST);
 
 /**
  * Store a criterion. The route registers **or replaces** by id, so this is both
@@ -223,11 +233,12 @@ export const fetchCriteria = (): Promise<AcceptsCriterion[]> =>
  * references, the vetting requirements against the manifest schema, and that
  * the `statementType` is registered.
  */
-export const saveCriterion = (body: RegisterAcceptsBody): Promise<AcceptsCriterion> =>
-  postJsonExempt<AcceptsCriterion>("/v1/schemas/accepts", body);
+export const saveCriterion = async (body: RegisterAcceptsBody): Promise<AcceptsCriterion> =>
+  (await postSignedTrustTask<{ criterion: AcceptsCriterion }>(TASK_ACCEPTS_REGISTER, body))
+    .criterion;
 
 export const deleteCriterion = (id: string): Promise<unknown> =>
-  deleteJsonExempt<unknown>(`/v1/schemas/accepts/${encodeURIComponent(id)}`);
+  postSignedTrustTask<unknown>(TASK_ACCEPTS_DELETE, { id });
 
 // ── Endorsement types ───────────────────────────────────────────────────
 

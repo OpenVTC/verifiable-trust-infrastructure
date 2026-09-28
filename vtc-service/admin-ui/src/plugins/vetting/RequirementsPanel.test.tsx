@@ -53,16 +53,18 @@ const criterion = (
     createdByDid: "did:key:zAdmin",
   }) as unknown as AcceptsCriterion;
 
+const ACCEPTS_LIST_TASK = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.1";
+const ACCEPTS_DELETE_TASK = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
+
 function routes(extra: MockRoute[] = []): MockRoute[] {
   return [
-    {
-      path: "/v1/schemas/accepts",
-      body: [
+    taskRoute(ACCEPTS_LIST_TASK, {
+      items: [
         criterion("kernel-developer", REQUIREMENTS, "Two vetters, at least one in person"),
         criterion("legacy", { ...REQUIREMENTS, minStatements: 0 }),
         criterion("open-door", undefined),
       ],
-    },
+    }),
     taskRoute(MANIFEST_TASK, {
       communityDid: "did:web:vtc.example.org",
       criteria: [
@@ -100,15 +102,13 @@ describe("RequirementsPanel", () => {
 
     // The criteria are read from the schema store, and the digests from the
     // manifest the applicant receives.
-    await waitFor(() =>
-      expect(requests.some((r) => r.url === "/v1/schemas/accepts")).toBe(true),
-    );
+    await waitFor(() => expect(sentPayloads(requests, ACCEPTS_LIST_TASK).length).toBe(1));
     expect(sentPayloads(requests, MANIFEST_TASK)).toContainEqual({});
   });
 
   it("removes a criterion once the admin confirms what it costs", async () => {
     const requests = mockFetch(
-      routes([{ method: "DELETE", path: "/v1/schemas/accepts/legacy", body: { id: "legacy" } }]),
+      routes([taskRoute(ACCEPTS_DELETE_TASK, { id: "legacy" })]),
     );
     renderWithProviders(<RequirementsPanel />);
 
@@ -124,11 +124,7 @@ describe("RequirementsPanel", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove criterion" }));
 
     await waitFor(() =>
-      expect(
-        requests.some(
-          (r) => r.method === "DELETE" && r.url === "/v1/schemas/accepts/legacy",
-        ),
-      ).toBe(true),
+      expect(sentPayloads(requests, ACCEPTS_DELETE_TASK)).toContainEqual({ id: "legacy" }),
     );
   });
 

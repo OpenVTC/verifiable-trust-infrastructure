@@ -1,18 +1,24 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { CommunityBrandingCard, readableTextOn } from "@/plugins/vetting/BrandingCard";
-import { mockFetch, renderWithProviders } from "@/test/render";
+import { mockFetch, renderWithProviders, sentPayloads, taskRoute } from "@/test/render";
+
+// Signed documents reach the fetch table unsigned; there is no console key here.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+  postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+}));
+
+const SHOW = "https://trusttasks.org/spec/vtc/community/branding/show/0.1";
+const UPDATE = "https://trusttasks.org/spec/vtc/community/branding/update/0.1";
 
 describe("CommunityBrandingCard", () => {
   it("previews the branding and saves it with the colour in lower case", async () => {
     const requests = mockFetch([
-      { path: "/v1/community/branding", body: {} },
-      {
-        method: "PUT",
-        path: "/v1/community/branding",
-        body: ({ body }) => body,
-      },
+      taskRoute(SHOW, { branding: {} }),
+      taskRoute(UPDATE, (payload) => payload),
     ]);
     renderWithProviders(<CommunityBrandingCard />);
 
@@ -40,9 +46,8 @@ describe("CommunityBrandingCard", () => {
 
     expect(save.disabled).toBe(false);
     fireEvent.click(save);
-    await waitFor(() => expect(requests.some((r) => r.method === "PUT")).toBe(true));
-    const put = requests.find((r) => r.method === "PUT")!;
-    expect(put.body).toEqual({
+    await waitFor(() => expect(sentPayloads(requests, UPDATE).length).toBe(1));
+    expect((sentPayloads(requests, UPDATE)[0] as { branding: unknown }).branding).toEqual({
       displayName: "Linux Kernel",
       accentColor: "#1a2b3c",
       logoUrl: "https://kernel.example.org/logo.svg",
@@ -51,7 +56,7 @@ describe("CommunityBrandingCard", () => {
   });
 
   it("explains invalid values and will not save them", async () => {
-    mockFetch([{ path: "/v1/community/branding", body: { displayName: "Kernel" } }]);
+    mockFetch([taskRoute(SHOW, { branding: { displayName: "Kernel" } })]);
     renderWithProviders(<CommunityBrandingCard />);
 
     await screen.findByDisplayValue("Kernel");

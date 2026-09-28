@@ -72,11 +72,12 @@ const member = (did: string, label: string) => ({
 
 function routes(extra: MockRoute[] = []): MockRoute[] {
   return [
-    { path: "/v1/vetting/vetters", body: { vetters: GRANTS } },
-    {
-      path: "/v1/vetting/auto-grant",
-      body: { enabled: false, sweepMinutes: 60, validitySeconds: 31_536_000 },
-    },
+    taskRoute("https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1", {
+      items: GRANTS,
+    }),
+    taskRoute("https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1", {
+      autoGrant: { enabled: false, sweepMinutes: 60, validitySeconds: 31_536_000 },
+    }),
     taskRoute(MEMBERS_LIST_TASK, { items: [member(CAROL, "Carol"), member(ERIN, "Erin")] }),
     { path: "/v1/acl", body: { entries: [], truncated: false } },
     ...extra,

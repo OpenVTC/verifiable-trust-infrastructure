@@ -775,18 +775,19 @@ async fn a_delivered_invitation_arrives_as_an_offer() {
 async fn a_join_query_is_answered_by_a_present_on_its_thread() {
     init_tracing();
     let mock = MockVtcDidcomm::start().await;
-    let admin_token = seed_join_ceremony(&mock).await;
+    seed_join_ceremony(&mock).await;
     let vtc_did = mock.vtc_did().to_string();
     let holder = mock.client.did().to_string();
 
-    let (status, sent) = rest_post(
-        &mock,
-        "/v1/join-requests/query",
-        "x",
-        &admin_token,
+    let admin = common::signed::admin(&mock.vtc).await;
+    let (status, sent) = common::signed::call(
+        &mock.vtc,
+        &admin,
+        "https://trusttasks.org/spec/vtc/join-requests/query/0.1",
         json!({ "holderDid": holder, "criterionId": "membership" }),
     )
     .await;
+    let sent = sent["payload"].clone();
     assert_eq!(status, StatusCode::OK, "{sent}");
     assert_eq!(
         sent["delivered"], true,

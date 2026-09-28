@@ -66,6 +66,9 @@ use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::{MockVtcDidcomm, TestJoinClient, TestVtc};
 use vti_common::auth::session::{Session, SessionState, store_session};
 
+const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
+const JOIN_VETTING_SHOW_TASK: &str =
+    "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1";
 const RP_ORIGIN: &str = "https://kernel-vtc.example";
 const ADMIN_DID: &str = "did:key:zKernelAdmin";
 
@@ -128,11 +131,9 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     // …and the criterion says how many a join needs. Every number is the
     // community's policy.
     let (status, body) = c
-        .admin(
-            "POST",
-            "/v1/schemas/accepts",
-            None,
-            Some(json!({
+        .admin_document(
+            ACCEPTS_REGISTER_TASK,
+            json!({
                 "id": "kernel-developer",
                 "description": "Two vetters, at least one in person",
                 "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
@@ -148,10 +149,10 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
                     "eligibleVetters": { "role": "vetter" },
                     "independence": { "requireConsistentIdentityCommitment": true }
                 }
-            })),
+            }),
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "vetting criterion: {body}");
+    assert_eq!(status, StatusCode::OK, "vetting criterion: {body}");
 
     // -----------------------------------------------------------------------
     // 2. The community names its vetters.
@@ -364,12 +365,7 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
 
     // The admin reads the facts the decision rested on.
     let (status, facts) = c
-        .admin(
-            "GET",
-            &format!("/v1/join-requests/{alice_request}/vetting"),
-            None,
-            None,
-        )
+        .admin_document(JOIN_VETTING_SHOW_TASK, json!({ "id": alice_request }))
         .await;
     assert_eq!(status, StatusCode::OK, "{facts}");
     let vetting = &facts["vetting"];
@@ -420,12 +416,7 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     assert_eq!(notice["affectedMembers"], json!([alice.did]));
     assert_eq!(notice["affectedJoinRequests"], json!([alice_request]));
     let (_, facts) = c
-        .admin(
-            "GET",
-            &format!("/v1/join-requests/{alice_request}/vetting"),
-            None,
-            None,
-        )
+        .admin_document(JOIN_VETTING_SHOW_TASK, json!({ "id": alice_request }))
         .await;
     let withdrawn: Vec<&str> = facts["vetting"]["statements"]
         .as_array()
@@ -495,12 +486,7 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     );
     let bob_request = verdict["payload"]["requestId"].as_str().unwrap();
     let (_, facts) = c
-        .admin(
-            "GET",
-            &format!("/v1/join-requests/{bob_request}/vetting"),
-            None,
-            None,
-        )
+        .admin_document(JOIN_VETTING_SHOW_TASK, json!({ "id": bob_request }))
         .await;
     let daves = facts["vetting"]["statements"]
         .as_array()
