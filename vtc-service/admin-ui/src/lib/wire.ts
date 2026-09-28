@@ -20,38 +20,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/admin/console-keys": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["adminConsoleKeyList"];
-        put?: never;
-        post: operations["adminConsoleKeyEnrol"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/admin/console-keys/{console_did}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["adminConsoleKeyRevoke"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/admin/did/register": {
         parameters: {
             query?: never;
@@ -1801,57 +1769,6 @@ export interface components {
          * @enum {string}
          */
         ConfigSource: "env" | "db" | "toml" | "default";
-        /**
-         * @description One delegation as the console sees it.
-         *
-         *     Separate from the stored [`ConsoleKeyDelegation`] for the same reason
-         *     `RegisteredCredential` is separate from `RegisteredPasskey`: that type is a
-         *     storage row whose member names are the on-disk format. This one can change
-         *     without orphaning anything.
-         */
-        ConsoleKey: {
-            /**
-             * @description Live right now: not revoked, not expired. Computed server-side so the
-             *     console does not re-implement the predicate the verifier uses — the two
-             *     disagreeing is how a page shows a key as working after it stopped.
-             */
-            active: boolean;
-            /**
-             * @description The admin DID this key acts as — always the listing caller, included so
-             *     a console need not infer it from the session.
-             */
-            adminDid: string;
-            consoleDid: string;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            expiresAt?: string | null;
-            label?: string | null;
-            /** Format: date-time */
-            lastUsedAt?: string | null;
-            /** Format: date-time */
-            revokedAt?: string | null;
-        };
-        ConsoleKeyListResponse: {
-            /**
-             * @description The caller's own console keys, newest first, revoked ones included so
-             *     an operator can see that a browser was disowned rather than never
-             *     enrolled.
-             */
-            consoleKeys: components["schemas"]["ConsoleKey"][];
-        };
-        ConsoleKeyRevokeResponse: {
-            consoleDid: string;
-            /**
-             * @description How many of the owning admin's console keys are still active. Zero is a
-             *     legitimate state — unlike a passkey, whose last one is protected,
-             *     because losing every console key costs an operator the *signed* door
-             *     and not the door: the bearer routes and the passkey login are untouched.
-             */
-            remainingActive: number;
-            /** Format: date-time */
-            revokedAt: string;
-        };
         CreateInviteRequest: {
             /** @description Admin DID the install URL grants a passkey for. */
             did: string;
@@ -2277,33 +2194,6 @@ export interface components {
              *     keyspace key.
              */
             typeUri: string;
-        };
-        /**
-         * @description The enrolment request.
-         *
-         *     **There is no `adminDid` member, and that is the design.** The delegation is
-         *     always written against the authenticated caller, so "enrol a key that acts
-         *     as somebody else" is not a request this surface can express. See
-         *     [`enrol`]'s own comment for why self-targeting is the only valid case here
-         *     and why that is the *opposite* of the `acl/grant` rule.
-         */
-        EnrolRequest: {
-            /**
-             * @description The console key's `did:key` — Ed25519 multikey, as the browser derives
-             *     it from the public half of its non-extractable keypair.
-             */
-            consoleDid: string;
-            /**
-             * Format: date-time
-             * @description Optional finite lifetime. Omit — the expected case — and the delegation
-             *     lasts until it is revoked or the browser profile is cleared.
-             */
-            expiresAt?: string | null;
-            /**
-             * @description Operator-supplied, e.g. `"Work laptop — Chrome"`. Optional; an empty
-             *     string is treated as absent.
-             */
-            label?: string | null;
         };
         /**
          * @description One terminally-failed reconciliation job, as the operator needs to see it.
@@ -5458,136 +5348,6 @@ export interface operations {
             };
             /** @description An admin already exists */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    adminConsoleKeyList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The caller's console keys; empty when none are enrolled */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConsoleKeyListResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    adminConsoleKeyEnrol: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EnrolRequest"];
-            };
-        };
-        responses: {
-            /** @description The console key may now act as the caller's admin DID */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConsoleKey"];
-                };
-            };
-            /** @description consoleDid is not a did:key, or is the caller's own DID */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin, or has no live step-up */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description That DID already holds an ACL row, or is already enrolled */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    adminConsoleKeyRevoke: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The console key's did:key */
-                console_did: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Revoked; the next document signed by this key is refused */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConsoleKeyRevokeResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is neither the owning admin nor a super-admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such console key */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };

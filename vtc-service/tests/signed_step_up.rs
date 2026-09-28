@@ -215,6 +215,28 @@ async fn approve(
     post(fix, &doc).await
 }
 
+/// The same answer, unsigned: the console's, whose browser holds a session
+/// passkey of the admin's and no key of theirs.
+async fn approve_unsigned(
+    fix: &Fixture,
+    request: &Value,
+    cred: &PublicKeyCredential,
+) -> (StatusCode, Value) {
+    let doc = vta_sdk::trust_task_sign::build_unsigned(
+        APPROVE_RESPONSE,
+        json!({
+            "subject": request["subject"],
+            "challenge": request["challenge"],
+            "decision": "approved",
+            "evidence": { "kind": "webauthn", "assertion": assertion(cred) },
+        }),
+        request["subject"].as_str().unwrap(),
+        TEST_VTC_DID,
+    )
+    .unwrap();
+    post(fix, &serde_json::to_value(doc).unwrap()).await
+}
+
 /// The whole loop: refused with the ceremony inline, the gesture recorded
 /// against that grant, the identical document re-sent and accepted.
 #[tokio::test]
@@ -384,7 +406,9 @@ async fn a_signature_alone_cannot_record_a_gesture() {
 }
 
 /// A console key acts as its admin: it signs the grant and may redeem the
-/// gesture, but the gesture is the admin's passkey — the key cannot supply it.
+/// gesture, but the gesture is the admin's passkey — the key cannot supply it,
+/// and its proof is never accepted on the answer (`auth/signing-key/enroll`
+/// item 7). The console answers unsigned, with the passkey as the gate.
 #[tokio::test]
 async fn a_console_key_redeems_its_admins_gesture_but_cannot_make_one() {
     let mut fix = fixture().await;
@@ -414,7 +438,18 @@ async fn a_console_key_redeems_its_admins_gesture_but_cannot_make_one() {
     let cred = fix
         .authenticator
         .authenticate(&options(&request), RP_ORIGIN);
-    let (status, ack) = approve(&fix, &console, &request, &cred).await;
+    let (status, refused) = approve(&fix, &console, &request, &cred).await;
+    assert_ne!(status, StatusCode::OK, "{refused}");
+    assert_eq!(refused["code"], "permissionDenied", "{refused}");
+
+    // A fresh ceremony — the refused answer consumed nothing, but the
+    // challenge is best asked again as the console would.
+    let (_, refusal) = post(&fix, &grant).await;
+    let request = step_up_request(&refusal);
+    let cred = fix
+        .authenticator
+        .authenticate(&options(&request), RP_ORIGIN);
+    let (status, ack) = approve_unsigned(&fix, &request, &cred).await;
     assert_eq!(status, StatusCode::OK, "{ack}");
 
     let (status, reply) = post(&fix, &grant).await;
@@ -704,5 +739,345 @@ async fn a_non_admin_signer_cannot_change_roles() {
         let (status, reply) = post(&fix, &doc).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
         assert!(reply["details"].get("stepUpRequest").is_none(), "{reply}");
+    }
+}
+
+// ─── auth/signing-key/{enroll,list,revoke}/0.1 ──────────────────────────
+//
+// The console enrols its key with nothing but the key and a passkey: the
+// enrolment is signed by the key (proof of possession), and control of the
+// identity it names is a passkey gesture of that identity bound to that one
+// document, answered unsigned from the requester's own browser.
+
+const ENROLL: &str = "https://trusttasks.org/spec/auth/signing-key/enroll/0.1";
+const KEY_LIST: &str = "https://trusttasks.org/spec/auth/signing-key/list/0.1";
+const KEY_REVOKE: &str = "https://trusttasks.org/spec/auth/signing-key/revoke/0.1";
+const ACL_LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
+
+fn enrolment(key: &Party, identity: &str, label: &str) -> Value {
+    json!({
+        "signingKeyDid": key.did,
+        "identityDid": identity,
+        "scope": "console",
+        "deviceLabel": label,
+    })
+}
+
+/// Enrol `key` for `identity` end to end: refused with the ceremony, the
+/// identity's passkey answers unsigned, the identical document goes through.
+/// The reply's status and payload.
+async fn enrol_with_gesture(fix: &mut Fixture, key: &Party, identity: &str) -> (StatusCode, Value) {
+    let doc = signed(key, ENROLL, enrolment(key, identity, "Work laptop")).await;
+    let (status, refusal) = post(fix, &doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
+    let request = step_up_request(&refusal);
+    assert_eq!(request["subject"], identity, "{request}");
+    let cred = fix
+        .authenticator
+        .authenticate(&options(&request), RP_ORIGIN);
+    let (status, ack) = approve_unsigned(fix, &request, &cred).await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+    assert_eq!(ack["status"], "recorded", "{ack}");
+    post(fix, &doc).await
+}
+
+#[tokio::test]
+async fn a_signing_key_is_enrolled_by_the_identitys_bound_gesture() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let key = Party::new();
+
+    let (status, reply) = enrol_with_gesture(&mut fix, &key, &admin.did).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let enrolled = &reply["signingKey"];
+    assert_eq!(enrolled["signingKeyDid"], key.did.as_str());
+    assert_eq!(enrolled["identityDid"], admin.did.as_str());
+    assert_eq!(enrolled["scope"], "console");
+    assert_eq!(enrolled["active"], true);
+    // Always an expiry, and never more than 30 days out (item 6).
+    let expires: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(enrolled["expiresAt"].clone()).unwrap();
+    assert!(expires <= chrono::Utc::now() + chrono::Duration::days(30));
+
+    // The key now signs as the admin, and lists the admin's keys.
+    let (status, listed) = post(&fix, &signed(&key, ACL_LIST, json!({})).await).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let (_, keys) = post(&fix, &signed(&key, KEY_LIST, json!({})).await).await;
+    assert_eq!(
+        keys["signingKeys"][0]["signingKeyDid"],
+        key.did.as_str(),
+        "{keys}"
+    );
+}
+
+/// A requested expiry past the ceiling is capped, not honoured.
+#[tokio::test]
+async fn a_requested_lifetime_is_capped() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let key = Party::new();
+    let mut body = enrolment(&key, &admin.did, "Laptop");
+    body["expiresAt"] = json!((chrono::Utc::now() + chrono::Duration::days(365)).to_rfc3339());
+    let doc = signed(&key, ENROLL, body).await;
+    let (_, refusal) = post(&fix, &doc).await;
+    let request = step_up_request(&refusal);
+    let cred = fix
+        .authenticator
+        .authenticate(&options(&request), RP_ORIGIN);
+    approve_unsigned(&fix, &request, &cred).await;
+    let (status, reply) = post(&fix, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let expires: chrono::DateTime<chrono::Utc> =
+        serde_json::from_value(reply["signingKey"]["expiresAt"].clone()).unwrap();
+    assert!(
+        expires <= chrono::Utc::now() + chrono::Duration::days(30),
+        "{reply}"
+    );
+}
+
+/// The first answer is the same whoever the identity is (item 5, *not an
+/// oracle*): an administrator and a DID the community has never heard of get
+/// the same refusal offering the same credentials, and nothing is enrolled.
+#[tokio::test]
+async fn the_first_answer_does_not_depend_on_the_identitys_standing() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let key = Party::new();
+    let other = Party::new();
+
+    let (_, for_admin) = post(
+        &fix,
+        &signed(&key, ENROLL, enrolment(&key, &admin.did, "L")).await,
+    )
+    .await;
+    let (_, for_nobody) = post(
+        &fix,
+        &signed(
+            &other,
+            ENROLL,
+            enrolment(&other, "did:key:z6MkNobodyAtAll", "L"),
+        )
+        .await,
+    )
+    .await;
+    let a = step_up_request(&for_admin);
+    let b = step_up_request(&for_nobody);
+    assert_eq!(
+        a["webauthn"]["allowCredentials"],
+        b["webauthn"]["allowCredentials"]
+    );
+    assert_eq!(for_admin["code"], for_nobody["code"]);
+
+    // A gesture that could only come from the admin's passkey does not answer
+    // for somebody else, so the stranger's enrolment never completes.
+    let cred = fix.authenticator.authenticate(&options(&b), RP_ORIGIN);
+    let (status, _) = approve_unsigned(&fix, &b, &cred).await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+/// The gesture binds the whole document (item 4): a changed label, or another
+/// key, finds no gesture and is asked again.
+#[tokio::test]
+async fn a_gesture_for_one_enrolment_does_not_enrol_another() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let key = Party::new();
+    let doc = signed(&key, ENROLL, enrolment(&key, &admin.did, "Work laptop")).await;
+    let (_, refusal) = post(&fix, &doc).await;
+    let request = step_up_request(&refusal);
+    let cred = fix
+        .authenticator
+        .authenticate(&options(&request), RP_ORIGIN);
+    approve_unsigned(&fix, &request, &cred).await;
+
+    let wider = signed(
+        &key,
+        ENROLL,
+        enrolment(&key, &admin.did, "Somebody else's laptop"),
+    )
+    .await;
+    let (status, refusal) = post(&fix, &wider).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    step_up_request(&refusal);
+    let (status, reply) = post(&fix, &doc).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the original is still covered: {reply}"
+    );
+}
+
+#[tokio::test]
+async fn the_key_rules_are_refused_with_their_codes() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let key = Party::new();
+    let code = |v: &Value| v["code"].as_str().unwrap_or_default().to_string();
+
+    // Signed by a key other than the one named.
+    let other = Party::new();
+    let (_, r) = post(
+        &fix,
+        &signed(&other, ENROLL, enrolment(&key, &admin.did, "L")).await,
+    )
+    .await;
+    assert_eq!(code(&r), "auth/signing-key/enroll:keyNotIssuer", "{r}");
+    // The key as its own identity.
+    let (_, r) = post(
+        &fix,
+        &signed(&key, ENROLL, enrolment(&key, &key.did, "L")).await,
+    )
+    .await;
+    assert_eq!(code(&r), "auth/signing-key/enroll:selfDelegation", "{r}");
+    // A key that holds standing of its own.
+    let (_, r) = post(
+        &fix,
+        &signed(&admin, ENROLL, enrolment(&admin, "did:key:z6MkX", "L")).await,
+    )
+    .await;
+    assert_eq!(code(&r), "auth/signing-key/enroll:keyHoldsStanding", "{r}");
+    // An expiry already past.
+    let mut past = enrolment(&key, &admin.did, "L");
+    past["expiresAt"] = json!("2020-01-01T00:00:00Z");
+    let (_, r) = post(&fix, &signed(&key, ENROLL, past).await).await;
+    assert_eq!(code(&r), "auth/signing-key/enroll:expiryInPast", "{r}");
+
+    // Enrolled, then enrolled again, then revoked and enrolled again.
+    let (status, _) = enrol_with_gesture(&mut fix, &key, &admin.did).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, r) = post(
+        &fix,
+        &signed(&key, ENROLL, enrolment(&key, &admin.did, "Again")).await,
+    )
+    .await;
+    assert_eq!(code(&r), "auth/signing-key/enroll:alreadyEnrolled", "{r}");
+    let (status, _) = post(
+        &fix,
+        &signed(&key, KEY_REVOKE, json!({ "signingKeyDid": key.did })).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, r) = post(
+        &fix,
+        &signed(&key, ENROLL, enrolment(&key, &admin.did, "Again")).await,
+    )
+    .await;
+    assert_eq!(code(&r), "auth/signing-key/enroll:keyRevoked", "{r}");
+}
+
+/// An identity holds at most five active keys (item 8).
+#[tokio::test]
+async fn an_identity_holds_a_bounded_number_of_keys() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    for _ in 0..vtc_service::acl::console_key::MAX_ACTIVE_PER_IDENTITY {
+        vtc_service::acl::console_key::enrol_delegation(
+            &fix.vtc.state.console_keys_ks,
+            &fix.vtc.state.acl_ks,
+            &Party::new().did,
+            &admin.did,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let (_, reply) = enrol_with_gesture(&mut fix, &Party::new(), &admin.did).await;
+    assert_eq!(
+        reply["code"], "auth/signing-key/enroll:tooManyKeys",
+        "{reply}"
+    );
+    assert_eq!(
+        reply["details"]["maxActiveKeys"],
+        vtc_service::acl::console_key::MAX_ACTIVE_PER_IDENTITY
+    );
+}
+
+/// A delegation of a fresh key to `admin`, written directly.
+async fn delegated_key(fix: &Fixture, admin: &str) -> Party {
+    let key = Party::new();
+    vtc_service::acl::console_key::enrol_delegation(
+        &fix.vtc.state.console_keys_ks,
+        &fix.vtc.state.acl_ks,
+        &key.did,
+        admin,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    key
+}
+
+async fn revoke(by: &Party, key: &Party) -> Value {
+    signed(by, KEY_REVOKE, json!({ "signingKeyDid": key.did })).await
+}
+
+/// Revoked by the key itself or its identity; a context-scoped admin cannot
+/// disarm a peer's key and is told `notFound`; an unrestricted admin can; a
+/// second revocation changes nothing.
+#[tokio::test]
+async fn a_key_is_revoked_by_itself_its_identity_or_an_unrestricted_admin() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let own = delegated_key(&fix, &admin.did).await;
+    let (status, reply) = post(&fix, &revoke(&own, &own).await).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let first = reply["revokedAt"].clone();
+    let (_, again) = post(&fix, &revoke(&admin, &own).await).await;
+    assert_eq!(
+        again["revokedAt"], first,
+        "a second revocation changes nothing"
+    );
+
+    let peer_key = delegated_key(&fix, &admin.did).await;
+    let scoped = Party::new();
+    store_acl_entry(
+        &fix.vtc.state.acl_ks,
+        &VtcAclEntry {
+            allowed_contexts: vec!["ctx-a".into()],
+            ..row(&scoped.did, VtcRole::Admin)
+        },
+    )
+    .await
+    .unwrap();
+    let (_, reply) = post(&fix, &revoke(&scoped, &peer_key).await).await;
+    assert_eq!(reply["code"], "auth/signing-key/revoke:notFound", "{reply}");
+    let root = Party::new();
+    store_acl_entry(&fix.vtc.state.acl_ks, &row(&root.did, VtcRole::Admin))
+        .await
+        .unwrap();
+    let (status, reply) = post(&fix, &revoke(&root, &peer_key).await).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["remainingActive"], 0);
+
+    // A revoked key authorizes nothing.
+    let (status, _) = post(&fix, &signed(&peer_key, ACL_LIST, json!({})).await).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A key's list is its identity's, and a signer speaking for nobody is refused.
+#[tokio::test]
+async fn a_list_is_the_signers_identitys_own() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    let (_, empty) = post(&fix, &signed(&admin, KEY_LIST, json!({})).await).await;
+    assert_eq!(empty["signingKeys"], json!([]), "{empty}");
+    let (status, _) = post(&fix, &signed(&Party::new(), KEY_LIST, json!({})).await).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn the_console_keys_bearer_routes_are_gone() {
+    let fix = fixture().await;
+    for (method, path) in [
+        ("GET", "/v1/admin/console-keys"),
+        ("POST", "/v1/admin/console-keys"),
+        ("DELETE", "/v1/admin/console-keys/did:key:z6MkGone"),
+    ] {
+        assert!(
+            !common::signed::bearer_route_served(&fix.vtc, method, path).await,
+            "{method} {path}"
+        );
     }
 }

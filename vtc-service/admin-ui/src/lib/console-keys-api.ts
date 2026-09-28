@@ -1,87 +1,113 @@
-// The console-key enrolment surface — `/v1/admin/console-keys` (#1692).
+// The console's signing keys — `auth/signing-key/{enroll,list,revoke}/0.1`,
+// signed documents on `POST /v1/trust-tasks`.
 //
-// Three bearer routes, mounted without a Trust-Task binding because no
-// published task family describes enrolling a signing-key delegation; the
-// handler records what the upstream `auth/signing-key/{enroll,list,revoke}`
-// family should be, and these bodies are already those payloads. So they use
-// the `*Exempt` helpers, and the smell is the intended one.
+// Everything here is about the *delegation record*, which lives on the daemon.
+// The key itself never leaves this browser — see `console-key.ts`.
 //
-// Everything here is about the *delegation record*, which lives on the
-// daemon. The key itself never leaves this browser — see `console-key.ts`.
+// Enrolment needs no key of the operator's: the document is signed by the new
+// key (proof that this browser holds it), and the VTC asks for a passkey
+// gesture of the operator's identity bound to that one enrolment. The gesture
+// is answered here, from this browser, and the identical document is sent
+// again (`postSignedWithStepUp`).
 
-import { deleteJsonExempt, getJsonExempt, postJsonExempt } from "./api";
-import {
-  forgetConsoleKey,
-  generateConsoleKey,
-  loadConsoleKey,
-} from "./console-key";
-import { stepUpSession } from "./step-up";
-import type { ConsoleKey, ConsoleKeyListResponse } from "./wire-types";
+import { type ApiError, fetchWhoami, postSignedRead, postSignedTrustTask } from "./api";
+import { forgetConsoleKey, generateConsoleKey, loadConsoleKey } from "./console-key";
+import { type ConfirmGesture, postSignedWithStepUp } from "./signed-act";
+import type { ConsoleKey } from "./wire-types";
 
 export type { ConsoleKey } from "./wire-types";
 
-/** The caller's own console keys, newest first, revoked ones included. */
-export async function listConsoleKeys(): Promise<ConsoleKey[]> {
-  const body = await getJsonExempt<ConsoleKeyListResponse>(
-    "/v1/admin/console-keys",
-  );
-  return body.consoleKeys;
+export const TASK_SIGNING_KEY_ENROLL = "https://trusttasks.org/spec/auth/signing-key/enroll/0.1";
+export const TASK_SIGNING_KEY_LIST = "https://trusttasks.org/spec/auth/signing-key/list/0.1";
+export const TASK_SIGNING_KEY_REVOKE = "https://trusttasks.org/spec/auth/signing-key/revoke/0.1";
+
+/** `auth/_shared/0.1/signing-key.schema.json`'s `SigningKey`. */
+interface SigningKey {
+  signingKeyDid: string;
+  identityDid: string;
+  scope: string;
+  deviceLabel?: string;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+  active: boolean;
+}
+
+function asConsoleKey(k: SigningKey): ConsoleKey {
+  return {
+    consoleDid: k.signingKeyDid,
+    adminDid: k.identityDid,
+    label: k.deviceLabel ?? null,
+    createdAt: k.createdAt,
+    expiresAt: k.expiresAt,
+    lastUsedAt: k.lastUsedAt ?? null,
+    revokedAt: k.revokedAt ?? null,
+    active: k.active,
+  };
 }
 
 /**
- * Enrol this browser's key, generating one first if the profile has none.
+ * Your identity's signing keys, newest first, revoked ones included.
  *
- * The step-up runs **before** the POST rather than on a caught
- * `step_up_required`, for the reason `stepUpSession`'s own doc gives: it keeps
- * the operator's passkey gesture tied to the click that asked for it, which is
- * the whole point of requiring a *recent* second factor. The daemon's own
- * reason for demanding one here is narrower than `acl/grant`'s and worth
- * knowing: a delegation confers no role, but it can author signed documents in
- * the caller's name with no gesture at use time, so a stolen session must not
- * be enough to leave one behind.
+ * The list is read with this browser's key, which speaks for your identity
+ * only once enrolled — so a browser with no enrolled key sees none, and
+ * enrolling this one is how to see the rest.
+ */
+export async function listConsoleKeys(): Promise<ConsoleKey[]> {
+  if (!(await loadConsoleKey())) return [];
+  try {
+    const body = await postSignedRead<{ signingKeys: SigningKey[] }>(TASK_SIGNING_KEY_LIST, {});
+    return body.signingKeys.map(asConsoleKey);
+  } catch (e) {
+    if ((e as ApiError | null)?.code === "permissionDenied") return [];
+    throw e;
+  }
+}
+
+/**
+ * Enrol this browser's key for your identity, generating one first if the
+ * profile has none. `confirmGesture` asks you to confirm the passkey gesture
+ * the VTC then requests — its own click, so the ceremony runs in a fresh user
+ * gesture with the act on screen.
  *
  * Generating before enrolling is safe: a key nobody has enrolled authorises
  * nothing at all.
  */
-export async function enrolThisBrowser(label?: string): Promise<ConsoleKey> {
+export async function enrolThisBrowser(
+  label: string | undefined,
+  confirmGesture: ConfirmGesture,
+): Promise<ConsoleKey> {
   const key = (await loadConsoleKey()) ?? (await generateConsoleKey());
-  await stepUpSession();
-  const body: Record<string, unknown> = { consoleDid: key.consoleDid };
+  const identity = (await fetchWhoami()).session.subject;
+  const payload: Record<string, unknown> = {
+    signingKeyDid: key.consoleDid,
+    identityDid: identity,
+    scope: "console",
+  };
   const trimmed = label?.trim();
-  if (trimmed) body.label = trimmed;
-  return postJsonExempt<ConsoleKey>("/v1/admin/console-keys", body);
+  if (trimmed) payload.deviceLabel = trimmed;
+  const body = await postSignedWithStepUp<{ signingKey: SigningKey }>(
+    TASK_SIGNING_KEY_ENROLL,
+    payload,
+    confirmGesture,
+  );
+  return asConsoleKey(body.signingKey);
 }
 
 /**
  * Revoke a delegation. Takes effect on the very next document — the daemon
- * reads the record when it executes one, not when the session began.
+ * reads the record when it executes one.
  *
  * No step-up: requiring a fresh gesture to *withdraw* a credential is a gate
- * that protects the attacker, and an operator who suspects a browser should
- * not have to find their authenticator before disowning it.
+ * that protects the attacker. Signed by this browser's key, which the VTC
+ * accepts for its own identity's keys and for itself.
  *
- * When the revoked key is the one this browser holds, the local copy goes too.
- * Keeping it would leave a key that signs documents the daemon refuses, which
- * presents to the operator as a console that has quietly stopped working.
- *
- * The response body (`ConsoleKeyRevokeResponse`: `{consoleDid, revokedAt,
- * remainingActive}`) is not read: the caller refetches the list, which is
- * what it wants to render anyway.
+ * When the revoked key is the one this browser holds, the local copy goes
+ * too: keeping it would leave a key that signs documents the daemon refuses.
  */
 export async function revokeConsoleKey(consoleDid: string): Promise<void> {
-  await deleteJsonExempt<unknown>(
-    `/v1/admin/console-keys/${encodeURIComponent(consoleDid)}`,
-  );
+  await postSignedTrustTask<unknown>(TASK_SIGNING_KEY_REVOKE, { signingKeyDid: consoleDid });
   const held = await loadConsoleKey();
   if (held?.consoleDid === consoleDid) await forgetConsoleKey();
-}
-
-/** Did the daemon refuse for want of a live step-up, rather than a real 403? */
-export function isStepUpRequired(error: unknown): boolean {
-  const message = (error as { message?: string } | null)?.message;
-  // `AppError::StepUpRequired` serialises `{"error":"step_up_required", …}`
-  // and `daemonErrorMessage` returns `body.error` first, so this is the code
-  // rather than the prose. `ApprovalRequired` spells the same thing with an
-  // `auth:` prefix, and both mean "run the ceremony and retry".
-  return message === "step_up_required" || message === "auth:step_up_required";
 }

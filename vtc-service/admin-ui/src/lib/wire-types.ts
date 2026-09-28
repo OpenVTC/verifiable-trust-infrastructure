@@ -38,13 +38,20 @@ export type PasskeyLoginStartResponse =
   Schemas["AdminPasskeyLoginStartResponse"];
 export type RegisteredCredential = Schemas["RegisteredCredential"];
 export type PasskeyListResponse = Schemas["PasskeyListResponse"];
-// Schema names are unique across the document — `openapi_schema_names.rs`
-// holds that (#1697). Before it, `PasskeyListResponse` and
-// `ConsoleKeyListResponse` were both published as `ListResponse` and the
-// passkey endpoint was documented with the console-key shape.
-export type ConsoleKey = Schemas["ConsoleKey"];
-export type ConsoleKeyListResponse = Schemas["ConsoleKeyListResponse"];
-export type ConsoleKeyRevokeResponse = Schemas["ConsoleKeyRevokeResponse"];
+/**
+ * One of your console signing keys, as the Console keys page shows it — an
+ * `auth/signing-key/list/0.1` `SigningKey`, read by `lib/console-keys-api.ts`.
+ */
+export interface ConsoleKey {
+  consoleDid: string;
+  adminDid: string;
+  label: string | null;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  active: boolean;
+}
 export type PasskeyRegisterStartResponse = Schemas["RegisterStartResponse"];
 export type PasskeyRevokeStartResponse = Schemas["RevokeStartResponse"];
 

@@ -800,6 +800,10 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1",
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1",
     "https://trusttasks.org/spec/vtc/rooms/list/0.1",
+    // The console's signing keys (`trust_tasks::signing_key_tasks`).
+    "https://trusttasks.org/spec/auth/signing-key/enroll/0.1",
+    "https://trusttasks.org/spec/auth/signing-key/list/0.1",
+    "https://trusttasks.org/spec/auth/signing-key/revoke/0.1",
 ];
 
 #[test]

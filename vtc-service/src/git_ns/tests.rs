@@ -7557,9 +7557,10 @@ async fn namespace_list_signed_by_a_console_key_answers_its_administrator() {
         &crate::acl::console_key::ConsoleKeyDelegation {
             console_did: console.did.clone(),
             admin_did: f.carol.did.clone(),
+            scope: crate::acl::console_key::DelegationScope::Console,
             label: None,
             created_at: chrono::Utc::now(),
-            expires_at: None,
+            expires_at: chrono::Utc::now() + chrono::Duration::days(1),
             last_used_at: None,
             revoked_at: None,
             revoked_by: None,

@@ -3,7 +3,6 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SigningUnavailableError } from "./api";
 import {
   ANSWER_CODE_PREFIX,
   answerCodeOf,
@@ -120,6 +119,11 @@ describe("answering a step-up", () => {
     });
     // A bound step-up carries no session.
     expect(doc.payload).not.toHaveProperty("sessionId");
+    // Unsigned, naming the subject: the console key is a delegation, and a
+    // delegated key is never accepted as an approver's attestation — the
+    // passkey assertion is the gate.
+    expect(doc).not.toHaveProperty("proof");
+    expect(doc.issuer).toBe(ADMIN);
   });
 
   it("refuses options whose challenge is not the request's, before asking for a gesture", async () => {
@@ -128,18 +132,6 @@ describe("answering a step-up", () => {
       answerStepUp({ ...REQUEST, webauthn: { ...REQUEST.webauthn!, challenge: "b3RoZXItY2hhbGxlbmdlLXh4eA" } }, creds),
     ).rejects.toThrow(/does not match/);
     expect(creds.get).not.toHaveBeenCalled();
-  });
-
-  it("never answers unsigned: with no console key it sends nothing", async () => {
-    // No generateConsoleKey(): a member who is no console user. Their answer
-    // is signed by `cnm`, from the answer code, never sent bare from here.
-    const requests = mockFetch([
-      { path: "/health", body: { status: "ok", version: "t", vtc_did: VTC_DID } },
-    ]);
-    await expect(answerStepUp(REQUEST, fakeCredentials())).rejects.toBeInstanceOf(
-      SigningUnavailableError,
-    );
-    expect(requests.find((r) => r.url === "/v1/trust-tasks")).toBeUndefined();
   });
 
   it("hands the assertion to cnm as one answer-code line", async () => {

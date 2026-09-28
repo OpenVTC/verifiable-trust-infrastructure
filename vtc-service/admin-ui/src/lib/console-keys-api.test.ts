@@ -1,14 +1,30 @@
-// Enrolment and revocation, as sequences of requests rather than as clicks.
+// Enrolment, listing and revocation as the signed documents they send.
 //
-// The thing worth asserting is the *order*: the passkey gesture happens before
-// the POST that writes the delegation, and the `consoleDid` posted is the one
-// this browser can actually sign with.
+// The things worth asserting: the enrolment names the key this browser can
+// actually sign with and the identity the session belongs to, it goes through
+// the bound step-up (`postSignedWithStepUp`), and a browser with no enrolled
+// key lists nothing rather than failing.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("./api", async (original) => ({
+  ...(await original<typeof import("./api")>()),
+  fetchWhoami: vi.fn(),
+  postSignedRead: vi.fn(),
+  postSignedTrustTask: vi.fn(),
+}));
+vi.mock("./signed-act", async (original) => ({
+  ...(await original<typeof import("./signed-act")>()),
+  postSignedWithStepUp: vi.fn(),
+}));
+
+import { fetchWhoami, postSignedRead, postSignedTrustTask } from "./api";
+import { postSignedWithStepUp } from "./signed-act";
 import {
+  TASK_SIGNING_KEY_ENROLL,
+  TASK_SIGNING_KEY_LIST,
+  TASK_SIGNING_KEY_REVOKE,
   enrolThisBrowser,
-  isStepUpRequired,
   listConsoleKeys,
   revokeConsoleKey,
 } from "./console-keys-api";
@@ -18,214 +34,110 @@ import {
   loadConsoleKey,
   resetConsoleKeyCacheForTests,
 } from "./console-key";
-import { mockFetch, type MockRoute, type RecordedRequest } from "@/test/render";
 
 const ADMIN_DID = "did:webvh:QmScid:community.example:alice";
+const yes = async () => true;
 
-afterEach(async () => {
-  await forgetConsoleKey();
-  resetConsoleKeyCacheForTests();
-  vi.unstubAllGlobals();
-});
-
-/** A passkey that always says yes, so the step-up is a step and not a wall. */
-function stubAuthenticator(): void {
-  vi.stubGlobal("navigator", {
-    ...globalThis.navigator,
-    credentials: {
-      get: () =>
-        Promise.resolve({
-          id: "cred",
-          rawId: new Uint8Array([1]).buffer,
-          type: "public-key",
-          response: {
-            authenticatorData: new Uint8Array([2]).buffer,
-            clientDataJSON: new Uint8Array([3]).buffer,
-            signature: new Uint8Array([4]).buffer,
-            userHandle: null,
-          },
-        }),
-    },
-  });
-}
-
-const STEP_UP_ROUTES: MockRoute[] = [
-  {
-    method: "POST",
-    path: "/v1/auth/passkey-login/start",
-    body: { authId: "auth-1", options: { challenge: "AAAA", allowCredentials: [] } },
-  },
-  { method: "POST", path: "/v1/auth/passkey-login/finish", body: {} },
-];
-
-function consoleKeyRow(consoleDid: string, patch: Record<string, unknown> = {}) {
+function signingKey(did: string, patch: Record<string, unknown> = {}) {
   return {
-    consoleDid,
-    adminDid: ADMIN_DID,
+    signingKeyDid: did,
+    identityDid: ADMIN_DID,
+    scope: "console",
     createdAt: "2026-09-23T10:00:00Z",
+    expiresAt: "2026-10-23T10:00:00Z",
     active: true,
     ...patch,
   };
 }
 
+beforeEach(() => {
+  vi.mocked(fetchWhoami).mockResolvedValue({
+    session: { subject: ADMIN_DID },
+  } as unknown as Awaited<ReturnType<typeof fetchWhoami>>);
+});
+
+afterEach(async () => {
+  await forgetConsoleKey();
+  resetConsoleKeyCacheForTests();
+  vi.mocked(postSignedRead).mockReset();
+  vi.mocked(postSignedTrustTask).mockReset();
+  vi.mocked(postSignedWithStepUp).mockReset();
+});
+
 describe("enrolment", () => {
-  it("runs the passkey gesture first, then posts the key this browser holds", async () => {
-    stubAuthenticator();
-    const requests: RecordedRequest[] = mockFetch([
-      ...STEP_UP_ROUTES,
-      {
-        method: "POST",
-        path: "/v1/admin/console-keys",
-        status: 201,
-        body: ({ body }) =>
-          consoleKeyRow((body as { consoleDid: string }).consoleDid, {
-            label: "Work laptop",
-          }),
-      },
-    ]);
-
-    const enrolled = await enrolThisBrowser("  Work laptop  ");
-
-    // The key exists in this browser and is the one that was enrolled.
+  it("names this browser's key and the session's identity, through the bound step-up", async () => {
+    vi.mocked(postSignedWithStepUp).mockImplementation(async (_t, payload) => ({
+      signingKey: signingKey((payload as { signingKeyDid: string }).signingKeyDid, {
+        deviceLabel: "Work laptop",
+      }),
+    }));
+    const enrolled = await enrolThisBrowser("  Work laptop  ", yes);
     const held = await loadConsoleKey();
     expect(held).not.toBeNull();
-    expect(enrolled.consoleDid).toBe(held!.consoleDid);
-
-    const paths = requests.map((r) => `${r.method} ${r.url}`);
-    expect(paths).toEqual([
-      "POST /v1/auth/passkey-login/start",
-      "POST /v1/auth/passkey-login/finish",
-      "POST /v1/admin/console-keys",
-    ]);
-
-    // The gesture is what stops a stolen session leaving a signing key behind,
-    // so it must precede the write rather than follow a caught refusal.
-    const enrol = requests.at(-1)!;
-    expect(enrol.body).toEqual({
+    const [task, payload, gesture] = vi.mocked(postSignedWithStepUp).mock.calls[0]!;
+    expect(task).toBe(TASK_SIGNING_KEY_ENROLL);
+    expect(payload).toEqual({
+      signingKeyDid: held!.consoleDid,
+      identityDid: ADMIN_DID,
+      scope: "console",
+      deviceLabel: "Work laptop",
+    });
+    expect(gesture).toBe(yes);
+    expect(enrolled).toMatchObject({
       consoleDid: held!.consoleDid,
+      adminDid: ADMIN_DID,
       label: "Work laptop",
-    });
-    // There is no `adminDid` member on this surface and there must not be one:
-    // the delegation is always written against the proven caller.
-    expect(Object.keys(enrol.body as object)).not.toContain("adminDid");
-  });
-
-  it("omits an empty label rather than sending one", async () => {
-    stubAuthenticator();
-    const requests = mockFetch([
-      ...STEP_UP_ROUTES,
-      {
-        method: "POST",
-        path: "/v1/admin/console-keys",
-        status: 201,
-        body: ({ body }) => consoleKeyRow((body as { consoleDid: string }).consoleDid),
-      },
-    ]);
-    await enrolThisBrowser("   ");
-    expect(requests.at(-1)!.body).toEqual({
-      consoleDid: (await loadConsoleKey())!.consoleDid,
+      active: true,
     });
   });
 
-  it("reuses the key this browser already holds rather than minting a second", async () => {
-    stubAuthenticator();
+  it("omits an empty label, and reuses the key this browser already holds", async () => {
     const existing = await generateConsoleKey();
-    const requests = mockFetch([
-      ...STEP_UP_ROUTES,
-      {
-        method: "POST",
-        path: "/v1/admin/console-keys",
-        status: 201,
-        body: ({ body }) => consoleKeyRow((body as { consoleDid: string }).consoleDid),
-      },
-    ]);
-    const enrolled = await enrolThisBrowser();
-    expect(enrolled.consoleDid).toBe(existing.consoleDid);
-    expect((requests.at(-1)!.body as { consoleDid: string }).consoleDid).toBe(
-      existing.consoleDid,
-    );
-  });
-
-  it("does not write a delegation when the operator refuses the passkey", async () => {
-    vi.stubGlobal("navigator", {
-      ...globalThis.navigator,
-      credentials: { get: () => Promise.reject(new Error("NotAllowedError")) },
-    });
-    const requests = mockFetch([
-      ...STEP_UP_ROUTES,
-      { method: "POST", path: "/v1/admin/console-keys", status: 201, body: {} },
-    ]);
-
-    await expect(enrolThisBrowser()).rejects.toThrow();
-    expect(requests.map((r) => r.url)).not.toContain("/v1/admin/console-keys");
-  });
-
-  it("recognises the daemon's step-up refusal for what it is", async () => {
-    // A 403 here means two different things, and only the body says which:
-    // `step_up_required` is "do the ceremony and retry"; anything else is a
-    // real permission failure and retrying will not help.
-    expect(isStepUpRequired({ status: 403, message: "step_up_required" })).toBe(true);
-    expect(isStepUpRequired({ status: 403, message: "auth:step_up_required" })).toBe(
-      true,
-    );
-    expect(isStepUpRequired({ status: 403, message: "Caller is not an admin" })).toBe(
-      false,
-    );
+    vi.mocked(postSignedWithStepUp).mockResolvedValue({ signingKey: signingKey(existing.consoleDid) });
+    await enrolThisBrowser("   ", yes);
+    const payload = vi.mocked(postSignedWithStepUp).mock.calls[0]![1] as Record<string, unknown>;
+    expect(payload.signingKeyDid).toBe(existing.consoleDid);
+    expect("deviceLabel" in payload).toBe(false);
   });
 });
 
 describe("listing", () => {
-  it("returns the rows as the daemon computed them, `active` included", async () => {
-    mockFetch([
-      {
-        method: "GET",
-        path: "/v1/admin/console-keys",
-        body: {
-          consoleKeys: [
-            consoleKeyRow("did:key:zA"),
-            consoleKeyRow("did:key:zB", {
-              active: false,
-              revokedAt: "2026-09-22T09:00:00Z",
-            }),
-          ],
-        },
-      },
-    ]);
+  it("lists nothing, and sends nothing, from a browser with no key", async () => {
+    expect(await listConsoleKeys()).toEqual([]);
+    expect(postSignedRead).not.toHaveBeenCalled();
+  });
+
+  it("returns the identity's keys as the daemon computed them", async () => {
+    const key = await generateConsoleKey();
+    vi.mocked(postSignedRead).mockResolvedValue({
+      signingKeys: [signingKey(key.consoleDid), signingKey("did:key:z6MkOld", { active: false, revokedAt: "2026-09-24T00:00:00Z" })],
+    });
     const keys = await listConsoleKeys();
+    expect(vi.mocked(postSignedRead).mock.calls[0]![0]).toBe(TASK_SIGNING_KEY_LIST);
     expect(keys.map((k) => [k.consoleDid, k.active])).toEqual([
-      ["did:key:zA", true],
-      ["did:key:zB", false],
+      [key.consoleDid, true],
+      ["did:key:z6MkOld", false],
     ]);
+  });
+
+  it("lists nothing when this browser's key speaks for nobody", async () => {
+    await generateConsoleKey();
+    vi.mocked(postSignedRead).mockRejectedValue({ status: 403, code: "permissionDenied", message: "x" });
+    expect(await listConsoleKeys()).toEqual([]);
   });
 });
 
 describe("revocation", () => {
-  it("needs no second factor, and forgets the local key when it is this browser's", async () => {
-    // Requiring a gesture to *withdraw* a credential is a gate that protects
-    // the attacker. And keeping the local key after revoking it would leave a
-    // browser signing documents the daemon refuses, which an operator meets as
-    // a console that has quietly stopped working.
+  it("forgets the local key when it is this browser's, and not otherwise", async () => {
     const key = await generateConsoleKey();
-    const requests = mockFetch([
-      { method: "DELETE", path: `/v1/admin/console-keys/${encodeURIComponent(key.consoleDid)}`, body: {} },
-    ]);
-
+    vi.mocked(postSignedTrustTask).mockResolvedValue({});
+    await revokeConsoleKey("did:key:z6MkAnotherBrowser");
+    expect(await loadConsoleKey()).not.toBeNull();
     await revokeConsoleKey(key.consoleDid);
-
-    expect(requests.map((r) => r.method)).toEqual(["DELETE"]);
-    resetConsoleKeyCacheForTests();
-    expect(await loadConsoleKey()).toBeNull();
-  });
-
-  it("leaves this browser's key alone when revoking another browser's", async () => {
-    const key = await generateConsoleKey();
-    mockFetch([
-      { method: "DELETE", path: "/v1/admin/console-keys/did%3Akey%3AzOther", body: {} },
+    expect(vi.mocked(postSignedTrustTask).mock.calls[1]).toEqual([
+      TASK_SIGNING_KEY_REVOKE,
+      { signingKeyDid: key.consoleDid },
     ]);
-
-    await revokeConsoleKey("did:key:zOther");
-
-    resetConsoleKeyCacheForTests();
-    expect((await loadConsoleKey())?.consoleDid).toBe(key.consoleDid);
+    expect(await loadConsoleKey()).toBeNull();
   });
 });

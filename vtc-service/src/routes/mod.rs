@@ -580,20 +580,8 @@ fn build_api_chain(
         // here: issuing, redeeming, revoking and an administrator's listing
         // (`auth/passkey/admin-list/0.1`) are Trust Tasks served only by the
         // spine (`trust_tasks::step_up_passkey_tasks`), on every transport.
-        // Admin console signing keys (#1684) — the delegation that lets the
-        // admin SPA author signed Trust Task documents at all.
-        //
-        // Mounted **without** a Trust-Task binding: until trust-tasks-rs 0.24.5
-        // no published task family covers enrolling a signing-key delegation
-        // (`device/register/0.1` grants a device its own capabilities, which is
-        // the shape VTI-OPS-050 refuses here, and `auth/passkey/*` is WebAuthn
-        // end to end). The spec moves first; `routes/admin/console_keys.rs`
-        // records what the upstream `auth/signing-key/*` family should be.
-        .routes(routes!(
-            admin::console_keys::enrol,
-            admin::console_keys::list
-        ))
-        .routes(routes!(admin::console_keys::revoke))
+        // The console's signing keys are `auth/signing-key/*` on the spine
+        // (`trust_tasks::signing_key_tasks`), and have no route.
         // Admin invites (`vtc/admin/invites/{list,create,revoke}/0.1`) have no
         // route: each is a signed document served by the spine
         // (`trust_tasks::admin_tasks`) on every transport.
