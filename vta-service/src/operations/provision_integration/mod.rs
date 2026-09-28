@@ -988,6 +988,9 @@ async fn register_admin(
         .await?;
         return Ok(());
     }
+    if rolling_over_itself {
+        refuse_unmarked_expiring_rollover(state, client_did, context).await?;
+    }
     match super::acl::create_acl(
         &state.acl_ks,
         &state.audit,
@@ -1019,6 +1022,43 @@ async fn register_admin(
         }
         Err(e) => Err(e),
     }
+}
+
+/// Refuse an ephemeral that rolls itself over with an expiring entry and no
+/// hand-off marker, with an error that names the fix.
+///
+/// The long-term row is permanent, so an ordinary grant from an expiring caller
+/// is refused by VTI-ACL-053 anyway, but its generic text ("give it an expiry
+/// no later than yours") points the operator at the wrong remedy: the
+/// successor must be permanent, and what is missing is the granter's one-time
+/// hand-off (VTI-ACL-054). The marker is set only at creation (VTI-ACL-055),
+/// so the fix is a re-grant, and the message prints it.
+async fn refuse_unmarked_expiring_rollover(
+    state: &ProvisionIntegrationDeps,
+    client_did: &str,
+    context: &str,
+) -> Result<(), AppError> {
+    let Some(entry) = get_acl_entry(&state.acl_ks, client_did).await? else {
+        return Ok(());
+    };
+    let Some(expires_at) = entry.expires_at else {
+        return Ok(());
+    };
+    // Re-grant exactly the scope it holds; an unrestricted admin takes no
+    // `--contexts`, and a row authorized nowhere is shown the context it
+    // asked to provision into.
+    let contexts = match entry.act_scope() {
+        vti_common::acl::ActScope::Contexts(cs) => format!(" --contexts {}", cs.join(",")),
+        vti_common::acl::ActScope::All => String::new(),
+        vti_common::acl::ActScope::None => format!(" --contexts {context}"),
+    };
+    Err(AppError::Forbidden(format!(
+        "{client_did}'s entry expires at {expires_at} and carries no one-time hand-off, so \
+         it cannot roll over to the permanent long-term admin (VTI-ACL-053, VTI-ACL-054). \
+         The hand-off is set only when the entry is created — re-grant it, then retry: \
+         `pnm acl delete --did {client_did}` then `pnm acl create --did {client_did} \
+         --role admin{contexts} --expires 1h --handoff`"
+    )))
 }
 
 /// Retire the ephemeral `client_did`'s ACL row after the VTA has rolled
@@ -2903,6 +2943,22 @@ mod tests {
         assert!(
             matches!(&err, AppError::Forbidden(m) if m.contains("VTI-ACL-053")),
             "{err:?}"
+        );
+        // The refusal names the fix — the missing one-time hand-off, re-granted
+        // at creation — not the generic "give it an expiry" (#1738's bound).
+        let AppError::Forbidden(msg) = &err else {
+            unreachable!()
+        };
+        assert!(msg.contains("VTI-ACL-054"), "{msg}");
+        assert!(
+            msg.contains(&format!("pnm acl delete --did {client_did}")),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(&format!(
+                "pnm acl create --did {client_did} --role admin --contexts ctx-eph --expires 1h --handoff"
+            )),
+            "{msg}"
         );
 
         let kept = crate::acl::get_acl_entry(&deps.acl_ks, &client_did)
