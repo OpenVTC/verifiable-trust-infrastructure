@@ -7534,7 +7534,7 @@ dependencies = [
  "aes-gcm 0.10.3",
  "aes-kw",
  "argon2 0.5.3",
- "base64 0.21.7",
+ "base64 0.22.1",
  "bitfields",
  "block-padding 0.3.3",
  "blowfish",
@@ -7878,6 +7878,8 @@ dependencies = [
 [[package]]
 name = "predicate-credential-system"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca56c675955e5b667c886572087f32f61687e51ec62843b3f32b296b87f472d8"
 dependencies = [
  "ark-bls12-381",
  "ark-ec",
@@ -9099,7 +9101,7 @@ checksum = "7bd22781911de0ca6debda95f073c8f18bec65d1a94f1fa9573f3102e514cea4"
 dependencies = [
  "ahash",
  "annotate-snippets",
- "base64 0.21.7",
+ "base64 0.22.1",
  "encoding_rs_io",
  "getrandom 0.3.4",
  "granit-parser",

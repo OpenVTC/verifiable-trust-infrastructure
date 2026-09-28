@@ -33,8 +33,7 @@ members = [
   "vti-secrets",
   "vti-webauthn",
   # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: `publish = false`,
-  # reached only from `vtc-service`'s off-by-default `vetting-pcs` feature. The
-  # library it builds on is vendored; see `vendor/PROVENANCE.md`.
+  # reached only from `vtc-service`'s off-by-default `vetting-pcs` feature.
   "vti-vetting-pcs",
 ]
 # `vta-mobile-core` is a UniFFI client crate that cross-compiles to Android/iOS.
@@ -71,10 +70,6 @@ default-members = [
 ]
 exclude = [
   "deploy/nitro/enclave-proxy",
-  # Vendored third-party crate, kept verbatim (`vendor/PROVENANCE.md`). A path
-  # dependency, never a member: as a member its criterion dev-dependency would
-  # build on every workspace test run and its `[profile]` would be ignored.
-  "vendor/predicate-credential-system",
 ]
 resolver = "3"
 

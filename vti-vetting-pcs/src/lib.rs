@@ -9,7 +9,7 @@
 //! corrections applied. `vetter`/`applicant` engines are not here: they belong to the member
 //! side (the VTA), and live on the openvtc branch.
 //!
-//! Development branch. The library it builds on is vendored (`vendor/PROVENANCE.md`).
+//! Development branch.
 
 pub mod community;
 pub mod error;

@@ -291,9 +291,9 @@ jobs:
       # invisible to every job here. That is the workspace's own "green and
       # wrong" failure mode with a feature flag in front of it.
       #
-      # It builds on a runner: `predicate-credential-system` is vendored and
-      # tracked, and `vti-vetting-pcs` is a path dependency, so nothing here
-      # reaches an unpublished registry.
+      # `predicate-credential-system` is published (crates.io); `vti-vetting-pcs`
+      # is a path dependency within this workspace, so this job needs no
+      # special network or registry allowance.
       - name: hidden vetting (vetting-pcs)
         run: |
           cargo clippy -p vtc-service --features vetting-pcs --all-targets -- -D warnings

@@ -6,17 +6,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Development branch `zkp-pcs`. It depends on a vendored path crate, so it could
-# not be published even if we wanted to; `vendor/PROVENANCE.md` says what ends
-# that. `vtc-service` is `publish = false` too, so nothing in the release train
-# is affected.
+# Development branch `zkp-pcs`. `vtc-service` is `publish = false` too, so
+# nothing in the release train is affected.
 publish = false
 
 [dependencies]
-# Vendored, temporarily: see `vendor/PROVENANCE.md`.
-predicate-credential-system = { version = "0.1.0", path = "../vendor/predicate-credential-system", features = [
-  "serde",
-] }
+predicate-credential-system = { version = "0.1", features = ["serde"] }
 ark-bls12-381 = { version = "0.6.0", default-features = false, features = ["curve", "std"] }
 ark-ec = { version = "0.6.0", default-features = false, features = ["std"] }
 ark-ff = { version = "0.6.0", default-features = false, features = ["std"] }
