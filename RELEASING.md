@@ -156,8 +156,43 @@ nothing, because every version is already on crates.io.
 
 ### 3. If it fails partway
 
-Re-run the job. Publishing is idempotent — crates already at that version are
-skipped, so a re-run resumes rather than duplicating.
+**Read the `Release-plz release` job's log after every Release PR merge** — a
+run that stops partway publishes some crates and not others, and nothing else
+tells you. Publishing is idempotent (crates already at that version are
+skipped), so a later run resumes rather than duplicating — but only once the
+cause is fixed. Re-running unchanged repeats the same failure.
+
+Two causes have halted a release, both on #1795:
+
+- **A versioned dev-only dependency on a sibling.** `cargo publish` resolves it
+  against crates.io, and the release publishes in *normal*-dependency order, so
+  the sibling may not be there yet. Make it path-only (#1805); CI's
+  `check-release-bump-sizes.py` now refuses the versioned form.
+- **API that landed after the release was cut.** A crate is packaged from
+  `main`, so if a later merge made it depend on a sibling change that no
+  published version carries (#1803's `AppConfig.fjall`), it fails tarball
+  verification. The next Release PR bumps the changed sibling; merge it and the
+  run resumes.
+
+A half-finished release can also break what is *already* published: crates
+that did go out may be ones an older dependent resolves by caret. See the next
+section.
+
+### 4. A dependency move is a breaking bump
+
+When a Release PR moves a crate's requirement on a sibling to a new
+compatibility range (`vti-common = "^0.27"` → `"^0.29"`), that crate must take a
+breaking bump itself (0.3.25 → 0.4.0, not 0.3.26). release-plz derives a patch
+here, and cargo-semver-checks cannot see it — it compares a crate's own API, not
+what the crate depends on. But every published crate that asks for this one by
+caret would take the patch and, with it, a second copy of the sibling: that is
+how vta-audit 0.3.26 and vta-support 0.5.7 made vta-service 0.44.0 unbuildable
+from a fresh resolve.
+
+CI's `check-release-bump-sizes.py` fails the Release PR when this happens and
+names the crate. Fix it in the Release PR: raise that crate to the next breaking
+version and update its dependents' requirements (`check-workspace-version-reqs.py`
+points at any you miss).
 
 ---
 
