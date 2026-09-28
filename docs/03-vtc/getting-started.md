@@ -104,7 +104,8 @@ pnm acl create \
     --did "did:key:z6Mk..." \
     --role admin \
     --contexts mycommunity \
-    --expires 1h
+    --expires 1h \
+    --handoff
 ```
 
 Press Enter in the VTC setup wizard. Now that the ephemeral key is

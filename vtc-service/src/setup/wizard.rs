@@ -1874,7 +1874,7 @@ fn print_acl_step(inputs: &WizardInputs, setup_key: &EphemeralSetupKey) {
     println!("  If the context already exists, grant admin access to the ephemeral DID instead:");
     println!();
     println!(
-        "  pnm acl create --did {} \\\n    --role admin --contexts {} --expires 1h",
+        "  pnm acl create --did {} \\\n    --role admin --contexts {} --expires 1h --handoff",
         setup_key.did, inputs.context,
     );
     println!();
