@@ -805,6 +805,16 @@ jobs:
       # here, expensive anywhere else. See the script header.
       - name: Workspace version requirements agree
         run: python3 scripts/check-workspace-version-reqs.py
+      # Fourth: what a release must never publish. A versioned dev-only
+      # dependency on a sibling halts the release partway (it must already be
+      # on crates.io, and publishing orders by normal dependencies only), and a
+      # crate that moves a sibling's compatibility range under a patch bump
+      # breaks every published dependent that asks for it by caret. Both hit
+      # the same release (#1795) and left vta-service 0.44.0 unbuildable from a
+      # fresh resolve. The second rule only has work on a Release PR; on any
+      # other PR every version is already published. See the script header.
+      - name: Release bump sizes and dev-dependency versions
+        run: python3 scripts/check-release-bump-sizes.py
 
   authz-context-types:
     # An approver's device chooses which approval card to render by
