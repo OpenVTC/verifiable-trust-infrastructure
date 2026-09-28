@@ -185,6 +185,7 @@ pub(crate) async fn run_rest_attempt_full_setup(
         &client,
         &setup_did,
         vta_did,
+        &ask.context,
         Some(
             crate::protocols::provision_integration_management::ProvisionSpecVersion::CURRENT
                 .request_uri(),
@@ -395,6 +396,7 @@ pub(crate) async fn run_rest_attempt_admin_rotated(
         &client,
         &setup_did,
         vta_did,
+        &ask.context,
         Some(
             crate::protocols::provision_integration_management::ProvisionSpecVersion::CURRENT
                 .request_uri(),
