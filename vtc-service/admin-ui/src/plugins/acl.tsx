@@ -12,7 +12,7 @@ import {
 } from "@tanstack/react-query";
 import { Copy, Mail, Pencil, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
 
-import { deleteJson, getJson, postJson } from "@/lib/api";
+import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import {
   fetchAclPage,
   grantAcl,
@@ -21,11 +21,15 @@ import {
   type AclGrantRequest,
   type AclListResponse,
 } from "@/lib/acl";
-import { explainConsent, gestureFromConfirm, type ConfirmGesture } from "@/lib/signed-act";
+import {
+  explainConsent,
+  gestureFromConfirm,
+  postSignedWithStepUp,
+  type ConfirmGesture,
+} from "@/lib/signed-act";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Field } from "@/components/Field";
 import { formatIso, shorten, shortenDid } from "@/lib/format";
-import { stepUpSession } from "@/lib/step-up";
 import { useToast } from "@/lib/toast";
 import { SessionTimeoutCard } from "@/plugins/SessionTimeoutCard";
 
@@ -88,36 +92,27 @@ interface CreateInviteRequest {
 }
 
 async function fetchInvites(): Promise<InvitesListResponse> {
-  return getJson<InvitesListResponse>("/v1/admin/invites", {
-    trustTask: TRUST_TASK_INVITES_LIST,
-  });
-}
-
-async function createInvite(
-  req: CreateInviteRequest,
-): Promise<CreateInviteResponse> {
-  return postJson<CreateInviteResponse>("/v1/admin/invites", req, {
-    trustTask: TRUST_TASK_INVITES_CREATE,
-  });
+  return postSignedRead<InvitesListResponse>(TRUST_TASK_INVITES_LIST, {});
 }
 
 /**
- * Invite someone who is not an admin yet. The entry the invite writes is an
- * unrestricted admin, so it costs what `acl/grant` of one costs: a live step-up
- * — taken first, so the gesture is tied to this click — and another admin's
+ * Mint an admin invite, a signed document. Inviting someone who is not an
+ * admin yet writes an unrestricted admin entry, so it costs what `acl/grant`
+ * of one costs: a passkey gesture bound to this invite — asked for with
+ * `confirmGesture` when the VTC refuses for want of one — and another admin's
  * consent (VTI-APV-014).
  */
-async function inviteNewAdmin(
+async function createInvite(
   req: CreateInviteRequest,
+  confirmGesture: ConfirmGesture,
 ): Promise<CreateInviteResponse> {
-  await stepUpSession();
-  return explainConsent(createInvite(req));
+  return explainConsent(
+    postSignedWithStepUp<CreateInviteResponse>(TRUST_TASK_INVITES_CREATE, req, confirmGesture),
+  );
 }
 
 async function revokeInvite(jti: string): Promise<void> {
-  await deleteJson<unknown>(`/v1/admin/invites/${encodeURIComponent(jti)}`, {
-    trustTask: TRUST_TASK_INVITES_REVOKE,
-  });
+  await postSignedTrustTask<unknown>(TRUST_TASK_INVITES_REVOKE, { jti });
 }
 
 export function Acl() {
@@ -296,6 +291,7 @@ function InvitesPanel() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
+  const confirmGesture = gestureFromConfirm(confirm);
   const [showCreate, setShowCreate] = useState(false);
   const [regenerated, setRegenerated] = useState<CreateInviteResponse | null>(
     null,
@@ -321,7 +317,7 @@ function InvitesPanel() {
       // existing invite intact — the operator can retry without
       // losing access to a working URL. Only after the new invite
       // is in hand do we revoke the old one.
-      const fresh = await createInvite({ did: args.targetDid });
+      const fresh = await createInvite({ did: args.targetDid }, confirmGesture);
       try {
         await revokeInvite(args.oldJti);
       } catch (err) {
@@ -529,9 +525,10 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
   const [issued, setIssued] = useState<CreateInviteResponse | null>(null);
   const toast = useToast();
   const queryClient = useQueryClient();
+  const confirmGesture = gestureFromConfirm(useConfirm());
 
   const mutation = useMutation({
-    mutationFn: inviteNewAdmin,
+    mutationFn: (req: CreateInviteRequest) => createInvite(req, confirmGesture),
     onSuccess: (resp) => {
       // Refresh the list + ACL tables in the background so the new
       // row shows up after the operator dismisses the success card.

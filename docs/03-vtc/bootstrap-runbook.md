@@ -74,7 +74,8 @@ vtc --config /srv/vtc/config.toml admin invite --did <admin DID>
 a claim through it always leaves a DID that can sign in. `--ttl <seconds>`
 changes the default 900. It needs the daemon stopped because it opens the store
 directly. Once an admin exists, invite further admins from the running console
-(**Access control → Invite**) or with `POST /v1/admin/invites`.
+(**Access control → Invite**) or with a signed `vtc/admin/invites/create/0.1`
+document, sent over any transport the VTC serves.
 
 > **Claim before you add any other admin.** `POST /v1/admin/bootstrap` refuses
 > with `409` once *any* admin ACL entry exists, and the install page treats

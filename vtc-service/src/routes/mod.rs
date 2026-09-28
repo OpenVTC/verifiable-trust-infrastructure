@@ -2,10 +2,10 @@ pub(crate) mod acl;
 pub(crate) mod admin;
 #[cfg(feature = "admin-ui")]
 mod admin_ui;
-mod audit;
+pub(crate) mod audit;
 pub mod auth;
 pub(crate) mod backup;
-mod ceremonies;
+pub(crate) mod ceremonies;
 pub(crate) mod community;
 pub(crate) mod credential_exchange;
 pub(crate) mod did_log;
@@ -13,15 +13,15 @@ pub(crate) mod directory;
 pub(crate) mod endorsement_types;
 pub(crate) mod endorsements;
 pub(crate) mod git_ns;
-mod health;
+pub(crate) mod health;
 pub(crate) mod install;
 pub(crate) mod invitations;
 pub mod join_requests;
 pub(crate) mod members;
 pub(crate) mod policies;
 pub mod recognise;
-mod recognition_admin;
-mod registry_admin;
+pub(crate) mod recognition_admin;
+pub(crate) mod registry_admin;
 pub(crate) mod relationships;
 pub(crate) mod rooms;
 mod schemas;
@@ -88,6 +88,8 @@ use crate::server::AppState;
         policies::read::PolicyStatusFilter,
         crate::git_ns::admin_reads::GitNsNamespaceList,
         crate::git_ns::admin_reads::GitNsRepoList,
+        // A repository's drift, as `git-ns/view/0.5`'s `repos[].sync` carries it.
+        vta_sdk::openapi::GitNsView01DriftItem,
         acl::AclListResponse,
         acl::AclEntryEnvelope,
         vta_sdk::openapi::VetterList01Payload,
@@ -95,6 +97,23 @@ use crate::server::AppState;
         endorsement_types::RegisterBody,
         endorsement_types::RegisterResponse,
         vta_sdk::openapi::EndorsementTypeDelete01Response,
+        // The operational verbs the console signs (`trust_tasks::admin_tasks`).
+        health::DiagnosticsResponse,
+        vta_sdk::openapi::RegistrySyncJobsList01Response,
+        vta_sdk::openapi::RegistrySyncJobsRetry01Response,
+        vta_sdk::openapi::RegistrySyncJobsDiscard01Response,
+        vta_sdk::openapi::RegistryRecordsList01Response,
+        audit::AuditListResponse,
+        crate::config_store::EffectiveConfig,
+        admin::config::PatchResponse,
+        admin::config::ReloadResponse,
+        admin::config::RestartResponse,
+        admin::invites::ListInvitesResponse,
+        admin::invites::CreateInviteRequest,
+        admin::invites::CreateInviteResponse,
+        admin::invites::RevokeInviteResponse,
+        auth::SessionListResponse,
+        auth::RevokeSessionResponse,
     )),
 )]
 pub struct ApiDoc;
@@ -379,32 +398,6 @@ fn build_api_chain(
     // the POST task on the shared mount.
 
     let api = OpenApiRouter::<AppState>::new()
-        .routes(tt(
-            routes!(health::diagnostics),
-            "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1",
-        ))
-        // The reconciler's operator surface. Admin-gated, not super-admin: the
-        // same on-call staff who read `diagnostics` are the ones who act on it,
-        // and a queue you can see but not clear is what this family was added
-        // to fix. `retry` and `discard` share the eligibility rule with the
-        // offline `vtc sync-jobs` CLI, which remains the break-glass path for a
-        // daemon that will not start.
-        .routes(tt(
-            routes!(registry_admin::sync_jobs_list),
-            "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1",
-        ))
-        .routes(tt(
-            routes!(registry_admin::sync_jobs_retry),
-            "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1",
-        ))
-        .routes(tt(
-            routes!(registry_admin::sync_jobs_discard),
-            "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1",
-        ))
-        .routes(tt(
-            routes!(registry_admin::records_list),
-            "https://trusttasks.org/spec/vtc/registry/records/list/0.1",
-        ))
         // The administrator's read surface over the git namespaces — the
         // admin console's Repos plugin. Mutations are not here: each is a
         // signed `git-ns/*` Trust Task, authorized by the signer's git rights,
@@ -417,14 +410,14 @@ fn build_api_chain(
         // They stay behind the admin session (and, for `activity`, any
         // session, narrowed to the namespaces the caller administers).
         //
-        // The administrator's view, the namespace and repository listings
-        // and the break-glass list have no route: they are the signed
-        // `git-ns/view/0.5`, `git-ns/namespace/list/0.1` and
+        // The administrator's view, the namespace and repository listings,
+        // the break-glass list and each repository's drift have no route:
+        // they are the signed `git-ns/view/0.5` (`scope: administrator`, whose
+        // `repos[].sync` carries the drift), `git-ns/namespace/list/0.1` and
         // `git-ns/repo/list/0.1`, answered to a namespace's administrators
         // on the document endpoint (`git_ns::admin_reads`).
         .routes(routes!(git_ns::rights_list))
         .routes(routes!(git_ns::issued_by_departed))
-        .routes(routes!(git_ns::drift_list))
         .routes(routes!(git_ns::jobs_list))
         .routes(routes!(git_ns::projection_show))
         .routes(routes!(git_ns::accounts_list))
@@ -439,24 +432,12 @@ fn build_api_chain(
         // session-management endpoints below are authenticated and
         // stay on the main chain.
         //
-        // The listing and the two revocations each carry their own task. The
-        // revocation by subject (`DELETE /auth/sessions?did=`) had borrowed
-        // `sessions/list`, and so claimed a listing's response for a
-        // revocation. `revoke-session/0.2` is the task that names both forms —
-        // one `sessionId`, or every session of a `subject` — and its response
-        // is the `revokedCount` both answer with.
-        .routes(tt(
-            routes!(auth::session_list),
-            "https://trusttasks.org/spec/auth/sessions/list/0.1",
-        ))
-        .routes(tt(
-            routes!(auth::revoke_sessions_by_did),
-            "https://trusttasks.org/spec/auth/revoke-session/0.2",
-        ))
-        .routes(tt(
-            routes!(auth::revoke_session),
-            "https://trusttasks.org/spec/auth/revoke-session/0.2",
-        ))
+        // The session listing and revocation are the signed
+        // `auth/sessions/list/0.1` and `auth/revoke-session/0.2`, served by the
+        // spine (`trust_tasks::admin_tasks`) on every transport; neither has a
+        // route. `whoami` describes the bearer session the request carries,
+        // which a signed document does not have, so it stays with the session
+        // surface.
         .routes(tt(
             routes!(auth::whoami),
             "https://trusttasks.org/spec/auth/whoami/0.1",
@@ -468,11 +449,9 @@ fn build_api_chain(
         // answers `204`. It carries no binding, and goes when the cookie
         // session does.
         .routes(routes!(auth::sign_out))
-        // Audit log read (super-admin only).
-        .routes(tt(
-            routes!(audit::list_audit),
-            "https://trusttasks.org/spec/audit/list/0.1",
-        ))
+        // Audit log (super-admin only). `audit/list` is a signed document
+        // only; `audit/verify` is served there too, and keeps this route while
+        // `vtc-client`'s `audit_verify` calls it.
         .routes(tt(
             routes!(audit::verify_audit_chain),
             "https://trusttasks.org/spec/audit/verify/0.1",
@@ -523,30 +502,9 @@ fn build_api_chain(
             community::join_discovery::get_join_discovery,
             community::join_discovery::put_join_discovery
         ))
-        // Admin config (M0.8). GET and PATCH share a path but carry
-        // *separate* canonical tasks — `task_routes` layers the method
-        // router and axum merges same-path routers per method, so each
-        // verb enforces its own URI (pinned by
-        // `vti_common::trust_task::openapi` tests).
-        .routes(tt(
-            routes!(admin::config::get_config),
-            "https://trusttasks.org/spec/config/show/0.1",
-        ))
-        .routes(tt(
-            routes!(admin::config::patch_config),
-            "https://trusttasks.org/spec/config/patch/0.1",
-        ))
-        // Reload + restart (M0.8.3). Reload applies hot-reloadable
-        // settings in-place; restart requires a supervisor (412
-        // `SupervisorRequired` otherwise).
-        .routes(tt(
-            routes!(admin::config::reload_config),
-            "https://trusttasks.org/spec/config/reload/0.1",
-        ))
-        .routes(tt(
-            routes!(admin::config::restart_config),
-            "https://trusttasks.org/spec/config/restart/0.1",
-        ))
+        // The runtime configuration (`config/{show,patch,reload,restart}/0.1`)
+        // has no route: each is a signed document served by the spine
+        // (`trust_tasks::admin_tasks`) on every transport.
         // Export / import (`vtc/config/{export,import}/0.1`) have no route
         // here: both declare `proof` REQUIRED and are served only as signed
         // documents at `POST /v1/trust-tasks` (#1641 phase 2, batch 3). Their
@@ -620,30 +578,9 @@ fn build_api_chain(
             admin::console_keys::list
         ))
         .routes(routes!(admin::console_keys::revoke))
-        // Admin invites — REST mirror of `vtc admin invite`. GET +
-        // POST share the same mount; DELETE on `/admin/invites/{jti}`
-        // revokes outstanding (Issued) invites. Consumed rows are
-        // immutable (audit history) — DELETE on those returns 409.
-        // Split per method (was one `admin/invites/manage` task over both
-        // verbs). "Enumerate the invites" and "mint a credential-bearing
-        // install URL" are different contracts with different exposure, so
-        // they get different Trust Tasks. Same path, different methods —
-        // `task_routes` layers the *method* router and axum merges same-path
-        // method routers per method, so each verb enforces its own task
-        // (pinned by `vti_common::trust_task::openapi::
-        // per_method_tasks_on_one_path_are_enforced_independently`).
-        .routes(tt(
-            routes!(admin::invites::list_invites),
-            "https://trusttasks.org/spec/vtc/admin/invites/list/0.1",
-        ))
-        .routes(tt(
-            routes!(admin::invites::create_invite),
-            "https://trusttasks.org/spec/vtc/admin/invites/create/0.1",
-        ))
-        .routes(tt(
-            routes!(admin::invites::revoke_invite),
-            "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1",
-        ))
+        // Admin invites (`vtc/admin/invites/{list,create,revoke}/0.1`) have no
+        // route: each is a signed document served by the spine
+        // (`trust_tasks::admin_tasks`) on every transport.
         // A self-hosted community's own DID log (Keyring VTI-35). The task a
         // DID owner sends a DID host, answered for the one DID this community
         // hosts — see `admin::did_register`.
@@ -1433,17 +1370,12 @@ mod openapi_tests {
     use super::*;
 
     #[test]
-    fn openapi_spec_documents_the_migrated_route_and_security_scheme() {
+    fn openapi_spec_documents_the_bearer_scheme_and_the_signed_verbs_shapes() {
         let spec = openapi_spec();
         assert_eq!(spec.info.title, "Verifiable Trust Community (VTC) API");
-        // The migrated route is nested under the /v1 API mount.
-        let diag = spec
-            .paths
-            .paths
-            .get("/v1/health/diagnostics")
-            .expect("/v1/health/diagnostics must be documented");
-        assert!(diag.get.is_some(), "diagnostics documents a GET operation");
-        // The bearer scheme + the response schema are present.
+        // The bearer scheme is present, and the response schema of a verb
+        // served only as a signed document is still published: the console's
+        // wire types are generated from it.
         let components = spec.components.as_ref().expect("components present");
         assert!(components.security_schemes.contains_key("bearer_jwt"));
         assert!(
@@ -1458,11 +1390,8 @@ mod openapi_tests {
         let paths = &spec.paths.paths;
         // A representative path (all nested under /v1) from each major group.
         for p in [
-            "/v1/audit",
+            "/v1/audit/verify",
             "/v1/auth/challenge",
-            "/v1/auth/sessions",
-            "/v1/admin/config",
-            "/v1/admin/invites",
             "/v1/admin/passkeys",
             "/v1/members",
             "/v1/members/{did}",
@@ -1480,8 +1409,8 @@ mod openapi_tests {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
         }
         assert!(
-            paths.len() >= 55,
-            "expected the documented surface to be >= 55 paths, got {}",
+            paths.len() >= 45,
+            "expected the documented surface to be >= 45 paths, got {}",
             paths.len()
         );
     }
@@ -1503,6 +1432,20 @@ mod openapi_tests {
             "/v1/vetting/vetters/list",
             "/v1/join-requests/manifest",
             "/v1/join-requests/{id}/status",
+            "/v1/health/diagnostics",
+            "/v1/registry/sync-jobs",
+            "/v1/registry/sync-jobs/retry",
+            "/v1/registry/sync-jobs/discard",
+            "/v1/registry/records",
+            "/v1/audit",
+            "/v1/admin/config",
+            "/v1/admin/config/reload",
+            "/v1/admin/config/restart",
+            "/v1/admin/invites",
+            "/v1/admin/invites/{jti}",
+            "/v1/auth/sessions",
+            "/v1/auth/sessions/{session_id}",
+            "/v1/git-ns/drift",
         ] {
             assert!(!paths.contains_key(p), "{p} is a signed document only");
         }

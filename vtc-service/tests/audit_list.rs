@@ -1,10 +1,12 @@
-//! Integration coverage for `GET /v1/audit` — canonical
-//! `spec/audit/list/0.1` (phase 2b(ii)).
+//! Integration coverage for the signed `spec/audit/list/0.1` document
+//! (phase 2b(ii)).
 //!
 //! What matters here is not the URI swap but the three things the
 //! repoint introduced: the canonical response/envelope shape, filters
 //! that are actually applied (rather than accepted and ignored), and a
 //! cursor that refuses to be reused under a different filter set.
+
+mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -33,8 +35,10 @@ async fn build() -> Fixture {
     }
 }
 
-async fn super_admin_token(fix: &Fixture) -> String {
-    fix.vtc.token("did:key:z6MkAdmin", "admin", vec![]).await
+/// Who a `list` call is signed by: `"admin"` for an unrestricted
+/// administrator, anything else for a member.
+async fn super_admin_token(_fix: &Fixture) -> String {
+    "admin".into()
 }
 
 async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
@@ -45,20 +49,27 @@ async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
     (status, v)
 }
 
-async fn list(fix: &Fixture, token: &str, query: &str) -> (StatusCode, Value) {
-    let uri = if query.is_empty() {
-        "/v1/audit".to_string()
+/// `audit/list/0.1` signed by the party `who` names, with the filters in
+/// `query` (`a=b&c=d`, as the bearer route read them) as the payload: the
+/// reply's status and payload.
+async fn list(fix: &Fixture, who: &str, query: &str) -> (StatusCode, Value) {
+    let mut payload = serde_json::Map::new();
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = pair.split_once('=').expect("key=value");
+        let v = match k {
+            "pageSize" => json!(v.parse::<u64>().unwrap()),
+            _ => json!(v),
+        };
+        payload.insert(k.to_string(), v);
+    }
+    let party = if who == "admin" {
+        common::signed::admin(&fix.vtc).await
     } else {
-        format!("/v1/audit?{query}")
+        common::signed::party_with_role(&fix.vtc, vtc_service::acl::VtcRole::Member, &[]).await
     };
-    let req = Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("Trust-Task", LIST_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+    let (status, doc) =
+        common::signed::call(&fix.vtc, &party, LIST_TASK, Value::Object(payload)).await;
+    (status, doc["payload"].clone())
 }
 
 /// Emit real `CommunityProfileUpdated` envelopes through the live document
@@ -166,11 +177,12 @@ async fn entry_hash_and_audit_verify_head_agree() {
     let (_, list_body) = list(&fix, &token, "").await;
     let newest = list_body["entries"][0]["entryHash"].as_str().unwrap();
 
+    let bearer = fix.vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
     let req = Request::builder()
         .method("GET")
         .uri("/v1/audit/verify")
         .header("Trust-Task", "https://trusttasks.org/spec/audit/verify/0.1")
-        .header("Authorization", format!("Bearer {token}"))
+        .header("Authorization", format!("Bearer {bearer}"))
         .body(Body::empty())
         .unwrap();
     let (_, verify_body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
@@ -250,13 +262,12 @@ async fn unsupported_filters_are_refused_not_ignored() {
     for q in ["outcome=denied", "contextId=ctx-1"] {
         let (status, body) = list(&fix, &token, q).await;
         assert_eq!(
-            status,
-            StatusCode::BAD_REQUEST,
+            body["code"], "malformedRequest",
             "{q} must be refused, got {status}: {body}"
         );
         // The refusal has to name the offending filter, or an operator
         // cannot tell which of their filters this maintainer dropped.
-        let msg = body["error"].as_str().unwrap_or_default();
+        let msg = body["message"].as_str().unwrap_or_default();
         let named = q.split('=').next().unwrap();
         assert!(msg.contains(named), "error should name `{named}`: {body}");
     }
@@ -324,7 +335,6 @@ async fn truncated_reflects_matching_entries_not_raw_rows() {
 #[tokio::test]
 async fn non_super_admin_is_refused() {
     let fix = build().await;
-    let token = fix.vtc.token("did:key:z6MkReader", "reader", vec![]).await;
-    let (status, _) = list(&fix, &token, "").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (_, body) = list(&fix, "member", "").await;
+    assert_eq!(body["code"], "permissionDenied", "{body}");
 }

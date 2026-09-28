@@ -1,5 +1,5 @@
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -17,17 +17,18 @@ use vta_sdk::protocols::auth::{
     epoch_to_rfc3339,
 };
 
-use crate::acl::{Role, get_acl_entry, is_acl_entry_visible, list_acl_entries, resolve_auth_role};
+use crate::acl::{Role, get_acl_entry, resolve_auth_role};
+use crate::auth::AuthClaims;
 use crate::auth::session::{
     Session, SessionState, delete_session, get_session, list_sessions, now_epoch,
     store_refresh_index, store_session,
 };
-use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::error::{AppError, TaskError};
-use crate::routes::acl::as_vti_acl_entry;
 use crate::server::AppState;
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, AuthSteppedUpData, SessionRevokedData, SignedOutData};
+use vti_common::audit::{
+    AuditEvent, AuthSteppedUpData, SessionRevocationRefusedData, SessionRevokedData, SignedOutData,
+};
 use vti_common::store::KeyspaceHandle;
 
 // ---------- POST /auth/challenge ----------
@@ -1436,31 +1437,6 @@ async fn try_refresh_trust_task(
     Ok(Some(resp))
 }
 
-// ---------- GET /auth/sessions ----------
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct SessionSummary {
-    pub session_id: String,
-    pub did: String,
-    pub state: SessionState,
-    pub created_at: u64,
-    pub refresh_expires_at: Option<u64>,
-}
-
-impl From<Session> for SessionSummary {
-    fn from(s: Session) -> Self {
-        Self {
-            session_id: s.session_id,
-            did: s.did,
-            state: s.state,
-            created_at: s.created_at,
-            refresh_expires_at: s.refresh_expires_at,
-        }
-    }
-}
-
 // ---------- GET /auth/whoami ----------
 
 /// Wire shape returned by `whoami`. Minimal: enough for the admin
@@ -1621,102 +1597,179 @@ pub async fn sign_out(
     Ok(response)
 }
 
-/// `GET /v1/auth/sessions` — list active sessions visible to the caller.
-/// Super-admin sees all; context-admin sees only sessions in their contexts.
-#[utoipa::path(
-    get, path = "/auth/sessions", tag = "auth",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Active sessions", body = [SessionSummary]),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin/initiator"),
-    ),
-)]
-pub async fn session_list(
-    auth: ManageAuth,
-    State(state): State<AppState>,
-) -> Result<Json<Vec<SessionSummary>>, AppError> {
-    let sessions = state.sessions_ks.clone();
-    let all = list_sessions(&sessions).await?;
-
-    // A super-admin sees the whole roster; a context-admin must only see
-    // sessions whose subject DID is an ACL entry visible to them (overlapping
-    // contexts). Build the visible-DID set once from the ACL rather than doing
-    // a per-session lookup. A session whose subject has no ACL entry (e.g. the
-    // entry was deleted out from under it) is visible only to a super-admin.
-    let summaries: Vec<SessionSummary> = if auth.0.is_super_admin() {
-        all.into_iter().map(SessionSummary::from).collect()
-    } else {
-        let acl = state.acl_ks.clone();
-        let visible: std::collections::HashSet<String> = list_acl_entries(&acl)
-            .await?
-            .into_iter()
-            .filter(|e| is_acl_entry_visible(&auth.0, &as_vti_acl_entry(e)))
-            .map(|e| e.did)
-            .collect();
-        all.into_iter()
-            .filter(|s| visible.contains(&s.did))
-            .map(SessionSummary::from)
-            .collect()
-    };
-    info!(caller = %auth.0.did, count = summaries.len(), "sessions listed");
-    Ok(Json(summaries))
+/// `auth/sessions/list/0.1#response` — the sessions the caller may see.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionListResponse {
+    /// Newest first (`issuedAt` descending), as the specification recommends.
+    pub sessions: Vec<SessionView>,
 }
 
-// ---------- DELETE /auth/sessions/{session_id} ----------
+/// When `session` stops being usable, as [`crate::auth::session`]'s sweeper
+/// reckons it: a REST session at its refresh token's deadline, an intrinsic
+/// (DIDComm / TSP) session a day after it was last seen.
+fn session_expiry(session: &Session) -> u64 {
+    if session.refresh_token.is_none() && session.session_id == session.did {
+        session.last_seen.max(session.created_at)
+            + vti_common::auth::session::INTRINSIC_SESSION_IDLE_TTL_SECS
+    } else {
+        session.refresh_expires_at.unwrap_or(session.created_at)
+    }
+}
 
-/// `DELETE /v1/auth/sessions/{session_id}` — revoke one session
-/// (`auth/revoke-session/0.2`, the `sessionId` form).
+/// `auth/sessions/list/0.1` — the live sessions `actor` may see: its own, and
+/// those of every subject whose access it could withdraw
+/// ([`may_end_sessions_of`], the `acl/revoke` check). The authority is the
+/// revocation's, so an administrator is shown exactly the sessions it can end:
+/// a context admin sees neither an unrestricted admin's sessions nor those of
+/// an admin whose scope reaches past its own, and a session whose subject has
+/// no ACL entry is visible only to an unrestricted admin.
+pub(crate) async fn list_sessions_for(
+    state: &AppState,
+    actor: &AuthClaims,
+) -> Result<SessionListResponse, AppError> {
+    let now = now_epoch();
+    let mut visible = std::collections::HashMap::<String, bool>::new();
+    let mut sessions = Vec::new();
+    for session in list_sessions(&state.sessions_ks).await? {
+        if session.state != SessionState::Authenticated {
+            continue;
+        }
+        let expires = session_expiry(&session);
+        if expires < now {
+            continue;
+        }
+        let may = match visible.get(&session.did) {
+            Some(may) => *may,
+            None => {
+                let may = may_end_sessions_of(state, actor, &session.did).await?;
+                visible.insert(session.did.clone(), may);
+                may
+            }
+        };
+        if !may {
+            continue;
+        }
+        sessions.push(SessionView {
+            id: session.session_id.clone(),
+            subject: session.did.clone(),
+            issued_at: epoch_to_datetime(session.created_at),
+            expires_at: epoch_to_datetime(expires),
+            amr: session.amr.clone(),
+            acr: Some(session.acr.clone()).filter(|a| !a.is_empty()),
+        });
+    }
+    sessions.sort_by(|a, b| b.issued_at.cmp(&a.issued_at).then(a.id.cmp(&b.id)));
+    info!(caller = %actor.did, count = sessions.len(), "sessions listed");
+    Ok(SessionListResponse { sessions })
+}
+
+/// What `auth/revoke-session/0.2` names: one session, or every session of a
+/// subject (`all: true` is the producer's own).
+pub(crate) enum RevokeTarget {
+    Session(String),
+    Subject(String),
+}
+
+/// `auth/revoke-session/0.2`, by `actor`.
 ///
-/// The caller's own session, or one whose subject the caller could withdraw
-/// the access of ([`may_end_sessions_of`]). A session that does not exist, was
-/// already revoked, or belongs to a subject outside the caller's authority is
-/// answered identically — `revokedCount: 0`, the form the specification
-/// recommends — so a retry succeeds and the answer says nothing about sessions
-/// the caller does not control.
-#[utoipa::path(
-    delete, path = "/auth/sessions/{session_id}", tag = "auth",
-    security(("bearer_jwt" = [])),
-    params(("session_id" = String, Path, description = "Session identifier")),
-    responses(
-        (status = 200, description = "`revokedCount` 1 when the session was ended; 0 when there was no such session the caller may end", body = RevokeSessionResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-    ),
-)]
-pub async fn revoke_session(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(session_id): Path<String>,
-) -> Result<Json<RevokeSessionResponse>, AppError> {
-    let none = || Json(RevokeSessionResponse { revoked_count: 0 });
-    let sessions = state.sessions_ks.clone();
-    let Some(session) = get_session(&sessions, &session_id).await? else {
-        return Ok(none());
-    };
-    if !may_end_sessions_of(&state, &auth, &session.did).await? {
-        info!(
-            caller = %auth.did,
-            target_did = %session.did,
-            "session revocation outside the caller's authority, answered as absent"
-        );
-        return Ok(none());
+/// **One session** (`sessionId`): its own, or one whose subject the caller
+/// could withdraw the access of ([`may_end_sessions_of`]). A session that does
+/// not exist, was already revoked, or belongs to a subject outside the
+/// caller's authority is answered identically — `revokedCount: 0`, the form
+/// the specification recommends — so a retry succeeds and the answer says
+/// nothing about sessions the caller does not control.
+///
+/// **A subject** (`subject`, or `all: true` for the producer itself): refused
+/// with `permissionDenied` — the same whether or not the subject is known or
+/// holds sessions — unless the caller could withdraw the subject's access.
+/// Overlap is not enough: an admin of `a` must not sign out an admin of
+/// `[a, b]`. Super-admins are unrestricted (and may mop up orphan sessions for
+/// a DID with no ACL row). Every refusal of this form is audited (item 7).
+pub(crate) async fn revoke_sessions_task(
+    state: &AppState,
+    actor: &AuthClaims,
+    target: RevokeTarget,
+    reason: Option<String>,
+) -> Result<RevokeSessionResponse, AppError> {
+    let sessions = &state.sessions_ks;
+    match target {
+        RevokeTarget::Session(session_id) => {
+            let none = || RevokeSessionResponse { revoked_count: 0 };
+            let Some(session) = get_session(sessions, &session_id).await? else {
+                return Ok(none());
+            };
+            if !may_end_sessions_of(state, actor, &session.did).await? {
+                info!(
+                    caller = %actor.did,
+                    target_did = %session.did,
+                    "session revocation outside the caller's authority, answered as absent"
+                );
+                return Ok(none());
+            }
+            delete_session(sessions, &session_id).await?;
+            if let Some(writer) = state.audit_writer.as_ref() {
+                writer
+                    .write(
+                        &actor.did,
+                        Some(&session.did),
+                        AuditEvent::SessionRevoked(SessionRevokedData {
+                            session_id: Some(session_id.clone()),
+                            revoked_count: 1,
+                            reason,
+                        }),
+                    )
+                    .await?;
+            }
+            info!(caller = %actor.did, session_id = %session_id, "session revoked");
+            Ok(RevokeSessionResponse { revoked_count: 1 })
+        }
+        RevokeTarget::Subject(subject) => {
+            if !may_end_sessions_of(state, actor, &subject).await? {
+                info!(
+                    caller = %actor.did,
+                    target_did = %subject,
+                    "session revocation by subject refused: outside the caller's authority"
+                );
+                // Fail closed: a refusal the audit trail cannot record is not
+                // answered as though it had been.
+                if let Some(writer) = state.audit_writer.as_ref() {
+                    writer
+                        .write(
+                            &actor.did,
+                            Some(&subject),
+                            AuditEvent::SessionRevocationRefused(SessionRevocationRefusedData {
+                                reason,
+                            }),
+                        )
+                        .await?;
+                }
+                return Err(AppError::Forbidden(
+                    "cannot revoke sessions for a DID outside your authority".into(),
+                ));
+            }
+            let revoked = revoke_sessions_for_did(sessions, &subject).await?;
+            if revoked > 0
+                && let Some(writer) = state.audit_writer.as_ref()
+            {
+                writer
+                    .write(
+                        &actor.did,
+                        Some(&subject),
+                        AuditEvent::SessionRevoked(SessionRevokedData {
+                            session_id: None,
+                            revoked_count: revoked as u32,
+                            reason,
+                        }),
+                    )
+                    .await?;
+            }
+            info!(caller = %actor.did, target_did = %subject, revoked, "sessions revoked by DID");
+            Ok(RevokeSessionResponse {
+                revoked_count: revoked,
+            })
+        }
     }
-
-    delete_session(&sessions, &session_id).await?;
-    if let Some(writer) = state.audit_writer.as_ref() {
-        writer
-            .write(
-                &auth.did,
-                Some(&session.did),
-                AuditEvent::SessionRevoked(SessionRevokedData {
-                    session_id: Some(session_id.clone()),
-                    revoked_count: 1,
-                }),
-            )
-            .await?;
-    }
-    info!(caller = %auth.did, session_id = %session_id, "session revoked");
-    Ok(Json(RevokeSessionResponse { revoked_count: 1 }))
 }
 
 /// Whether `actor` may end `subject`'s sessions: exactly when it could
@@ -1743,13 +1796,6 @@ async fn may_end_sessions_of(
         .is_some_and(|entry| crate::routes::acl::caller_covers_target(actor, &entry)))
 }
 
-// ---------- DELETE /auth/sessions?did=X ----------
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct RevokeByDidQuery {
-    pub did: String,
-}
-
 /// `auth/revoke-session/0.2#response` — how many sessions the call ended.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1757,66 +1803,9 @@ pub struct RevokeSessionResponse {
     pub revoked_count: u64,
 }
 
-/// `DELETE /v1/auth/sessions?did=X` — revoke all sessions for a DID.
-/// Super-admin unrestricted; context-admin limited to visible DIDs.
-#[utoipa::path(
-    delete, path = "/auth/sessions", tag = "auth",
-    security(("bearer_jwt" = [])),
-    params(("did" = String, Query, description = "Subject DID whose sessions to revoke")),
-    responses(
-        (status = 200, description = "Sessions revoked", body = RevokeSessionResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller cannot revoke sessions for this DID"),
-    ),
-)]
-pub async fn revoke_sessions_by_did(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<RevokeByDidQuery>,
-) -> Result<Json<RevokeSessionResponse>, AppError> {
-    // Authority over the subject's access, decided before its sessions are
-    // looked at, and refused the same way whether or not it has any. Overlap
-    // is not enough: an admin of `a` must not sign out an admin of `[a, b]`.
-    // Super-admins are unrestricted (and may mop up orphan sessions for a DID
-    // with no ACL row).
-    if !may_end_sessions_of(&state, &auth.0, &query.did).await? {
-        info!(
-            caller = %auth.0.did,
-            target_did = %query.did,
-            "session revocation by subject refused: outside the caller's authority"
-        );
-        return Err(AppError::Forbidden(
-            "cannot revoke sessions for a DID outside your authority".into(),
-        ));
-    }
-
-    let sessions = state.sessions_ks.clone();
-    let revoked = revoke_sessions_for_did(&sessions, &query.did).await?;
-
-    if revoked > 0
-        && let Some(writer) = state.audit_writer.as_ref()
-    {
-        writer
-            .write(
-                &auth.0.did,
-                Some(&query.did),
-                AuditEvent::SessionRevoked(SessionRevokedData {
-                    session_id: None,
-                    revoked_count: revoked as u32,
-                }),
-            )
-            .await?;
-    }
-
-    info!(caller = %auth.0.did, target_did = %query.did, revoked, "sessions revoked by DID");
-    Ok(Json(RevokeSessionResponse {
-        revoked_count: revoked,
-    }))
-}
-
 /// Delete every session whose subject is `did`; returns the count revoked.
 ///
-/// Shared by [`revoke_sessions_by_did`] and the ACL-downgrade path in
+/// Shared by [`revoke_sessions_task`] and the ACL-downgrade path in
 /// [`crate::routes::acl::update_acl`], which revokes a demoted admin's live
 /// sessions so the still-valid JWT can't outlive the downgrade.
 pub(crate) async fn revoke_sessions_for_did(

@@ -1,8 +1,7 @@
 // Audit trail viewer.
 //
-// Wraps `GET /v1/audit`. Super-admin only — the endpoint is gated
-// server-side, and a non-super-admin caller gets a 403 rendered as
-// a toast.
+// Sends signed `audit/list/0.1` documents. Super-admin only — the VTC
+// refuses anyone else with `permissionDenied`, rendered as a toast.
 //
 // Pagination is forward-only ("Show older" button). The page shows
 // timestamp + event-kind + actor/target DIDs + a collapsible JSON
@@ -14,7 +13,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ClipboardList, RefreshCw } from "lucide-react";
 
-import { getJson } from "@/lib/api";
+import { postSignedRead } from "@/lib/api";
 import { formatIso } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import { NamedDid } from "@/components/NamedDid";
@@ -114,11 +113,9 @@ async function fetchAuditPage(
   cursor: string | null,
   pageSize: number,
 ): Promise<AuditListResponse> {
-  const q = new URLSearchParams();
-  if (cursor) q.set("cursor", cursor);
-  q.set("pageSize", String(pageSize));
-  return getJson<AuditListResponse>(`/v1/audit?${q}`, {
-    trustTask: TRUST_TASK,
+  return postSignedRead<AuditListResponse>(TRUST_TASK, {
+    pageSize,
+    ...(cursor ? { cursor } : {}),
   });
 }
 

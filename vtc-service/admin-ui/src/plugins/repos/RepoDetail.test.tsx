@@ -17,6 +17,7 @@ import {
   JUN,
   PERSONAL,
   RIGHTS,
+  driftViewRoute,
   signedReads,
   WIDGETS,
   isChange,
@@ -273,10 +274,8 @@ describe("Repo detail", () => {
     expect(postSignedTrustTask).not.toHaveBeenCalled();
   });
 
-  const driftRoute = (items: object[]) => ({
-    path: "/v1/git-ns/drift",
-    body: { repos: [{ resource: DOCS.resource, state: "drift", drift: items }] },
-  });
+  const driftRoute = (items: object[]) =>
+    driftViewRoute([{ resource: DOCS.resource, state: "drift", drift: items }]);
   const hsato = { forge: "github.com", id: "1003", login: "hsato" };
 
   it("adopts write on a personal account as maintainer, where the server projects it", async () => {
@@ -452,29 +451,18 @@ describe("Repo detail", () => {
   });
 
   it("offers an elevated revert only to a community administrator who owns the repository", async () => {
-    const routes = gitNsRoutes().map((r) =>
-      r.path === "/v1/git-ns/drift"
-        ? {
-            ...r,
-            body: {
-              repos: [
-                {
-                  resource: DOCS.resource,
-                  state: "drift",
-                  drift: [
-                    {
-                      type: "roleAdded",
-                      resource: DOCS.resource,
-                      observed: "admin",
-                      account: { forge: "github.com", id: "1003", login: "hsato" },
-                    },
-                  ],
-                },
-              ],
-            },
-          }
-        : r,
-    );
+    const routes = gitNsRoutes({
+      extra: [
+        driftRoute([
+          {
+            type: "roleAdded",
+            resource: DOCS.resource,
+            observed: "admin",
+            account: { forge: "github.com", id: "1003", login: "hsato" },
+          },
+        ]),
+      ],
+    });
     mockFetch(routes);
     const view = mount(DOCS.resource, signedInAs(BOB));
     const drift = await screen.findByRole("region", { name: "Drift" });

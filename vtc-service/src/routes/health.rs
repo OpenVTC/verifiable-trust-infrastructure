@@ -5,7 +5,6 @@ use serde::Serialize;
 use tracing::debug;
 use vti_common::error::AppError;
 
-use crate::auth::AdminAuth;
 use crate::registry::{HealthStatus, list_sync_jobs};
 use crate::server::AppState;
 
@@ -37,7 +36,7 @@ pub struct HealthResponse {
 /// minimal: `{status, version, vtc_did}`. It sits at the parent root
 /// outside the governor, so it must not leak infrastructure topology
 /// (the mediator URL was a free recon oracle). The DID/mediator
-/// detail moved to the admin-gated [`diagnostics`] route.
+/// detail moved to the administrator's signed [`diagnostics`] task.
 pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     debug!("health check");
     let vtc_did = state.config.read().await.vtc_did.clone();
@@ -278,19 +277,10 @@ pub struct FailedSyncJob {
     pub purge_due_at: DateTime<Utc>,
 }
 
-#[utoipa::path(
-    get, path = "/health/diagnostics", tag = "health",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Trust-registry reconciler diagnostics", body = DiagnosticsResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn diagnostics(
-    State(state): State<AppState>,
-    _auth: AdminAuth,
-) -> Result<Json<DiagnosticsResponse>, AppError> {
+/// `vtc/registry/diagnostics/0.1` — the reconciler's health, for an
+/// administrator. A signed document served by the spine
+/// (`trust_tasks::admin_tasks`); there is no REST route.
+pub(crate) async fn diagnostics(state: &AppState) -> Result<DiagnosticsResponse, AppError> {
     let jobs = list_sync_jobs(&state.sync_queue_ks).await?;
     let now = Utc::now();
     let queue_depth = jobs
@@ -414,7 +404,7 @@ pub async fn diagnostics(
         .map(crate::transport_capability::findings_for_build)
         .unwrap_or_default();
 
-    Ok(Json(DiagnosticsResponse {
+    Ok(DiagnosticsResponse {
         registry_status,
         queue_depth,
         rtbf_batched_count,
@@ -439,5 +429,5 @@ pub async fn diagnostics(
                 registry_drift,
             },
         },
-    }))
+    })
 }

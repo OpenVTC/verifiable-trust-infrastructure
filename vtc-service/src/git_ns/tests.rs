@@ -2504,7 +2504,6 @@ async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
         "/git-ns/accounts",
         "/git-ns/rights/issued-by-departed",
         "/git-ns/projection",
-        "/git-ns/drift",
     ] {
         let (status, body) = get(&f, &f.admin.did, vec!["ops".into()], path).await;
         assert_eq!(status, 403, "{path}: {body}");
@@ -2514,7 +2513,6 @@ async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
         "/git-ns/accounts",
         "/git-ns/rights/issued-by-departed",
         "/git-ns/projection",
-        "/git-ns/drift",
     ] {
         let (status, body) = get(&f, &f.admin.did, vec![], path).await;
         assert_eq!(status, 200, "{path}: {body}");

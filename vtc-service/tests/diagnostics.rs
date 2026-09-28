@@ -1,8 +1,7 @@
-//! Integration coverage for `GET /v1/health/diagnostics`.
+//! Integration coverage for `vtc/registry/diagnostics/0.1`, a signed document.
 //!
-//! Exercises the full router stack — Trust-Task header → auth
-//! extractor → handler → registry storage — through
-//! `Router::oneshot`.
+//! Exercises the full router stack — the document endpoint → the spine → the
+//! signer's ACL row → handler → registry storage — through `Router::oneshot`.
 //!
 //! Phase 3 M3.8.
 
@@ -12,6 +11,10 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+mod common;
+
+use common::signed::{admin, call, error_code, party_with_role};
+use vtc_service::acl::VtcRole;
 use vtc_service::registry::{SyncJob, SyncJobKind, SyncJobState, store_sync_job};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
@@ -34,8 +37,12 @@ async fn build() -> Fixture {
     }
 }
 
-async fn token_for(fix: &Fixture, role: &str) -> String {
-    fix.vtc.token("did:key:z6MkAdmin", role, vec![]).await
+/// `vtc/registry/diagnostics/0.1`, signed by an unrestricted administrator:
+/// the reply's status and payload.
+async fn send(vtc: &TestVtc) -> (StatusCode, Value) {
+    let admin = admin(vtc).await;
+    let (status, doc) = call(vtc, &admin, DIAGNOSTICS_TASK, json!({})).await;
+    (status, doc["payload"].clone())
 }
 
 async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
@@ -46,28 +53,11 @@ async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
     (status, v)
 }
 
-fn get(uri: &str, task: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("Trust-Task", task)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap()
-}
-
 #[tokio::test]
 async fn diagnostics_empty_queue_reports_zero_counts() {
     let fix = build().await;
-    let token = token_for(&fix, "admin").await;
 
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&fix.vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["queueDepth"], 0);
     assert_eq!(v["rtbfBatchedCount"], 0);
@@ -89,7 +79,6 @@ async fn diagnostics_empty_queue_reports_zero_counts() {
 #[tokio::test]
 async fn diagnostics_reports_pending_rtbf_and_failed_counts() {
     let fix = build().await;
-    let token = token_for(&fix, "admin").await;
 
     // Pending dispatchable.
     let pending = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:zP");
@@ -113,13 +102,7 @@ async fn diagnostics_reports_pending_rtbf_and_failed_counts() {
         .await
         .unwrap();
 
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&fix.vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     // Pending (1) + RTBF-pending (1) = queue_depth 2; Failed
     // sits outside the active queue.
@@ -134,25 +117,10 @@ async fn diagnostics_reports_pending_rtbf_and_failed_counts() {
 #[tokio::test]
 async fn diagnostics_requires_admin_role() {
     let fix = build().await;
-    // `reader` is a valid VTC ACL role but not admin —
-    // AdminAuth must reject.
-    let reader_token = token_for(&fix, "reader").await;
-
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(get(
-            "/v1/health/diagnostics",
-            DIAGNOSTICS_TASK,
-            &reader_token,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::FORBIDDEN,
-        "non-admin must be rejected"
-    );
+    // A member is in the ACL but not an administrator.
+    let member = party_with_role(&fix.vtc, VtcRole::Member, &[]).await;
+    let (_, doc) = call(&fix.vtc, &member, DIAGNOSTICS_TASK, json!({})).await;
+    assert_eq!(error_code(&doc), Some("permissionDenied"), "{doc}");
 }
 
 #[tokio::test]
@@ -187,15 +155,8 @@ async fn diagnostics_surfaces_mediator_detail_to_admin() {
         .messaging_mediator("did:key:z6MkMediator")
         .build()
         .await;
-    let token = vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
 
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["mediatorDid"], "did:key:z6MkMediator");
 }
@@ -213,15 +174,8 @@ async fn diagnostics_surfaces_mediator_detail_to_admin() {
 #[tokio::test]
 async fn transport_findings_ride_in_the_openvtc_ext_namespace() {
     let fix = build().await;
-    let token = token_for(&fix, "admin").await;
 
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&fix.vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 
     // Reverse-DNS, per SPEC.md §4.5.1 — a bare `vtc` key claims a name nobody
@@ -242,25 +196,6 @@ async fn transport_findings_ride_in_the_openvtc_ext_namespace() {
     );
 }
 
-#[tokio::test]
-async fn diagnostics_requires_trust_task_header() {
-    let fix = build().await;
-    let token = token_for(&fix, "admin").await;
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/health/diagnostics")
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "missing Trust-Task header must 400"
-    );
-}
-
 /// The `Failed` rows themselves ride in `ext["org.openvtc"].failedJobs`.
 ///
 /// `failedCount` alone was not an operator surface. A `Failed` row is
@@ -276,7 +211,6 @@ async fn diagnostics_requires_trust_task_header() {
 #[tokio::test]
 async fn failed_jobs_ride_in_the_openvtc_ext_namespace() {
     let fix = build().await;
-    let token = token_for(&fix, "admin").await;
 
     let mut failed = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:z6MkStranded");
     failed.state = SyncJobState::Failed;
@@ -289,13 +223,7 @@ async fn failed_jobs_ride_in_the_openvtc_ext_namespace() {
         .await
         .unwrap();
 
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&fix.vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 
     let jobs = v
@@ -344,15 +272,8 @@ async fn failed_jobs_ride_in_the_openvtc_ext_namespace() {
 #[tokio::test]
 async fn registry_drift_is_absent_until_a_check_has_run() {
     let fix = build().await;
-    let token = token_for(&fix, "admin").await;
 
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&fix.vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert!(
         v.pointer("/ext/org.openvtc/registryDrift").is_none(),
@@ -372,15 +293,8 @@ async fn registry_drift_is_absent_until_a_check_has_run() {
 #[tokio::test]
 async fn failed_jobs_is_an_empty_list_when_nothing_failed() {
     let fix = build().await;
-    let token = token_for(&fix, "admin").await;
 
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&fix.vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(
         v.pointer("/ext/org.openvtc/failedJobs"),

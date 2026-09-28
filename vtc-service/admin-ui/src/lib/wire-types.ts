@@ -33,7 +33,7 @@ export type Schemas = components["schemas"];
 // ── Auth, session, passkeys ─────────────────────────────────────────────
 export type SessionView = Schemas["SessionView"];
 export type WhoamiResponse = Schemas["WhoamiResponse"];
-export type SessionSummary = Schemas["SessionSummary"];
+export type SessionListResponse = Schemas["SessionListResponse"];
 export type PasskeyLoginStartResponse =
   Schemas["AdminPasskeyLoginStartResponse"];
 export type RegisteredCredential = Schemas["RegisteredCredential"];
@@ -209,8 +209,6 @@ export type GitNsRightRow = Schemas["GitNsRightRow"];
 export type GitNsRightList = Schemas["GitNsRightList"];
 export type GitNsDepartedGrants = Schemas["GitNsDepartedGrants"];
 export type GitNsDepartedGranter = Schemas["GitNsDepartedGranter"];
-export type GitNsDriftList = Schemas["GitNsDriftList"];
-export type GitNsDriftRow = Schemas["GitNsDriftRow"];
 export type GitNsDriftItem = Schemas["GitNsViewV0_1DriftItem"];
 export type GitNsJobList = Schemas["GitNsJobList"];
 export type GitNsJobRow = Schemas["GitNsJobRow"];

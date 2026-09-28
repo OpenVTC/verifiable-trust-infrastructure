@@ -1,7 +1,8 @@
 //! Integration coverage for the trust-registry operator surface.
 //!
-//! `vtc/registry/sync-jobs/{list,retry,discard}/0.1` through the full router
-//! stack — Trust-Task header, admin extractor, handler, fjall.
+//! `vtc/registry/sync-jobs/{list,retry,discard}/0.1` as signed documents
+//! through the full router stack — the document endpoint, the spine, the
+//! signer's ACL row, handler, fjall.
 //!
 //! The eligibility rule is the thing worth pinning. Both this surface and the
 //! offline `vtc sync-jobs` CLI refuse to move a row the reconciler still owns,
@@ -9,11 +10,13 @@
 //! reports a `skipped` entry, discard returns 409 — so a shared unit test
 //! cannot cover it. These are the wire-level half.
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
+mod common;
+
+use axum::http::StatusCode;
 use serde_json::{Value, json};
-use tower::ServiceExt;
+
+use common::signed::{admin, call, error_code, party_with_role};
+use vtc_service::acl::VtcRole;
 
 use vtc_service::registry::{SyncJob, SyncJobKind, SyncJobState, get_sync_job, store_sync_job};
 use vtc_service::test_support::TestVtc;
@@ -22,33 +25,12 @@ const LIST: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1"
 const RETRY: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1";
 const DISCARD: &str = "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1";
 
-async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let v: Value = serde_json::from_slice(&bytes)
-        .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes) }));
-    (status, v)
-}
-
-fn get(uri: &str, task: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("Trust-Task", task)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap()
-}
-
-fn post(uri: &str, task: &str, token: &str, body: Value) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("Trust-Task", task)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap()
+/// `task` signed by an unrestricted administrator: the reply's status and
+/// `payload` — the `#response` payload, or the `trust-task-error` one.
+async fn send(vtc: &TestVtc, task: &str, payload: Value) -> (StatusCode, Value) {
+    let admin = admin(vtc).await;
+    let (status, doc) = call(vtc, &admin, task, payload).await;
+    (status, doc["payload"].clone())
 }
 
 fn failed(kind: SyncJobKind, did: &str) -> SyncJob {
@@ -66,7 +48,6 @@ fn failed(kind: SyncJobKind, did: &str) -> SyncJob {
 #[tokio::test]
 async fn a_failed_job_lists_without_claiming_a_next_attempt() {
     let vtc = TestVtc::builder().build().await;
-    let token = vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     let mut job = failed(SyncJobKind::PublishMember, "did:key:z6MkStranded");
     job.next_attempt_at = chrono::Utc::now() + chrono::Duration::days(1);
@@ -74,13 +55,7 @@ async fn a_failed_job_lists_without_claiming_a_next_attempt() {
         .await
         .unwrap();
 
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(get("/v1/registry/sync-jobs?state=failed", LIST, &token))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&vtc, LIST, json!({ "state": "failed" })).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 
     let items = v["items"].as_array().expect("items");
@@ -100,25 +75,13 @@ async fn a_failed_job_lists_without_claiming_a_next_attempt() {
 #[tokio::test]
 async fn retry_requeues_a_failed_job() {
     let vtc = TestVtc::builder().build().await;
-    let token = vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     let job = failed(SyncJobKind::PublishMember, "did:key:z6MkStranded");
     store_sync_job(&vtc.state.sync_queue_ks, &job)
         .await
         .unwrap();
 
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(post(
-            "/v1/registry/sync-jobs/retry",
-            RETRY,
-            &token,
-            json!({ "jobId": job.id.to_string() }),
-        ))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&vtc, RETRY, json!({ "jobId": job.id.to_string() })).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["requeued"].as_array().unwrap().len(), 1, "{v}");
     assert_eq!(v["requeued"][0]["memberDid"], "did:key:z6MkStranded");
@@ -138,7 +101,6 @@ async fn retry_requeues_a_failed_job() {
 #[tokio::test]
 async fn retry_reports_a_live_job_as_skipped_rather_than_failing() {
     let vtc = TestVtc::builder().build().await;
-    let token = vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     let mut live = SyncJob::fresh(SyncJobKind::UpdateMember, "did:key:z6MkBusy");
     live.state = SyncJobState::InFlight;
@@ -147,18 +109,7 @@ async fn retry_reports_a_live_job_as_skipped_rather_than_failing() {
         .await
         .unwrap();
 
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(post(
-            "/v1/registry/sync-jobs/retry",
-            RETRY,
-            &token,
-            json!({ "jobId": live.id.to_string() }),
-        ))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&vtc, RETRY, json!({ "jobId": live.id.to_string() })).await;
     assert_eq!(status, StatusCode::OK, "reported, not an error: {v}");
     assert!(v["requeued"].as_array().unwrap().is_empty(), "{v}");
     assert_eq!(v["skipped"][0]["reason"], "notFailed", "{v}");
@@ -176,20 +127,13 @@ async fn retry_reports_a_live_job_as_skipped_rather_than_failing() {
 #[tokio::test]
 async fn retry_reports_an_unknown_job_as_not_found() {
     let vtc = TestVtc::builder().build().await;
-    let token = vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
 
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(post(
-            "/v1/registry/sync-jobs/retry",
-            RETRY,
-            &token,
-            json!({ "jobId": uuid::Uuid::new_v4().to_string() }),
-        ))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(
+        &vtc,
+        RETRY,
+        json!({ "jobId": uuid::Uuid::new_v4().to_string() }),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["skipped"][0]["reason"], "notFound", "{v}");
 }
@@ -198,7 +142,6 @@ async fn retry_reports_an_unknown_job_as_not_found() {
 #[tokio::test]
 async fn retry_all_failed_moves_only_terminal_rows() {
     let vtc = TestVtc::builder().build().await;
-    let token = vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     for i in 0..3 {
         let job = failed(SyncJobKind::PublishMember, &format!("did:key:z6MkDead{i}"));
@@ -211,18 +154,7 @@ async fn retry_all_failed_moves_only_terminal_rows() {
         .await
         .unwrap();
 
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(post(
-            "/v1/registry/sync-jobs/retry",
-            RETRY,
-            &token,
-            json!({ "allFailed": true }),
-        ))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&vtc, RETRY, json!({ "allFailed": true })).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["requeued"].as_array().unwrap().len(), 3, "{v}");
     assert!(v["skipped"].as_array().unwrap().is_empty(), "{v}");
@@ -241,27 +173,16 @@ async fn retry_all_failed_moves_only_terminal_rows() {
 #[tokio::test]
 async fn retry_refuses_a_payload_naming_neither_target() {
     let vtc = TestVtc::builder().build().await;
-    let token = vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     let job = failed(SyncJobKind::PublishMember, "did:key:z6MkStranded");
     store_sync_job(&vtc.state.sync_queue_ks, &job)
         .await
         .unwrap();
 
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(post(
-            "/v1/registry/sync-jobs/retry",
-            RETRY,
-            &token,
-            json!({}),
-        ))
-        .await
-        .unwrap();
-    assert!(
-        resp.status().is_client_error(),
-        "an empty payload must not be readable as 'retry everything'",
+    let (_, v) = send(&vtc, RETRY, json!({})).await;
+    assert_eq!(
+        v["code"], "malformedRequest",
+        "an empty payload must not be readable as 'retry everything': {v}"
     );
 
     let back = get_sync_job(&vtc.state.sync_queue_ks, job.id)
@@ -275,25 +196,13 @@ async fn retry_refuses_a_payload_naming_neither_target() {
 #[tokio::test]
 async fn discard_deletes_a_failed_job_and_names_the_member() {
     let vtc = TestVtc::builder().build().await;
-    let token = vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     let job = failed(SyncJobKind::PublishMember, "did:key:z6MkStranded");
     store_sync_job(&vtc.state.sync_queue_ks, &job)
         .await
         .unwrap();
 
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(post(
-            "/v1/registry/sync-jobs/discard",
-            DISCARD,
-            &token,
-            json!({ "jobId": job.id.to_string() }),
-        ))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = send(&vtc, DISCARD, json!({ "jobId": job.id.to_string() })).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["memberDid"], "did:key:z6MkStranded", "{v}");
 
@@ -312,7 +221,6 @@ async fn discard_deletes_a_failed_job_and_names_the_member() {
 #[tokio::test]
 async fn discard_refuses_a_live_job() {
     let vtc = TestVtc::builder().build().await;
-    let token = vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
 
     let mut live = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:z6MkBusy");
     live.state = SyncJobState::InFlight;
@@ -320,18 +228,9 @@ async fn discard_refuses_a_live_job() {
         .await
         .unwrap();
 
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(post(
-            "/v1/registry/sync-jobs/discard",
-            DISCARD,
-            &token,
-            json!({ "jobId": live.id.to_string() }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let (_, v) = send(&vtc, DISCARD, json!({ "jobId": live.id.to_string() })).await;
+    assert_eq!(v["code"], "taskFailed", "{v}");
+    assert_eq!(v["details"]["reason"], "conflict", "{v}");
 
     assert!(
         get_sync_job(&vtc.state.sync_queue_ks, live.id)
@@ -343,30 +242,13 @@ async fn discard_refuses_a_live_job() {
 }
 
 /// The whole surface is admin-gated. It names members in the clear and
-/// re-asserts membership to a third party, so a reader role is not enough.
+/// re-asserts membership to a third party, so a member is not enough.
 #[tokio::test]
 async fn the_surface_requires_an_admin() {
     let vtc = TestVtc::builder().build().await;
-    let reader = vtc.token("did:key:z6MkReader", "reader", vec![]).await;
-
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(get("/v1/registry/sync-jobs", LIST, &reader))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-
-    let resp = vtc
-        .router
-        .clone()
-        .oneshot(post(
-            "/v1/registry/sync-jobs/retry",
-            RETRY,
-            &reader,
-            json!({ "allFailed": true }),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let member = party_with_role(&vtc, VtcRole::Member, &[]).await;
+    for (task, payload) in [(LIST, json!({})), (RETRY, json!({ "allFailed": true }))] {
+        let (_, doc) = call(&vtc, &member, task, payload).await;
+        assert_eq!(error_code(&doc), Some("permissionDenied"), "{doc}");
+    }
 }

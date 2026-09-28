@@ -17,12 +17,14 @@
 //!   now that a cookie alone can authenticate it — while the body-token
 //!   refresh that SDK and CLI clients use stays exempt.
 
+mod common;
+
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use serde_json::{Value, json};
+use serde_json::json;
 use tower::ServiceExt;
 
 use vti_common::auth::extractor::{ADMIN_REFRESH_COOKIE, ADMIN_SESSION_COOKIE};
@@ -36,7 +38,8 @@ use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
 const ADMIN_DID: &str = "did:key:z6MkAdminIdle";
-const CONFIG_SHOW_TASK: &str = "https://trusttasks.org/spec/config/show/0.1";
+/// A protected route that stays a bearer route: `audit/verify`, which `vtc-client` calls.
+const PROTECTED_TASK: &str = "https://trusttasks.org/spec/audit/verify/0.1";
 const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
 
 struct Fixture {
@@ -147,9 +150,9 @@ async fn a_cookie_request_records_activity() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/admin/config")
+        .uri("/v1/audit/verify")
         .header("cookie", format!("{ADMIN_SESSION_COOKIE}={access}"))
-        .header("trust-task", CONFIG_SHOW_TASK)
+        .header("trust-task", PROTECTED_TASK)
         .body(Body::empty())
         .unwrap();
     let (status, body) = send(&fix.router, req).await;
@@ -184,9 +187,9 @@ async fn a_bearer_request_does_not_record_activity() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/admin/config")
+        .uri("/v1/audit/verify")
         .header("authorization", format!("Bearer {access}"))
-        .header("trust-task", CONFIG_SHOW_TASK)
+        .header("trust-task", PROTECTED_TASK)
         .body(Body::empty())
         .unwrap();
     let (status, body) = send(&fix.router, req).await;
@@ -494,30 +497,27 @@ async fn sign_out_clears_the_refresh_cookie_too() {
     assert!(refresh_clear.contains("Max-Age=0"), "got {refresh_clear}");
 }
 
-/// Reading the effective config is how the console renders the control;
-/// the key has to actually be in the registry for that to work.
+/// Reading the effective config (the signed `config/show`) is how the console
+/// renders the control; the key has to actually be in the registry for that
+/// to work.
 #[tokio::test]
 async fn the_idle_timeout_is_in_the_effective_config() {
-    let fix = build().await;
-    let (access, _refresh, _session_id) = seed_session(&fix, 60).await;
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/admin/config")
-        .header("authorization", format!("Bearer {access}"))
-        .header("trust-task", "https://trusttasks.org/spec/config/show/0.1")
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = send(&fix.router, req).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-
-    let doc: Value = serde_json::from_str(&body).expect("json");
-    let field = doc["fields"]
+    let vtc = TestVtc::builder().build().await;
+    let admin = common::signed::admin(&vtc).await;
+    let (status, doc) = common::signed::call(
+        &vtc,
+        &admin,
+        "https://trusttasks.org/spec/config/show/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let field = doc["payload"]["fields"]
         .as_array()
         .expect("fields array")
         .iter()
         .find(|f| f["key"] == "auth.admin_idle_timeout")
-        .unwrap_or_else(|| panic!("key missing from effective config: {body}"));
+        .unwrap_or_else(|| panic!("key missing from effective config: {doc}"));
     assert_eq!(field["value"], 900);
     assert_eq!(field["requiresRestart"], false);
 }

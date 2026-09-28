@@ -1,16 +1,18 @@
-//! `GET / PATCH /v1/admin/config` handlers.
+//! `config/{show,patch,reload,restart}/0.1` and `vtc/config/{export,import}/0.1`.
 //!
-//! Implements **M0.8.2** of the VTC MVP Phase 0 plan.
+//! Implements **M0.8.2** of the VTC MVP Phase 0 plan. Every one is a signed
+//! document served by the spine (`trust_tasks::admin_tasks` and the portable
+//! pair in `trust_tasks`); none has a REST route.
 //!
-//! - **GET**: returns the four-layer-merged [`EffectiveConfig`].
-//! - **PATCH**: writes overrides to the db-layer (`config` keyspace),
+//! - **show**: returns the four-layer-merged [`EffectiveConfig`].
+//! - **patch**: writes overrides to the db-layer (`config` keyspace),
 //!   returning `{ applied, pending_restart, rejected }` so the
 //!   caller can tell which keys took effect immediately, which
 //!   require a daemon restart (M0.8.3), and which were rejected
 //!   (and why).
 //!
 //! Every mutating handler emits an audit event keyed to the calling
-//! admin's real DID (the `AdminAuth` extractor's `did`). Sensitive
+//! admin's real DID (the document's signer). Sensitive
 //! values are run through `vti_common::audit::ConfigChange::redact_if`
 //! before the `ConfigChanged` event is persisted. Audit is
 //! fail-closed: a mutation that produces a change but cannot be
@@ -19,14 +21,11 @@
 
 use std::collections::HashMap;
 
-use axum::Json;
-use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::info;
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use crate::community::{CommunityProfile, CommunityProfileUpdate, load_profile, store_profile};
@@ -75,41 +74,27 @@ pub struct RejectedKey {
 }
 
 /// GET handler.
-#[utoipa::path(
-    get, path = "/admin/config", tag = "admin",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Four-layer-merged effective config", body = EffectiveConfig),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn get_config(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<EffectiveConfig>, AppError> {
+pub(crate) async fn get_config(
+    state: &AppState,
+    keys: Option<&[String]>,
+) -> Result<EffectiveConfig, AppError> {
     let cfg = state.config.read().await;
     let store = ConfigStore::new(state.config_ks.clone());
-    let eff = compute_effective_config(&cfg, &store).await?;
-    Ok(Json(eff))
+    let mut eff = compute_effective_config(&cfg, &store).await?;
+    // `config/show`'s `keys` narrows the answer to the named keys; absent,
+    // every key the registry knows.
+    if let Some(keys) = keys {
+        eff.fields.retain(|f| keys.contains(&f.key));
+    }
+    Ok(eff)
 }
 
 /// PATCH handler.
-#[utoipa::path(
-    patch, path = "/admin/config", tag = "admin",
-    security(("bearer_jwt" = [])),
-    request_body = PatchRequest,
-    responses(
-        (status = 200, description = "Applied / pending-restart / rejected keys", body = PatchResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn patch_config(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Json(req): Json<PatchRequest>,
-) -> Result<(StatusCode, Json<PatchResponse>), AppError> {
+pub(crate) async fn patch_config(
+    state: &AppState,
+    actor: &str,
+    req: PatchRequest,
+) -> Result<PatchResponse, AppError> {
     let store = ConfigStore::new(state.config_ks.clone());
     // Snapshot the current db-layer overrides up front so each applied
     // key's audit record carries its real `old_value` + source.
@@ -136,7 +121,7 @@ pub async fn patch_config(
             });
             continue;
         }
-        if let Err(e) = check_against_community(&state, &key, &value).await {
+        if let Err(e) = check_against_community(state, &key, &value).await {
             rejected.push(RejectedKey {
                 key,
                 reason: format!("validation failed: {e}"),
@@ -190,10 +175,10 @@ pub async fn patch_config(
     // (matches reload/restart/import). No applied changes → nothing to
     // audit, so a rejects-only or empty PATCH never needs the writer.
     if !audit_changes.is_empty() {
-        let audit_writer = require_audit_writer(&state)?;
+        let audit_writer = require_audit_writer(state)?;
         audit_writer
             .write(
-                &admin.0.did,
+                actor,
                 None,
                 AuditEvent::ConfigChanged(ConfigChangedData {
                     changes: audit_changes,
@@ -203,14 +188,11 @@ pub async fn patch_config(
             .await?;
     }
 
-    Ok((
-        StatusCode::OK,
-        Json(PatchResponse {
-            applied,
-            pending_restart,
-            rejected,
-        }),
-    ))
+    Ok(PatchResponse {
+        applied,
+        pending_restart,
+        rejected,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -245,20 +227,11 @@ pub struct ReloadResponse {
 /// runtime-state subscribers (tracing subscriber filter handle,
 /// session-cleanup interval, etc.) will plug into the same diff
 /// loop.
-#[utoipa::path(
-    post, path = "/admin/config/reload", tag = "admin",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Keys re-applied in-memory", body = ReloadResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn reload_config(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<ReloadResponse>, AppError> {
-    let audit_writer = require_audit_writer(&state)?;
+pub(crate) async fn reload_config(
+    state: &AppState,
+    actor: &str,
+) -> Result<ReloadResponse, AppError> {
+    let audit_writer = require_audit_writer(state)?;
 
     let store = ConfigStore::new(state.config_ks.clone());
 
@@ -299,7 +272,7 @@ pub async fn reload_config(
 
     audit_writer
         .write(
-            &admin.0.did,
+            actor,
             None,
             AuditEvent::ConfigReloaded(ConfigReloadedData {
                 keys_reloaded: keys_reloaded.clone(),
@@ -309,7 +282,7 @@ pub async fn reload_config(
 
     info!(?keys_reloaded, "config reloaded");
 
-    Ok(Json(ReloadResponse { keys_reloaded }))
+    Ok(ReloadResponse { keys_reloaded })
 }
 
 // ---------------------------------------------------------------------------
@@ -342,20 +315,11 @@ pub struct RestartResponse {
 /// On success the handler emits `RestartRequested` to the audit
 /// log *before* signalling shutdown — so the row survives even if
 /// the drain wedges.
-#[utoipa::path(
-    post, path = "/admin/config/restart", tag = "admin",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Restart requested", body = RestartResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn restart_config(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<RestartResponse>, AppError> {
-    let audit_writer = require_audit_writer(&state)?;
+pub(crate) async fn restart_config(
+    state: &AppState,
+    actor: &str,
+) -> Result<RestartResponse, AppError> {
+    let audit_writer = require_audit_writer(state)?;
 
     let supervisor = state.supervisor.ok_or_else(|| AppError::ServiceError {
         status: StatusCode::PRECONDITION_FAILED,
@@ -366,7 +330,7 @@ pub async fn restart_config(
 
     audit_writer
         .write(
-            &admin.0.did,
+            actor,
             None,
             AuditEvent::RestartRequested(RestartRequestedData {
                 drain_timeout_seconds: DEFAULT_DRAIN_TIMEOUT_SECS,
@@ -383,10 +347,10 @@ pub async fn restart_config(
     // drain still leaves the row behind.
     let _ = state.shutdown_tx.send(true);
 
-    Ok(Json(RestartResponse {
+    Ok(RestartResponse {
         supervisor,
         drain_timeout_seconds: DEFAULT_DRAIN_TIMEOUT_SECS,
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------

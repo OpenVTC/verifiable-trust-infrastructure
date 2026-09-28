@@ -587,11 +587,18 @@ pub enum AuditEvent {
     /// pushed to the invited DID, or returned to the inviter for a QR code.
     InvitationDelivered(InvitationDeliveredData),
 
-    /// One or more authenticated sessions were revoked by an admin
-    /// (`DELETE /v1/auth/sessions/{id}` or `?did=`). Cutting off access
-    /// is security-relevant and must be attributable. Envelope
-    /// `target_did` is the session owner (when revoking by DID).
+    /// One or more authenticated sessions were revoked
+    /// (`auth/revoke-session`). Cutting off access is security-relevant and
+    /// must be attributable. Envelope `target_did` is the session owner.
     SessionRevoked(SessionRevokedData),
+
+    /// A revocation of another subject's sessions (`auth/revoke-session`'s
+    /// `subject` form) was **refused**: the producer could not withdraw that
+    /// subject's access. `auth/revoke-session/0.2` consumer item 7 requires
+    /// every such refusal in the audit trail, with the producer and the
+    /// subject, so an investigation can see who reached for whose sessions.
+    /// Envelope `actor` is the producer; `target_did` the named subject.
+    SessionRevocationRefused(SessionRevocationRefusedData),
 
     /// A principal ended their **own** session (`POST
     /// /v1/auth/sign-out`).
@@ -763,6 +770,7 @@ impl AuditEvent {
             Self::InvitationRevoked(..) => "InvitationRevoked",
             Self::InvitationDelivered(..) => "InvitationDelivered",
             Self::SessionRevoked(..) => "SessionRevoked",
+            Self::SessionRevocationRefused(..) => "SessionRevocationRefused",
             Self::SignedOut(..) => "SignedOut",
             Self::BackupExported(..) => "BackupExported",
             Self::BackupImported(..) => "BackupImported",
@@ -878,6 +886,18 @@ pub struct SessionRevokedData {
     pub session_id: Option<String>,
     /// Number of sessions revoked (1 for a single id, N for revoke-by-DID).
     pub revoked_count: u32,
+    /// The producer's stated rationale (`reason`), when it gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Payload for [`AuditEvent::SessionRevocationRefused`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRevocationRefusedData {
+    /// The producer's stated rationale (`reason`), when it gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Payload for [`AuditEvent::SignedOut`].

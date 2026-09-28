@@ -200,7 +200,7 @@ graph LR
 
 A `tokio::sync::watch` channel coordinates graceful shutdown:
 SIGINT/SIGTERM, REST-thread panic, or
-`POST /v1/admin/config/restart` all flip the channel and every
+a signed `config/restart/0.1` document all flip the channel and every
 thread drains.
 
 ## Relationship to the VTA
