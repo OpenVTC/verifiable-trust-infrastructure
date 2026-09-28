@@ -517,7 +517,31 @@ pub async fn initiate_import(
     digests: Vec<String>,
 ) -> Result<ChunkedBundle, ChunkedError> {
     auth.require_super_admin()?;
-    enforce_open_bundle_cap(bundles_ks, &auth.did).await?;
+    initiate_import_for(
+        bundles_ks,
+        &auth.did,
+        expected_sha256,
+        expected_size_bytes,
+        chunk_size,
+        declared_chunk_count,
+        digests,
+    )
+    .await
+}
+
+/// [`initiate_import`] for `owner`, whose authority the caller has already
+/// established — for a transfer whose task grants it to someone other than an
+/// unrestricted administrator (a community website upload, say).
+pub async fn initiate_import_for(
+    bundles_ks: &KeyspaceHandle,
+    owner: &str,
+    expected_sha256: &str,
+    expected_size_bytes: u64,
+    chunk_size: u64,
+    declared_chunk_count: u64,
+    digests: Vec<String>,
+) -> Result<ChunkedBundle, ChunkedError> {
+    enforce_open_bundle_cap(bundles_ks, owner).await?;
 
     if expected_sha256.len() != 64
         || !expected_sha256
@@ -562,7 +586,7 @@ pub async fn initiate_import(
         state: BundleState::ImportPending,
         created_at: now,
         expires_at: now + bundle_ttl(),
-        created_by: auth.did.clone(),
+        created_by: owner.to_string(),
         algorithm: ALGORITHM_CHUNKED.into(),
         expected_sha256: expected_sha256.to_string(),
         expected_size_bytes,
@@ -626,19 +650,30 @@ pub async fn put_chunk(
     auth: &AuthClaims,
     write: ChunkWrite<'_>,
 ) -> Result<PutOutcome, ChunkedError> {
+    auth.require_super_admin()?;
+    put_chunk_for(bundles_ks, blob_dir, limiter, &auth.did, write).await
+}
+
+/// [`put_chunk`] for `owner`, whose authority the caller has already
+/// established.
+pub async fn put_chunk_for(
+    bundles_ks: &KeyspaceHandle,
+    blob_dir: &Path,
+    limiter: &ChunkRateLimiter,
+    owner: &str,
+    write: ChunkWrite<'_>,
+) -> Result<PutOutcome, ChunkedError> {
     let ChunkWrite {
         bundle_id,
         index,
         digest_multibase,
         data,
     } = write;
-    auth.require_super_admin()?;
-    limiter.check(&auth.did)?;
+    limiter.check(owner)?;
     let id = parse_bundle_id(bundle_id)?;
 
     let _guard = chunk_lock().lock().await;
-    let (mut record, mut plan) =
-        load_chunked(bundles_ks, &id, &auth.did, BundleKind::Import).await?;
+    let (mut record, mut plan) = load_chunked(bundles_ks, &id, owner, BundleKind::Import).await?;
     match record.state {
         BundleState::ImportPending => {}
         // Assembled and verified: every index is held, so this is a repeat of a
@@ -718,9 +753,19 @@ pub async fn finalize_precheck(
     bundle_id: &str,
 ) -> Result<(), ChunkedError> {
     auth.require_super_admin()?;
+    finalize_precheck_for(bundles_ks, &auth.did, bundle_id).await
+}
+
+/// [`finalize_precheck`] for `owner`, whose authority the caller has already
+/// established.
+pub async fn finalize_precheck_for(
+    bundles_ks: &KeyspaceHandle,
+    owner: &str,
+    bundle_id: &str,
+) -> Result<(), ChunkedError> {
     let id = parse_bundle_id(bundle_id)?;
     let _guard = chunk_lock().lock().await;
-    let record = require_owned(bundles_ks, &id, &auth.did).await?;
+    let record = require_owned(bundles_ks, &id, owner).await?;
     enforce_kind(&record, BundleKind::Import)?;
     if record.algorithm != ALGORITHM_CHUNKED || record.state != BundleState::ImportPending {
         return Ok(());

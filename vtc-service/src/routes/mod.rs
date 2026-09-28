@@ -792,21 +792,12 @@ fn build_api_chain(
             "https://trusttasks.org/spec/policy/activate/0.1",
         ));
 
-    // Phase 5 M5.5 — public-website management routes. The
-    // `route_with_task` helper accepts a pre-layered `MethodRouter`
-    // so per-route body caps override the 1 MiB global. We attach
-    // these BEFORE the global `DefaultBodyLimit` layer so the
-    // route-specific cap wins.
+    // Phase 5 M5.5 — public-website management routes. Content moves as
+    // signed Trust Tasks (`trust_tasks::website_tasks`: a chunked upload,
+    // deploy, ranged reads); these are the listing, delete and generation
+    // verbs, which carry no bytes.
     #[cfg(feature = "website")]
     let api = {
-        use axum::extract::DefaultBodyLimit;
-
-        // 64 MiB upper bound on the per-route body cap covers
-        // both `max_bundle_size_mb` (default 50) and
-        // `max_file_size_mb` (default 10). Handler then enforces
-        // the operator-configured value at runtime.
-        const WEBSITE_ROUTE_CAP: usize = 64 * 1024 * 1024;
-
         api.route(
             "/website/files",
             ttl(
@@ -828,22 +819,12 @@ fn build_api_chain(
         // should have had all along.
         .route(
             "/website/files/{*path}",
-            get(website::files::show)
-                .put(website::files::write)
-                .layer(DefaultBodyLimit::max(WEBSITE_ROUTE_CAP)),
-        )
-        .route(
-            "/website/files/{*path}",
             ttl(
                 delete(website::files::delete),
                 "https://trusttasks.org/spec/vtc/website/files/delete/0.1",
             ),
         )
         // Raw bundle upload — de-listed for the same reason as the PUT above.
-        .route(
-            "/website/deploy",
-            post(website::deploy::deploy).layer(DefaultBodyLimit::max(WEBSITE_ROUTE_CAP)),
-        )
         .route(
             "/website/generations",
             ttl(

@@ -9,9 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use axum::Json;
-use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -210,38 +208,34 @@ fn hash_window(window: Vec<FileMeta>) -> Vec<FileEntry> {
         .collect()
 }
 
-/// `GET /v1/website/files/{*path}`
-pub async fn show(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    AxumPath(path): AxumPath<String>,
-) -> Result<axum::response::Response, AppError> {
-    let resolved = resolve_or_400(&state, &path).await?;
-    let bytes = tokio::fs::read(&resolved)
-        .await
-        .map_err(|e| AppError::Internal(format!("read {resolved:?}: {e}")))?;
-    let etag = format!("\"{}\"", hex::encode(Sha256::digest(&bytes)));
-    let mime = mime_guess::from_path(&resolved)
-        .first_or_octet_stream()
-        .to_string();
-    let resp = axum::response::Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, mime)
-        .header(header::ETAG, etag.clone())
-        .header("x-website-etag", etag)
-        .body(axum::body::Body::from(bytes))
-        .map_err(|e| AppError::Internal(format!("build response: {e}")))?;
-    Ok(resp)
+/// `PUT /v1/website/files/{*path}`
+/// Why a single-file write was refused.
+pub(crate) enum WriteError {
+    /// `ifMatch` was given and the file's current hash is not it (or the file
+    /// is absent).
+    Precondition(String),
+    /// The site would not serve the path, or is in managed deploy mode.
+    Path(String),
+    App(AppError),
 }
 
-/// `PUT /v1/website/files/{*path}`
-pub async fn write(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    AxumPath(path): AxumPath<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<(StatusCode, Json<WebsiteWriteResponse>), AppError> {
+impl From<AppError> for WriteError {
+    fn from(e: AppError) -> Self {
+        Self::App(e)
+    }
+}
+
+/// Write `body` to `path` in the site as `actor`, atomically — what
+/// `vtc/website/upload/commit/0.1` does with a `file` target's verified bytes.
+/// `if_match` is the lowercase hex SHA-256 the file must currently have.
+pub(crate) async fn write_file(
+    state: &AppState,
+    actor: &str,
+    path: &str,
+    if_match: Option<&str>,
+    body: &[u8],
+) -> Result<WebsiteWriteResponse, WriteError> {
+    let path = path.to_string();
     let cfg = state.config.read().await;
     let max_size = cfg.website.max_file_size_mb.saturating_mul(1024 * 1024);
     let root_dir = cfg
@@ -257,15 +251,16 @@ pub async fn write(
         return Err(AppError::Validation(format!(
             "body size {} exceeds max_file_size_mb",
             body.len()
-        )));
+        ))
+        .into());
     }
 
-    // Live mode writes directly into root_dir. Managed mode
-    // refuses single-file writes because every change has to land
-    // in a new generation; the operator must use POST /deploy.
+    // Live mode writes directly into root_dir. Managed mode refuses
+    // single-file writes because every change has to land in a new
+    // generation; the operator deploys a bundle instead.
     if deploy_mode == "managed" {
-        return Err(AppError::Validation(
-            "single-file writes are not supported in managed deploy mode; use POST /v1/website/deploy".into(),
+        return Err(WriteError::Path(
+            "single-file writes are not supported in managed deploy mode; deploy a bundle".into(),
         ));
     }
 
@@ -278,7 +273,7 @@ pub async fn write(
     // `.git/config` writes that `deploy` + `serve` already refuse.
     let req_path = format!("/{}", path.trim_start_matches('/'));
     let target = canonical_within_root_for_create(&root_dir, &req_path, &blocklist)
-        .map_err(|e| write_path_error(&path, e))?;
+        .map_err(|e| WriteError::Path(write_path_error(&path, e).to_string()))?;
 
     // Only now, after validation passed, create the parent dirs.
     if let Some(parent) = target.parent()
@@ -289,7 +284,7 @@ pub async fn write(
     }
 
     // Optional If-Match optimistic concurrency.
-    if let Some(if_match) = headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok()) {
+    if let Some(if_match) = if_match {
         let current = match tokio::fs::read(&target).await {
             Ok(b) => Some(format!("\"{}\"", hex::encode(Sha256::digest(&b)))),
             Err(_) => None,
@@ -300,15 +295,15 @@ pub async fn write(
             .map(|c| c.trim_matches('"') == stripped)
             .unwrap_or(false);
         if !matches {
-            return Err(AppError::Conflict(format!(
-                "If-Match {if_match} does not match the current ETag for {path}"
+            return Err(WriteError::Precondition(format!(
+                "ifMatch {if_match} is not the current content hash of {path}"
             )));
         }
     }
 
     // Atomic single-file write: write to a temp file in the same
     // directory, then rename.
-    let digest_hex = hex::encode(Sha256::digest(&body));
+    let digest_hex = hex::encode(Sha256::digest(body));
     let etag = format!("\"{}\"", digest_hex);
     let size_bytes = body.len() as u64;
 
@@ -320,7 +315,7 @@ pub async fn write(
             .unwrap_or("file"),
         rand_suffix(),
     ));
-    tokio::fs::write(&tmp, &body)
+    tokio::fs::write(&tmp, body)
         .await
         .map_err(|e| AppError::Internal(format!("write tmp {tmp:?}: {e}")))?;
     tokio::fs::rename(&tmp, &target)
@@ -330,7 +325,7 @@ pub async fn write(
     if let Some(writer) = state.audit_writer.as_ref() {
         let _ = writer
             .write(
-                "admin",
+                actor,
                 None,
                 AuditEvent::WebsiteFileWritten(WebsiteFileWrittenData {
                     path: path.clone(),
@@ -341,14 +336,11 @@ pub async fn write(
             .await;
     }
 
-    Ok((
-        StatusCode::OK,
-        Json(WebsiteWriteResponse {
-            path,
-            etag,
-            size_bytes,
-        }),
-    ))
+    Ok(WebsiteWriteResponse {
+        path,
+        etag,
+        size_bytes,
+    })
 }
 
 /// `vtc/website/files/delete:notFound` — no file exists at the supplied path.

@@ -705,6 +705,153 @@ fn witnesses() -> Vec<Witness> {
             "surface_verbs_spine.rs",
             "the_lifecycle_and_join_codes_are_answered"
         ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::begin::v0_1::error_codes::NOT_CONFIGURED,
+            crate::trust_tasks::website_tasks::BEGIN_ERR_NOT_CONFIGURED,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::begin::v0_1::error_codes::TOO_LARGE,
+            crate::trust_tasks::website_tasks::BEGIN_ERR_TOO_LARGE,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::begin::v0_1::error_codes::PATH_REFUSED,
+            crate::trust_tasks::website_tasks::BEGIN_ERR_PATH_REFUSED,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::begin::v0_1::error_codes::SINGLE_FILE_WRITES_DISABLED,
+            crate::trust_tasks::website_tasks::BEGIN_ERR_SINGLE_FILE_WRITES_DISABLED,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::begin::v0_1::error_codes::INVALID_MANIFEST,
+            crate::trust_tasks::website_tasks::BEGIN_ERR_INVALID_MANIFEST,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::chunk::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::website_tasks::CHUNK_ERR_NOT_FOUND,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::chunk::v0_1::error_codes::CHUNK_OUT_OF_RANGE,
+            crate::trust_tasks::website_tasks::CHUNK_ERR_CHUNK_OUT_OF_RANGE,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::chunk::v0_1::error_codes::CHUNK_MISMATCH,
+            crate::trust_tasks::website_tasks::CHUNK_ERR_CHUNK_MISMATCH,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::commit::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::website_tasks::COMMIT_ERR_NOT_FOUND,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::commit::v0_1::error_codes::INCOMPLETE,
+            crate::trust_tasks::website_tasks::COMMIT_ERR_INCOMPLETE,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::commit::v0_1::error_codes::DIGEST_MISMATCH,
+            crate::trust_tasks::website_tasks::COMMIT_ERR_DIGEST_MISMATCH,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::commit::v0_1::error_codes::PRECONDITION_FAILED,
+            crate::trust_tasks::website_tasks::COMMIT_ERR_PRECONDITION_FAILED,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::commit::v0_1::error_codes::PATH_REFUSED,
+            crate::trust_tasks::website_tasks::COMMIT_ERR_PATH_REFUSED,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::commit::v0_1::error_codes::SINGLE_FILE_WRITES_DISABLED,
+            crate::trust_tasks::website_tasks::COMMIT_ERR_SINGLE_FILE_WRITES_DISABLED,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::upload::abort::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::website_tasks::ABORT_ERR_NOT_FOUND,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::deploy::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::website_tasks::DEPLOY_ERR_NOT_FOUND,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::deploy::v0_1::error_codes::BUNDLE_REFUSED,
+            crate::trust_tasks::website_tasks::DEPLOY_ERR_BUNDLE_REFUSED,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::files::show::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::website_tasks::SHOW_ERR_NOT_FOUND,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::files::show::v0_1::error_codes::PATH_REFUSED,
+            crate::trust_tasks::website_tasks::SHOW_ERR_PATH_REFUSED,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::files::show::v0_1::error_codes::CHANGED,
+            crate::trust_tasks::website_tasks::SHOW_ERR_CHANGED,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
+        #[cfg(feature = "website")]
+        witness!(
+            s::website::files::show::v0_1::error_codes::RANGE_OUT_OF_BOUNDS,
+            crate::trust_tasks::website_tasks::SHOW_ERR_RANGE_OUT_OF_BOUNDS,
+            "website_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
+        ),
     ]
 }
 
@@ -743,6 +890,11 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // query is an object once DCQL has parsed it, so no schema-valid
         // registration reaches it; the arm stays for a manifest that narrows.
         s::schemas::accepts::register::v0_1::error_codes::NOT_PUBLISHABLE,
+        // `alreadyStored` is different bytes at an index already held. Every
+        // chunk is checked against the digest `begin` committed for its index
+        // before anything else, so different bytes are `chunkMismatch` first;
+        // the same bytes are the idempotent `stored: false`.
+        s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
         // BASELINE-END
     ]
 }
@@ -750,7 +902,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The length of [`unwitnessed`], asserted. Lower it as witnesses land; raising
 /// it means a newly bound task declares codes nothing tests, which is the
 /// thing this census exists to stop.
-const UNWITNESSED: usize = 9;
+const UNWITNESSED: usize = 10;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.
