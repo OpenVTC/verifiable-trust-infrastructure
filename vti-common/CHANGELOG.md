@@ -2,6 +2,27 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.29.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.29.0...vti-common-v0.29.1) — 2026-09-28
+
+
+### Added
+
+- **storage**: Optional Fjall memory settings for the VTA and VTC ([#1803](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1803))
+
+Add STORAGE_FJALL_BLOCK_CACHE, STORAGE_FJALL_WRITE_BUFFER and
+  STORAGE_FJALL_MAX_JOURNAL, plus a matching [fjall] config-file table, so
+  an operator can keep fjall's block cache, buffered writes and startup
+  journal replay inside a pod's Kubernetes memory limit.
+
+  All three are optional and shared, unprefixed names for every consumer
+  (vti_common::config::FjallTuning, apply_fjall_env_overrides). Unset
+  leaves fjall's own defaults byte for byte; an env var overrides the
+  config file; an invalid, zero, or absurdly small value is refused at
+  startup naming the setting. Values accept a plain byte count or a
+  suffixed size ("64MiB", "512MB", "1GiB").
+
+
+
 ## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.28.0...vti-common-v0.29.0) — 2026-09-27
 
 
