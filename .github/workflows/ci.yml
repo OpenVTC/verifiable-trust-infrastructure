@@ -59,8 +59,31 @@ env:
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
+  # ── The job graph: three tiers ───────────────────────────────────────────
+  #
+  #   tier 0  Format, lockfile self-pins, lockfile resolves, cargo-deny,
+  #           authorization-context types, `affects`: seconds to a minute
+  #           each, little or no compile. Every tier-1 job `needs` all of them.
+  #   tier 1  Check, Clippy, Test (workspace), Test (VTC), Test (VTC admin UI).
+  #   tier 2  the Feature combos groups, Feature combos (all-features), Mobile
+  #           build, Enclave build, Enclave proxy, MSRV. Each `needs` every
+  #           tier-1 job, and runs only if none of them FAILED.
+  #
+  # Why tiers: without them a formatting slip or a stale lockfile still started
+  # every compile job in the workflow, and a PR that breaks `cargo check` learns
+  # nothing from twenty feature combinations of the same break. The cheap
+  # answer arrives first; the expensive jobs start once the cheap ones say the
+  # tree is worth building.
+  #
+  # The semver report and the release bump guard sit outside the tiers: one is
+  # opt-in by label, the other Release-PR-only and the verdict a Release PR is
+  # waiting on.
+  #
+  # Tier 2's condition is `!cancelled() && !failure() && <its affects gate>`,
+  # never the default. See the `affects` job for why.
   check:
     name: Check
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -159,7 +182,7 @@ jobs:
 
   test:
     name: Test (workspace)
-    needs: affects
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
     if: needs.affects.outputs.vta_tests != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -223,7 +246,7 @@ jobs:
 
   test-vtc:
     name: Test (VTC)
-    needs: affects
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
     if: needs.affects.outputs.vtc_tests != 'false'
     runs-on: ubuntu-latest
     # Measured over the 34 runs before this change: 11-16 min end to end
@@ -362,7 +385,7 @@ jobs:
     # console's own scripts. Gated on the VTC closure, which is where
     # `vtc-service/admin-ui/` belongs.
     name: Test (VTC admin UI)
-    needs: affects
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
     if: needs.affects.outputs.vtc_tests != 'false'
     runs-on: ubuntu-latest
     # ~2 min in practice (`npm ci` plus a ~20 s suite); a vitest run that
@@ -420,6 +443,7 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: [fmt, lockfile-self-pins, lockfile-resolves, deny, authz-context-types, affects]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -519,6 +543,10 @@ jobs:
     # than the MSRV; without this job a `let-else` introduced under a
     # newer compiler can silently break consumers on the documented MSRV.
     name: MSRV
+    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    # On a pull request, only when something that decides which compiler the
+    # tree needs changed; see the `msrv` step of `affects`.
+    if: ${{ !cancelled() && !failure() && needs.affects.outputs.msrv != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -943,90 +971,61 @@ jobs:
           MSG
           exit 1
 
-  features:
-    # Build the most-used non-default feature combinations so a misuse
-    # of `cfg(feature = "...")` doesn't silently rot. Default-feature
-    # builds are covered by the `check` job above.
-    name: Feature combos
-    needs: affects
-    if: needs.affects.outputs.features != 'false'
+  # ── Feature combos ───────────────────────────────────────────────────────
+  #
+  # Build the most-used non-default feature combinations so a misuse
+  # of `cfg(feature = "...")` doesn't silently rot. Default-feature
+  # builds are covered by the `check` job above.
+  #
+  # Tier 2. These used to be ONE job, `Feature combos`, running every step
+  # below one after another: the critical path of the whole workflow (~32-47
+  # min on a warm runner). Its budget history is worth keeping: it was ~40
+  # minutes once the all-features step moved out, but the budget was 45
+  # against a 45-minute job, which made every run a coin flip. An overrun is
+  # also not reported as a failure: GitHub marks the step that was in flight
+  # `cancelled`, which reads as though a human cancelled the run. #1575 spent
+  # three attempts getting one verdict out of it. Budget the tail, not the mean.
+  #
+  # It is now five parallel `Feature combos (<group>)` jobs of ~6-11 minutes
+  # each, grouped so the steps of a group share their dependency builds. Every
+  # step, command and comment is the same as in the single job; only which job
+  # it runs in changed. The shared preamble (system packages, toolchain, one
+  # registry cache for all five) is `.github/actions/feature-combos-setup`.
+  #
+  # Each group is gated on its OWN packages: `affects` derives a list from
+  # the group's `-p` flags (scripts/ci-feature-combo-pkgs.sh <job-key>), so a
+  # change to vti-rooms does not wait for the vta-service tests. Every step
+  # must stay package-scoped for that to be sound; that script refuses a
+  # `--workspace` step, which belongs in `features-all`.
+  #
+  # Tier 2 also means: runs only once every tier-1 job (Check, Clippy, both
+  # Test jobs, the admin UI tests) succeeded or was skipped by its own filter.
+  # See the `affects` job for why the condition is spelled
+  # `!cancelled() && !failure()` rather than left to the default.
+  #
+  # 30 minutes each: a group is ~11 at most, so this is ~3x, the same
+  # tail-budgeting as above.
+
+  features-vta-service-builds:
+    # The narrowed vta-service builds: one `cargo check` or `clippy` per feature
+    # set, and nothing run. ~11 min of steps on the pre-split timings (tee + webvh
+    # 3.3, didcomm without webvh 2.1, the three clippy builds ~1.5 each, the two
+    # secrets backends 0.7 each).
+    name: Feature combos (vta-service builds)
+    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_vta_service_builds != 'false' }}
     runs-on: ubuntu-latest
-    # ~40 minutes on a warm runner once the all-features step moved out, but
-    # the budget was 45 against a 45-minute job, which made every run a coin
-    # flip. An overrun is also not reported as a failure: GitHub marks the step
-    # that was in flight `cancelled`, which reads as though a human cancelled
-    # the run. #1575 spent three attempts getting one verdict out of it.
-    # Budget the tail, not the mean.
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Install system dependencies
-        run: |
-          # `apt-get update` is the operation that hangs here — three runs
-          # stalled on it, and once each attempt was bounded the timings showed
-          # every failure landing on the 90s `update` ceiling, never on the
-          # install. The mirror is unresponsive; retrying it harder does not
-          # help.
-          #
-          # So don't run it unless it is actually needed. The runner image ships
-          # a usable package index, and pkg-config is already present on
-          # ubuntu-24.04, so the fast path is to check what is missing and
-          # install straight from the shipped index. Refreshing the index is the
-          # fallback, still bounded and retried, for the case where the package
-          # genuinely is not in it.
-          pkgs=""
-          for p in libdbus-1-dev pkg-config; do
-            dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
-          done
-          if [ -z "$pkgs" ]; then
-            echo "libdbus-1-dev and pkg-config already present; nothing to do"
-            exit 0
-          fi
-          echo "missing:$pkgs"
-          if sudo timeout 120 apt-get install -y $pkgs; then
-            exit 0
-          fi
-          echo "::warning::install from the shipped index failed; refreshing"
-          for attempt in 1 2 3; do
-            if sudo timeout 120 apt-get -o Acquire::Retries=3 update \
-              && sudo timeout 120 apt-get -o Acquire::Retries=3 install -y $pkgs; then
-              exit 0
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out; retrying in 10s"
-            sleep 10
-          done
-          echo "::error::apt-get failed after the shipped index and 3 bounded refreshes"
-          exit 1
-
-      - name: Install the Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
-
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          # `target/` is deliberately NOT cached. Every crate in this
-          # workspace is a **path** dependency, so a source-only change does not
-          # move `Cargo.lock` and therefore does not move this key: the job
-          # restores a `target/` built from *other* source and reuses stale
-          # artifacts. The failure names a field that is plainly there in the
-          # diff, so it reads as the author's bug — see #1133, where a
-          # clean-room checkout of the same commit compiled fine.
-          #
-          # The registry and git caches stay: content-addressed by package
-          # version, so a stale entry is impossible by construction.
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-features-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-features-
+      - uses: ./.github/actions/feature-combos-setup
 
       - name: vta-service tee + webvh
         run: cargo check -p vta-service --no-default-features --features tee,rest,didcomm
+
       # DIDComm *without* webvh. Not covered by the step above, because `tee`
       # pulls `webvh` in — which is how this combination sat broken: three
       # trust-task call sites buffered into the `webvh`-gated
@@ -1035,11 +1034,13 @@ jobs:
       # until someone built the pair on its own, and no CI step ever did.
       - name: vta-service didcomm without webvh
         run: cargo check -p vta-service --no-default-features --features rest,didcomm
+
       # REST on its own — the narrowest supported build. `-D warnings` because
       # this combination had accumulated six dead imports/constants whose only
       # consumers were behind `didcomm`; nothing built it, so nothing said so.
       - name: vta-service rest only
         run: cargo clippy -p vta-service --no-default-features --features rest --all-targets -- -D warnings
+
       # TSP *without* DIDComm — the combination the `tsp = ["didcomm"]` feature
       # edge used to make unbuildable. `-D warnings` for the same reason as the
       # REST-only step above: the dead code this build exposes (DIDComm-only
@@ -1047,10 +1048,13 @@ jobs:
       # exactly what a silent-pass would hide.
       - name: vta-service tsp without didcomm
         run: cargo clippy -p vta-service --no-default-features --features setup,keyring,rest,tsp,cli-synthesis --all-targets -- -D warnings
+
       - name: vta-service aws-secrets
         run: cargo check -p vta-service --no-default-features --features aws-secrets,keyring,rest
+
       - name: vta-service azure-secrets
         run: cargo check -p vta-service --no-default-features --features azure-secrets,keyring,rest
+
       # The default build carries `tsp`, so the build that needs its own step
       # is the one without it: a VTA that must refuse `services.tsp = true`
       # rather than advertise a transport it cannot receive (Keyring VTI-34),
@@ -1058,45 +1062,70 @@ jobs:
       # `cfg(not(feature = "tsp"))` arms compile nowhere else.
       - name: vta-service without tsp
         run: cargo clippy -p vta-service --no-default-features --features setup,keyring,rest,didcomm,cli-synthesis --all-targets -- -D warnings
-      # `room-host`'s mediator listener is behind a non-default feature, so
-      # `cargo test --workspace` never compiles it — the same hole the transport
-      # harness sat in (CHANGELOG, "CI now runs the harness"). Tested rather than
-      # only checked: the bug it has already had was a reply threaded on the
-      # wrong id, which compiles perfectly.
-      - name: room-host didcomm + tsp
-        run: cargo test -p room-host --features didcomm
-      # A room's member half must not need a server. `vti-common` is optional
-      # behind `host`, and it is what pulls axum, fjall and tokio — so this is
-      # the check that `mls`/`sealed`/`retention` have not quietly acquired a
-      # dependency on one. It is also the *whole* precondition for the browser
-      # member: no store, no `AppError`, no runtime.
-      - name: vti-rooms member half (no host)
-        run: cargo clippy -p vti-rooms --no-default-features --features mls --all-targets -- -D warnings
-      # …and that the member half still reaches wasm, which is the property the
-      # feature exists for. `--lib` because the dev-dependencies (tokio) are
-      # native and do not need to reach wasm for this to hold.
-      - name: vti-rooms member half on wasm32
+
+  features-vta-service-tests:
+    # The two vta-service steps that RUN tests under a non-default feature set.
+    # ~10.5 min (setup wizard 5.8, TEE Mode B carve-out 4.6).
+    name: Feature combos (vta-service tests)
+    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_vta_service_tests != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/feature-combos-setup
+
+      # ("Every step above" below dates from the single job: it means the
+      # `cargo check`/`clippy` steps now in `Feature combos (vta-service builds)`.)
+      # Every step above only *compiles*. The setup wizard's scripted-prompt
+      # tests are the one place where a feature flag changes behaviour rather
+      # than just what compiles: each secrets backend adds an option to the
+      # backend menu, which shifts the answer script. `cargo check` cannot see
+      # that, so these two tests sat broken under `config-seed` — the only combo
+      # that both adds a backend and is cheap to build — until someone ran it by
+      # hand. Run them, don't just build them.
+      - name: vta-service setup wizard under extra secrets backends
         run: |
-          rustup target add wasm32-unknown-unknown
-          cargo check -p vti-rooms --lib --no-default-features --features mls \
-            --target wasm32-unknown-unknown
-      # The artifact itself, and its size. The size is reported rather than
-      # gated: a threshold picked today would either be slack enough to be
-      # meaningless or tight enough to fail on a dependency's patch release, and
-      # what a reviewer needs is the number in the log next to the diff that
-      # moved it.
-      - name: vti-rooms-wasm artifact
-        run: |
-          cargo build -p vti-rooms-wasm --profile wasm-release \
-            --target wasm32-unknown-unknown
-          f=target/wasm32-unknown-unknown/wasm-release/vti_rooms_wasm.wasm
-          echo "raw:      $(( $(wc -c < "$f") / 1024 )) KB"
-          echo "gzipped:  $(( $(gzip -9 -c "$f" | wc -c) / 1024 )) KB"
+          cargo test -p vta-service --bin vta --features config-seed setup::interactive
+          cargo test -p vta-service --bin vta --features config-seed,vault-secrets,k8s-secrets setup::interactive
+
+      # ("The `cargo check` step above" below is `vta-service tee + webvh`, now in
+      # `Feature combos (vta-service builds)`.)
+      # The TEE Mode B carve-out. `tee` is not a default feature of
+      # `vta-service`, so `cargo test --workspace` never builds
+      # `routes::bootstrap::tests` — and the `cargo check` step above builds
+      # the lib only, so it does not even TYPE-CHECK them. That module holds
+      # the two properties CLAUDE.md calls load-bearing: exactly one admin is
+      # ever minted, and a consumed carve-out refuses with 410 rather than a
+      # code that invites a retry. Both were unrunnable in CI. Run them.
+      - name: vta-service TEE Mode B carve-out
+        run: cargo test -p vta-service --no-default-features --features tee,rest,didcomm --lib routes::bootstrap
+
+  features-sdk-tee:
+    # vta-sdk's feature combinations and vta-tee's fleet path. ~10.5 min
+    # (attest-verify 1.7, client + sealed-transfer 1.9, vetting 2.6,
+    # all-features 1.5, tenant-overlay 2.7).
+    name: Feature combos (vta-sdk, vta-tee)
+    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_sdk_tee != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/feature-combos-setup
 
       - name: vta-sdk attest-verify
         run: cargo check -p vta-sdk --features attest-verify
+
       - name: vta-sdk client + sealed-transfer + provision-integration
         run: cargo check -p vta-sdk --features client,sealed-transfer,provision-integration
+
       # `vetting` is off by default and no workspace member's *tests* run with it
       # on, so `cargo test --workspace` never compiles its unit tests — the
       # all-features clippy step below lints them but runs nothing. Tested, not
@@ -1114,28 +1143,6 @@ jobs:
       - name: vta-sdk all-features (test)
         run: cargo test -p vta-sdk --all-features
 
-      # Every step above only *compiles*. The setup wizard's scripted-prompt
-      # tests are the one place where a feature flag changes behaviour rather
-      # than just what compiles: each secrets backend adds an option to the
-      # backend menu, which shifts the answer script. `cargo check` cannot see
-      # that, so these two tests sat broken under `config-seed` — the only combo
-      # that both adds a backend and is cheap to build — until someone ran it by
-      # hand. Run them, don't just build them.
-      - name: vta-service setup wizard under extra secrets backends
-        run: |
-          cargo test -p vta-service --bin vta --features config-seed setup::interactive
-          cargo test -p vta-service --bin vta --features config-seed,vault-secrets,k8s-secrets setup::interactive
-
-      # The TEE Mode B carve-out. `tee` is not a default feature of
-      # `vta-service`, so `cargo test --workspace` never builds
-      # `routes::bootstrap::tests` — and the `cargo check` step above builds
-      # the lib only, so it does not even TYPE-CHECK them. That module holds
-      # the two properties CLAUDE.md calls load-bearing: exactly one admin is
-      # ever minted, and a consumed carve-out refuses with 410 rather than a
-      # code that invites a retry. Both were unrunnable in CI. Run them.
-      - name: vta-service TEE Mode B carve-out
-        run: cargo test -p vta-service --no-default-features --features tee,rest,didcomm --lib routes::bootstrap
-
       # The fleet (`BAKE_CONFIG=false`) tenant-overlay path. `tenant-overlay` is
       # not a default feature of `vta-tee` and nothing in the default workspace
       # graph turns it on, so `cargo test --workspace` never even COMPILES
@@ -1145,6 +1152,75 @@ jobs:
       # that must not rot silently. Run them, don't just build them.
       - name: vta-tee fleet tenant-overlay path
         run: cargo test -p vta-tee --features tenant-overlay tenant_overlay
+
+  features-rooms:
+    # The room member half, natively and on wasm32, and the wasm artifact.
+    # ~6.5 min (clippy 1.6, wasm32 check 1.7, artifact 3.0).
+    name: Feature combos (vti-rooms)
+    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_rooms != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/feature-combos-setup
+
+      # A room's member half must not need a server. `vti-common` is optional
+      # behind `host`, and it is what pulls axum, fjall and tokio — so this is
+      # the check that `mls`/`sealed`/`retention` have not quietly acquired a
+      # dependency on one. It is also the *whole* precondition for the browser
+      # member: no store, no `AppError`, no runtime.
+      - name: vti-rooms member half (no host)
+        run: cargo clippy -p vti-rooms --no-default-features --features mls --all-targets -- -D warnings
+
+      # …and that the member half still reaches wasm, which is the property the
+      # feature exists for. `--lib` because the dev-dependencies (tokio) are
+      # native and do not need to reach wasm for this to hold.
+      - name: vti-rooms member half on wasm32
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check -p vti-rooms --lib --no-default-features --features mls \
+            --target wasm32-unknown-unknown
+
+      # The artifact itself, and its size. The size is reported rather than
+      # gated: a threshold picked today would either be slack enough to be
+      # meaningless or tight enough to fail on a dependency's patch release, and
+      # what a reviewer needs is the number in the log next to the diff that
+      # moved it.
+      - name: vti-rooms-wasm artifact
+        run: |
+          cargo build -p vti-rooms-wasm --profile wasm-release \
+            --target wasm32-unknown-unknown
+          f=target/wasm32-unknown-unknown/wasm-release/vti_rooms_wasm.wasm
+          echo "raw:      $(( $(wc -c < "$f") / 1024 )) KB"
+          echo "gzipped:  $(( $(gzip -9 -c "$f" | wc -c) / 1024 )) KB"
+
+  features-mediator:
+    # Behaviour tests that stand up a real embedded mediator, grouped because
+    # they share the messaging/mediator dependency stack. ~9 min (room-host 3.2,
+    # transport harness 3.5, VTC TSP receive 2.0, registry round trip 0.1).
+    name: Feature combos (mediator-backed)
+    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    if: ${{ !cancelled() && !failure() && needs.affects.outputs.features_mediator != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/feature-combos-setup
+
+      # `room-host`'s mediator listener is behind a non-default feature, so
+      # `cargo test --workspace` never compiles it — the same hole the transport
+      # harness sat in (CHANGELOG, "CI now runs the harness"). Tested rather than
+      # only checked: the bug it has already had was a reply threaded on the
+      # wrong id, which compiles perfectly.
+      - name: room-host didcomm + tsp
+        run: cargo test -p room-host --features didcomm
 
       # `transport-harness` is not a default feature, so `cargo test
       # --workspace` never compiles `MockVta::start_with_transports` — the
@@ -1189,6 +1265,10 @@ jobs:
   features-all:
     # The *maximal* combination, split out of `Feature combos`.
     #
+    # (That was when `Feature combos` was one job; it is now the
+    # `Feature combos (<group>)` jobs above. "That job" below means them, and
+    # the reasoning holds for each group: every one is package-scoped.)
+    #
     # Every step in that job narrows the feature set and names its package with
     # `-p`; this one does neither, and that difference is load-bearing. It
     # builds the whole workspace, including `pnm-cli`, `cnm-cli`, `vta-mcp` and
@@ -1204,12 +1284,12 @@ jobs:
     # `test-support`) sat uncompilable for as long as it took
     # `ProvisionIntegrationRequest.request` to become a `serde_json::Value`.
     name: Feature combos (all-features)
-    needs: affects
+    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
     # The whole workspace, expressed with the two answers that already exist:
     # anything inside "everything except vtc-service" or inside the VTC closure
     # is, between them, every crate. So this skips only a change that touches
     # no crate at all — prose — which is exactly the scope of the step.
-    if: needs.affects.outputs.vta_tests != 'false' || needs.affects.outputs.vtc_tests != 'false'
+    if: ${{ !cancelled() && !failure() && (needs.affects.outputs.vta_tests != 'false' || needs.affects.outputs.vtc_tests != 'false') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -1275,6 +1355,28 @@ jobs:
     # itself skipped, so gating this would stop the builds running on pushes to
     # main — the opposite of what a filter should do. It runs everywhere and simply
     # answers `true` when there is no diff to reason about.
+    #
+    # It is tier 0 (see the top of `jobs:`): every tier-1 job needs it, and every
+    # tier-2 job needs it directly too, because `needs.affects.outputs.*` is only
+    # readable from a job that lists `affects` in its own `needs`.
+    #
+    # The same skip rule is why tier 2 cannot use the default condition. A job
+    # with no status function in its `if` gets an implicit `success()`, which is
+    # false when ANY job it needs was skipped — and tier-1 jobs are skipped by
+    # their own filters all the time (a vta-only PR skips both VTC jobs). With
+    # the default, that skip would cascade and silently drop the Feature combos,
+    # Mobile, Enclave and MSRV coverage the PR actually needs. So tier 2 spells
+    # it out:
+    #
+    #   if: ${{ !cancelled() && !failure() && needs.affects.outputs.<x> != 'false' }}
+    #
+    # `failure()` in a job-level `if` is true when any ANCESTOR job failed, not
+    # just a direct need, so a failed tier-0 job (whose tier-1 dependents are then
+    # skipped, not failed) still stops tier 2. A skipped tier-1 job is not a
+    # failure and lets it through; `!cancelled()` stops it on a cancelled run.
+    #
+    # Pushes to main and nightly: every script below answers `run=true` for a
+    # non-pull-request event, so the whole graph runs there, as before.
     name: which builds this change can affect
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1283,7 +1385,12 @@ jobs:
       enclave: ${{ steps.enclave.outputs.run }}
       vta_tests: ${{ steps.vta_tests.outputs.run }}
       vtc_tests: ${{ steps.vtc_tests.outputs.run }}
-      features: ${{ steps.features.outputs.run }}
+      features_vta_service_builds: ${{ steps.features_vta_service_builds.outputs.run }}
+      features_vta_service_tests: ${{ steps.features_vta_service_tests.outputs.run }}
+      features_sdk_tee: ${{ steps.features_sdk_tee.outputs.run }}
+      features_rooms: ${{ steps.features_rooms.outputs.run }}
+      features_mediator: ${{ steps.features_mediator.outputs.run }}
+      msrv: ${{ steps.msrv.outputs.run }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1308,7 +1415,7 @@ jobs:
         run: bash scripts/ci-affects.sh --except vtc-service
       - id: vtc_tests
         run: bash scripts/ci-affects.sh vtc-service,vtc-client
-      # `Feature combos` is the longest job on the graph and was the only
+      # `Feature combos` was the longest job on the graph and was the only
       # expensive one with no filter at all, so a CLI-only or docs-only pull
       # request waited ~45 minutes for it.
       #
@@ -1319,16 +1426,64 @@ jobs:
       # written down here; `ci-feature-combo-pkgs.sh` explains why, and refuses
       # if a `--workspace` step ever makes those flags an incomplete account of
       # what the job builds.
-      - id: features
-        run: bash scripts/ci-affects.sh "$(bash scripts/ci-feature-combo-pkgs.sh)"
+      #
+      # Now that it is five `Feature combos (<group>)` jobs, each group gets its
+      # own answer from its own `-p` flags, so a group runs only when its own
+      # packages' closure is touched. The argument is the group's JOB KEY. The
+      # list is captured in an assignment first so a refusal from the pkgs
+      # script fails this step, instead of being swallowed by `$(...)` inside
+      # an argument and reaching ci-affects.sh as an empty package list.
+      #
+      # The `--list` call applies the `--workspace` guard to EVERY group,
+      # including one added later without a gate step of its own here. (Such a
+      # group reads an output that does not exist, gets '' and so runs on
+      # every PR: fail-safe, but give it its own gate step below.)
+      - name: Every Feature combos group is package-scoped
+        run: bash scripts/ci-feature-combo-pkgs.sh --list
+      - id: features_vta_service_builds
+        run: |
+          pkgs=$(bash scripts/ci-feature-combo-pkgs.sh features-vta-service-builds)
+          bash scripts/ci-affects.sh "$pkgs"
+      - id: features_vta_service_tests
+        run: |
+          pkgs=$(bash scripts/ci-feature-combo-pkgs.sh features-vta-service-tests)
+          bash scripts/ci-affects.sh "$pkgs"
+      - id: features_sdk_tee
+        run: |
+          pkgs=$(bash scripts/ci-feature-combo-pkgs.sh features-sdk-tee)
+          bash scripts/ci-affects.sh "$pkgs"
+      - id: features_rooms
+        run: |
+          pkgs=$(bash scripts/ci-feature-combo-pkgs.sh features-rooms)
+          bash scripts/ci-affects.sh "$pkgs"
+      - id: features_mediator
+        run: |
+          pkgs=$(bash scripts/ci-feature-combo-pkgs.sh features-mediator)
+          bash scripts/ci-affects.sh "$pkgs"
+      # MSRV asks one question: does the tree still build on the declared
+      # `rust-version`? On a pull request the things that move that answer
+      # most directly are a manifest (a new dependency, or `rust-version`
+      # itself), the lockfile (a dependency release that raised ITS own
+      # `rust-version`), and the toolchain / `.cargo` config. A crate-closure
+      # answer would run it for nearly every PR, since MSRV checks the whole
+      # workspace; this runs it only for those files (and for a change to
+      # ci.yml, so an edit to the MSRV job itself is exercised by its own PR).
+      #
+      # The trade, stated plainly: a PR whose SOURCE uses a feature newer than
+      # the MSRV (a std API stabilised after it, a new syntax form) no longer
+      # hears it from this job; Check/Clippy/Test run a newer stable and accept
+      # it. The push to main still runs MSRV unconditionally and reports it
+      # there, one merge late. `ci-affects.sh --toolchain` has the path list.
+      - id: msrv
+        run: bash scripts/ci-affects.sh --toolchain
 
   enclave:
     # The Nitro enclave binary uses a TEE-only feature combo that the
     # default `check` job never touches. Linux-only because vsock-store
     # depends on `tokio-vsock` which doesn't build on macOS/Windows.
     name: Enclave build
-    needs: affects
-    if: needs.affects.outputs.enclave != 'false'
+    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    if: ${{ !cancelled() && !failure() && needs.affects.outputs.enclave != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1417,6 +1572,8 @@ jobs:
     # Not gated on `affects` — this crate's lock can break on a crates.io
     # move with no diff here at all.
     name: Enclave proxy (standalone crate)
+    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -1494,8 +1651,8 @@ jobs:
     # 60 minutes, not 45: a warm run on main takes ~40, and a PR run on a busy
     # runner hit 45 and was cancelled (#1807), which reads as a failure.
     name: Mobile build
-    needs: affects
-    if: needs.affects.outputs.mobile != 'false'
+    needs: [check, clippy, test, test-vtc, test-vtc-admin-ui, affects]
+    if: ${{ !cancelled() && !failure() && needs.affects.outputs.mobile != 'false' }}
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
