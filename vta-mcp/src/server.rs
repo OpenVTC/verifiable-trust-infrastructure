@@ -37,7 +37,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ServerCapabilities, ServerInfo,
+    ResourceContents, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{Peer, RequestContext};
 use rmcp::{
@@ -1057,7 +1057,7 @@ impl VtaMcp {
 
 #[tool_handler]
 impl ServerHandler for VtaMcp {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         // `Implementation` / `InitializeResult` are `#[non_exhaustive]`, so build
         // them via constructors + field assignment rather than struct literals.
         let mut server_info = Implementation::from_build_env();
@@ -1068,7 +1068,7 @@ impl ServerHandler for VtaMcp {
         // these lines in the host's UI, but it is deprecated by SEP-2577 and
         // slated for removal — the runtime log goes to stderr (which hosts
         // capture) and the call record is readable as `vta://calls/recent`.
-        ServerInfo::new(
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
