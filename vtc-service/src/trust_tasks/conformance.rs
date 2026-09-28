@@ -616,6 +616,9 @@ fn auto_grant_status() -> Value {
     })
 }
 
+/// A website file's content hash (`WebsiteEtag`): lowercase hex SHA-256.
+const SITE_ETAG: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 // ─── The witness table ───────────────────────────────────────────────────
 
 /// The number of annotated divergences. Asserted, so the debt can shrink but
@@ -1613,6 +1616,85 @@ fn table() -> Vec<Conformance> {
             // `RollbackResponse` — 200 with zero bytes until #1059, which
             // discarded a `noop` it had already computed.
             json!({ "generation": "1", "current": true, "noop": false })
+        ),
+        // `trust_tasks::website_tasks`: the chunked upload, deploy and ranged
+        // reads. Each handler builds its answer with `json!`, so these are the
+        // members it writes; `deploy` answers with `DeployResponse` itself.
+        checked!(
+            s::website::upload::begin::v0_1::Payload,
+            s::website::upload::begin::v0_1::Response,
+            json!({
+                "target": { "kind": "file", "path": "/index.html", "ifMatch": SITE_ETAG },
+                "expectedSha256": SITE_ETAG,
+                "expectedSizeBytes": 1024,
+                "chunks": {
+                    "chunkSize": 262_144,
+                    "chunkCount": 1,
+                    "chunkDigests": ["zQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"],
+                },
+            }),
+            json!({ "uploadId": REQUEST_ID, "expiresAt": TS })
+        ),
+        checked!(
+            s::website::upload::chunk::v0_1::Payload,
+            s::website::upload::chunk::v0_1::Response,
+            json!({
+                "uploadId": REQUEST_ID,
+                "index": 0,
+                "digestMultibase": "zQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+                "data": "PGh0bWw-PC9odG1sPg",
+            }),
+            json!({
+                "uploadId": REQUEST_ID,
+                "index": 0,
+                "stored": true,
+                "remainingCount": 0,
+                "expiresAt": TS,
+            })
+        ),
+        checked!(
+            s::website::upload::commit::v0_1::Payload,
+            s::website::upload::commit::v0_1::Response,
+            json!({ "uploadId": REQUEST_ID }),
+            json!({
+                "uploadId": REQUEST_ID,
+                "target": { "kind": "file", "path": "/index.html", "ifMatch": SITE_ETAG },
+                "sha256": SITE_ETAG,
+                "sizeBytes": 1024,
+                "file": { "path": "/index.html", "etag": SITE_ETAG, "sizeBytes": 1024 },
+            })
+        ),
+        checked!(
+            s::website::upload::abort::v0_1::Payload,
+            s::website::upload::abort::v0_1::Response,
+            json!({ "uploadId": REQUEST_ID }),
+            json!({ "uploadId": REQUEST_ID, "aborted": true })
+        ),
+        checked!(
+            s::website::deploy::v0_1::Payload,
+            s::website::deploy::v0_1::Response,
+            json!({ "uploadId": REQUEST_ID }),
+            to_v(crate::routes::website::deploy::DeployResponse {
+                deploy_mode: "managed".into(),
+                bundle_sha256: SITE_ETAG.into(),
+                bundle_size_bytes: 4096,
+                target_generation: 3,
+                pruned_generations: 1,
+            })
+        ),
+        checked!(
+            s::website::files::show::v0_1::Payload,
+            s::website::files::show::v0_1::Response,
+            json!({ "path": "/index.html", "offset": 0, "length": 1024, "ifMatch": SITE_ETAG }),
+            json!({
+                "path": "/index.html",
+                "etag": SITE_ETAG,
+                "sizeBytes": 13,
+                "contentType": "text/html",
+                "offset": 0,
+                "data": "PGh0bWw-PC9odG1sPg",
+                "complete": true,
+            })
         ),
         // ─── join manifest 0.2 and peer identity vetting ─────────────
         //
