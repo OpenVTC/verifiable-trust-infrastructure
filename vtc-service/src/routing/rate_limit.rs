@@ -23,8 +23,10 @@
 //! |------------------------|-------------------|---------------------|
 //! | `tower-governor` on the unauthenticated chain ([`crate::routes`]) | [`UNAUTH_LIMITER`] | source IP |
 //! | per-member publish window ([`crate::relationships::rate_limit`]) | [`RELATIONSHIPS_LIMITER`] | HMAC of the signer DID |
+//! | known-signer documents on `POST /v1/trust-tasks` ([`crate::routing::trust_task_admission`]) | [`SIGNED_ADDRESS_LIMITER`] | source IP |
+//! | a verified known signer on `POST /v1/trust-tasks` ([`crate::routing::trust_task_admission`]) | [`SIGNER_LIMITER`] | the signer's principal (a console key's admin) |
 //!
-//! Both are HTTP-only: the Trust Task framework (`trust_tasks_rs::StandardCode`)
+//! All are HTTP-only: the Trust Task framework (`trust_tasks_rs::StandardCode`)
 //! defines no rate-limit error code, and neither limiter sits on the DIDComm or
 //! TSP dispatch path, so no Trust Task error document ever reports one.
 
@@ -51,6 +53,14 @@ pub const UNAUTH_LIMITER: &str = "unauth";
 
 /// The per-member relationship publish window.
 pub const RELATIONSHIPS_LIMITER: &str = "relationships";
+
+/// The per-address ceiling on `POST /v1/trust-tasks` documents that claim a
+/// signer the community knows, charged before the proof is verified.
+pub const SIGNED_ADDRESS_LIMITER: &str = "signed-address";
+
+/// A verified known signer's own bucket on `POST /v1/trust-tasks`, keyed by
+/// the principal it acts for.
+pub const SIGNER_LIMITER: &str = "signer";
 
 /// The JSON body of a rate-limit refusal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]

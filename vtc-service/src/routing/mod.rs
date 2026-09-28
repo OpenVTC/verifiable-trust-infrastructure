@@ -6,6 +6,8 @@
 //! - [`host_dispatch`] — subdomain-mode `Host` header check.
 //! - [`rate_limit`] — the response shape every VTC rate-limit refusal
 //!   takes (`x-rate-limit-source: vtc`, `Retry-After`, JSON body).
+//! - [`trust_task_admission`] — the budgets `POST /v1/trust-tasks` charges
+//!   a document to: per address when anonymous, per signer once verified.
 //!
 //! Body-cap enforcement + tower-governor rate limiting are layered
 //! directly in [`crate::routes::router_with`] at the API nest
@@ -17,3 +19,4 @@ pub mod csrf;
 pub mod host_dispatch;
 pub mod rate_limit;
 pub mod security_headers;
+pub mod trust_task_admission;

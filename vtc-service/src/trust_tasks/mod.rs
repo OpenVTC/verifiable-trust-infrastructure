@@ -265,7 +265,33 @@ pub(crate) async fn dispatch_trust_task_core(
     // Every answer is signed, refusals included — the early returns below as
     // well as the dispatched result (which `dispatch_trust_task_validated`
     // signs before recording it for redelivery).
-    let outcome = dispatch_trust_task_validated(state, ctx, body).await;
+    let outcome = dispatch_trust_task_validated(state, ctx, body, None).await;
+    sign_response(state, outcome).await
+}
+
+/// A transport's say in whether a document whose proof has verified may go on
+/// to execute: the HTTPS door's per-signer rate limit
+/// ([`crate::routing::trust_task_admission`]).
+///
+/// It is asked once, after the proof has verified against the document's
+/// `issuer` and before the duplicate-execution record is claimed, so a refusal
+/// spends neither the document's `id` nor any work past verification.
+pub(crate) trait VerifiedAdmission: Sync {
+    /// `false` refuses the document. The spine then stops and answers an empty
+    /// `429` outcome, which the transport replaces with its own refusal; the
+    /// admission is expected to have recorded why.
+    fn admit_verified(&self, signer: &str) -> bool;
+}
+
+/// [`dispatch_trust_task_core`], with `admit` consulted once the proof has
+/// verified (see [`VerifiedAdmission`]).
+pub(crate) async fn dispatch_trust_task_core_admitted(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    body: &[u8],
+    admit: &dyn VerifiedAdmission,
+) -> TrustTaskOutcome {
+    let outcome = dispatch_trust_task_validated(state, ctx, body, Some(admit)).await;
     sign_response(state, outcome).await
 }
 
@@ -273,6 +299,7 @@ async fn dispatch_trust_task_validated(
     state: &AppState,
     ctx: &JoinAuthCtx,
     body: &[u8],
+    admit: Option<&dyn VerifiedAdmission>,
 ) -> TrustTaskOutcome {
     // 0. The size the document's type accepts — decided before anything in it
     //    is parsed, on every transport (`size`).
@@ -465,6 +492,19 @@ async fn dispatch_trust_task_validated(
                 );
             }
         }
+    }
+
+    // 3a'. The transport's admission of the verified signer — the HTTPS
+    //      door's per-signer rate limit. After verification, so the bucket it
+    //      charges is the one the proof establishes; before the claim below,
+    //      so a refused document keeps its `id` for the retry.
+    if let (Some(admit), Some(signer)) = (admit, ctx.verified_signer.as_deref())
+        && !admit.admit_verified(signer)
+    {
+        return TrustTaskOutcome {
+            status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+            body: Vec::new(),
+        };
     }
 
     // 3b. SPEC §7.2 item 11 — the duplicate-execution record.
@@ -6408,7 +6448,7 @@ mod config_pair_tests {
     /// Both bearer routes take `AdminAuth`, which a context-scoped admin
     /// satisfies, so this door must admit them too.
     #[tokio::test]
-    async fn a_context_scoped_admin_may_export_and_import() {
+    async fn a_context_scoped_admin_may_export_but_not_import() {
         let fix = fixture().await;
         let document = changed_document(&fix.vtc).await;
 
@@ -6416,10 +6456,13 @@ mod config_pair_tests {
         let out = dispatch(&fix.vtc, &doc).await;
         assert!(
             out.status.is_success(),
-            "a context-scoped admin passes AdminAuth and must pass here: {}",
+            "a context-scoped admin may export: {}",
             String::from_utf8_lossy(&out.body)
         );
 
+        // An import writes community-wide configuration, so it needs an
+        // unrestricted admin (#1829): a context admin is refused and nothing
+        // is stored.
         let doc = signed(
             &fix.scoped_admin,
             CONFIG_IMPORT_TYPE,
@@ -6427,12 +6470,13 @@ mod config_pair_tests {
         )
         .await;
         let out = dispatch(&fix.vtc, &doc).await;
-        assert!(
-            out.status.is_success(),
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("permissionDenied"),
             "{}",
             String::from_utf8_lossy(&out.body)
         );
-        assert_eq!(stored_name(&fix.vtc).await, "Imported Community");
+        assert_ne!(stored_name(&fix.vtc).await, "Imported Community");
     }
 
     // ─── the operation's own refusals ────────────────────────────────────

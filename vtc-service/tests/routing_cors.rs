@@ -359,12 +359,12 @@ async fn preflight_from_allowed_origin_returns_cors_headers() {
 
     let req = Request::builder()
         .method("OPTIONS")
-        .uri("/v1/admin/config")
+        .uri("/v1/trust-tasks")
         .header("Origin", "https://admin.example.com")
-        .header("Access-Control-Request-Method", "PATCH")
+        .header("Access-Control-Request-Method", "POST")
         .header(
             "Access-Control-Request-Headers",
-            "Authorization, Trust-Task",
+            "Authorization, Content-Type, Trust-Task",
         )
         .body(Body::empty())
         .unwrap();
@@ -383,6 +383,7 @@ async fn preflight_from_allowed_origin_returns_cors_headers() {
         .unwrap()
         .to_lowercase();
     assert!(allow_headers.contains("authorization"));
+    assert!(allow_headers.contains("content-type"));
     assert!(allow_headers.contains("trust-task"));
     assert!(allow_headers.contains("idempotency-key"));
     assert_eq!(
@@ -400,9 +401,9 @@ async fn preflight_from_disallowed_origin_omits_cors_headers() {
 
     let req = Request::builder()
         .method("OPTIONS")
-        .uri("/v1/admin/config")
+        .uri("/v1/trust-tasks")
         .header("Origin", "https://attacker.example.com")
-        .header("Access-Control-Request-Method", "PATCH")
+        .header("Access-Control-Request-Method", "POST")
         .body(Body::empty())
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
@@ -424,9 +425,9 @@ async fn empty_allowlist_disables_cors_headers() {
 
     let req = Request::builder()
         .method("OPTIONS")
-        .uri("/v1/admin/config")
+        .uri("/v1/trust-tasks")
         .header("Origin", "https://admin.example.com")
-        .header("Access-Control-Request-Method", "PATCH")
+        .header("Access-Control-Request-Method", "POST")
         .body(Body::empty())
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
