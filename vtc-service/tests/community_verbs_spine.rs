@@ -207,6 +207,101 @@ async fn the_member_and_inviter_verbs_answer_those_members() {
     }
 }
 
+/// A `Moderator` or `Issuer` manages only the invitations it issued: another
+/// inviter's (an administrator's here) is absent from its list, and revoking
+/// or delivering it is refused exactly as an invitation that does not exist
+/// is. It cannot confer a role by invitation either. An administrator sees
+/// and acts on every invitation.
+#[tokio::test]
+async fn an_inviter_below_admin_manages_only_its_own_invitations() {
+    let (vtc, _) = vtc().await;
+    let admin = admin(&vtc).await;
+    let unknown = "urn:uuid:00000000-0000-4000-8000-000000000000";
+    for role in [VtcRole::Moderator, VtcRole::Issuer] {
+        let inviter = party_with_role(&vtc, role.clone(), &[]).await;
+        let theirs = invitation(&vtc, &admin).await;
+        let own = {
+            let (_, doc) = call(
+                &vtc,
+                &inviter,
+                INVITATIONS_ISSUE,
+                json!({ "subjectDid": format!("{INVITEE}{role}") }),
+            )
+            .await;
+            payload(&doc)["vic"]["id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{role}: an issued invitation: {doc}"))
+                .to_string()
+        };
+
+        let ids = |doc: &Value| -> Vec<String> {
+            payload(doc)["invitations"]
+                .as_array()
+                .unwrap_or_else(|| panic!("a list: {doc}"))
+                .iter()
+                .map(|i| i["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let (_, doc) = call(&vtc, &inviter, INVITATIONS_LIST, json!({})).await;
+        assert_eq!(ids(&doc), vec![own.clone()], "{role}: {doc}");
+        let (_, doc) = call(&vtc, &admin, INVITATIONS_LIST, json!({})).await;
+        let all = ids(&doc);
+        assert!(all.contains(&own) && all.contains(&theirs), "{doc}");
+
+        let refusal = |doc: &Value| {
+            (
+                payload(doc)["code"].clone(),
+                payload(doc)["details"]["reason"].clone(),
+            )
+        };
+        for (uri, extra) in [
+            (INVITATIONS_REVOKE, json!({})),
+            (INVITATIONS_DELIVER, json!({ "channel": "offer" })),
+        ] {
+            let with = |id: &str| {
+                let mut body = extra.clone();
+                body["id"] = json!(id);
+                body
+            };
+            let (_, foreign) = call(&vtc, &inviter, uri, with(&theirs)).await;
+            let (_, missing) = call(&vtc, &inviter, uri, with(unknown)).await;
+            assert!(error_code(&foreign).is_some(), "{role} {uri}: {foreign}");
+            assert_eq!(
+                refusal(&foreign),
+                refusal(&missing),
+                "{role} {uri}: another inviter's invitation must read as absent"
+            );
+        }
+        // Still live: the refused revoke did nothing, so the admin can deliver it.
+        let (_, doc) = call(
+            &vtc,
+            &admin,
+            INVITATIONS_DELIVER,
+            json!({ "id": theirs, "channel": "offer" }),
+        )
+        .await;
+        assert_eq!(error_code(&doc), None, "{doc}");
+        // Its own it may revoke.
+        let (_, doc) = call(&vtc, &inviter, INVITATIONS_REVOKE, json!({ "id": own })).await;
+        assert_eq!(error_code(&doc), None, "{role}: {doc}");
+
+        for granted in ["moderator", "issuer", "custom:editor"] {
+            let (_, doc) = call(
+                &vtc,
+                &inviter,
+                INVITATIONS_ISSUE,
+                json!({ "subjectDid": format!("{INVITEE}{role}x"), "role": granted }),
+            )
+            .await;
+            assert_eq!(
+                error_code(&doc),
+                Some("permissionDenied"),
+                "{role} granting {granted}: {doc}"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn every_moved_verb_refuses_an_unsigned_document() {
     let (vtc, request_id) = vtc().await;

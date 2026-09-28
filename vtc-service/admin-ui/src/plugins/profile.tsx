@@ -1,5 +1,5 @@
-// Community profile plugin — read over GET /v1/community/profile, edited as a
-// signed `vtc/community/profile/update/0.1` document.
+// Community profile plugin — read as a signed `vtc/community/profile/show/0.1`
+// document, edited as a signed `vtc/community/profile/update/0.1` document.
 //
 // Read-only fields (community_did, created_at) render as plain
 // text. Editable fields (name, description, language, contact
