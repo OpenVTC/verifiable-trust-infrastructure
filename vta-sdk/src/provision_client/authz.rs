@@ -59,10 +59,29 @@ use crate::error::VtaError;
 /// Emits the [`DiagCheck::VerifyAuthorization`] row. Returns `Err` with an
 /// operator-facing message on a failure the run cannot recover from; `Ok(())`
 /// covers both a clean probe and a VTA that does not serve discovery.
+/// The grant a setup DID needs, scoped to the context it provisions into — never
+/// an unscoped `--role admin`, which would make it an unrestricted admin.
+///
+/// A flow that mints (`rolls_over`) rolls the setup DID over to a long-term
+/// admin the VTA mints, so the grant is the canonical time-boxed one-time
+/// hand-off (VTI-ACL-054): without the marker, the rollover is refused
+/// (VTI-ACL-053). A flow that mints nothing keeps the setup DID as the admin,
+/// so its grant is a scoped one with no expiry.
+pub(super) fn grant_hint(setup_did: &str, context: &str, rolls_over: bool) -> String {
+    if rolls_over {
+        format!(
+            "pnm acl create --did {setup_did} --role admin --contexts {context} --expires 1h --handoff"
+        )
+    } else {
+        format!("pnm acl create --did {setup_did} --role admin --contexts {context}")
+    }
+}
+
 pub(super) async fn verify_authorization(
     client: &VtaClient,
     setup_did: &str,
     vta_did: &str,
+    context: &str,
     required_task: Option<&str>,
     tx: &UnboundedSender<VtaEvent>,
 ) -> Result<(), String> {
@@ -97,10 +116,10 @@ pub(super) async fn verify_authorization(
             // Plain text, no markdown: this string is rendered verbatim into a
             // terminal checklist row, where `**that**` is four stray asterisks.
             let msg = format!(
-                "{setup_did} is not authorized on {vta_did}. Run \
-                 `pnm acl create --did {setup_did} --role admin` against that VTA — an \
-                 ACL grant is per-VTA and one made on a different VTA does not carry — \
-                 and confirm {vta_did} is the VTA you meant. ({detail})"
+                "{setup_did} is not authorized on {vta_did}. Run `{}` against that VTA \
+                 — an ACL grant is per-VTA and one made on a different VTA does not \
+                 carry — and confirm {vta_did} is the VTA you meant. ({detail})",
+                grant_hint(setup_did, context, required_task.is_some())
             );
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::VerifyAuthorization,
@@ -262,5 +281,28 @@ mod tests {
             Some("https://trusttasks.org/spec/provision/integration")
         );
         assert_eq!(task_family("no-slashes"), None);
+    }
+}
+
+#[cfg(test)]
+mod grant_hint_tests {
+    use super::grant_hint;
+
+    /// A flow that rolls over is told the scoped, time-boxed hand-off grant
+    /// (VTI-ACL-054); one that does not, a scoped permanent one. Neither is
+    /// ever told an unscoped `--role admin`, which would be an unrestricted
+    /// admin.
+    #[test]
+    fn the_grant_hint_is_scoped_and_carries_the_handoff_when_it_rolls_over() {
+        let rolling = grant_hint("did:key:zSetup", "vtc", true);
+        assert_eq!(
+            rolling,
+            "pnm acl create --did did:key:zSetup --role admin --contexts vtc --expires 1h --handoff"
+        );
+        let staying = grant_hint("did:key:zSetup", "vtc", false);
+        assert_eq!(
+            staying,
+            "pnm acl create --did did:key:zSetup --role admin --contexts vtc"
+        );
     }
 }

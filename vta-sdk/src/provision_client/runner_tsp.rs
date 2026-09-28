@@ -254,8 +254,15 @@ async fn tsp_attempt_body(
                 .request_uri(),
         ),
     };
-    if let Err(msg) =
-        super::authz::verify_authorization(client, setup_did, vta_did, required_task, tx).await
+    if let Err(msg) = super::authz::verify_authorization(
+        client,
+        setup_did,
+        vta_did,
+        &ask.context,
+        required_task,
+        tx,
+    )
+    .await
     {
         // Post-auth in the sense that matters to the runner: the transport
         // worked, so another transport will hit exactly the same refusal and

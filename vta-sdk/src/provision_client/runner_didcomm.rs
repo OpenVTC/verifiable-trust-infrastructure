@@ -298,8 +298,15 @@ pub(crate) async fn run_didcomm_attempt(
 
             // AdminOnly mints nothing, so it names no required task — the
             // question here is only whether this DID is granted on this VTA.
-            let authorized =
-                super::authz::verify_authorization(&client, &setup_did, &vta_did, None, tx).await;
+            let authorized = super::authz::verify_authorization(
+                &client,
+                &setup_did,
+                &vta_did,
+                &ask.context,
+                None,
+                tx,
+            )
+            .await;
             client.shutdown().await;
             if let Err(msg) = authorized {
                 let _ = tx.send(VtaEvent::CheckDone(
@@ -391,6 +398,7 @@ pub(crate) async fn run_didcomm_attempt(
                 &probe_client,
                 &setup_did,
                 &vta_did,
+                &ask.context,
                 Some(
                     crate::protocols::provision_integration_management::ProvisionSpecVersion::CURRENT
                         .request_uri(),
