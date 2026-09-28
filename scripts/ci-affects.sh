@@ -47,10 +47,20 @@ set -euo pipefail
 # `room-host` depends on `vtc-client`, so `vtc-client` is inside "everything
 # except vtc-service" despite being a VTC crate. Complementing by hand gets that
 # backwards; deriving it does not.
+#
+# `--own` asks a narrower one: the named packages' own directories only, not what
+# they depend on. Global files (lockfile, manifests, toolchain, workflows) still
+# run it. See `ci-closure.py` for the one job that wants this and why.
 EXCEPT=""
-if [ "${1:-}" = "--except" ]; then EXCEPT="--except"; shift; fi
-PKG="${1:?usage: ci-affects.sh [--except] <package>[,<package>...] [base-ref]}"
-if [ -n "$EXCEPT" ]; then SCOPE="everything except $PKG"; else SCOPE="$PKG"; fi
+case "${1:-}" in
+  --except|--own) EXCEPT="$1"; shift ;;
+esac
+PKG="${1:?usage: ci-affects.sh [--except|--own] <package>[,<package>...] [base-ref]}"
+case "$EXCEPT" in
+  --except) SCOPE="everything except $PKG" ;;
+  --own) SCOPE="$PKG (own sources)" ;;
+  *) SCOPE="$PKG" ;;
+esac
 
 # Resolving the base is where a filter like this quietly stops working. On a
 # pull_request event Actions checks out the MERGE commit, and `origin/main` is

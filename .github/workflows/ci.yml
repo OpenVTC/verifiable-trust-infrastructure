@@ -687,8 +687,16 @@ jobs:
     # premise was wrong, and the premise came from the name. A job whose red is
     # expected should say so where the red is displayed, not only in a comment
     # nobody opens.
+    #
+    # Opt-in: it runs only on a pull request labelled `semver-report`. It was the
+    # longest job on the graph (~33 minutes), red on most feature PRs by design,
+    # and blocks nothing — while `release bump is large enough` below runs the
+    # same check in enforcing mode on every Release PR, which is where a missing
+    # `!` actually has to be caught before anything publishes. Label a PR, or run
+    # `bash scripts/semver-report.sh` locally, when you want the answer early. A
+    # label added after the last push takes effect on the next push.
     name: semver report (informational — never blocks)
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'semver-report')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     continue-on-error: true
@@ -1259,7 +1267,7 @@ jobs:
     # Which package-scoped builds this change can possibly alter.
     #
     # `Mobile build` cross-compiles vta-mobile-core for iOS and Android and takes
-    # ~22 minutes; its workspace dependency closure is TWO crates. `Enclave build`
+    # ~22-40 minutes; it is gated on vta-mobile-core's own sources (`--own`). `Enclave build`
     # checks vta-enclave, whose closure contains no vtc-* and no room-host. Most
     # pull requests here touch neither, and wait for both.
     #
@@ -1286,8 +1294,11 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
+      # `--own`, not the closure: a change to vta-sdk's *source* cannot break the
+      # phone link or the bindings, and dependency or toolchain moves reach the
+      # job through the global files, which always run it. See ci-closure.py.
       - id: mobile
-        run: bash scripts/ci-affects.sh vta-mobile-core
+        run: bash scripts/ci-affects.sh --own vta-mobile-core
       - id: enclave
         run: bash scripts/ci-affects.sh vta-enclave
       # "everything except vtc-service" is not the complement of the VTC closure:
@@ -1473,11 +1484,20 @@ jobs:
     # deployment-target pin guards against) — or an FFI type that no longer
     # generates bindings — would land green. macOS runner because iOS needs
     # Xcode; the macOS image also ships the Android NDK.
+    #
+    # On a pull request it runs only when vta-mobile-core itself or a global
+    # file (lockfile, manifests, toolchain, workflows) changed; pushes to main
+    # and nightly always run it. Over 30 PRs it ran 22 times and failed none —
+    # the host jobs already build and test vta-mobile-core on every PR, and what
+    # only this job sees arrives through a dependency, not through vta-sdk's code.
+    #
+    # 60 minutes, not 45: a warm run on main takes ~40, and a PR run on a busy
+    # runner hit 45 and was cancelled (#1807), which reads as a failure.
     name: Mobile build
     needs: affects
     if: needs.affects.outputs.mobile != 'false'
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -240,4 +240,4 @@ changelog sections — there is no range for it to read commits from.
 | `.github/workflows/publish.yml` | the Release PR + release jobs |
 | `scripts/check-lockfile-self-pins.sh` | catches a stale registry self-pin in `Cargo.lock` |
 | CI `commit lint` | PR title must be a conventional commit |
-| CI `semver checks` | reports API breaks on the PR that causes them |
+| CI `semver report` | reports API breaks on a PR labelled `semver-report` (opt-in); `release bump is large enough` enforces on every Release PR |
