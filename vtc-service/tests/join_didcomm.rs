@@ -344,19 +344,20 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     );
     assert_eq!(recovered.status, "pending");
 
-    // 5. Admin approves over REST — the real ceremony admits the applicant,
-    //    issues the VMC + role VEC, and pushes them to the applicant's wallet
-    //    over DIDComm (`deliver_membership_credentials`).
-    let (code, body) = rest_post(
-        &mock,
-        &format!("/v1/join-requests/{request_id}/decide"),
+    // 5. An administrator approves with a signed decision — the real ceremony
+    //    admits the applicant, issues the VMC + role VEC, and pushes them to
+    //    the applicant's wallet over DIDComm (`deliver_membership_credentials`).
+    let _ = admin_token;
+    let admin = common::signed::admin(&mock.vtc).await;
+    let (code, doc) = common::signed::call(
+        &mock.vtc,
+        &admin,
         DECIDE_TASK,
-        &admin_token,
-        json!({ "decision": "approved" }),
+        json!({ "id": request_id, "decision": "approved" }),
     )
     .await;
-    assert_eq!(code, StatusCode::OK, "approve failed: {body}");
-    assert_eq!(body["status"], "approved");
+    assert_eq!(code, StatusCode::OK, "approve failed: {doc}");
+    assert_eq!(doc["payload"]["status"], "approved", "{doc}");
 
     // 6. The membership credential lands at the applicant over DIDComm — the
     //    full push the activation path (T6) needs.

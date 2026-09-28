@@ -16,8 +16,7 @@
 //! | `auth/revoke-session/0.2` | any member | the same rule |
 //!
 //! Every one arrives here the same way over TSP, DIDComm or HTTPS. None of
-//! them has a REST route except `audit/verify`, whose bearer route stays while
-//! `vtc-client`'s `audit_verify` calls it.
+//! them has a REST route.
 //!
 //! # Where the authority comes from
 //!

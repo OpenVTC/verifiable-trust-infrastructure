@@ -199,6 +199,7 @@ async fn the_bearer_routes_are_gone() {
         ("POST", "/v1/registry/sync-jobs/discard"),
         ("GET", "/v1/registry/records"),
         ("GET", "/v1/audit"),
+        ("GET", "/v1/audit/verify"),
         ("GET", "/v1/admin/config"),
         ("PATCH", "/v1/admin/config"),
         ("POST", "/v1/admin/config/reload"),
@@ -219,13 +220,6 @@ async fn the_bearer_routes_are_gone() {
             "{method} {path} is still served"
         );
     }
-}
-
-/// `audit/verify` keeps its bearer route while `vtc-client` calls it.
-#[tokio::test]
-async fn audit_verify_keeps_its_route_for_vtc_client() {
-    let vtc = vtc().await;
-    assert!(bearer_route_served(&vtc, "GET", "/v1/audit/verify").await);
 }
 
 /// An invite for a DID with no entry writes an unrestricted admin one, so on

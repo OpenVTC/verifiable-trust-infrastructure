@@ -7,8 +7,6 @@
 //! privacy gating beyond `AdminAuth`; spec §12.3's PMF lands in
 //! Phase 2+.
 
-use axum::Json;
-use axum::extract::{Query, State};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -16,7 +14,6 @@ use serde_json::Value as JsonValue;
 use vti_common::pagination::{Cursor, MAX_LIMIT, Paginated};
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, list_acl_entries};
-use crate::auth::AdminAuth;
 use crate::error::{AppError, TaskError};
 use crate::members::{Disposition, Member, get_member, list_members_paginated};
 use crate::server::AppState;
@@ -134,10 +131,8 @@ pub struct ListMembersQuery {
     pub limit: Option<usize>,
 }
 
-/// GET /members — paginated member list. Auth: Admin.
-/// `vtc/members/list/0.1`, on either door: the signed document the spine
-/// serves (`trust_tasks::community_tasks`), and the bearer route below, which
-/// stays while `vtc-client`'s `list_members` calls it.
+/// The paginated member list, `vtc/members/list/0.1`: the signed document the
+/// spine serves (`trust_tasks::community_tasks`).
 pub(crate) async fn list_members_inner(
     state: &AppState,
     query: ListMembersQuery,
@@ -206,24 +201,6 @@ pub(crate) async fn list_members_inner(
         next_cursor: page.next_cursor,
         total_estimate: page.total_estimate,
     })
-}
-
-#[utoipa::path(
-    get, path = "/members", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(ListMembersQuery),
-    responses(
-        (status = 200, description = "Paginated member list", body = Paginated<MemberResponse>),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_members(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<ListMembersQuery>,
-) -> Result<Json<Paginated<MemberResponse>>, AppError> {
-    list_members_inner(&state, query).await.map(Json)
 }
 
 // ---------------------------------------------------------------------------

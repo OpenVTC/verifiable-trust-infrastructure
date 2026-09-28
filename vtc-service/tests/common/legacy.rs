@@ -24,6 +24,10 @@ use vti_rooms_dtg::test_support::Party;
 use vtc_service::test_support::TestVtc;
 
 const SPEC: &str = "https://trusttasks.org/spec/vtc/";
+const POLICY_GET: &str = "https://trusttasks.org/spec/policy/get/0.1";
+const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const VETTER_GRANT: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
+const VETTER_SHOW: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1";
 
 /// Which signed document a request to a retired route is, and the success
 /// status the route answered with.
@@ -47,7 +51,74 @@ fn translate(
     };
     let ok = StatusCode::OK;
     let t = |slug: &str| format!("{SPEC}{slug}");
+    let with = |mut v: Value, k: &str, x: Value| {
+        if !v.is_object() {
+            v = json!({});
+        }
+        v[k] = x;
+        v
+    };
+    let page = || {
+        obj(vec![
+            ("cursor", q("cursor")),
+            ("limit", q("limit").map(number)),
+        ])
+    };
     Some(match (method, seg.as_slice()) {
+        ("GET", ["members"]) => (
+            t("members/list/0.1"),
+            with(page(), "role", q("role").unwrap_or(Value::Null)),
+            ok,
+        ),
+        ("GET", ["members", did, "credentials"]) => (
+            t("members/credentials/0.1"),
+            json!({ "did": decode(did) }),
+            ok,
+        ),
+        ("PATCH", ["members", did]) => (
+            t("members/update/0.1"),
+            with(body.clone(), "did", json!(decode(did))),
+            ok,
+        ),
+        ("DELETE", ["members", did]) => (
+            t("members/admin-remove/0.1"),
+            with(body.clone(), "did", json!(decode(did))),
+            ok,
+        ),
+        ("GET", ["join-requests"]) => (
+            t("join-requests/list/0.1"),
+            with(page(), "status", q("status").unwrap_or(Value::Null)),
+            ok,
+        ),
+        ("POST", ["join-requests", id, "decide"]) => (
+            t("join-requests/decide/0.1"),
+            with(body.clone(), "id", json!(decode(id))),
+            ok,
+        ),
+        ("GET", ["policies"]) => (
+            "https://trusttasks.org/spec/policy/list/0.2".into(),
+            page(),
+            ok,
+        ),
+        ("POST", ["policies"]) => (POLICY_UPSERT.into(), body.clone(), StatusCode::CREATED),
+        ("GET", ["policies", id]) => (POLICY_GET.into(), json!({ "id": decode(id) }), ok),
+        ("POST", ["policies", id, "activate"]) => (
+            "https://trusttasks.org/spec/policy/activate/0.1".into(),
+            with(body.clone(), "id", json!(decode(id))),
+            ok,
+        ),
+        ("GET", ["audit", "verify"]) => (
+            "https://trusttasks.org/spec/audit/verify/0.1".into(),
+            json!({}),
+            ok,
+        ),
+        ("POST", ["admin", "did", "register"]) => (
+            "https://trusttasks.org/spec/did-management/did/register/0.1".into(),
+            body.clone(),
+            ok,
+        ),
+        ("POST", ["vetting", "vetters"]) => (VETTER_GRANT.into(), body.clone(), StatusCode::CREATED),
+        ("POST", ["vetting", "vetters", "show"]) => (VETTER_SHOW.into(), body.clone(), ok),
         ("GET", ["community", "profile"]) => (t("community/profile/show/0.1"), json!({}), ok),
         ("GET", ["ceremonies"]) => (t("ceremonies/list/0.1"), json!({}), ok),
         ("GET", ["directory", did]) => (
@@ -133,7 +204,7 @@ fn parse_query(q: Option<&str>) -> Map<String, Value> {
 }
 
 /// The status a retired route answered a refusal with.
-fn legacy_status(payload: &Value) -> StatusCode {
+pub fn legacy_status(payload: &Value) -> StatusCode {
     let code = payload["code"].as_str().unwrap_or_default();
     match (code, payload["details"]["reason"].as_str()) {
         ("permissionDenied", _) => StatusCode::FORBIDDEN,
@@ -180,7 +251,8 @@ pub async fn send_json(
     let path = parts.uri.path().to_string();
     let query = parse_query(parts.uri.query());
 
-    let Some((task, payload, success)) = translate(&method, &path, &query, &json_body) else {
+    let Some((task, mut payload, mut success)) = translate(&method, &path, &query, &json_body)
+    else {
         let req = Request::from_parts(parts, Body::from(bytes));
         let res = vtc.router.clone().oneshot(req).await.unwrap();
         let status = res.status();
@@ -202,9 +274,38 @@ pub async fn send_json(
             json!({ "error": "no signer for this request" }),
         );
     };
+    if let Some(map) = payload.as_object_mut() {
+        map.retain(|_, v| !v.is_null());
+    }
+    // `policy/activate` names the purpose the revision is bound to, which the
+    // route read from the stored revision.
+    if task.ends_with("/policy/activate/0.1") && payload.get("purpose").is_none() {
+        let (_, got) =
+            super::signed::call(vtc, party, POLICY_GET, json!({ "id": payload["id"] })).await;
+        if let Some(purpose) = got["payload"]["policy"]["ext"]["org.openvtc.purpose"].as_str() {
+            payload["purpose"] = json!(purpose);
+        }
+    }
+    // The grant route answered `201` for a new grant and `200` for one that
+    // stood; the task's response does not say which, so ask first.
+    if task == VETTER_GRANT {
+        let (_, shown) = super::signed::call(
+            vtc,
+            party,
+            VETTER_SHOW,
+            json!({ "vetterDid": payload["memberDid"] }),
+        )
+        .await;
+        if shown["payload"]["status"] == "live" {
+            success = StatusCode::OK;
+        }
+    }
     let (_, doc) = super::signed::call(vtc, party, &task, payload).await;
     let payload = doc["payload"].clone();
     if super::signed::error_code(&doc).is_none() {
+        if task == POLICY_UPSERT && payload["created"] == false {
+            return (StatusCode::OK, payload);
+        }
         return (success, payload);
     }
     let status = legacy_status(&payload);

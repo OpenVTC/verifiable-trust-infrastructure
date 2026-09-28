@@ -1491,14 +1491,18 @@ async fn main() {
         Commands::Audit { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => match command {
-                    AuditCommands::Verify => audit::cmd_verify(&key, &target).await,
+                    AuditCommands::Verify => {
+                        audit::cmd_verify(&key, &target, cli.transport.into()).await
+                    }
                 },
                 Err(e) => Err(e),
             }
         }
         Commands::Vetting { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
-                Ok((key, target)) => vetting::run(command, &key, &target).await,
+                Ok((key, target)) => {
+                    vetting::run(command, &key, &target, cli.transport.into()).await
+                }
                 Err(e) => Err(e),
             }
         }
@@ -1529,6 +1533,7 @@ async fn main() {
                         command,
                         &community_keyring_key(&slug),
                         url_override.as_deref(),
+                        cli.transport.into(),
                     )
                     .await
                 }
@@ -2411,7 +2416,6 @@ mod tests {
                 "revoke",
                 "3f1c9a52-8c1e-4f2b-9d7a-0b6e5c4d3a21",
             ],
-            vec!["cnm", "vetting", "vetters", "resend", "did:key:z6Mk"],
             vec!["cnm", "vetting", "auto-grant", "show"],
             vec![
                 "cnm",

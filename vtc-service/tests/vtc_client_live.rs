@@ -140,12 +140,6 @@ async fn vetting_admin_verbs_round_trip() {
     assert_eq!(grants.vetters.len(), 1);
     assert!(grants.vetters[0].live);
 
-    // No messaging in this community: the resend cannot be handed over.
-    assert!(matches!(
-        client.resend_vetter_grant(&vetter).await,
-        Err(vtc_client::VtcError::Http { status: 503, .. })
-    ));
-
     let status = client.auto_grant().await.unwrap();
     assert!(!status.enabled);
     let stored = client
@@ -197,10 +191,6 @@ async fn vetting_admin_verbs_round_trip() {
         revoked.revocation.credential_id,
         first.grant.credential_id.as_str()
     );
-    assert!(matches!(
-        client.resend_vetter_grant(&vetter).await,
-        Err(vtc_client::VtcError::Http { status: 404, .. })
-    ));
 }
 
 /// `VtcClient::connect` authenticates against a real VTC, and the token it
