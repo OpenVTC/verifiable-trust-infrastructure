@@ -29,7 +29,7 @@ import type {
   GitNsActivity,
   GitNsBreakGlassMark,
   GitNsDepartedGrants,
-  GitNsDriftList,
+  GitNsDriftItem,
   GitNsJobList,
   GitNsNamespaceList,
   GitNsProjection,
@@ -51,9 +51,13 @@ export const TASK_NAMESPACE_LIST = "https://trusttasks.org/spec/git-ns/namespace
 export const TASK_REPO_LIST = "https://trusttasks.org/spec/git-ns/repo/list/0.1";
 export const TASK_VIEW = "https://trusttasks.org/spec/git-ns/view/0.5";
 
-/** The parts of a `git-ns/view/0.5#response` the break-glass list reads. */
+/** The parts of a `git-ns/view/0.5#response` the break-glass list and the drift read. */
 interface GitNsViewAnswer {
   namespaces: { id: string; forge: string; owner: string }[];
+  repos?: {
+    resource: string;
+    sync: { state: string; checkedAt?: string; drift: GitNsDriftItem[] };
+  }[];
   rights: {
     subject: string;
     right: string;
@@ -61,6 +65,19 @@ interface GitNsViewAnswer {
     grantedAt: string;
     breakGlass?: GitNsBreakGlassMark | null;
   }[];
+}
+
+/** The outstanding drift on one repository: its `repos[].sync` in the view. */
+export interface GitNsDriftRow {
+  resource: string;
+  state: string;
+  checkedAt?: string;
+  drift: GitNsDriftItem[];
+}
+
+/** Every repository with outstanding drift. */
+export interface GitNsDriftList {
+  repos: GitNsDriftRow[];
 }
 
 /** Query keys. Everything under `["git-ns"]` is refreshed together. */
@@ -97,8 +114,27 @@ export const fetchRights = (): Promise<GitNsRightList> =>
 export const fetchIssuedByDeparted = (): Promise<GitNsDepartedGrants> =>
   getJsonExempt<GitNsDepartedGrants>("/v1/git-ns/rights/issued-by-departed");
 
-export const fetchDrift = (): Promise<GitNsDriftList> =>
-  getJsonExempt<GitNsDriftList>("/v1/git-ns/drift");
+/**
+ * Every repository whose forge differs from the projection, in the namespaces
+ * the caller administers: `git-ns/view/0.5` with `scope: administrator`,
+ * whose `repos[].sync` is the drift the bridge last reported.
+ */
+export async function fetchDrift(): Promise<GitNsDriftList> {
+  const view = await postSignedRead<GitNsViewAnswer>(TASK_VIEW, { scope: "administrator" });
+  return { repos: driftRows(view) };
+}
+
+/** The repositories in `view` with outstanding drift. */
+export function driftRows(view: GitNsViewAnswer): GitNsDriftRow[] {
+  return (view.repos ?? [])
+    .filter((r) => r.sync.drift.length > 0)
+    .map((r) => ({
+      resource: r.resource,
+      state: r.sync.state,
+      checkedAt: r.sync.checkedAt,
+      drift: r.sync.drift,
+    }));
+}
 
 export const fetchJobs = (): Promise<GitNsJobList> =>
   getJsonExempt<GitNsJobList>("/v1/git-ns/jobs");

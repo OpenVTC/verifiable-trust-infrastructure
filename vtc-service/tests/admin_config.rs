@@ -1,12 +1,14 @@
-//! Integration coverage for `/v1/admin/config`.
+//! Integration coverage for the runtime configuration's signed documents:
+//! `config/{show,patch,reload,restart}/0.1` and `vtc/config/{export,import}/0.1`.
 //!
-//! Exercises the full router stack — Trust-Task header → AdminAuth
-//! extractor → handler → three-layer effective view → db-overlay
+//! Exercises the full router stack — the document endpoint → the spine → the
+//! signer's ACL row → handler → three-layer effective view → db-overlay
 //! persistence — via `Router::oneshot`.
+
+mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -27,16 +29,29 @@ struct Fixture {
     vtc: TestVtc,
 }
 
-async fn build() -> Fixture {
-    build_with(false, None).await
+async fn token_for(fix: &Fixture, role: &str) -> String {
+    fix.vtc.token("did:key:z6MkAdmin", role, vec![]).await
 }
 
-async fn build_with(
+// ──────────────────────── show ────────────────────────
+//
+// `config/{show,patch,reload,restart}/0.1` are signed documents only, served
+// at `POST /v1/trust-tasks`; their bearer routes are gone
+// (`admin_verbs_spine.rs` holds that, and the unsigned / member refusals for
+// every one of them). Authority is the signer's ACL row.
+
+const RELOAD_TASK: &str = "https://trusttasks.org/spec/config/reload/0.1";
+const RESTART_TASK: &str = "https://trusttasks.org/spec/config/restart/0.1";
+
+/// A fixture that answers signed documents, with or without an audit writer
+/// and a supervisor.
+async fn build_signed_with(
     with_audit: bool,
     supervisor: Option<vtc_service::supervisor::SupervisorKind>,
 ) -> Fixture {
     let vtc = TestVtc::builder()
         .with_audit(with_audit)
+        .with_signers(true)
         .supervisor(supervisor)
         .build()
         .await;
@@ -47,139 +62,72 @@ async fn build_with(
     }
 }
 
-async fn token_for(fix: &Fixture, role: &str) -> String {
-    fix.vtc.token("did:key:z6MkAdmin", role, vec![]).await
+async fn show(fix: &Fixture, from: &Party) -> (StatusCode, Value) {
+    post_signed(fix, from, SHOW_TASK, json!({})).await
 }
 
-async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let v: Value = serde_json::from_slice(&bytes)
-        .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes) }));
-    (status, v)
+async fn patch(fix: &Fixture, from: &Party, body: Value) -> (StatusCode, Value) {
+    post_signed(fix, from, PATCH_TASK, body).await
 }
 
-// ──────────────────────── GET ────────────────────────
+async fn reload(fix: &Fixture, from: &Party) -> (StatusCode, Value) {
+    post_signed(fix, from, RELOAD_TASK, json!({})).await
+}
 
-#[tokio::test]
-async fn get_returns_effective_config_with_defaults() {
-    let fix = build().await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", SHOW_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+async fn restart(fix: &Fixture, from: &Party) -> (StatusCode, Value) {
+    post_signed(fix, from, RESTART_TASK, json!({})).await
+}
 
-    let fields = body["fields"].as_array().unwrap();
-    let by_key: std::collections::HashMap<_, _> = fields
+fn field<'a>(body: &'a Value, key: &str) -> &'a Value {
+    body["fields"]
+        .as_array()
+        .unwrap()
         .iter()
-        .map(|f| (f["key"].as_str().unwrap(), f))
-        .collect();
-
-    assert_eq!(by_key["server.host"]["value"], "0.0.0.0");
-    assert_eq!(by_key["server.host"]["source"], "default");
-    assert_eq!(by_key["server.host"]["requiresRestart"], true);
-
-    assert_eq!(by_key["server.port"]["value"], 8200);
-    assert_eq!(by_key["server.port"]["source"], "default");
-
-    assert_eq!(by_key["log.level"]["value"], "info");
-    assert_eq!(by_key["log.level"]["source"], "default");
-    assert_eq!(by_key["log.level"]["requiresRestart"], false);
+        .find(|f| f["key"] == key)
+        .unwrap_or_else(|| panic!("{key} missing: {body}"))
 }
 
 #[tokio::test]
-async fn get_requires_admin_role() {
-    let fix = build().await;
-    let token = token_for(&fix, "reader").await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", SHOW_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+async fn show_returns_effective_config_with_defaults() {
+    let fix = build_signed(false).await;
+    let admin = admin(&fix).await;
+    let (status, body) = show(&fix, &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    assert_eq!(field(&body, "server.host")["value"], "0.0.0.0");
+    assert_eq!(field(&body, "server.host")["source"], "default");
+    assert_eq!(field(&body, "server.host")["requiresRestart"], true);
+    assert_eq!(field(&body, "server.port")["value"], 8200);
+    assert_eq!(field(&body, "server.port")["source"], "default");
+    assert_eq!(field(&body, "log.level")["value"], "info");
+    assert_eq!(field(&body, "log.level")["source"], "default");
+    assert_eq!(field(&body, "log.level")["requiresRestart"], false);
 }
 
-#[tokio::test]
-async fn get_requires_authentication() {
-    let fix = build().await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", SHOW_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
-
-// ──────────────────────── PATCH ────────────────────────
+// ──────────────────────── patch ────────────────────────
 
 #[tokio::test]
 async fn patch_applies_reloadable_key_immediately() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let (status, body) = patch(&fix, &admin, json!({"overrides":{"log.level":"debug"}})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["applied"], json!(["log.level"]));
     assert_eq!(body["pendingRestart"], json!([]));
     assert_eq!(body["rejected"], json!([]));
 
-    // GET reflects the new value with source = db.
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", SHOW_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (_, body) = body_value(resp).await;
-    let level = body["fields"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["key"] == "log.level")
-        .unwrap();
-    assert_eq!(level["value"], "debug");
-    assert_eq!(level["source"], "db");
+    // `show` reflects the new value with source = db.
+    let (_, body) = show(&fix, &admin).await;
+    assert_eq!(field(&body, "log.level")["value"], "debug");
+    assert_eq!(field(&body, "log.level")["source"], "db");
 }
 
 #[tokio::test]
 async fn patch_restart_required_key_is_pending() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"server.port":9100}}"#))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let (status, body) = patch(&fix, &admin, json!({"overrides":{"server.port":9100}})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["applied"], json!([]));
     assert_eq!(body["pendingRestart"], json!(["server.port"]));
     assert_eq!(body["rejected"], json!([]));
@@ -187,19 +135,10 @@ async fn patch_restart_required_key_is_pending() {
 
 #[tokio::test]
 async fn patch_unknown_key_rejected_with_reason() {
-    let fix = build().await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"made.up.key":"value"}}"#))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let fix = build_signed(false).await;
+    let admin = admin(&fix).await;
+    let (status, body) = patch(&fix, &admin, json!({"overrides":{"made.up.key":"value"}})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let rejected = body["rejected"].as_array().unwrap();
     assert_eq!(rejected.len(), 1);
     assert_eq!(rejected[0]["key"], "made.up.key");
@@ -213,19 +152,11 @@ async fn patch_unknown_key_rejected_with_reason() {
 
 #[tokio::test]
 async fn patch_invalid_value_rejected_with_reason() {
-    let fix = build().await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"log.level":"verbose"}}"#)) // not in enum
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let fix = build_signed(false).await;
+    let admin = admin(&fix).await;
+    // Not in the key's enum.
+    let (status, body) = patch(&fix, &admin, json!({"overrides":{"log.level":"verbose"}})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let rejected = body["rejected"].as_array().unwrap();
     assert_eq!(rejected.len(), 1);
     assert_eq!(rejected[0]["key"], "log.level");
@@ -239,26 +170,20 @@ async fn patch_invalid_value_rejected_with_reason() {
 
 #[tokio::test]
 async fn patch_mixed_batch_partitions_correctly() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let body = json!({ "overrides": {
-        "log.level": "debug",      // applied
-        "server.port": 9100,        // pendingRestart
-        "made.up": "x",             // rejected (unknown)
-        "log.level_v2": "debug",    // rejected (unknown)
-    }});
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
-
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let (status, body) = patch(
+        &fix,
+        &admin,
+        json!({ "overrides": {
+            "log.level": "debug",      // applied
+            "server.port": 9100,        // pendingRestart
+            "made.up": "x",             // rejected (unknown)
+            "log.level_v2": "debug",    // rejected (unknown)
+        }}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["applied"], json!(["log.level"]));
     assert_eq!(body["pendingRestart"], json!(["server.port"]));
     let rejected: Vec<&str> = body["rejected"]
@@ -272,62 +197,29 @@ async fn patch_mixed_batch_partitions_correctly() {
     assert!(rejected.contains(&"log.level_v2"));
 }
 
+/// `config/patch` names at least one key (`overrides` has `minProperties:
+/// 1`), so an empty one is malformed rather than a no-op.
 #[tokio::test]
-async fn patch_requires_admin_role() {
-    let fix = build().await;
-    let token = token_for(&fix, "reader").await;
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn patch_empty_body_returns_empty_response() {
-    let fix = build().await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{}}"#))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["applied"], json!([]));
-    assert_eq!(body["pendingRestart"], json!([]));
-    assert_eq!(body["rejected"], json!([]));
+async fn patch_with_no_overrides_is_malformed() {
+    let fix = build_signed(false).await;
+    let admin = admin(&fix).await;
+    let (_, body) = patch(&fix, &admin, json!({"overrides":{}})).await;
+    assert_eq!(tt_error_code(&body), "malformedRequest", "{body}");
 }
 
 #[tokio::test]
 async fn patch_emits_config_changed_audit_with_real_actor() {
     use vti_common::audit::{AuditEnvelope, AuditEvent};
 
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(
-            r#"{"overrides":{"log.level":"debug","server.port":9100}}"#,
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let (status, body) = patch(
+        &fix,
+        &admin,
+        json!({"overrides":{"log.level":"debug","server.port":9100}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let raw = fix
         .state
@@ -345,8 +237,8 @@ async fn patch_emits_config_changed_audit_with_real_actor() {
         .collect();
     assert_eq!(changed.len(), 1, "exactly one ConfigChanged envelope");
     let env = changed[0];
-    // Actor is the calling admin's real DID, not the old sentinel.
-    assert_eq!(env.actor_did_plain.as_deref(), Some("did:key:z6MkAdmin"));
+    // The actor is the document's signer.
+    assert_eq!(env.actor_did_plain.as_deref(), Some(admin.did.as_str()));
     let AuditEvent::ConfigChanged(data) = &env.event else {
         unreachable!()
     };
@@ -361,245 +253,105 @@ async fn patch_emits_config_changed_audit_with_real_actor() {
 
 #[tokio::test]
 async fn patch_rejects_only_does_not_need_audit_writer() {
-    // A PATCH that applies nothing (only rejects) emits no audit, so
-    // it must not 503 even when no AuditWriter is configured.
-    let fix = build_with(false, None).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"made.up.key":"value"}}"#))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    // A patch that applies nothing (only rejects) emits no audit, so it must
+    // not be refused even when no AuditWriter is configured.
+    let fix = build_signed(false).await;
+    let admin = admin(&fix).await;
+    let (status, body) = patch(&fix, &admin, json!({"overrides":{"made.up.key":"value"}})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["applied"], json!([]));
     assert_eq!(body["rejected"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
-async fn patch_503_when_audit_writer_missing() {
-    // A PATCH that would apply a real change is refused (fail-closed)
-    // when the change can't be audited.
-    let fix = build_with(false, None).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+async fn patch_is_refused_when_the_change_cannot_be_audited() {
+    // A patch that would apply a real change is refused (fail-closed) when
+    // the change can't be audited.
+    let fix = build_signed(false).await;
+    let admin = admin(&fix).await;
+    let (_, body) = patch(&fix, &admin, json!({"overrides":{"log.level":"debug"}})).await;
+    assert_eq!(tt_error_code(&body), "internalError", "{body}");
 }
 
-// ──────────────────────── Trust-Task gate ────────────────────────
-
-#[tokio::test]
-async fn get_with_wrong_trust_task_returns_415() {
-    let fix = build().await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/admin/config")
-        .header(
-            "Trust-Task",
-            "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
-        )
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
-}
-
-/// GET and PATCH share `/v1/admin/config` but carry **separate** canonical
-/// Trust Tasks. Each verb must reject its *sibling's* task, not just some
-/// unrelated one — otherwise the split is cosmetic and either task would
-/// authorise either verb.
-#[tokio::test]
-async fn each_verb_rejects_its_siblings_trust_task() {
-    let fix = build().await;
-    let token = token_for(&fix, "admin").await;
-
-    // GET presented with the PATCH task → 415.
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    let (status, _) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(
-        status,
-        StatusCode::UNSUPPORTED_MEDIA_TYPE,
-        "GET must not accept the config/patch task"
-    );
-
-    // PATCH presented with the SHOW task → 415.
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", SHOW_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
-        .unwrap();
-    let (status, _) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(
-        status,
-        StatusCode::UNSUPPORTED_MEDIA_TYPE,
-        "PATCH must not accept the config/show task"
-    );
-}
-
-/// The PATCH body is the canonical `{"overrides": {...}}` envelope, not a
-/// bare key→value map. A top-level config key is now an unknown member.
+/// The payload is the canonical `{"overrides": {...}}` envelope, not a bare
+/// key→value map: a top-level config key is an unknown member.
 #[tokio::test]
 async fn patch_rejects_the_pre_migration_flattened_body() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", PATCH_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"log.level":"debug"}"#))
-        .unwrap();
-    let (status, _) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let (_, body) = patch(&fix, &admin, json!({"log.level":"debug"})).await;
     assert_eq!(
-        status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "the flattened pre-migration body must not be silently accepted"
+        tt_error_code(&body),
+        "malformedRequest",
+        "the flattened pre-migration body must not be silently accepted: {body}"
     );
 }
 
-// ──────────────────────── Reload ────────────────────────
-
-const RELOAD_TASK: &str = "https://trusttasks.org/spec/config/reload/0.1";
-const RESTART_TASK: &str = "https://trusttasks.org/spec/config/restart/0.1";
-
-async fn reload(fix: &Fixture, token: &str) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/admin/config/reload")
-        .header("Trust-Task", RELOAD_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from("{}"))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    body_value(resp).await
-}
-
-async fn restart(fix: &Fixture, token: &str) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/admin/config/restart")
-        .header("Trust-Task", RESTART_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from("{}"))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    body_value(resp).await
-}
+// ──────────────────────── reload ────────────────────────
 
 #[tokio::test]
 async fn reload_no_diff_returns_empty_keys_reloaded() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let (status, body) = reload(&fix, &token).await;
-    assert_eq!(status, StatusCode::OK);
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let (status, body) = reload(&fix, &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["keysReloaded"], json!([]));
 }
 
 #[tokio::test]
 async fn reload_applies_hot_reloadable_diff() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
 
-    // Write `log.level = "debug"` via PATCH so the db-layer differs
-    // from the live in-memory `info`. reload must pick up the
-    // delta.
-    let req = Request::builder()
-        .method("PATCH")
-        .uri("/v1/admin/config")
-        .header("Trust-Task", "https://trusttasks.org/spec/config/patch/0.1")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    // Write `log.level = "debug"` so the db-layer differs from the live
+    // in-memory `info`; reload must pick up the delta.
+    let (status, body) = patch(&fix, &admin, json!({"overrides":{"log.level":"debug"}})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
-    let (status, body) = reload(&fix, &token).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, body) = reload(&fix, &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["keysReloaded"], json!(["log.level"]));
 
     // In-memory `AppConfig.log.level` now reflects the new value.
     assert_eq!(fix.state.config.read().await.log.level, "debug");
 
     // Second reload is a no-op (no diff left).
-    let (_, body) = reload(&fix, &token).await;
+    let (_, body) = reload(&fix, &admin).await;
     assert_eq!(body["keysReloaded"], json!([]));
 }
 
 #[tokio::test]
-async fn reload_requires_admin_role() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "reader").await;
-    let (status, _) = reload(&fix, &token).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+async fn reload_is_refused_without_an_audit_writer() {
+    let fix = build_signed(false).await;
+    let admin = admin(&fix).await;
+    let (_, body) = reload(&fix, &admin).await;
+    assert_eq!(tt_error_code(&body), "internalError", "{body}");
 }
 
-#[tokio::test]
-async fn reload_503_when_audit_writer_missing() {
-    let fix = build_with(false, None).await;
-    let token = token_for(&fix, "admin").await;
-    let (status, _) = reload(&fix, &token).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-}
-
-// ──────────────────────── Restart ────────────────────────
+// ──────────────────────── restart ────────────────────────
 
 #[tokio::test]
-async fn restart_without_supervisor_returns_412() {
-    let fix = build_with(true, None).await;
-    let token = token_for(&fix, "admin").await;
-    let (status, body) = restart(&fix, &token).await;
-    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap()
-            .contains("SupervisorRequired"),
-        "got {body}",
-    );
+async fn restart_without_supervisor_is_refused() {
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let mut rx = fix.state.shutdown_tx.subscribe();
+    let (_, body) = restart(&fix, &admin).await;
+    assert!(!tt_error_code(&body).is_empty(), "refused: {body}");
+    assert!(!*rx.borrow_and_update(), "no shutdown without a supervisor");
 }
 
 #[tokio::test]
 async fn restart_with_supervisor_triggers_shutdown() {
     use vtc_service::supervisor::SupervisorKind;
-    let fix = build_with(true, Some(SupervisorKind::Manual)).await;
-    let token = token_for(&fix, "admin").await;
+    let fix = build_signed_with(true, Some(SupervisorKind::Manual)).await;
+    let admin = admin(&fix).await;
 
-    // Subscribe to the shutdown channel BEFORE the request so we
-    // can assert the flip.
+    // Subscribe to the shutdown channel BEFORE the request so we can assert
+    // the flip.
     let mut rx = fix.state.shutdown_tx.subscribe();
     assert!(!*rx.borrow_and_update());
 
-    let (status, body) = restart(&fix, &token).await;
+    let (status, body) = restart(&fix, &admin).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["supervisor"], "manual");
     assert!(body["drainTimeoutSeconds"].as_u64().unwrap() > 0);
@@ -611,11 +363,11 @@ async fn restart_with_supervisor_triggers_shutdown() {
 #[tokio::test]
 async fn restart_emits_audit_event_before_signal() {
     use vtc_service::supervisor::SupervisorKind;
-    let fix = build_with(true, Some(SupervisorKind::Systemd)).await;
-    let token = token_for(&fix, "admin").await;
+    let fix = build_signed_with(true, Some(SupervisorKind::Systemd)).await;
+    let admin = admin(&fix).await;
 
-    let (status, _) = restart(&fix, &token).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, body) = restart(&fix, &admin).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // Confirm exactly one RestartRequested envelope landed.
     let raw = fix
@@ -636,39 +388,14 @@ async fn restart_emits_audit_event_before_signal() {
 }
 
 #[tokio::test]
-async fn restart_requires_admin_role() {
+async fn restart_is_refused_without_an_audit_writer() {
     use vtc_service::supervisor::SupervisorKind;
-    let fix = build_with(true, Some(SupervisorKind::Manual)).await;
-    let token = token_for(&fix, "reader").await;
-    let (status, _) = restart(&fix, &token).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn restart_503_when_audit_writer_missing() {
-    use vtc_service::supervisor::SupervisorKind;
-    let fix = build_with(false, Some(SupervisorKind::Manual)).await;
-    let token = token_for(&fix, "admin").await;
-    let (status, _) = restart(&fix, &token).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-}
-
-#[tokio::test]
-async fn restart_wrong_trust_task_returns_415() {
-    use vtc_service::supervisor::SupervisorKind;
-    let fix = build_with(true, Some(SupervisorKind::Manual)).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/admin/config/restart")
-        .header("Trust-Task", RELOAD_TASK) // wrong
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from("{}"))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _) = body_value(resp).await;
-    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let fix = build_signed_with(false, Some(SupervisorKind::Manual)).await;
+    let admin = admin(&fix).await;
+    let mut rx = fix.state.shutdown_tx.subscribe();
+    let (_, body) = restart(&fix, &admin).await;
+    assert_eq!(tt_error_code(&body), "internalError", "{body}");
+    assert!(!*rx.borrow_and_update(), "no unaudited restart");
 }
 
 // ──────────────────────── Export / Import ────────────────────────
@@ -757,14 +484,8 @@ async fn post_signed(
         .await
         .expect("sign the document");
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/trust-tasks")
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
+    let doc = serde_json::to_value(doc).expect("a document serialises");
+    let (status, body) = common::signed::post(&fix.vtc, &doc).await;
     (status, body["payload"].clone())
 }
 
@@ -867,6 +588,38 @@ async fn export_requires_admin_role() {
     let member = signer(&fix, vtc_service::acl::VtcRole::Member).await;
     let (_, body) = export_signed(&fix, &member).await;
     assert_eq!(tt_error_code(&body), "permissionDenied", "{body}");
+}
+
+/// An import writes the same community-wide overrides `config/patch` does, so
+/// an administrator scoped to some contexts is refused it — preview included —
+/// and nothing is written.
+#[tokio::test]
+async fn import_refuses_a_context_admin() {
+    let fix = build_signed(true).await;
+    let scoped = Party::new();
+    common::signed::seed_role(
+        &fix.vtc,
+        &scoped.did,
+        vtc_service::acl::VtcRole::Admin,
+        &["ctx-a"],
+    )
+    .await;
+    for confirm in [false, true] {
+        let (_, body) = import_signed(
+            &fix,
+            &scoped,
+            confirm,
+            document_with_overrides(json!({ "log.level": "trace" })),
+        )
+        .await;
+        assert_eq!(tt_error_code(&body), "permissionDenied", "{body}");
+    }
+    let store = vtc_service::config_store::ConfigStore::new(fix.state.config_ks.clone());
+    assert_eq!(
+        store.get("log.level").await.unwrap(),
+        None,
+        "nothing is written"
+    );
 }
 
 /// The signed door is the only one: the bearer route is gone, not merely

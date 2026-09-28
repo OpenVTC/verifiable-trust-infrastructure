@@ -13,8 +13,8 @@ import { renewIfNeeded, resetSession, setSessionExpiry } from "@/lib/session";
 
 // `GET /health` is unauth and deliberately minimal: it carries only
 // `{status, version, vtc_did}`. The `vta_did` / `mediator_url` /
-// `mediator_did` infrastructure detail moved to the admin-gated
-// `/v1/health/diagnostics` (P3.7) so it isn't a free unauth recon
+// `mediator_did` infrastructure detail moved to the administrator's signed
+// `vtc/registry/diagnostics/0.1` (P3.7) so it isn't a free unauth recon
 // oracle — read those from `DiagnosticsResponse` instead.
 export interface HealthResponse {
   status: string;
@@ -22,7 +22,7 @@ export interface HealthResponse {
   vtc_did?: string;
 }
 
-// `GET /v1/health/diagnostics` — admin-gated. Surfaces the trust-registry
+// `vtc/registry/diagnostics/0.1` — an administrator's signed read. Surfaces the trust-registry
 // reconciler state plus the identity/mediator detail that used to live on
 // `/health` (P3.7).
 //
@@ -635,19 +635,18 @@ export const fetchBuildInfo = (): Promise<BuildInfo> =>
 const DIAGNOSTICS_TASK =
   "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1";
 
-// Admin-gated identity + reconciler diagnostics. The dashboard reads
-// `vta_did` / `mediator_did` from here since P3.7 stripped them off
-// the unauth `/health` payload.
+// The administrator's identity + reconciler diagnostics, a signed read. The
+// dashboard reads `vta_did` / `mediator_did` from here since P3.7 stripped
+// them off the unauth `/health` payload.
 export const fetchDiagnostics = (): Promise<DiagnosticsResponse> =>
-  getJson<DiagnosticsResponse>("/v1/health/diagnostics", {
-    trustTask: DIAGNOSTICS_TASK,
-  });
+  postSignedRead<DiagnosticsResponse>(DIAGNOSTICS_TASK, {});
 
 // ── Trust-registry operator surface ─────────────────────────────────────
 //
-// `vtc/registry/{sync-jobs,records}/…`. The offline `vtc sync-jobs` CLI does
-// the same three things against a stopped daemon; these are the online half,
-// and they share the daemon's eligibility rule rather than re-deriving it.
+// `vtc/registry/{sync-jobs,records}/…`, each a signed document. The offline
+// `vtc sync-jobs` CLI does the same three things against a stopped daemon;
+// these are the online half, and they share the daemon's eligibility rule
+// rather than re-deriving it.
 const SYNC_JOBS_LIST_TASK =
   "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1";
 const SYNC_JOBS_RETRY_TASK =
@@ -660,10 +659,7 @@ const REGISTRY_RECORDS_TASK =
 export const fetchSyncJobs = (
   state?: "pending" | "inFlight" | "failed",
 ): Promise<SyncJobsListResponse> =>
-  getJson<SyncJobsListResponse>(
-    `/v1/registry/sync-jobs${state ? `?state=${state}` : ""}`,
-    { trustTask: SYNC_JOBS_LIST_TASK },
-  );
+  postSignedRead<SyncJobsListResponse>(SYNC_JOBS_LIST_TASK, state ? { state } : {});
 
 /**
  * Requeue one job, or every failed job.
@@ -675,25 +671,17 @@ export const fetchSyncJobs = (
 export const retrySyncJob = (
   target: { jobId: string } | { allFailed: true },
 ): Promise<SyncJobsRetryResponse> =>
-  postJson<SyncJobsRetryResponse>("/v1/registry/sync-jobs/retry", target, {
-    trustTask: SYNC_JOBS_RETRY_TASK,
-  });
+  postSignedTrustTask<SyncJobsRetryResponse>(SYNC_JOBS_RETRY_TASK, target);
 
 export const discardSyncJob = (
   jobId: string,
 ): Promise<SyncJobsDiscardResponse> =>
-  postJson<SyncJobsDiscardResponse>(
-    "/v1/registry/sync-jobs/discard",
-    { jobId },
-    { trustTask: SYNC_JOBS_DISCARD_TASK },
-  );
+  postSignedTrustTask<SyncJobsDiscardResponse>(SYNC_JOBS_DISCARD_TASK, { jobId });
 
 export const fetchRegistryRecords = (
   source: "registry" | "local",
 ): Promise<RegistryRecordsResponse> =>
-  getJson<RegistryRecordsResponse>(`/v1/registry/records?source=${source}`, {
-    trustTask: REGISTRY_RECORDS_TASK,
-  });
+  postSignedRead<RegistryRecordsResponse>(REGISTRY_RECORDS_TASK, { source });
 
 /**
  * The canonical `Session` shape, as published by the `auth/whoami/0.1`
@@ -739,8 +727,8 @@ export const fetchWhoami = (): Promise<WhoamiResponse> =>
 
 // ── Runtime config ──────────────────────────────────────────────────────
 //
-// The console's first client for `/v1/admin/config`. Note the two-step
-// Save: PATCH writes the db-layer override but does **not** touch the
+// `config/{show,patch,reload}`, each a signed document. Note the two-step
+// Save: `patch` writes the db-layer override but does **not** touch the
 // running config, so a Save that stopped there would report success and
 // change nothing until the daemon happened to restart. `reload` is what
 // folds the overlay onto the live `AppConfig`.
@@ -750,10 +738,7 @@ const CONFIG_PATCH_TASK = "https://trusttasks.org/spec/config/patch/0.1";
 const CONFIG_RELOAD_TASK = "https://trusttasks.org/spec/config/reload/0.1";
 
 export const fetchEffectiveConfig = (): Promise<EffectiveConfig> =>
-  getJson<EffectiveConfig>("/v1/admin/config", {
-    trustTask: CONFIG_SHOW_TASK,
-    requires: ["fields"],
-  });
+  postSignedRead<EffectiveConfig>(CONFIG_SHOW_TASK, {});
 
 /**
  * Write config overrides and put them into effect.
@@ -765,15 +750,11 @@ export const fetchEffectiveConfig = (): Promise<EffectiveConfig> =>
 export async function saveConfig(
   overrides: Record<string, unknown>,
 ): Promise<ConfigPatchResponse> {
-  const result = await patchJson<ConfigPatchResponse>(
-    "/v1/admin/config",
-    { overrides },
-    { trustTask: CONFIG_PATCH_TASK, requires: ["applied", "rejected"] },
-  );
+  const result = await postSignedTrustTask<ConfigPatchResponse>(CONFIG_PATCH_TASK, {
+    overrides,
+  });
   if (result.applied.length > 0) {
-    await postJson<unknown>("/v1/admin/config/reload", undefined, {
-      trustTask: CONFIG_RELOAD_TASK,
-    });
+    await postSignedTrustTask<unknown>(CONFIG_RELOAD_TASK, {});
   }
   return result;
 }

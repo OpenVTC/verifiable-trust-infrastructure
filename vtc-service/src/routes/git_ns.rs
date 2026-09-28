@@ -158,24 +158,6 @@ pub struct GitNsDepartedGrants {
     pub granters: Vec<GitNsDepartedGranter>,
 }
 
-/// The outstanding drift on one repository.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct GitNsDriftRow {
-    pub resource: String,
-    pub state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub checked_at: Option<String>,
-    /// The bridge's items, each a `DriftItem` of the shared schema.
-    #[schema(value_type = Vec<vta_sdk::openapi::GitNsView01DriftItem>)]
-    pub drift: Vec<Value>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct GitNsDriftList {
-    pub repos: Vec<GitNsDriftRow>,
-}
-
 /// One bridge job.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -381,35 +363,6 @@ pub async fn issued_by_departed(
         cascade_on_departure: settings.cascade_on_departure,
         granters,
     }))
-}
-
-#[utoipa::path(
-    get, path = "/git-ns/drift",
-    operation_id = "gitNsDriftList", tag = "git-ns",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Repositories whose forge differs from the projection", body = GitNsDriftList),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a community administrator"),
-    ),
-)]
-pub async fn drift_list(
-    _auth: SuperAdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<GitNsDriftList>, AppError> {
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
-    let repos = snap
-        .repos
-        .iter()
-        .filter(|r| !r.sync.drift.is_empty())
-        .map(|r| GitNsDriftRow {
-            resource: r.resource.clone(),
-            state: r.sync.state.as_str().to_string(),
-            checked_at: r.sync.checked_at.map(wire::timestamp),
-            drift: r.sync.drift.clone(),
-        })
-        .collect();
-    Ok(Json(GitNsDriftList { repos }))
 }
 
 fn job_row(j: &BridgeJob) -> GitNsJobRow {

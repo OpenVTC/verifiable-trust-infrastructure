@@ -105,7 +105,7 @@ The syncer:
   outstanding jobs.
 - Uses exponential backoff on failure (default starts at 30s,
   doubles, caps at 1h).
-- Surfaces health on `GET /v1/health/diagnostics`:
+- Surfaces health on the signed `vtc/registry/diagnostics/0.1` document:
   - `registry_status: "active" | "degraded"`
   - `sync_queue_depth: <u32>`
   - `last_sync_at: <iso8601>`
@@ -304,9 +304,10 @@ document listed one that was never built. What exists today:
 ```sh
 # Reconciler state: registry_status, queue_depth, failed_count,
 # oldest_pending_age_seconds, last_error, syncer liveness, plus the
-# transport view below.
-curl -H "Authorization: Bearer $TOKEN" \
-  https://vtc.example.org/v1/health/diagnostics | jq .
+# transport view below. `vtc/registry/diagnostics/0.1` is a signed Trust
+# Task: send it from the admin console (Dashboard), or as a document signed
+# by an administrator over any transport the VTC serves (POST it to
+# /v1/trust-tasks over HTTPS, or send it over DIDComm or TSP).
 ```
 
 Two transport fields on that payload answer "how are we actually

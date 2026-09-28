@@ -168,7 +168,7 @@ jobs:
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
         # because that repo does publish v6 — the convention is not universal.)
-        uses: release-plz/action@8e61445f0b34e7c6d985255f2f1f05a36eb350dc # v0.5.137
+        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
         with:
           command: release
         env:
@@ -294,7 +294,7 @@ jobs:
       # guessing from commit messages — which is the failure this exists to
       # prevent, and it is only a warning, so nothing goes red.
       - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2.87.12
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
         with:
           tool: cargo-semver-checks
 
@@ -351,7 +351,7 @@ jobs:
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
         # because that repo does publish v6 — the convention is not universal.)
-        uses: release-plz/action@8e61445f0b34e7c6d985255f2f1f05a36eb350dc # v0.5.137
+        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
         with:
           command: release-pr
         env:

@@ -2129,8 +2129,13 @@ pub(crate) enum ContextCommands {
         #[arg(long)]
         name: Option<String>,
         /// Set the DID for this context
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_did")]
         did: Option<String>,
+        /// Clear this context's DID, leaving it with no identity of its own.
+        /// The DID is not deleted. Sent as `vta/contexts/update-did/1.1`, so
+        /// it needs only admin over the context.
+        #[arg(long)]
+        clear_did: bool,
         /// New description
         #[arg(long)]
         description: Option<String>,
@@ -2140,7 +2145,12 @@ pub(crate) enum ContextCommands {
         /// Context ID
         id: String,
         /// The new DID to assign
-        did: String,
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        did: Option<String>,
+        /// Clear the context's DID instead, leaving it with no identity of its
+        /// own. The DID is not deleted.
+        #[arg(long)]
+        clear: bool,
     },
     /// Delete an application context and all associated resources
     Delete {

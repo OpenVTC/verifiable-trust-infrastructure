@@ -92,6 +92,7 @@ pub struct TestVtcBuilder {
     git_ns_bridge: Option<Arc<dyn crate::git_ns::bridge::BridgeClient>>,
     /// `[git_ns]` configuration.
     git_ns_config: Option<crate::git_ns::GitNsConfig>,
+    registry_client: Option<Arc<dyn crate::registry::TrustRegistryClient>>,
 }
 
 impl Default for TestVtcBuilder {
@@ -109,6 +110,7 @@ impl Default for TestVtcBuilder {
             messaging_mediator: None,
             git_ns_bridge: None,
             git_ns_config: None,
+            registry_client: None,
         }
     }
 }
@@ -182,6 +184,17 @@ impl TestVtcBuilder {
         bridge: Arc<dyn crate::git_ns::bridge::BridgeClient>,
     ) -> Self {
         self.git_ns_bridge = Some(bridge);
+        self
+    }
+
+    /// Wire a trust-registry client — typically a
+    /// [`crate::registry::MockRegistryClient`] — so the routes and tasks that
+    /// read the registry find one.
+    pub fn with_registry_client(
+        mut self,
+        client: Arc<dyn crate::registry::TrustRegistryClient>,
+    ) -> Self {
+        self.registry_client = Some(client);
         self
     }
 
@@ -457,7 +470,7 @@ impl TestVtcBuilder {
             member_pushes_ks,
             tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
             backup_bundles_ks,
-            registry_client: None,
+            registry_client: self.registry_client,
             registry_health: crate::registry::RegistryHealth::new(),
             // Empty: no drift check has run, which is "not yet known" and is
             // exactly what a test fixture should report until one does.

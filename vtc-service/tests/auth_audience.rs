@@ -53,11 +53,8 @@ async fn vta_audience_token_rejected_by_vtc_route() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/auth/sessions")
-        .header(
-            "Trust-Task",
-            "https://trusttasks.org/spec/auth/sessions/list/0.1",
-        )
+        .uri("/v1/audit/verify")
+        .header("Trust-Task", "https://trusttasks.org/spec/audit/verify/0.1")
         .header("Authorization", format!("Bearer {foreign_token}"))
         .body(Body::empty())
         .unwrap();
@@ -90,11 +87,8 @@ async fn unknown_audience_token_rejected_by_vtc_route() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/auth/sessions")
-        .header(
-            "Trust-Task",
-            "https://trusttasks.org/spec/auth/sessions/list/0.1",
-        )
+        .uri("/v1/audit/verify")
+        .header("Trust-Task", "https://trusttasks.org/spec/audit/verify/0.1")
         .header("Authorization", format!("Bearer {foreign_token}"))
         .body(Body::empty())
         .unwrap();
@@ -108,11 +102,8 @@ async fn no_token_rejected_by_vtc_route() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/auth/sessions")
-        .header(
-            "Trust-Task",
-            "https://trusttasks.org/spec/auth/sessions/list/0.1",
-        )
+        .uri("/v1/audit/verify")
+        .header("Trust-Task", "https://trusttasks.org/spec/audit/verify/0.1")
         .body(Body::empty())
         .unwrap();
     let (status, _body) = request(&router, req).await;
@@ -129,7 +120,7 @@ async fn missing_trust_task_header_returns_400() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/auth/sessions")
+        .uri("/v1/audit/verify")
         .body(Body::empty())
         .unwrap();
     let (status, body) = request(&router, req).await;
@@ -144,7 +135,7 @@ async fn mismatched_trust_task_header_returns_415() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/auth/sessions")
+        .uri("/v1/audit/verify")
         .header(
             "Trust-Task",
             // Any well-formed URI the mount does not bind. Deliberately not a

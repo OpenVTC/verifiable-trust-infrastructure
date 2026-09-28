@@ -35,7 +35,7 @@ vta-support = { path = "../vta-support", version = "0.5" }
 aes-gcm = { workspace = true }
 utoipa = { workspace = true }
 rand = { workspace = true }
-bip39 = "2"
+bip39 = "3"
 hmac = "0.13"
 # `default-features = false` drops the SDKs' `rustls` feature, which is not
 # "use rustls" but `aws-smithy-runtime/tls-rustls` -> the smithy client's

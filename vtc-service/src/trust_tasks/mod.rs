@@ -68,6 +68,9 @@ mod discovery;
 // The canonical `acl/{show,list,update,revoke}` tasks, and the operation-bound
 // gate `acl/grant` shares with `acl/update`.
 mod acl_tasks;
+// The administrator's operational verbs: the registry reconciler, the audit
+// log, the runtime configuration, admin invites and sessions.
+pub(crate) mod admin_tasks;
 
 // The member-facing verbs that were HTTPS REST only: renewal, DID rotation,
 // personhood revocation, the relationship graph's member verbs and the
@@ -561,7 +564,9 @@ async fn dispatch_trust_task_validated(
     // recorded as completed **without** its body, so the secret is not kept
     // for the acceptance window; a redelivery is then answered `204`.
     if outcome.status.is_success() {
-        let recorded = if step_up_passkey_tasks::SECRET_RESPONSES.contains(&type_uri.as_str()) {
+        let recorded = if step_up_passkey_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
+            || admin_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
+        {
             None
         } else {
             serde_json::from_slice::<serde_json::Value>(&outcome.body).ok()
@@ -818,6 +823,13 @@ async fn dispatch_typed(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("backup_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
+        uri if admin_tasks::URIS.contains(&uri) => {
+            match admin_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("admin_tasks::URIS names {uri}, which it does not route"),
             }
         }
         uri if step_up_passkey_tasks::URIS.contains(&uri) => {
@@ -1392,7 +1404,7 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            60,
+            70,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1418,7 +1430,12 @@ mod spine_proof_tests {
              `members/personhood/revoke`, `relationships/{{publish,revoke}}`, \
              `endorsements/{{issue,revoke}}`; `relationships/list` and \
              `endorsements/{{list,show}}` declare none, and their handlers refuse \
-             an unsigned one regardless); got {required:?}"
+             an unsigned one regardless) + the 10 operational verbs `admin_tasks` \
+             moved that declare one (`vtc/registry/sync-jobs/{{retry,discard}}`, \
+             `audit/list`, `config/{{patch,reload,restart}}`, \
+             `vtc/admin/invites/{{create,revoke}}`, `auth/sessions/list`, \
+             `auth/revoke-session/0.2`; the reads that declare none refuse an \
+             unsigned one in their handlers regardless); got {required:?}"
         );
     }
 
@@ -1819,6 +1836,26 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     member_tasks::ENDORSEMENTS_LIST_TYPE,
     member_tasks::ENDORSEMENTS_SHOW_TYPE,
     member_tasks::ENDORSEMENTS_REVOKE_TYPE,
+    // The administrator's operational verbs, which had only bearer REST: the
+    // registry reconciler, the audit log, the runtime configuration, admin
+    // invites, and the auth service's sessions. `audit/verify` keeps its route
+    // while `vtc-client` calls it; none of the others has one.
+    admin_tasks::DIAGNOSTICS_TYPE,
+    admin_tasks::SYNC_JOBS_LIST_TYPE,
+    admin_tasks::SYNC_JOBS_RETRY_TYPE,
+    admin_tasks::SYNC_JOBS_DISCARD_TYPE,
+    admin_tasks::RECORDS_LIST_TYPE,
+    admin_tasks::AUDIT_LIST_TYPE,
+    admin_tasks::AUDIT_VERIFY_TYPE,
+    admin_tasks::CONFIG_SHOW_TYPE,
+    admin_tasks::CONFIG_PATCH_TYPE,
+    admin_tasks::CONFIG_RELOAD_TYPE,
+    admin_tasks::CONFIG_RESTART_TYPE,
+    admin_tasks::INVITES_LIST_TYPE,
+    admin_tasks::INVITES_CREATE_TYPE,
+    admin_tasks::INVITES_REVOKE_TYPE,
+    admin_tasks::SESSIONS_LIST_TYPE,
+    admin_tasks::REVOKE_SESSION_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -3186,9 +3223,13 @@ async fn handle_config_export(
 /// `vtc/config/import/0.1` — preview (`confirm: false`, the default) or apply
 /// a portable configuration.
 ///
-/// Administrator only, from the signer's ACL entry — the `AdminAuth` question
-/// the removed bearer route asked. The audit rows name the signer. This is the
-/// task's only binding; see [`handle_config_export`].
+/// An **unrestricted** administrator only, from the signer's ACL entry. The
+/// removed bearer route asked only `AdminAuth`, but an import writes the same
+/// community-wide overrides `config/patch` does — the unrestricted-admin
+/// consent threshold among them — so it takes what `config/patch` takes, or a
+/// context admin could reach through the import what the patch refuses it. The
+/// audit rows name the signer. This is the task's only binding; see
+/// [`handle_config_export`].
 ///
 /// # Why the payload is read twice
 ///
@@ -3217,6 +3258,9 @@ async fn handle_config_import(
         Ok(a) => a,
         Err(reject) => return reject,
     };
+    if let Err(e) = actor.require_super_admin() {
+        return app_error_to_reject(&doc, &e);
+    }
     let _checked: config_import::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -4045,6 +4089,22 @@ mod tests {
             <trust_tasks_rs::specs::vtc::endorsements::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             discovery::DISCOVERY_V0_3_TYPE,
+            <trust_tasks_rs::specs::vtc::registry::diagnostics::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::registry::sync_jobs::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::registry::sync_jobs::retry::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::registry::sync_jobs::discard::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::registry::records::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::audit::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::audit::verify::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::config::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::config::patch::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::config::reload::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::config::restart::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::admin::invites::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::admin::invites::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::admin::invites::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::auth::sessions::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::auth::revoke_session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.

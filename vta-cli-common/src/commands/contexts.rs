@@ -399,6 +399,29 @@ pub async fn cmd_context_update(
     Ok(())
 }
 
+/// Clear a context's DID (`vta/contexts/update-did/1.1`, `did: null`).
+///
+/// The context is left with no identity of its own; the DID is not deleted.
+/// This is the step `pnm webvh delete-did` asks for when the DID is the last
+/// one a context acts as and there is nothing to reassign it to.
+pub async fn cmd_context_clear_did(
+    client: &VtaClient,
+    id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client.clear_context_did(id).await?;
+    println!("Context DID cleared:");
+    println!("  ID:         {}", resp.id);
+    println!(
+        "  DID:        {}",
+        resp.did.as_deref().unwrap_or("(not set)")
+    );
+    println!(
+        "  Updated At: {}",
+        crate::duration::format_local_datetime(resp.updated_at)
+    );
+    Ok(())
+}
+
 pub async fn cmd_context_update_did(
     client: &VtaClient,
     id: &str,

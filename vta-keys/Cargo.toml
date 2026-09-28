@@ -42,7 +42,7 @@ vta-sdk = { path = "../vta-sdk", version = "0.56", features = ["sealed-transfer"
 affinidi-tdk = { workspace = true }
 affinidi-crypto = { workspace = true }
 ed25519-dalek = { workspace = true }
-bip39 = "2"
+bip39 = "3"
 multibase = { workspace = true }
 aes-gcm = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }

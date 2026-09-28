@@ -1,7 +1,7 @@
-//! Audit log read endpoint.
+//! Audit log reads: `audit/list/0.1` and `audit/verify/0.1`.
 //!
-//! `GET /v1/audit` — newest-first paginated view of the daemon's
-//! audit envelopes. Super-admin only: envelopes carry plaintext
+//! `audit/list` — newest-first paginated view of the daemon's
+//! audit envelopes, a signed document only. Super-admin only: envelopes carry plaintext
 //! actor + target DIDs (until an RTBF override nulls them), which
 //! is the same sensitivity tier as the audit keyspace itself.
 //!
@@ -16,7 +16,7 @@
 //! that key.
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -32,8 +32,6 @@ use tracing::info;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
 pub struct AuditQuery {
     /// Return only entries recorded at or after this time.
     pub from: Option<DateTime<Utc>>,
@@ -228,22 +226,14 @@ pub struct AuditListResponse {
     pub cursor: Option<String>,
 }
 
-/// GET /audit — newest-first paginated audit envelopes. Auth: Super-admin.
-#[utoipa::path(
-    get, path = "/audit", tag = "audit",
-    security(("bearer_jwt" = [])),
-    params(AuditQuery),
-    responses(
-        (status = 200, description = "Paginated audit envelopes", body = AuditListResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a super-admin"),
-    ),
-)]
-pub async fn list_audit(
-    auth: SuperAdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<AuditQuery>,
-) -> Result<Json<AuditListResponse>, AppError> {
+/// `audit/list/0.1` — newest-first paginated audit envelopes, for an
+/// unrestricted administrator (`actor`). A signed document served by the
+/// spine (`trust_tasks::admin_tasks`); there is no REST route.
+pub(crate) async fn list_audit(
+    state: &AppState,
+    actor: &str,
+    query: AuditQuery,
+) -> Result<AuditListResponse, AppError> {
     let unsupported = query.unsupported_filters();
     if !unsupported.is_empty() {
         return Err(AppError::Validation(format!(
@@ -337,17 +327,17 @@ pub async fn list_audit(
     };
 
     info!(
-        caller = %auth.0.did,
+        caller = %actor,
         count = entries.len(),
         has_more = cursor.is_some(),
         "audit listed",
     );
 
-    Ok(Json(AuditListResponse {
+    Ok(AuditListResponse {
         truncated: cursor.is_some(),
         entries,
         cursor,
-    }))
+    })
 }
 
 /// Result of a chain verification pass.
@@ -698,6 +688,18 @@ pub async fn verify_audit_chain(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<VerifyResponse>, AppError> {
+    verify_audit_chain_inner(&state, &auth.0.did)
+        .await
+        .map(Json)
+}
+
+/// `audit/verify/0.1` for `actor`, on either door: the signed document the
+/// spine serves (`trust_tasks::admin_tasks`), and the bearer route above,
+/// which stays while `vtc-client`'s `audit_verify` calls it.
+pub(crate) async fn verify_audit_chain_inner(
+    state: &AppState,
+    actor: &str,
+) -> Result<VerifyResponse, AppError> {
     // Ascending key order is chronological write order, which is what
     // the verifier requires — note this is the opposite of
     // `list_audit`'s newest-first sort.
@@ -738,7 +740,7 @@ pub async fn verify_audit_chain(
     }
 
     let verified = chain_break.is_none();
-    let checkpoints = verify_checkpoint_state(&state).await;
+    let checkpoints = verify_checkpoint_state(state).await;
     let response = VerifyResponse {
         verified,
         entries_examined: verifier.index(),
@@ -759,7 +761,7 @@ pub async fn verify_audit_chain(
     // the response.
     if verified {
         info!(
-            caller = %auth.0.did,
+            caller = %actor,
             examined = response.entries_examined,
             verified = response.entries_verified,
             legacy_skipped = response.legacy_skipped,
@@ -767,12 +769,12 @@ pub async fn verify_audit_chain(
         );
     } else {
         tracing::warn!(
-            caller = %auth.0.did,
+            caller = %actor,
             examined = response.entries_examined,
             chain_break = ?response.chain_break,
             "audit chain verification FAILED",
         );
     }
 
-    Ok(Json(response))
+    Ok(response)
 }

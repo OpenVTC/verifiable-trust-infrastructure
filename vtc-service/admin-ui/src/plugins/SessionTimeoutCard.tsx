@@ -7,9 +7,9 @@
 // is a rotation cadence the operator has no reason to think about now that
 // renewal is automatic.
 //
-// Save is two calls, not one. `PATCH /v1/admin/config` persists the
+// Save is two calls, not one. `config/patch` persists the
 // db-layer override; the running config only changes on
-// `POST /v1/admin/config/reload`. `saveConfig` does both, because a Save
+// `config/reload`. `saveConfig` does both, because a Save
 // that stopped at the PATCH would report success and change nothing.
 
 import { useEffect, useState } from "react";

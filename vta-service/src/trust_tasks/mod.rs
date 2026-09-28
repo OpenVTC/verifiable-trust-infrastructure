@@ -2252,7 +2252,9 @@ dispatch_table! {
     // existing keys and mints, rotates and revokes nothing.
     vta_sdk::trust_tasks::TASK_CONTEXTS_SECRETS_1_0 => contexts::handle_secrets
         [ None Secret false ],
-    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0 => contexts::handle_update_did
+    // 1.0 and 1.1 share the handler: 1.1 only lets `did` be `null` (clear it).
+    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0 | vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1
+        => contexts::handle_update_did
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0 => contexts::handle_preview_delete
         [ None Metadata false ],
@@ -4657,6 +4659,69 @@ mod response_coverage {
         .await;
     }
 
+    /// `update-did/1.1`: `did: null` clears the context's DID and the record
+    /// comes back with `did` absent — not `null`, not `""` — and clearing again
+    /// succeeds. 1.0 is still served by the same handler.
+    #[tokio::test]
+    async fn contexts_update_did_1_1_clears() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        a_context(&state, "cov-clear-did").await;
+        ok(
+            &state,
+            t::TASK_CONTEXTS_UPDATE_DID_1_0,
+            json!({ "id": "cov-clear-did", "did": "did:key:z6MkCovContextDid" }),
+        )
+        .await;
+        let set = ok(
+            &state,
+            t::TASK_CONTEXTS_UPDATE_DID_1_1,
+            json!({ "id": "cov-clear-did", "did": "did:web:ctx.example" }),
+        )
+        .await;
+        assert_eq!(set["did"], "did:web:ctx.example");
+        for round in ["first", "second"] {
+            let cleared = ok(
+                &state,
+                t::TASK_CONTEXTS_UPDATE_DID_1_1,
+                json!({ "id": "cov-clear-did", "did": null }),
+            )
+            .await;
+            assert!(
+                cleared.get("did").is_none(),
+                "{round} clear must leave `did` absent: {cleared}"
+            );
+        }
+    }
+
+    /// `update-did/1.1` refuses a `did` that is not a DID, and a missing one —
+    /// serde alone would read an absent `Option` as a clear.
+    #[tokio::test]
+    async fn contexts_update_did_1_1_refuses_a_non_did() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        a_context(&state, "cov-bad-did").await;
+        for payload in [
+            json!({ "id": "cov-bad-did", "did": "" }),
+            json!({ "id": "cov-bad-did", "did": "did:" }),
+            json!({ "id": "cov-bad-did", "did": "hello" }),
+            json!({ "id": "cov-bad-did" }),
+        ] {
+            let body = signed_body(t::TASK_CONTEXTS_UPDATE_DID_1_1, &vta_did, payload.clone());
+            let outcome = super::dispatch_trust_task_core(
+                &state,
+                &crate::test_support::super_admin_claims(),
+                &body,
+                transport::TransportConfidentiality::HopByHop,
+            )
+            .await;
+            let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+            assert_eq!(
+                doc["payload"]["code"], "malformedRequest",
+                "{payload} must be refused: {doc}"
+            );
+        }
+    }
+
     /// A swap with no `linkProof` names the policy, rather than calling a
     /// well-formed document malformed.
     ///
@@ -5598,6 +5663,11 @@ mod response_coverage {
                 t::TASK_CONTEXTS_UPDATE_DID_1_0,
                 "vta/contexts/update-did",
                 json!({ "id": "PLACEHOLDER", "did": "did:key:z6MkTest" }),
+            ),
+            (
+                t::TASK_CONTEXTS_UPDATE_DID_1_1,
+                "vta/contexts/update-did",
+                json!({ "id": "PLACEHOLDER", "did": null }),
             ),
             (
                 t::TASK_CONTEXTS_PREVIEW_DELETE_1_0,

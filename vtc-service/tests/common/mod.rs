@@ -6,3 +6,6 @@
 
 #[allow(dead_code)] // pulled into different test binaries; not every file uses every helper
 pub mod webauthn_harness;
+
+#[allow(dead_code)] // pulled into different test binaries; not every file uses every helper
+pub mod signed;

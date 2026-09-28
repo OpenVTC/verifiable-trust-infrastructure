@@ -980,6 +980,7 @@ pub async fn run_context_update(
     id: String,
     name: Option<String>,
     did: Option<String>,
+    clear_did: bool,
     description: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::auth::AuthClaims;
@@ -997,7 +998,7 @@ pub async fn run_context_update(
         description,
         context_policy: None,
     };
-    let record = crate::operations::contexts::update_context(
+    let mut record = crate::operations::contexts::update_context(
         &contexts_ks,
         &auth,
         &id,
@@ -1005,6 +1006,18 @@ pub async fn run_context_update(
         "vta-contexts-update",
     )
     .await?;
+    // `update_context` only ever sets a DID; clearing is update-did's job, as
+    // it is for `pnm contexts update --clear-did`.
+    if clear_did {
+        record = crate::operations::contexts::update_context_did(
+            &contexts_ks,
+            &auth,
+            &id,
+            None,
+            "vta-contexts-update",
+        )
+        .await?;
+    }
 
     cs.persist().await?;
     println!("Context updated:");

@@ -1,7 +1,8 @@
 // Sessions plugin — list + revoke active sessions.
 //
-// Wraps the `/v1/auth/sessions` endpoint family. Lists every active
-// session in the daemon's session keyspace, marks the caller's own
+// Signed `auth/sessions/list/0.1` and `auth/revoke-session/0.2` documents.
+// Lists every live session the operator may end — their own, and those of
+// every subject whose access they could withdraw — marks the caller's own
 // session (so an operator who clicks Revoke on themselves understands
 // they're about to be signed out), and offers per-session revoke +
 // "revoke all of this DID" buttons.
@@ -9,20 +10,20 @@
 // Purpose: if an operator suspects a cookie has been stolen, they
 // open this and revoke the suspect session without having to nuke
 // every credential they hold. The backend already enforces that you
-// can only revoke your own sessions unless you're admin.
+// can only see and revoke sessions whose subject's access you could withdraw.
 
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ArrowUpDown, Smartphone } from "lucide-react";
 
-import { deleteJson, getJson, WhoamiResponse } from "@/lib/api";
+import { postSignedRead, postSignedTrustTask, WhoamiResponse } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
-import { formatEpoch, shorten as shortId } from "@/lib/format";
+import { formatIso, shorten as shortId } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import { NamedDid } from "@/components/NamedDid";
 import { useToast } from "@/lib/toast";
 
-type SortKey = "did" | "state" | "createdAt" | "refreshExpiresAt";
+type SortKey = "subject" | "acr" | "issuedAt" | "expiresAt";
 type SortDir = "asc" | "desc";
 
 const TRUST_TASK_LIST =
@@ -31,28 +32,23 @@ const TRUST_TASK_LIST =
 const TRUST_TASK_REVOKE =
   "https://trusttasks.org/spec/auth/revoke-session/0.2";
 
-import type { SessionSummary } from "@/lib/wire-types";
-async function fetchSessions(): Promise<SessionSummary[]> {
-  return getJson<SessionSummary[]>("/v1/auth/sessions", {
-    trustTask: TRUST_TASK_LIST,
-  });
+import type { SessionListResponse, SessionView } from "@/lib/wire-types";
+async function fetchSessions(): Promise<SessionView[]> {
+  const body = await postSignedRead<SessionListResponse>(TRUST_TASK_LIST, {});
+  return body.sessions;
 }
 
 // `revokedCount` is 0 when there was no such session this operator may end —
 // already gone, or outside their authority; the VTC answers both alike.
 async function revokeSession(sessionId: string): Promise<number> {
-  const body = await deleteJson<{ revokedCount: number }>(
-    `/v1/auth/sessions/${encodeURIComponent(sessionId)}`,
-    { trustTask: TRUST_TASK_REVOKE },
-  );
+  const body = await postSignedTrustTask<{ revokedCount: number }>(TRUST_TASK_REVOKE, {
+    sessionId,
+  });
   return body.revokedCount;
 }
 
 async function revokeAllForDid(did: string): Promise<void> {
-  await deleteJson<unknown>(
-    `/v1/auth/sessions?did=${encodeURIComponent(did)}`,
-    { trustTask: TRUST_TASK_REVOKE },
-  );
+  await postSignedTrustTask<{ revokedCount: number }>(TRUST_TASK_REVOKE, { subject: did });
 }
 
 export function Sessions() {
@@ -64,7 +60,7 @@ export function Sessions() {
   // Default sort = newest first by created time. Click a header to
   // toggle direction; clicking a different header switches the sort
   // key with sensible-for-that-column default direction.
-  const [sortKey, setSortKey] = useState<SortKey>("createdAt");
+  const [sortKey, setSortKey] = useState<SortKey>("issuedAt");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   const sessionsQuery = useQuery({
@@ -126,7 +122,7 @@ export function Sessions() {
     const needle = filterText.trim().toLowerCase();
     const filtered = needle
       ? allSessions.filter((s) =>
-          (s.did + " " + s.sessionId + " " + s.state)
+          (s.subject + " " + s.id + " " + (s.acr ?? ""))
             .toLowerCase()
             .includes(needle),
         )
@@ -136,9 +132,8 @@ export function Sessions() {
       const bv = b[sortKey];
       if (av === bv) return 0;
       // Blanks sort last regardless of direction so they don't crowd the top.
-      // Both emptinesses count: the daemon sends `refreshExpiresAt: null`, and
-      // the schema marks it optional, so the generated type admits `undefined`
-      // too. Testing only for `null` left the other one comparing as a value.
+      // Both emptinesses count: `acr` is optional, so the generated type
+      // admits `undefined` as well as `null`.
       const aEmpty = av === null || av === undefined;
       const bEmpty = bv === null || bv === undefined;
       if (aEmpty && bEmpty) return 0;
@@ -158,7 +153,7 @@ export function Sessions() {
     setSortKey(key);
     // Timestamps default descending (most recent first); strings
     // default ascending (A → Z).
-    setSortDir(key === "createdAt" || key === "refreshExpiresAt" ? "desc" : "asc");
+    setSortDir(key === "issuedAt" || key === "expiresAt" ? "desc" : "asc");
   };
 
   // Group "revoke all for this DID" by DID — only show on the first
@@ -187,7 +182,7 @@ export function Sessions() {
               <span className="field-label">Filter</span>
               <input
                 type="search"
-                placeholder="DID, session id, or state"
+                placeholder="DID, session id, or assurance"
                 value={filterText}
                 onChange={(e) => setFilterText(e.target.value)}
               />
@@ -229,29 +224,29 @@ export function Sessions() {
               <tr>
                 <SortableTh
                   label="DID"
-                  sortKey="did"
+                  sortKey="subject"
                   active={sortKey}
                   dir={sortDir}
                   onSort={handleSort}
                 />
                 <th>Session</th>
                 <SortableTh
-                  label="State"
-                  sortKey="state"
+                  label="Assurance"
+                  sortKey="acr"
                   active={sortKey}
                   dir={sortDir}
                   onSort={handleSort}
                 />
                 <SortableTh
                   label="Created"
-                  sortKey="createdAt"
+                  sortKey="issuedAt"
                   active={sortKey}
                   dir={sortDir}
                   onSort={handleSort}
                 />
                 <SortableTh
-                  label="Refresh expires"
-                  sortKey="refreshExpiresAt"
+                  label="Expires"
+                  sortKey="expiresAt"
                   active={sortKey}
                   dir={sortDir}
                   onSort={handleSort}
@@ -261,25 +256,25 @@ export function Sessions() {
             </thead>
             <tbody>
               {sessions.map((s) => {
-                const isMine = s.sessionId === mySessionId;
-                const showBulk = !seenDids.has(s.did);
-                seenDids.add(s.did);
+                const isMine = s.id === mySessionId;
+                const showBulk = !seenDids.has(s.subject);
+                seenDids.add(s.subject);
                 const sameDidCount = sessions.filter(
-                  (x) => x.did === s.did,
+                  (x) => x.subject === s.subject,
                 ).length;
                 return (
-                  <tr key={s.sessionId}>
+                  <tr key={s.id}>
                     <td>
-                      <NamedDid book={nameBook} did={s.did} />
-                      {s.did === myDid && (
+                      <NamedDid book={nameBook} did={s.subject} />
+                      {s.subject === myDid && (
                         <span className="chip accent" title="Your DID">
                           you
                         </span>
                       )}
                     </td>
                     <td>
-                      <code className="truncate" title={s.sessionId}>
-                        {shortId(s.sessionId)}
+                      <code className="truncate" title={s.id}>
+                        {shortId(s.id)}
                       </code>
                       {isMine && (
                         <span className="chip accent" title="This browser tab">
@@ -288,16 +283,10 @@ export function Sessions() {
                       )}
                     </td>
                     <td>
-                      <code>{s.state}</code>
+                      {s.acr ? <code>{s.acr}</code> : <span className="muted">—</span>}
                     </td>
-                    <td>{formatEpoch(s.createdAt)}</td>
-                    <td>
-                      {s.refreshExpiresAt ? (
-                        formatEpoch(s.refreshExpiresAt)
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
-                    </td>
+                    <td>{formatIso(s.issuedAt)}</td>
+                    <td>{formatIso(s.expiresAt)}</td>
                     <td>
                       <div className="row-actions">
                         <button
@@ -309,14 +298,14 @@ export function Sessions() {
                             const ok = await confirm({
                               title: isMine
                                 ? "Revoke your own session?"
-                                : `Revoke session ${shortId(s.sessionId)}?`,
+                                : `Revoke session ${shortId(s.id)}?`,
                               message: isMine
                                 ? "You'll be signed out of this tab."
-                                : `${s.did} loses this session immediately.`,
+                                : `${s.subject} loses this session immediately.`,
                               confirmLabel: "Revoke",
                               destructive: true,
                             });
-                            if (ok) revokeOne.mutate(s.sessionId);
+                            if (ok) revokeOne.mutate(s.id);
                           }}
                         >
                           Revoke
@@ -327,15 +316,15 @@ export function Sessions() {
                             className="secondary destructive"
                             disabled={revokeMany.isPending}
                             aria-busy={revokeMany.isPending}
-                            title={`Revoke all ${sameDidCount} sessions for ${s.did}`}
+                            title={`Revoke all ${sameDidCount} sessions for ${s.subject}`}
                             onClick={async () => {
                               const ok = await confirm({
-                                title: `Revoke all sessions for ${s.did}?`,
+                                title: `Revoke all sessions for ${s.subject}?`,
                                 message: `${sameDidCount} active sessions will be terminated immediately.`,
                                 confirmLabel: "Revoke all",
                                 destructive: true,
                               });
-                              if (ok) revokeMany.mutate(s.did);
+                              if (ok) revokeMany.mutate(s.subject);
                             }}
                           >
                             Revoke all for DID

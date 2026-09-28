@@ -4392,6 +4392,16 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             (context_record(), parses::<ctx::update_did::v1_0::Response>),
         ),
         (
+            // 1.1: `did` may be `null`, which clears the context's DID.
+            uris::TASK_CONTEXTS_UPDATE_DID_1_1,
+            (
+                json!({ "id": "personal", "did": null }),
+                parses::<ctx::update_did::v1_1::Payload>,
+                validates::<ctx::update_did::v1_1::Payload>,
+            ),
+            (context_record(), parses::<ctx::update_did::v1_1::Response>),
+        ),
+        (
             uris::TASK_CONTEXTS_SECRETS_1_0,
             (
                 json!({ "id": "rooms/host-1" }),

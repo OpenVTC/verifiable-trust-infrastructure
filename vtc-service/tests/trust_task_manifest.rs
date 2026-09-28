@@ -748,6 +748,21 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1",
     "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1",
     "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2",
+    // The administrator's operational verbs (`trust_tasks::admin_tasks`).
+    "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1",
+    "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1",
+    "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1",
+    "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1",
+    "https://trusttasks.org/spec/vtc/registry/records/list/0.1",
+    "https://trusttasks.org/spec/audit/list/0.1",
+    "https://trusttasks.org/spec/config/show/0.1",
+    "https://trusttasks.org/spec/config/patch/0.1",
+    "https://trusttasks.org/spec/config/reload/0.1",
+    "https://trusttasks.org/spec/vtc/admin/invites/list/0.1",
+    "https://trusttasks.org/spec/vtc/admin/invites/create/0.1",
+    "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1",
+    "https://trusttasks.org/spec/auth/sessions/list/0.1",
+    "https://trusttasks.org/spec/auth/revoke-session/0.2",
 ];
 
 #[test]
