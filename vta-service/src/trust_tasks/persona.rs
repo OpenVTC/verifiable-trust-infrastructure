@@ -282,7 +282,7 @@ fn decide(
                  trust context. It requires an ACL entry granted the `persona-holder` \
                  capability, and no role carries it — not even super-admin, which is what a \
                  credential that administers every context does NOT get to read by default. \
-                 Grant it deliberately: `pnm acl update --did <did> --capabilities \
+                 Grant it deliberately: `pnm acl update <did> --capabilities \
                  persona-holder`. An administrator scoped to a context is refused here exactly \
                  as an application would be."
                     .into(),

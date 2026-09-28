@@ -240,7 +240,7 @@ pub(crate) enum Commands {
     /// Your attributes and your faces sit ABOVE every trust context. Reaching
     /// them needs a credential granted `persona-holder`, and no role carries it
     /// — administering every context is not permission to read what sits above
-    /// them. Grant it with `pnm acl update --did <did> --capabilities
+    /// them. Grant it with `pnm acl update <did> --capabilities
     /// persona-holder`. Wearing, contacts and what leaves are context-scoped
     /// and take `--context`.
     Persona {
@@ -4462,6 +4462,45 @@ mod world_colour_tests {
             vec![
                 "slate", "indigo", "teal", "moss", "sand", "clay", "rose", "plum"
             ],
+        );
+    }
+}
+
+#[cfg(test)]
+mod acl_update_hint_tests {
+    use super::*;
+
+    /// The persona refusal (`vta-service` `trust_tasks/persona.rs`) and
+    /// `pnm persona --help` both tell an operator to run this. `pnm acl update`
+    /// takes the entry's DID positionally; the hint used to print `--did`,
+    /// which clap rejects, so the one command offered as the fix did not run.
+    #[test]
+    fn acl_update_accepts_the_persona_holder_grant_the_hints_print() {
+        let did = "did:key:z6MkExampleHolder";
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "acl",
+                "update",
+                did,
+                "--capabilities",
+                "persona-holder",
+            ])
+            .is_ok(),
+            "the printed grant must parse"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "acl",
+                "update",
+                "--did",
+                did,
+                "--capabilities",
+                "persona-holder",
+            ])
+            .is_err(),
+            "`--did` is not a flag of `acl update`; a hint spelling it that way is wrong"
         );
     }
 }
