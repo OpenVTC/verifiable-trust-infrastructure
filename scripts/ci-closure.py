@@ -9,6 +9,14 @@ emits one `<dir>\t<name>\t<IN|OUT>` row per workspace member, where IN means the
 crate is in the transitive workspace-member dependency closure of the named
 packages — i.e. a change to it can change what those packages build.
 
+`--own A B` tags only the named packages themselves IN, without walking their
+dependencies. It is for a job whose failure modes a dependency's *source* cannot
+cause — `Mobile build` cross-compiles and links for phone targets and generates
+FFI bindings from `vta-mobile-core`'s own types, so a change to `vta-sdk`'s code
+reaches it only through the lockfile and toolchain, which `ci-affects.sh` treats
+as global and always runs on. Every other job wants the closure; this is not a
+cheaper default.
+
 `--except A B` takes the union closure of every workspace member EXCEPT the named
 ones. That is how a job phrased as "test everything but VTC" states its scope, and
 it is not the complement of the VTC closure: `room-host` depends on `vtc-client`,
@@ -33,11 +41,13 @@ LIB_KINDS = {"lib", "rlib", "proc-macro", "dylib", "cdylib"}
 
 def main() -> int:
     args = sys.argv[1:]
-    invert = False
+    invert = own = False
     if args and args[0] == "--except":
         invert, args = True, args[1:]
+    elif args and args[0] == "--own":
+        own, args = True, args[1:]
     if not args:
-        print("usage: ci-closure.py [--except] <package>...", file=sys.stderr)
+        print("usage: ci-closure.py [--except|--own] <package>...", file=sys.stderr)
         return 2
     targets = {t for a in args for t in a.split(",") if t}
 
@@ -66,7 +76,9 @@ def main() -> int:
         return 3
 
     seen: set[str] = set()
-    stack = list(start)
+    stack = [] if own else list(start)
+    if own:
+        seen.update(start)
     while stack:
         i = stack.pop()
         if i in seen:

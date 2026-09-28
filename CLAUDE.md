@@ -1101,7 +1101,8 @@ the Release PR that release-plz maintains; merging that PR is what publishes.
 Merging a feature PR publishes nothing. See [`RELEASING.md`](RELEASING.md).
 
 That includes when the `semver report (informational — never blocks)` check
-goes **red on your PR**. It is doing its job: it compares the crate's public
+goes **red on your PR** (it runs only on a PR labelled `semver-report`; the
+Release PR's `release bump is large enough` job enforces the same check). It is doing its job: it compares the crate's public
 API against the version on crates.io, so a PR that adds a struct member or
 renames a `pub const` *should* turn it red. The red is the report, not a
 defect, and the fix is not a version bump in your branch — release-plz reads
