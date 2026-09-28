@@ -60,8 +60,6 @@ const ENROLL_START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll
 const ENROLL_FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2";
 const LIST_TASK: &str = "https://trusttasks.org/spec/auth/passkey/list/0.1";
 const COMMUNITY_PROFILE_TASK: &str = "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
-const ADMIN_CONFIG_PATCH_TASK: &str = "https://trusttasks.org/spec/config/patch/0.1";
-const RESTART_TASK: &str = "https://trusttasks.org/spec/config/restart/0.1";
 
 struct Fixture {
     state: AppState,
@@ -381,41 +379,9 @@ async fn end_to_end_install_flow_phase_0_gate() {
     assert_eq!(acl[0].did, admin_did);
     assert_eq!(acl[0].role, Role::Admin);
 
-    // ----------------------------------------------------------------
-    // Step 8 — admin/config PATCH applies a hot-reloadable setting
-    // ----------------------------------------------------------------
-    let (status, body) = request(
-        &fix.router,
-        "PATCH",
-        "/v1/admin/config",
-        ADMIN_CONFIG_PATCH_TASK,
-        Some(&admin_token),
-        Some(json!({ "overrides": { "log.level": "debug" } })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "config PATCH: {body}");
-    assert_eq!(body["applied"], json!(["log.level"]));
-
-    // ----------------------------------------------------------------
-    // Step 9 — restart without supervisor → 412 SupervisorRequired
-    // ----------------------------------------------------------------
-    let (status, body) = request(
-        &fix.router,
-        "POST",
-        "/v1/admin/config/restart",
-        RESTART_TASK,
-        Some(&admin_token),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("SupervisorRequired"),
-        "expected SupervisorRequired, got {body}"
-    );
+    // The runtime configuration (`config/patch`, `config/restart`) is a
+    // signed document only, driven through the signed door in
+    // `admin_config.rs` and `admin_verbs_spine.rs`.
 
     // ----------------------------------------------------------------
     // Step 10 — second claim/start with the same token is rejected

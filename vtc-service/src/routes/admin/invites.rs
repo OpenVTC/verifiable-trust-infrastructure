@@ -1,36 +1,27 @@
-//! `/v1/admin/invites/*` — REST surface for admin onboarding.
+//! `vtc/admin/invites/{create,list,revoke}/0.1` — admin onboarding.
 //!
-//! Mirrors the `vtc admin invite` CLI exactly, just over HTTP from
-//! the running daemon:
+//! Mirrors the `vtc admin invite` CLI, from the running daemon. Each is a
+//! signed document served by the spine on every transport
+//! (`trust_tasks::admin_tasks`); none has a REST route.
 //!
-//! - `POST /v1/admin/invites` mints a fresh single-use install URL
-//!   for `--did`, ensuring an `Admin` ACL grant exists first (so the
-//!   new admin can actually log in once they claim the passkey).
-//! - `GET  /v1/admin/invites` lists every persisted install-token
-//!   row with a derived status (`issued` / `consumed` / `expired`).
-//! - `DELETE /v1/admin/invites/{jti}` revokes an outstanding invite
-//!   by deleting its install-token row. Refuses to revoke an
-//!   already-consumed invite.
-//!
-//! All three routes are gated by [`AdminAuth`] + Trust-Task at the
-//! router layer; reaching a handler implies both checks passed.
-//!
-//! No step-up UV is required — minting an invite doesn't enrol a
-//! passkey for the caller, only for the *target* DID once they claim
-//! the URL. The new admin's WebAuthn registration ceremony covers
-//! that side.
+//! - `create` mints a fresh single-use install URL for `did`, ensuring an
+//!   `Admin` ACL grant exists first (so the new admin can actually log in
+//!   once they claim the passkey). Writing that grant confers unrestricted
+//!   authority, so it takes the inviter's passkey gesture bound to the
+//!   invite and another unrestricted admin's consent.
+//! - `list` lists every persisted install-token row with a derived status
+//!   (`issued` / `consumed` / `expired`).
+//! - `revoke` removes an invite by deleting its install-token row.
 
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
 use vti_common::audit::{AdminInviteData, AuditEvent};
-use vti_common::auth::AdminAuth;
+use vti_common::auth::extractor::AuthClaims;
 use vti_common::error::AppError;
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
@@ -135,36 +126,37 @@ pub struct RevokeInviteResponse {
 // POST handler
 // ---------------------------------------------------------------------------
 
-const MAX_TTL_SECONDS: u64 = 24 * 60 * 60;
+/// The longest an invite may live.
+pub(crate) const MAX_TTL_SECONDS: u64 = 24 * 60 * 60;
 
 /// `vtc/admin/invites/create:ttlTooLong` — `ttlSeconds` exceeds the 24-hour
 /// maximum.
-/// `vtc/admin/invites/create/0.1` — what an invite's consent is bound to.
-const CREATE_INVITE_TYPE: &str =
-    <trust_tasks_rs::specs::vtc::admin::invites::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
 pub const CREATE_INVITE_ERR_TTL_TOO_LONG: &str =
     trust_tasks_rs::specs::vtc::admin::invites::create::v0_1::error_codes::TTL_TOO_LONG.code;
 /// `vtc/admin/invites/revoke:notFound` — no invite with that `jti`.
 pub const REVOKE_INVITE_ERR_NOT_FOUND: &str =
     trust_tasks_rs::specs::vtc::admin::invites::revoke::v0_1::error_codes::NOT_FOUND.code;
 
-#[utoipa::path(
-    post, path = "/admin/invites", tag = "admin",
-    security(("bearer_jwt" = [])),
-    request_body = CreateInviteRequest,
-    responses(
-        (status = 200, description = "Install URL + one-time claim code minted", body = CreateInviteResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an unrestricted (community-wide) admin"),
-        (status = 409, description = "Target DID already has a non-admin ACL grant"),
-    ),
-)]
-pub async fn create_invite(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Json(req): Json<CreateInviteRequest>,
-) -> Result<(StatusCode, Json<CreateInviteResponse>), TaskError> {
+/// What [`check_invite`] decided, carried to [`commit_invite`] once the
+/// caller has settled whatever the invite costs.
+#[derive(Debug)]
+pub(crate) struct InvitePlan {
+    ttl_seconds: u64,
+    /// `true` when the invited DID holds no ACL entry, so the invite writes an
+    /// **unrestricted** admin entry for it: a grant of unrestricted authority,
+    /// which costs what one costs on `acl/grant` — the caller's passkey gesture
+    /// bound to this invite, and another unrestricted admin's consent
+    /// (VTI-APV-014). The caller settles both before [`commit_invite`].
+    pub(crate) grants_admin: bool,
+}
+
+/// Every check that decides whether `actor` may invite `req.did`, before the
+/// invite costs anything.
+pub(crate) async fn check_invite(
+    state: &AppState,
+    actor: &AuthClaims,
+    req: &CreateInviteRequest,
+) -> Result<InvitePlan, TaskError> {
     if !req.did.starts_with("did:") {
         return Err(AppError::Validation(format!(
             "did must start with 'did:' (got '{}')",
@@ -193,10 +185,10 @@ pub async fn create_invite(
 
     // The grant below is an unrestricted admin entry — a community-wide
     // super-admin. Only a caller that already is one may confer it
-    // (VTI-ACL-022, VTI-ACL-053); `AdminAuth` alone admits an administrator of
-    // a single context, who could otherwise mint community-wide authority for
-    // any DID it controls by inviting it.
-    if !admin.0.is_super_admin() {
+    // (VTI-ACL-022, VTI-ACL-053); the admin role alone admits an administrator
+    // of a single context, who could otherwise mint community-wide authority
+    // for any DID it controls by inviting it.
+    if !actor.is_super_admin() {
         return Err(AppError::Forbidden(
             "only an unrestricted administrator can invite an administrator: the invite grants community-wide admin authority, which an administrator scoped to some contexts does not hold"
                 .into(),
@@ -204,15 +196,15 @@ pub async fn create_invite(
         .into());
     }
 
-    let signer = require_install_signer(&state)?;
-    let base_url = require_public_url(&state).await?;
-    let vtc_did = require_vtc_did(&state).await?;
+    require_install_signer(state)?;
+    require_public_url(state).await?;
+    require_vtc_did(state).await?;
 
-    // Ensure the target DID has an Admin ACL grant. Mirrors the
-    // CLI: idempotent — leaves a pre-existing grant untouched (we
-    // don't downgrade non-Admin DIDs here, since that would mean
-    // a separate role change is needed first).
-    let acl_entry_created = match get_acl_entry(&state.acl_ks, &req.did).await? {
+    // Ensure the target DID has an Admin ACL grant. Mirrors the CLI:
+    // idempotent — leaves a pre-existing grant untouched (we don't downgrade
+    // non-Admin DIDs here, since that would mean a separate role change is
+    // needed first).
+    let grants_admin = match get_acl_entry(&state.acl_ks, &req.did).await? {
         Some(existing) if existing.role == VtcRole::Admin => false,
         Some(_) => {
             return Err(AppError::Conflict(format!(
@@ -222,65 +214,60 @@ pub async fn create_invite(
             ))
             .into());
         }
-        None => {
-            // The entry this writes is an **unrestricted** admin, so an invite
-            // is a grant of unrestricted authority and costs what one costs on
-            // `acl/grant`: an unrestricted caller, the caller's live step-up,
-            // and another unrestricted admin's consent (VTI-APV-014). Before
-            // this, `AdminAuth` alone was enough — so a *scoped* admin could
-            // mint a community-wide admin here, with no gesture and nobody
-            // else asked.
-            if !admin.0.is_super_admin() {
-                return Err(AppError::Forbidden(
-                    "only an unrestricted admin can invite an admin, because an invited admin \
-                     is unrestricted"
-                        .into(),
-                )
-                .into());
-            }
-            if !crate::acl::elevation::verified(&admin.0, &state.sessions_ks).await {
-                return Err(crate::acl::elevation::required(&format!(
-                    "inviting {} as an unrestricted admin",
-                    req.did
-                ))
-                .into());
-            }
-            let op_payload = serde_json::to_value(&req)
-                .map_err(|e| AppError::Internal(format!("serialise invite request: {e}")))?;
-            let consent = crate::acl::admin_consent::require(
-                &state,
-                &admin.0.did,
-                &req.did,
-                crate::acl::admin_consent::Operation {
-                    type_uri: CREATE_INVITE_TYPE,
-                    payload: &op_payload,
-                },
-                &format!(
-                    "Invite {} to become an unrestricted administrator of this community",
-                    req.did
-                ),
-            )
-            .await?;
-            consent.spend(&state).await?;
+        None => true,
+    };
+    Ok(InvitePlan {
+        ttl_seconds,
+        grants_admin,
+    })
+}
 
-            let label = req
-                .label
-                .clone()
-                .unwrap_or_else(|| "admin invite (web)".into());
-            let entry = VtcAclEntry {
-                did: req.did.clone(),
-                role: VtcRole::Admin,
-                label: Some(label),
-                allowed_contexts: vec![],
-                created_at: now_epoch(),
-                created_by: format!("admin-ui/{}", env!("CARGO_PKG_VERSION")),
-                updated_at: None,
-                updated_by: None,
-                expires_at: None,
-            };
-            store_acl_entry(&state.acl_ks, &entry).await?;
-            true
+/// Mint the invite [`check_invite`] planned, writing the admin entry it
+/// grants. The caller has already settled the gesture and the consent a
+/// granting invite costs.
+pub(crate) async fn commit_invite(
+    state: &AppState,
+    actor: &AuthClaims,
+    req: CreateInviteRequest,
+    plan: InvitePlan,
+) -> Result<CreateInviteResponse, TaskError> {
+    let InvitePlan {
+        ttl_seconds,
+        grants_admin,
+    } = plan;
+    let signer = require_install_signer(state)?;
+    let base_url = require_public_url(state).await?;
+    let vtc_did = require_vtc_did(state).await?;
+
+    let acl_entry_created = if grants_admin {
+        // Re-read under the commit: an entry written for this DID since the
+        // check must not be overwritten by an unrestricted admin row.
+        if get_acl_entry(&state.acl_ks, &req.did).await?.is_some() {
+            return Err(AppError::Conflict(format!(
+                "did {} gained an ACL entry while this invite was being approved; send it again",
+                req.did
+            ))
+            .into());
         }
+        let label = req
+            .label
+            .clone()
+            .unwrap_or_else(|| "admin invite (web)".into());
+        let entry = VtcAclEntry {
+            did: req.did.clone(),
+            role: VtcRole::Admin,
+            label: Some(label),
+            allowed_contexts: vec![],
+            created_at: now_epoch(),
+            created_by: format!("admin-ui/{}", env!("CARGO_PKG_VERSION")),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        };
+        store_acl_entry(&state.acl_ks, &entry).await?;
+        true
+    } else {
+        false
     };
 
     let minted = mint_install_token(signer.as_ref(), &vtc_did, &req.did, ttl_seconds)?;
@@ -315,7 +302,7 @@ pub async fn create_invite(
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
-                &admin.0.did,
+                &actor.did,
                 Some(&req.did),
                 AuditEvent::AdminInviteCreated(AdminInviteData {
                     jti: minted.jti.to_string(),
@@ -329,38 +316,24 @@ pub async fn create_invite(
         target_did = %req.did,
         jti = %minted.jti,
         ttl_seconds,
-        "admin invite minted via REST"
+        "admin invite minted"
     );
 
-    Ok((
-        StatusCode::OK,
-        Json(CreateInviteResponse {
-            jti: minted.jti.to_string(),
-            install_url,
-            claim_code,
-            expires_at,
-            acl_entry_created,
-        }),
-    ))
+    Ok(CreateInviteResponse {
+        jti: minted.jti.to_string(),
+        install_url,
+        claim_code,
+        expires_at,
+        acl_entry_created,
+    })
 }
 
 // ---------------------------------------------------------------------------
 // GET handler
 // ---------------------------------------------------------------------------
 
-#[utoipa::path(
-    get, path = "/admin/invites", tag = "admin",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Outstanding + terminal install-token invites", body = ListInvitesResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_invites(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<ListInvitesResponse>, AppError> {
+/// `vtc/admin/invites/list/0.1`.
+pub(crate) async fn list_invites(state: &AppState) -> Result<ListInvitesResponse, AppError> {
     let now = Utc::now();
     let mut invites: Vec<InviteSummary> = state
         .install_store
@@ -377,29 +350,19 @@ pub async fn list_invites(
         let b_ts = b.consumed_at.or(b.expires_at);
         b_ts.cmp(&a_ts).then_with(|| a.jti.cmp(&b.jti))
     });
-    Ok(Json(ListInvitesResponse { invites }))
+    Ok(ListInvitesResponse { invites })
 }
 
 // ---------------------------------------------------------------------------
 // DELETE handler
 // ---------------------------------------------------------------------------
 
-#[utoipa::path(
-    delete, path = "/admin/invites/{jti}", tag = "admin",
-    security(("bearer_jwt" = [])),
-    params(("jti" = String, Path, description = "Invite token id (jti)")),
-    responses(
-        (status = 200, description = "Invite revoked", body = RevokeInviteResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Invite not found"),
-    ),
-)]
-pub async fn revoke_invite(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(jti_str): Path<String>,
-) -> Result<(StatusCode, Json<RevokeInviteResponse>), TaskError> {
+/// `vtc/admin/invites/revoke/0.1`, by `actor`.
+pub(crate) async fn revoke_invite(
+    state: &AppState,
+    actor: &str,
+    jti_str: &str,
+) -> Result<RevokeInviteResponse, TaskError> {
     let jti = jti_str
         .parse::<Uuid>()
         .map_err(|_| AppError::Validation(format!("invalid jti: '{jti_str}'")))?;
@@ -436,7 +399,7 @@ pub async fn revoke_invite(
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
-                &admin.0.did,
+                actor,
                 None,
                 AuditEvent::AdminInviteRevoked(AdminInviteData {
                     jti: jti.to_string(),
@@ -446,14 +409,11 @@ pub async fn revoke_invite(
             .await?;
     }
 
-    info!(%jti, "admin invite removed via REST");
+    info!(%jti, "admin invite removed");
 
-    Ok((
-        StatusCode::OK,
-        Json(RevokeInviteResponse {
-            jti: jti.to_string(),
-        }),
-    ))
+    Ok(RevokeInviteResponse {
+        jti: jti.to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------

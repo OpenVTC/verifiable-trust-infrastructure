@@ -271,25 +271,6 @@ export function gitNsRoutes(
         granters: [{ granter: GUS, rights: RIGHTS.filter((r) => r.granterDeparted) }],
       },
     },
-    {
-      path: "/v1/git-ns/drift",
-      body: {
-        repos: [
-          {
-            resource: "github.com/acme/docs",
-            state: "drift",
-            drift: [
-              {
-                type: "roleAdded",
-                resource: "github.com/acme/docs",
-                observed: "maintain",
-                account: { forge: "github.com", id: "1003", login: "hsato" },
-              },
-            ],
-          },
-        ],
-      },
-    },
     { path: "/v1/git-ns/jobs", body: { jobs: [] } },
     { path: "/v1/git-ns/accounts", body: { accounts: over.accounts ?? ACCOUNTS } },
     {
@@ -382,7 +363,9 @@ export function signedReads(o: {
         case TASK_REPO_LIST:
           return statusFor(o.reposStatus);
         case TASK_VIEW:
-          return statusFor(o.breakGlassStatus);
+          return (body as { payload?: { breakGlass?: boolean } }).payload?.breakGlass
+            ? statusFor(o.breakGlassStatus)
+            : 200;
         case ACL_LIST_TASK:
           return 200;
         default:
@@ -400,6 +383,10 @@ export function signedReads(o: {
             ? refused(o.reposStatus, "git-ns/repo/list")
             : { payload: { repos: o.repos } };
         case TASK_VIEW:
+          if (!(body as { payload?: { breakGlass?: boolean } }).payload?.breakGlass) {
+            // The administrator's whole view: the repositories' drift.
+            return { payload: driftView(o.namespaces) };
+          }
           return o.breakGlassStatus && o.breakGlassStatus !== 200
             ? refused(o.breakGlassStatus, "git-ns/view")
             : { payload: breakGlassView(o.namespaces, o.breakGlass) };
@@ -410,6 +397,65 @@ export function signedReads(o: {
           return refusal("unsupportedType", `no mock for ${typeOf(body)}`);
       }
     },
+  };
+}
+
+/**
+ * `git-ns/view/0.5` answering the administrator's view with `repos`' drift,
+ * ahead of [`signedReads`] (pass it in `extra`). A `breakGlass: true` view is
+ * answered empty.
+ */
+export function driftViewRoute(
+  repos: { resource: string; state: string; drift: object[] }[],
+): MockRoute {
+  return {
+    method: "POST",
+    path: "/v1/trust-tasks",
+    task: TASK_VIEW,
+    body: ({ body }) => {
+      const breakGlass = (body as { payload?: { breakGlass?: boolean } }).payload?.breakGlass;
+      return {
+        payload: {
+          namespaces: [],
+          repos: breakGlass
+            ? []
+            : repos.map((r) => ({ resource: r.resource, sync: { state: r.state, drift: r.drift } })),
+          rights: [],
+          accounts: [],
+        },
+      };
+    },
+  };
+}
+
+/** A `git-ns/view/0.5` `scope: administrator` answer: `docs` has drifted. */
+function driftView(namespaces: GitNsNamespaceRow[]) {
+  return {
+    namespaces: namespaces.map((n) => ({
+      id: n.id,
+      forge: n.forge,
+      owner: n.owner,
+      mode: n.mode,
+      state: n.state,
+    })),
+    repos: [
+      {
+        resource: "github.com/acme/docs",
+        sync: {
+          state: "drift",
+          drift: [
+            {
+              type: "roleAdded",
+              resource: "github.com/acme/docs",
+              observed: "maintain",
+              account: { forge: "github.com", id: "1003", login: "hsato" },
+            },
+          ],
+        },
+      },
+    ],
+    rights: [],
+    accounts: [],
   };
 }
 

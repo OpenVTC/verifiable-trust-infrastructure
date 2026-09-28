@@ -54,13 +54,13 @@ pub use event::{
     MembershipReciprocatedData, MembershipRenewedData, OperationStepUpData, PersonhoodAssertedData,
     PersonhoodRevokedData, PolicyActivatedData, PolicyUploadedData, REDACTED_MARKER,
     RegistryRecordPolicyOverrideData, RegistryStatusChangedData, RegistrySyncOutcomeData,
-    RestartRequestedData, RoleChangedData, RoomOperationData, SchemaChangeData, SessionRevokedData,
-    SignedOutData, StatusListFlippedData, StepUpEvidence, StepUpPasskeyData, TaskConsentData,
-    VetterAutoGrantConfiguredData, VetterAutoGrantSweptData, VetterGrantResentData,
-    VetterGrantedData, VetterProfileDeletedData, VetterProfileUpdatedData,
-    VettingStatementRevokedData, VpcAnnotationData, VrcLifecycleData, VrcPublishedData,
-    VrcRevokedData, VrcSupersededData, WebsiteBundleDeployedData, WebsiteFileDeletedData,
-    WebsiteFileWrittenData, WebsiteGenerationRolledBackData,
+    RestartRequestedData, RoleChangedData, RoomOperationData, SchemaChangeData,
+    SessionRevocationRefusedData, SessionRevokedData, SignedOutData, StatusListFlippedData,
+    StepUpEvidence, StepUpPasskeyData, TaskConsentData, VetterAutoGrantConfiguredData,
+    VetterAutoGrantSweptData, VetterGrantResentData, VetterGrantedData, VetterProfileDeletedData,
+    VetterProfileUpdatedData, VettingStatementRevokedData, VpcAnnotationData, VrcLifecycleData,
+    VrcPublishedData, VrcRevokedData, VrcSupersededData, WebsiteBundleDeployedData,
+    WebsiteFileDeletedData, WebsiteFileWrittenData, WebsiteGenerationRolledBackData,
 };
 pub use key_store::{AuditKey, AuditKeyStore, KeyId, RotationReason};
 pub use writer::AuditWriter;

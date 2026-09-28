@@ -20,81 +20,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/admin/config": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** GET handler. */
-        get: operations["get_config"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** PATCH handler. */
-        patch: operations["patch_config"];
-        trace?: never;
-    };
-    "/v1/admin/config/reload": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * `POST /v1/admin/config/reload` handler. Re-reads the
-         *     `EffectiveConfig` and diffs against the live in-memory config;
-         *     for each hot-reloadable key whose effective value differs, the
-         *     in-memory `AppConfig` is updated. Emits `ConfigReloaded` listing
-         *     the keys that actually changed.
-         * @description **Phase 0 limitation**: only the Phase-0 registry's
-         *     hot-reloadable keys (`log.level` today) are propagated. Future
-         *     runtime-state subscribers (tracing subscriber filter handle,
-         *     session-cleanup interval, etc.) will plug into the same diff
-         *     loop.
-         */
-        post: operations["reload_config"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/admin/config/restart": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * `POST /v1/admin/config/restart` handler.
-         * @description Refuses (`412 Precondition Failed`,
-         *     `SupervisorRequired`) unless a supervisor is detected — restart
-         *     without an external supervisor is just "kill the process" and a
-         *     caller asking for `restart` likely means "have the daemon come
-         *     back up afterwards". Detection lives in
-         *     [`crate::supervisor::detect_supervisor`].
-         *
-         *     On success the handler emits `RestartRequested` to the audit
-         *     log *before* signalling shutdown — so the row survives even if
-         *     the drain wedges.
-         */
-        post: operations["restart_config"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/admin/console-keys": {
         parameters: {
             query?: never;
@@ -143,38 +68,6 @@ export interface paths {
          */
         post: operations["didRegister"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/admin/invites": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_invites"];
-        put?: never;
-        post: operations["create_invite"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/admin/invites/{jti}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["revoke_invite"];
         options?: never;
         head?: never;
         patch?: never;
@@ -254,23 +147,6 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["revoke_start"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/audit": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** GET /audit — newest-first paginated audit envelopes. Auth: Super-admin. */
-        get: operations["list_audit"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -482,56 +358,6 @@ export interface paths {
          */
         post: operations["refresh"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/auth/sessions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * `GET /v1/auth/sessions` — list active sessions visible to the caller.
-         *     Super-admin sees all; context-admin sees only sessions in their contexts.
-         */
-        get: operations["session_list"];
-        put?: never;
-        post?: never;
-        /**
-         * `DELETE /v1/auth/sessions?did=X` — revoke all sessions for a DID.
-         *     Super-admin unrestricted; context-admin limited to visible DIDs.
-         */
-        delete: operations["revoke_sessions_by_did"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/auth/sessions/{session_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * `DELETE /v1/auth/sessions/{session_id}` — revoke one session
-         *     (`auth/revoke-session/0.2`, the `sessionId` form).
-         * @description The caller's own session, or one whose subject the caller could withdraw
-         *     the access of ([`may_end_sessions_of`]). A session that does not exist, was
-         *     already revoked, or belongs to a subject outside the caller's authority is
-         *     answered identically — `revokedCount: 0`, the form the specification
-         *     recommends — so a retry succeeds and the answer says nothing about sessions
-         *     the caller does not control.
-         */
-        delete: operations["revoke_session"];
         options?: never;
         head?: never;
         patch?: never;
@@ -836,22 +662,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/git-ns/drift": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsDriftList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/git-ns/jobs": {
         parameters: {
             query?: never;
@@ -908,22 +718,6 @@ export interface paths {
             cookie?: never;
         };
         get: operations["gitNsRightsIssuedByDeparted"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/health/diagnostics": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["diagnostics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1466,70 +1260,6 @@ export interface paths {
         get: operations["check"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/registry/records": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["registryRecordsList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/registry/sync-jobs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["registrySyncJobsList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/registry/sync-jobs/discard": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["registrySyncJobsDiscard"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/registry/sync-jobs/retry": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["registrySyncJobsRetry"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3265,17 +2995,6 @@ export interface components {
             cascadeOnDeparture: boolean;
             granters: components["schemas"]["GitNsDepartedGranter"][];
         };
-        GitNsDriftList: {
-            repos: components["schemas"]["GitNsDriftRow"][];
-        };
-        /** @description The outstanding drift on one repository. */
-        GitNsDriftRow: {
-            checkedAt?: string | null;
-            /** @description The bridge's items, each a `DriftItem` of the shared schema. */
-            drift: components["schemas"]["GitNsViewV0_1DriftItem"][];
-            resource: string;
-            state: string;
-        };
         /**
          * @description The bridge's report of its standing on a namespace's forge owner, carried
          *     in the `ext` member (`org.openvtc.git-ns`) of its results and events.
@@ -4574,20 +4293,6 @@ export interface components {
             credentials: components["schemas"]["RegisteredCredential"][];
         };
         /**
-         * @description PATCH request body: a `key → value` map under `overrides`. Keys not in
-         *     [`crate::config_store::REGISTRY`] are reported back under
-         *     `rejected` rather than silently dropped.
-         *
-         *     The map is wrapped (rather than `#[serde(flatten)]`ed to the top level) to
-         *     match canonical `spec/config/patch/0.1`, whose envelope is
-         *     `additionalProperties: false` around a single `overrides` object.
-         */
-        PatchRequest: {
-            overrides: {
-                [key: string]: unknown;
-            };
-        };
-        /**
          * @description PATCH response body. Lists which keys took effect immediately,
          *     which await restart, and which were rejected.
          */
@@ -5470,19 +5175,10 @@ export interface components {
             issuedAt: string;
             subject: string;
         };
-        /**
-         * @description Session lifecycle state.
-         * @enum {string}
-         */
-        SessionState: "ChallengeSent" | "Authenticated";
-        SessionSummary: {
-            /** Format: int64 */
-            createdAt: number;
-            did: string;
-            /** Format: int64 */
-            refreshExpiresAt?: number | null;
-            sessionId: string;
-            state: components["schemas"]["SessionState"];
+        /** @description `auth/sessions/list/0.1#response` — the sessions the caller may see. */
+        SessionListResponse: {
+            /** @description Newest first (`issuedAt` descending), as the specification recommends. */
+            sessions: components["schemas"]["SessionView"][];
         };
         /** @description The canonical `Session` shape. */
         SessionView: {
@@ -6052,12 +5748,6 @@ export interface components {
         VtcRegistrySyncJobsDiscardV0_1Ext: {
             [key: string]: unknown;
         };
-        /** @description Delete an abandoned trust-registry reconciliation job without dispatching it. The registry's record for that member is left exactly as it is. */
-        VtcRegistrySyncJobsDiscardV0_1Payload: {
-            ext?: components["schemas"]["VtcRegistrySyncJobsDiscardV0_1Ext"];
-            /** @description The job to delete, from `vtc/registry/sync-jobs/list`. Required and single: discard is irreversible, so there is deliberately no bulk form. */
-            jobId: string;
-        };
         VtcRegistrySyncJobsDiscardV0_1Response: {
             ext?: components["schemas"]["VtcRegistrySyncJobsDiscardV0_1Ext"];
             /** @description The deleted job, echoed. */
@@ -6122,8 +5812,6 @@ export interface components {
         VtcRegistrySyncJobsRetryV0_1Ext: {
             [key: string]: unknown;
         };
-        /** @description Requeue an abandoned trust-registry reconciliation job so the community's reconciler dispatches it again. */
-        VtcRegistrySyncJobsRetryV0_1Payload: unknown | unknown;
         VtcRegistrySyncJobsRetryV0_1Requeued: {
             ext?: components["schemas"]["VtcRegistrySyncJobsRetryV0_1Ext"];
             jobId: string;
@@ -6459,146 +6147,6 @@ export interface operations {
             };
         };
     };
-    get_config: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Four-layer-merged effective config */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EffectiveConfig"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    patch_config: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PatchRequest"];
-            };
-        };
-        responses: {
-            /** @description Applied / pending-restart / rejected keys */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PatchResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    reload_config: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Keys re-applied in-memory */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ReloadResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    restart_config: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Restart requested */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RestartResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     adminConsoleKeyList: {
         parameters: {
             query?: never;
@@ -6781,129 +6329,6 @@ export interface operations {
             };
             /** @description Log does not keep every served entry unchanged */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    list_invites: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Outstanding + terminal install-token invites */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListInvitesResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    create_invite: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateInviteRequest"];
-            };
-        };
-        responses: {
-            /** @description Install URL + one-time claim code minted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CreateInviteResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an unrestricted (community-wide) admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Target DID already has a non-admin ACL grant */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    revoke_invite: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Invite token id (jti) */
-                jti: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Invite revoked */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RevokeInviteResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Invite not found */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7114,64 +6539,6 @@ export interface operations {
             };
             /** @description credential_id not registered for this admin */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    list_audit: {
-        parameters: {
-            query?: {
-                /** @description Return only entries recorded at or after this time. */
-                from?: string;
-                /** @description Return only entries recorded strictly before this time. */
-                to?: string;
-                /**
-                 * @description Return only entries whose `action` equals this value — the
-                 *     event variant name, e.g. `MemberRemoved`.
-                 */
-                action?: string;
-                /**
-                 * @description Return only entries whose actor DID equals this value. Matches
-                 *     the plaintext, so RTBF-redacted rows are never returned by an
-                 *     actor filter (canonical requires exactly this).
-                 */
-                actor?: string;
-                /** @description Not supported by this maintainer — see [`unsupported_filters`]. */
-                outcome?: string;
-                /** @description Not supported by this maintainer — see [`unsupported_filters`]. */
-                contextId?: string;
-                /** @description Page size. Clamped to `1..=200`. Defaults to 50. */
-                pageSize?: number;
-                /** @description Pagination cursor (returned by a previous call). */
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated audit envelopes */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuditListResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a super-admin */
-            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7442,107 +6809,6 @@ export interface operations {
                 };
             };
             /** @description Refresh token not found, revoked, or already used */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    session_list: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Active sessions */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SessionSummary"][];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin/initiator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    revoke_sessions_by_did: {
-        parameters: {
-            query: {
-                /** @description Subject DID whose sessions to revoke */
-                did: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Sessions revoked */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RevokeSessionResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller cannot revoke sessions for this DID */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    revoke_session: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Session identifier */
-                session_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description `revokedCount` 1 when the session was ended; 0 when there was no such session the caller may end */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RevokeSessionResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -8313,40 +7579,6 @@ export interface operations {
             };
         };
     };
-    gitNsDriftList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Repositories whose forge differs from the projection */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsDriftList"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     gitNsJobsList: {
         parameters: {
             query?: never;
@@ -8487,40 +7719,6 @@ export interface operations {
                 content?: never;
             };
             /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    diagnostics: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Trust-registry reconciler diagnostics */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DiagnosticsResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9807,200 +9005,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RecognitionCheck"];
                 };
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    registryRecordsList: {
-        parameters: {
-            query?: {
-                /** @description registry (default) or local. */
-                source?: string;
-                /** @description Filter to records about this entity. */
-                entityId?: string;
-                /** @description Filter to records asserted by this authority. */
-                authorityId?: string;
-                /** @description Filter to records for this action. */
-                action?: string;
-                /** @description Filter to records for this resource. */
-                resource?: string;
-                /** @description Continuation token from a previous page's nextCursor. */
-                cursor?: string;
-                /** @description Page size, clamped to 1..=200 (default 50). */
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Trust records from the requested view */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcRegistryRecordsListV0_1Response"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The registry could not be enumerated */
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No trust registry is configured */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    registrySyncJobsList: {
-        parameters: {
-            query?: {
-                /** @description pending | inFlight | failed. Omit for every state. */
-                state?: string;
-                /** @description Continuation token from a previous page's nextCursor. */
-                cursor?: string;
-                /** @description Page size, clamped to 1..=200 (default 50). */
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The reconciliation queue */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcRegistrySyncJobsListV0_1Response"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    registrySyncJobsDiscard: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VtcRegistrySyncJobsDiscardV0_1Payload"];
-            };
-        };
-        responses: {
-            /** @description The job was deleted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcRegistrySyncJobsDiscardV0_1Response"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such job */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The job is not in the terminal failed state */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    registrySyncJobsRetry: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VtcRegistrySyncJobsRetryV0_1Payload"];
-            };
-        };
-        responses: {
-            /** @description What was requeued, and what was declined */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcRegistrySyncJobsRetryV0_1Response"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
             /** @description Caller is not an admin */
             403: {
