@@ -25,7 +25,6 @@ use vtc_service::test_support::TestVtc;
 
 const UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
-const TEST_TASK: &str = "https://trusttasks.org/spec/vtc/policies/test/0.1";
 /// `/v1/policies` (list) + `/v1/policies/{id}` (show) share their
 /// HTTP mounts with the upload + activate POSTs respectively —
 /// TrustTaskRouter doesn't yet support per-method selectors, so
@@ -359,87 +358,6 @@ async fn activate_unknown_id_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-/// Acceptance bullet 3: test-without-activate runs the policy and
-/// does not mutate the active pointer or the policy row's
-/// `activated_at`.
-#[tokio::test]
-async fn test_does_not_mutate_state() {
-    let fix = build_fixture().await;
-    let uploaded = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
-    let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
-
-    let req = auth_request(
-        "POST",
-        &format!("/v1/policies/{id}/test"),
-        TEST_TASK,
-        &fix.admin_token,
-        json!({
-            "query": "data.vtc.join.allow",
-            "input": { "role": "admin" }
-        }),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let body = body_json(resp.into_body()).await;
-    assert_eq!(body["id"], id.to_string());
-    let allow = body
-        .pointer("/result/result/0/expressions/0/value")
-        .expect("regorus QueryResults shape");
-    assert_eq!(allow, &json!(true));
-
-    // No active pointer was flipped, no activated_at was stamped.
-    assert!(
-        get_active_policy_id(&fix.active_policies_ks, PolicyPurpose::Join)
-            .await
-            .unwrap()
-            .is_none(),
-        "test must not activate the policy"
-    );
-    let stored = get_policy(&fix.policies_ks, id).await.unwrap().unwrap();
-    assert!(
-        stored.activated_at.is_none(),
-        "test must not stamp activated_at"
-    );
-}
-
-/// The shipped decision-shaped default policy, evaluated through the
-/// real `/test` endpoint with the query + facts the simulator sends,
-/// produces a four-valued decision object — proving the backend +
-/// default + wire shape are sound end-to-end (the simulator's
-/// "no decision" error is a non-decision-shaped *active* policy, not a
-/// backend bug).
-#[tokio::test]
-async fn shipped_directory_default_yields_a_decision_via_test() {
-    const DIRECTORY_DEFAULT: &str = include_str!("../policies/default/directory.rego");
-    let fix = build_fixture().await;
-    let uploaded = upload_policy(&fix, "directory", DIRECTORY_DEFAULT).await;
-    let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
-
-    let req = auth_request(
-        "POST",
-        &format!("/v1/policies/{id}/test"),
-        TEST_TASK,
-        &fix.admin_token,
-        json!({
-            "query": "data.vtc.directory.decision",
-            "input": { "actor": { "role": "admin", "authenticated": true } }
-        }),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let body = body_json(resp.into_body()).await;
-    let decision = body
-        .pointer("/result/result/0/expressions/0/value")
-        .expect("decision query must yield a value");
-    assert_eq!(
-        decision["effect"], "allow",
-        "admin viewer → allow, got {decision}"
-    );
-    assert!(decision["with"]["fields"].is_array());
-}
-
 /// Upload + activate each emit one audit envelope. The audit
 /// keyspace gains exactly two rows (plus the boot-time
 /// `AuditKeyRotated::Initial` row from `ensure_initial`).
@@ -735,53 +653,4 @@ async fn upload_without_token_returns_401() {
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-}
-
-// ---------------------------------------------------------------------------
-// #1600 — the codes `vtc/policies/test/0.1` declares, read from the generated
-// bindings.
-// ---------------------------------------------------------------------------
-
-const TEST_ERR_NOT_FOUND: &str =
-    trust_tasks_rs::specs::vtc::policies::test::v0_1::error_codes::NOT_FOUND.code;
-const TEST_ERR_EVALUATION_FAILED: &str =
-    trust_tasks_rs::specs::vtc::policies::test::v0_1::error_codes::EVALUATION_FAILED.code;
-
-/// The extended error code carried by a REST error body (`{"error", "code"}`).
-fn rest_error_code(body: &Value) -> &str {
-    body["code"].as_str().unwrap_or_default()
-}
-
-/// `notFound` for an id nothing was stored under; `evaluationFailed` for a
-/// module that cannot be evaluated as asked — here a query that does not parse.
-/// Both keep their status (404, and the evaluator's 500).
-#[tokio::test]
-async fn the_policy_test_task_answers_with_the_codes_its_spec_declares() {
-    let fix = build_fixture().await;
-
-    let req = auth_request(
-        "POST",
-        &format!("/v1/policies/{}/test", Uuid::new_v4()),
-        TEST_TASK,
-        &fix.admin_token,
-        json!({ "query": "data.vtc.join.allow", "input": {} }),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    let body = body_json(resp.into_body()).await;
-    assert_eq!(rest_error_code(&body), TEST_ERR_NOT_FOUND, "{body}");
-
-    let uploaded = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
-    let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
-    let req = auth_request(
-        "POST",
-        &format!("/v1/policies/{id}/test"),
-        TEST_TASK,
-        &fix.admin_token,
-        json!({ "query": "data.vtc.join[", "input": {} }),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let body = body_json(resp.into_body()).await;
-    assert_eq!(rest_error_code(&body), TEST_ERR_EVALUATION_FAILED, "{body}");
 }

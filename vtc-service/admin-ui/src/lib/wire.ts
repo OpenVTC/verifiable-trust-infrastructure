@@ -987,22 +987,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/policies/active": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["active_policies"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/policies/{id}": {
         parameters: {
             query?: never;
@@ -1029,28 +1013,6 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["activate"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/policies/{id}/test": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Evaluate a stored policy against a caller-supplied input.
-         *     **Does not activate** the policy and does not mutate any state
-         *     beyond log lines. Used by operators to dry-run a candidate
-         *     upload before flipping the active pointer.
-         */
-        post: operations["test"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1573,22 +1535,6 @@ export interface components {
              */
             previousPolicyId?: string | null;
             purpose: components["schemas"]["PolicyPurpose"];
-        };
-        /**
-         * @description One activation binding. `contextId` is omitted throughout: a VTC is
-         *     a single community and does not partition its policy set per trust
-         *     context, so every binding is community-wide.
-         */
-        ActiveBinding: {
-            policy: components["schemas"]["PolicyModuleResponse"];
-            purpose: string;
-        };
-        /**
-         * @description Canonical `policy/active` response: the `(contextId, purpose) →
-         *     module` bindings currently in force.
-         */
-        ActiveBindingsResponse: {
-            bindings: components["schemas"]["ActiveBinding"][];
         };
         AdminBootstrapRequest: {
             setupSessionToken: string;
@@ -4989,32 +4935,6 @@ export interface components {
         };
         /** @enum {string} */
         SupervisorKind: "manual" | "systemd" | "kubernetes";
-        TestBody: {
-            /**
-             * @description JSON document fed to the policy as `input`. Mirrors the
-             *     shape M2.6 / M2.7 will pass in production.
-             */
-            input: components["schemas"]["Value"];
-            /**
-             * @description Rego query to evaluate against the candidate policy
-             *     (e.g. `"data.vtc.join.allow"`). Caller chooses the query so
-             *     `test` can be used to probe any rule in the module, not
-             *     just `allow`.
-             */
-            query: string;
-        };
-        TestResponse: {
-            /** Format: uuid */
-            id: string;
-            purpose: components["schemas"]["PolicyPurpose"];
-            /**
-             * @description Raw regorus `QueryResults` JSON. Same shape M2.6 / M2.7
-             *     will pluck `result[0].expressions[0].value` from when they
-             *     wire policy evaluation into the membership flows.
-             */
-            result: components["schemas"]["Value"];
-            sha256: string;
-        };
         /**
          * @description Canonical `TokenBundle` from `spec/auth/_shared/0.1/tokens.schema.json`.
          *
@@ -8111,49 +8031,6 @@ export interface operations {
             };
         };
     };
-    active_policies: {
-        parameters: {
-            query?: {
-                /** @description Narrow to a single decision slot. */
-                purpose?: components["schemas"]["PolicyPurpose"];
-                /**
-                 * @description Not implemented — a VTC is not context-partitioned. Refused
-                 *     rather than ignored, so a caller never reads a community-wide
-                 *     binding as one scoped to their context.
-                 */
-                contextId?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Active policy bindings */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ActiveBindingsResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     show_policy: {
         parameters: {
             query?: never;
@@ -8217,54 +8094,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActivateResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Policy not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    test: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Policy revision id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TestBody"];
-            };
-        };
-        responses: {
-            /** @description Policy evaluation result */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TestResponse"];
                 };
             };
             /** @description Missing or invalid bearer token */

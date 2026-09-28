@@ -376,14 +376,14 @@ fn witnesses() -> Vec<Witness> {
         witness!(
             s::policies::test::v0_1::error_codes::NOT_FOUND,
             crate::routes::policies::admin::TEST_ERR_NOT_FOUND,
-            "policies.rs",
-            "the_policy_test_task_answers_with_the_codes_its_spec_declares"
+            "policy_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
         ),
         witness!(
             s::policies::test::v0_1::error_codes::EVALUATION_FAILED,
             crate::routes::policies::admin::TEST_ERR_EVALUATION_FAILED,
-            "policies.rs",
-            "the_policy_test_task_answers_with_the_codes_its_spec_declares"
+            "policy_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
         ),
         witness!(
             s::website::files::delete::v0_1::error_codes::NOT_FOUND,

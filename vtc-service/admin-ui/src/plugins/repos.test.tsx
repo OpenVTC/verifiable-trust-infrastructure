@@ -15,6 +15,7 @@ import {
   signedReads,
   WIDGETS,
   isChange,
+  POLICY_ACTIVE_TASK,
 } from "@/plugins/repos/fixtures.test-data";
 import { TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW } from "@/plugins/repos/api";
 import { MEMBERS_LIST_TASK, mockFetch, renderWithProviders } from "@/test/render";
@@ -64,7 +65,14 @@ describe("Repos plugin — overview", () => {
     const types = new Set(reads.map((r) => (r.body as { type: string }).type));
     // …beside the name book's `acl/list`, the console-wide read every page makes.
     expect(types).toEqual(
-      new Set([TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW, ACL_LIST_TASK, MEMBERS_LIST_TASK]),
+      new Set([
+        TASK_NAMESPACE_LIST,
+        TASK_REPO_LIST,
+        TASK_VIEW,
+        ACL_LIST_TASK,
+        MEMBERS_LIST_TASK,
+        POLICY_ACTIVE_TASK,
+      ]),
     );
     for (const r of reads) expect(r.method).toBe("POST");
     expect(requests.some((r) => /^\/v1\/git-ns\/(namespaces|repos|view|break-glass)/.test(r.url))).toBe(false);

@@ -5,7 +5,7 @@
 // roleChange); the rest are policy-only purposes the daemon ships
 // defaults for. The Ceremonies plugin manages all of them.
 
-import { getJson, postJson } from "@/lib/api";
+import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import type { PolicyPurpose } from "@/lib/wire-types";
 
 // One canonical task per verb (the shared upload/1.0 mount was retired
@@ -113,10 +113,12 @@ export function policyPurpose(p: PolicyRow): Purpose | undefined {
 }
 
 export async function fetchPolicies(purpose: Purpose): Promise<PoliciesPage> {
-  return getJson<PoliciesPage>(
-    `/v1/policies?purpose=${purpose}&pageSize=100`,
-    { trustTask: TRUST_TASK_LIST },
-  );
+  // `policy/list/0.2` has no purpose filter; the VTC narrows by the same `ext`
+  // key a revision names its purpose by.
+  return postSignedRead<PoliciesPage>(TRUST_TASK_LIST, {
+    pageSize: 100,
+    ext: { [PURPOSE_EXT]: purpose },
+  });
 }
 
 interface ActiveBindingsResponse {
@@ -128,10 +130,7 @@ export async function fetchActivePolicy(
 ): Promise<PolicyRow | null> {
   // Activeness is now its own canonical task rather than a flag on the
   // module — a module carries no isActive field.
-  const res = await getJson<ActiveBindingsResponse>(
-    `/v1/policies/active?purpose=${purpose}`,
-    { trustTask: TRUST_TASK_ACTIVE },
-  );
+  const res = await postSignedRead<ActiveBindingsResponse>(TRUST_TASK_ACTIVE, { purpose });
   return res.bindings.find((b) => b.purpose === purpose)?.policy ?? null;
 }
 
@@ -144,22 +143,17 @@ export async function uploadPolicy(args: {
   purpose: Purpose;
   regoSource: string;
 }): Promise<PolicyRow> {
-  const res = await postJson<UpsertResponse>(
-    "/v1/policies",
-    {
-      name: args.purpose,
-      module: args.regoSource,
-      ext: { [PURPOSE_EXT]: args.purpose },
-    },
-    { trustTask: TRUST_TASK_UPSERT },
-  );
+  const res = await postSignedTrustTask<UpsertResponse>(TRUST_TASK_UPSERT, {
+    name: args.purpose,
+    module: args.regoSource,
+    ext: { [PURPOSE_EXT]: args.purpose },
+  });
   return res.policy;
 }
 
-export async function activatePolicy(id: string): Promise<unknown> {
-  return postJson<unknown>(`/v1/policies/${id}/activate`, undefined, {
-    trustTask: TRUST_TASK_ACTIVATE,
-  });
+/** Make revision `id` live for `purpose` — the one its Rego package decides. */
+export async function activatePolicy(id: string, purpose: Purpose): Promise<unknown> {
+  return postSignedTrustTask<unknown>(TRUST_TASK_ACTIVATE, { id, purpose });
 }
 
 // ---------------------------------------------------------------------------
@@ -199,11 +193,11 @@ export async function evaluatePolicy(
   pkg: string,
   input: unknown,
 ): Promise<Verdict | null> {
-  const resp = await postJson<PolicyTestResult>(
-    `/v1/policies/${encodeURIComponent(policyId)}/test`,
-    { query: `data.${pkg}.decision`, input },
-    { trustTask: TRUST_TASK_TEST },
-  );
+  const resp = await postSignedRead<PolicyTestResult>(TRUST_TASK_TEST, {
+    id: policyId,
+    query: `data.${pkg}.decision`,
+    input,
+  });
   return pluckDecision(resp);
 }
 
