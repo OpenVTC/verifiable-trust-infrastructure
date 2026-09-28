@@ -1205,15 +1205,16 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         //
         // Its body cap is not `UNAUTH_BODY_SIZE`: each Trust Task type declares
         // its own largest document (`crate::trust_tasks::size`, 64 KiB unless
-        // its specification needs more), and the spine refuses a document over
-        // its type's limit before parsing it. The route admits the largest any
-        // type declares, so that check is the one that decides.
+        // its specification needs more, and only while it is served), and the
+        // spine refuses a document over its type's limit before parsing it.
+        // The route admits the largest any served type accepts, so that check
+        // is the one that decides.
         .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE))
         .merge(
             OpenApiRouter::<AppState>::new()
                 .routes(routes!(trust_tasks::dispatch))
                 .layer(DefaultBodyLimit::max(
-                    crate::trust_tasks::size::LARGEST_MAX_DOCUMENT_BYTES,
+                    crate::trust_tasks::size::largest_max_document_bytes(),
                 )),
         );
 

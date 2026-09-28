@@ -38,11 +38,14 @@ async function fetchSessions(): Promise<SessionSummary[]> {
   });
 }
 
-async function revokeSession(sessionId: string): Promise<void> {
-  await deleteJson<unknown>(
+// `revokedCount` is 0 when there was no such session this operator may end —
+// already gone, or outside their authority; the VTC answers both alike.
+async function revokeSession(sessionId: string): Promise<number> {
+  const body = await deleteJson<{ revokedCount: number }>(
     `/v1/auth/sessions/${encodeURIComponent(sessionId)}`,
     { trustTask: TRUST_TASK_REVOKE },
   );
+  return body.revokedCount;
 }
 
 async function revokeAllForDid(did: string): Promise<void> {
@@ -86,8 +89,13 @@ export function Sessions() {
 
   const revokeOne = useMutation({
     mutationFn: revokeSession,
-    onSuccess: (_, sessionId) => {
-      toast.push("success", `Revoked session ${shortId(sessionId)}`);
+    onSuccess: (revokedCount, sessionId) => {
+      toast.push(
+        "success",
+        revokedCount > 0
+          ? `Revoked session ${shortId(sessionId)}`
+          : `Session ${shortId(sessionId)} was already gone`,
+      );
       void qc.invalidateQueries({ queryKey: ["sessions"] });
       // If the operator revoked themselves, the whoami probe will
       // flip to null on next refetch and the shell shows Login.

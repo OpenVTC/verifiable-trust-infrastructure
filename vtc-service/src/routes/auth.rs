@@ -1665,17 +1665,22 @@ pub async fn session_list(
 
 // ---------- DELETE /auth/sessions/{session_id} ----------
 
-/// `DELETE /v1/auth/sessions/{session_id}` — revoke a single session
-/// (caller's own, or any if admin).
+/// `DELETE /v1/auth/sessions/{session_id}` — revoke one session
+/// (`auth/revoke-session/0.2`, the `sessionId` form).
+///
+/// The caller's own session, or one whose subject the caller could withdraw
+/// the access of ([`may_end_sessions_of`]). A session that does not exist, was
+/// already revoked, or belongs to a subject outside the caller's authority is
+/// answered identically — `revokedCount: 0`, the form the specification
+/// recommends — so a retry succeeds and the answer says nothing about sessions
+/// the caller does not control.
 #[utoipa::path(
     delete, path = "/auth/sessions/{session_id}", tag = "auth",
     security(("bearer_jwt" = [])),
     params(("session_id" = String, Path, description = "Session identifier")),
     responses(
-        (status = 200, description = "Session revoked", body = RevokeSessionResponse),
+        (status = 200, description = "`revokedCount` 1 when the session was ended; 0 when there was no such session the caller may end", body = RevokeSessionResponse),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Cannot revoke another user's session"),
-        (status = 404, description = "Session not found"),
     ),
 )]
 pub async fn revoke_session(
@@ -1683,16 +1688,18 @@ pub async fn revoke_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<RevokeSessionResponse>, AppError> {
+    let none = || Json(RevokeSessionResponse { revoked_count: 0 });
     let sessions = state.sessions_ks.clone();
-    let session = get_session(&sessions, &session_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("session not found: {session_id}")))?;
-
-    // Allow if caller owns the session or is admin
-    if session.did != auth.did && auth.role != Role::Admin {
-        return Err(AppError::Forbidden(
-            "cannot revoke another user's session".into(),
-        ));
+    let Some(session) = get_session(&sessions, &session_id).await? else {
+        return Ok(none());
+    };
+    if !may_end_sessions_of(&state, &auth, &session.did).await? {
+        info!(
+            caller = %auth.did,
+            target_did = %session.did,
+            "session revocation outside the caller's authority, answered as absent"
+        );
+        return Ok(none());
     }
 
     delete_session(&sessions, &session_id).await?;
@@ -1710,6 +1717,30 @@ pub async fn revoke_session(
     }
     info!(caller = %auth.did, session_id = %session_id, "session revoked");
     Ok(Json(RevokeSessionResponse { revoked_count: 1 }))
+}
+
+/// Whether `actor` may end `subject`'s sessions: exactly when it could
+/// withdraw `subject`'s access (`auth/revoke-session/0.2` Authorization,
+/// VTI-SES-043 / VTI-ACL-050) — the check `acl/revoke` makes. Its own
+/// sessions always; an unrestricted admin's, anyone's; a context admin's, only
+/// a subject whose every context it administers. Holding the admin role is not
+/// enough: a context admin cannot sign out an unrestricted admin, nor one whose
+/// scope reaches past its own, and a subject with no ACL entry belongs to no
+/// scope, so only an unrestricted admin reaches it.
+async fn may_end_sessions_of(
+    state: &AppState,
+    actor: &AuthClaims,
+    subject: &str,
+) -> Result<bool, AppError> {
+    if actor.did == subject || actor.is_super_admin() {
+        return Ok(true);
+    }
+    if actor.role != Role::Admin {
+        return Ok(false);
+    }
+    Ok(get_acl_entry(&state.acl_ks, subject)
+        .await?
+        .is_some_and(|entry| crate::routes::acl::caller_covers_target(actor, &entry)))
 }
 
 // ---------- DELETE /auth/sessions?did=X ----------
@@ -1743,22 +1774,20 @@ pub async fn revoke_sessions_by_did(
     State(state): State<AppState>,
     Query(query): Query<RevokeByDidQuery>,
 ) -> Result<Json<RevokeSessionResponse>, AppError> {
-    // Context-scope: a context-admin may only revoke sessions for a DID whose
-    // ACL entry is visible to them (overlapping contexts). Without this any
-    // context-admin could revoke a super-admin's or any member's sessions
-    // community-wide. Super-admins are unrestricted (and may mop up orphan
-    // sessions for a DID with no ACL row).
-    if !auth.0.is_super_admin() {
-        let acl = state.acl_ks.clone();
-        let visible = get_acl_entry(&acl, &query.did)
-            .await?
-            .as_ref()
-            .is_some_and(|e| is_acl_entry_visible(&auth.0, &as_vti_acl_entry(e)));
-        if !visible {
-            return Err(AppError::Forbidden(
-                "cannot revoke sessions for a DID outside your contexts".into(),
-            ));
-        }
+    // Authority over the subject's access, decided before its sessions are
+    // looked at, and refused the same way whether or not it has any. Overlap
+    // is not enough: an admin of `a` must not sign out an admin of `[a, b]`.
+    // Super-admins are unrestricted (and may mop up orphan sessions for a DID
+    // with no ACL row).
+    if !may_end_sessions_of(&state, &auth.0, &query.did).await? {
+        info!(
+            caller = %auth.0.did,
+            target_did = %query.did,
+            "session revocation by subject refused: outside the caller's authority"
+        );
+        return Err(AppError::Forbidden(
+            "cannot revoke sessions for a DID outside your authority".into(),
+        ));
     }
 
     let sessions = state.sessions_ks.clone();

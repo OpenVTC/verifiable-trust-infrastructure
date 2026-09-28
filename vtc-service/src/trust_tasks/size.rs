@@ -12,6 +12,13 @@
 //! takes [`DEFAULT_MAX_DOCUMENT_BYTES`]. A value is raised above the default
 //! only where the task's specification needs it, and each says why.
 //!
+//! A declared maximum is **in force only while this node serves the type**
+//! ([`super::DISPATCHED_URIS`]). The spine verifies a document's proof —
+//! canonicalising the whole document and resolving its signer's DID — before
+//! it refuses a type it does not route, so a raised limit on a type nobody
+//! serves would buy an unauthenticated caller that much more work for nothing.
+//! Until a declared type is dispatched it takes the default like any other.
+//!
 //! # Before the parse
 //!
 //! A body no larger than the default is admitted without looking at it: every
@@ -22,8 +29,9 @@
 //! `malformedRequest` code and the limit under `details.maxBytes`.
 //!
 //! The check sits in the spine, so it is the same on every transport. The
-//! HTTPS door additionally caps its request body at [`LARGEST_MAX_DOCUMENT_BYTES`],
-//! so no body larger than any type accepts is ever buffered.
+//! HTTPS door additionally caps its request body at
+//! [`largest_max_document_bytes`], so no body larger than any served type
+//! accepts is ever buffered.
 
 use trust_tasks_rs::{ErrorPayload, Payload, RejectReason};
 
@@ -67,45 +75,61 @@ pub(crate) const DECLARED: &[(&str, usize)] = &[
     ),
 ];
 
-/// The largest document any type accepts: the HTTPS door's body cap.
-pub(crate) const LARGEST_MAX_DOCUMENT_BYTES: usize = {
-    let mut max = DEFAULT_MAX_DOCUMENT_BYTES;
-    let mut i = 0;
-    while i < DECLARED.len() {
-        if DECLARED[i].1 > max {
-            max = DECLARED[i].1;
-        }
-        i += 1;
-    }
-    max
-};
+/// The largest document any **served** type accepts: the HTTPS door's body
+/// cap. The default while no type in [`DECLARED`] is dispatched.
+pub(crate) fn largest_max_document_bytes() -> usize {
+    largest_in(DECLARED, super::DISPATCHED_URIS)
+}
+
+fn largest_in(declared: &[(&str, usize)], served: &[&str]) -> usize {
+    declared
+        .iter()
+        .filter(|(uri, _)| served.contains(uri))
+        .map(|(_, max)| *max)
+        .fold(DEFAULT_MAX_DOCUMENT_BYTES, usize::max)
+}
 
 /// The `details` member naming the limit a refused document exceeded.
 pub(crate) const DETAILS_MAX_BYTES: &str = "maxBytes";
 
 /// The largest document `type_uri` accepts, in bytes.
 pub(crate) fn max_document_bytes(type_uri: &str) -> usize {
-    DECLARED
+    max_in(type_uri, DECLARED, super::DISPATCHED_URIS)
+}
+
+fn max_in(type_uri: &str, declared: &[(&str, usize)], served: &[&str]) -> usize {
+    declared
         .iter()
-        .find(|(uri, _)| *uri == type_uri)
+        .find(|(uri, _)| *uri == type_uri && served.contains(uri))
         .map_or(DEFAULT_MAX_DOCUMENT_BYTES, |(_, max)| *max)
 }
 
 /// Admit `body`, or refuse it for its size before it is parsed.
 pub(crate) fn check(body: &[u8]) -> Result<(), TrustTaskOutcome> {
+    check_with(body, max_document_bytes)
+}
+
+/// The longest `type` a refusal names. A caller's own `type` is echoed back
+/// only when it is short enough to be a Type URI; anything longer is not one,
+/// and repeating it would turn the refusal into an echo of the caller's body.
+const MAX_NAMED_TYPE_CHARS: usize = 256;
+
+fn check_with(body: &[u8], limit: impl Fn(&str) -> usize) -> Result<(), TrustTaskOutcome> {
     if body.len() <= DEFAULT_MAX_DOCUMENT_BYTES {
         return Ok(());
     }
     let type_uri = peek_type(body);
     let max = type_uri
         .as_deref()
-        .map_or(DEFAULT_MAX_DOCUMENT_BYTES, max_document_bytes);
+        .map_or(DEFAULT_MAX_DOCUMENT_BYTES, &limit);
     if body.len() <= max {
         return Ok(());
     }
-    let named = type_uri
-        .as_deref()
-        .unwrap_or("a document of no readable type");
+    let named = match type_uri.as_deref() {
+        Some(t) if t.chars().count() <= MAX_NAMED_TYPE_CHARS => t,
+        Some(_) => "its type",
+        None => "a document of no readable type",
+    };
     let payload: ErrorPayload = RejectReason::MalformedRequest {
         reason: format!(
             "the document is {} bytes; {named} accepts at most {max}",
@@ -141,6 +165,11 @@ mod tests {
         <trust_tasks_rs::specs::policy::upsert::v0_2::Payload as Payload>::TYPE_URI;
     const MEMBERS_UPDATE: &str =
         <trust_tasks_rs::specs::vtc::members::update::v0_1::Payload as Payload>::TYPE_URI;
+
+    /// `policy/upsert` as though this node served it.
+    fn served_upsert(type_uri: &str) -> usize {
+        max_in(type_uri, DECLARED, &[POLICY_UPSERT])
+    }
 
     /// A document of `type_uri` padded to exactly `len` bytes.
     fn document_of(type_uri: &str, len: usize) -> Vec<u8> {
@@ -178,25 +207,51 @@ mod tests {
 
     #[test]
     fn an_undeclared_type_takes_the_default() {
+        assert_eq!(served_upsert(MEMBERS_UPDATE), DEFAULT_MAX_DOCUMENT_BYTES);
         assert_eq!(
-            max_document_bytes(MEMBERS_UPDATE),
-            DEFAULT_MAX_DOCUMENT_BYTES
-        );
-        assert_eq!(
-            max_document_bytes(POLICY_UPSERT),
+            served_upsert(POLICY_UPSERT),
             POLICY_UPSERT_MAX_DOCUMENT_BYTES
         );
-        assert_eq!(LARGEST_MAX_DOCUMENT_BYTES, DID_REGISTER_MAX_DOCUMENT_BYTES);
+    }
+
+    /// A raised limit on a type this node does not route would only let an
+    /// unauthenticated caller make the spine canonicalise and verify a larger
+    /// document before refusing it as unrouted.
+    #[test]
+    fn a_declared_type_that_is_not_served_takes_the_default() {
+        assert_eq!(
+            max_in(POLICY_UPSERT, DECLARED, &[]),
+            DEFAULT_MAX_DOCUMENT_BYTES
+        );
+        assert_eq!(largest_in(DECLARED, &[]), DEFAULT_MAX_DOCUMENT_BYTES);
+        assert_eq!(
+            largest_in(DECLARED, &[POLICY_UPSERT]),
+            POLICY_UPSERT_MAX_DOCUMENT_BYTES
+        );
+        // And on this build, the live table agrees with what the spine routes.
+        for (uri, max) in DECLARED {
+            let served = super::super::DISPATCHED_URIS.contains(uri);
+            assert_eq!(
+                max_document_bytes(uri),
+                if served {
+                    *max
+                } else {
+                    DEFAULT_MAX_DOCUMENT_BYTES
+                },
+                "{uri}"
+            );
+        }
+        assert!(largest_max_document_bytes() >= DEFAULT_MAX_DOCUMENT_BYTES);
     }
 
     #[test]
     fn a_document_at_its_types_limit_is_admitted() {
         assert!(check(&document_of(MEMBERS_UPDATE, DEFAULT_MAX_DOCUMENT_BYTES)).is_ok());
         assert!(
-            check(&document_of(
-                POLICY_UPSERT,
-                POLICY_UPSERT_MAX_DOCUMENT_BYTES
-            ))
+            check_with(
+                &document_of(POLICY_UPSERT, POLICY_UPSERT_MAX_DOCUMENT_BYTES),
+                served_upsert
+            )
             .is_ok()
         );
     }
@@ -216,16 +271,65 @@ mod tests {
     #[test]
     fn a_document_over_its_raised_limit_is_refused() {
         let payload = refusal(
-            check(&document_of(
-                POLICY_UPSERT,
-                POLICY_UPSERT_MAX_DOCUMENT_BYTES + 1,
-            ))
+            check_with(
+                &document_of(POLICY_UPSERT, POLICY_UPSERT_MAX_DOCUMENT_BYTES + 1),
+                served_upsert,
+            )
             .unwrap_err(),
         );
         assert_eq!(payload["code"], "malformedRequest");
         assert_eq!(
             payload["details"][DETAILS_MAX_BYTES],
             POLICY_UPSERT_MAX_DOCUMENT_BYTES
+        );
+    }
+
+    /// The `type` is read wherever it sits: one placed after a large member is
+    /// still the one the limit is looked up by, and a nested `type` is not it.
+    #[test]
+    fn the_type_is_the_top_level_one_wherever_it_sits() {
+        let pad = "x".repeat(DEFAULT_MAX_DOCUMENT_BYTES);
+        let late = format!(
+            r#"{{"payload":{{"type":"{MEMBERS_UPDATE}","pad":"{pad}"}},"type":"{POLICY_UPSERT}"}}"#
+        );
+        assert!(check_with(late.as_bytes(), served_upsert).is_ok());
+        let nested_only = format!(r#"{{"payload":{{"type":"{POLICY_UPSERT}","pad":"{pad}"}}}}"#);
+        assert_eq!(
+            refusal(check_with(nested_only.as_bytes(), served_upsert).unwrap_err())["details"]
+                [DETAILS_MAX_BYTES],
+            DEFAULT_MAX_DOCUMENT_BYTES
+        );
+    }
+
+    /// Two top-level `type`s cannot claim the larger limit: the body reads as
+    /// no type at all, and takes the default.
+    #[test]
+    fn a_duplicated_type_takes_the_default() {
+        let pad = "x".repeat(DEFAULT_MAX_DOCUMENT_BYTES);
+        let body =
+            format!(r#"{{"type":"{MEMBERS_UPDATE}","type":"{POLICY_UPSERT}","pad":"{pad}"}}"#);
+        assert_eq!(
+            refusal(check_with(body.as_bytes(), served_upsert).unwrap_err())["details"]
+                [DETAILS_MAX_BYTES],
+            DEFAULT_MAX_DOCUMENT_BYTES
+        );
+    }
+
+    /// The refusal repeats a caller's `type` only when it could be a Type URI.
+    #[test]
+    fn a_refusal_does_not_echo_an_oversized_type() {
+        let huge = "t".repeat(DEFAULT_MAX_DOCUMENT_BYTES + 1);
+        let body = format!(r#"{{"type":"{huge}"}}"#);
+        let payload = refusal(check(body.as_bytes()).unwrap_err());
+        let text = payload.to_string();
+        assert!(
+            text.len() < 1024,
+            "the refusal echoes the body: {} bytes",
+            text.len()
+        );
+        assert_eq!(
+            payload["details"],
+            serde_json::json!({ DETAILS_MAX_BYTES: DEFAULT_MAX_DOCUMENT_BYTES })
         );
     }
 
@@ -240,5 +344,35 @@ mod tests {
             payload["details"][DETAILS_MAX_BYTES],
             DEFAULT_MAX_DOCUMENT_BYTES
         );
+    }
+
+    /// The gate is the spine's, so a transport that is not HTTPS — which has
+    /// no body cap of its own here — meets the same refusal.
+    #[tokio::test]
+    async fn every_transport_meets_the_same_refusal() {
+        use crate::join::JoinTransport;
+        let vtc = crate::test_support::TestVtc::builder().build().await;
+        let body = document_of(MEMBERS_UPDATE, DEFAULT_MAX_DOCUMENT_BYTES + 1);
+        for transport in [
+            JoinTransport::Rest,
+            JoinTransport::DIDComm,
+            JoinTransport::Tsp,
+        ] {
+            let ctx = match transport {
+                JoinTransport::Rest => super::super::JoinAuthCtx::rest(),
+                _ => super::super::JoinAuthCtx {
+                    transport,
+                    sender_did: Some("did:key:z6MkSizeSender".into()),
+                    verified_signer: None,
+                },
+            };
+            let out = super::super::dispatch_trust_task_core(&vtc.state, &ctx, &body).await;
+            let payload = refusal(out);
+            assert_eq!(payload["code"], "malformedRequest", "{transport:?}");
+            assert_eq!(
+                payload["details"][DETAILS_MAX_BYTES], DEFAULT_MAX_DOCUMENT_BYTES,
+                "{transport:?}"
+            );
+        }
     }
 }

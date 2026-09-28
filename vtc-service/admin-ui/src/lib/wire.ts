@@ -522,8 +522,14 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * `DELETE /v1/auth/sessions/{session_id}` — revoke a single session
-         *     (caller's own, or any if admin).
+         * `DELETE /v1/auth/sessions/{session_id}` — revoke one session
+         *     (`auth/revoke-session/0.2`, the `sessionId` form).
+         * @description The caller's own session, or one whose subject the caller could withdraw
+         *     the access of ([`may_end_sessions_of`]). A session that does not exist, was
+         *     already revoked, or belongs to a subject outside the caller's authority is
+         *     answered identically — `revokedCount: 0`, the form the specification
+         *     recommends — so a retry succeeds and the answer says nothing about sessions
+         *     the caller does not control.
          */
         delete: operations["revoke_session"];
         options?: never;
@@ -7527,7 +7533,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Session revoked */
+            /** @description `revokedCount` 1 when the session was ended; 0 when there was no such session the caller may end */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7538,20 +7544,6 @@ export interface operations {
             };
             /** @description Missing or invalid bearer token */
             401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Cannot revoke another user's session */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Session not found */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -1267,7 +1267,7 @@ fn not_covered(did: &str, verb: &str) -> AppError {
 /// no `allowed_contexts` is either a super-admin or acts nowhere, and in both
 /// cases can only be acted on by a super-admin (the non-`Contexts` branch
 /// below is `false` for a non-super caller, so it is refused).
-fn caller_covers_target(caller: &AuthClaims, target: &VtcAclEntry) -> bool {
+pub(crate) fn caller_covers_target(caller: &AuthClaims, target: &VtcAclEntry) -> bool {
     if caller.is_super_admin() {
         return true;
     }

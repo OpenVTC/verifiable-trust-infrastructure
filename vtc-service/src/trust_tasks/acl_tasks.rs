@@ -298,8 +298,8 @@ pub(super) async fn settle_signed_gate(
 /// The spine is the single place REST, DIDComm and TSP meet, so each task is
 /// driven through [`super::dispatch_trust_task_core`] once per
 /// [`crate::join::JoinTransport`] — with the context each transport builds.
-/// The live-mediator round trip is `tests/acl_trust_tasks.rs`; the bearer
-/// route's parity with this door is `tests/acl_canonical.rs`.
+/// The live-mediator round trip is `tests/acl_trust_tasks.rs`; the canonical
+/// family's behaviour through the real router is `tests/acl_canonical.rs`.
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
