@@ -114,6 +114,24 @@ use crate::server::AppState;
         admin::invites::RevokeInviteResponse,
         auth::SessionListResponse,
         auth::RevokeSessionResponse,
+        // The community verbs the console signs (`trust_tasks::community_tasks`).
+        community::profile::CommunityProfileResponse,
+        ceremonies::CeremonyListResponse,
+        directory::DirectoryResponse,
+        vti_common::pagination::Paginated<crate::endorsement_types::EndorsementType>,
+        recognition_admin::RecognitionCheck,
+        members::read::RemovedMembersResponse,
+        members::read::MemberEnvelope,
+        members::request_vmc::RequestVmcBody,
+        members::request_vmc::RequestVmcResponse,
+        join_requests::read::JoinRequestEnvelope,
+        relationships::RelationshipsGraph,
+        invitations::IssueInvitationBody,
+        invitations::IssueInvitationResponse,
+        invitations::InvitationListResponse,
+        invitations::RevokeResponse,
+        vta_sdk::openapi::InvitationDeliver01Payload,
+        vta_sdk::openapi::InvitationDeliver01Response,
     )),
 )]
 pub struct ApiDoc;
@@ -466,12 +484,8 @@ fn build_api_chain(
         // served only at `POST /v1/trust-tasks` (`trust_tasks::acl_tasks`),
         // on every transport.
         //
-        // Community profile. The read is REST; the edit
-        // (`vtc/community/profile/update/0.1`) is a signed document only.
-        .routes(tt(
-            routes!(community::profile::get_profile),
-            "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
-        ))
+        // Community profile. The read (`vtc/community/profile/show/0.1`) and the
+        // edit (`vtc/community/profile/update/0.1`) are signed documents only.
         // Public read of the community profile. Trust-Task-exempt and
         // unauthenticated — visitors landing on the default public
         // website need the community's name + description + DIDs to
@@ -590,16 +604,8 @@ fn build_api_chain(
         ))
         // Directory ceremony (read-only field projection via the
         // ceremony decision pipeline).
-        .routes(tt(
-            routes!(directory::query),
-            "https://trusttasks.org/spec/vtc/directory/query/0.1",
-        ))
         // Ceremony registry — the admin-UI renders its flow + simulator
         // from these manifests (purpose / fields / facts template).
-        .routes(tt(
-            routes!(ceremonies::list),
-            "https://trusttasks.org/spec/vtc/ceremonies/list/0.1",
-        ))
         // Members (Phase 1 M1.4–M1.6).
         .routes(tt(
             routes!(members::read::list_members),
@@ -610,10 +616,6 @@ fn build_api_chain(
         // "removed" as a DID. The purge (`vtc/members/purge/0.1`) and a
         // member's own departure (`vtc/members/self-remove/0.1`) have no
         // route: both are signed documents only.
-        .routes(tt(
-            routes!(members::read::list_removed),
-            "https://trusttasks.org/spec/vtc/members/removed/0.1",
-        ))
         // Renewal (M2.13). POST on its own mount so the
         // Trust Task header check + per-method selectors are
         // unambiguous.
@@ -635,10 +637,6 @@ fn build_api_chain(
         // Reciprocal-VMC request — ask an active member to issue + send the
         // member → community half of the membership pair. The member replies
         // asynchronously over the `members/vmc/1.0` DIDComm surface.
-        .routes(tt(
-            routes!(members::request_vmc::request_vmc),
-            "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1",
-        ))
         // Phase 4 M4.3 + M4.4 — personhood lifecycle. The challenge and the
         // assertion are signed documents only (`vtc/members/personhood/
         // {challenge,assert}/0.1`); the revoke keeps its route, declared
@@ -666,10 +664,6 @@ fn build_api_chain(
             "https://trusttasks.org/spec/vtc/members/credentials/0.1",
         ))
         // Admin connections-graph view — the member-relationship (VRC) graph.
-        .routes(tt(
-            routes!(relationships::graph),
-            "https://trusttasks.org/spec/vtc/relationships/graph/0.2",
-        ))
         .routes(tt(
             routes!(relationships::revoke),
             "https://trusttasks.org/spec/vtc/relationships/revoke/0.1",
@@ -699,10 +693,6 @@ fn build_api_chain(
         ))
         // Phase 4 M4.8.1 — operator-uploaded endorsement type registry. The
         // listing is REST; `register` and `delete` are signed documents only.
-        .routes(tt(
-            routes!(endorsement_types::list),
-            "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1",
-        ))
         // Phase 2 §8 — community schema store (Issues + Accepts
         // registry). Plain admin-gated CRUD (AdminAuth extractor),
         // exempt from the Trust-Task soft-gate. (`accepts` static
@@ -734,30 +724,10 @@ fn build_api_chain(
         // Split per method, as with admin/invites above: issuance returns a
         // bearer credential, listing must never re-disclose one. The old
         // shared `issue/1.0` mount could not state both contracts.
-        .routes(tt(
-            routes!(invitations::issue),
-            "https://trusttasks.org/spec/vtc/invitations/issue/0.1",
-        ))
-        .routes(tt(
-            routes!(invitations::list),
-            "https://trusttasks.org/spec/vtc/invitations/list/0.1",
-        ))
         // Revoke an outstanding invitation (flips its revocation bit).
-        .routes(tt(
-            routes!(invitations::revoke),
-            "https://trusttasks.org/spec/vtc/invitations/revoke/0.1",
-        ))
         // Get an issued invitation to the DID it admits: push an offer to it,
         // or return the offer for a QR code (Keyring VTI-21 / VTI-32).
-        .routes(tt(
-            routes!(invitations::deliver),
-            "https://trusttasks.org/spec/vtc/invitations/deliver/0.1",
-        ))
         // Recognition (trust-graph) lookup — admin window into TRQP recognise.
-        .routes(tt(
-            routes!(recognition_admin::check),
-            "https://trusttasks.org/spec/vtc/recognition/check/0.1",
-        ))
         .routes(tt(
             routes!(endorsements::show),
             "https://trusttasks.org/spec/vtc/endorsements/show/0.1",
@@ -799,10 +769,6 @@ fn build_api_chain(
         // routers per method), so the three tasks are now enforced
         // independently instead of one standing in for all three.
         .routes(tt(
-            routes!(members::read::show_member),
-            "https://trusttasks.org/spec/vtc/members/show/0.1",
-        ))
-        .routes(tt(
             routes!(members::update::update_member),
             "https://trusttasks.org/spec/vtc/members/update/0.1",
         ))
@@ -820,10 +786,6 @@ fn build_api_chain(
         .routes(tt(
             routes!(join_requests::read::list_join_requests),
             "https://trusttasks.org/spec/vtc/join-requests/list/0.1",
-        ))
-        .routes(tt(
-            routes!(join_requests::read::show_join_request),
-            "https://trusttasks.org/spec/vtc/join-requests/show/0.1",
         ))
         // The vetting facts a request was decided on — admin REST with no Trust
         // Task of its own.
@@ -1395,15 +1357,12 @@ mod openapi_tests {
             "/v1/admin/passkeys",
             "/v1/members",
             "/v1/members/{did}",
-            "/v1/community/profile",
             "/v1/join-requests",
             "/v1/policies",
             "/v1/rooms",
             "/v1/credentials/endorsements",
-            "/v1/endorsement-types",
             "/v1/schemas",
             "/v1/relationships",
-            "/v1/directory/{did}",
             "/v1/install/claim/start",
         ] {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
@@ -1446,12 +1405,23 @@ mod openapi_tests {
             "/v1/auth/sessions",
             "/v1/auth/sessions/{session_id}",
             "/v1/git-ns/drift",
+            "/v1/community/profile",
+            "/v1/ceremonies",
+            "/v1/directory/{did}",
+            "/v1/recognition/check",
+            "/v1/members/removed",
+            "/v1/members/{did}/request-vmc",
+            "/v1/join-requests/{id}",
+            "/v1/relationships/graph",
+            "/v1/invitations",
+            "/v1/invitations/{id}",
+            "/v1/invitations/deliver",
+            "/v1/endorsement-types",
         ] {
             assert!(!paths.contains_key(p), "{p} is a signed document only");
         }
         let item = |p: &str| paths.get(p).unwrap_or_else(|| panic!("{p} is documented"));
-        assert!(item("/v1/community/profile").put.is_none());
-        assert!(item("/v1/endorsement-types").post.is_none());
+        assert!(item("/v1/members/{did}").get.is_none());
         assert!(item("/v1/members/{did}/personhood").post.is_none());
         assert!(item("/v1/join-requests").post.is_none());
     }

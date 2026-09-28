@@ -15,11 +15,8 @@
 //! project) stays reviewed Rust; this registry only describes the
 //! decision surface.
 
-use axum::Json;
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
-
-use crate::auth::AuthClaims;
 
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct FieldOption {
@@ -409,19 +406,12 @@ fn manifests() -> Vec<CeremonyManifest> {
 /// `GET /v1/ceremonies` — list the ceremony manifests. Authenticated
 /// (any session); the payload is admin-UI metadata, not secret, but
 /// the surface lives behind the same gate as the rest of the API.
-#[utoipa::path(
-    get, path = "/ceremonies",
-    operation_id = "ceremonyList", tag = "ceremonies",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Ceremony manifests", body = CeremonyListResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-    ),
-)]
-pub async fn list(_claims: AuthClaims) -> Json<CeremonyListResponse> {
-    Json(CeremonyListResponse {
+/// `vtc/ceremonies/list/0.1`. A signed document served by the spine
+/// (`trust_tasks::community_tasks`).
+pub(crate) fn list() -> CeremonyListResponse {
+    CeremonyListResponse {
         ceremonies: manifests(),
-    })
+    }
 }
 
 /// `{ ceremonies: […] }` — the shape `vtc/ceremonies/list/0.1` publishes. The

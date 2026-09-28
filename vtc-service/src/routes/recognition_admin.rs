@@ -9,12 +9,9 @@
 //! third-party invitation issuer is trusted, M2). The configured-registry status
 //! comes from `GET /v1/health/diagnostics`.
 
-use axum::Json;
-use axum::extract::{Query, State};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use crate::server::AppState;
@@ -43,20 +40,9 @@ pub struct RecognitionCheck {
     pub error: Option<String>,
 }
 
-#[utoipa::path(
-    get, path = "/recognition/check", tag = "recognition",
-    params(CheckQuery),
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Recognition verdict", body = RecognitionCheck),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn check(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Query(q): Query<CheckQuery>,
-) -> Result<Json<RecognitionCheck>, AppError> {
+/// `vtc/recognition/check/0.1`. A signed document served by the spine
+/// (`trust_tasks::community_tasks`).
+pub(crate) async fn check(state: &AppState, q: CheckQuery) -> Result<RecognitionCheck, AppError> {
     let registry_configured = state.registry_client.is_some();
     let (recognised, error) = match state.registry_client.as_deref() {
         Some(registry) => match registry.recognise(&q.did).await {
@@ -68,10 +54,10 @@ pub async fn check(
         },
         None => (false, None),
     };
-    Ok(Json(RecognitionCheck {
+    Ok(RecognitionCheck {
         did: q.did,
         recognised,
         registry_configured,
         error,
-    }))
+    })
 }

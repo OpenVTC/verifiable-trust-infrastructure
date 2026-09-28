@@ -763,6 +763,22 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1",
     "https://trusttasks.org/spec/auth/sessions/list/0.1",
     "https://trusttasks.org/spec/auth/revoke-session/0.2",
+    // The administrator's community verbs (`trust_tasks::community_tasks`).
+    "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
+    "https://trusttasks.org/spec/vtc/ceremonies/list/0.1",
+    "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1",
+    "https://trusttasks.org/spec/vtc/recognition/check/0.1",
+    "https://trusttasks.org/spec/vtc/members/list/0.1",
+    "https://trusttasks.org/spec/vtc/members/removed/0.1",
+    "https://trusttasks.org/spec/vtc/members/show/0.1",
+    "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1",
+    "https://trusttasks.org/spec/vtc/join-requests/list/0.1",
+    "https://trusttasks.org/spec/vtc/join-requests/show/0.1",
+    "https://trusttasks.org/spec/vtc/relationships/graph/0.2",
+    "https://trusttasks.org/spec/vtc/invitations/issue/0.1",
+    "https://trusttasks.org/spec/vtc/invitations/list/0.1",
+    "https://trusttasks.org/spec/vtc/invitations/revoke/0.1",
+    "https://trusttasks.org/spec/vtc/invitations/deliver/0.1",
 ];
 
 #[test]

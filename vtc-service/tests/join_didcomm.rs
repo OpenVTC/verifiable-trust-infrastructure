@@ -30,6 +30,8 @@
 //! means a silent send failure and a lost frame look identical from the
 //! assertion. [`init_tracing`] installs the subscriber so they don't.
 
+mod common;
+
 use std::time::Duration;
 
 /// Install a `RUST_LOG`-driven subscriber once per test binary.
@@ -640,25 +642,31 @@ async fn a_delivered_invitation_arrives_as_an_offer() {
     let vtc_did = mock.vtc_did().to_string();
     let invitee = mock.client.did().to_string();
 
-    let (status, issued) = rest_post(
-        &mock,
-        "/v1/invitations",
+    let _ = admin_token;
+    // The invitation verbs are signed documents; an administrator of the
+    // community signs them.
+    let admin = common::signed::admin(&mock.vtc).await;
+    let (status, issued) = common::signed::call(
+        &mock.vtc,
+        &admin,
         "https://trusttasks.org/spec/vtc/invitations/issue/0.1",
-        &admin_token,
         json!({ "subjectDid": invitee }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{issued}");
-    let id = issued["vic"]["id"].as_str().expect("vic id").to_string();
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let id = issued["payload"]["vic"]["id"]
+        .as_str()
+        .expect("vic id")
+        .to_string();
 
-    let (status, delivered) = rest_post(
-        &mock,
-        "/v1/invitations/deliver",
+    let (status, delivered) = common::signed::call(
+        &mock.vtc,
+        &admin,
         "https://trusttasks.org/spec/vtc/invitations/deliver/0.1",
-        &admin_token,
         json!({ "id": id, "channel": "message" }),
     )
     .await;
+    let delivered = delivered["payload"].clone();
     assert_eq!(status, StatusCode::OK, "{delivered}");
     assert!(
         delivered.get("offer").is_none(),

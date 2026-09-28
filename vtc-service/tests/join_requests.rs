@@ -60,6 +60,8 @@ const ADMIN_DID: &str = "did:key:zAdmin1";
 struct Fixture {
     router: axum::Router,
     state: AppState,
+    /// The key `admin_token`'s administrator signs with on the signed door.
+    signer: vti_rooms_dtg::test_support::Party,
     admin_token: String,
     acl_ks: KeyspaceHandle,
     members_ks: KeyspaceHandle,
@@ -163,9 +165,11 @@ async fn build_fixture() -> Fixture {
     let join_requests_ks = vtc.state.join_requests_ks.clone();
     let router = vtc.router.clone();
 
+    let signer = common::signed::party_with_role(&vtc, VtcRole::Admin, &[]).await;
     Fixture {
         router,
         state,
+        signer,
         admin_token,
         acl_ks,
         members_ks,
@@ -284,6 +288,33 @@ fn applicant_pair() -> (SigningKey, String) {
     let pub_bytes = sk.verifying_key().to_bytes();
     let did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes);
     (sk, did)
+}
+
+/// A request to a route that is now a signed document only, sent as that
+/// document (`common::legacy`), signed by the administrator `admin_token`
+/// stands for.
+async fn send_as_admin(
+    fix: &Fixture,
+    method: &str,
+    uri: &str,
+    _trust_task: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {t}"));
+    }
+    let req = req
+        .body(
+            body.map(|v| Body::from(v.to_string()))
+                .unwrap_or(Body::empty()),
+        )
+        .unwrap();
+    common::legacy::send_json(&fix._vtc, &[(fix.admin_token.as_str(), &fix.signer)], req).await
 }
 
 async fn send(
@@ -504,8 +535,8 @@ async fn list_returns_pending_by_default() {
 async fn show_returns_full_request_including_vp() {
     let fix = build_fixture().await;
     let id = submit_pending(&fix).await;
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "GET",
         &format!("/v1/join-requests/{id}"),
         SHOW_TASK,
@@ -951,8 +982,8 @@ async fn rest_submit_under_default_join_policy_lands_pending_with_vp_claims() {
     let id = body["payload"]["requestId"].as_str().unwrap();
 
     // Fetch via admin show — `vpClaims` is on the persisted row.
-    let (status, row) = send(
-        &fix.router,
+    let (status, row) = send_as_admin(
+        &fix,
         "GET",
         &format!("/v1/join-requests/{id}"),
         SHOW_TASK,
@@ -997,8 +1028,8 @@ async fn rest_submit_under_deny_all_policy_persists_rejected_with_decision() {
     assert_eq!(verdict_effect(&body), "deny");
     let id = body["payload"]["requestId"].as_str().unwrap();
 
-    let (status, row) = send(
-        &fix.router,
+    let (status, row) = send_as_admin(
+        &fix,
         "GET",
         &format!("/v1/join-requests/{id}"),
         SHOW_TASK,
@@ -4246,8 +4277,8 @@ async fn requested_attributes_are_published_enforced_and_kept_with_the_request()
     assert_eq!(status, StatusCode::OK, "submit: {body}");
     let id = tt_payload(&body)["requestId"].as_str().unwrap().to_string();
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "GET",
         &format!("/v1/join-requests/{id}"),
         SHOW_TASK,
@@ -4345,8 +4376,8 @@ async fn the_decide_task_answers_with_the_codes_its_spec_declares() {
 #[tokio::test]
 async fn show_for_an_unknown_request_is_the_declared_not_found() {
     let fix = build_fixture().await;
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "GET",
         &format!("/v1/join-requests/{}", Uuid::new_v4()),
         SHOW_TASK,

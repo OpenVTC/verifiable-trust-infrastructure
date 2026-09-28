@@ -17,7 +17,7 @@ import {
   isChange,
 } from "@/plugins/repos/fixtures.test-data";
 import { TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW } from "@/plugins/repos/api";
-import { mockFetch, renderWithProviders } from "@/test/render";
+import { MEMBERS_LIST_TASK, mockFetch, renderWithProviders } from "@/test/render";
 
 // The browser's signing door, controlled per test: jsdom has no IndexedDB to
 // hold a console key, and whether the key exists is exactly what these tests
@@ -63,7 +63,9 @@ describe("Repos plugin — overview", () => {
     const reads = requests.filter((r) => r.url === "/v1/trust-tasks");
     const types = new Set(reads.map((r) => (r.body as { type: string }).type));
     // …beside the name book's `acl/list`, the console-wide read every page makes.
-    expect(types).toEqual(new Set([TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW, ACL_LIST_TASK]));
+    expect(types).toEqual(
+      new Set([TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW, ACL_LIST_TASK, MEMBERS_LIST_TASK]),
+    );
     for (const r of reads) expect(r.method).toBe("POST");
     expect(requests.some((r) => /^\/v1\/git-ns\/(namespaces|repos|view|break-glass)/.test(r.url))).toBe(false);
     // The projections are mounted with no binding, and sending one would

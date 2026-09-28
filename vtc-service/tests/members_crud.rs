@@ -67,6 +67,8 @@ const ADMIN_DID: &str = "did:key:zAdmin1";
 
 struct Fixture {
     router: axum::Router,
+    /// The key `admin_token`'s administrator signs with on the signed door.
+    signer: Party,
     /// An ordinary admin session: `aal1`, no step-up elevation. Enough for
     /// every members operation *except* promotion to admin.
     admin_token: String,
@@ -160,8 +162,10 @@ async fn build_fixture() -> Fixture {
     let jwt_keys = vtc.jwt_keys.clone();
     let sessions_ks = vtc.state.sessions_ks.clone();
 
+    let signer = common::signed::party_with_role(&vtc, VtcRole::Admin, &[]).await;
     Fixture {
         router,
+        signer,
         admin_token,
         acl_ks,
         members_ks,
@@ -278,8 +282,11 @@ async fn purge(fix: &Fixture, from: &Party, did: &str) -> (StatusCode, Value) {
     (status, doc["payload"].clone())
 }
 
+/// A request the suite sends; one to a route that is now a signed document
+/// only is sent as that document (`common::legacy`), signed by the
+/// administrator `fix.admin_token` stands for.
 async fn send(
-    router: &axum::Router,
+    fix: &Fixture,
     method: &str,
     uri: &str,
     trust_task: &str,
@@ -294,25 +301,13 @@ async fn send(
     if let Some(t) = token {
         req = req.header("Authorization", format!("Bearer {t}"));
     }
-    let res = router
-        .clone()
-        .oneshot(
-            req.body(
-                body.map(|v| Body::from(v.to_string()))
-                    .unwrap_or(Body::empty()),
-            )
-            .unwrap(),
+    let req = req
+        .body(
+            body.map(|v| Body::from(v.to_string()))
+                .unwrap_or(Body::empty()),
         )
-        .await
-        .expect("oneshot");
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-    };
-    (status, json)
+        .unwrap();
+    common::legacy::send_json(&fix._vtc, &[(fix.admin_token.as_str(), &fix.signer)], req).await
 }
 
 // ---------------------------------------------------------------------------
@@ -323,7 +318,7 @@ async fn send(
 async fn list_members_empty_returns_empty_items() {
     let fix = build_fixture().await;
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members",
         LIST_TASK,
@@ -343,7 +338,7 @@ async fn list_members_returns_seeded_members() {
     seed_member(&fix, "did:key:zMember2", VtcRole::Moderator).await;
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members",
         LIST_TASK,
@@ -372,7 +367,7 @@ async fn list_members_skips_tombstoned_member_with_no_acl() {
     store_member(&fix.members_ks, &gone).await.unwrap();
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members",
         LIST_TASK,
@@ -397,7 +392,7 @@ async fn list_removed_returns_tombstoned_members_and_purge_deletes_them() {
 
     // The removed list surfaces the tombstone (and only it).
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/removed",
         REMOVED_TASK,
@@ -420,7 +415,7 @@ async fn list_removed_returns_tombstoned_members_and_purge_deletes_them() {
 
     // Now the removed list is empty — the row is gone for good.
     let (_, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/removed",
         REMOVED_TASK,
@@ -438,7 +433,7 @@ async fn list_members_filter_by_role_drops_non_matching() {
     seed_member(&fix, "did:key:zMod1", VtcRole::Moderator).await;
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members?role=moderator",
         LIST_TASK,
@@ -455,7 +450,7 @@ async fn list_members_filter_by_role_drops_non_matching() {
 #[tokio::test]
 async fn list_members_requires_admin_role() {
     let fix = build_fixture().await;
-    let (status, _) = send(&fix.router, "GET", "/v1/members", LIST_TASK, None, None).await;
+    let (status, _) = send(&fix, "GET", "/v1/members", LIST_TASK, None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -465,7 +460,7 @@ async fn show_member_returns_joined_response() {
     seed_member(&fix, "did:key:zM1", VtcRole::Issuer).await;
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/did:key:zM1",
         SHOW_TASK,
@@ -489,7 +484,7 @@ async fn show_member_rejects_malformed_did_path_param() {
     // the handler before it's ever used as a store key.
     let fix = build_fixture().await;
     let (status, _) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/not-a-did",
         SHOW_TASK,
@@ -504,7 +499,7 @@ async fn show_member_rejects_malformed_did_path_param() {
 async fn show_member_returns_404_for_unknown_did() {
     let fix = build_fixture().await;
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/did:key:zNobody",
         SHOW_TASK,
@@ -583,7 +578,7 @@ async fn member_credentials_returns_the_stored_bodies_and_audits_the_read() {
     store_member(&fix.members_ks, &member).await.unwrap();
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         &format!("/v1/members/{did}/credentials"),
         CREDENTIALS_TASK,
@@ -625,7 +620,7 @@ async fn member_credentials_for_a_member_holding_nothing_is_ok_and_unbound() {
     seed_member(&fix, "did:key:zBare", VtcRole::Member).await;
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/did:key:zBare/credentials",
         CREDENTIALS_TASK,
@@ -644,7 +639,7 @@ async fn member_credentials_for_a_member_holding_nothing_is_ok_and_unbound() {
 async fn member_credentials_for_an_unknown_member_is_the_declared_not_found() {
     let fix = build_fixture().await;
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/did:key:zNobody/credentials",
         CREDENTIALS_TASK,
@@ -674,7 +669,7 @@ async fn member_credentials_for_a_departed_member_is_not_found() {
     store_member(&fix.members_ks, &gone).await.unwrap();
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/did:key:zGone/credentials",
         CREDENTIALS_TASK,
@@ -695,7 +690,7 @@ async fn member_credentials_requires_authentication() {
     let fix = build_fixture().await;
     seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
     let (status, _) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/did:key:zM1/credentials",
         CREDENTIALS_TASK,
@@ -714,7 +709,7 @@ async fn member_credentials_refuses_a_non_admin() {
     seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
     let token = fix._vtc.token("did:key:zM1", "application", vec![]).await;
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/did:key:zM1/credentials",
         CREDENTIALS_TASK,
@@ -733,7 +728,7 @@ async fn member_credentials_refuses_another_tasks_header() {
     let fix = build_fixture().await;
     seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
     let (status, _) = send(
-        &fix.router,
+        &fix,
         "GET",
         "/v1/members/did:key:zM1/credentials",
         SHOW_TASK,
@@ -757,7 +752,7 @@ async fn patch_member_role_member_to_moderator_succeeds_and_emits_audit() {
     seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "PATCH",
         "/v1/members/did:key:zM1",
         UPDATE_TASK,
@@ -795,7 +790,7 @@ async fn the_update_task_answers_with_the_admin_role_forbidden_code_its_spec_dec
     // field that is forbidden here, not the caller's authentication.
     let token = stepped_up_admin_token(&fix, 900).await;
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "PATCH",
         "/v1/members/did:key:zM1",
         UPDATE_TASK,
@@ -831,7 +826,7 @@ async fn the_update_task_answers_with_the_admin_role_forbidden_code_its_spec_dec
 async fn admin_role_forbidden_is_answered_before_the_member_is_looked_up() {
     let fix = build_fixture().await;
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "PATCH",
         "/v1/members/did:key:zNobody",
         UPDATE_TASK,
@@ -853,7 +848,7 @@ async fn patch_member_profile_only_emits_member_updated() {
     seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "PATCH",
         "/v1/members/did:key:zM1",
         UPDATE_TASK,
@@ -889,8 +884,7 @@ async fn patch_member_extensions_cannot_write_or_wipe_linked_forge_accounts() {
     m.extensions = json!({ "forges": linked.clone(), "org": "acme" });
     store_member(&fix.members_ks, &m).await.unwrap();
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send(&fix,
         "PATCH",
         "/v1/members/did:key:zM1",
         UPDATE_TASK,
@@ -901,7 +895,7 @@ async fn patch_member_extensions_cannot_write_or_wipe_linked_forge_accounts() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "PATCH",
         "/v1/members/did:key:zM1",
         UPDATE_TASK,
@@ -925,7 +919,7 @@ async fn patch_member_extensions_cannot_write_or_wipe_linked_forge_accounts() {
 async fn patch_member_404_for_unknown_did() {
     let fix = build_fixture().await;
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "PATCH",
         "/v1/members/did:key:zNobody",
         UPDATE_TASK,
@@ -962,7 +956,7 @@ async fn removing_a_member_whose_acl_is_already_gone_succeeds() {
         .unwrap();
 
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "DELETE",
         "/v1/members/did:key:zOrphan",
         "https://trusttasks.org/spec/vtc/members/admin-remove/0.1",
@@ -987,7 +981,7 @@ async fn removing_a_member_whose_acl_is_already_gone_succeeds() {
 async fn removing_a_did_with_no_rows_at_all_is_still_not_found() {
     let fix = build_fixture().await;
     let (status, body) = send(
-        &fix.router,
+        &fix,
         "DELETE",
         "/v1/members/did:key:zNeverExisted",
         "https://trusttasks.org/spec/vtc/members/admin-remove/0.1",
@@ -1005,9 +999,11 @@ async fn removing_a_did_with_no_rows_at_all_is_still_not_found() {
 async fn the_purge_task_answers_with_the_codes_its_spec_declares() {
     let fix = build_fixture().await;
     // The signer is made the community's only administrator.
-    vtc_service::acl::delete_acl_entry(&fix.acl_ks, ADMIN_DID)
-        .await
-        .unwrap();
+    for did in [ADMIN_DID, fix.signer.did.as_str()] {
+        vtc_service::acl::delete_acl_entry(&fix.acl_ks, did)
+            .await
+            .unwrap();
+    }
     let admin = super_admin(&fix).await;
 
     let (status, body) = purge(&fix, &admin, "did:key:zNeverHere").await;
@@ -1035,7 +1031,7 @@ async fn soliciting_a_vmc_from_a_non_member_is_the_declared_not_found() {
     store_member(&fix.members_ks, &gone).await.unwrap();
     for did in ["did:key:zNobody", "did:key:zDeparted"] {
         let (status, body) = send(
-            &fix.router,
+            &fix,
             "POST",
             &format!("/v1/members/{did}/request-vmc"),
             "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1",

@@ -19,7 +19,7 @@ import { unsignedRead } from "@/test/signed-read";
 import { answerStepUp } from "@/lib/bound-step-up";
 import { BreakGlassBanner } from "@/components/BreakGlassBanner";
 import { Repos } from "@/plugins/repos";
-import { mockFetch, renderWithProviders } from "@/test/render";
+import { MEMBERS_LIST_TASK, mockFetch, renderWithProviders } from "@/test/render";
 
 import {
   ALICE,
@@ -118,7 +118,9 @@ describe("the break-glass read", () => {
     renderWithProviders(<BreakGlassBanner />, { whoami: signedInAs(HANA) });
     await screen.findByRole("alert");
     const read = requests.find(
-      (r) => r.url === "/v1/trust-tasks" && (r.body as { type?: string }).type !== ACL_LIST_TASK,
+      (r) =>
+        r.url === "/v1/trust-tasks" &&
+        ![ACL_LIST_TASK, MEMBERS_LIST_TASK].includes((r.body as { type?: string }).type ?? ""),
     );
     expect(read?.body).toEqual({
       type: "https://trusttasks.org/spec/git-ns/view/0.5",

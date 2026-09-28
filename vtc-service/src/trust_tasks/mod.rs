@@ -71,6 +71,9 @@ mod acl_tasks;
 // The administrator's operational verbs: the registry reconciler, the audit
 // log, the runtime configuration, admin invites and sessions.
 pub(crate) mod admin_tasks;
+// The administrator's community verbs: roster, join queue, graph, directory,
+// recognition, and invitation credentials.
+pub(crate) mod community_tasks;
 
 // The member-facing verbs that were HTTPS REST only: renewal, DID rotation,
 // personhood revocation, the relationship graph's member verbs and the
@@ -566,6 +569,7 @@ async fn dispatch_trust_task_validated(
     if outcome.status.is_success() {
         let recorded = if step_up_passkey_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
             || admin_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
+            || community_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
         {
             None
         } else {
@@ -830,6 +834,15 @@ async fn dispatch_typed(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("admin_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
+        uri if community_tasks::URIS.contains(&uri) => {
+            match community_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("community_tasks::URIS names {uri}, which it does not route")
+                }
             }
         }
         uri if step_up_passkey_tasks::URIS.contains(&uri) => {
@@ -1404,7 +1417,7 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            70,
+            73,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1435,7 +1448,10 @@ mod spine_proof_tests {
              `audit/list`, `config/{{patch,reload,restart}}`, \
              `vtc/admin/invites/{{create,revoke}}`, `auth/sessions/list`, \
              `auth/revoke-session/0.2`; the reads that declare none refuse an \
-             unsigned one in their handlers regardless); got {required:?}"
+             unsigned one in their handlers regardless) + the 3 invitation verbs \
+             `community_tasks` moved that declare one (`vtc/invitations/{{issue,revoke,deliver}}`; \
+             the community reads declare none and their handlers refuse an unsigned \
+             one regardless); got {required:?}"
         );
     }
 
@@ -1856,6 +1872,25 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     admin_tasks::INVITES_REVOKE_TYPE,
     admin_tasks::SESSIONS_LIST_TYPE,
     admin_tasks::REVOKE_SESSION_TYPE,
+    // The administrator's community verbs, which had only bearer REST. The
+    // member and join-request listings keep their routes while `vtc-client`
+    // calls them; none of the others has one.
+    community_tasks::PROFILE_SHOW_TYPE,
+    community_tasks::CEREMONIES_LIST_TYPE,
+    community_tasks::DIRECTORY_QUERY_TYPE,
+    community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
+    community_tasks::RECOGNITION_CHECK_TYPE,
+    community_tasks::MEMBERS_LIST_TYPE,
+    community_tasks::MEMBERS_REMOVED_TYPE,
+    community_tasks::MEMBERS_SHOW_TYPE,
+    community_tasks::MEMBERS_SOLICIT_VMC_TYPE,
+    community_tasks::JOIN_REQUESTS_LIST_TYPE,
+    community_tasks::JOIN_REQUESTS_SHOW_TYPE,
+    community_tasks::RELATIONSHIPS_GRAPH_TYPE,
+    community_tasks::INVITATIONS_ISSUE_TYPE,
+    community_tasks::INVITATIONS_LIST_TYPE,
+    community_tasks::INVITATIONS_REVOKE_TYPE,
+    community_tasks::INVITATIONS_DELIVER_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -4098,6 +4133,22 @@ mod tests {
             <trust_tasks_rs::specs::vtc::admin::invites::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::auth::sessions::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::auth::revoke_session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            community_tasks::PROFILE_SHOW_TYPE,
+            community_tasks::CEREMONIES_LIST_TYPE,
+            community_tasks::DIRECTORY_QUERY_TYPE,
+            community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
+            community_tasks::RECOGNITION_CHECK_TYPE,
+            community_tasks::MEMBERS_LIST_TYPE,
+            community_tasks::MEMBERS_REMOVED_TYPE,
+            community_tasks::MEMBERS_SHOW_TYPE,
+            community_tasks::MEMBERS_SOLICIT_VMC_TYPE,
+            community_tasks::JOIN_REQUESTS_LIST_TYPE,
+            community_tasks::JOIN_REQUESTS_SHOW_TYPE,
+            community_tasks::RELATIONSHIPS_GRAPH_TYPE,
+            community_tasks::INVITATIONS_ISSUE_TYPE,
+            community_tasks::INVITATIONS_LIST_TYPE,
+            community_tasks::INVITATIONS_REVOKE_TYPE,
+            community_tasks::INVITATIONS_DELIVER_TYPE,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.

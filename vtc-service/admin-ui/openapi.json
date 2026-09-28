@@ -761,35 +761,6 @@
         ]
       }
     },
-    "/v1/ceremonies": {
-      "get": {
-        "tags": [
-          "ceremonies"
-        ],
-        "summary": "`GET /v1/ceremonies` — list the ceremony manifests. Authenticated\n(any session); the payload is admin-UI metadata, not secret, but\nthe surface lives behind the same gate as the rest of the API.",
-        "operationId": "ceremonyList",
-        "responses": {
-          "200": {
-            "description": "Ceremony manifests",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CeremonyListResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/community/branding": {
       "get": {
         "tags": [
@@ -952,38 +923,6 @@
           },
           "503": {
             "description": "Audit writer not configured — change refused"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/community/profile": {
-      "get": {
-        "tags": [
-          "community"
-        ],
-        "summary": "GET handler. Returns the singleton profile + the live\ntrust-registry status.\nGET /community/profile — full community profile + live registry status.\nAuth: any authenticated session.",
-        "operationId": "get_profile",
-        "responses": {
-          "200": {
-            "description": "Community profile + registry status",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CommunityProfileResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "404": {
-            "description": "Community profile not initialised"
           }
         },
         "security": [
@@ -1327,113 +1266,6 @@
         ]
       }
     },
-    "/v1/directory/{did}": {
-      "get": {
-        "tags": [
-          "directory"
-        ],
-        "summary": "`GET /v1/directory/{did}`.",
-        "operationId": "query",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Subject DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Projected subject record",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DirectoryResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "404": {
-            "description": "No member with that DID, or nothing about them visible to this caller"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/endorsement-types": {
-      "get": {
-        "tags": [
-          "endorsement-types"
-        ],
-        "operationId": "endorsementTypeList",
-        "parameters": [
-          {
-            "name": "cursor",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "minimum": 0
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Paginated list of endorsement types",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Paginated_EndorsementType"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/git-ns/accounts": {
       "get": {
         "tags": [
@@ -1732,176 +1564,11 @@
         }
       }
     },
-    "/v1/invitations": {
-      "get": {
-        "tags": [
-          "invitations"
-        ],
-        "operationId": "invitationList",
-        "responses": {
-          "200": {
-            "description": "Issued invitations",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InvitationListResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not Admin / Moderator / Issuer"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "invitations"
-        ],
-        "operationId": "invitationIssue",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/IssueInvitationBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Invitation issued",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IssueInvitationResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not Admin / Moderator / Issuer"
-          },
-          "409": {
-            "description": "Subject is already a member"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/invitations/deliver": {
-      "post": {
-        "tags": [
-          "invitations"
-        ],
-        "summary": "Deliver an issued invitation to the DID it admits\n(`vtc/invitations/deliver/0.1`, Keyring VTI-21 / VTI-32).",
-        "description": "Records a single-use offer bound to the invited DID — withdrawing any\nearlier one — and either pushes it to that DID as a\n`credential-exchange/offer` (`message`) or returns it for a QR code\n(`offer`). The invitation credential is released only by\n`credential-exchange/request` with a key-binding proof by the invited\nDID's key, so the offer itself admits no one else; it is never in this\nresponse.",
-        "operationId": "invitationDeliver",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VtcInvitationsDeliverV0_1Payload"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Offer recorded, and sent or returned",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VtcInvitationsDeliverV0_1Response"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not Admin / Moderator / Issuer"
-          },
-          "404": {
-            "description": "No such invitation"
-          },
-          "409": {
-            "description": "Revoked, or issued before delivery existed"
-          },
-          "410": {
-            "description": "The invitation has lapsed"
-          },
-          "422": {
-            "description": "The invited DID advertises no transport this community can send over"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/invitations/{id}": {
-      "delete": {
-        "tags": [
-          "invitations"
-        ],
-        "operationId": "invitationRevoke",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "VIC id (urn:uuid)",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Invitation revoked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/InvitationRevokeResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not Admin / Moderator / Issuer"
-          },
-          "404": {
-            "description": "No such invitation"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/join-requests": {
       "get": {
         "tags": [
           "join-requests"
         ],
-        "summary": "GET /join-requests — list join requests (admin work queue). Auth: Admin.",
         "operationId": "list_join_requests",
         "parameters": [
           {
@@ -2005,52 +1672,6 @@
           },
           "404": {
             "description": "No such Accepts criterion registered"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/join-requests/{id}": {
-      "get": {
-        "tags": [
-          "join-requests"
-        ],
-        "summary": "GET /join-requests/{id} — show a single join request. Auth: Admin.",
-        "operationId": "show_join_request",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Join request id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Join request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/JoinRequestEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "404": {
-            "description": "Join request not found"
           }
         },
         "security": [
@@ -2174,7 +1795,6 @@
         "tags": [
           "members"
         ],
-        "summary": "GET /members — paginated member list. Auth: Admin.",
         "operationId": "list_members",
         "parameters": [
           {
@@ -2365,80 +1985,7 @@
         ]
       }
     },
-    "/v1/members/removed": {
-      "get": {
-        "tags": [
-          "members"
-        ],
-        "summary": "GET /members/removed — members whose row was kept as a tombstone after\ndeparture (no ACL). Auth: Admin. Full scan (departed members are few and\nthis is an operator view), newest-departed first.",
-        "operationId": "list_removed",
-        "responses": {
-          "200": {
-            "description": "Departed (tombstoned/historical) members",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RemovedMembersResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/members/{did}": {
-      "get": {
-        "tags": [
-          "members"
-        ],
-        "summary": "GET /members/{did} — single member. Auth: Admin.",
-        "operationId": "show_member",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Member DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Member record",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MemberEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "404": {
-            "description": "Member not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
       "delete": {
         "tags": [
           "members"
@@ -2706,59 +2253,6 @@
           },
           "403": {
             "description": "Caller is not authorised"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/members/{did}/request-vmc": {
-      "post": {
-        "tags": [
-          "members"
-        ],
-        "summary": "POST /members/{did}/request-vmc — dispatch a reciprocal-VMC request.",
-        "operationId": "request_vmc",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Member DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RequestVmcBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "description": "Request dispatched to the member",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RequestVmcResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "No active member with that DID"
-          },
-          "502": {
-            "description": "Could not deliver the request to the member"
           }
         },
         "security": [
@@ -3131,45 +2625,6 @@
         ]
       }
     },
-    "/v1/recognition/check": {
-      "get": {
-        "tags": [
-          "recognition"
-        ],
-        "operationId": "check",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "query",
-            "description": "The issuer / community DID to test for recognition.",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Recognition verdict",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecognitionCheck"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/relationships": {
       "post": {
         "tags": [
@@ -3212,36 +2667,6 @@
                 }
               }
             }
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/relationships/graph": {
-      "get": {
-        "tags": [
-          "relationships"
-        ],
-        "summary": "`GET /v1/relationships/graph` — the community's relationship (VRC) graph for\nthe admin-UI connections view. Admin-gated; a full scan of the relationships\nkeyspace (communities are small and this is operator-only). Edge-derived\nnodes — members with no VRCs don't appear.",
-        "description": "Edges are pairs, not individual credentials: each carries the VRCs published\nbetween its two endpoints and a `complete` flag saying whether both\ndirections are present. See the module comment above for why.",
-        "operationId": "graph",
-        "responses": {
-          "200": {
-            "description": "Relationship graph",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RelationshipsGraph"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not an admin"
           }
         },
         "security": [

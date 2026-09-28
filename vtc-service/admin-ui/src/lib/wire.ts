@@ -407,27 +407,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/ceremonies": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * `GET /v1/ceremonies` — list the ceremony manifests. Authenticated
-         *     (any session); the payload is admin-UI metadata, not secret, but
-         *     the surface lives behind the same gate as the rest of the API.
-         */
-        get: operations["ceremonyList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/community/branding": {
         parameters: {
             query?: never;
@@ -477,28 +456,6 @@ export interface paths {
         get: operations["communityJoinDiscoveryShow"];
         /** Replace the setting. */
         put: operations["communityJoinDiscoveryUpdate"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/community/profile": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * GET handler. Returns the singleton profile + the live
-         *     trust-registry status.
-         *     GET /community/profile — full community profile + live registry status.
-         *     Auth: any authenticated session.
-         */
-        get: operations["get_profile"];
-        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -592,39 +549,6 @@ export interface paths {
         put?: never;
         post?: never;
         delete: operations["endorsementRevoke"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/directory/{did}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** `GET /v1/directory/{did}`. */
-        get: operations["query"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/endorsement-types": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["endorsementTypeList"];
-        put?: never;
-        post?: never;
-        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -766,65 +690,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/invitations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["invitationList"];
-        put?: never;
-        post: operations["invitationIssue"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/invitations/deliver": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Deliver an issued invitation to the DID it admits
-         *     (`vtc/invitations/deliver/0.1`, Keyring VTI-21 / VTI-32).
-         * @description Records a single-use offer bound to the invited DID — withdrawing any
-         *     earlier one — and either pushes it to that DID as a
-         *     `credential-exchange/offer` (`message`) or returns it for a QR code
-         *     (`offer`). The invitation credential is released only by
-         *     `credential-exchange/request` with a key-binding proof by the invited
-         *     DID's key, so the offer itself admits no one else; it is never in this
-         *     response.
-         */
-        post: operations["invitationDeliver"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/invitations/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete: operations["invitationRevoke"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/join-requests": {
         parameters: {
             query?: never;
@@ -832,7 +697,6 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /join-requests — list join requests (admin work queue). Auth: Admin. */
         get: operations["list_join_requests"];
         put?: never;
         post?: never;
@@ -863,23 +727,6 @@ export interface paths {
          *     a holder for a registered Accepts criterion. Auth: Admin.
          */
         post: operations["send_query"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/join-requests/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** GET /join-requests/{id} — show a single join request. Auth: Admin. */
-        get: operations["show_join_request"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -941,7 +788,6 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /members — paginated member list. Auth: Admin. */
         get: operations["list_members"];
         put?: never;
         post?: never;
@@ -1005,27 +851,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/members/removed": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * GET /members/removed — members whose row was kept as a tombstone after
-         *     departure (no ACL). Auth: Admin. Full scan (departed members are few and
-         *     this is an operator view), newest-departed first.
-         */
-        get: operations["list_removed"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/members/{did}": {
         parameters: {
             query?: never;
@@ -1033,8 +858,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GET /members/{did} — single member. Auth: Admin. */
-        get: operations["show_member"];
+        get?: never;
         put?: never;
         post?: never;
         /**
@@ -1143,23 +967,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/members/{did}/request-vmc": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /members/{did}/request-vmc — dispatch a reciprocal-VMC request. */
-        post: operations["request_vmc"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/policies": {
         parameters: {
             query?: never;
@@ -1250,22 +1057,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/recognition/check": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["check"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/relationships": {
         parameters: {
             query?: never;
@@ -1276,31 +1067,6 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["publish"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/relationships/graph": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * `GET /v1/relationships/graph` — the community's relationship (VRC) graph for
-         *     the admin-UI connections view. Admin-gated; a full scan of the relationships
-         *     keyspace (communities are small and this is operator-only). Edge-derived
-         *     nodes — members with no VRCs don't appear.
-         * @description Edges are pairs, not individual credentials: each carries the VRCs published
-         *     between its two endpoints and a `complete` flag saying whether both
-         *     directions are present. See the module comment above for why.
-         */
-        get: operations["graph"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6869,33 +6635,6 @@ export interface operations {
             };
         };
     };
-    ceremonyList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Ceremony manifests */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CeremonyListResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     communityBrandingShow: {
         parameters: {
             query?: never;
@@ -7067,40 +6806,6 @@ export interface operations {
             };
             /** @description Audit writer not configured — change refused */
             503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    get_profile: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Community profile + registry status */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CommunityProfileResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Community profile not initialised */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7430,82 +7135,6 @@ export interface operations {
             };
         };
     };
-    query: {
-        parameters: {
-            query?: {
-                fields?: string;
-            };
-            header?: never;
-            path: {
-                /** @description Subject DID */
-                did: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Projected subject record */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DirectoryResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No member with that DID, or nothing about them visible to this caller */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    endorsementTypeList: {
-        parameters: {
-            query?: {
-                cursor?: string | null;
-                limit?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated list of endorsement types */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Paginated_EndorsementType"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     gitNsAccountsList: {
         parameters: {
             query?: never;
@@ -7789,174 +7418,6 @@ export interface operations {
             };
         };
     };
-    invitationList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Issued invitations */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InvitationListResponse"];
-                };
-            };
-            /** @description Caller is not Admin / Moderator / Issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    invitationIssue: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["IssueInvitationBody"];
-            };
-        };
-        responses: {
-            /** @description Invitation issued */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IssueInvitationResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not Admin / Moderator / Issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Subject is already a member */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    invitationDeliver: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VtcInvitationsDeliverV0_1Payload"];
-            };
-        };
-        responses: {
-            /** @description Offer recorded, and sent or returned */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcInvitationsDeliverV0_1Response"];
-                };
-            };
-            /** @description Caller is not Admin / Moderator / Issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such invitation */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Revoked, or issued before delivery existed */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The invitation has lapsed */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The invited DID advertises no transport this community can send over */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    invitationRevoke: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description VIC id (urn:uuid) */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Invitation revoked */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["InvitationRevokeResponse"];
-                };
-            };
-            /** @description Caller is not Admin / Moderator / Issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such invitation */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     list_join_requests: {
         parameters: {
             query?: {
@@ -8036,50 +7497,6 @@ export interface operations {
                 content?: never;
             };
             /** @description No such Accepts criterion registered */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    show_join_request: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Join request id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Join request */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["JoinRequestEnvelope"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Join request not found */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8358,77 +7775,6 @@ export interface operations {
             };
         };
     };
-    list_removed: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Departed (tombstoned/historical) members */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RemovedMembersResponse"];
-                };
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    show_member: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Member DID */
-                did: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Member record */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemberEnvelope"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Member not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     admin_remove: {
         parameters: {
             query?: never;
@@ -8660,47 +8006,6 @@ export interface operations {
             };
             /** @description Caller is not authorised */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    request_vmc: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Member DID */
-                did: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RequestVmcBody"];
-            };
-        };
-        responses: {
-            /** @description Request dispatched to the member */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RequestVmcResponse"];
-                };
-            };
-            /** @description No active member with that DID */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Could not deliver the request to the member */
-            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8985,36 +8290,6 @@ export interface operations {
             };
         };
     };
-    check: {
-        parameters: {
-            query: {
-                /** @description The issuer / community DID to test for recognition. */
-                did: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Recognition verdict */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecognitionCheck"];
-                };
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     publish: {
         parameters: {
             query?: never;
@@ -9059,33 +8334,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RateLimitedBody"];
                 };
-            };
-        };
-    };
-    graph: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Relationship graph */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RelationshipsGraph"];
-                };
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

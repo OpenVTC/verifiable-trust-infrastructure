@@ -1,5 +1,5 @@
 import { screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { Members } from "@/plugins/members";
 import {
@@ -9,7 +9,20 @@ import {
   MEMBERS,
   RIGHTS,
 } from "@/plugins/repos/fixtures.test-data";
-import { mockFetch, renderWithProviders, taskRoute, type MockRoute } from "@/test/render";
+import {
+  MEMBERS_LIST_TASK,
+  mockFetch,
+  renderWithProviders,
+  taskRoute,
+  type MockRoute,
+} from "@/test/render";
+
+// The member reads are signed documents; the stand-in sends them unsigned so
+// the table below answers them without a key.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+}));
 
 // UI-13: the Members page shows each member's git rights and linked forge
 // accounts (design §7.1), from the same console projections the Repos plugin
@@ -20,12 +33,12 @@ const NOBODY = "did:webvh:QmNobody:nobody.dev";
 const routes = (
   over: { rightsStatus?: number; rights?: typeof RIGHTS } = {},
 ): MockRoute[] => [
-  {
-    path: "/v1/members",
-    body: { items: [...MEMBERS, member(NOBODY, "No Rights")], nextCursor: null },
-  },
-  { path: "/v1/members/removed", body: { removed: [] } },
-  { path: /^\/v1\/members\/did%3A[^/?]+(\?|$)/, body: { member: member(BOB, "Bob Mensah") } },
+  taskRoute(MEMBERS_LIST_TASK, {
+    items: [...MEMBERS, member(NOBODY, "No Rights")],
+    nextCursor: null,
+  }),
+  taskRoute("https://trusttasks.org/spec/vtc/members/removed/0.1", { removed: [] }),
+  taskRoute("https://trusttasks.org/spec/vtc/members/show/0.1", { member: member(BOB, "Bob Mensah") }),
   taskRoute("https://trusttasks.org/spec/acl/list/0.1", { entries: [], truncated: false }),
   {
     path: "/v1/git-ns/rights",

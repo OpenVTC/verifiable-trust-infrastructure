@@ -71,9 +71,7 @@ function routes(extra: MockRoute[] = []): MockRoute[] {
         { id: "open-door", presentationDefinition: {} },
       ],
     }),
-    {
-      path: "/v1/endorsement-types",
-      body: {
+    taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", {
         items: [
           {
             typeUri: STATEMENT_TYPE,
@@ -82,8 +80,7 @@ function routes(extra: MockRoute[] = []): MockRoute[] {
             createdByDid: "did:key:zAdmin",
           },
         ],
-      },
-    },
+      }),
     ...extra,
   ];
 }

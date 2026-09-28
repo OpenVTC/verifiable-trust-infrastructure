@@ -15,6 +15,7 @@ import {
 // key, so they go through the unsigned stand-in to the `mockFetch` table.
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
   postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
 }));
 
@@ -31,10 +32,7 @@ const REGISTERED = {
   createdByDid: "did:key:zAdmin",
 };
 
-const listRoute: MockRoute = {
-  path: "/v1/endorsement-types",
-  body: { items: [REGISTERED] },
-};
+const listRoute: MockRoute = taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", { items: [REGISTERED] });
 
 /** A criterion counting statements of `statementType`. */
 const criterion = (id: string, statementType: string): AcceptsCriterion =>
@@ -57,7 +55,7 @@ const registerRoute: MockRoute = taskRoute(REGISTER_TASK, (payload) => ({
 describe("StatementTypesCard", () => {
   it("registers the identity-vetting type when the community has none", async () => {
     const requests = mockFetch([
-      { path: "/v1/endorsement-types", body: { items: [] } },
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", { items: [] }),
       registerRoute,
     ]);
     renderWithProviders(<StatementTypesCard criteria={[]} />);
@@ -76,9 +74,7 @@ describe("StatementTypesCard", () => {
 
   it("lists what is registered and does not offer to register it again", async () => {
     mockFetch([
-      {
-        path: "/v1/endorsement-types",
-        body: {
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", {
           items: [
             {
               typeUri: STATEMENT_TYPE,
@@ -87,8 +83,7 @@ describe("StatementTypesCard", () => {
               createdByDid: "did:key:zAdmin",
             },
           ],
-        },
-      },
+        }),
     ]);
     renderWithProviders(<StatementTypesCard criteria={[]} />);
 
@@ -98,9 +93,7 @@ describe("StatementTypesCard", () => {
 
   it("registers a type an admin types in", async () => {
     const requests = mockFetch([
-      {
-        path: "/v1/endorsement-types",
-        body: {
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", {
           items: [
             {
               typeUri: STATEMENT_TYPE,
@@ -108,8 +101,7 @@ describe("StatementTypesCard", () => {
               createdByDid: "did:key:zAdmin",
             },
           ],
-        },
-      },
+        }),
       registerRoute,
     ]);
     renderWithProviders(<StatementTypesCard criteria={[]} />);

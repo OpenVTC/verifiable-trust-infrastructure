@@ -3,7 +3,13 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { postSignedTrustTask, signingAvailable, SigningUnavailableError } from "@/lib/api";
-import { mockFetch, renderWithProviders } from "@/test/render";
+import {
+  MEMBERS_LIST_TASK,
+  mockFetch,
+  renderWithProviders,
+  sentPayloads,
+  taskRoute,
+} from "@/test/render";
 
 import { grantTask } from "./actions";
 import { GrantDialog } from "./dialogs";
@@ -157,13 +163,11 @@ describe("Repos dialogs — the member picker", () => {
   it("reads members a page at a time, and filters what it has read", async () => {
     const page1 = Array.from({ length: 3 }, (_, i) => member(`did:key:z6MkPage1n${i}`, `First ${i}`));
     const requests = mockFetch([
-      {
-        path: "/v1/members",
-        body: ({ url }) =>
-          url.includes("cursor=c2")
-            ? { items: [member(ALICE, "Alice Wong")] }
-            : { items: page1, nextCursor: "c2" },
-      },
+      taskRoute(MEMBERS_LIST_TASK, (payload) =>
+        (payload as { cursor?: string }).cursor === "c2"
+          ? { items: [member(ALICE, "Alice Wong")] }
+          : { items: page1, nextCursor: "c2" },
+      ),
       { path: "/v1/acl", body: { entries: [], truncated: false } },
     ]);
     renderWithProviders(
@@ -179,7 +183,7 @@ describe("Repos dialogs — the member picker", () => {
     expect(within(dialog).queryByRole("option", { name: /Alice Wong/ })).toBeNull();
     // The listing clamps a page to 200; asking for more would be silently cut.
     // (The name book reads its own listing; this is the picker's.)
-    expect(requests.some((r) => r.url === "/v1/members?limit=200")).toBe(true);
+    expect(sentPayloads(requests, MEMBERS_LIST_TASK)).toContainEqual({ limit: 200 });
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Load more members" }));
     await within(dialog).findByRole("option", { name: /Alice Wong/ });

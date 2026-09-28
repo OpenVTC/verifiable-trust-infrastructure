@@ -8,7 +8,7 @@
 //! Phase 2+.
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -135,21 +135,13 @@ pub struct ListMembersQuery {
 }
 
 /// GET /members — paginated member list. Auth: Admin.
-#[utoipa::path(
-    get, path = "/members", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(ListMembersQuery),
-    responses(
-        (status = 200, description = "Paginated member list", body = Paginated<MemberResponse>),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_members(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<ListMembersQuery>,
-) -> Result<Json<Paginated<MemberResponse>>, AppError> {
+/// `vtc/members/list/0.1`, on either door: the signed document the spine
+/// serves (`trust_tasks::community_tasks`), and the bearer route below, which
+/// stays while `vtc-client`'s `list_members` calls it.
+pub(crate) async fn list_members_inner(
+    state: &AppState,
+    query: ListMembersQuery,
+) -> Result<Paginated<MemberResponse>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
 
     // Phase 1 reads the audit_key out of AppState's writer. The
@@ -209,11 +201,29 @@ pub async fn list_members(
         }
     }
 
-    Ok(Json(Paginated {
+    Ok(Paginated {
         items,
         next_cursor: page.next_cursor,
         total_estimate: page.total_estimate,
-    }))
+    })
+}
+
+#[utoipa::path(
+    get, path = "/members", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(ListMembersQuery),
+    responses(
+        (status = 200, description = "Paginated member list", body = Paginated<MemberResponse>),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn list_members(
+    _auth: AdminAuth,
+    State(state): State<AppState>,
+    Query(query): Query<ListMembersQuery>,
+) -> Result<Json<Paginated<MemberResponse>>, AppError> {
+    list_members_inner(&state, query).await.map(Json)
 }
 
 // ---------------------------------------------------------------------------
@@ -238,18 +248,7 @@ pub struct RemovedMember {
 /// GET /members/removed — members whose row was kept as a tombstone after
 /// departure (no ACL). Auth: Admin. Full scan (departed members are few and
 /// this is an operator view), newest-departed first.
-#[utoipa::path(
-    get, path = "/members/removed", tag = "members",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Departed (tombstoned/historical) members", body = RemovedMembersResponse),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_removed(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<RemovedMembersResponse>, AppError> {
+pub(crate) async fn list_removed(state: &AppState) -> Result<RemovedMembersResponse, AppError> {
     let mut removed: Vec<RemovedMember> = crate::members::list_members(&state.members_ks)
         .await?
         .into_iter()
@@ -263,7 +262,7 @@ pub async fn list_removed(
         })
         .collect();
     removed.sort_by_key(|b| std::cmp::Reverse(b.removed_at));
-    Ok(Json(RemovedMembersResponse { removed }))
+    Ok(RemovedMembersResponse { removed })
 }
 
 /// `{ removed: [...] }` — the shape `vtc/members/removed/0.1` publishes.
@@ -284,30 +283,15 @@ pub const SHOW_ERR_NOT_FOUND: &str =
     trust_tasks_rs::specs::vtc::members::show::v0_1::error_codes::NOT_FOUND.code;
 
 /// GET /members/{did} — single member. Auth: Admin.
-#[utoipa::path(
-    get, path = "/members/{did}", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(("did" = String, Path, description = "Member DID")),
-    responses(
-        (status = 200, description = "Member record", body = MemberEnvelope),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Member not found"),
-    ),
-)]
-pub async fn show_member(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Path(did): Path<String>,
-) -> Result<Json<MemberEnvelope>, TaskError> {
-    vti_common::identifier::validate_did("did", &did)?;
-    let member = get_member(&state.members_ks, &did).await?.ok_or_else(|| {
+pub(crate) async fn show_member(state: &AppState, did: &str) -> Result<MemberEnvelope, TaskError> {
+    vti_common::identifier::validate_did("did", did)?;
+    let member = get_member(&state.members_ks, did).await?.ok_or_else(|| {
         TaskError::declared(
             SHOW_ERR_NOT_FOUND,
             AppError::NotFound(format!("member not found: {did}")),
         )
     })?;
-    let acl = get_acl_entry(&state.acl_ks, &did).await?.ok_or_else(|| {
+    let acl = get_acl_entry(&state.acl_ks, did).await?.ok_or_else(|| {
         // Same out-of-band corruption case as the list path —
         // surface as 404 because the *member* isn't presentable.
         TaskError::declared(
@@ -315,9 +299,9 @@ pub async fn show_member(
             AppError::NotFound(format!("member not found (no ACL row): {did}")),
         )
     })?;
-    Ok(Json(MemberEnvelope {
+    Ok(MemberEnvelope {
         member: MemberResponse::from_pair(acl, member),
-    }))
+    })
 }
 
 /// Unused-listing helper kept to ensure `list_acl_entries` stays

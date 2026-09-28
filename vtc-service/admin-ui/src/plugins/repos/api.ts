@@ -23,7 +23,7 @@
 // `actions.ts` builds them and sends them from this browser's console key
 // where one is enrolled.
 
-import { getJson, getJsonExempt, postSignedRead } from "@/lib/api";
+import { getJsonExempt, postSignedRead } from "@/lib/api";
 import type {
   GitNsAccountList,
   GitNsActivity,
@@ -217,9 +217,10 @@ const MEMBERS_PAGE = 200;
 export async function fetchMembersPage(
   cursor: string | null,
 ): Promise<{ members: { did: string; label?: string | null }[]; nextCursor: string | null }> {
-  const q = new URLSearchParams({ limit: String(MEMBERS_PAGE) });
-  if (cursor) q.set("cursor", cursor);
-  const page = await getJson<MembersPage>(`/v1/members?${q}`, { trustTask: TASK_MEMBERS_LIST });
+  const page = await postSignedRead<MembersPage>(TASK_MEMBERS_LIST, {
+    limit: MEMBERS_PAGE,
+    ...(cursor ? { cursor } : {}),
+  });
   return {
     members: (page.items ?? []).map((m) => ({ did: m.did, label: m.label })),
     nextCursor: page.nextCursor ?? null,

@@ -16,6 +16,8 @@
 use std::sync::Arc;
 
 use affinidi_status_list::StatusPurpose;
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -400,18 +402,19 @@ async fn lifecycle_verb(fix: &Fixture, id: Uuid, verb: &str, token: &str) -> (St
     body_value(fix.router.clone().oneshot(req).await.unwrap()).await
 }
 
+/// `vtc/relationships/graph/0.2`, signed by a fresh unrestricted administrator:
+/// the reply's status and payload.
+async fn graph_as_admin(vtc: &TestVtc) -> (StatusCode, Value) {
+    let admin = common::signed::admin(vtc).await;
+    let (status, doc) = common::signed::call(vtc, &admin, GRAPH_TASK, json!({})).await;
+    (status, doc["payload"].clone())
+}
+
 /// Whether the community graph currently reports the pair as a mutual
 /// relationship. Read through the admin surface rather than the keyspace,
 /// because the claim is about what an operator is told.
 async fn pair_is_complete(fix: &Fixture) -> bool {
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/relationships/graph")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", GRAPH_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let (status, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let (status, v) = graph_as_admin(&fix._vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     v["edges"]
         .as_array()
@@ -676,15 +679,7 @@ async fn graph_separates_complete_edges_from_half_edges() {
     // ISSUER → STRANGER — never answered, so a half-edge.
     let a_to_c = seed_relationship(&fix, ISSUER_DID, STRANGER_DID).await;
 
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/relationships/graph")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", GRAPH_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = graph_as_admin(&fix._vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 
     let nodes: Vec<&str> = v["nodes"]
@@ -732,15 +727,13 @@ async fn graph_separates_complete_edges_from_half_edges() {
 #[tokio::test]
 async fn graph_is_admin_only() {
     let fix = build_fixture().await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/relationships/graph")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", GRAPH_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let member = common::signed::party_with_role(&fix._vtc, VtcRole::Member, &[]).await;
+    let (_, doc) = common::signed::call(&fix._vtc, &member, GRAPH_TASK, json!({})).await;
+    assert_eq!(
+        common::signed::error_code(&doc),
+        Some("permissionDenied"),
+        "{doc}"
+    );
 }
 
 // ─── Publish under a pairwise relationship DID ────────────
@@ -1612,10 +1605,8 @@ mod pairwise {
         const PERSONA: u8 = 0x45;
         const RDID2: u8 = 0x46;
         const PEER2_RDID: u8 = 0x47;
-        const GRAPH_ADMIN: u8 = 0x7A;
 
         const PERSONA_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/persona/0.1";
-        const GRAPH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.2";
 
         /// A signed VPC: issued under `persona_seed`'s P-DID, naming
         /// `counterparty_seed` as the subject. DTG Credentials §VPC.
@@ -1713,66 +1704,10 @@ mod pairwise {
 
         /// The admin connections graph is where the correlation a persona
         /// enables actually becomes visible, so the assertions that matter
-        /// read it rather than the storage layer. Seeds its own admin because
-        /// the `pairwise` fixture only has the one member session.
+        /// read it rather than the storage layer, signed by an administrator of
+        /// its own because the `pairwise` fixture only has the one member.
         async fn graph_edges(fix: &Pw) -> Vec<Value> {
-            let now = now_epoch();
-            let admin = did_for(GRAPH_ADMIN);
-            store_acl_entry(
-                &fix._vtc.state.acl_ks,
-                &VtcAclEntry {
-                    did: admin.clone(),
-                    role: VtcRole::Admin,
-                    label: None,
-                    allowed_contexts: vec![],
-                    created_at: now,
-                    created_by: "did:key:vtc-install".into(),
-                    updated_at: None,
-                    updated_by: None,
-                    expires_at: None,
-                },
-            )
-            .await
-            .unwrap();
-            store_member(&fix._vtc.state.members_ks, &Member::fresh(&admin))
-                .await
-                .unwrap();
-            let session_id = format!("sess-{}", Uuid::new_v4());
-            store_session(
-                &fix._vtc.state.sessions_ks,
-                &Session {
-                    session_id: session_id.clone(),
-                    did: admin.clone(),
-                    challenge: "test".into(),
-                    state: SessionState::Authenticated,
-                    created_at: now,
-                    last_seen: now,
-                    refresh_token: None,
-                    refresh_expires_at: None,
-                    tee_attested: false,
-                    amr: Vec::new(),
-                    acr: String::new(),
-                    acr_expires_at: None,
-                    token_id: None,
-                    session_pubkey_b58btc: None,
-                },
-            )
-            .await
-            .unwrap();
-            let claims =
-                fix._vtc
-                    .jwt_keys
-                    .new_claims(admin, session_id, "admin".into(), vec![], 3600, true);
-            let token = fix._vtc.jwt_keys.encode(&claims).unwrap();
-
-            let req = Request::builder()
-                .method("GET")
-                .uri("/v1/relationships/graph")
-                .header("authorization", format!("Bearer {token}"))
-                .header("trust-task", GRAPH_TASK)
-                .body(Body::empty())
-                .unwrap();
-            let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+            let (status, body) = graph_as_admin(&fix._vtc).await;
             assert_eq!(status, StatusCode::OK, "graph: {body}");
             body["edges"].as_array().cloned().unwrap_or_default()
         }
