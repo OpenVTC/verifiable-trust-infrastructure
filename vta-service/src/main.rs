@@ -772,8 +772,12 @@ enum ContextCommands {
         #[arg(long)]
         name: Option<String>,
         /// Set the DID for this context.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_did")]
         did: Option<String>,
+        /// Leave the context with no DID of its own. The DID itself is not
+        /// deleted, so it can then be deleted or assigned again.
+        #[arg(long)]
+        clear_did: bool,
         /// New description.
         #[arg(long)]
         description: Option<String>,
@@ -2072,9 +2076,18 @@ async fn main() {
                     id,
                     name,
                     did,
+                    clear_did,
                     description,
                 } => {
-                    bootstrap_cli::run_context_update(cli.config, id, name, did, description).await
+                    bootstrap_cli::run_context_update(
+                        cli.config,
+                        id,
+                        name,
+                        did,
+                        clear_did,
+                        description,
+                    )
+                    .await
                 }
                 ContextCommands::Delete { id, yes } => {
                     bootstrap_cli::run_context_delete(cli.config, id, yes).await
