@@ -297,7 +297,7 @@ thiserror = { workspace = true }
 urlencoding = "2"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-bip39 = "2"
+bip39 = "3"
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 keyring-core = { workspace = true, optional = true }
