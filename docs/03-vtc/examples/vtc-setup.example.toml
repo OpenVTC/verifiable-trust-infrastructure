@@ -18,7 +18,7 @@
 #      on a host with PNM authenticated to the VTA):
 #        pnm contexts create --id <context> --name "VTC" \
 #          --admin-did <setup-did> --admin-expires 1h --admin-handoff
-#      (or `pnm acl create ...` if the context already exists).
+#      (or `pnm acl create ... --expires 1h --handoff` if the context already exists).
 #   3. Provision (phase 2):
 #        vtc setup --from vtc-setup.toml
 #      with `setup_key_file` below pointing at that persisted key.
