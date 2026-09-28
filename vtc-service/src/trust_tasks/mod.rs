@@ -61,6 +61,9 @@ pub(crate) mod accepted_ids;
 // The per-type document size limit, checked before the parse.
 mod credential_exchange;
 pub(crate) mod size;
+// `trust-task-discovery/0.3`: what this VTC serves and the acceptance window it
+// applies (VTI-TRN-047).
+mod discovery;
 
 // The canonical `acl/{show,list,update,revoke}` tasks, and the operation-bound
 // gate `acl/grant` shares with `acl/update`.
@@ -617,8 +620,10 @@ async fn dispatch_trust_task_validated(
 /// `VtaClient::dispatch_trust_task` for every transport), and 52 of the 95
 /// specifications this service binds declare the member REQUIRED in any case.
 fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
-    trust_tasks_rs::FreshnessPolicy::default()
-        .with_max_age(vti_common::trust_task::ACCEPTANCE_WINDOW)
+    // The window this node also advertises in its `trust-task-discovery/0.3`
+    // answer (VTI-TRN-047): one value, so the two cannot drift.
+    vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW
+        .freshness_policy()
         .requiring_issued_at()
 }
 
@@ -866,6 +871,7 @@ async fn dispatch_typed(
         crate::acl::admin_consent::DECISION_TYPE => {
             handle_task_consent_decision(state, ctx, doc).await
         }
+        discovery::DISCOVERY_V0_3_TYPE => discovery::handle(ctx, doc),
         other => unsupported_type_or_version(&doc, other),
     }
 }
@@ -1817,6 +1823,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
     // does not cover these; they are pinned by `rooms_dispatch_matches_wire` below.
+    //
+    // Discovery, with this VTC's acceptance window (VTI-TRN-047).
+    discovery::DISCOVERY_V0_3_TYPE,
 ];
 
 /// `vtc/members/personhood/challenge/0.1` — mint the single-use nonce
@@ -4035,6 +4044,7 @@ mod tests {
             <trust_tasks_rs::specs::vtc::endorsements::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            discovery::DISCOVERY_V0_3_TYPE,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.

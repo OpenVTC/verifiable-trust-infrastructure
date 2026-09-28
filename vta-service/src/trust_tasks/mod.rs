@@ -1428,8 +1428,10 @@ mod lifecycle_mapping {}
 /// this spine applies item 11 to **every** document it dispatches, `whoami`
 /// included, so the qualifying set here is all of them.
 pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
-    trust_tasks_rs::FreshnessPolicy::default()
-        .with_max_age(vti_common::trust_task::ACCEPTANCE_WINDOW)
+    // The window this node also advertises in its `trust-task-discovery/0.3`
+    // answer (VTI-TRN-047): one value, so the two cannot drift.
+    vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW
+        .freshness_policy()
         .requiring_issued_at()
 }
 
@@ -2327,6 +2329,9 @@ dispatch_table! {
         [ Mutating None false ],
     // ─── Discovery ───────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1 => discovery::handle_trust_task_discovery
+        [ None None false ],
+    // 0.3 adds the acceptance window this VTA applies (VTI-TRN-047).
+    vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3 => discovery::handle_trust_task_discovery_v0_3
         [ None None false ],
     // ─── Credential-exchange: the holder's steps ─────────────────
     //

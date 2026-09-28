@@ -1,10 +1,18 @@
-//! Discovery slice. One URI, one question: **which Trust Tasks does this agent
-//! serve?**
+//! Discovery slice. One URI family, one question: **which Trust Tasks does this
+//! agent serve?**
 //!
-//! `spec/trust-task-discovery/0.1` — the published canonical family from the
-//! dtgwg-trust-tasks-tf registry, carried by `trust-tasks-rs`. Any
+//! `spec/trust-task-discovery/0.1` and `/0.3` — the published canonical family
+//! from the dtgwg-trust-tasks-tf registry, carried by `trust-tasks-rs`. Any
 //! authenticated caller. This is what a client should ask before assuming a
-//! task exists.
+//! task exists. Each version is answered in the version it was asked
+//! (discovery 0.3, *Relationship to 0.2 and 0.1*).
+//!
+//! 0.3 adds the acceptance window this VTA applies to `issuedAt`, at response
+//! level (VTI-TRN-047). It is built by
+//! [`vti_common::trust_task::discovery::respond_v0_3`] from the same
+//! [`VTI_ACCEPTANCE_WINDOW`](vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW)
+//! this VTA's spine applies (`super::freshness_policy`), so the advertised
+//! window cannot be wider than the applied one; the tests below pin it.
 //!
 //! `vta/discovery/capabilities/1.0` and `GET /capabilities` used to live here
 //! too. Both are retired (#1039, #1043) — see
@@ -14,6 +22,7 @@
 use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
+use vti_common::trust_task::discovery;
 
 use crate::auth::AuthClaims;
 use crate::server::AppState;
@@ -39,137 +48,99 @@ pub(super) async fn handle_trust_task_discovery(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-
-    // An absent or empty pattern list means "everything", per the spec: the
-    // responder MUST treat the query as `['*']`.
-    let patterns: Vec<String> = req.patterns.iter().map(|p| p.to_string()).collect();
-
-    let mut matched: Vec<String> = super::dispatched_uris()
-        .into_iter()
-        .filter(|uri| slug_matches_any(uri, &patterns))
-        .map(str::to_string)
-        .collect();
-
-    // The spec forbids duplicate Type URIs in the response. The dispatch table
-    // legitimately contains repeats — one handler can be reached by several
-    // URIs, and dual-accept versions sit side by side — so dedupe rather than
-    // assume. Sorted for a stable answer across calls.
-    matched.sort_unstable();
-    matched.dedup();
-
-    let body = serde_json::json!({
-        "frameworkVersion": FRAMEWORK_VERSION,
-        "supportedTypes": matched,
-    });
-    success_response(&doc, body)
+    success_response(
+        &doc,
+        discovery::respond_v0_1(super::dispatched_uris(), &req),
+    )
 }
 
-/// MAJOR.MINOR of the Trust Tasks framework spec this agent targets.
-///
-/// Matches the framework crate's own `DEFAULT_FRAMEWORK_VERSION`. Kept as a
-/// named constant so a reader can see what is being claimed, rather than
-/// finding a bare string in a JSON literal.
-const FRAMEWORK_VERSION: &str = "0.2";
+/// Handler for `spec/trust-task-discovery/0.3` — the 0.1 answer, with the
+/// framework release in three parts and this VTA's acceptance window at
+/// response level (VTI-TRN-047).
+pub(super) async fn handle_trust_task_discovery_v0_3(
+    _state: &AppState,
+    _auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::specs::trust_task_discovery::v0_3 as wire;
 
-/// Slug-glob match, per the `trust-task-discovery/0.1` pattern grammar.
-///
-/// The grammar is deliberately narrow: `*` matches everything, `<prefix>/*`
-/// matches any slug under that prefix, and anything else is an exact match —
-/// interior wildcards are literal and therefore never match.
-///
-/// Patterns are matched against the URI's **slug**, not the whole URI, so a
-/// caller writes `acl/*` rather than repeating the registry origin.
-fn slug_matches_any(uri: &str, patterns: &[String]) -> bool {
-    if patterns.is_empty() {
-        return true;
-    }
-    let slug = slug_of(uri);
-    patterns
-        .iter()
-        .any(|p| trust_tasks_rs::discovery::match_slug(p, slug))
-}
-
-/// The slug of a Type URI — everything after the registry prefix.
-///
-/// `https://trusttasks.org/spec/acl/grant/0.1` → `acl/grant/0.1`.
-/// A URI that does not carry the prefix is returned whole, so a non-conforming
-/// entry can still be matched exactly rather than silently dropping out of
-/// every response.
-fn slug_of(uri: &str) -> &str {
-    uri.strip_prefix("https://trusttasks.org/spec/")
-        .unwrap_or(uri)
+    let req: wire::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    success_response(
+        &doc,
+        discovery::respond_v0_3(super::dispatched_uris(), &req),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use trust_tasks_rs::specs::trust_task_discovery::v0_3;
+    use vti_common::trust_task::acceptance::AcceptanceWindow;
 
-    fn pats(p: &[&str]) -> Vec<String> {
-        p.iter().map(|s| s.to_string()).collect()
+    /// What this VTA answers a discovery 0.3 query with, read back as a
+    /// discoverer reads it.
+    fn advertised() -> AcceptanceWindow {
+        let response = vti_common::trust_task::discovery::respond_v0_3(
+            crate::trust_tasks::dispatched_uris(),
+            &v0_3::Payload::default(),
+        );
+        AcceptanceWindow::from_advertised(
+            response
+                .acceptance_window
+                .as_ref()
+                .expect("VTI-TRN-047: a VTA SHOULD advertise its window"),
+        )
     }
 
-    /// Patterns match the **slug**, not the whole URI.
+    /// The window this VTA advertises in its discovery 0.3 answer is the window
+    /// its spine applies — neither wider (VTI-TRN-047's MUST NOT) nor narrower.
     ///
-    /// If this regressed to matching the full URI, `acl/*` would match
-    /// nothing and every narrowed query would come back empty — a discovery
-    /// response that is wrong in the safe-looking direction, which is the hard
-    /// kind to notice.
+    /// Compared against `freshness_policy`, the policy the spine refuses
+    /// documents with: were either side to take its own constant again, this
+    /// is where it would show.
     #[test]
-    fn patterns_match_the_slug_not_the_whole_uri() {
-        // The real URI: ACL folded to the top-level canonical family, so the
-        // slug is `acl/grant/0.1` and NOT `vta/acl/grant/0.1`. Using the
-        // VTA-namespaced form here is the mistake this test caught during
-        // review, and it is silent — a wrong pattern returns an empty list, not
-        // an error.
-        let grant = "https://trusttasks.org/spec/acl/grant/0.1";
-        assert!(slug_matches_any(grant, &pats(&["acl/*"])));
-        assert!(slug_matches_any(grant, &pats(&["acl/grant/0.1"])));
-        assert!(!slug_matches_any(grant, &pats(&["vta/acl/*"])));
-        assert!(!slug_matches_any(grant, &pats(&["keys/*"])));
+    fn vti_trn_047_the_advertised_window_is_the_applied_window() {
+        let advertised = advertised();
+        let applied = super::super::freshness_policy();
+        assert_eq!(Some(advertised.max_age), applied.max_age);
+        assert_eq!(advertised.clock_skew, applied.skew);
     }
 
-    /// An empty pattern list means everything, per the spec — the responder
-    /// MUST treat the query as `['*']`. Returning nothing would be the obvious
-    /// misreading.
+    /// The same property, measured the way a producer meets it: a document
+    /// issued exactly the advertised window ago is still accepted, and one a
+    /// second older is refused. An advertisement wider than the policy fails
+    /// the second assertion; a narrower one fails the first.
     #[test]
-    fn no_patterns_means_everything() {
-        let uri = "https://trusttasks.org/spec/acl/grant/0.1";
-        assert!(slug_matches_any(uri, &[]));
-        assert!(slug_matches_any(uri, &pats(&["*"])));
-    }
-
-    /// Interior wildcards are literal, so they never match.
-    ///
-    /// The grammar admits only a bare `*` and a trailing `/*`. Anything else is
-    /// an exact slug. Worth pinning because a caller who assumes full globbing
-    /// gets an empty answer rather than an error, and would reasonably read
-    /// that as "the agent serves nothing".
-    #[test]
-    fn interior_wildcards_are_not_globs() {
-        let uri = "https://trusttasks.org/spec/acl/grant/0.1";
-        assert!(!slug_matches_any(uri, &pats(&["*/grant/0.1"])));
-    }
-
-    /// A URI without the registry prefix is still matchable exactly.
-    ///
-    /// Everything dispatched today carries the prefix. Stripping blindly with
-    /// an `unwrap_or` that dropped the URI instead would make any future
-    /// non-conforming entry silently invisible to discovery rather than
-    /// findable by exact name.
-    #[test]
-    fn a_prefixless_uri_is_returned_whole() {
-        assert_eq!(slug_of("urn:example:odd"), "urn:example:odd");
-        assert!(slug_matches_any(
-            "urn:example:odd",
-            &pats(&["urn:example:odd"])
-        ));
+    fn vti_trn_047_a_document_at_the_advertised_edge_is_accepted_and_one_past_it_refused() {
+        let w = advertised();
+        let now = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 0);
+        let doc = |issued| {
+            let mut d = trust_tasks_rs::TrustTask::new(
+                "urn:uuid:00000000-0000-4000-8000-000000000000".to_string(),
+                "https://trusttasks.org/spec/acl/list/0.1".parse().unwrap(),
+                serde_json::json!({}),
+            );
+            d.issued_at = Some(issued);
+            d
+        };
+        let policy = super::super::freshness_policy();
+        let edge = now - w.max_age - w.clock_skew;
+        assert!(doc(edge).validate_freshness(now, &policy).is_ok());
+        assert!(
+            doc(edge - chrono::TimeDelta::seconds(1))
+                .validate_freshness(now, &policy)
+                .is_err()
+        );
     }
 
     /// Discovery answers from the dispatch table, and that table is non-trivial.
     ///
     /// The property under test is that the two are connected at all: if
-    /// `dispatched_uris` were emptied by a refactor, every test above would
-    /// still pass while discovery answered "I support nothing".
+    /// `dispatched_uris` were emptied by a refactor, the pattern tests in
+    /// `vti_common::trust_task::discovery` would still pass while discovery
+    /// answered "I support nothing".
     #[test]
     fn discovery_draws_on_the_real_dispatch_table() {
         let all = crate::trust_tasks::dispatched_uris();
@@ -179,10 +150,15 @@ mod tests {
              table rather than this floor",
             all.len()
         );
-        assert!(
-            all.contains(&vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1),
-            "discovery must advertise itself — a client that cannot see it \
-             cannot know to ask again"
-        );
+        for version in [
+            vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1,
+            vta_sdk::trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3,
+        ] {
+            assert!(
+                all.contains(&version),
+                "discovery must advertise itself ({version}) — a client that \
+                 cannot see it cannot know to ask again"
+            );
+        }
     }
 }

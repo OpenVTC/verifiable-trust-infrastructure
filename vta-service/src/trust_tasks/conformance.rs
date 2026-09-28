@@ -550,12 +550,30 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::trust_task_discovery::v0_1::Response,
                 json!({ "patterns": ["acl/*"] }),
                 json!({
-                    "frameworkVersion": "0.2",
+                    "frameworkVersion": "0.6",
                     "supportedTypes": [
                         "https://trusttasks.org/spec/acl/grant/0.1",
                         "https://trusttasks.org/spec/acl/revoke/0.1"
                     ]
                 })
+            ),
+        ),
+        // 0.3: the response is the one the handler builds, not a literal, so
+        // the witness pins the advertised acceptance window (VTI-TRN-047) as
+        // it is actually written — whole seconds, at response level.
+        (
+            uris::TASK_TRUST_TASK_DISCOVERY_0_3,
+            checked!(
+                specs::trust_task_discovery::v0_3::Payload,
+                specs::trust_task_discovery::v0_3::Response,
+                json!({ "patterns": ["acl/*"] }),
+                to_v(vti_common::trust_task::discovery::respond_v0_3(
+                    [
+                        "https://trusttasks.org/spec/acl/grant/0.1",
+                        "https://trusttasks.org/spec/acl/revoke/0.1",
+                    ],
+                    &specs::trust_task_discovery::v0_3::Payload::default(),
+                ))
             ),
         ),
         // ─── auth ────────────────────────────────────────────────

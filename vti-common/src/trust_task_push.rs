@@ -57,8 +57,8 @@
 //!
 //! A push's deadline runs to hours or days — thirty for a removal notice — but
 //! a VTI consumer accepts a document only for
-//! [`ACCEPTANCE_WINDOW`](crate::trust_task::ACCEPTANCE_WINDOW) after its
-//! `issuedAt`, plus its skew tolerance (VTI-OPS-024), and refuses anything
+//! [`VTI_ACCEPTANCE_WINDOW`]'s ten minutes after its
+//! `issuedAt`, plus its sixty seconds of skew tolerance (VTI-OPS-024), and refuses anything
 //! older as `expired`. An attempt queued after that — an escalation an hour
 //! in, an attempt re-queued after a crash, a hop the mediator refused for
 //! twenty minutes, or a copy the recipient collected on reconnecting the next
@@ -100,6 +100,36 @@
 //! node's hands until the recipient collects it, so a recipient offline past
 //! the window receives one refused copy before the new attempt.
 //! [`MAX_REISSUES`] bounds how many new attempts one push may make.
+//!
+//! # Which window (VTI-TRN-045)
+//!
+//! VTI-TRN-045 orders the window a sender assumes: the recipient's own, from
+//! its authenticated `trust-task-discovery/0.3` answer where it advertises one
+//! (a per-type entry over the response-level value); otherwise the window the
+//! task's specification states; otherwise a documented constant. The engine
+//! applies the last, [`VTI_ACCEPTANCE_WINDOW`] — the same value both VTI nodes
+//! apply as consumers and advertise as responders (VTI-TRN-047) — to every
+//! recipient.
+//!
+//! It does not ask. A lookup here would be a request/reply exchange with the
+//! recipient, and the engine has none: every push is one-way, and neither node
+//! lends it a correlated reply path. It would buy little, too:
+//!
+//! - The recipients are approvers' devices, members' wallets and requesters,
+//!   none of which serves `trust-task-discovery` today, so every lookup would
+//!   end in the fallback after a timeout.
+//! - The window matters only for a document the engine *holds* — a recipient
+//!   offline, a mediator refusing hops — which is exactly when a lookup cannot
+//!   be answered. A cached answer would have to have been learnt earlier.
+//! - The engine never sees an `expired` refusal (a REST attempt reports only
+//!   its HTTP status, and a DIDComm or TSP reply arrives at the node's inbound
+//!   router), so discovery 0.3's rule 7 — re-ask after an unexpected
+//!   refusal — would have no trigger.
+//!
+//! What remains open is recorded against VTI-TRN-045 in the specification's
+//! divergence register (Appendix F.3): the engine reads no advertised window.
+//! The day a recipient advertises one, the seam is the two predicates below,
+//! which already take the window from one value rather than two constants.
 
 #[cfg(feature = "tsp")]
 use std::sync::Arc;
@@ -118,7 +148,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
-use trust_tasks_rs::freshness::DEFAULT_SKEW;
 use vta_sdk::protocol::matching::{
     DIDCOMM_SERVICE_TYPE, Protocol, ServiceCapabilities, TRUST_TASK_HTTPS_SERVICE_TYPE,
 };
@@ -126,7 +155,7 @@ use vta_sdk::protocol::matching::{
 use crate::capability_client::TRUST_TASK_ENVELOPE_TYPE;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
-use crate::trust_task::ACCEPTANCE_WINDOW;
+use crate::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW;
 use crate::tsp_reach::TspReachability;
 
 /// What a node lends the push engine: the stores and handles that are its own.
@@ -271,19 +300,24 @@ fn issued_at(doc: &Value) -> Option<DateTime<Utc>> {
     doc.get("issuedAt")?.as_str()?.parse::<DateTime<Utc>>().ok()
 }
 
-/// Whether a VTI consumer has stopped accepting `doc` by `now`, before its skew
+/// Whether the recipient has stopped accepting `doc` by `now`, before its skew
 /// tolerance: the point past which the engine will not put it on the wire
-/// again. A document with no readable `issuedAt` cannot be placed in any
-/// window, so it is never judged past one — it is sent as it is.
+/// again (discovery 0.3's "SHOULD NOT send after `issuedAt + maxAgeSeconds`").
+/// A document with no readable `issuedAt` cannot be placed in any window, so it
+/// is never judged past one — it is sent as it is.
+///
+/// The window is [`VTI_ACCEPTANCE_WINDOW`] — VTI-TRN-045's documented constant,
+/// its last tier — for every recipient; see the module docs (*Which window*)
+/// for why the engine reads no advertised one.
 fn past_acceptance(doc: &Value, now: DateTime<Utc>) -> bool {
-    issued_at(doc).is_some_and(|t| now >= t + ACCEPTANCE_WINDOW)
+    issued_at(doc).is_some_and(|t| VTI_ACCEPTANCE_WINDOW.past_max_age(t, now))
 }
 
-/// Whether every VTI consumer refuses `doc` at `now`, skew tolerance included.
-/// A copy collected past this point was refused, whatever the collection
+/// Whether the recipient refuses `doc` at `now`, skew tolerance included. A
+/// copy collected past this point was refused, whatever the collection
 /// evidence says.
 fn refused_when_collected(doc: &Value, now: DateTime<Utc>) -> bool {
-    issued_at(doc).is_some_and(|t| now > t + ACCEPTANCE_WINDOW + DEFAULT_SKEW)
+    issued_at(doc).is_some_and(|t| VTI_ACCEPTANCE_WINDOW.refuses(t, now))
 }
 
 /// A **new attempt** at `previous` (SPEC §8.4): a fresh `id`, a fresh
@@ -1316,18 +1350,19 @@ mod tests {
     #[test]
     fn a_document_is_past_acceptance_at_the_window_and_refused_after_the_skew() {
         // Whole seconds, as `issuedAt` is on the wire.
-        let issued = chrono::SubsecRound::trunc_subsecs(Utc::now() - ACCEPTANCE_WINDOW, 0);
+        let window = VTI_ACCEPTANCE_WINDOW;
+        let issued = chrono::SubsecRound::trunc_subsecs(Utc::now() - window.max_age, 0);
         let doc = signed_at(issued);
-        let at_window = issued + ACCEPTANCE_WINDOW;
+        let at_window = issued + window.max_age;
         assert!(!past_acceptance(
             &doc,
             at_window - chrono::TimeDelta::seconds(1)
         ));
         assert!(past_acceptance(&doc, at_window));
-        assert!(!refused_when_collected(&doc, at_window + DEFAULT_SKEW));
+        assert!(!refused_when_collected(&doc, at_window + window.clock_skew));
         assert!(refused_when_collected(
             &doc,
-            at_window + DEFAULT_SKEW + chrono::TimeDelta::seconds(1)
+            at_window + window.clock_skew + chrono::TimeDelta::seconds(1)
         ));
     }
 
