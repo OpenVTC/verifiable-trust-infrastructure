@@ -10,8 +10,11 @@
 //! accept, manifest, status), with the holder authenticated by the document's
 //! `eddsa-jcs-2022` proof.
 //!
-//! This mirrors the VTA's `POST /api/trust-tasks`. It rides the governed
-//! (rate-limited) unauth chain. Each document type has its own size limit,
+//! This mirrors the VTA's `POST /api/trust-tasks`. It sits on the unauth
+//! chain but not behind its tower governor: a document is charged to the
+//! per-address anonymous budget, or — when it claims a signer the community
+//! knows — to that signer's own bucket once its proof verifies
+//! ([`crate::routing::trust_task_admission`]). Each document type has its own size limit,
 //! checked before the document is parsed
 //! ([`crate::trust_tasks::size`]).
 //!
@@ -33,11 +36,12 @@
 //! rejected `unsupportedType`.
 
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::response::{IntoResponse, Response};
 
+use crate::routing::trust_task_admission::{Admission, ClientAddress, TrustTaskLimits};
 use crate::server::AppState;
-use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core};
+use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core_admitted};
 
 /// POST /trust-tasks — dispatch a Trust Task document. Public: the holder's
 /// document proof (or, over DIDComm, the authcrypt sender) IS the auth.
@@ -63,8 +67,20 @@ use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core};
         (status = 422, description = "Task failed, e.g. duplicate request (trust-task-error)"),
     ),
 )]
-pub async fn dispatch(State(state): State<AppState>, body: Bytes) -> Response {
-    dispatch_trust_task_core(&state, &JoinAuthCtx::rest(), &body)
-        .await
-        .into_response()
+pub async fn dispatch(
+    State(state): State<AppState>,
+    Extension(ClientAddress(address)): Extension<ClientAddress>,
+    Extension(limits): Extension<TrustTaskLimits>,
+    body: Bytes,
+) -> Response {
+    let admission = match Admission::begin(&state, &limits, address, &body).await {
+        Ok(admission) => admission,
+        Err(limited) => return limited.into_response(),
+    };
+    let outcome =
+        dispatch_trust_task_core_admitted(&state, &JoinAuthCtx::rest(), &body, &admission).await;
+    match admission.finish() {
+        Ok(()) => outcome.into_response(),
+        Err(limited) => limited.into_response(),
+    }
 }

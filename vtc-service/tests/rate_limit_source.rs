@@ -5,8 +5,12 @@
 //! `{"error":"rate_limited","limiter":"<name>","message":…,"retryAfterSecs":N}`.
 //!
 //! This file drives the per-IP `tower-governor` on the unauthenticated chain
-//! through the real router. The per-member relationship publish limiter is
-//! covered in `relationships.rs`, where a signed publish can be built.
+//! through the real router, and the per-signer budget on `POST /v1/trust-tasks`
+//! that a signer the community knows is charged instead. The per-member
+//! relationship publish limiter is covered in `relationships.rs`, where a
+//! signed publish can be built.
+
+mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -17,6 +21,7 @@ use tower::ServiceExt;
 use vta_sdk::error::VtaError;
 use vta_sdk::rate_limit::{RateLimitSource, SOURCE_HEADER};
 use vtc_service::test_support::TestVtc;
+use vti_rooms_dtg::test_support::Party;
 
 /// Post `uri` until the governor refuses, returning the refusal. The governor
 /// allows a burst of 10, so 40 sequential in-memory requests always trip it.
@@ -130,4 +135,65 @@ async fn unauth_governor_refusal_on_auth_challenge_carries_the_contract() {
     )
     .await;
     assert_unauth_contract(res).await;
+}
+
+const CONFIG_SHOW: &str = "https://trusttasks.org/spec/config/show/0.1";
+
+/// Post `count` fresh documents signed by `from`, all from one address, and
+/// return the status of each.
+async fn signed_from_one_address(vtc: &TestVtc, from: &Party, count: usize) -> Vec<StatusCode> {
+    let peer = std::net::SocketAddr::from(([192, 0, 2, 77], 40_000));
+    let mut statuses = Vec::with_capacity(count);
+    for _ in 0..count {
+        let doc = common::signed::signed(from, CONFIG_SHOW, json!({})).await;
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/v1/trust-tasks")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(peer));
+        let res = vtc.router.clone().oneshot(req).await.unwrap();
+        statuses.push(res.status());
+        if res.status() == StatusCode::TOO_MANY_REQUESTS {
+            assert_unauth_contract(res).await;
+            break;
+        }
+    }
+    statuses
+}
+
+/// A console's reads are signed Trust Tasks: an administrator navigating it
+/// sends far more than the anonymous burst of 10 from one address, and is
+/// charged its own signer bucket (a burst of 60) instead.
+#[tokio::test]
+async fn a_signer_the_community_knows_is_not_held_to_the_anonymous_burst() {
+    let vtc = TestVtc::builder().build().await;
+    let admin = common::signed::admin(&vtc).await;
+    let statuses = signed_from_one_address(&vtc, &admin, 30).await;
+    assert_eq!(statuses.len(), 30);
+    assert!(
+        statuses.iter().all(|s| *s != StatusCode::TOO_MANY_REQUESTS),
+        "an ACL signer was rate limited within its own burst: {statuses:?}"
+    );
+}
+
+/// A signer with no ACL entry buys nothing by signing: minting a DID is free,
+/// so it pays the per-address anonymous governor and is refused at 10.
+#[tokio::test]
+async fn a_signer_the_community_does_not_know_is_refused_at_the_anonymous_burst() {
+    let vtc = TestVtc::builder().build().await;
+    let stranger = Party::new();
+    let statuses = signed_from_one_address(&vtc, &stranger, 30).await;
+    assert_eq!(
+        statuses.len(),
+        11,
+        "ten pass, the eleventh is refused: {statuses:?}"
+    );
+    assert!(
+        statuses[..10]
+            .iter()
+            .all(|s| *s != StatusCode::TOO_MANY_REQUESTS)
+    );
 }

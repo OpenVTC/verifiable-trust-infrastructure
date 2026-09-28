@@ -247,6 +247,9 @@ toml = { workspace = true }
 serde_ignored = { workspace = true }
 tower-http = { workspace = true, features = ["cors", "trace", "timeout"] }
 tower_governor = "0.8"
+# The HTTPS Trust Task door's own limiters (`routing::trust_task_admission`),
+# sharing the per-address one with `tower_governor`'s layer.
+governor = "0.10"
 ipnetwork = { workspace = true }
 mime_guess = { version = "2", optional = true }
 unicode-normalization = { version = "0.1", optional = true }

@@ -1108,14 +1108,7 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // spine refuses a document over its type's limit before parsing it.
         // The route admits the largest any served type accepts, so that check
         // is the one that decides.
-        .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE))
-        .merge(
-            OpenApiRouter::<AppState>::new()
-                .routes(routes!(trust_tasks::dispatch))
-                .layer(DefaultBodyLimit::max(
-                    crate::trust_tasks::size::largest_max_document_bytes(),
-                )),
-        );
+        .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
 
     // One extractor covers both cases: with an empty CIDR list
     // `TrustedProxyKeyExtractor` trusts nothing and so keys on the socket
@@ -1130,9 +1123,31 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
             .finish()
             .expect("governor config values are static and non-zero"),
     );
-    let unauth_router = unauth_router.layer(
-        GovernorLayer::new(cfg).error_handler(crate::routing::rate_limit::governor_error_response),
+    // `/trust-tasks` is not behind the tower layer: it charges a document to
+    // one of several budgets depending on who signed it
+    // (`routing::trust_task_admission`). Anonymous documents still pay this
+    // governor's own limiter state, so an address has one anonymous budget
+    // across the whole chain, not one here and another on `/trust-tasks`.
+    let limits = crate::routing::trust_task_admission::TrustTaskLimits::new(
+        cfg.limiter().clone(),
+        TrustedProxyKeyExtractor::new(trust_xff_cidrs.to_vec()),
     );
+    let unauth_router = unauth_router
+        .layer(
+            GovernorLayer::new(cfg)
+                .error_handler(crate::routing::rate_limit::governor_error_response),
+        )
+        .merge(
+            OpenApiRouter::<AppState>::new()
+                .routes(routes!(trust_tasks::dispatch))
+                .layer(axum::middleware::from_fn_with_state(
+                    limits,
+                    crate::routing::trust_task_admission::client_address,
+                ))
+                .layer(DefaultBodyLimit::max(
+                    crate::trust_tasks::size::largest_max_document_bytes(),
+                )),
+        );
     match synth_connect_info {
         Some(layer) => unauth_router.layer(layer),
         None => unauth_router,
