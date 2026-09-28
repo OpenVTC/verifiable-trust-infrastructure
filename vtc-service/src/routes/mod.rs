@@ -1297,9 +1297,7 @@ mod openapi_tests {
             "/v1/members/{did}",
             "/v1/join-requests",
             "/v1/policies",
-            "/v1/rooms",
             "/v1/credentials/endorsements",
-            "/v1/schemas",
             "/v1/relationships",
             "/v1/install/claim/start",
         ] {
@@ -1355,6 +1353,16 @@ mod openapi_tests {
             "/v1/invitations/{id}",
             "/v1/invitations/deliver",
             "/v1/endorsement-types",
+            "/v1/community/join-discovery",
+            "/v1/join-requests/query",
+            "/v1/join-requests/{id}/vetting",
+            "/v1/relationships/{id}/suspend",
+            "/v1/relationships/{id}/restore",
+            "/v1/rooms",
+            "/v1/schemas",
+            "/v1/schemas/accepts",
+            "/v1/schemas/accepts/{id}",
+            "/v1/schemas/{type_uri}",
         ] {
             assert!(!paths.contains_key(p), "{p} is a signed document only");
         }
