@@ -308,6 +308,20 @@ pub struct AppState {
     /// Design note `tsp-relationship-recovery.md`, D6.
     #[cfg(feature = "tsp")]
     pub tsp_recovery: Arc<affinidi_messaging_sdk::RecoveryCoordinator>,
+    /// The durable TSP relationship store, over the (encrypted) `relationships`
+    /// keyspace, for what the ATM's trait object cannot do: stamp a pair's
+    /// last-active time on a successful round trip and read it back (D5), which
+    /// the outbound path uses to re-invite a peer idle long enough to have lost
+    /// its half, and the startup sweep uses to evict. The ATM holds its own
+    /// instance over the same keyspace; neither caches, so they agree.
+    #[cfg(feature = "tsp")]
+    pub tsp_relationships: Arc<crate::messaging::tsp_relationship_store::VtaRelationshipStore>,
+    /// Peers an idle-relationship re-invite is in flight to, so concurrent
+    /// sends produce one invite. Deliberately not `tsp_recovery`: a proactive
+    /// re-invite is not a recovery, and counting it as one would falsify the D8
+    /// recovery metrics.
+    #[cfg(feature = "tsp")]
+    pub tsp_idle_reinvites: crate::operations::outbound::IdleReinvites,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
     pub tee: Option<TeeContext>,
@@ -641,6 +655,12 @@ pub async fn build_app_state(
         tsp_recovery: Arc::new(affinidi_messaging_sdk::RecoveryCoordinator::new(
             affinidi_messaging_sdk::BackoffPolicy::default(),
         )),
+        #[cfg(feature = "tsp")]
+        tsp_relationships: vti_common::relationship_store::build_relationship_store(
+            apply_encryption(store.keyspace(crate::keyspaces::RELATIONSHIPS)?),
+        ),
+        #[cfg(feature = "tsp")]
+        tsp_idle_reinvites: Default::default(),
         jwt_keys: auth.jwt_keys,
         atm: auth.atm,
         tee: tee_context,
@@ -1319,15 +1339,8 @@ pub async fn run(
                     // reconnect and would leak a task per reconnect.
                     #[cfg(feature = "tsp")]
                     {
-                        let sweep_store = std::sync::Arc::new(
-                            affinidi_messaging_sdk::PersistentRelationshipStore::new(
-                                crate::messaging::tsp_relationship_store::KeyspaceRelationshipKv::new(
-                                    relationships_ks.clone(),
-                                ),
-                            ),
-                        );
                         tokio::spawn(crate::messaging::tsp_relationship_store::maintenance_loop(
-                            sweep_store,
+                            app_state.tsp_relationships.clone(),
                         ));
                         tokio::spawn(
                             crate::messaging::tsp_relationship_store::drop_telemetry_loop(

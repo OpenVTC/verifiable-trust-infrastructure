@@ -174,7 +174,7 @@ use affinidi_messaging_sdk::RecoveryAction;
 
 /// The outcome of one send-and-await-reply over TSP.
 #[cfg(feature = "tsp")]
-enum TspAttempt {
+pub(crate) enum TspAttempt {
     /// The peer answered; the reply document.
     Reply(Value),
     /// No answer within the window — the §7.2.2 silent-drop signature.
@@ -192,6 +192,67 @@ enum TspAttempt {
 #[cfg(feature = "tsp")]
 fn resend_after_reform(type_uri: &str) -> bool {
     vta_sdk::retry_safety::retry_safety(type_uri).is_some_and(|c| c.is_blind_retry_safe())
+}
+
+/// How long a relationship may go without a successful round trip before the
+/// next send re-invites alongside its payload rather than trusting it.
+///
+/// # Why a send re-invites at all
+///
+/// A peer that lost its half (a data wipe, an operator reset, a build that did
+/// not persist relationships) drops our next frame silently — §7.2.2 forbids it
+/// from saying so (design note C2) — and we learn of it only when
+/// [`TSP_REPLY_TIMEOUT_SECS`] expires and D6 recovers. That costs every such
+/// first request a full reply window, which any caller with a budget near it
+/// reports as a failure while the task in fact succeeds. A peer loses state
+/// while quiet far more often than mid-conversation, so a relationship that has
+/// been idle this long is re-asserted up front: our half is reset and the
+/// payload goes out with a fresh invite, which a peer that kept its half simply
+/// re-accepts (D2). Nothing is signalled back, so C2 still holds.
+///
+/// An hour keeps the extra invite rare on a busy pair while covering the gap a
+/// restart or reset leaves.
+#[cfg(feature = "tsp")]
+const TSP_IDLE_REESTABLISH_MS: u64 = 60 * 60 * 1000;
+
+/// Peers an idle-relationship re-invite is currently in flight to — the
+/// single-flight for [`TspSender::send_after_idle_reestablish`]. Shared through
+/// `AppState`, because a [`TspSender`] is built per request.
+#[cfg(feature = "tsp")]
+#[derive(Clone, Default)]
+pub struct IdleReinvites(std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>);
+
+#[cfg(feature = "tsp")]
+impl IdleReinvites {
+    /// Claim `peer`, or `None` if another send already holds it. The claim is
+    /// released when the guard drops, on every path out of the send.
+    fn claim(&self, peer: &str) -> Option<IdleReinviteClaim> {
+        let mut peers = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        peers.insert(peer.to_string()).then(|| IdleReinviteClaim {
+            peers: self.clone(),
+            peer: peer.to_string(),
+        })
+    }
+}
+
+#[cfg(feature = "tsp")]
+struct IdleReinviteClaim {
+    peers: IdleReinvites,
+    peer: String,
+}
+
+#[cfg(feature = "tsp")]
+impl Drop for IdleReinviteClaim {
+    fn drop(&mut self) {
+        self.peers
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.peer);
+    }
 }
 
 /// Wall-clock milliseconds for the recovery coordinator's clock.
@@ -212,6 +273,11 @@ pub struct TspSender {
     /// (an `Arc`) rather than rebuilt per sender so concurrent sends to one peer
     /// coalesce onto a single re-invite.
     recovery: std::sync::Arc<affinidi_messaging_sdk::RecoveryCoordinator>,
+    /// The durable relationship store, for last-active stamps (D5): written on
+    /// every reply, read to decide whether a send should re-invite first.
+    relationships: std::sync::Arc<crate::messaging::tsp_relationship_store::VtaRelationshipStore>,
+    /// Single-flight for idle re-invites, shared through `AppState`.
+    idle_reinvites: IdleReinvites,
     /// How long to wait for a reply before treating a send as a §7.2.2 drop.
     /// A field rather than the bare [`TSP_REPLY_TIMEOUT_SECS`] const only so a
     /// test can shorten it — production always gets the const default.
@@ -229,6 +295,8 @@ impl TspSender {
             transport: state.tsp_transport()?,
             replies: state.pending_replies.clone(),
             recovery: state.tsp_recovery.clone(),
+            relationships: state.tsp_relationships.clone(),
+            idle_reinvites: state.tsp_idle_reinvites.clone(),
             reply_timeout: std::time::Duration::from_secs(TSP_REPLY_TIMEOUT_SECS),
         })
     }
@@ -298,7 +366,10 @@ impl TspSender {
         }
         match tokio::time::timeout(self.reply_timeout, waiting).await {
             Ok(Ok(reply)) => match serde_json::to_value(reply) {
-                Ok(v) => TspAttempt::Reply(v),
+                Ok(v) => {
+                    self.mark_active(recipient).await;
+                    TspAttempt::Reply(v)
+                }
                 Err(e) => TspAttempt::SendFailed(format!("re-serialise the reply: {e}")),
             },
             Ok(Err(_)) => {
@@ -310,6 +381,95 @@ impl TspSender {
                 TspAttempt::Timeout
             }
         }
+    }
+
+    /// Stamp the relationship with `recipient` as active now (D5). Called only
+    /// on a correlated reply — a broken relationship must age out, not refresh
+    /// itself on every failed attempt. A failed write costs only an extra
+    /// re-invite on the next send, so it is logged, not surfaced.
+    async fn mark_active(&self, recipient: &str) {
+        let Some(our) = self.transport.our_vid() else {
+            return;
+        };
+        if let Err(e) = self.relationships.touch(&our, recipient, now_ms()).await {
+            tracing::debug!(peer = recipient, error = %e, "could not stamp TSP relationship activity");
+        }
+    }
+
+    /// Whether the next send to `recipient` should re-invite first: our half is
+    /// established, but no round trip has succeeded within
+    /// [`TSP_IDLE_REESTABLISH_MS`] — or none was ever recorded, which covers every
+    /// relationship formed before this stamp existed. A relationship that is not
+    /// established needs nothing here: the ordinary send already invites.
+    pub(crate) async fn idle_reestablish_due(&self, recipient: &str) -> bool {
+        use affinidi_messaging_sdk::protocols::tsp::RelationshipStore as _;
+        let Some(our) = self.transport.our_vid() else {
+            return false;
+        };
+        match self.relationships.get(&our, recipient).await {
+            Ok(affinidi_messaging_sdk::protocols::tsp::RelationshipState::Bidirectional) => {}
+            _ => return false,
+        }
+        match self.relationships.last_active(&our, recipient).await {
+            Ok(Some(at_ms)) => now_ms().saturating_sub(at_ms) > TSP_IDLE_REESTABLISH_MS,
+            Ok(None) => true,
+            // Unreadable: do what we would have done without the stamp.
+            Err(_) => false,
+        }
+    }
+
+    /// The first attempt at a send: re-inviting alongside it when the
+    /// relationship has been idle past [`TSP_IDLE_REESTABLISH_MS`], the ordinary
+    /// routed send otherwise. A `Timeout` from either goes on to D6.
+    pub(crate) async fn first_attempt(
+        &self,
+        recipient: &str,
+        peer_mediator: Option<&str>,
+        thread: &str,
+        framed: &[u8],
+    ) -> TspAttempt {
+        if self.idle_reestablish_due(recipient).await {
+            self.send_after_idle_reestablish(recipient, peer_mediator, thread, framed)
+                .await
+        } else {
+            self.send_and_await(recipient, peer_mediator, thread, framed, false)
+                .await
+        }
+    }
+
+    /// Send to a peer idle past [`TSP_IDLE_REESTABLISH_MS`]: reset our half and
+    /// send `framed` with a fresh invite. One send per peer does this at a time;
+    /// a concurrent one, or one whose reset fails, goes out the ordinary way —
+    /// and if the peer did lose its half, D6 recovers that one as before.
+    ///
+    /// This is the first send of `framed`, not a resend, so retry safety does not
+    /// apply. It is not a D6 recovery either, and does not touch that
+    /// coordinator or its metrics. Direct rather than nested for a cross-mediator
+    /// peer, as on the D6 resend: the SDK has no nested re-establishing send.
+    async fn send_after_idle_reestablish(
+        &self,
+        recipient: &str,
+        peer_mediator: Option<&str>,
+        thread: &str,
+        framed: &[u8],
+    ) -> TspAttempt {
+        let Some(_claim) = self.idle_reinvites.claim(recipient) else {
+            return self
+                .send_and_await(recipient, peer_mediator, thread, framed, false)
+                .await;
+        };
+        if let Err(e) = self.transport.reset_relationship(recipient).await {
+            tracing::debug!(peer = recipient, error = %e, "could not reset an idle TSP relationship");
+            return self
+                .send_and_await(recipient, peer_mediator, thread, framed, false)
+                .await;
+        }
+        tracing::info!(
+            peer = recipient,
+            "re-inviting an idle TSP relationship alongside the request"
+        );
+        self.send_and_await(recipient, None, thread, framed, true)
+            .await
     }
 
     /// D6 self-repair on a reply-timeout (design note `tsp-relationship-recovery.md`).
@@ -810,7 +970,7 @@ impl Outbound<'_> {
         let framed = vta_sdk::tsp_binding::wrap_envelope(&body);
 
         match tsp
-            .send_and_await(recipient, Some(peer_mediator), &thread, &framed, false)
+            .first_attempt(recipient, Some(peer_mediator), &thread, &framed)
             .await
         {
             TspAttempt::Reply(v) => Ok(v),
@@ -1376,6 +1536,30 @@ mod tests {
         assert!(
             !DIDCOMM_MESSAGE_TYPE.starts_with("https://trusttasks.org/spec/"),
             "a `spec/` URI here is a task type on the wire: {DIDCOMM_MESSAGE_TYPE}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "tsp"))]
+mod idle_reinvite_tests {
+    use super::IdleReinvites;
+
+    #[test]
+    fn one_idle_reinvite_per_peer_at_a_time_and_released_on_drop() {
+        let reinvites = IdleReinvites::default();
+        let first = reinvites.claim("did:example:hosting").expect("free peer");
+        assert!(
+            reinvites.claim("did:example:hosting").is_none(),
+            "a second concurrent send to the same peer goes out the ordinary way"
+        );
+        assert!(
+            reinvites.claim("did:example:other").is_some(),
+            "other peers are independent"
+        );
+        drop(first);
+        assert!(
+            reinvites.claim("did:example:hosting").is_some(),
+            "the claim is released when the send finishes, whichever way"
         );
     }
 }
