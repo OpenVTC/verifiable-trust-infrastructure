@@ -6408,7 +6408,7 @@ mod config_pair_tests {
     /// Both bearer routes take `AdminAuth`, which a context-scoped admin
     /// satisfies, so this door must admit them too.
     #[tokio::test]
-    async fn a_context_scoped_admin_may_export_and_import() {
+    async fn a_context_scoped_admin_may_export_but_not_import() {
         let fix = fixture().await;
         let document = changed_document(&fix.vtc).await;
 
@@ -6416,10 +6416,13 @@ mod config_pair_tests {
         let out = dispatch(&fix.vtc, &doc).await;
         assert!(
             out.status.is_success(),
-            "a context-scoped admin passes AdminAuth and must pass here: {}",
+            "a context-scoped admin may export: {}",
             String::from_utf8_lossy(&out.body)
         );
 
+        // An import writes community-wide configuration, so it needs an
+        // unrestricted admin (#1829): a context admin is refused and nothing
+        // is stored.
         let doc = signed(
             &fix.scoped_admin,
             CONFIG_IMPORT_TYPE,
@@ -6427,12 +6430,13 @@ mod config_pair_tests {
         )
         .await;
         let out = dispatch(&fix.vtc, &doc).await;
-        assert!(
-            out.status.is_success(),
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("permissionDenied"),
             "{}",
             String::from_utf8_lossy(&out.body)
         );
-        assert_eq!(stored_name(&fix.vtc).await, "Imported Community");
+        assert_ne!(stored_name(&fix.vtc).await, "Imported Community");
     }
 
     // ─── the operation's own refusals ────────────────────────────────────
