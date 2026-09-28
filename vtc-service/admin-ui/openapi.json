@@ -1156,7 +1156,8 @@
         "tags": [
           "auth"
         ],
-        "summary": "`DELETE /v1/auth/sessions/{session_id}` — revoke a single session\n(caller's own, or any if admin).",
+        "summary": "`DELETE /v1/auth/sessions/{session_id}` — revoke one session\n(`auth/revoke-session/0.2`, the `sessionId` form).",
+        "description": "The caller's own session, or one whose subject the caller could withdraw\nthe access of ([`may_end_sessions_of`]). A session that does not exist, was\nalready revoked, or belongs to a subject outside the caller's authority is\nanswered identically — `revokedCount: 0`, the form the specification\nrecommends — so a retry succeeds and the answer says nothing about sessions\nthe caller does not control.",
         "operationId": "revoke_session",
         "parameters": [
           {
@@ -1171,7 +1172,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Session revoked",
+            "description": "`revokedCount` 1 when the session was ended; 0 when there was no such session the caller may end",
             "content": {
               "application/json": {
                 "schema": {
@@ -1182,12 +1183,6 @@
           },
           "401": {
             "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Cannot revoke another user's session"
-          },
-          "404": {
-            "description": "Session not found"
           }
         },
         "security": [
