@@ -2,6 +2,24 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.26.1...pnm-cli-v0.26.2) — 2026-09-28
+
+
+### Fixed
+
+- **pnm**: The persona-holder hint prints a pnm acl update that runs ([#1811](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1811))
+
+The persona refusal and `pnm persona --help` both told operators to run
+  `pnm acl update --did <did> --capabilities persona-holder`. `acl update`
+  takes the entry's DID as a positional argument and has no `--did` flag, so
+  the command offered as the fix failed to parse.
+
+  Both now print `pnm acl update <did> --capabilities persona-holder`. A new
+  test parses that form and checks that the `--did` form is rejected, so a
+  change to the arguments fails in CI rather than for an operator.
+
+
+
 ## [0.26.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.26.0...pnm-cli-v0.26.1) — 2026-09-27
 
 
