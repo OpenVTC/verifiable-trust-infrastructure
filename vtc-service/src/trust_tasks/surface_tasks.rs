@@ -471,16 +471,16 @@ async fn handle_schemas_register(
 /// schema, not the schema itself.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SchemaSummary {
-    type_uri: String,
+pub(crate) struct SchemaSummary {
+    pub(crate) type_uri: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    dtg_type: Option<String>,
-    kind: crate::schemas::SchemaKind,
+    pub(crate) dtg_type: Option<String>,
+    pub(crate) kind: crate::schemas::SchemaKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    has_credential_schema: bool,
-    created_at: chrono::DateTime<chrono::Utc>,
-    created_by_did: String,
+    pub(crate) description: Option<String>,
+    pub(crate) has_credential_schema: bool,
+    pub(crate) created_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) created_by_did: String,
 }
 
 async fn handle_schemas_list(
