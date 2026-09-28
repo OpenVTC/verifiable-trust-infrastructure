@@ -171,7 +171,13 @@ sends, `credential-exchange/{request,present}/0.1`, which were bare DIDComm
 arms beside the envelope until then — bring it to forty-six, and `acl/update`
 and `acl/revoke` (2026-09-26, with `acl/{show,list}`, which declare no proof
 and are refused unsigned anyway because they authorize from the signer's ACL
-row) to forty-eight. The
+row) to forty-eight. The four step-up passkey tasks that declare a proof
+bring it to fifty-two, and the eight proof-REQUIRED member-facing verbs
+(2026-09-28, `trust_tasks::member_tasks`: `members/{renew,rotate-challenge,
+rotate}`, `members/personhood/revoke`, `relationships/{publish,revoke}`,
+`endorsements/{issue,revoke}`) to sixty; `relationships/list` and
+`endorsements/{list,show}`, served with them, declare no proof and are refused
+unsigned anyway. The
 count is asserted by
 `the_dispatched_set_declares_the_proofs_the_design_note_records`, so a batch
 that lands without updating this note fails a test.
@@ -602,6 +608,25 @@ implementation of the manifest and chunk checks; and the VTC dispatches all seve
 largest whose `put-chunk` document fits the 64 KiB this door accepts before
 checking a proof. `vtc/backup/import/0.1` stays on its bearer route for a
 community small enough to fit one request.
+
+**Member-facing verbs** (2026-09-28). Renewal, DID rotation, personhood
+revocation, `relationships/{list,publish,revoke}` and `endorsements/{issue,
+list,show,revoke}` were bound to published specifications but served only on
+HTTPS REST, so a member on TSP or DIDComm could join and then do none of them.
+`trust_tasks::member_tasks` serves all eleven on the spine, each calling the
+operation its route calls. Authority is the verified signer's own current ACL
+row (an expired one refuses), or for the administrative capacities a
+console-key delegation through `admin_signer`: the self verbs take the signer
+as the member; personhood revoke admits the subject or an admin; relationship
+revoke the edge's issuer or an admin, anyone else being told `notFound` as the
+specification requires; the endorsement verbs an `Admin` or `Issuer` row. The
+bearer routes stay mounted. Because a VTC bearer session is minted only for an
+admin row, those routes were in practice admin-only; this door admits the
+member or issuer the specifications and the handlers name. Two limits: a
+pairwise edge is still retracted only on the bearer route (its
+`VrcRevokeAuthorization` binds to a REST session, and `revoke/0.1` carries no
+authorization member), and `endorsements/revoke`'s `reason` is accepted and not
+persisted (the audit event has no member for it).
 
 **Next batch.** `vtc/admin/invites/{create,revoke}` are the same admin-from-ACL
 shape, and become available once the `vtc/invitations/*` work owned elsewhere

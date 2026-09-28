@@ -27,7 +27,8 @@ use uuid::Uuid;
 
 pub use storage::{
     ENDORSEMENTS_PREFIX, count_live_by_type, delete_endorsement, endorsements_by_type,
-    endorsements_for_subject, get_endorsement, list_endorsements, mark_revoked, store_endorsement,
+    endorsements_for_subject, get_endorsement, list_endorsements, list_endorsements_matching,
+    mark_revoked, store_endorsement,
 };
 
 /// A stored custom endorsement. The accompanying VEC body

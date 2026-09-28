@@ -88,7 +88,19 @@ pub async fn renew(
     auth: AuthClaims,
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<RenewResponse>), TaskError> {
-    let caller_did = auth.did.clone();
+    Ok((StatusCode::OK, Json(renew_inner(&state, &auth.did).await?)))
+}
+
+/// Renew `caller_did`'s VMC + role VEC — the operation behind both doors: the
+/// bearer route above and the `vtc/members/renew/0.1` Trust Task
+/// (`trust_tasks::member_tasks`), which authorizes from the document's proof
+/// signer. The member check is here, not in either door, so a DID with no ACL
+/// or member row gets `renew:notMember` whichever way it asked.
+pub(crate) async fn renew_inner(
+    state: &AppState,
+    caller_did: &str,
+) -> Result<RenewResponse, TaskError> {
+    let caller_did = caller_did.to_string();
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -164,7 +176,7 @@ pub async fn renew(
     // 3. Re-evaluate `personhood.rego` against the Member's
     //    persisted state (Phase 4 M4.2.2).
     let prior_personhood = member.personhood;
-    let policy_allow = evaluate_personhood(&state, &member).await?;
+    let policy_allow = evaluate_personhood(state, &member).await?;
 
     // M4.2.2: when the policy flips a previously-asserted
     // member's flag to `false`, branch on the operator's
@@ -281,18 +293,15 @@ pub async fn renew(
         "membership renewed"
     );
 
-    Ok((
-        StatusCode::OK,
-        Json(RenewResponse {
-            did: caller_did,
-            vmc: serde_json::to_value(&vmc)
-                .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
-            role_vec: serde_json::to_value(&role_vec)
-                .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
-            personhood,
-            personhood_changed,
-        }),
-    ))
+    Ok(RenewResponse {
+        did: caller_did,
+        vmc: serde_json::to_value(&vmc)
+            .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
+        role_vec: serde_json::to_value(&role_vec)
+            .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
+        personhood,
+        personhood_changed,
+    })
 }
 
 /// Run the active `personhood.rego` against the renewal-time
