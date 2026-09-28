@@ -1,8 +1,15 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { RegistryPreview } from "@/plugins/vetting/RegistryPreview";
-import { mockFetch, renderWithProviders } from "@/test/render";
+import { mockFetch, renderWithProviders, taskRoute } from "@/test/render";
+
+// The listing is a signed read; the test browser holds no key, so it goes
+// through the unsigned stand-in to the `mockFetch` table.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+}));
 
 const LIST_TASK = "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1";
 
@@ -31,13 +38,9 @@ type ListRequest = { country?: string; cursor?: string };
 describe("RegistryPreview", () => {
   it("sends the filters an applicant would, with the country in upper case", async () => {
     const requests = mockFetch([
-      {
-        method: "POST",
-        path: "/v1/vetting/vetters/list",
-        body: ({ body }) => ({
-          vetters: (body as ListRequest).country === "AT" ? [CAROL] : [],
-        }),
-      },
+      taskRoute(LIST_TASK, (payload) => ({
+        vetters: (payload as ListRequest).country === "AT" ? [CAROL] : [],
+      })),
     ]);
     renderWithProviders(<RegistryPreview />);
 
@@ -52,17 +55,14 @@ describe("RegistryPreview", () => {
     expect(screen.getByText("Vienna, AT")).toBeTruthy();
     const last = requests.at(-1)!;
     expect(last.body).toEqual({
-      language: "de",
-      country: "AT",
-      method: "video",
-      limit: 25,
+      type: LIST_TASK,
+      payload: { language: "de", country: "AT", method: "video", limit: 25 },
     });
-    expect(last.headers.get("Trust-Task")).toBe(LIST_TASK);
   });
 
   it("names a malformed filter and does not send it", async () => {
     const requests = mockFetch([
-      { method: "POST", path: "/v1/vetting/vetters/list", body: { vetters: [] } },
+      taskRoute(LIST_TASK, { vetters: [] }),
     ]);
     renderWithProviders(<RegistryPreview />);
     await screen.findByText("No vetter is listed");
@@ -87,14 +87,11 @@ describe("RegistryPreview", () => {
 
   it("pages with the cursor the listing returned", async () => {
     const requests = mockFetch([
-      {
-        method: "POST",
-        path: "/v1/vetting/vetters/list",
-        body: ({ body }) =>
-          (body as ListRequest).cursor === "page-2"
-            ? { vetters: [{ ...CAROL, displayName: "Zed" }] }
-            : { vetters: [CAROL], nextCursor: "page-2" },
-      },
+      taskRoute(LIST_TASK, (payload) =>
+        (payload as ListRequest).cursor === "page-2"
+          ? { vetters: [{ ...CAROL, displayName: "Zed" }] }
+          : { vetters: [CAROL], nextCursor: "page-2" },
+      ),
     ]);
     renderWithProviders(<RegistryPreview />);
 
@@ -103,7 +100,7 @@ describe("RegistryPreview", () => {
     expect(await screen.findByText("Zed")).toBeTruthy();
     expect(screen.getByText("Page 2")).toBeTruthy();
     await waitFor(() =>
-      expect((requests.at(-1)!.body as ListRequest).cursor).toBe("page-2"),
+      expect((requests.at(-1)!.body as { payload: ListRequest }).payload.cursor).toBe("page-2"),
     );
   });
 });

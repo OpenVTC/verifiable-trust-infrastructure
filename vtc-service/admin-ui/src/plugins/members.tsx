@@ -51,27 +51,22 @@ import {
   fetchMemberRelationships,
   fetchRelationshipsGraph,
   getJson,
-  patchJson,
   postJson,
-  signedOrBearer,
+  postSignedRead,
+  postSignedTrustTask,
   type MemberRelationship,
   type RelationshipsGraph,
 } from "@/lib/api";
 import { CopyButton } from "@/components/CopyButton";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
-import { stepUpSession } from "@/lib/step-up";
+import { changeAclRole } from "@/lib/acl";
+import { explainConsent, gestureFromConfirm, type ConfirmGesture } from "@/lib/signed-act";
 
 const TRUST_TASK_LIST =
   "https://trusttasks.org/spec/vtc/members/list/0.1";
-// `members/show/1.0` covers GET + PATCH + DELETE on `/members/{did}`
-// today (TrustTaskRouter limitation). Server-side resolves the
-// actual operation by method; the header just needs to match the
-// router's registered task.
 const TRUST_TASK_SHOW =
   "https://trusttasks.org/spec/vtc/members/show/0.1";
-// DELETE /members/{did} is its own canonical task now that each verb on
-// the shared mount carries its own descriptor.
 const TRUST_TASK_ADMIN_REMOVE =
   "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 // Promotion is a **role transition**, so it goes to the task defined for role
@@ -80,9 +75,7 @@ const TRUST_TASK_ADMIN_REMOVE =
 // used to carry bounded that one route while `acl/change-role` reached the
 // same ACL row with none. The gate now sits on the transition — a host
 // invariant in the role-change ceremony — and the passkey gesture below is
-// what satisfies it.
-const TRUST_TASK_CHANGE_ROLE =
-  "https://trusttasks.org/spec/acl/change-role/0.1";
+// what satisfies it. It is sent by `changeAclRole` (`lib/acl.ts`).
 const TRUST_TASK_REMOVED =
   "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const TRUST_TASK_PURGE =
@@ -160,11 +153,9 @@ function isLiveGrant(grant: EndorsementRow): boolean {
 }
 
 async function grantVetterRole(did: string): Promise<VetterGrantResponse> {
-  return postJson<VetterGrantResponse>(
-    "/v1/vetting/vetters",
-    { memberDid: did },
-    { trustTask: TRUST_TASK_VETTER_GRANT },
-  );
+  return postSignedTrustTask<VetterGrantResponse>(TRUST_TASK_VETTER_GRANT, {
+    memberDid: did,
+  });
 }
 
 async function revokeVetterRole(endorsementId: string): Promise<void> {
@@ -196,22 +187,10 @@ async function fetchMember(did: string): Promise<MemberRow> {
 }
 
 /** The membership pair's bodies for one member. Admin-only, and audited
- * server-side: every call records that an administrator read them.
- *
- * One of the three `#1681` tasks this console can now author as a **signed
- * document** (#1684). `signedOrBearer` sends it that way when this browser
- * holds an enrolled console key, and over the transitional bearer route
- * otherwise; the daemon runs the same inner function either way. */
+ * server-side: every call records that an administrator read them. A signed
+ * read, from this browser's console key. */
 async function fetchMemberCredentials(did: string): Promise<MemberCredentials> {
-  return signedOrBearer<MemberCredentials>(
-    TRUST_TASK_CREDENTIALS,
-    { did },
-    () =>
-      getJson<MemberCredentials>(
-        `/v1/members/${encodeURIComponent(did)}/credentials`,
-        { trustTask: TRUST_TASK_CREDENTIALS },
-      ),
-  );
+  return postSignedRead<MemberCredentials>(TRUST_TASK_CREDENTIALS, { did });
 }
 
 /** Ask an active member to issue + send their reciprocal VMC (member →
@@ -228,18 +207,17 @@ async function requestMemberVmc(did: string): Promise<RequestVmcResponse> {
 async function promoteToAdmin(args: {
   did: string;
   fromRole: string;
+  confirmGesture: ConfirmGesture;
 }): Promise<void> {
-  // Step up first, then promote. Doing it unconditionally (rather than
-  // promoting, catching `step_up_required`, and retrying) keeps the operator's
-  // passkey gesture tied to the click that asked for it — which is the whole
-  // point of requiring a *recent* second factor.
-  await stepUpSession();
+  // A signed `acl/change-role`. The VTC asks for a passkey gesture bound to
+  // this one promotion, which the operator confirms as its own click.
   // `fromRole` is a compare-and-swap guard, not decoration: the role we render
   // is a read, and the daemon refuses the change if the row has moved since.
-  await patchJson<unknown>(
-    `/v1/acl/${encodeURIComponent(args.did)}`,
-    { fromRole: args.fromRole, toRole: "admin" },
-    { trustTask: TRUST_TASK_CHANGE_ROLE },
+  await explainConsent(
+    changeAclRole(
+      { subject: args.did, fromRole: args.fromRole, toRole: "admin" },
+      args.confirmGesture,
+    ),
   );
 }
 
@@ -247,26 +225,12 @@ async function adminRemove(args: {
   did: string;
   reason: string;
 }): Promise<void> {
-  // Signed when this browser can (the document carries `did` in its payload —
-  // there is no path segment to put it in), bearer otherwise.
-  //
-  // The bearer arm's own quirk, unchanged: DELETE accepts an optional
-  // `{reason}` body, and `/members/{did}` collapses GET + PATCH + DELETE under
-  // the single `members/show/0.1` Trust Task at the router (per-method
-  // selectors are deferred infra), so the DELETE must send the admin-remove
-  // task while the path is shared. The signed door has no such constraint: the
-  // document's `type` is the routing key.
-  await signedOrBearer<unknown>(
+  // A signed document (the payload carries `did`). `reason` is omitted rather
+  // than sent as `null` — the payload is `deny_unknown_fields` with `reason`
+  // an optional string, so `null` is a parse failure rather than "no reason".
+  await postSignedTrustTask<unknown>(
     TRUST_TASK_ADMIN_REMOVE,
-    // `reason` is omitted rather than sent as `null` — the payload is
-    // `deny_unknown_fields` with `reason` an optional string, so `null` is a
-    // parse failure rather than "no reason".
     args.reason ? { did: args.did, reason: args.reason } : { did: args.did },
-    () =>
-      deleteJson<unknown>(`/v1/members/${encodeURIComponent(args.did)}`, {
-        trustTask: TRUST_TASK_ADMIN_REMOVE,
-        body: { reason: args.reason || null },
-      }),
   );
 }
 
@@ -278,15 +242,9 @@ async function fetchRemovedMembers(): Promise<RemovedMemberRow[]> {
 }
 
 async function purgeMember(did: string): Promise<void> {
-  // Super-admin either way. Over the signed door the check is `ActScope`
-  // against the ACL row resolved *now*, rather than the scope copied into the
-  // JWT when the session began — so an operator demoted since sign-in is
-  // refused here and not there.
-  await signedOrBearer<unknown>(TRUST_TASK_PURGE, { did }, () =>
-    deleteJson<unknown>(`/v1/members/${encodeURIComponent(did)}/purge`, {
-      trustTask: TRUST_TASK_PURGE,
-    }),
-  );
+  // Super-admin only, checked against the signer's ACL row resolved *now*
+  // — so an operator demoted since sign-in is refused.
+  await postSignedTrustTask<unknown>(TRUST_TASK_PURGE, { did });
 }
 
 /// Departed members whose Member row was kept as a tombstone (Tombstone /
@@ -714,8 +672,10 @@ function MemberDetail() {
       e.halves.some((h) => h.issuerDid !== decoded && h.subjectDid === decoded),
   );
 
+  const confirmGesture = gestureFromConfirm(confirm);
   const promoteMutation = useMutation({
-    mutationFn: promoteToAdmin,
+    mutationFn: (args: { did: string; fromRole: string }) =>
+      promoteToAdmin({ ...args, confirmGesture }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["member", decoded] });
       void queryClient.invalidateQueries({ queryKey: ["members"] });

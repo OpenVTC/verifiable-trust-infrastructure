@@ -1,3 +1,4 @@
+import { ACL_LIST_TASK } from "@/lib/acl";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -61,7 +62,8 @@ describe("Repos plugin — overview", () => {
     // endpoint — no bearer view serves them any more.
     const reads = requests.filter((r) => r.url === "/v1/trust-tasks");
     const types = new Set(reads.map((r) => (r.body as { type: string }).type));
-    expect(types).toEqual(new Set([TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW]));
+    // …beside the name book's `acl/list`, the console-wide read every page makes.
+    expect(types).toEqual(new Set([TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW, ACL_LIST_TASK]));
     for (const r of reads) expect(r.method).toBe("POST");
     expect(requests.some((r) => /^\/v1\/git-ns\/(namespaces|repos|view|break-glass)/.test(r.url))).toBe(false);
     // The projections are mounted with no binding, and sending one would

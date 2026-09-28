@@ -1,4 +1,5 @@
-//! Integration coverage for `/v1/community/profile`.
+//! Integration coverage for `/v1/community/profile`, and its edit as the
+//! signed `vtc/community/profile/update/0.1` document.
 //!
 //! Exercises the full router stack — Trust-Task header → auth
 //! extractor → handler → community keyspace — through
@@ -10,6 +11,10 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+use vti_common::auth::session::now_epoch;
+use vti_rooms_dtg::test_support::Party;
+
+use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::community::{CommunityProfile, store_profile};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
@@ -120,44 +125,80 @@ async fn get_requires_authentication() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-// ──────────────────────── PUT ────────────────────────
+// ──────────────────────── Update (signed document) ────────────────────────
+//
+// The edit has no REST route: it is `vtc/community/profile/update/0.1`, a
+// signed document at `POST /v1/trust-tasks`, authorized by the signer's ACL
+// row.
 
-#[tokio::test]
-async fn put_requires_admin_role() {
-    let fix = build().await;
-    seed_profile(&fix).await;
-    let token = token_for(&fix, "reader").await;
-    let req = Request::builder()
-        .method("PUT")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_UPDATE_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"name":"Renamed"}"#))
+/// A party holding an ACL row of `role`, to sign as.
+async fn signer(fix: &Fixture, role: VtcRole) -> Party {
+    let who = Party::new();
+    store_acl_entry(
+        &fix.state.acl_ks,
+        &VtcAclEntry {
+            did: who.did.clone(),
+            role,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: now_epoch(),
+            created_by: "test".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    who
+}
+
+/// Send `payload` as a signed profile update from `from`; the reply's status
+/// and payload.
+async fn update(fix: &Fixture, from: &Party, payload: Value) -> (StatusCode, Value) {
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        PROFILE_UPDATE_TASK,
+        payload,
+        &from.did,
+        vtc_service::test_support::TEST_VTC_DID,
+    )
+    .unwrap();
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
         .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .unwrap();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/trust-tasks")
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+        .unwrap();
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    (status, body["payload"].clone())
 }
 
 #[tokio::test]
-async fn put_updates_profile_and_lists_changed_fields() {
+async fn an_update_requires_an_admin_signer() {
+    let fix = build().await;
+    seed_profile(&fix).await;
+    let member = signer(&fix, VtcRole::Member).await;
+    let (status, payload) = update(&fix, &member, json!({ "name": "Renamed" })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{payload}");
+}
+
+#[tokio::test]
+async fn an_update_changes_the_profile_and_lists_changed_fields() {
     let fix = build_with_audit().await;
     seed_profile(&fix).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PUT")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_UPDATE_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(
-            r#"{"name":"Renamed","description":"new","logoUrl":"https://x/y.png"}"#,
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let admin = signer(&fix, VtcRole::Admin).await;
+    let (status, body) = update(
+        &fix,
+        &admin,
+        json!({ "name": "Renamed", "description": "new", "logoUrl": "https://x/y.png" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let changed = body["fieldsChanged"].as_array().unwrap();
     let names: Vec<&str> = changed.iter().map(|v| v.as_str().unwrap()).collect();
     assert!(names.contains(&"name"));
@@ -168,123 +209,76 @@ async fn put_updates_profile_and_lists_changed_fields() {
 }
 
 #[tokio::test]
-async fn put_idempotent_noop_returns_empty_changeset() {
+async fn an_update_to_the_same_value_is_an_empty_changeset_and_needs_no_audit_writer() {
+    // A no-op emits no audit, so it must not be refused without a writer.
     let fix = build().await;
     seed_profile(&fix).await;
-    let token = token_for(&fix, "admin").await;
-    let body = r#"{"name":"Example Community"}"#; // already the value
-    let req = Request::builder()
-        .method("PUT")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_UPDATE_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(body))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let admin = signer(&fix, VtcRole::Admin).await;
+    let (status, body) = update(&fix, &admin, json!({ "name": "Example Community" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["fieldsChanged"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn put_returns_404_when_profile_not_initialised() {
+async fn an_update_before_the_profile_exists_is_refused() {
     let fix = build().await;
-    // No seed_profile call — store is empty.
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PUT")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_UPDATE_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"name":"Renamed"}"#))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let admin = signer(&fix, VtcRole::Admin).await;
+    let (status, payload) = update(&fix, &admin, json!({ "name": "Renamed" })).await;
+    assert!(!status.is_success(), "{payload}");
+    assert!(payload["code"].is_string(), "{payload}");
 }
 
 #[tokio::test]
-async fn put_rejects_oversized_extensions() {
+async fn an_update_with_oversized_extensions_is_refused() {
     let fix = build().await;
     seed_profile(&fix).await;
-    let token = token_for(&fix, "admin").await;
-
-    // Build a clearly-too-large extensions value (~32 KiB).
-    let mut huge_value = String::new();
-    huge_value.push('"');
-    huge_value.push_str(&"a".repeat(32 * 1024));
-    huge_value.push('"');
-    let body = format!(r#"{{"extensions":{{"k":{huge_value}}}}}"#);
-
-    let req = Request::builder()
-        .method("PUT")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_UPDATE_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(body))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let admin = signer(&fix, VtcRole::Admin).await;
+    // ~32 KiB — well inside the document limit, over the extensions cap.
+    let (status, payload) = update(
+        &fix,
+        &admin,
+        json!({ "extensions": { "k": "a".repeat(32 * 1024) } }),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status}: {payload}");
 }
 
+/// `communityDid` is no member of the update payload, whose schema admits no
+/// others, so a document naming it is refused and changes nothing.
 #[tokio::test]
-async fn put_does_not_accept_community_did_in_request() {
+async fn an_update_naming_the_community_did_is_refused() {
     let fix = build_with_audit().await;
     seed_profile(&fix).await;
-    let token = token_for(&fix, "admin").await;
-
-    // `communityDid` is not a field on the update DTO; serde_json
-    // with `additionalProperties = no` would reject it, but our
-    // CommunityProfileUpdate has no such guard at the type level
-    // (serde silently ignores extra fields by default). The
-    // important property is that it never reaches the stored
-    // profile.
-    let req = Request::builder()
-        .method("PUT")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_UPDATE_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(
-            r#"{"name":"Renamed","communityDid":"did:webvh:attacker:steal"}"#,
-        ))
+    let admin = signer(&fix, VtcRole::Admin).await;
+    let (status, payload) = update(
+        &fix,
+        &admin,
+        json!({ "name": "Renamed", "communityDid": "did:webvh:attacker:steal" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{payload}");
+    let stored = vtc_service::community::load_profile(&fix.state.community_ks)
+        .await
+        .unwrap()
         .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
-    // Profile's communityDid is unchanged.
-    assert_eq!(
-        body["profile"]["communityDid"],
-        "did:webvh:vtc.example.com:abc"
-    );
-    // Only `name` made it into the changeset.
-    let changed = body["fieldsChanged"].as_array().unwrap();
-    assert_eq!(changed.len(), 1);
-    assert_eq!(changed[0], "name");
+    assert_eq!(stored.community_did, "did:webvh:vtc.example.com:abc");
+    assert_eq!(stored.name, "Example Community");
 }
 
 #[tokio::test]
-async fn put_emits_profile_updated_audit_with_real_actor() {
+async fn an_update_is_audited_under_the_signer() {
     use vti_common::audit::{AuditEnvelope, AuditEvent};
 
     let fix = build_with_audit().await;
     seed_profile(&fix).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PUT")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_UPDATE_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"name":"Renamed","description":"new"}"#))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let admin = signer(&fix, VtcRole::Admin).await;
+    let (status, body) = update(
+        &fix,
+        &admin,
+        json!({ "name": "Renamed", "description": "new" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let raw = fix
         .state
@@ -302,7 +296,7 @@ async fn put_emits_profile_updated_audit_with_real_actor() {
         .collect();
     assert_eq!(updated.len(), 1, "one CommunityProfileUpdated envelope");
     let env = updated[0];
-    assert_eq!(env.actor_did_plain.as_deref(), Some("did:key:z6MkAdmin"));
+    assert_eq!(env.actor_did_plain.as_deref(), Some(admin.did.as_str()));
     let AuditEvent::CommunityProfileUpdated(data) = &env.event else {
         unreachable!()
     };
@@ -311,9 +305,27 @@ async fn put_emits_profile_updated_audit_with_real_actor() {
 }
 
 #[tokio::test]
-async fn put_503_when_audit_writer_missing() {
+async fn an_update_that_cannot_be_audited_is_refused() {
     // Fail-closed: a profile change that can't be audited is refused.
     let fix = build().await; // no AuditWriter
+    seed_profile(&fix).await;
+    let admin = signer(&fix, VtcRole::Admin).await;
+    let (status, payload) = update(&fix, &admin, json!({ "name": "Renamed" })).await;
+    assert!(status.is_server_error(), "{status}: {payload}");
+    let stored = vtc_service::community::load_profile(&fix.state.community_ks)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.name, "Example Community",
+        "an unaudited change must not land"
+    );
+}
+
+/// The edit has no REST route.
+#[tokio::test]
+async fn there_is_no_rest_update() {
+    let fix = build().await;
     seed_profile(&fix).await;
     let token = token_for(&fix, "admin").await;
     let req = Request::builder()
@@ -325,28 +337,21 @@ async fn put_503_when_audit_writer_missing() {
         .body(Body::from(r#"{"name":"Renamed"}"#))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, _body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-}
-
-#[tokio::test]
-async fn put_idempotent_noop_does_not_need_audit_writer() {
-    // A no-op PUT emits no audit, so it must not 503 without a writer.
-    let fix = build().await;
-    seed_profile(&fix).await;
-    let token = token_for(&fix, "admin").await;
-    let req = Request::builder()
-        .method("PUT")
-        .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_UPDATE_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"name":"Example Community"}"#)) // already the value
+    // Refused at the read's mount (its task or its method), and nothing moved.
+    assert!(
+        [
+            StatusCode::METHOD_NOT_ALLOWED,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        ]
+        .contains(&resp.status()),
+        "{}",
+        resp.status()
+    );
+    let stored = vtc_service::community::load_profile(&fix.state.community_ks)
+        .await
+        .unwrap()
         .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, body) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body["fieldsChanged"].as_array().unwrap().is_empty());
+    assert_eq!(stored.name, "Example Community");
 }
 
 // ──────────────────────── Public profile (unauth) ─────────────
@@ -472,40 +477,26 @@ const PROFILE_UPDATE_ERR_VALIDATION_FAILED: &str =
     trust_tasks_rs::specs::vtc::community::profile::update::v0_1::error_codes::VALIDATION_FAILED
         .code;
 
-/// The extended error code carried by a REST error body (`{"error", "code"}`).
-fn rest_error_code(body: &Value) -> &str {
-    body["code"].as_str().unwrap_or_default()
+/// The error code carried by a `trust-task-error` payload.
+fn tt_error_code(payload: &Value) -> &str {
+    payload["code"].as_str().unwrap_or_default()
 }
 
-/// A field that fails validation — a `logoUrl` that is not http(s), a name
-/// over its cap — is `validationFailed`, status unchanged (400), and the
-/// stored profile is untouched.
+/// A field that fails validation — a `logoUrl` that is not http(s) — is
+/// `validationFailed`, and the stored profile is untouched.
 #[tokio::test]
 async fn a_profile_field_failing_validation_is_the_declared_validation_failed() {
     let fix = build().await;
     let before = seed_profile(&fix).await;
-    let token = token_for(&fix, "admin").await;
+    let admin = signer(&fix, VtcRole::Admin).await;
 
-    for update in [
-        json!({ "logoUrl": "javascript:alert(1)" }),
-        json!({ "name": "n".repeat(10_000) }),
-    ] {
-        let req = Request::builder()
-            .method("PUT")
-            .uri("/v1/community/profile")
-            .header("Trust-Task", PROFILE_UPDATE_TASK)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Content-Type", "application/json")
-            .body(Body::from(update.to_string()))
-            .unwrap();
-        let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{update}: {body}");
-        assert_eq!(
-            rest_error_code(&body),
-            PROFILE_UPDATE_ERR_VALIDATION_FAILED,
-            "{update}: {body}"
-        );
-    }
+    let (status, payload) = update(&fix, &admin, json!({ "logoUrl": "javascript:alert(1)" })).await;
+    assert!(status.is_client_error(), "{status}: {payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        PROFILE_UPDATE_ERR_VALIDATION_FAILED,
+        "{payload}"
+    );
 
     let after = vtc_service::community::load_profile(&fix.state.community_ks)
         .await

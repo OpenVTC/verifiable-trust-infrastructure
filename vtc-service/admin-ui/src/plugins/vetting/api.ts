@@ -1,12 +1,15 @@
 // Vetting admin API — what the vetting panels, the join-request detail and the
 // dashboard read and write.
 //
-// Three of these routes carry a Trust Task binding and are called with it:
-// grant, resend, and the vetter listing. The rest are admin REST the daemon
-// mounts with no binding, because no published task describes them — the grant
-// listing, automatic grants, withdrawal notices, a join request's vetting facts
-// and community branding — so they go through the `*Exempt` helpers instead of
-// borrowing a task URI that names something else.
+// Naming a vetter, the vetter listing, the join manifest and the
+// endorsement-type writes are signed documents, sent from this browser's
+// console key. Resending a member's grant is admin REST under its task: the
+// signed `resend` is the vetter's own request for their credential, and names
+// no one else. The rest are admin REST the daemon mounts with no binding,
+// because no published task describes them — the grant listing, automatic
+// grants, withdrawal notices, a join request's vetting facts and community
+// branding — so they go through the `*Exempt` helpers instead of borrowing a
+// task URI that names something else.
 
 import {
   deleteJson,
@@ -15,8 +18,9 @@ import {
   getJsonExempt,
   postJson,
   postJsonExempt,
+  postSignedRead,
+  postSignedTrustTask,
   putJsonExempt,
-  signedOrBearer,
 } from "@/lib/api";
 import type {
   AcceptsCriterion,
@@ -92,9 +96,7 @@ export const grantVetter = (args: {
   memberDid: string;
   validitySeconds: number;
 }): Promise<VetterGrantResponse> =>
-  postJson<VetterGrantResponse>("/v1/vetting/vetters", args, {
-    trustTask: TASK_VETTER_GRANT,
-  });
+  postSignedTrustTask<VetterGrantResponse>(TASK_VETTER_GRANT, args);
 
 /** A grant is withdrawn like any endorsement. */
 export const revokeGrant = (endorsementId: string): Promise<unknown> =>
@@ -132,11 +134,9 @@ export async function fetchActiveMembers(): Promise<MemberRow[]> {
 
 // ── The public listing ──────────────────────────────────────────────────
 
+/** The listing an applicant sees: the same signed document they send. */
 export const fetchListing = (body: VetterListBody): Promise<VetterListResponse> =>
-  postJson<VetterListResponse>("/v1/vetting/vetters/list", body, {
-    trustTask: TASK_VETTER_LIST,
-    requires: ["vetters"],
-  });
+  postSignedRead<VetterListResponse>(TASK_VETTER_LIST, body);
 
 // ── Automatic grants, withdrawals, join-request facts, branding ─────────
 
@@ -203,14 +203,11 @@ export type { JoinManifest, ManifestCriterion };
 
 /**
  * `join-requests/manifest/0.2` as applicants receive it — each criterion with
- * its vetting requirements and `requirementsDigest` — from the admin route that
- * answers under the same task. The shape is the manifest specification's own.
+ * its vetting requirements and `requirementsDigest` — read as the same signed
+ * document an applicant sends. The shape is the manifest specification's own.
  */
 export const fetchManifest = (): Promise<JoinManifest> =>
-  getJson<JoinManifest>("/v1/join-requests/manifest", {
-    trustTask: TASK_MANIFEST_V0_2,
-    requires: ["criteria"],
-  });
+  postSignedRead<JoinManifest>(TASK_MANIFEST_V0_2, {});
 
 // ── Admission criteria ──────────────────────────────────────────────────
 //
@@ -263,33 +260,14 @@ export async function fetchEndorsementTypes(): Promise<EndorsementType[]> {
  * `statementType` — and names both in the refusal, which is what the card
  * renders.
  *
- * Both endorsement-type writes go as signed documents when this browser holds
- * a console key, and over their transitional bearer routes when it does not
- * (#1641 batch 4). The refusal text is the same on either door — one function
- * answers both.
+ * Both endorsement-type writes are signed documents.
  */
 export const deleteEndorsementType = (
   typeUri: string,
 ): Promise<EndorsementTypeDeleted> =>
-  signedOrBearer<EndorsementTypeDeleted>(
-    TASK_ENDORSEMENT_TYPE_DELETE,
-    { typeUri },
-    () =>
-      deleteJson<EndorsementTypeDeleted>(
-        `/v1/endorsement-types/${encodeURIComponent(typeUri)}`,
-        { trustTask: TASK_ENDORSEMENT_TYPE_DELETE, requires: ["typeUri"] },
-      ),
-  );
+  postSignedTrustTask<EndorsementTypeDeleted>(TASK_ENDORSEMENT_TYPE_DELETE, { typeUri });
 
 export const registerEndorsementType = (
   body: RegisterEndorsementTypeBody,
 ): Promise<EndorsementTypeRegistered> =>
-  signedOrBearer<EndorsementTypeRegistered>(
-    TASK_ENDORSEMENT_TYPE_REGISTER,
-    body,
-    () =>
-      postJson<EndorsementTypeRegistered>("/v1/endorsement-types", body, {
-        trustTask: TASK_ENDORSEMENT_TYPE_REGISTER,
-        requires: ["endorsementType.typeUri"],
-      }),
-  );
+  postSignedTrustTask<EndorsementTypeRegistered>(TASK_ENDORSEMENT_TYPE_REGISTER, body);

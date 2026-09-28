@@ -387,17 +387,16 @@ import {
  * Thrown when this browser cannot produce a signed document — no WebCrypto
  * Ed25519, or no console key enrolled yet.
  *
- * A distinct type because it is not a failure: every call site catches it and
- * falls back to the bearer route, which is exactly what keeps the console
- * working on a browser that has never enrolled. Anything else thrown by
- * `postSignedTrustTask` is a real error and must not be swallowed.
+ * A distinct type because the fix is the operator's, not the daemon's: its
+ * message says where to enable signing, and a screen that needs to can
+ * recognise it. The console has no other door for a signed verb.
  */
 export class SigningUnavailableError extends Error {
   constructor(readonly reason: "no-ed25519" | "no-key") {
     super(
       reason === "no-ed25519"
         ? "this browser has no WebCrypto Ed25519, so the console cannot sign documents"
-        : "no console signing key is enrolled in this browser",
+        : "no console signing key is enrolled in this browser — enable console signing on the Console keys page",
     );
     this.name = "SigningUnavailableError";
   }
@@ -453,9 +452,8 @@ interface TrustTaskErrorPayload {
  * Send `payload` as a signed Trust Task document and return the `#response`
  * document's payload.
  *
- * Throws [`SigningUnavailableError`] when this browser cannot sign — the
- * caller falls back to the bearer route — and an [`ApiError`] for everything
- * else, so existing error rendering is unchanged.
+ * Throws [`SigningUnavailableError`] when this browser cannot sign, and an
+ * [`ApiError`] for everything else, so existing error rendering is unchanged.
  */
 export async function postSignedTrustTask<T>(
   typeUri: string,
@@ -586,39 +584,6 @@ async function postDocument<T>(
     throw apiError;
   }
   return body.payload as T;
-}
-
-/**
- * Send this as a signed document if the browser can, and over the task's
- * transitional bearer route if it cannot.
- *
- * The fallback catches [`SigningUnavailableError`] and **nothing else**: a
- * browser without WebCrypto Ed25519, or an operator who has not yet enabled
- * signing here, keeps working exactly as before. A signed call that is
- * *refused* — a revoked delegation, an ACL row that no longer permits it —
- * propagates, because silently retrying it over a bearer token would use the
- * session as the authority the signed door exists to stop relying on, and
- * would hide a revocation from the operator who performed it.
- *
- * Both doors run the same inner function server-side (#1681 moved each
- * handler's body into a transport-free inner both call), so they cannot answer
- * differently — but they are not equivalent: the signed door additionally
- * verifies a proof, binds the recipient, bounds the document's age and records
- * its id against replay, and reads authority from the ACL at execution time.
- * The bearer routes stay mounted only until every client can sign; each
- * carries its removal point in its OpenAPI description.
- */
-export async function signedOrBearer<T>(
-  typeUri: string,
-  payload: unknown,
-  bearer: () => Promise<T>,
-): Promise<T> {
-  try {
-    return await postSignedTrustTask<T>(typeUri, payload);
-  } catch (e) {
-    if (e instanceof SigningUnavailableError) return bearer();
-    throw e;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -760,7 +725,6 @@ export interface WhoamiResponse {
 }
 
 const WHOAMI_TASK = "https://trusttasks.org/spec/auth/whoami/0.1";
-const SIGN_OUT_TASK = "https://trusttasks.org/spec/auth/revoke-session/0.1";
 
 /** Fetch the caller's session identity. Throws on 401/403. */
 export const fetchWhoami = (): Promise<WhoamiResponse> =>
@@ -814,9 +778,10 @@ export async function saveConfig(
   return result;
 }
 
-/** Revoke the server-side session and clear browser cookies. */
+/** Revoke the server-side session and clear browser cookies. Sign-out ends the
+ *  cookie session, which no Trust Task describes, so it carries no task. */
 export const signOut = async (): Promise<void> => {
-  await postJson<void>("/v1/auth/sign-out", undefined, { trustTask: SIGN_OUT_TASK });
+  await postJsonExempt<void>("/v1/auth/sign-out", undefined);
   // Drop the expiry so a subsequent sign-in starts from that session's
   // own deadline rather than renewing against the dead one's.
   resetSession();

@@ -9,7 +9,7 @@
 //! (the store lives behind the vsock proxy there).
 //!
 //! For online ACL management against a running VTC, use the admin UI
-//! (ACL plugin) or the REST `/v1/acl` surface.
+//! (ACL plugin), `cnm`, or the signed `acl/*` Trust Tasks.
 
 use crate::store::keyspaces;
 use vta_sdk::display_name::{NameBook, NameSource, shorten_did};

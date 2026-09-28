@@ -51,9 +51,9 @@ criteria may count it — "Register it" on the Requirements page, or:
 ```
 
 A type can be withdrawn again — "Remove" beside it on the Requirements page, or
-`vtc/endorsement-types/delete/0.1` (`DELETE /v1/endorsement-types/{typeUri}`) —
-but **only while nothing references it**. The community refuses with `409
-endorsement-type-in-use` while any criterion names the type as its
+`vtc/endorsement-types/delete/0.1`, a signed document —
+but **only while nothing references it**. The community refuses with the
+task's `inUse` code while any criterion names the type as its
 `statementType`, or any endorsement of the type is still live, and the refusal
 names both: the criteria by id and the live endorsements by count. Revoke the
 endorsements and remove or re-point the criteria first. The console shows which
@@ -251,11 +251,10 @@ and `updatedAt` — nothing else. With an event filter the earliest matching
 event comes first; otherwise vetters are ordered by `displayName` (vetters
 without one last), then by DID, by code point.
 
-An admin session reads the same listing with `POST /v1/vetting/vetters/list`
-(`Trust-Task: …/vtc/vetting/vetters/list/0.1`), whose body and answer are the
-task's payloads. Over `POST /v1/trust-tasks` the listing names its caller by the
-document proof, which a browser session cannot sign; the admin console's
-**Vetting → Registry preview** uses this route to show what applicants see.
+The admin console's **Vetting → Registry preview** sends the same signed
+`vtc/vetting/vetters/list/0.1` document an applicant does, from its console
+signing key, so it shows exactly what applicants see. The listing has no REST
+route.
 
 A vetter hands out tickets as a QR code carrying a **ticket URI**, encoded and
 decoded with `vta_sdk::vetting::ticket_uri`:
@@ -449,11 +448,12 @@ key revoked later does not revoke the grant — revoke it with
   linking to the join requests and members they touch.
 - **Vetting → Requirements** is where admission criteria are written: it adds,
   edits and removes them (`/v1/schemas/accepts`), registers and removes the
-  endorsement types a criterion may count (`/v1/endorsement-types`) — saying
-  under each type which criteria require it, and leaving Remove disabled while
-  any do — and reads each criterion's `requirementsDigest` from `GET
-  /v1/join-requests/manifest` — the manifest 0.2 answer for an admin session,
-  under the same task — so a change is visible as applicants will see it. Every requirement is checked in the
+  endorsement types a criterion may count (signed
+  `vtc/endorsement-types/{register,delete}/0.1`) — saying under each type which
+  criteria require it, and leaving Remove disabled while any do — and reads
+  each criterion's `requirementsDigest` from the signed
+  `vtc/join-requests/manifest/0.2` document applicants send, so a change is
+  visible as applicants will see it. Every requirement is checked in the
   browser against the same rules the daemon applies before it can be saved, and
   the page says in sentences what applicants will be told.
 - A join request's page shows the vetting facts it was decided on, statement

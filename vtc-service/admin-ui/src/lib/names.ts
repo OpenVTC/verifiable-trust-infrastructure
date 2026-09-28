@@ -34,6 +34,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
+import { fetchAllAcl } from "@/lib/acl";
 import { getJson } from "@/lib/api";
 import { shortenDid } from "@/lib/format";
 
@@ -125,13 +126,7 @@ interface NamedMember {
   label: string | null;
 }
 
-interface NamedAclEntry {
-  subject: string;
-  label?: string | null;
-}
-
 const MEMBERS_TASK = "https://trusttasks.org/spec/vtc/members/list/0.1";
-const ACL_TASK = "https://trusttasks.org/spec/acl/list/0.1";
 
 /**
  * The console-wide `NameBook`.
@@ -155,9 +150,9 @@ export function useNameBook(): NameBook {
         getJson<{ items: NamedMember[] }>("/v1/members?limit=500", {
           trustTask: MEMBERS_TASK,
         }),
-        getJson<{ entries: NamedAclEntry[] }>("/v1/acl", {
-          trustTask: ACL_TASK,
-        }),
+        // A signed read (`acl/list`); a browser with no console key simply
+        // gets no ACL labels.
+        fetchAllAcl(),
       ]);
 
       if (members.status === "fulfilled") {
@@ -166,7 +161,7 @@ export function useNameBook(): NameBook {
         }
       }
       if (acl.status === "fulfilled") {
-        for (const e of acl.value.entries ?? []) {
+        for (const e of acl.value) {
           book.insert(e.subject, e.label, "acl-label");
         }
       }

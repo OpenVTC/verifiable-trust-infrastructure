@@ -9,6 +9,7 @@ import type {
   GitNsRepoRow,
   GitNsRightRow,
 } from "@/lib/wire-types";
+import { ACL_LIST_TASK } from "@/lib/acl";
 import { type MockRoute } from "@/test/render";
 
 import { TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW } from "./api";
@@ -341,7 +342,6 @@ export function gitNsRoutes(
       },
     },
     { path: "/v1/members", body: { items: MEMBERS } },
-    { path: "/v1/acl", body: { entries: [], truncated: false } },
   ];
 }
 
@@ -383,6 +383,8 @@ export function signedReads(o: {
           return statusFor(o.reposStatus);
         case TASK_VIEW:
           return statusFor(o.breakGlassStatus);
+        case ACL_LIST_TASK:
+          return 200;
         default:
           return 404;
       }
@@ -401,6 +403,9 @@ export function signedReads(o: {
           return o.breakGlassStatus && o.breakGlassStatus !== 200
             ? refused(o.breakGlassStatus, "git-ns/view")
             : { payload: breakGlassView(o.namespaces, o.breakGlass) };
+        // The console's name book reads the ACL on every render.
+        case ACL_LIST_TASK:
+          return { payload: { entries: [], truncated: false } };
         default:
           return refusal("unsupportedType", `no mock for ${typeOf(body)}`);
       }
@@ -442,11 +447,20 @@ function breakGlassView(namespaces: GitNsNamespaceRow[], items: GitNsBreakGlassI
 
 /**
  * Whether a recorded request changes anything: every request but a GET and
- * the administrator's signed reads (`signedReads`). "Sends nothing" in these
- * tests means no change was sent — the reads are sent on every render.
+ * the signed reads (`signedReads`, and the name book's `acl/list`). "Sends
+ * nothing" in these tests means no change was sent — the reads are sent on
+ * every render.
  */
 export function isChange(r: { method: string; url: string; body: unknown }): boolean {
   if (r.method === "GET") return false;
+  return !isSignedRead(r);
+}
+
+/** A signed read: one of the administrator's reads, or the name book's. */
+export function isSignedRead(r: { url: string; body: unknown }): boolean {
   const type = (r.body as { type?: string } | undefined)?.type;
-  return !(r.url === "/v1/trust-tasks" && [TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW].includes(type ?? ""));
+  return (
+    r.url === "/v1/trust-tasks" &&
+    [TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW, ACL_LIST_TASK].includes(type ?? "")
+  );
 }

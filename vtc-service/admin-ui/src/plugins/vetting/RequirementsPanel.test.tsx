@@ -1,9 +1,19 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AcceptsCriterion } from "@/lib/wire-types";
 import { RequirementsPanel } from "@/plugins/vetting/RequirementsPanel";
-import { type MockRoute, mockFetch, renderWithProviders } from "@/test/render";
+import { type MockRoute, mockFetch, renderWithProviders, sentPayloads, taskRoute } from "@/test/render";
+
+// Signed reads go through the unsigned stand-in to the `mockFetch` table: the
+// test browser holds no console key.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+  postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+}));
+
+const MANIFEST_TASK = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2";
 
 const STATEMENT_TYPE =
   "https://firstperson.network/endorsements/identity-vetting/0.1";
@@ -53,17 +63,14 @@ function routes(extra: MockRoute[] = []): MockRoute[] {
         criterion("open-door", undefined),
       ],
     },
-    {
-      path: "/v1/join-requests/manifest",
-      body: {
-        communityDid: "did:web:vtc.example.org",
-        criteria: [
-          { id: "kernel-developer", presentationDefinition: {}, vetting: REQUIREMENTS, requirementsDigest: "zQmKernelDigest" },
-          { id: "legacy", presentationDefinition: {}, requirementsDigest: "zQmLegacyDigest" },
-          { id: "open-door", presentationDefinition: {} },
-        ],
-      },
-    },
+    taskRoute(MANIFEST_TASK, {
+      communityDid: "did:web:vtc.example.org",
+      criteria: [
+        { id: "kernel-developer", presentationDefinition: {}, vetting: REQUIREMENTS, requirementsDigest: "zQmKernelDigest" },
+        { id: "legacy", presentationDefinition: {}, requirementsDigest: "zQmLegacyDigest" },
+        { id: "open-door", presentationDefinition: {} },
+      ],
+    }),
     {
       path: "/v1/endorsement-types",
       body: {
@@ -99,10 +106,7 @@ describe("RequirementsPanel", () => {
     await waitFor(() =>
       expect(requests.some((r) => r.url === "/v1/schemas/accepts")).toBe(true),
     );
-    const manifest = requests.find((r) => r.url === "/v1/join-requests/manifest")!;
-    expect(manifest.headers.get("Trust-Task")).toBe(
-      "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2",
-    );
+    expect(sentPayloads(requests, MANIFEST_TASK)).toContainEqual({});
   });
 
   it("removes a criterion once the admin confirms what it costs", async () => {

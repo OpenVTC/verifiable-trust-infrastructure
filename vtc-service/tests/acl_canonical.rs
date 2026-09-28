@@ -1,5 +1,10 @@
 //! Integration coverage for the canonical `acl/*` surface (phase 2d).
 //!
+//! The ACL has no REST route: every verb is a signed Trust Task document at
+//! `POST /v1/trust-tasks`, authorized by the signer's ACL row. Each test below
+//! names its request by the route it once had — `call` sends it as the signed
+//! document that replaced it — so the properties read as they always did.
+//!
 //! The URI swap is the least interesting part. What needs pinning is
 //! the behaviour the canonical tasks promise and VTC did not previously
 //! implement: a compare-and-swap on role changes, scope *reduction*
@@ -15,8 +20,12 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
-use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
+
+use vti_common::auth::session::now_epoch;
+use vti_rooms_dtg::test_support::Party;
 
 use vtc_service::test_support::TestVtc;
 
@@ -26,11 +35,40 @@ const SHOW: &str = "https://trusttasks.org/spec/acl/show/0.1";
 const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
 
-const ADMIN: &str = "did:key:z6MkAdmin";
-
 struct Fixture {
     router: axum::Router,
     vtc: TestVtc,
+    /// The unrestricted admin every test acts as unless it says otherwise.
+    admin: Arc<Party>,
+    /// Every signer a test made, by DID — what `call`'s `token` names.
+    signers: Mutex<HashMap<String, Arc<Party>>>,
+}
+
+impl Fixture {
+    fn party(&self, did: &str) -> Arc<Party> {
+        self.signers
+            .lock()
+            .unwrap()
+            .get(did)
+            .cloned()
+            .unwrap_or_else(|| panic!("no signer {did}"))
+    }
+
+    /// A signer holding an ACL row of `role` over `scopes`; its DID.
+    async fn signer(
+        &self,
+        role: vtc_service::acl::VtcRole,
+        scopes: Vec<String>,
+        expires_at: Option<u64>,
+    ) -> String {
+        let who = Arc::new(Party::new());
+        seed_entry(&self.vtc, &who.did, role, scopes, expires_at).await;
+        self.signers
+            .lock()
+            .unwrap()
+            .insert(who.did.clone(), who.clone());
+        who.did.clone()
+    }
 }
 
 async fn build() -> Fixture {
@@ -50,12 +88,22 @@ async fn build() -> Fixture {
     .await
     .expect("install default policies");
     // The caller every test acts as. Its entry is what bounds the entries it
-    // may write (VTI-ACL-053), so it has to exist, as it would for any caller
-    // that could have authenticated.
-    seed_entry(&vtc, ADMIN, vtc_service::acl::VtcRole::Admin, vec![], None).await;
+    // may write (VTI-ACL-053), and what authorizes every document it signs.
+    let admin = Arc::new(Party::new());
+    seed_entry(
+        &vtc,
+        &admin.did,
+        vtc_service::acl::VtcRole::Admin,
+        vec![],
+        None,
+    )
+    .await;
+    let signers = Mutex::new(HashMap::from([(admin.did.clone(), admin.clone())]));
     Fixture {
         router: vtc.router.clone(),
         vtc,
+        admin,
+        signers,
     }
 }
 
@@ -84,45 +132,9 @@ async fn seed_entry(
     .unwrap();
 }
 
+/// The fixture admin's DID — the `token` `call` signs as.
 async fn admin_token(fix: &Fixture) -> String {
-    fix.vtc.token(ADMIN, "admin", vec![]).await
-}
-
-/// An admin bearer whose **session** carries a live step-up elevation — what
-/// `auth/passkey/login/finish/0.2` with `purpose: stepUp` leaves behind, and
-/// the only thing that can confer admin.
-///
-/// `remaining_secs` is the window's lifetime; pass a past instant for a lapsed
-/// one.
-async fn stepped_up_admin_token(fix: &Fixture, remaining_secs: i64) -> String {
-    let session_id = format!("stepped-up-{remaining_secs}-{}", uuid::Uuid::new_v4());
-    store_session(
-        &fix.vtc.state.sessions_ks,
-        &Session {
-            session_id: session_id.clone(),
-            did: ADMIN.into(),
-            challenge: String::new(),
-            state: SessionState::Authenticated,
-            created_at: now_epoch(),
-            last_seen: now_epoch(),
-            refresh_token: None,
-            refresh_expires_at: None,
-            tee_attested: false,
-            amr: vec!["passkey".into()],
-            acr: "aal2".into(),
-            acr_expires_at: Some(now_epoch().saturating_add_signed(remaining_secs)),
-            token_id: None,
-            session_pubkey_b58btc: None,
-        },
-    )
-    .await
-    .unwrap();
-    let claims = fix
-        .vtc
-        .jwt_keys
-        .new_claims(ADMIN.into(), session_id, "admin".into(), vec![], 900, false)
-        .with_aal(vec!["passkey".into()], "aal2");
-    fix.vtc.jwt_keys.encode(&claims).unwrap()
+    fix.admin.did.clone()
 }
 
 /// Seed a member: an ACL entry **and** the member row a role VEC is repointed
@@ -131,7 +143,7 @@ async fn seed_member(fix: &Fixture, did: &str, role: &str) {
     let token = admin_token(fix).await;
     assert_eq!(
         grant(fix, &token, did, role, json!([])).await,
-        StatusCode::CREATED
+        StatusCode::OK
     );
     make_member(fix, did).await;
 }
@@ -144,6 +156,10 @@ async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
     (status, v)
 }
 
+/// Send the request once made to `method uri` as the signed `acl/*`
+/// document that replaced it, signed by `token`'s party; the reply's status
+/// and payload. `task` is the task the route was bound to — asserted, so a
+/// test cannot drift from the verb it names.
 async fn call(
     fix: &Fixture,
     method: &str,
@@ -152,18 +168,52 @@ async fn call(
     token: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    let mut b = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("Trust-Task", task)
-        .header("Authorization", format!("Bearer {token}"));
-    if body.is_some() {
-        b = b.header("Content-Type", "application/json");
-    }
-    let req = b
-        .body(body.map_or(Body::empty(), |v| Body::from(v.to_string())))
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+    let (path, query) = uri.split_once('?').unwrap_or((uri, ""));
+    let params: Vec<(&str, &str)> = query
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| p.split_once('=').unwrap_or((p, "")))
+        .collect();
+    let subject = path.strip_prefix("/v1/acl/").map(|s| s.replace("%3A", ":"));
+    let (sent, payload) = match (method, subject) {
+        ("GET", None) => {
+            let mut filter = serde_json::Map::new();
+            for (k, v) in &params {
+                let v = if *k == "pageSize" {
+                    json!(v.parse::<u64>().unwrap())
+                } else {
+                    json!(v)
+                };
+                filter.insert((*k).to_string(), v);
+            }
+            (LIST, Value::Object(filter))
+        }
+        ("POST", None) => (GRANT, body.expect("a grant carries an entry")),
+        ("GET", Some(subject)) => (SHOW, json!({ "subject": subject })),
+        ("PATCH", Some(subject)) => {
+            let mut payload = body.expect("a role change carries its roles");
+            payload["subject"] = json!(subject);
+            (CHANGE_ROLE, payload)
+        }
+        ("DELETE", Some(subject)) => {
+            let mut payload = json!({ "subject": subject });
+            for (k, v) in &params {
+                match *k {
+                    "scopes" => {
+                        payload["scopes"] =
+                            json!(v.split(',').filter(|s| !s.is_empty()).collect::<Vec<_>>())
+                    }
+                    other => payload[other] = json!(v),
+                }
+            }
+            (REVOKE, payload)
+        }
+        other => panic!("no acl verb for {other:?}"),
+    };
+    assert_eq!(sent, task, "{method} {uri} is {sent}");
+    let signer = fix.party(token);
+    let (status, doc) = post_doc(fix, &signed_doc(&signer, task, payload).await).await;
+    (status, doc["payload"].clone())
 }
 
 async fn grant(fix: &Fixture, token: &str, subject: &str, role: &str, scopes: Value) -> StatusCode {
@@ -192,7 +242,7 @@ async fn entries_use_canonical_names_and_rfc3339_timestamps() {
             json!(["ctx-a"])
         )
         .await,
-        StatusCode::CREATED
+        StatusCode::OK
     );
 
     let (status, body) = call(&fix, "GET", "/v1/acl", LIST, &token, None).await;
@@ -227,7 +277,7 @@ async fn grant_refuses_to_change_an_existing_role() {
     let token = admin_token(&fix).await;
     assert_eq!(
         grant(&fix, &token, "did:key:z6MkBob", "member", json!(["ctx-a"])).await,
-        StatusCode::CREATED
+        StatusCode::OK
     );
 
     let (status, body) = call(
@@ -239,8 +289,8 @@ async fn grant_refuses_to_change_an_existing_role() {
         Some(json!({ "entry": { "subject": "did:key:z6MkBob", "role": "moderator", "scopes": ["ctx-a"] } })),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    let msg = body["error"].as_str().unwrap_or_default();
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let msg = body["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("change-role"),
         "the refusal should name the right task: {body}"
@@ -278,7 +328,7 @@ async fn grant_with_the_same_role_rewrites_the_entry() {
         body["entry"]["updatedAt"].as_str().is_some(),
         "a rewrite must stamp updatedAt: {body}"
     );
-    assert_eq!(body["entry"]["updatedBy"], "did:key:z6MkAdmin");
+    assert_eq!(body["entry"]["updatedBy"], fix.admin.did);
 }
 
 #[tokio::test]
@@ -299,7 +349,7 @@ async fn change_role_enforces_the_from_role_guard() {
     .await;
     assert_eq!(
         status,
-        StatusCode::CONFLICT,
+        StatusCode::UNPROCESSABLE_ENTITY,
         "a mismatched fromRole must not apply: {body}"
     );
 
@@ -374,7 +424,7 @@ async fn revoke_without_scopes_removes_the_entry() {
     assert!(body.get("entry").is_some_and(Value::is_null), "{body}");
 
     let (status, _) = call(&fix, "GET", "/v1/acl/did:key:z6MkFred", SHOW, &token, None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 /// Emptying an entry's scope set would leave an *unscoped* entry —
@@ -395,7 +445,7 @@ async fn revoking_every_scope_is_refused_rather_than_unscoping() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 
     let (status, body) = call(&fix, "GET", "/v1/acl/did:key:z6MkGina", SHOW, &token, None).await;
     assert_eq!(status, StatusCode::OK, "entry must be untouched: {body}");
@@ -403,13 +453,41 @@ async fn revoking_every_scope_is_refused_rather_than_unscoping() {
     assert_eq!(body["entry"]["scopes"], json!(["ctx-a"]));
 }
 
+/// The ACL has no REST route, under any method.
 #[tokio::test]
-async fn each_verb_rejects_a_siblings_task() {
+async fn the_acl_has_no_rest_route() {
     let fix = build().await;
-    let token = admin_token(&fix).await;
-    // GET /v1/acl bound to acl/list must not accept acl/grant.
-    let (status, _) = call(&fix, "GET", "/v1/acl", GRANT, &token, None).await;
-    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    let bearer = fix.vtc.token(&fix.admin.did, "admin", vec![]).await;
+    for (method, uri) in [
+        ("GET", "/v1/acl"),
+        ("POST", "/v1/acl"),
+        ("GET", "/v1/acl/did:key:z6MkAnyone"),
+        ("PATCH", "/v1/acl/did:key:z6MkAnyone"),
+        ("DELETE", "/v1/acl/did:key:z6MkAnyone"),
+    ] {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("Trust-Task", LIST)
+            .header("Authorization", format!("Bearer {bearer}"))
+            .body(Body::empty())
+            .unwrap();
+        // Unrouted under the API mount, a GET falls through to the website's
+        // fallback page; nothing answers as the ACL.
+        let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+        assert!(
+            body.get("entries").is_none()
+                && body.get("entry").is_none()
+                && !status.is_server_error(),
+            "{method} {uri} answered {status}: {body}"
+        );
+        if method != "GET" {
+            assert!(
+                status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {uri} answered {status}"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -517,13 +595,13 @@ async fn revoking_a_members_acl_is_refused_and_names_the_removal_command() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 
     // "Operator errors should suggest the fix" — the message must carry the
     // command that actually removes a member, not just refuse.
     let msg = body.to_string();
     assert!(
-        msg.contains("/v1/members/"),
+        msg.contains("vtc/members/admin-remove"),
         "the refusal must name the leave ceremony: {msg}"
     );
 
@@ -606,7 +684,20 @@ async fn reducing_a_members_scopes_is_still_allowed() {
 async fn vti_ops_051_change_role_to_admin_without_a_live_step_up_is_refused() {
     let fix = build().await;
     let token = admin_token(&fix).await;
-    seed_member(&fix, "did:key:z6MkCandidate", "member").await;
+    // Scoped, so the gesture is the whole gate (an unrestricted admin also
+    // needs another admin's consent, `unrestricted_admin_consent.rs`).
+    assert_eq!(
+        grant(
+            &fix,
+            &token,
+            "did:key:z6MkCandidate",
+            "member",
+            json!(["ctx-a"])
+        )
+        .await,
+        StatusCode::OK
+    );
+    make_member(&fix, "did:key:z6MkCandidate").await;
 
     let (status, body) = call(
         &fix,
@@ -618,7 +709,15 @@ async fn vti_ops_051_change_role_to_admin_without_a_live_step_up_is_refused() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"], "step_up_required", "{body}");
+    // The fixture's admin has no passkey, so the refusal names the gesture it
+    // cannot give (with one, it carries the ceremony as
+    // `details.stepUpRequest` — `signed_step_up.rs`).
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("step-up required")),
+        "refused pending a passkey gesture: {body}"
+    );
 
     // A refused promotion writes nothing.
     let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, "did:key:z6MkCandidate")
@@ -628,43 +727,18 @@ async fn vti_ops_051_change_role_to_admin_without_a_live_step_up_is_refused() {
     assert_eq!(entry.role, vtc_service::acl::VtcRole::Member);
 }
 
-/// The window is the point: an elevation from an hour ago is no elevation.
+/// A role change brings the whole role-change pipeline with it: the ACL row
+/// moves and the member's role VEC is re-minted at the new role. (A promotion
+/// to admin runs the same pipeline behind an operation-bound passkey gesture,
+/// driven end to end in `signed_step_up.rs`.)
 #[tokio::test]
-async fn vti_ops_051_a_lapsed_step_up_does_not_promote() {
+async fn a_role_change_runs_the_role_change_pipeline() {
     let fix = build().await;
-    let token = stepped_up_admin_token(&fix, -1).await;
-    seed_member(&fix, "did:key:z6MkLapsed", "member").await;
-
-    let (status, body) = call(
-        &fix,
-        "PATCH",
-        "/v1/acl/did:key:z6MkLapsed",
-        CHANGE_ROLE,
-        &token,
-        Some(json!({ "fromRole": "member", "toRole": "admin" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"], "step_up_required", "{body}");
-}
-
-/// With a live elevation the promotion goes through — and brings the whole
-/// role-change pipeline with it: the ACL row moves, the member's role VEC is
-/// re-minted, and the admin sister record that lets the new admin enrol a
-/// passkey is created.
-#[tokio::test]
-async fn vti_ops_051_a_live_step_up_promotes_and_runs_the_role_change_pipeline() {
-    let fix = build().await;
-    let token = stepped_up_admin_token(&fix, 900).await;
+    let token = admin_token(&fix).await;
     const DID: &str = "did:key:z6MkPromoted";
-    // Scoped, so the promotion lands a scoped admin and the step-up is the
-    // whole gate. Promoting a scopeless member makes an *unrestricted* admin,
-    // which also needs another admin's consent (VTI-APV-014) — covered in
-    // `unrestricted_admin_consent.rs`.
-    let admin = admin_token(&fix).await;
     assert_eq!(
-        grant(&fix, &admin, DID, "member", json!(["ctx-a"])).await,
-        StatusCode::CREATED
+        grant(&fix, &token, DID, "member", json!(["ctx-a"])).await,
+        StatusCode::OK
     );
     make_member(&fix, DID).await;
 
@@ -674,18 +748,18 @@ async fn vti_ops_051_a_live_step_up_promotes_and_runs_the_role_change_pipeline()
         &format!("/v1/acl/{DID}"),
         CHANGE_ROLE,
         &token,
-        Some(json!({ "fromRole": "member", "toRole": "admin" })),
+        Some(json!({ "fromRole": "member", "toRole": "moderator" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["entry"]["role"], "admin");
+    assert_eq!(body["entry"]["role"], "moderator");
     assert!(body["entry"]["updatedAt"].as_str().is_some(), "{body}");
 
     let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, DID)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(entry.role, vtc_service::acl::VtcRole::Admin);
+    assert_eq!(entry.role, vtc_service::acl::VtcRole::Moderator);
 
     // The pipeline's effect, not just the ACL write: the role assertion was
     // re-issued at the new role and the member repointed at it.
@@ -697,59 +771,41 @@ async fn vti_ops_051_a_live_step_up_promotes_and_runs_the_role_change_pipeline()
         member.current_role_vec_id.is_some(),
         "the role VEC must be re-minted by the ceremony, got {member:?}"
     );
-
-    // And the sister record, without which the promotion produces an admin
-    // who cannot sign in to the console.
-    assert!(
-        vtc_service::acl::admin::get_admin_entry(&fix.vtc.state.passkey_ks, DID)
-            .await
-            .unwrap()
-            .is_some(),
-        "a promotion must leave an admin record to enrol a passkey against"
-    );
 }
 
 /// VTI-OPS-050: a second factor proves who is at the keyboard, never that a
-/// second person agreed. A token minted while the caller was an admin must not
-/// be usable to put their own demoted entry back.
+/// second person agreed. A signer who has been demoted cannot put their own
+/// entry back: authority is read from the ACL row when the document executes.
 #[tokio::test]
 async fn vti_ops_050_self_promotion_is_refused_on_the_change_role_path() {
     let fix = build().await;
-    let token = stepped_up_admin_token(&fix, 900).await;
-    // The caller's own ACL row now says `member` — the bearer outlived the
-    // demotion, which is exactly when self-promotion is reachable.
-    // Written directly: the caller cannot rewrite its own entry through
-    // `acl/grant` (VTI-ACL-052), which is the point of the neighbouring tests.
+    let me = fix
+        .signer(vtc_service::acl::VtcRole::Admin, vec![], None)
+        .await;
+    // The signer's own ACL row now says `member`. Written directly: the
+    // signer cannot rewrite its own entry through `acl/grant` (VTI-ACL-052).
     seed_entry(
         &fix.vtc,
-        ADMIN,
+        &me,
         vtc_service::acl::VtcRole::Member,
         vec![],
         None,
     )
     .await;
-    make_member(&fix, ADMIN).await;
+    make_member(&fix, &me).await;
 
     let (status, body) = call(
         &fix,
         "PATCH",
-        &format!("/v1/acl/{ADMIN}"),
+        &format!("/v1/acl/{me}"),
         CHANGE_ROLE,
-        &token,
+        &me,
         Some(json!({ "fromRole": "member", "toRole": "admin" })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    // Refused before the ceremony runs: moving your own role in either
-    // direction is a modification of your own entry (VTI-ACL-052). The
-    // ceremony's self-promotion invariant stays behind it.
-    let msg = body["error"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("cannot change your own role"),
-        "the refusal must say why: {body}"
-    );
 
-    let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, ADMIN)
+    let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, &me)
         .await
         .unwrap()
         .unwrap();
@@ -795,7 +851,15 @@ async fn vti_ops_051_granting_the_admin_role_without_a_step_up_is_refused() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"], "step_up_required", "{body}");
+    // The fixture's admin has no passkey, so the refusal names the gesture it
+    // cannot give (with one, it carries the ceremony as
+    // `details.stepUpRequest` — `signed_step_up.rs`).
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("step-up required")),
+        "refused pending a passkey gesture: {body}"
+    );
     assert!(
         vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, "did:key:z6MkFreshAdmin")
             .await
@@ -805,24 +869,6 @@ async fn vti_ops_051_granting_the_admin_role_without_a_step_up_is_refused() {
     );
 }
 
-#[tokio::test]
-async fn granting_the_admin_role_with_a_step_up_succeeds() {
-    let fix = build().await;
-    let token = stepped_up_admin_token(&fix, 900).await;
-
-    let (status, body) = call(
-        &fix,
-        "POST",
-        "/v1/acl",
-        GRANT,
-        &token,
-        Some(json!({ "entry": { "subject": "did:key:z6MkFreshAdmin", "role": "admin", "scopes": ["ctx-a"] } })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["entry"]["role"], "admin");
-}
-
 /// A re-grant that does not widen is not a conferral, and must not demand a
 /// passkey. This is how the console edits an admin's label — `acl/change-role`
 /// is role-only and would reject it — so gating every rewrite would have made
@@ -830,20 +876,17 @@ async fn granting_the_admin_role_with_a_step_up_succeeds() {
 #[tokio::test]
 async fn re_granting_an_admin_at_the_same_scopes_needs_no_step_up() {
     let fix = build().await;
-    let stepped_up = stepped_up_admin_token(&fix, 900).await;
     const DID: &str = "did:key:z6MkScopedAdmin";
-    let (status, body) = call(
-        &fix,
-        "POST",
-        "/v1/acl",
-        GRANT,
-        &stepped_up,
-        Some(json!({ "entry": { "subject": DID, "role": "admin", "scopes": ["ctx-a"] } })),
+    seed_entry(
+        &fix.vtc,
+        DID,
+        vtc_service::acl::VtcRole::Admin,
+        vec!["ctx-a".into()],
+        None,
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
 
-    // Same role, same scopes, new label — on an *un*-elevated session.
+    // Same role, same scopes, new label — with no gesture.
     let plain = admin_token(&fix).await;
     let (status, body) = call(
         &fix,
@@ -871,18 +914,28 @@ async fn re_granting_an_admin_at_the_same_scopes_needs_no_step_up() {
         "/v1/acl",
         GRANT,
         &plain,
-        Some(json!({ "entry": { "subject": DID, "role": "admin", "scopes": [] } })),
+        // Still scoped, so the gesture is the whole gate: an unrestricted
+        // admin also needs another admin's consent (`unrestricted_admin_consent.rs`).
+        Some(json!({ "entry": { "subject": DID, "role": "admin", "scopes": ["ctx-a", "ctx-b"] } })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"], "step_up_required", "{body}");
+    // The fixture's admin has no passkey, so the refusal names the gesture it
+    // cannot give (with one, it carries the ceremony as
+    // `details.stepUpRequest` — `signed_step_up.rs`).
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("step-up required")),
+        "refused pending a passkey gesture: {body}"
+    );
 }
 
 /// Minting yourself an admin entry is self-promotion by another name.
 #[tokio::test]
 async fn vti_ops_050_granting_yourself_the_admin_role_is_refused() {
     let fix = build().await;
-    let token = stepped_up_admin_token(&fix, 900).await;
+    let token = admin_token(&fix).await;
 
     let (status, body) = call(
         &fix,
@@ -890,14 +943,14 @@ async fn vti_ops_050_granting_yourself_the_admin_role_is_refused() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": { "subject": ADMIN, "role": "admin", "scopes": [] } })),
+        Some(json!({ "entry": { "subject": fix.admin.did, "role": "admin", "scopes": [] } })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     // The caller already holds an entry, so this is a rewrite of it and is
     // refused as one (VTI-ACL-052); a caller with no entry is refused with
     // "cannot grant yourself" before anything else.
-    let msg = body["error"].as_str().unwrap_or_default();
+    let msg = body["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("cannot grant yourself") || msg.contains("your own ACL entry"),
         "{body}"
@@ -919,15 +972,14 @@ async fn a_context_admin_cannot_promote_across_a_context_it_does_not_hold() {
     const DID: &str = "did:key:z6MkCrossScope";
     assert_eq!(
         grant(&fix, &super_token, DID, "member", json!(["ctx-a", "ctx-b"])).await,
-        StatusCode::CREATED
+        StatusCode::OK
     );
     make_member(&fix, DID).await;
 
     // An admin of ctx-a only. The entry is *visible* to them (the scopes
     // overlap), which is exactly what makes this reachable.
     let ctx_admin = fix
-        .vtc
-        .token("did:key:z6MkCtxAdmin", "admin", vec!["ctx-a".into()])
+        .signer(vtc_service::acl::VtcRole::Admin, vec!["ctx-a".into()], None)
         .await;
 
     let (status, body) = call(
@@ -962,7 +1014,7 @@ async fn granting_a_non_admin_role_needs_no_step_up() {
             json!(["ctx-a"])
         )
         .await,
-        StatusCode::CREATED
+        StatusCode::OK
     );
 }
 
@@ -974,17 +1026,15 @@ async fn granting_a_non_admin_role_needs_no_step_up() {
 #[tokio::test]
 async fn vti_acl_052_an_admin_cannot_rewrite_its_own_entry() {
     let fix = build().await;
-    const SELF: &str = "did:key:z6MkExpiringCtxAdmin";
     let expires = now_epoch() + 3600;
-    seed_entry(
-        &fix.vtc,
-        SELF,
-        vtc_service::acl::VtcRole::Admin,
-        vec!["ctx-a".into()],
-        Some(expires),
-    )
-    .await;
-    let token = fix.vtc.token(SELF, "admin", vec!["ctx-a".into()]).await;
+    let token = fix
+        .signer(
+            vtc_service::acl::VtcRole::Admin,
+            vec!["ctx-a".into()],
+            Some(expires),
+        )
+        .await;
+    let me = token.as_str();
 
     let (status, body) = call(
         &fix,
@@ -992,11 +1042,11 @@ async fn vti_acl_052_an_admin_cannot_rewrite_its_own_entry() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": { "subject": SELF, "role": "admin", "scopes": ["ctx-a"] } })),
+        Some(json!({ "entry": { "subject": me, "role": "admin", "scopes": ["ctx-a"] } })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, SELF)
+    let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, me)
         .await
         .unwrap()
         .unwrap();
@@ -1012,7 +1062,7 @@ async fn vti_acl_052_an_admin_cannot_change_its_own_role() {
     let (status, body) = call(
         &fix,
         "PATCH",
-        &format!("/v1/acl/{ADMIN}"),
+        &format!("/v1/acl/{}", fix.admin.did),
         CHANGE_ROLE,
         &token,
         Some(json!({ "fromRole": "admin", "toRole": "moderator" })),
@@ -1027,17 +1077,14 @@ async fn vti_acl_052_an_admin_cannot_change_its_own_role() {
 #[tokio::test]
 async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
     let fix = build().await;
-    const GRANTER: &str = "did:key:z6MkShortLivedAdmin";
     let expires = now_epoch() + 3600;
-    seed_entry(
-        &fix.vtc,
-        GRANTER,
-        vtc_service::acl::VtcRole::Admin,
-        vec!["ctx-a".into()],
-        Some(expires),
-    )
-    .await;
-    let token = fix.vtc.token(GRANTER, "admin", vec!["ctx-a".into()]).await;
+    let token = fix
+        .signer(
+            vtc_service::acl::VtcRole::Admin,
+            vec!["ctx-a".into()],
+            Some(expires),
+        )
+        .await;
     let at = |secs: u64| {
         chrono::DateTime::from_timestamp(secs as i64, 0)
             .unwrap()
@@ -1081,7 +1128,7 @@ async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
     .await;
     assert_eq!(
         status,
-        StatusCode::CREATED,
+        StatusCode::OK,
         "within the granter's expiry: {body}"
     );
 }
@@ -1097,11 +1144,10 @@ async fn a_context_admin_cannot_manage_an_entry_straddling_its_scope() {
     const DID: &str = "did:key:z6MkStraddler";
     assert_eq!(
         grant(&fix, &super_token, DID, "member", json!(["ctx-a", "ctx-b"])).await,
-        StatusCode::CREATED
+        StatusCode::OK
     );
     let ctx_admin = fix
-        .vtc
-        .token("did:key:z6MkCtxAdminA", "admin", vec!["ctx-a".into()])
+        .signer(vtc_service::acl::VtcRole::Admin, vec!["ctx-a".into()], None)
         .await;
 
     let (status, body) = call(
@@ -1146,13 +1192,12 @@ async fn a_context_admin_cannot_manage_an_entry_straddling_its_scope() {
 }
 
 // ---------------------------------------------------------------------------
-// One operation, two doors.
+// One operation, whichever way it is asked.
 //
-// The bearer routes above are thin adapters over the same functions the signed
-// Trust Task documents reach on the spine (`trust_tasks::acl_tasks`). These
-// pin that: the same request, made by the same principal once as a bearer call
-// and once as a signed document to `POST /v1/trust-tasks`, gets the same
-// answer — the same body on success, the same refusal on failure.
+// Written when the ACL still had bearer routes, to pin that both doors gave
+// one answer. Both halves are signed documents now; the tests still pin that
+// the operation answers the same request the same way — the same body on
+// success, the same declared refusal on failure.
 // ---------------------------------------------------------------------------
 
 const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
@@ -1185,22 +1230,12 @@ async fn post_doc(fix: &Fixture, doc: &Value) -> (StatusCode, Value) {
     body_value(fix.router.clone().oneshot(req).await.unwrap()).await
 }
 
-/// An admin with a real key, a bearer token for it, and the fixture.
-async fn two_door_admin(
-    fix: &Fixture,
-    scopes: Vec<String>,
-) -> (vti_rooms_dtg::test_support::Party, String) {
-    let who = vti_rooms_dtg::test_support::Party::new();
-    seed_entry(
-        &fix.vtc,
-        &who.did,
-        vtc_service::acl::VtcRole::Admin,
-        scopes.clone(),
-        None,
-    )
-    .await;
-    let token = fix.vtc.token(&who.did, "admin", scopes).await;
-    (who, token)
+/// An admin with a real key over `scopes`, and its DID (`call`'s `token`).
+async fn two_door_admin(fix: &Fixture, scopes: Vec<String>) -> (Arc<Party>, String) {
+    let did = fix
+        .signer(vtc_service::acl::VtcRole::Admin, scopes, None)
+        .await;
+    (fix.party(&did), did)
 }
 
 /// Drop what legitimately differs between two answers to the same question:
@@ -1272,7 +1307,7 @@ async fn acl_show_and_list_answer_the_same_on_both_doors() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let (_, doc) = post_doc(
         &fix,
         &signed_doc(&admin, SHOW, json!({ "subject": "did:key:z6MkNobody" })).await,
@@ -1357,7 +1392,7 @@ async fn acl_revoke_answers_the_same_on_both_doors() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{rest}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{rest}");
     assert_eq!(rest["code"], "acl/revoke:subjectNotPresent", "{rest}");
     let (_, doc) = post_doc(
         &fix,
@@ -1411,7 +1446,7 @@ async fn acl_revoke_refuses_the_same_on_both_doors() {
     )
     .await;
     assert_eq!(doc["payload"]["code"], "permissionDenied", "{doc}");
-    for said in [doc["payload"]["message"].as_str(), rest["error"].as_str()] {
+    for said in [doc["payload"]["message"].as_str(), rest["message"].as_str()] {
         assert!(
             said.is_some_and(|m| m.contains("holds authority outside your contexts")),
             "the same refusal on both doors: {doc} / {rest}"
@@ -1427,13 +1462,13 @@ async fn acl_revoke_refuses_the_same_on_both_doors() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{rest}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{rest}");
     let (_, doc) = post_doc(
         &fix,
         &signed_doc(&scoped, REVOKE, json!({ "subject": scoped.did })).await,
     )
     .await;
-    for said in [doc["payload"]["message"].as_str(), rest["error"].as_str()] {
+    for said in [doc["payload"]["message"].as_str(), rest["message"].as_str()] {
         assert!(
             said.is_some_and(|m| m.contains("cannot delete your own ACL entry")),
             "the same refusal on both doors: {doc} / {rest}"

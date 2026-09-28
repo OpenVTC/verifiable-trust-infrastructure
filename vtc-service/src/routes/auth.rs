@@ -1672,7 +1672,7 @@ pub async fn session_list(
     security(("bearer_jwt" = [])),
     params(("session_id" = String, Path, description = "Session identifier")),
     responses(
-        (status = 204, description = "Session revoked"),
+        (status = 200, description = "Session revoked", body = RevokeSessionResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Cannot revoke another user's session"),
         (status = 404, description = "Session not found"),
@@ -1682,7 +1682,7 @@ pub async fn revoke_session(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<Json<RevokeSessionResponse>, AppError> {
     let sessions = state.sessions_ks.clone();
     let session = get_session(&sessions, &session_id)
         .await?
@@ -1709,7 +1709,7 @@ pub async fn revoke_session(
             .await?;
     }
     info!(caller = %auth.did, session_id = %session_id, "session revoked");
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(RevokeSessionResponse { revoked_count: 1 }))
 }
 
 // ---------- DELETE /auth/sessions?did=X ----------
@@ -1719,9 +1719,11 @@ pub struct RevokeByDidQuery {
     pub did: String,
 }
 
+/// `auth/revoke-session/0.2#response` — how many sessions the call ended.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct RevokeByDidResponse {
-    pub revoked: u64,
+#[serde(rename_all = "camelCase")]
+pub struct RevokeSessionResponse {
+    pub revoked_count: u64,
 }
 
 /// `DELETE /v1/auth/sessions?did=X` — revoke all sessions for a DID.
@@ -1731,7 +1733,7 @@ pub struct RevokeByDidResponse {
     security(("bearer_jwt" = [])),
     params(("did" = String, Query, description = "Subject DID whose sessions to revoke")),
     responses(
-        (status = 200, description = "Sessions revoked", body = RevokeByDidResponse),
+        (status = 200, description = "Sessions revoked", body = RevokeSessionResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller cannot revoke sessions for this DID"),
     ),
@@ -1740,7 +1742,7 @@ pub async fn revoke_sessions_by_did(
     auth: AdminAuth,
     State(state): State<AppState>,
     Query(query): Query<RevokeByDidQuery>,
-) -> Result<Json<RevokeByDidResponse>, AppError> {
+) -> Result<Json<RevokeSessionResponse>, AppError> {
     // Context-scope: a context-admin may only revoke sessions for a DID whose
     // ACL entry is visible to them (overlapping contexts). Without this any
     // context-admin could revoke a super-admin's or any member's sessions
@@ -1778,7 +1780,9 @@ pub async fn revoke_sessions_by_did(
     }
 
     info!(caller = %auth.0.did, target_did = %query.did, revoked, "sessions revoked by DID");
-    Ok(Json(RevokeByDidResponse { revoked }))
+    Ok(Json(RevokeSessionResponse {
+        revoked_count: revoked,
+    }))
 }
 
 /// Delete every session whose subject is `did`; returns the count revoked.

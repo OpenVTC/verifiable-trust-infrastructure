@@ -9,7 +9,7 @@ import {
   MEMBERS,
   RIGHTS,
 } from "@/plugins/repos/fixtures.test-data";
-import { mockFetch, renderWithProviders, type MockRoute } from "@/test/render";
+import { mockFetch, renderWithProviders, taskRoute, type MockRoute } from "@/test/render";
 
 // UI-13: the Members page shows each member's git rights and linked forge
 // accounts (design §7.1), from the same console projections the Repos plugin
@@ -26,7 +26,7 @@ const routes = (
   },
   { path: "/v1/members/removed", body: { removed: [] } },
   { path: /^\/v1\/members\/did%3A[^/?]+(\?|$)/, body: { member: member(BOB, "Bob Mensah") } },
-  { path: "/v1/acl", body: { entries: [], truncated: false } },
+  taskRoute("https://trusttasks.org/spec/acl/list/0.1", { entries: [], truncated: false }),
   {
     path: "/v1/git-ns/rights",
     status: over.rightsStatus,

@@ -1,7 +1,8 @@
 //! Integration coverage for the M1.11 + M1.12 removal endpoints.
 //!
-//! - `DELETE /v1/members/me` (self-remove): happy path per
-//!   disposition, sole-admin protection, missing-member 404.
+//! - `vtc/members/self-remove/0.1` (a signed document at
+//!   `POST /v1/trust-tasks`): happy path per disposition, sole-admin
+//!   protection, an unsigned document refused.
 //! - `DELETE /v1/members/{did}` (admin-remove): admin auth,
 //!   self-target refused, last-admin protection.
 
@@ -17,6 +18,8 @@ use tower::ServiceExt;
 use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::session::{Session, SessionState, store_session};
 use vti_common::store::KeyspaceHandle;
+
+use vti_rooms_dtg::test_support::Party;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use vtc_service::members::{Member, get_member, store_member};
@@ -250,24 +253,60 @@ async fn send(
 }
 
 // ---------------------------------------------------------------------------
-// M1.11.1 — DELETE /v1/members/me
+// M1.11.1 — vtc/members/self-remove, a signed document
 // ---------------------------------------------------------------------------
+
+/// A member with a real key and an ACL row of `role`.
+async fn seed_party(fix: &Fixture, role: VtcRole) -> Party {
+    let who = Party::new();
+    let _ = seed_member_with_session(fix, &who.did, role).await;
+    who
+}
+
+/// `from` leaves, with `payload`; the reply's status and payload.
+async fn self_remove(fix: &Fixture, from: &Party, payload: Value) -> (StatusCode, Value) {
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        SELF_REMOVE_TASK,
+        payload,
+        &from.did,
+        vtc_service::test_support::TEST_VTC_DID,
+    )
+    .unwrap();
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+        .unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .unwrap();
+    post_document(fix, serde_json::to_value(doc).unwrap()).await
+}
+
+async fn post_document(fix: &Fixture, doc: Value) -> (StatusCode, Value) {
+    let res = fix
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/trust-tasks")
+                .header("content-type", "application/json")
+                .body(Body::from(doc.to_string()))
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let doc: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, doc["payload"].clone())
+}
 
 #[tokio::test]
 async fn self_remove_tombstones_member_by_default() {
     let fix = build_fixture().await;
-    let member_did = "did:key:zMember1";
-    let token = seed_member_with_session(&fix, member_did, VtcRole::Member).await;
+    let member = seed_party(&fix, VtcRole::Member).await;
+    let member_did = member.did.as_str();
 
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        "/v1/members/me",
-        SELF_REMOVE_TASK,
-        Some(&token),
-        Some(json!({})),
-    )
-    .await;
+    let (status, body) = self_remove(&fix, &member, json!({})).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
     assert_eq!(body["disposition"], "tombstone");
     assert_eq!(body["removed"], true);
@@ -289,18 +328,10 @@ async fn self_remove_tombstones_member_by_default() {
 #[tokio::test]
 async fn self_remove_with_purge_deletes_member_row() {
     let fix = build_fixture().await;
-    let member_did = "did:key:zMember2";
-    let token = seed_member_with_session(&fix, member_did, VtcRole::Member).await;
+    let member = seed_party(&fix, VtcRole::Member).await;
+    let member_did = member.did.as_str();
 
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        "/v1/members/me",
-        SELF_REMOVE_TASK,
-        Some(&token),
-        Some(json!({ "disposition": "purge" })),
-    )
-    .await;
+    let (status, body) = self_remove(&fix, &member, json!({ "disposition": "purge" })).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
     assert_eq!(body["disposition"], "purge");
 
@@ -321,8 +352,8 @@ async fn self_remove_with_purge_deletes_member_row() {
 #[tokio::test]
 async fn self_remove_with_historical_keeps_row_verbatim() {
     let fix = build_fixture().await;
-    let member_did = "did:key:zMember3";
-    let token = seed_member_with_session(&fix, member_did, VtcRole::Member).await;
+    let member = seed_party(&fix, VtcRole::Member).await;
+    let member_did = member.did.as_str();
     // Stamp a credential pointer so we can confirm Historical
     // retains it.
     let mut m = get_member(&fix.members_ks, member_did)
@@ -332,15 +363,7 @@ async fn self_remove_with_historical_keeps_row_verbatim() {
     m.current_vmc_id = Some("vmc-test".into());
     store_member(&fix.members_ks, &m).await.unwrap();
 
-    let (status, _) = send(
-        &fix.router,
-        "DELETE",
-        "/v1/members/me",
-        SELF_REMOVE_TASK,
-        Some(&token),
-        Some(json!({ "disposition": "historical" })),
-    )
-    .await;
+    let (status, _) = self_remove(&fix, &member, json!({ "disposition": "historical" })).await;
     assert_eq!(status, StatusCode::OK);
     let kept = get_member(&fix.members_ks, member_did)
         .await
@@ -353,26 +376,19 @@ async fn self_remove_with_historical_keeps_row_verbatim() {
 #[tokio::test]
 async fn self_remove_refused_for_sole_admin() {
     let fix = build_fixture().await;
-    // The fixture's sole admin is ADMIN_DID — try to remove them.
-    // No-last-admin invariant guards this case in
-    // `remove_inner` (`routes/members/remove.rs:215-226`): the
-    // 409 is the only way a caller could end up with zero
-    // admins, and the audit + admin UX rely on the message
-    // pointing at "last admin" so the operator knows to promote
-    // someone first.
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        "/v1/members/me",
-        SELF_REMOVE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "got {body}");
-    let message = body["error"]
+    // Make a real-keyed admin the sole admin, then have them leave. The
+    // no-last-admin invariant guards this case in `remove_inner`: the
+    // refusal is the only way a caller could end up with zero admins, and
+    // the audit + admin UX rely on the message pointing at "last admin" so
+    // the operator knows to promote someone first.
+    vtc_service::acl::delete_acl_entry(&fix.acl_ks, ADMIN_DID)
+        .await
+        .unwrap();
+    let admin = seed_party(&fix, VtcRole::Admin).await;
+    let (status, body) = self_remove(&fix, &admin, json!({})).await;
+    assert!(!status.is_success(), "got {body}");
+    let message = body["message"]
         .as_str()
-        .or_else(|| body["message"].as_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
     assert!(
@@ -383,40 +399,32 @@ async fn self_remove_refused_for_sole_admin() {
     // removal — the operator needs to be able to retry after
     // promoting another admin.
     assert!(
-        get_acl_entry(&fix.acl_ks, ADMIN_DID)
+        get_acl_entry(&fix.acl_ks, &admin.did)
             .await
             .unwrap()
             .is_some(),
-        "ACL row was deleted despite the 409"
+        "ACL row was deleted despite the refusal"
     );
     assert!(
-        get_member(&fix.members_ks, ADMIN_DID)
+        get_member(&fix.members_ks, &admin.did)
             .await
             .unwrap()
             .is_some(),
-        "member row was deleted despite the 409"
+        "member row was deleted despite the refusal"
     );
 }
 
 #[tokio::test]
 async fn self_remove_works_when_second_admin_exists() {
     let fix = build_fixture().await;
-    // Promote a second admin so the no-last-admin invariant is
-    // satisfied.
-    let _other_token = seed_member_with_session(&fix, "did:key:zSecondAdmin", VtcRole::Admin).await;
+    // The fixture's admin stays, so the no-last-admin invariant is
+    // satisfied when this second admin leaves.
+    let admin = seed_party(&fix, VtcRole::Admin).await;
 
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        "/v1/members/me",
-        SELF_REMOVE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({})),
-    )
-    .await;
+    let (status, body) = self_remove(&fix, &admin, json!({})).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
     assert!(
-        get_acl_entry(&fix.acl_ks, ADMIN_DID)
+        get_acl_entry(&fix.acl_ks, &admin.did)
             .await
             .unwrap()
             .is_none()
@@ -424,18 +432,25 @@ async fn self_remove_works_when_second_admin_exists() {
 }
 
 #[tokio::test]
-async fn self_remove_requires_authentication() {
+async fn self_remove_requires_a_signed_document() {
     let fix = build_fixture().await;
-    let (status, _) = send(
-        &fix.router,
-        "DELETE",
-        "/v1/members/me",
+    let member = seed_party(&fix, VtcRole::Member).await;
+    let doc = vta_sdk::trust_task_sign::build_unsigned(
         SELF_REMOVE_TASK,
-        None,
-        None,
+        json!({}),
+        &member.did,
+        vtc_service::test_support::TEST_VTC_DID,
     )
-    .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    .unwrap();
+    let (status, body) = post_document(&fix, serde_json::to_value(doc).unwrap()).await;
+    assert!(!status.is_success(), "got {body}");
+    assert_eq!(body["code"], "proofRequired", "got {body}");
+    assert!(
+        get_acl_entry(&fix.acl_ks, &member.did)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +491,7 @@ async fn admin_remove_self_refused_with_self_remove_hint() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let msg = body.to_string();
-    assert!(msg.contains("/v1/members/me"), "got {msg}");
+    assert!(msg.contains("vtc/members/self-remove"), "got {msg}");
 }
 
 #[tokio::test]
@@ -751,8 +766,8 @@ async fn admin_remove_flips_revocation_bit() {
 #[tokio::test]
 async fn self_remove_flips_revocation_bit() {
     let fix = build_fixture().await;
-    let target = "did:key:zSelfFlip";
-    let token = seed_member_with_session(&fix, target, VtcRole::Member).await;
+    let leaver = seed_party(&fix, VtcRole::Member).await;
+    let target = leaver.did.as_str();
 
     // Pre-allocate a slot.
     let mut state = vtc_service::status_list::get_state(
@@ -775,15 +790,7 @@ async fn self_remove_flips_revocation_bit() {
         .await
         .unwrap();
 
-    let (status, _) = send(
-        &fix.router,
-        "DELETE",
-        "/v1/members/me",
-        SELF_REMOVE_TASK,
-        Some(&token),
-        Some(json!({})),
-    )
-    .await;
+    let (status, _) = self_remove(&fix, &leaver, json!({})).await;
     assert_eq!(status, StatusCode::OK);
 
     let post = vtc_service::status_list::get_state(

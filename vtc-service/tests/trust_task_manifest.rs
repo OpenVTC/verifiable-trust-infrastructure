@@ -727,7 +727,8 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
 /// when a break-glass is refused with `details.stepUpRequest`; and members'
 /// step-up passkeys (`trust_tasks::step_up_passkey_tasks`) — an
 /// administrator's invite, revocation and listing, and the browser's finish
-/// of a redemption the member's `cnm` started.
+/// of a redemption the member's `cnm` started; and the admin verbs whose REST
+/// routes are gone.
 const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
     "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2",
@@ -735,6 +736,18 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2",
     "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2",
     "https://trusttasks.org/spec/auth/passkey/admin-list/0.1",
+    // Verbs with no REST route: the console signs them.
+    "https://trusttasks.org/spec/acl/list/0.1",
+    "https://trusttasks.org/spec/acl/show/0.1",
+    "https://trusttasks.org/spec/acl/grant/0.1",
+    "https://trusttasks.org/spec/acl/change-role/0.1",
+    "https://trusttasks.org/spec/acl/revoke/0.1",
+    "https://trusttasks.org/spec/vtc/community/profile/update/0.1",
+    "https://trusttasks.org/spec/vtc/members/purge/0.1",
+    "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1",
+    "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1",
+    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2",
 ];
 
 #[test]

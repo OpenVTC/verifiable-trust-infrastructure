@@ -80,10 +80,21 @@ use crate::server::AppState;
     // returns — they are Trust Task responses on the document endpoint
     // (`git_ns::admin_reads`) — but which the admin console's wire types are
     // generated from, so no shape is written twice.
+    //
+    // Likewise the admin verbs with no route at all — signed documents only —
+    // whose shapes the console's signed calls are typed by: the ACL family,
+    // the vetter listing, and the endorsement-type writes.
     components(schemas(
         policies::read::PolicyStatusFilter,
         crate::git_ns::admin_reads::GitNsNamespaceList,
         crate::git_ns::admin_reads::GitNsRepoList,
+        acl::AclListResponse,
+        acl::AclEntryEnvelope,
+        vta_sdk::openapi::VetterList01Payload,
+        vta_sdk::openapi::VetterList01Response,
+        endorsement_types::RegisterBody,
+        endorsement_types::RegisterResponse,
+        vta_sdk::openapi::EndorsementTypeDelete01Response,
     )),
 )]
 pub struct ApiDoc;
@@ -427,22 +438,36 @@ fn build_api_chain(
         // tower-governor + tighter body cap apply. The two
         // session-management endpoints below are authenticated and
         // stay on the main chain.
+        //
+        // The listing and the two revocations each carry their own task. The
+        // revocation by subject (`DELETE /auth/sessions?did=`) had borrowed
+        // `sessions/list`, and so claimed a listing's response for a
+        // revocation. `revoke-session/0.2` is the task that names both forms —
+        // one `sessionId`, or every session of a `subject` — and its response
+        // is the `revokedCount` both answer with.
         .routes(tt(
-            routes!(auth::session_list, auth::revoke_sessions_by_did),
+            routes!(auth::session_list),
             "https://trusttasks.org/spec/auth/sessions/list/0.1",
         ))
         .routes(tt(
+            routes!(auth::revoke_sessions_by_did),
+            "https://trusttasks.org/spec/auth/revoke-session/0.2",
+        ))
+        .routes(tt(
             routes!(auth::revoke_session),
-            "https://trusttasks.org/spec/auth/revoke-session/0.1",
+            "https://trusttasks.org/spec/auth/revoke-session/0.2",
         ))
         .routes(tt(
             routes!(auth::whoami),
             "https://trusttasks.org/spec/auth/whoami/0.1",
         ))
-        .routes(tt(
-            routes!(auth::sign_out),
-            "https://trusttasks.org/spec/auth/revoke-session/0.1",
-        ))
+        // Sign-out ends the browser's cookie session: it clears the cookie
+        // pair `auth/admin-session` set, which no Trust Task describes. It had
+        // borrowed `revoke-session`, whose request names a session or a
+        // subject and whose response counts them; sign-out takes neither and
+        // answers `204`. It carries no binding, and goes when the cookie
+        // session does.
+        .routes(routes!(auth::sign_out))
         // Audit log read (super-admin only).
         .routes(tt(
             routes!(audit::list_audit),
@@ -458,43 +483,15 @@ fn build_api_chain(
         // `vtc_description` on `vtc/community/profile/{show,update}`,
         // `public_url` in the config-store overlay reached through
         // `config/{show,patch}`.
-        // ACL
-        // Each verb carries its own canonical task — the two former
-        // combined mounts fan out to the five `acl/*` tasks. Safe
-        // because `task_routes` layers the *method* router and axum
-        // merges same-path routers per method (pinned by
-        // `vti_common::trust_task::openapi`).
-        .routes(tt(
-            routes!(acl::list_acl),
-            "https://trusttasks.org/spec/acl/list/0.1",
-        ))
-        .routes(tt(
-            routes!(acl::create_acl),
-            "https://trusttasks.org/spec/acl/grant/0.1",
-        ))
-        .routes(tt(
-            routes!(acl::get_acl),
-            "https://trusttasks.org/spec/acl/show/0.1",
-        ))
-        .routes(tt(
-            routes!(acl::update_acl),
-            "https://trusttasks.org/spec/acl/change-role/0.1",
-        ))
-        .routes(tt(
-            routes!(acl::delete_acl),
-            "https://trusttasks.org/spec/acl/revoke/0.1",
-        ))
-        // Community profile (GET + PUT share one Trust Task today;
-        // a spec-aligned split into community/profile/show/1.0 +
-        // community/profile/update/1.0 lands when TrustTaskRouter
-        // gains per-method task selectors in Phase 1+).
+        // The ACL has no route: the five `acl/*` tasks are signed documents
+        // served only at `POST /v1/trust-tasks` (`trust_tasks::acl_tasks`),
+        // on every transport.
+        //
+        // Community profile. The read is REST; the edit
+        // (`vtc/community/profile/update/0.1`) is a signed document only.
         .routes(tt(
             routes!(community::profile::get_profile),
             "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
-        ))
-        .routes(tt(
-            routes!(community::profile::put_profile),
-            "https://trusttasks.org/spec/vtc/community/profile/update/0.1",
         ))
         // Public read of the community profile. Trust-Task-exempt and
         // unauthenticated — visitors landing on the default public
@@ -671,24 +668,14 @@ fn build_api_chain(
             routes!(members::read::list_members),
             "https://trusttasks.org/spec/vtc/members/list/0.1",
         ))
-        // Departed (tombstoned/historical) members + forceful purge. The
-        // literal `/removed` must precede the `/{did}` catchall so axum's
-        // path-trie doesn't route "removed" as a DID (same reason as `/me`).
+        // Departed (tombstoned/historical) members. The literal `/removed`
+        // must precede the `/{did}` catchall so axum's path-trie doesn't route
+        // "removed" as a DID. The purge (`vtc/members/purge/0.1`) and a
+        // member's own departure (`vtc/members/self-remove/0.1`) have no
+        // route: both are signed documents only.
         .routes(tt(
             routes!(members::read::list_removed),
             "https://trusttasks.org/spec/vtc/members/removed/0.1",
-        ))
-        .routes(tt(
-            routes!(members::remove::purge),
-            "https://trusttasks.org/spec/vtc/members/purge/0.1",
-        ))
-        // `/v1/members/me` for self-remove (M1.11.1). Must be
-        // declared BEFORE the `/v1/members/{did}` mount otherwise
-        // axum's path-trie picks the parameterised route first
-        // and routes "me" as a literal DID.
-        .routes(tt(
-            routes!(members::remove::self_remove),
-            "https://trusttasks.org/spec/vtc/members/self-remove/0.1",
         ))
         // Renewal (M2.13). POST on its own mount so the
         // Trust Task header check + per-method selectors are
@@ -715,33 +702,11 @@ fn build_api_chain(
             routes!(members::request_vmc::request_vmc),
             "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1",
         ))
-        // Phase 4 M4.3 + M4.4 — personhood lifecycle. Three
-        // mounts on the same path prefix; declared BEFORE
-        // `/v1/members/{did}` so axum's path-trie matches the
-        // literal segment first. Personhood is a per-member
-        // resource; `{did}` is the subject.
-        .routes(tt(
-            routes!(members::personhood::challenge),
-            "https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1",
-        ))
-        // POST and DELETE each carry their own task. They shared
-        // `personhood/assert/0.1` "pending per-method selectors" — a
-        // workaround that outlived its reason: `task_routes` has supported
-        // one task per verb on a shared path since
-        // `per_method_tasks_on_one_path_are_enforced_independently` landed in
-        // `vti_common::trust_task::openapi`, and registering the path twice
-        // merges the operations rather than overwriting them.
-        //
-        // It was not cosmetic. A revoke replied under the *assert* task, so a
-        // client was told the wrong task for the document it received, and
-        // the response could not satisfy the schema it claimed: assert
-        // requires `personhood: const true` plus `vmc` and `roleVec`, and a
-        // revoke legitimately sends `false` with neither. The
-        // response-conformance layer found it on real traffic.
-        .routes(tt(
-            routes!(members::personhood::assert),
-            "https://trusttasks.org/spec/vtc/members/personhood/assert/0.1",
-        ))
+        // Phase 4 M4.3 + M4.4 — personhood lifecycle. The challenge and the
+        // assertion are signed documents only (`vtc/members/personhood/
+        // {challenge,assert}/0.1`); the revoke keeps its route, declared
+        // BEFORE `/v1/members/{did}` so axum's path-trie matches the literal
+        // segment first.
         .routes(tt(
             routes!(members::personhood::revoke),
             "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1",
@@ -795,25 +760,11 @@ fn build_api_chain(
             routes!(relationships::attach_persona, relationships::detach_persona),
             "https://trusttasks.org/spec/vtc/relationships/persona/0.1",
         ))
-        // Phase 4 M4.8.1 — operator-uploaded endorsement type
-        // registry. Admin-gated CRUD.
-        // POST + GET on `/endorsement-types` each carry their own canonical
-        // task. They shared `register`'s URI while the router was believed
-        // to need per-method selectors; it does not (`task_routes` layers
-        // the method router, axum merges same-path routers per method — see
-        // `vti_common::trust_task::openapi`), so `list` now enforces the
-        // standalone spec that previously shipped unenforced.
-        .routes(tt(
-            routes!(endorsement_types::register),
-            "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1",
-        ))
+        // Phase 4 M4.8.1 — operator-uploaded endorsement type registry. The
+        // listing is REST; `register` and `delete` are signed documents only.
         .routes(tt(
             routes!(endorsement_types::list),
             "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1",
-        ))
-        .routes(tt(
-            routes!(endorsement_types::delete),
-            "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1",
         ))
         // Phase 2 §8 — community schema store (Issues + Accepts
         // registry). Plain admin-gated CRUD (AdminAuth extractor),
@@ -893,12 +844,8 @@ fn build_api_chain(
             routes!(vetting::resend_vetter),
             "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1",
         ))
-        // The public listing, as an admin session reads it: the same task and
-        // payload an applicant sends, so the console previews what they see.
-        .routes(tt(
-            routes!(vetting::list_listed_vetters),
-            "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1",
-        ))
+        // The public listing (`vtc/vetting/vetters/list/0.1`) has no route:
+        // the console sends the same signed document an applicant does.
         // The by-DID lookup the listing cannot answer: an unlisted vetter and a
         // revoked one are both absent from a listing (#1651).
         .routes(tt(
@@ -944,13 +891,8 @@ fn build_api_chain(
         // The vetting facts a request was decided on — admin REST with no Trust
         // Task of its own.
         .routes(routes!(join_requests::read::show_join_request_vetting))
-        // The join manifest (0.2) for an admin session: the answer applicants get
-        // from `POST /v1/trust-tasks`, under the same task, for the console's
-        // view of the published vetting requirements and their digests.
-        .routes(tt(
-            routes!(join_requests::manifest::admin_manifest),
-            "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2",
-        ))
+        // The join manifest has no route: the console reads it as the signed
+        // `vtc/join-requests/manifest/0.2` document applicants send.
         // One decision endpoint, one task: `decide/0.1` carries
         // `{ decision: approved | rejected, reason? }`, superseding the
         // retired `approve/0.1` + `reject/0.1` pair (clean cutover — the
@@ -1260,8 +1202,20 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
         // recipient, freshness and replay rules its specification declares, and
         // the verb reads the *verified signer's* ACL entry. See
         // `trust_tasks::admin_signer`.
-        .routes(routes!(trust_tasks::dispatch))
-        .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
+        //
+        // Its body cap is not `UNAUTH_BODY_SIZE`: each Trust Task type declares
+        // its own largest document (`crate::trust_tasks::size`, 64 KiB unless
+        // its specification needs more), and the spine refuses a document over
+        // its type's limit before parsing it. The route admits the largest any
+        // type declares, so that check is the one that decides.
+        .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE))
+        .merge(
+            OpenApiRouter::<AppState>::new()
+                .routes(routes!(trust_tasks::dispatch))
+                .layer(DefaultBodyLimit::max(
+                    crate::trust_tasks::size::LARGEST_MAX_DOCUMENT_BYTES,
+                )),
+        );
 
     // One extractor covers both cases: with an empty CIDR list
     // `TrustedProxyKeyExtractor` trusts nothing and so keys on the socket
@@ -1503,8 +1457,6 @@ mod openapi_tests {
         let paths = &spec.paths.paths;
         // A representative path (all nested under /v1) from each major group.
         for p in [
-            "/v1/acl",
-            "/v1/acl/{did}",
             "/v1/audit",
             "/v1/auth/challenge",
             "/v1/auth/sessions",
@@ -1531,6 +1483,33 @@ mod openapi_tests {
             "expected the documented surface to be >= 55 paths, got {}",
             paths.len()
         );
+    }
+
+    /// The verbs served only as signed documents at `POST /v1/trust-tasks`
+    /// have no REST route: no path, and no method on a path that stays for
+    /// another verb.
+    #[test]
+    fn signed_only_verbs_have_no_route() {
+        let spec = openapi_spec();
+        let paths = &spec.paths.paths;
+        for p in [
+            "/v1/acl",
+            "/v1/acl/{did}",
+            "/v1/members/me",
+            "/v1/members/{did}/purge",
+            "/v1/members/{did}/personhood/challenge",
+            "/v1/endorsement-types/{type_uri}",
+            "/v1/vetting/vetters/list",
+            "/v1/join-requests/manifest",
+            "/v1/join-requests/{id}/status",
+        ] {
+            assert!(!paths.contains_key(p), "{p} is a signed document only");
+        }
+        let item = |p: &str| paths.get(p).unwrap_or_else(|| panic!("{p} is documented"));
+        assert!(item("/v1/community/profile").put.is_none());
+        assert!(item("/v1/endorsement-types").post.is_none());
+        assert!(item("/v1/members/{did}/personhood").post.is_none());
+        assert!(item("/v1/join-requests").post.is_none());
     }
 
     // ── Route-posture backstop (P2.6) ──────────────────────────────────────

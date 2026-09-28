@@ -7,7 +7,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { postSignedTrustTask, signedOrBearer, SigningUnavailableError } from "./api";
+import { postSignedTrustTask, SigningUnavailableError } from "./api";
 import type { SignedTrustTaskDocument } from "./console-key";
 import {
   forgetConsoleKey,
@@ -143,20 +143,10 @@ describe("postSignedTrustTask", () => {
   });
 });
 
-describe("signedOrBearer", () => {
-  it("takes the bearer route when this browser has never enrolled", async () => {
-    mockFetch([health()]);
-    let bearerCalls = 0;
-    const result = await signedOrBearer(PURGE, { did: "x" }, async () => {
-      bearerCalls += 1;
-      return "from-bearer";
-    });
-    expect(result).toBe("from-bearer");
-    expect(bearerCalls).toBe(1);
-  });
-
-  it("takes the bearer route on a browser with no WebCrypto Ed25519", async () => {
-    // Chrome <137 / Firefox <130 / Safari <17. The console must keep working.
+describe("no bearer door", () => {
+  it("tells a browser with no WebCrypto Ed25519 that it cannot sign", async () => {
+    // Chrome <137 / Firefox <130 / Safari <17. There is no REST route to fall
+    // back to: the operator is told why, and nothing is sent.
     await generateConsoleKey();
     resetConsoleKeyCacheForTests();
     const real = crypto.subtle.generateKey;
@@ -165,9 +155,11 @@ describe("signedOrBearer", () => {
       value: () => Promise.reject(new DOMException("nope", "NotSupportedError")),
     });
     try {
-      mockFetch([health()]);
-      const result = await signedOrBearer(PURGE, {}, async () => "from-bearer");
-      expect(result).toBe("from-bearer");
+      const requests = mockFetch([health()]);
+      await expect(postSignedTrustTask(PURGE, {})).rejects.toBeInstanceOf(
+        SigningUnavailableError,
+      );
+      expect(requests.filter((r) => r.url.endsWith("/v1/trust-tasks"))).toHaveLength(0);
     } finally {
       Object.defineProperty(crypto.subtle, "generateKey", {
         configurable: true,
@@ -176,11 +168,7 @@ describe("signedOrBearer", () => {
     }
   });
 
-  it("does NOT fall back when the signed call is refused", async () => {
-    // The property that makes the fallback safe. Retrying a refused document
-    // over a bearer token would use the session as the authority the signed
-    // door exists to stop relying on — and would hide a revocation from the
-    // operator who just performed it.
+  it("surfaces a refused signed call as the refusal", async () => {
     await generateConsoleKey();
     mockFetch([
       health(),
@@ -191,14 +179,9 @@ describe("signedOrBearer", () => {
         body: { payload: { code: "permissionDenied", message: "no" } },
       },
     ]);
-
-    let bearerCalls = 0;
-    await expect(
-      signedOrBearer(PURGE, {}, async () => {
-        bearerCalls += 1;
-        return "from-bearer";
-      }),
-    ).rejects.toMatchObject({ status: 403 });
-    expect(bearerCalls).toBe(0);
+    await expect(postSignedTrustTask(PURGE, {})).rejects.toMatchObject({
+      status: 403,
+      code: "permissionDenied",
+    });
   });
 });

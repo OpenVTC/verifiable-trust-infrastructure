@@ -14,313 +14,6 @@
     "version": "0.11.58"
   },
   "paths": {
-    "/v1/acl": {
-      "get": {
-        "tags": [
-          "acl"
-        ],
-        "summary": "GET /acl — list ACL entries visible to the caller. Auth: Manage.",
-        "operationId": "list_acl",
-        "parameters": [
-          {
-            "name": "role",
-            "in": "query",
-            "description": "Return only entries with this role.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "scope",
-            "in": "query",
-            "description": "Return only entries carrying this scope (canonical name for\nwhat VTC stores as an allowed context).",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "subjectPrefix",
-            "in": "query",
-            "description": "Return only entries whose subject starts with this prefix.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "direction",
-            "in": "query",
-            "description": "How `scope` is read over the hierarchy: `acting-in` (the default)\nreturns entries that may act in it — scoped to it or to an ancestor;\n`subtree` returns entries holding a grant at or beneath it; `any` is the\nunion. Canonical `acl/list/0.1` `direction`.",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "description": "Which way a context filter reads along the context hierarchy.\n\nA context id names a subtree, so \"entries relevant to context X\" is two\nquestions, not one, and an answer is only meaningful paired with the\ndirection being asked:\n\n| direction | question | predicate |\n|---|---|---|\n| [`ActingIn`](ContextDirection::ActingIn) | who may act **in** X? | scope is X or an ancestor of it |\n| [`Subtree`](ContextDirection::Subtree) | who holds a grant **beneath** X? | scope is X or a descendant of it |\n| [`Any`](ContextDirection::Any) | whose authority **touches** X's subtree? | either of the above |\n\nOnly [`ActingIn`](ContextDirection::ActingIn) existed until now, and a\ncaller sweeping a subtree to revoke it got back exactly the entries it was\n*not* revoking (the ancestors keeping their authority) while every\nleaf-scoped grant it existed to cut was silently absent — an incomplete\nanswer that looks like a complete one (#822).\n\n[`ActingIn`](ContextDirection::ActingIn) is the default, so an omitted\nparameter is today's behaviour exactly. An unparseable value is refused\nrather than defaulted: guessing which question an operator meant is how the\nsilent-wrong-answer failure returns.",
-              "enum": [
-                "acting-in",
-                "subtree",
-                "any"
-              ]
-            }
-          },
-          {
-            "name": "pageSize",
-            "in": "query",
-            "description": "Page size. Clamped to `1..=200`. Defaults to 50.",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 0
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "description": "Opaque continuation token from a previous page's `cursor`.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Visible ACL entries",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AclListResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller lacks manage authority"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "acl"
-        ],
-        "summary": "POST /acl — create a new ACL entry. Auth: Manage.",
-        "operationId": "create_acl",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateAclRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "ACL entry created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AclEntryEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller lacks manage authority / granting `admin` without a live step-up / granting `admin` to yourself"
-          },
-          "409": {
-            "description": "Entry exists at a different role — use acl/change-role"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/acl/{did}": {
-      "get": {
-        "tags": [
-          "acl"
-        ],
-        "summary": "GET /acl/{did} — retrieve a single ACL entry. Auth: Manage.",
-        "operationId": "get_acl",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Subject DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "ACL entry",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AclEntryEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller lacks manage authority"
-          },
-          "404": {
-            "description": "ACL entry not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "acl"
-        ],
-        "summary": "DELETE /acl/{did} — revoke: remove the entry, or reduce its scopes\nwhen `scopes` is supplied. Auth: Admin.",
-        "operationId": "delete_acl",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Subject DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "scopes",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "reason",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Entry revoked: `entry` is null after a removal, the reduced entry after a scope reduction",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AclRevokeV0_1Response"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`scopes` present but empty"
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin, or does not administer every context the entry acts in"
-          },
-          "404": {
-            "description": "ACL entry not found (`acl/revoke:subjectNotPresent`), or none of the named scopes are held"
-          },
-          "409": {
-            "description": "Own entry; a member's entry (use the leave ceremony); a reduction that would unscope the entry; or the last unrestricted admin (`acl/revoke:lastAuthorityProtected`)"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "patch": {
-        "tags": [
-          "acl"
-        ],
-        "summary": "PATCH /acl/{did} — modify an ACL entry. Auth: Admin.",
-        "operationId": "update_acl",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Subject DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateAclRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Updated ACL entry",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AclEntryEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin / promoting to `admin` without a live step-up / self-promotion / denied by the role-change policy"
-          },
-          "404": {
-            "description": "ACL entry not found"
-          },
-          "409": {
-            "description": "`fromRole` does not match the stored role, or the row moved under the promote lock"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/admin/bootstrap": {
       "post": {
         "tags": [
@@ -1439,7 +1132,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RevokeByDidResponse"
+                  "$ref": "#/components/schemas/RevokeSessionResponse"
                 }
               }
             }
@@ -1477,8 +1170,15 @@
           }
         ],
         "responses": {
-          "204": {
-            "description": "Session revoked"
+          "200": {
+            "description": "Session revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeSessionResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid bearer token"
@@ -1771,53 +1471,6 @@
           },
           "404": {
             "description": "Community profile not initialised"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "put": {
-        "tags": [
-          "community"
-        ],
-        "summary": "PUT handler. Admin-only. Refuses changes to `community_did`.",
-        "description": "Emits a `CommunityProfileUpdated` audit event keyed to the\ncalling admin's real DID. Audit is fail-closed: a change that\ncan't be recorded (no `AuditWriter`) returns 503 rather than\npersisting silently — matching the `/v1/admin/config` doors so\nauditability doesn't depend on which surface the admin used.\nPUT /community/profile — update the community profile. Auth: Admin.\nRefuses changes to the immutable `community_did`.\n\n**Transitional bearer-token path (#1641).**\n`vtc/community/profile/update/0.1` declares `proof` REQUIRED, and the\nauthoritative binding is the signed Trust Task document at\n`POST /v1/trust-tasks`, where the proof authenticates the administrator\nediting the community's public identity and their authority is read from\ntheir ACL entry. This route authenticates by bearer JWT and verifies no\ndocument proof; it is kept only until the admin console can sign a Trust\nTask document, and is removed in the same change that gives it that.",
-        "operationId": "put_profile",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CommunityProfileUpdate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Updated profile + the fields that changed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UpdateProfileResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "404": {
-            "description": "Community profile not initialised"
-          },
-          "503": {
-            "description": "Audit writer not configured — change refused"
           }
         },
         "security": [
@@ -2259,94 +1912,6 @@
           },
           "403": {
             "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "endorsement-types"
-        ],
-        "summary": "POST /endorsement-types — register an endorsement type. Auth: Admin.",
-        "description": "**Transitional bearer-token path (#1641).**\n`vtc/endorsement-types/register/0.1` declares `proof` REQUIRED, and the\nauthoritative binding is the signed Trust Task document at\n`POST /v1/trust-tasks`, where the proof authenticates the administrator and\ntheir authority is read from their ACL entry. This route authenticates by\nbearer JWT and verifies no document proof; the admin console uses it only\nfrom a browser with no console signing key enrolled, and it is removed once\nevery client signs.",
-        "operationId": "endorsementTypeRegister",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RegisterBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Endorsement type registered",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RegisterResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/endorsement-types/{type_uri}": {
-      "delete": {
-        "tags": [
-          "endorsement-types"
-        ],
-        "summary": "The response is the **generated** `vtc/endorsement-types/delete/0.1`\ntype, not a local restatement of it.",
-        "description": "A hand-written `{ typeUri }` lived here until the census in\n`vta-sdk/tests/generated_wire_types_census.rs` named it. It had been\ninvisible to that census only because it carried no doc comment\nsaying which task it restated — giving it one, while renaming it out\nof a three-way `DeleteResponse` collision, is what surfaced a\nviolation that predated the rename.\n\n`utoipa::ToSchema` cannot be derived on a foreign type, so the handler\nreturns [`EndorsementTypeDelete01Response`] — the `spec_types!` newtype\nwhose schema is rendered from the specification's own — wrapping the\ngenerated value rather than describing the shape a second time.\n\nReturning the wrapper, not the bare generated type, is what\n`openapi_response_census` requires: the `body =` annotation and the\nhandler's return type must name the same thing, because that annotation\nis what generates the console's `wire.ts` and a mismatch ships a console\nreading a shape the daemon never sends.\n\n**Transitional bearer-token path (#1641).**\n`vtc/endorsement-types/delete/0.1` declares `proof` REQUIRED, and the\nauthoritative binding is the signed Trust Task document at\n`POST /v1/trust-tasks`, where the proof authenticates the administrator and\ntheir authority is read from their ACL entry. This route authenticates by\nbearer JWT and verifies no document proof; the admin console uses it only\nfrom a browser with no console signing key enrolled, and it is removed once\nevery client signs.",
-        "operationId": "endorsementTypeDelete",
-        "parameters": [
-          {
-            "name": "type_uri",
-            "in": "path",
-            "description": "Endorsement type URI",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Endorsement type deleted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VtcEndorsementTypesDeleteV0_1Response"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "404": {
-            "description": "Endorsement type not found"
           }
         },
         "security": [
@@ -2953,39 +2518,6 @@
         ]
       }
     },
-    "/v1/join-requests/manifest": {
-      "get": {
-        "tags": [
-          "join-requests"
-        ],
-        "summary": "GET /join-requests/manifest — the join manifest (0.2) as applicants receive\nit, for an admin session.",
-        "description": "Applicants read the manifest as a Trust Task document over\n`POST /v1/trust-tasks`. The admin console reads the same answer here, under\nthe same `vtc/join-requests/manifest/0.2` task, to show each criterion's\nvetting requirements and `requirementsDigest` — criteria are registered\nthrough `/v1/schemas/accepts`, which carries no digest.",
-        "operationId": "joinRequestManifestShow",
-        "responses": {
-          "200": {
-            "description": "The join manifest (0.2): each criterion with its vetting requirements and requirementsDigest, and the branding",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2Response"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/join-requests/query": {
       "post": {
         "tags": [
@@ -3248,48 +2780,6 @@
           },
           "403": {
             "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/members/me": {
-      "delete": {
-        "tags": [
-          "members"
-        ],
-        "summary": "DELETE /members/me — self-leave ceremony. Auth: any authenticated member.",
-        "operationId": "self_remove",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RemoveBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Member removed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RemoveResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Removal denied by policy"
           }
         },
         "security": [
@@ -3663,60 +3153,6 @@
       }
     },
     "/v1/members/{did}/personhood": {
-      "post": {
-        "tags": [
-          "members"
-        ],
-        "summary": "POST /members/{did}/personhood — assert personhood via a VP.\nAuth: any authenticated session.",
-        "operationId": "assert",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Member DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AssertBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Personhood asserted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AssertResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Personhood proof invalid / policy denied"
-          },
-          "404": {
-            "description": "Member not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
       "delete": {
         "tags": [
           "members"
@@ -3753,93 +3189,6 @@
           },
           "404": {
             "description": "Member not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/members/{did}/personhood/challenge": {
-      "post": {
-        "tags": [
-          "members"
-        ],
-        "summary": "POST /members/{did}/personhood/challenge — mint a personhood challenge.\nAuth: any authenticated session.",
-        "operationId": "personhoodChallenge",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Member DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Personhood challenge minted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PersonhoodChallengeResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "404": {
-            "description": "Member not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/members/{did}/purge": {
-      "delete": {
-        "tags": [
-          "members"
-        ],
-        "summary": "DELETE /members/{did}/purge — permanently delete a member row, including a\nlingering **tombstone** (a departed member whose row was kept after its ACL\nwas removed). Hard-deletes the ACL (if any) + Member row, decrements the\ncount, and flips the revocation bit. Auth: **Super-admin** (forceful, skips\nthe removal policy). Refuses the sole admin (no-last-admin invariant).",
-        "description": "**Transitional bearer-token path (#1641).** `vtc/members/purge/0.1` declares\n`proof` REQUIRED, and the authoritative binding is the signed Trust Task\ndocument at `POST /v1/trust-tasks`, where the proof authenticates the\nsuper-administrator and their authority is read from their ACL entry. This\nroute authenticates by bearer JWT and verifies no document proof; it is kept\nonly until the admin console can sign a Trust Task document, and is removed\nin the same change that gives it that.",
-        "operationId": "purge",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Member DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Member purged",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RemoveResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not a super-admin / would orphan the last admin"
-          },
-          "404": {
-            "description": "No member or tombstone to purge"
           }
         },
         "security": [
@@ -5420,7 +4769,7 @@
             "description": "Trust Task #response document"
           },
           "400": {
-            "description": "Malformed document / payload (trust-task-error)"
+            "description": "Malformed document / payload, or a document larger than its type accepts (trust-task-error)"
           },
           "403": {
             "description": "Holder auth / VIC verification failed (trust-task-error)"
@@ -5617,52 +4966,6 @@
           },
           "403": {
             "description": "Caller is not a community admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/vetting/vetters/list": {
-      "post": {
-        "tags": [
-          "vetting"
-        ],
-        "summary": "The public vetter listing, as applicants see it.",
-        "description": "The body and the answer are `vtc/vetting/vetters/list/0.1`'s, and both go\nthrough [`crate::vetting::profiles::list`], so the console previews exactly\nwhat `POST /v1/trust-tasks` returns to an applicant with the same filters.",
-        "operationId": "vettingVetterListing",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VtcVettingVettersListV0_1Payload"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "A page of listed vetters",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VtcVettingVettersListV0_1Response"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "A filter breaks its bounds, or the cursor was issued for other filters"
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
           }
         },
         "security": [
@@ -5907,128 +5210,6 @@
           }
         }
       },
-      "AclRevokeV0_1AclEntry": {
-        "type": "object",
-        "required": [
-          "subject",
-          "role"
-        ],
-        "properties": {
-          "allowedKeys": {
-            "description": "Key identifiers this subject may invoke the maintainer's signing oracle on. INTERSECTS WITH `scopes` — it can only narrow, never widen: a key named here that lies outside the entry's scopes remains unreachable, exactly as if it were not named. ABSENT means every key within the entry's scopes (the behaviour of entries that pre-date this member); explicit `null` is equivalent to absent, and producers SHOULD omit the member instead. PRESENT-BUT-EMPTY means authorized on NO keys — the opposite of absent, and deliberately so: emptiness is never a wildcard (CONVENTIONS.md §5). A consumer MUST preserve and enforce the absent-vs-empty distinction end to end; collapsing the two (e.g. by testing emptiness alone) re-creates the empty-means-unrestricted class of privilege-escalation defect this family's conventions exist to prevent."
-          },
-          "approve": {
-            "type": "object",
-            "description": "Approve-authority: what this subject may **confer on others** by ratifying an approval, as distinct from `scopes`, which is what it may **exercise itself**. The two axes are independent, and that independence is the point — it is what lets a maintainer configure a least-privilege approver who can authorize an operation in a scope it has no authority to perform.\n\nOMISSION MEANS NOTHING IS CONFERRED. An absent `approve`, an absent `all`, and an empty `scopes` are all equivalent to \"this subject may ratify nothing\". A consumer that does not implement this member therefore confers less than the producer intended rather than more, which is the direction a missed member has to fail in.\n\nA subject with approve-authority is NOT thereby authorized to act. Consumers MUST resolve the two axes separately: reading `approve` to answer \"may this party ratify X\" and `scopes` to answer \"may this party do X\". Collapsing them grants an approver the ability to perform what it was only meant to sign off on.",
-            "properties": {
-              "all": {
-                "type": "boolean",
-                "description": "The subject may confer ANY scope. Takes precedence over `scopes`, which a consumer MUST ignore when this is true. Absent or false → only the scopes listed below, if any."
-              },
-              "scopes": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Opaque scope identifiers this subject may confer, drawn from the same vocabulary as the entry's own `scopes`. Where a maintainer's scopes are hierarchical, conferring a scope confers its descendants — the same containment rule the maintainer already applies to `scopes`, so the two axes cannot disagree about what a scope means. An empty array confers nothing; it is not a wildcard."
-              }
-            },
-            "additionalProperties": false
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "createdBy": {
-            "type": "string",
-            "description": "VID of the party that originally added this entry."
-          },
-          "expiresAt": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Optional time after which the entry is no longer effective."
-          },
-          "ext": {
-            "$ref": "#/components/schemas/AclRevokeV0_1Ext"
-          },
-          "label": {
-            "type": "string",
-            "description": "Optional human-readable label.",
-            "maxLength": 256
-          },
-          "role": {
-            "type": "string",
-            "description": "Opaque role identifier interpreted by the ACL maintainer."
-          },
-          "scopes": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Opaque scope identifiers (e.g. contexts, domains, resource prefixes)."
-          },
-          "stepUp": {
-            "type": "object",
-            "description": "Per-entry authentication step-up configuration, consumed by the ACL maintainer when it gates an operation behind a step-up (see auth/step-up/policy/0.1). ADDITIVE-ONLY: a per-entry setting MAY raise the assurance required of this subject above the maintainer's system-wide floor, but MUST NOT lower it. The maintainer resolves the effective requirement as the strictest of (system floor, this entry).",
-            "properties": {
-              "approver": {
-                "type": "string",
-                "description": "VID authorized to ratify step-up for this subject — the `recipient` the maintainer addresses an auth/step-up/approve-request to (e.g. the holder's mobile authenticator or browser companion). Absent → the subject is its own approver (mode `self`) when it holds a usable authenticator; if neither an `approver` nor a self authenticator exists, no step-up method is available for this subject and the maintainer's fail-closed rule applies."
-              },
-              "require": {
-                "type": "string",
-                "description": "Minimum step-up mode this subject MUST satisfy for gated operations, raising the system floor. `self` = the subject re-authenticates its own session; `delegated` = a separate `approver` MUST ratify. Omitted → the system floor applies unchanged. A value weaker than the resolved floor is ignored (additive-only).",
-                "enum": [
-                  "self",
-                  "delegated"
-                ]
-              }
-            },
-            "additionalProperties": false
-          },
-          "subject": {
-            "type": "string",
-            "description": "VID of the party in the ACL. Compared by exact string equality (SPEC.md §4.8); producers SHOULD emit canonical form."
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "updatedBy": {
-            "type": "string",
-            "description": "VID of the party that last modified this entry."
-          }
-        },
-        "additionalProperties": false
-      },
-      "AclRevokeV0_1Ext": {
-        "type": "object",
-        "description": "Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework.",
-        "additionalProperties": true,
-        "minProperties": 1
-      },
-      "AclRevokeV0_1Response": {
-        "type": "object",
-        "description": "The success response to an acl/revoke request. Carried in a Trust Task document whose type is https://trusttasks.org/spec/acl/revoke/0.1#response.",
-        "required": [
-          "entry"
-        ],
-        "properties": {
-          "entry": {
-            "oneOf": [
-              {},
-              {
-                "$ref": "#/components/schemas/AclRevokeV0_1AclEntry"
-              }
-            ],
-            "description": "The AclEntry the maintainer now holds for the subject. null for a full removal; an AclEntry with reduced scopes for a scope reduction."
-          },
-          "ext": {
-            "$ref": "#/components/schemas/AclRevokeV0_1Ext"
-          }
-        },
-        "additionalProperties": false
-      },
       "ActivateResponse": {
         "type": "object",
         "required": [
@@ -6202,41 +5383,6 @@
           },
           "sessionId": {
             "type": "string"
-          }
-        }
-      },
-      "AssertBody": {
-        "type": "object",
-        "required": [
-          "presentation"
-        ],
-        "properties": {
-          "presentation": {
-            "$ref": "#/components/schemas/Value",
-            "description": "W3C Verifiable Presentation. `holder` must equal the\npath-DID; `proof.challenge` must equal a fresh challenge\nid from `POST .../personhood/challenge`."
-          }
-        }
-      },
-      "AssertResponse": {
-        "type": "object",
-        "required": [
-          "did",
-          "personhood",
-          "vmc",
-          "roleVec"
-        ],
-        "properties": {
-          "did": {
-            "type": "string"
-          },
-          "personhood": {
-            "type": "boolean"
-          },
-          "roleVec": {
-            "$ref": "#/components/schemas/Value"
-          },
-          "vmc": {
-            "$ref": "#/components/schemas/Value"
           }
         }
       },
@@ -6757,67 +5903,6 @@
           }
         }
       },
-      "CommunityProfileUpdate": {
-        "type": "object",
-        "description": "PUT-shaped patch. Distinct from [`CommunityProfile`] because the\n`community_did` and `created_at` fields are immutable — exposing\nthem on the request body invites tampering, so we drop them at\nthe type level.\n\nEvery field is `Option` so a PUT can update a subset of fields\nwhile leaving the rest unchanged. Setting `extensions: Some(Value::Null)`\nclears the blob; omitting it (`None`) leaves it untouched.",
-        "properties": {
-          "contactEmail": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "description": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "extensions": {},
-          "language": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "logoUrl": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "personhood": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/PersonhoodGovernance",
-                "description": "See [`PersonhoodGovernance`]. Replaced wholesale rather than merged\nfield-by-field: the two booleans are a conjunction the operator is\nasserting together, and a partial patch that flipped one while leaving\nthe other at whatever it happened to be is how a community ends up\nclaiming PHC status it did not mean to claim."
-              }
-            ]
-          },
-          "publicUrl": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "relationshipIdentifierDefault": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "See [`CommunityProfile::relationship_identifier_default`]. Must be one\nof [`RELATIONSHIP_IDENTIFIER_FORMS`]."
-          }
-        }
-      },
       "ConfigRejectedKey": {
         "type": "object",
         "description": "One rejected key + the reason. Surfaced to the caller so the\nadmin UX can present a meaningful error inline.",
@@ -6934,26 +6019,6 @@
             "format": "date-time"
           }
         }
-      },
-      "CreateAclRequest": {
-        "type": "object",
-        "description": "Canonical `acl/grant` request: the entry the maintainer should hold\nfor the subject, plus an optional operator rationale.",
-        "required": [
-          "entry"
-        ],
-        "properties": {
-          "entry": {
-            "$ref": "#/components/schemas/GrantEntry"
-          },
-          "reason": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Operator rationale. Emitted on the service log line for this\nchange; the audit envelope's data types do not carry a free-text\nreason today, so this is deliberately not described as audited."
-          }
-        },
-        "additionalProperties": false
       },
       "CreateInviteRequest": {
         "type": "object",
@@ -9251,43 +8316,6 @@
         },
         "additionalProperties": false
       },
-      "GrantEntry": {
-        "type": "object",
-        "description": "The writable subset of a canonical `AclEntry`. Server-owned fields\n(`createdAt`/`createdBy`/`updatedAt`/`updatedBy`) are deliberately\nabsent — a caller must not be able to backdate provenance.",
-        "required": [
-          "subject",
-          "role"
-        ],
-        "properties": {
-          "expiresAt": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time",
-            "description": "RFC3339, per canonical `AclEntry.expiresAt`."
-          },
-          "label": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "role": {
-            "$ref": "#/components/schemas/VtcRole"
-          },
-          "scopes": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "subject": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": false
-      },
       "GrantOrigin": {
         "type": "string",
         "description": "Who issued a vetter grant.",
@@ -10964,28 +9992,6 @@
           }
         }
       },
-      "PersonhoodChallengeResponse": {
-        "type": "object",
-        "required": [
-          "challengeId",
-          "expiresAt",
-          "ext"
-        ],
-        "properties": {
-          "challengeId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "expiresAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "ext": {
-            "$ref": "#/components/schemas/Value",
-            "description": "Vendor-namespaced extension members (SPEC §4.5.1). Carries\n[`match_code::MATCH_CODE_EXT_KEY`] — the eight characters the\nadmin and the member read to each other to confirm they are\nlooking at the same ceremony. See [`crate::members::match_code`]\nfor why the code rides here rather than as a top-level field."
-          }
-        }
-      },
       "PersonhoodGovernance": {
         "type": "object",
         "description": "What a community's governance asserts about personhood, and therefore\nwhether its VMCs may be read as PHCs.\n\nDTG Credentials §Personhood Credentials: \"A PHC is simply a VMC issued by\na VTC whose governance enforces: real human personhood; exactly one\nmembership per person.\"  Those two clauses are the two booleans here.\n\n## Both halves, separately\n\nThey are separate fields because they are separately achievable, and a\ncommunity that has one without the other should be able to say so. This\ndaemon's in-person vetting supports the first — an administrator meets\nsomeone and issues them an identity-verification endorsement — and does\nnothing at all for the second. Collapsing them into one `is_phc` flag\nwould force every such community to either overclaim or stay silent.\n\n## Declaration, not enforcement — and the honesty rule that follows\n\nLike [`CommunityProfile::relationship_identifier_default`], this describes\nwhat the community's governance requires. Nothing here makes the daemon\nenforce anything.\n\nThat makes an overclaim worse than silence. Before this field, a verifier\nreading a `PersonhoodCredential` type had no authoritative source and knew\nit; a `singleMembership: true` from a community that does not enforce\nuniqueness gives that verifier a false one. **Do not set a flag the\ncommunity's governance does not actually require** — and note that\nrequiring it is not the same as this daemon checking it. `personhood.rego`\nis where a requirement becomes a gate.",
@@ -12001,19 +11007,6 @@
           }
         }
       },
-      "RevokeByDidResponse": {
-        "type": "object",
-        "required": [
-          "revoked"
-        ],
-        "properties": {
-          "revoked": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          }
-        }
-      },
       "RevokeFinishRequest": {
         "type": "object",
         "required": [
@@ -12060,6 +11053,20 @@
         "properties": {
           "jti": {
             "type": "string"
+          }
+        }
+      },
+      "RevokeSessionResponse": {
+        "type": "object",
+        "description": "`auth/revoke-session/0.2#response` — how many sessions the call ended.",
+        "required": [
+          "revokedCount"
+        ],
+        "properties": {
+          "revokedCount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -12528,30 +11535,6 @@
           }
         }
       },
-      "UpdateAclRequest": {
-        "type": "object",
-        "description": "Canonical `acl/change-role` request.\n\nRole-only, and `fromRole` is a **compare-and-swap guard**, not\ndecoration: the maintainer must confirm the subject's current role\nequals it and refuse otherwise. That closes the read-modify-write\nrace the previous partial update had — two admins demoting the same\nsubject concurrently could each read `admin` and write a different\nresult, last-writer-wins, with no signal.\n\nLabel and scope edits are **not** here: they go to `acl/grant` with\nthe subject's existing role, which is what canonical means by \"the\nentry the maintainer should hold\".",
-        "required": [
-          "fromRole",
-          "toRole"
-        ],
-        "properties": {
-          "fromRole": {
-            "$ref": "#/components/schemas/VtcRole"
-          },
-          "reason": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Operator rationale. Emitted on the service log line for this\nchange; the audit envelope's data types do not carry a free-text\nreason today, so this is deliberately not described as audited."
-          },
-          "toRole": {
-            "$ref": "#/components/schemas/VtcRole"
-          }
-        },
-        "additionalProperties": false
-      },
       "UpdateMemberRequest": {
         "type": "object",
         "description": "Body of the PATCH request. Every field is optional; a request\nwith no fields is a no-op (200 with the current row).",
@@ -12598,25 +11581,6 @@
                 "$ref": "#/components/schemas/VtcRole"
               }
             ]
-          }
-        }
-      },
-      "UpdateProfileResponse": {
-        "type": "object",
-        "description": "PUT response shape — echoes the updated profile + the list of\nfields that actually changed (operator-friendly + powers the\naudit event emitter that lands alongside this in a follow-up).",
-        "required": [
-          "profile",
-          "fieldsChanged"
-        ],
-        "properties": {
-          "fieldsChanged": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "profile": {
-            "$ref": "#/components/schemas/CommunityProfile"
           }
         }
       },

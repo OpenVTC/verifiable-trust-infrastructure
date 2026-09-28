@@ -25,15 +25,16 @@ import { useToast } from "@/lib/toast";
 type SortKey = "did" | "state" | "createdAt" | "refreshExpiresAt";
 type SortDir = "asc" | "desc";
 
-const TRUST_TASK_MANAGE =
+const TRUST_TASK_LIST =
   "https://trusttasks.org/spec/auth/sessions/list/0.1";
+// One session, or every session of a subject: the two forms of one task.
 const TRUST_TASK_REVOKE =
-  "https://trusttasks.org/spec/auth/revoke-session/0.1";
+  "https://trusttasks.org/spec/auth/revoke-session/0.2";
 
 import type { SessionSummary } from "@/lib/wire-types";
 async function fetchSessions(): Promise<SessionSummary[]> {
   return getJson<SessionSummary[]>("/v1/auth/sessions", {
-    trustTask: TRUST_TASK_MANAGE,
+    trustTask: TRUST_TASK_LIST,
   });
 }
 
@@ -47,7 +48,7 @@ async function revokeSession(sessionId: string): Promise<void> {
 async function revokeAllForDid(did: string): Promise<void> {
   await deleteJson<unknown>(
     `/v1/auth/sessions?did=${encodeURIComponent(did)}`,
-    { trustTask: TRUST_TASK_MANAGE },
+    { trustTask: TRUST_TASK_REVOKE },
   );
 }
 

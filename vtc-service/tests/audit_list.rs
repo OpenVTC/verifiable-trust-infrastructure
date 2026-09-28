@@ -61,8 +61,11 @@ async fn list(fix: &Fixture, token: &str, query: &str) -> (StatusCode, Value) {
     body_value(fix.router.clone().oneshot(req).await.unwrap()).await
 }
 
-/// Emit real `CommunityProfileUpdated` envelopes through a live route.
-async fn seed(fix: &Fixture, token: &str, count: usize) {
+/// Emit real `CommunityProfileUpdated` envelopes through the live document
+/// endpoint: signed `vtc/community/profile/update/0.1` documents from an
+/// administrator with a real key. Returns that administrator's DID — the
+/// envelopes' actor.
+async fn seed(fix: &Fixture, _token: &str, count: usize) -> String {
     let profile = vtc_service::community::CommunityProfile::new(
         "did:webvh:vtc.example.com:abc",
         "Example Community",
@@ -70,18 +73,47 @@ async fn seed(fix: &Fixture, token: &str, count: usize) {
     vtc_service::community::store_profile(&fix.state.community_ks, &profile)
         .await
         .unwrap();
+    let admin = vti_rooms_dtg::test_support::Party::new();
+    vtc_service::acl::store_acl_entry(
+        &fix.state.acl_ks,
+        &vtc_service::acl::VtcAclEntry {
+            did: admin.did.clone(),
+            role: vtc_service::acl::VtcRole::Admin,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: vti_common::auth::session::now_epoch(),
+            created_by: "test".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    let key =
+        vta_sdk::trust_task_sign::HolderKey::from_did_key(&admin.did, &admin.secret_multibase)
+            .unwrap();
     for i in 0..count {
+        let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+            PROFILE_TASK,
+            json!({ "name": format!("Rename {i}") }),
+            &admin.did,
+            vtc_service::test_support::TEST_VTC_DID,
+        )
+        .unwrap();
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+            .await
+            .unwrap();
         let req = Request::builder()
-            .method("PUT")
-            .uri("/v1/community/profile")
-            .header("Trust-Task", PROFILE_TASK)
-            .header("Authorization", format!("Bearer {token}"))
+            .method("POST")
+            .uri("/v1/trust-tasks")
             .header("Content-Type", "application/json")
-            .body(Body::from(format!(r#"{{"name":"Rename {i}"}}"#)))
+            .body(Body::from(serde_json::to_vec(&doc).unwrap()))
             .unwrap();
         let resp = fix.router.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "seed write {i}");
     }
+    admin.did
 }
 
 #[tokio::test]
@@ -176,9 +208,9 @@ async fn action_filter_is_actually_applied() {
 async fn actor_filter_is_actually_applied() {
     let fix = build().await;
     let token = super_admin_token(&fix).await;
-    seed(&fix, &token, 2).await;
+    let actor = seed(&fix, &token, 2).await;
 
-    let (_, body) = list(&fix, &token, "actor=did:key:z6MkAdmin").await;
+    let (_, body) = list(&fix, &token, &format!("actor={actor}")).await;
     assert!(!body["entries"].as_array().unwrap().is_empty());
 
     let (_, body) = list(&fix, &token, "actor=did:key:z6MkSomeoneElse").await;

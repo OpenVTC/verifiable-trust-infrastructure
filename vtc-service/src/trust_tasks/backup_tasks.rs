@@ -27,8 +27,9 @@
 //! # Chunk size
 //!
 //! A `put-chunk` document carries its chunk base64url-encoded, and this door
-//! refuses a body over [`crate::routes::UNAUTH_BODY_SIZE`] before verifying its
-//! proof. [`MAX_CHUNK_SIZE`] is the largest chunk whose document fits with room
+//! refuses a body over its type's limit — the default,
+//! [`super::size::DEFAULT_MAX_DOCUMENT_BYTES`], since `put-chunk` declares no
+//! other — before parsing it. [`MAX_CHUNK_SIZE`] is the largest chunk whose document fits with room
 //! for the envelope and proof; an import manifest with larger chunks is refused
 //! `chunkSizeUnacceptable`, and an export never uses larger ones. At 32 KiB and
 //! the family's 4096-chunk bound, a bundle may be up to 128 MiB.
@@ -62,7 +63,7 @@ use crate::error::TaskError;
 use crate::server::AppState;
 
 /// The largest chunk this node sends or accepts, in bytes. See the module docs:
-/// a `put-chunk` document must fit [`crate::routes::UNAUTH_BODY_SIZE`] once its
+/// a `put-chunk` document must fit its type's limit once its
 /// chunk is base64url-encoded (×4/3) and wrapped in an envelope and a proof.
 pub(crate) const MAX_CHUNK_SIZE: u64 = 32 * 1024;
 
@@ -996,9 +997,9 @@ mod tests {
         .await;
         let len = serde_json::to_vec(&doc).unwrap().len();
         assert!(
-            len < crate::routes::UNAUTH_BODY_SIZE,
+            len < crate::trust_tasks::size::max_document_bytes(PUT_CHUNK_TYPE),
             "a {MAX_CHUNK_SIZE}-byte chunk makes a {len}-byte document; the door takes {}",
-            crate::routes::UNAUTH_BODY_SIZE
+            crate::trust_tasks::size::max_document_bytes(PUT_CHUNK_TYPE)
         );
     }
 

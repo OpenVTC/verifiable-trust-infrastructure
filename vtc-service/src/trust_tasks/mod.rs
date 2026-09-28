@@ -58,7 +58,9 @@ pub(crate) mod helpers;
 // VTI-OPS-027 makes it every binding's, not this spine's: the dispatcher below
 // is its first caller, a bearer REST route is its second (#1641 phase 2).
 pub(crate) mod accepted_ids;
+// The per-type document size limit, checked before the parse.
 mod credential_exchange;
+pub(crate) mod size;
 
 // The canonical `acl/{show,list,update,revoke}` tasks, and the operation-bound
 // gate `acl/grant` shares with `acl/update`.
@@ -263,6 +265,12 @@ async fn dispatch_trust_task_validated(
     ctx: &JoinAuthCtx,
     body: &[u8],
 ) -> TrustTaskOutcome {
+    // 0. The size the document's type accepts — decided before anything in it
+    //    is parsed, on every transport (`size`).
+    if let Err(refused) = size::check(body) {
+        return refused;
+    }
+
     // 1. Parse the envelope.
     let doc: TrustTask<Value> = match serde_json::from_slice(body) {
         Ok(d) => d,
@@ -1719,34 +1727,37 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     vta_sdk::protocols::credential_exchange::PRESENT,
     // A vetter withdrawing a statement (OpenVTC vetting design §9.6).
     vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
-    // An admin naming a vetter — also mounted on REST as `POST /v1/vetting/vetters`.
+    // An admin naming a vetter. Its REST route `POST /v1/vetting/vetters`
+    // stays only until `vtc-client` sends it signed.
     vetting_wire::VETTING_VETTER_GRANT_TYPE,
     // The vetter registry: a vetter publishing a profile, anyone identified
     // finding vetters, and a vetter asking for their grant credential again
-    // (resend is also mounted for admins as `POST /v1/vetting/vetters/{memberDid}/resend`).
+    // (resend and show keep their admin REST routes only until `vtc-client`
+    // sends them signed; the listing has none).
     vetting_wire::VETTING_VETTER_PROFILE_TYPE,
     vetting_wire::VETTING_VETTER_LIST_TYPE,
     vetting_wire::VETTING_VETTER_SHOW_TYPE,
     vetting_wire::VETTING_VETTER_RESEND_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
-    // The admin-facing member verbs (#1641 phase 2). Each also remains mounted
-    // on its bearer-JWT REST route as a documented transitional path; this is
-    // the binding that holds the document requirements their specifications
-    // declare — proof, recipient, `issuedAt`, and the accepted-id record.
+    // The admin-facing member verbs (#1641 phase 2): the binding that holds the
+    // document requirements their specifications declare — proof, recipient,
+    // `issuedAt`, and the accepted-id record. `purge` has no REST route; the
+    // other three keep theirs only until `vtc-client` sends them signed.
     MEMBER_CREDENTIALS_TYPE,
     MEMBER_UPDATE_TYPE,
     MEMBER_ADMIN_REMOVE_TYPE,
     MEMBER_PURGE_TYPE,
     // Batch 2: the join decision and the community-profile edit, on the same
-    // terms — the bearer routes stay mounted as documented transitional paths.
+    // terms. The profile edit has no REST route; `decide` keeps its route only
+    // until `vtc-client` sends it signed.
     JOIN_DECIDE_TYPE,
     COMMUNITY_PROFILE_UPDATE_TYPE,
     // Batch 3: the portable-configuration pair, on the same terms.
     CONFIG_EXPORT_TYPE,
     CONFIG_IMPORT_TYPE,
-    // Batch 4: the endorsement-type writes. `list` declares no proof and stays
-    // on its bearer route.
+    // Batch 4: the endorsement-type writes, which have no REST route. `list`
+    // declares no proof and stays on its bearer route.
     ENDORSEMENT_TYPE_REGISTER_TYPE,
     ENDORSEMENT_TYPE_DELETE_TYPE,
     // Batch 5: the backup export. `import` carries the whole envelope and
@@ -1754,14 +1765,11 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     BACKUP_EXPORT_TYPE,
     // The first verb here that confers administrative authority. Its passkey
     // gesture is bound to the one grant rather than read from a session, which
-    // a signed document does not have; the bearer route stays mounted and
-    // keeps its session gate.
+    // a signed document does not have. No ACL verb has a REST route.
     ACL_GRANT_TYPE,
     // A role transition; promotion to admin takes the same bound gesture.
     ACL_CHANGE_ROLE_TYPE,
-    // The rest of the canonical family. Each bearer route (`GET /v1/acl`,
-    // `GET` / `DELETE /v1/acl/{did}`) is a thin adapter over the same
-    // operation; `acl/update` has no bearer route at all.
+    // The rest of the canonical family.
     ACL_SHOW_TYPE,
     ACL_LIST_TYPE,
     ACL_UPDATE_TYPE,
@@ -2382,13 +2390,8 @@ async fn handle_status(
     // repairs the applicant's record for every later poll.
     let result = match body.request_id {
         Some(request_id) => {
-            crate::routes::join_requests::status::status_inner(
-                state,
-                request_id,
-                applicant_did,
-                None,
-            )
-            .await
+            crate::routes::join_requests::status::status_inner(state, request_id, applicant_did)
+                .await
         }
         None => {
             crate::routes::join_requests::status::status_by_applicant(state, applicant_did).await
@@ -6394,9 +6397,9 @@ mod config_pair_tests {
 /// documents — **#1641 phase 2, batch 4**.
 ///
 /// `vtc/endorsement-types/register/0.1` and `vtc/endorsement-types/delete/0.1`
-/// declare `proof` REQUIRED and were served only as bearer REST. The admin
-/// console calls both, so their bearer routes stay as the fallback for a
-/// browser with no console key.
+/// declare `proof` REQUIRED and were served only as bearer REST. They are
+/// served only here now: the admin console signs both, and their bearer
+/// routes are gone.
 ///
 /// What these tests hold beyond the earlier batches':
 ///

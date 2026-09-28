@@ -5,7 +5,8 @@
 // with the `trust-task-error`'s `code` — so the screens see what they would.
 //
 // Only ever installed through `vi.mock("@/lib/api", …)`; the console itself
-// signs every read.
+// signs every read. It stands in for `postSignedTrustTask` too, as
+// [`unsignedTask`], where a test drives a signed change through `mockFetch`.
 
 import type { ApiError } from "@/lib/api";
 
@@ -28,3 +29,6 @@ export async function unsignedRead<T>(typeUri: string, payload: unknown): Promis
   }
   return body?.payload as T;
 }
+
+/** [`unsignedRead`], standing in for `postSignedTrustTask`. */
+export const unsignedTask = unsignedRead;

@@ -1,6 +1,6 @@
-//! `POST /v1/join-requests/{id}/status` — applicant-facing poll
-//! (`join-requests/status/1.0`) + a shared `status_inner` the DIDComm
-//! handler calls into.
+//! The applicant-facing poll (`vtc/join-requests/status/0.1`), served as a
+//! signed document on every transport by the spine, which calls
+//! [`status_inner`] / [`status_by_applicant`].
 //!
 //! The applicant polls their own request's lifecycle while it is in
 //! flight (after a `refer` → `Pending`, or a `request_more` →
@@ -11,15 +11,9 @@
 //!
 //! ## Auth
 //!
-//! Holder-bound to the request's `applicantDid`, like `submit`/`accept`:
-//! - REST carries an Ed25519 `signature` over the domain-tagged
-//!   ([`JOIN_STATUS_DOMAIN_TAG`]) canonical `{ applicantDid, requestId }`.
-//! - DIDComm omits it — the authcrypt sender binds `applicantDid`
-//!   (`signature_hex = None`).
+//! Holder-bound to the request's `applicantDid`: the spine has already bound
+//! the document's sender before either function runs.
 
-use axum::Json;
-use axum::extract::{Path, State};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use vta_sdk::protocols::join_requests::JoinRequestStatusResponseBody;
@@ -35,57 +29,12 @@ use crate::server::AppState;
 pub const STATUS_ERR_NOT_FOUND: &str =
     trust_tasks_rs::specs::vtc::join_requests::status::v0_1::error_codes::NOT_FOUND.code;
 
-/// Domain tag prefixing the REST holder-binding signature payload.
-/// Distinct from `submit`/`accept` so a status signature can't be
-/// replayed against another verb.
-pub const JOIN_STATUS_DOMAIN_TAG: &[u8] = b"vtc-join-status/v1\0";
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct StatusRequestBody {
-    pub applicant_did: String,
-    /// Hex-encoded Ed25519 signature over the canonical body.
-    pub signature: String,
-}
-
-/// POST /join-requests/{id}/status — applicant-facing lifecycle poll.
-/// Public: the holder-binding signature (REST) / authcrypt sender (DIDComm)
-/// IS the auth.
-#[utoipa::path(
-    post, path = "/join-requests/{id}/status", tag = "join-requests",
-    params(("id" = String, Path, description = "Join request id")),
-    request_body = StatusRequestBody,
-    responses(
-        (status = 200, description = "Join request lifecycle status", body = JoinRequestStatusResponseBody),
-        (status = 400, description = "Holder-binding validation failed"),
-        (status = 404, description = "Join request not found"),
-    ),
-)]
-pub async fn status(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(body): Json<StatusRequestBody>,
-) -> Result<Json<JoinRequestStatusResponseBody>, TaskError> {
-    let resp = status_inner(&state, id, body.applicant_did, Some(&body.signature)).await?;
-    Ok(Json(resp))
-}
-
-/// Shared poll for REST + DIDComm.
-///
-/// `signature_hex` is `Some` for REST (explicit holder binding) and
-/// `None` for DIDComm (the authcrypt sender already authenticated
-/// `applicant_did`).
+/// The poll for a named request, answered only to its applicant.
 pub async fn status_inner(
     state: &AppState,
     id: Uuid,
     applicant_did: String,
-    signature_hex: Option<&str>,
 ) -> Result<JoinRequestStatusResponseBody, TaskError> {
-    if let Some(hex_sig) = signature_hex {
-        verify_holder_signature(&applicant_did, id, hex_sig)?;
-    }
-
     // `vtc/join-requests/status:notFound` covers both "no such request" and
     // "not yours", and the two are answered with one message: telling them
     // apart would let any identified caller probe which request ids exist on
@@ -195,38 +144,4 @@ fn project_status(
         reason,
         decided_at,
     })
-}
-
-/// Verify the Ed25519 holder-binding signature over the canonical body
-/// (`applicantDid` + `requestId`), domain-tagged.
-fn verify_holder_signature(
-    applicant_did: &str,
-    request_id: Uuid,
-    signature_hex: &str,
-) -> Result<(), AppError> {
-    let payload = canonical_payload(applicant_did, request_id)?;
-    crate::holder_signature::verify_domain_signed(
-        applicant_did,
-        JOIN_STATUS_DOMAIN_TAG,
-        &payload,
-        signature_hex,
-    )
-    .map_err(AppError::Validation)
-}
-
-/// Canonical signing payload — typed struct, field order pinned by the
-/// derive (both sides build it identically).
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CanonicalPayload<'a> {
-    applicant_did: &'a str,
-    request_id: String,
-}
-
-fn canonical_payload(applicant_did: &str, request_id: Uuid) -> Result<Vec<u8>, AppError> {
-    serde_json::to_vec(&CanonicalPayload {
-        applicant_did,
-        request_id: request_id.to_string(),
-    })
-    .map_err(|e| AppError::Internal(format!("canonical payload serialize: {e}")))
 }
