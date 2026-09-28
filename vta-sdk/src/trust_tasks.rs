@@ -649,6 +649,19 @@ pub const TASK_AUDIT_UPDATE_RETENTION_1_0: &str =
 pub const TASK_TRUST_TASK_DISCOVERY_0_1: &str =
     "https://trusttasks.org/spec/trust-task-discovery/0.1";
 
+/// `spec/trust-task-discovery/0.3` — 0.1's answer plus the responder's
+/// **acceptance window**: how long after `issuedAt` it still accepts a
+/// document, and its clock-skew tolerance, in whole seconds.
+///
+/// A VTI node advertises the window it applies, at response level
+/// (VTI-TRN-047); a sender holding a document before delivery uses it to
+/// decide when to issue a new attempt instead (VTI-TRN-045). Absence means the
+/// discoverer learnt nothing, never "no window".
+///
+/// Auth: any authenticated user, as 0.1.
+pub const TASK_TRUST_TASK_DISCOVERY_0_3: &str =
+    <trust_tasks_rs::specs::trust_task_discovery::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Vault slice (spec/vault/*/0.1) ──────────────────────────────────────
 //
 // Canonical public Trust Tasks from the dtgwg-trust-tasks-tf registry.
@@ -2159,6 +2172,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUDIT_UPDATE_RETENTION_1_0,
     // Discovery
     TASK_TRUST_TASK_DISCOVERY_0_1,
+    TASK_TRUST_TASK_DISCOVERY_0_3,
     // Vault slice (0.1 + 0.2 + 0.3 dual-accept; delete is 0.1-only upstream)
     TASK_VAULT_LIST_0_1,
     TASK_VAULT_LIST_0_2,

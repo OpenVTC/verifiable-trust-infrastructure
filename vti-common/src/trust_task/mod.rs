@@ -22,6 +22,8 @@
 //! next to the handler in source, and `cargo doc` surfaces it on the
 //! route without any procedural-macro indirection.
 
+pub mod acceptance;
+pub mod discovery;
 pub mod envelope;
 pub mod extractor;
 #[cfg(feature = "openapi")]
@@ -56,6 +58,11 @@ pub const HEADER_NAME: &str = "Trust-Task";
 /// SPEC §7.2 (*Bounding the record*) makes this window and the retention of the
 /// duplicate-execution record one bound, and both consumers derive the record's
 /// retention from it; change it only as that one bound.
+///
+/// Both nodes also advertise it, with its skew, in their
+/// `trust-task-discovery/0.3` answers (VTI-TRN-047). Read it through
+/// [`acceptance::VTI_ACCEPTANCE_WINDOW`], which pairs it with the skew every
+/// party must agree on too.
 pub const ACCEPTANCE_WINDOW: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
 
 /// A validated Trust-Task identifier.

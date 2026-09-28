@@ -431,7 +431,113 @@ async fn trust_task_discovery_reports_dispatched_tasks() {
             .all(|t| t.as_str().is_some_and(|s| s.contains("/spec/acl/"))),
         "the pattern must narrow the answer, got: {types:?}"
     );
-    assert_eq!(body["payload"]["frameworkVersion"], "0.2");
+    // MAJOR.MINOR of the framework release this VTA targets — 0.1's schema
+    // admits no PATCH.
+    assert_eq!(
+        body["payload"]["frameworkVersion"],
+        vti_common::trust_task::discovery::FRAMEWORK_VERSION_MAJOR_MINOR
+    );
+}
+
+/// `trust-task-discovery/0.3` is answered in 0.3, and its acceptance window is
+/// the one this VTA enforces (VTI-TRN-047), measured end to end: a document
+/// issued past the advertised window, sent to the same service, is refused as
+/// `expired`, and one inside it is not.
+///
+/// An advertisement wider than the enforced window — the case VTI-TRN-047
+/// forbids — would have a producer deliver documents this service then
+/// refuses; this is where the two meet on the wire.
+#[tokio::test]
+async fn vti_trn_047_discovery_0_3_advertises_the_window_the_vta_enforces() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx
+        .auth_token(
+            &vta_service::test_support::test_admin_did().0,
+            "reader",
+            vec!["any".into()],
+        )
+        .await;
+    let (status, body) = app
+        .request(post_auth(
+            "/api/trust-tasks",
+            &token,
+            signed_doc(
+                &ctx,
+                "urn:uuid:6e5f7081-92a3-44b5-86d7-e8f901234567",
+                "https://trusttasks.org/spec/trust-task-discovery/0.3",
+                json!({ "patterns": ["trust-task-discovery/*"] }),
+            ),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(
+        body["type"], "https://trusttasks.org/spec/trust-task-discovery/0.3#response",
+        "a 0.3 query is answered in 0.3: {body}"
+    );
+    let payload = &body["payload"];
+    assert_eq!(
+        payload["frameworkVersion"],
+        vti_common::trust_task::discovery::FRAMEWORK_VERSION
+    );
+    let types = payload["supportedTypes"].as_array().expect("an array");
+    for version in ["0.1", "0.3"] {
+        let uri = format!("https://trusttasks.org/spec/trust-task-discovery/{version}");
+        assert!(types.iter().any(|t| *t == uri), "{uri} listed: {types:?}");
+    }
+    let max_age = payload["acceptanceWindow"]["maxAgeSeconds"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("a response-level window: {body}"));
+    let skew = payload["acceptanceWindow"]["clockSkewSeconds"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("a response-level window: {body}"));
+
+    // Signed with an `issuedAt` of the caller's choosing.
+    let issued_ago = |secs: i64, id: &str| {
+        let (did, _vm) = vta_service::test_support::test_admin_did();
+        let issued = chrono::Utc::now() - chrono::TimeDelta::seconds(secs);
+        let mut doc: trust_tasks_rs::TrustTask<serde_json::Value> = serde_json::from_value(json!({
+            "id": id,
+            "type": "https://trusttasks.org/spec/trust-task-discovery/0.3",
+            "issuer": did,
+            "recipient": ctx.inner.vta_did,
+            "issuedAt": issued.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {},
+        }))
+        .expect("envelope deserialises");
+        vta_service::test_support::sign_as_test_admin(&mut doc);
+        serde_json::to_value(&doc).expect("envelope serialises")
+    };
+
+    // Past the advertised window, skew included: refused.
+    let (_, body) = app
+        .request(post_auth(
+            "/api/trust-tasks",
+            &token,
+            issued_ago(
+                max_age + skew + 2,
+                "urn:uuid:7f608192-a3b4-45c6-97e8-f90123456789",
+            ),
+        ))
+        .await;
+    assert_eq!(body["payload"]["code"], "expired", "{body}");
+
+    // Past `maxAgeSeconds` but inside the skew: still accepted, which is why a
+    // producer SHOULD NOT (rather than MUST NOT) send it there.
+    let (status, body) = app
+        .request(post_auth(
+            "/api/trust-tasks",
+            &token,
+            issued_ago(
+                max_age + skew - 5,
+                "urn:uuid:80719203-b4c5-46d7-a8f9-012345678901",
+            ),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "inside the advertised window: {body}"
+    );
 }
 
 /// An empty pattern list means "everything", and everything is a lot.
