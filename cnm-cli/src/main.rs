@@ -589,8 +589,13 @@ enum ContextCommands {
         #[arg(long)]
         name: Option<String>,
         /// Set the DID for this context
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_did")]
         did: Option<String>,
+        /// Clear this context's DID, leaving it with no identity of its own.
+        /// The DID is not deleted. Sent as `vta/contexts/update-did/1.1`, so
+        /// it needs only admin over the context.
+        #[arg(long)]
+        clear_did: bool,
         /// New description
         #[arg(long)]
         description: Option<String>,
@@ -600,7 +605,12 @@ enum ContextCommands {
         /// Context ID
         id: String,
         /// The new DID to assign
-        did: String,
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        did: Option<String>,
+        /// Clear the context's DID instead, leaving it with no identity of its
+        /// own. The DID is not deleted.
+        #[arg(long)]
+        clear: bool,
     },
     /// Delete an application context and all associated resources
     Delete {
@@ -1318,11 +1328,29 @@ async fn main() {
                 id,
                 name,
                 did,
+                clear_did,
                 description,
-            } => contexts::cmd_context_update(&client, &id, name, did, description).await,
-            ContextCommands::UpdateDid { id, did } => {
-                contexts::cmd_context_update_did(&client, &id, &did).await
+            } => {
+                // The identity change goes through update-did, never
+                // `contexts/update` — which cannot clear and needs super-admin.
+                if clear_did {
+                    let renamed = if name.is_some() || description.is_some() {
+                        contexts::cmd_context_update(&client, &id, name, None, description).await
+                    } else {
+                        Ok(())
+                    };
+                    match renamed {
+                        Ok(()) => contexts::cmd_context_clear_did(&client, &id).await,
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    contexts::cmd_context_update(&client, &id, name, did, description).await
+                }
             }
+            ContextCommands::UpdateDid { id, did, clear } => match did {
+                Some(did) if !clear => contexts::cmd_context_update_did(&client, &id, &did).await,
+                _ => contexts::cmd_context_clear_did(&client, &id).await,
+            },
             ContextCommands::Delete { id, yes } => {
                 contexts::cmd_context_delete(&client, &id, yes).await
             }

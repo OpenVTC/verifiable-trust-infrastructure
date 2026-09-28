@@ -207,18 +207,26 @@ pub async fn update_context_did(
     contexts_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     id: &str,
-    did: String,
+    did: Option<String>,
     channel: &str,
 ) -> Result<CreateContextResultBody, ContextError> {
     auth.require_admin()?;
     let mut record = reach_context(contexts_ks, auth, id).await?;
 
-    record.did = Some(did);
+    // `None` clears (`update-did/1.1`, `did: null`). Clearing a context that
+    // has no DID is not an error — the requested state already holds. The DID
+    // itself is untouched: it can be assigned again, or now deleted.
+    let previous = std::mem::replace(&mut record.did, did);
     record.updated_at = Utc::now();
 
     store_context(contexts_ks, &record).await?;
 
-    info!(channel, id = %id, did = ?record.did, "context DID updated");
+    match &record.did {
+        Some(did) => {
+            info!(channel, id = %id, did = %did, previous = ?previous, "context DID updated")
+        }
+        None => info!(channel, id = %id, previous = ?previous, "context DID cleared"),
+    }
     Ok(to_result_body(&record))
 }
 
@@ -945,6 +953,44 @@ mod tests {
             allowed_contexts: vec![context.to_string()],
             ..Default::default()
         }
+    }
+
+    /// `update-did/1.1`'s `did: null`: the context is left with no DID, the
+    /// record comes back without one, and a second clear is not an error.
+    #[tokio::test]
+    async fn clearing_a_context_did_removes_it_and_is_idempotent() {
+        let (_d, _s, ks) = fresh_contexts();
+        create_context(&ks, &super_admin(), "acme", "Acme".into(), None, None, "t")
+            .await
+            .unwrap();
+        let set = update_context_did(
+            &ks,
+            &admin_of("acme"),
+            "acme",
+            Some("did:web:a.example".into()),
+            "t",
+        )
+        .await
+        .expect("assign");
+        assert_eq!(set.did.as_deref(), Some("did:web:a.example"));
+
+        let cleared = update_context_did(&ks, &admin_of("acme"), "acme", None, "t")
+            .await
+            .expect("clear");
+        assert_eq!(cleared.did, None);
+        assert_eq!(
+            get_context_op(&ks, &super_admin(), "acme", "t")
+                .await
+                .unwrap()
+                .did,
+            None,
+            "the clear was not stored"
+        );
+
+        let again = update_context_did(&ks, &admin_of("acme"), "acme", None, "t")
+            .await
+            .expect("clearing a context with no DID is not an error");
+        assert_eq!(again.did, None);
     }
 
     #[tokio::test]

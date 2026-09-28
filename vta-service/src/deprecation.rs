@@ -178,7 +178,7 @@ const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
         "PUT",
         "/contexts/{id}/did",
         "PUT /contexts/{id}/did",
-        trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
+        trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
     ),
     (
         "GET",
@@ -638,6 +638,16 @@ const SUPERSEDED_TASKS: &[SupersededTask] = &[
         successor: trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_0,
         reason: "3.0 accepts a template declaring `schemaVersion` 2 and a `keys` block, \
                  which names each key slot's algorithms",
+    },
+    // ── contexts ────────────────────────────────────────────────────────
+    //
+    // 1.0 has no defect for what it expresses and stays dispatched through the
+    // same handler; it simply cannot say "no DID".
+    SupersededTask {
+        uri: trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
+        successor: trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
+        reason: "1.1 accepts `did: null`, which clears the context's DID, and requires a \
+                 string `did` to be a DID; 1.0 can only replace one",
     },
     // ── auth ────────────────────────────────────────────────────────────
     SupersededTask {
