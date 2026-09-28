@@ -2,6 +2,74 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.45.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.45.0...vta-service-v0.45.1) — 2026-09-28
+
+
+### Added
+
+- **vta**: Re-invite an idle TSP relationship alongside the request, and stamp activity on every reply ([#1816](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1816))
+
+The sender only learns that a peer lost its half of a TSP relationship when its
+  reply window expires (§7.2.2 drops silently, and design note C2 rules out a
+  signal back), so the first request after such a loss always cost a full 30s
+  before D6 recovered it. The browser wallet timed out a DID creation at 30s while
+  the VTA's recovered answer arrived at 30.07s.
+
+- **vta**: List, reset and delete TSP relationships offline ([#1812](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1812))
+
+TSP relationship state is per endpoint and persisted in the encrypted
+  `relationships` keyspace, so neither restarting the VTA nor wiping the mediator
+  clears it, and there was no way to clear this VTA's half. Adds:
+
+    vta tsp-relationships list
+    vta tsp-relationships reset  --peer <did> [--our <vid>]
+    vta tsp-relationships delete --peer <did> [--our <vid>] | --all [--yes]
+
+  Reset is the D4 stale-half reset (`None` plus cleared thread digests; the
+  capability cache is kept), so the next send re-invites. Delete is the D5
+  eviction's `forget`. `--all` also removes half-formed records, which D9's
+  enumeration cannot see, and only reports without `--yes`. The keyspace is
+  opened through `CliStore`, so it decrypts under hardened configuration. `reset`
+  and `delete` are refused on a sealed VTA; `list` is not. Built only with the
+  `tsp` feature. All reads and writes go through the SDK's
+  `PersistentRelationshipStore`.
+
+
+
+### Fixed
+
+- **provision**: A setup DID granted without a hand-off is told to re-grant, not to shorten an expiry ([#1813](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1813))
+
+Online `vtc setup` (and any setup whose ephemeral is the authenticated
+  caller) rolls the setup DID over to a permanent long-term admin. That rollover
+  is allowed only through the granter's one-time hand-off marker (VTI-ACL-054,
+  `--admin-handoff` / `--handoff`), and every printed setup command carries it.
+  When the entry was granted without it, provision-integration fell through to
+  an ordinary grant and #1738's VTI-ACL-053 bound refused it with "your entry
+  expires at …, so you cannot write a permanent one — give it an expiry no later
+  than yours". That points the operator at the wrong remedy: the successor must
+  be permanent, and what is missing is the marker, which can only be set when
+  the entry is created (VTI-ACL-055).
+
+  The refusal is now specific: it names the missing hand-off and prints the
+  re-grant (`pnm acl delete --did <setup-did>` then `pnm acl create … --expires
+  1h --handoff`, with the entry's own scope derived through `act_scope`). It
+  refuses exactly what VTI-ACL-053 already refused, before anything is minted;
+  nothing is newly allowed.
+
+- **pnm**: The persona-holder hint prints a pnm acl update that runs ([#1811](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1811))
+
+The persona refusal and `pnm persona --help` both told operators to run
+  `pnm acl update --did <did> --capabilities persona-holder`. `acl update`
+  takes the entry's DID as a positional argument and has no `--did` flag, so
+  the command offered as the fix failed to parse.
+
+  Both now print `pnm acl update <did> --capabilities persona-holder`. A new
+  test parses that form and checks that the `--did` form is rejected, so a
+  change to the arguments fails in CI rather than for an operator.
+
+
+
 ## [0.45.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.44.0...vta-service-v0.45.0) — 2026-09-27
 
 

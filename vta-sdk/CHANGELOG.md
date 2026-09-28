@@ -2,6 +2,31 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.56.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.56.0...vta-sdk-v0.56.1) — 2026-09-28
+
+
+### Fixed
+
+- **provision-client**: Setup's authorization hint is a scoped grant, with the hand-off when setup rolls over ([#1815](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1815))
+
+Two setup messages pointed operators at a grant that fails or over-grants:
+
+  - The "not authorized on this VTA" diagnostic told the operator to run
+    `pnm acl create --did <setup-did> --role admin` — no `--contexts`, which
+    makes the setup DID an unrestricted admin, and no expiry or hand-off, so
+    the operator had to add those by hand, and a hand-typed time-boxed grant
+    without `--handoff` is refused at the last step (VTI-ACL-053). It now
+    prints the scoped grant for the context being provisioned:
+    `--contexts <ctx> --expires 1h --handoff` when setup rolls the setup DID
+    over to a minted admin (VTI-ACL-054), a scoped permanent grant when it
+    does not (AdminOnly).
+  - The phase-1 guidance under the printed `pnm contexts create … --admin-expires
+    1h --admin-handoff` described `--admin-handoff` as something that "lets" the
+    hand-off, which reads as optional. It now says to keep it, that setup's
+    last step is refused without it, and that it cannot be added afterwards.
+
+
+
 ## [0.56.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.55.0...vta-sdk-v0.56.0) — 2026-09-27
 
 
