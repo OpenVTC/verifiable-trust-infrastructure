@@ -38,7 +38,7 @@ use crate::acl::{VtcRole, get_acl_entry};
 use crate::credentials::{CredentialStatusRef, CustomEndorsementParams, build_custom_endorsement};
 use crate::endorsement_types::get_type;
 use crate::endorsements::{
-    Endorsement, get_endorsement, list_endorsements, mark_revoked, store_endorsement,
+    Endorsement, get_endorsement, list_endorsements_matching, mark_revoked, store_endorsement,
 };
 use crate::error::TaskError;
 use crate::server::AppState;
@@ -190,6 +190,40 @@ pub async fn issue(
     State(state): State<AppState>,
     Json(body): Json<IssueBody>,
 ) -> Result<(StatusCode, Json<IssueResponse>), TaskError> {
+    // 1. Auth: Admin OR Issuer (read the VTC ACL row — JWT
+    //    role degrades non-Admin VTC roles to Reader, so the
+    //    JWT alone can't distinguish Issuer from Member).
+    require_admin_or_issuer(&state, &auth.did, "mint custom endorsements").await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(issue_inner(&state, &auth.did, body).await?),
+    ))
+}
+
+/// Refuse `did` unless its ACL row holds `Admin` or `Issuer` — the capability
+/// every endorsement verb rests on (`vtc/endorsements/*`, Conformance 1). The
+/// bearer routes' gate; the Trust Task arms apply the same rule to the proof
+/// signer's row (`trust_tasks::member_tasks`).
+async fn require_admin_or_issuer(state: &AppState, did: &str, verb: &str) -> Result<(), AppError> {
+    let acl = get_acl_entry(&state.acl_ks, did)
+        .await?
+        .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
+    if !matches!(acl.role, VtcRole::Admin | VtcRole::Issuer) {
+        return Err(AppError::Forbidden(format!(
+            "only Admin or Issuer-role members can {verb}"
+        )));
+    }
+    Ok(())
+}
+
+/// Issue a custom endorsement on behalf of `actor_did` — the operation behind
+/// the bearer route above and the `vtc/endorsements/issue/0.1` Trust Task.
+/// The door has already established that `actor_did` is an admin or issuer.
+pub(crate) async fn issue_inner(
+    state: &AppState,
+    actor_did: &str,
+    body: IssueBody,
+) -> Result<IssueResponse, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -198,19 +232,6 @@ pub async fn issue(
         .credential_signer
         .as_ref()
         .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
-
-    // 1. Auth: Admin OR Issuer (read the VTC ACL row — JWT
-    //    role degrades non-Admin VTC roles to Reader, so the
-    //    JWT alone can't distinguish Issuer from Member).
-    let acl = get_acl_entry(&state.acl_ks, &auth.did)
-        .await?
-        .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
-    if !matches!(acl.role, VtcRole::Admin | VtcRole::Issuer) {
-        return Err(AppError::Forbidden(
-            "only Admin or Issuer-role members can mint custom endorsements".into(),
-        )
-        .into());
-    }
 
     // 2. Type registry consultation (D4 review).
     let Some(endorsement_type) =
@@ -363,7 +384,7 @@ pub async fn issue(
     //    VEC issuance accounting).
     audit_writer
         .write(
-            &auth.did,
+            actor_did,
             Some(&body.subject_did),
             AuditEvent::CustomEndorsementIssued(CustomEndorsementIssuedData {
                 endorsement_id: id.to_string(),
@@ -374,7 +395,7 @@ pub async fn issue(
         .await?;
     audit_writer
         .write(
-            &auth.did,
+            actor_did,
             Some(&body.subject_did),
             AuditEvent::VecIssued(CredentialIssuedData {
                 credential_id: vec_id.clone(),
@@ -396,21 +417,18 @@ pub async fn issue(
 
     let vec_value = serde_json::to_value(&vec)
         .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?;
-    Ok((
-        StatusCode::CREATED,
-        Json(IssueResponse {
-            endorsement: EndorsementRow {
-                // `issue` knows the expiry it just computed; a read does not.
-                issued: CredentialReference {
-                    credential_id: vec_id,
-                    issued_at: Some(now),
-                    expires_at: Some(valid_until),
-                },
-                ..end.into()
+    Ok(IssueResponse {
+        endorsement: EndorsementRow {
+            // `issue` knows the expiry it just computed; a read does not.
+            issued: CredentialReference {
+                credential_id: vec_id,
+                issued_at: Some(now),
+                expires_at: Some(valid_until),
             },
-            credential: vec_value,
-        }),
-    ))
+            ..end.into()
+        },
+        credential: vec_value,
+    })
 }
 
 // ─── List ────────────────────────────────────────────────
@@ -440,26 +458,59 @@ pub async fn list(
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Paginated<EndorsementRow>>, TaskError> {
-    let acl = get_acl_entry(&state.acl_ks, &auth.did)
-        .await?
-        .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
-    if !matches!(acl.role, VtcRole::Admin | VtcRole::Issuer) {
-        return Err(AppError::Forbidden(
-            "only Admin or Issuer-role members can list custom endorsements".into(),
+    require_admin_or_issuer(&state, &auth.did, "list custom endorsements").await?;
+    Ok(Json(
+        list_inner(
+            &state,
+            &ListFilter::default(),
+            query.cursor.as_deref(),
+            query.limit,
         )
-        .into());
-    }
+        .await?,
+    ))
+}
 
-    let limit = query.limit.unwrap_or(50).clamp(1, LIST_MAX_LIMIT);
+/// The filters `vtc/endorsements/list/0.1` defines. The default matches every
+/// row, live and revoked — the task's own default, and all the bearer route
+/// has ever returned.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ListFilter {
+    pub subject_did: Option<String>,
+    pub type_uri: Option<String>,
+    /// `includeRevoked`; absent means `true`.
+    pub include_revoked: Option<bool>,
+}
+
+impl ListFilter {
+    fn keeps(&self, row: &Endorsement) -> bool {
+        self.subject_did
+            .as_deref()
+            .is_none_or(|d| row.subject_did == d)
+            && self
+                .type_uri
+                .as_deref()
+                .is_none_or(|t| row.endorsement_type == t)
+            && (self.include_revoked.unwrap_or(true) || !row.is_revoked())
+    }
+}
+
+/// One page of endorsements matching `filter` — the operation behind the
+/// bearer route above and the `vtc/endorsements/list/0.1` Trust Task. The door
+/// has already established that the caller is an admin or issuer.
+pub(crate) async fn list_inner(
+    state: &AppState,
+    filter: &ListFilter,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+) -> Result<Paginated<EndorsementRow>, TaskError> {
+    let limit = limit.unwrap_or(50).clamp(1, LIST_MAX_LIMIT);
     let audit_key = state
         .audit_writer
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?
         .active_key()
         .await?;
-    let cursor = query
-        .cursor
-        .as_deref()
+    let cursor = cursor
         .map(|c| Cursor::decode(c, &audit_key.key))
         .transpose()
         .map_err(|e| {
@@ -468,9 +519,15 @@ pub async fn list(
                 AppError::Validation(format!("invalid cursor: {e}")),
             )
         })?;
-    let page =
-        list_endorsements(&state.endorsements_ks, &audit_key, cursor.as_ref(), limit).await?;
-    Ok(Json(page.map_items(EndorsementRow::from)))
+    let page = list_endorsements_matching(
+        &state.endorsements_ks,
+        &audit_key,
+        cursor.as_ref(),
+        limit,
+        |row| filter.keeps(row),
+    )
+    .await?;
+    Ok(page.map_items(EndorsementRow::from))
 }
 
 // ─── Show ────────────────────────────────────────────────
@@ -492,15 +549,17 @@ pub async fn show(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<EndorsementEnvelope>, TaskError> {
-    let acl = get_acl_entry(&state.acl_ks, &auth.did)
-        .await?
-        .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
-    if !matches!(acl.role, VtcRole::Admin | VtcRole::Issuer) {
-        return Err(AppError::Forbidden(
-            "only Admin or Issuer-role members can read custom endorsements".into(),
-        )
-        .into());
-    }
+    require_admin_or_issuer(&state, &auth.did, "read custom endorsements").await?;
+    Ok(Json(show_inner(&state, id).await?))
+}
+
+/// Read one endorsement — the operation behind the bearer route above and the
+/// `vtc/endorsements/show/0.1` Trust Task, each of which has already
+/// established that the caller is an admin or issuer.
+pub(crate) async fn show_inner(
+    state: &AppState,
+    id: Uuid,
+) -> Result<EndorsementEnvelope, TaskError> {
     let row = get_endorsement(&state.endorsements_ks, id)
         .await?
         .ok_or_else(|| {
@@ -509,9 +568,9 @@ pub async fn show(
                 AppError::NotFound(format!("endorsement {id} not found")),
             )
         })?;
-    Ok(Json(EndorsementEnvelope {
+    Ok(EndorsementEnvelope {
         endorsement: row.into(),
-    }))
+    })
 }
 
 // ─── Revoke ──────────────────────────────────────────────
@@ -553,11 +612,6 @@ pub async fn revoke(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<RevokeResponse>), TaskError> {
-    let audit_writer = state
-        .audit_writer
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
-
     // Auth: Admin OR original issuer (always == signer DID;
     // any Admin/Issuer of the community).
     let acl = get_acl_entry(&state.acl_ks, &auth.did)
@@ -577,6 +631,26 @@ pub async fn revoke(
         )
         .into());
     }
+
+    Ok((
+        StatusCode::OK,
+        Json(revoke_inner(&state, &auth.did, id).await?),
+    ))
+}
+
+/// Revoke an endorsement on behalf of `actor_did` — the operation behind the
+/// bearer route above and the `vtc/endorsements/revoke/0.1` Trust Task. The
+/// door has already established that `actor_did` is an admin or issuer, which
+/// must precede the lookup below (Conformance 1 before 2).
+pub(crate) async fn revoke_inner(
+    state: &AppState,
+    actor_did: &str,
+    id: Uuid,
+) -> Result<RevokeResponse, TaskError> {
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
 
     // Looked up only after the capability check (Conformance 1 before 2), so
     // a caller who may not revoke cannot use this route to learn which
@@ -629,7 +703,7 @@ pub async fn revoke(
     // (semantic) + StatusListFlipped (bit-flip accounting).
     audit_writer
         .write(
-            &auth.did,
+            actor_did,
             Some(&row.subject_did),
             AuditEvent::CustomEndorsementRevoked(CustomEndorsementRevokedData {
                 endorsement_id: id.to_string(),
@@ -639,7 +713,7 @@ pub async fn revoke(
         .await?;
     audit_writer
         .write(
-            &auth.did,
+            actor_did,
             Some(&row.subject_did),
             AuditEvent::StatusListFlipped(StatusListFlippedData {
                 purpose: "revocation".into(),
@@ -652,30 +726,27 @@ pub async fn revoke(
     // A vetter whose grant this was, holding no other, no longer has a profile
     // to publish (`vtc/vetting/vetters/profile/0.1`, Conformance 5).
     if row.endorsement_type == vta_sdk::protocols::vetting::COMMUNITY_ROLE_ENDORSEMENT_TYPE {
-        crate::vetting::profiles::after_grant_revoked(&state, &auth.did, &row.subject_did).await?;
+        crate::vetting::profiles::after_grant_revoked(state, actor_did, &row.subject_did).await?;
     }
 
     info!(
         endorsement_id = %id,
         endorsement_type = %row.endorsement_type,
         slot = row.status_list_index,
-        by = %auth.did,
+        by = %actor_did,
         "custom endorsement revoked"
     );
     // Every member the spec asks for was already in hand here: the handler
     // replied with `{id}` alone and dropped the rest, including `updated`,
     // which it had bound and then discarded with `let _ = updated;`.
-    Ok((
-        StatusCode::OK,
-        Json(RevokeResponse {
-            endorsement_id: id.to_string(),
-            revocation: RevocationDetail {
-                credential_id: row.vec_id.clone(),
-                revoked_at: rfc3339(updated.revoked_at.unwrap_or_else(Utc::now)),
-            },
-            status_list_index: row.status_list_index,
-        }),
-    ))
+    Ok(RevokeResponse {
+        endorsement_id: id.to_string(),
+        revocation: RevocationDetail {
+            credential_id: row.vec_id.clone(),
+            revoked_at: rfc3339(updated.revoked_at.unwrap_or_else(Utc::now)),
+        },
+        status_list_index: row.status_list_index,
+    })
 }
 
 fn rfc3339(t: chrono::DateTime<Utc>) -> String {

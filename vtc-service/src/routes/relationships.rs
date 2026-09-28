@@ -191,6 +191,34 @@ pub async fn publish(
             .await
             .map_err(|e| AppError::Forbidden(format!("document proof: {e}")))?;
 
+    let (status, response) = publish_inner(&state, &doc, &signer_did, now).await?;
+    // A response is itself a Trust Task document: `respond_with` swaps
+    // issuer and recipient, stamps the `#response` type, and carries the
+    // request's `threadId` (or its `id` when it had none) so the two
+    // halves of the exchange correlate — SPEC §4.4.1, §4.9.
+    Ok((
+        status,
+        Json(doc.respond_with(Uuid::new_v4().to_string(), response)),
+    ))
+}
+
+/// Publish the VRC `doc` carries, on behalf of `signer_did` — the operation
+/// behind both doors: the bearer-less REST route above, which verifies the
+/// document's proof itself, and the `vtc/relationships/publish/0.2` Trust Task
+/// on the spine, which has verified it already (`verified_signer`). Everything
+/// from the per-member rate limit onward is here, so the two cannot drift.
+///
+/// `doc` is the whole document rather than its payload because the publish
+/// authorization (`pop`) binds to the document's `id`. Returns `201` for a new
+/// edge and `200` for an idempotent republish of one already held.
+pub(crate) async fn publish_inner(
+    state: &AppState,
+    doc: &TrustTaskDoc<JsonValue>,
+    signer_did: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<(StatusCode, PublishResponse), PublishError> {
+    let signer_did = signer_did.to_string();
+
     // 0c. Per-DID rate limiting, keyed on the HMAC of the signer
     //     rather than the DID itself — the discipline the audit
     //     writer already applies, so the counter does not double as
@@ -202,7 +230,7 @@ pub async fn publish(
     //     governor's job, and this route now sits behind it. Two
     //     different controls: one protects the server from anonymous
     //     load, this protects the graph from an admitted member.
-    enforce_publish_rate_limit(&state, &signer_did).await?;
+    enforce_publish_rate_limit(state, &signer_did).await?;
 
     let body: PublishBody = serde_json::from_value(doc.payload.clone())
         .map_err(|e| AppError::Validation(format!("invalid publish payload: {e}")))?;
@@ -369,9 +397,9 @@ pub async fn publish(
     //    pairwise identifiers are not resolvable to members and
     //    are not meant to be.
     //
-    let member_current = is_current_member(&state, &signer_did).await?;
-    let issuer_current = is_current_member(&state, &issuer_did).await?;
-    let subject_current = is_current_member(&state, &subject_did).await?;
+    let member_current = is_current_member(state, &signer_did).await?;
+    let issuer_current = is_current_member(state, &issuer_did).await?;
+    let subject_current = is_current_member(state, &subject_did).await?;
 
     // The subject membership check only asks an answerable
     // question on the deprecated form, where the subject is named
@@ -406,7 +434,7 @@ pub async fn publish(
         "subject": { "did": subject_did, "is_current": subject_current },
         "action": "publish",
     });
-    let allow = evaluate_relationships_policy(&state, &policy_input).await?;
+    let allow = evaluate_relationships_policy(state, &policy_input).await?;
     if !allow {
         return Err(AppError::Forbidden(
             "RelationshipPolicyDenied: active relationships.rego rejected the publish".into(),
@@ -416,21 +444,14 @@ pub async fn publish(
 
     // 8. Idempotency: same hash → same id.
     if let Some(existing) = find_by_hash(&state.relationships_ks, &vrc_digest_multibase).await? {
-        // A response is itself a Trust Task document: `respond_with` swaps
-        // issuer and recipient, stamps the `#response` type, and carries the
-        // request's `threadId` (or its `id` when it had none) so the two
-        // halves of the exchange correlate — SPEC §4.4.1, §4.9.
         return Ok((
             StatusCode::OK,
-            Json(doc.respond_with(
-                Uuid::new_v4().to_string(),
-                PublishResponse {
-                    id: existing.id,
-                    issuer_did: existing.issuer_did,
-                    subject_did: existing.subject_did,
-                    vrc_digest_multibase: existing.vrc_digest_multibase,
-                },
-            )),
+            PublishResponse {
+                id: existing.id,
+                issuer_did: existing.issuer_did,
+                subject_did: existing.subject_did,
+                vrc_digest_multibase: existing.vrc_digest_multibase,
+            },
         ));
     }
 
@@ -562,15 +583,12 @@ pub async fn publish(
 
     Ok((
         StatusCode::CREATED,
-        Json(doc.respond_with(
-            Uuid::new_v4().to_string(),
-            PublishResponse {
-                id,
-                issuer_did,
-                subject_did,
-                vrc_digest_multibase,
-            },
-        )),
+        PublishResponse {
+            id,
+            issuer_did,
+            subject_did,
+            vrc_digest_multibase,
+        },
     ))
 }
 
@@ -674,12 +692,29 @@ pub async fn revoke(
     )
     .await?;
 
+    Ok((
+        StatusCode::OK,
+        Json(revoke_authorized(&state, &auth.did, &rel, revoked_by).await?),
+    ))
+}
+
+/// Delete an edge whose control the door has already established, and audit
+/// it — the effect behind both the bearer route above and the
+/// `vtc/relationships/revoke/0.1` Trust Task. `revoked_by` is the capacity the
+/// door authorized `actor_did` in (`"issuer"` or `"admin"`).
+pub(crate) async fn revoke_authorized(
+    state: &AppState,
+    actor_did: &str,
+    rel: &Relationship,
+    revoked_by: &'static str,
+) -> Result<RevokeResponse, AppError> {
+    let id = rel.id;
     delete_relationship(&state.relationships_ks, &state.relationships_by_did_ks, id).await?;
 
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
-                &auth.did,
+                actor_did,
                 Some(&rel.subject_did),
                 AuditEvent::VrcRevoked(VrcRevokedData {
                     vrc_id: id.to_string(),
@@ -691,7 +726,7 @@ pub async fn revoke(
 
     info!(vrc_id = %id, revoked_by, "VRC revoked");
 
-    Ok((StatusCode::OK, Json(RevokeResponse { id: id.to_string() })))
+    Ok(RevokeResponse { id: id.to_string() })
 }
 
 /// Establish that the caller may change the state of an existing edge, and

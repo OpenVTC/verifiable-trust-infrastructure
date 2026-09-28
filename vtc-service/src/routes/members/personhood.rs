@@ -624,7 +624,42 @@ pub async fn revoke(
         )
         .into());
     }
-    let reason = if is_self { "self" } else { "admin" };
+    let capacity = if is_self {
+        RevokeCapacity::Subject
+    } else {
+        RevokeCapacity::Admin
+    };
+    Ok((
+        StatusCode::OK,
+        Json(revoke_inner(&state, &auth.did, &member_did, capacity).await?),
+    ))
+}
+
+/// Which of the two parties `personhood/revoke` admits is acting. Decided by
+/// each door from what it authenticated — the bearer session's role, or the
+/// proof signer's ACL row — and recorded on the audit envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RevokeCapacity {
+    /// The subject revoking their own personhood.
+    Subject,
+    /// An administrator revoking another member's.
+    Admin,
+}
+
+/// Revoke `member_did`'s personhood — the operation behind the bearer route
+/// above and the `vtc/members/personhood/revoke/0.1` Trust Task. The door has
+/// already established that `actor_did` acts in `capacity`.
+pub(crate) async fn revoke_inner(
+    state: &AppState,
+    actor_did: &str,
+    member_did: &str,
+    capacity: RevokeCapacity,
+) -> Result<RevokeResponse, TaskError> {
+    let member_did = member_did.to_string();
+    let reason = match capacity {
+        RevokeCapacity::Subject => "self",
+        RevokeCapacity::Admin => "admin",
+    };
 
     let audit_writer = state
         .audit_writer
@@ -646,15 +681,12 @@ pub async fn revoke(
 
     // Idempotent no-op if already false.
     if !member.personhood {
-        return Ok((
-            StatusCode::OK,
-            Json(RevokeResponse {
-                did: member_did,
-                personhood: false,
-                vmc: None,
-                role_vec: None,
-            }),
-        ));
+        return Ok(RevokeResponse {
+            did: member_did,
+            personhood: false,
+            vmc: None,
+            role_vec: None,
+        });
     }
 
     // Mint a fresh VMC + role VEC carrying personhood: false.
@@ -708,7 +740,7 @@ pub async fn revoke(
 
     audit_writer
         .write(
-            &auth.did,
+            actor_did,
             Some(&member_did),
             AuditEvent::PersonhoodRevoked(PersonhoodRevokedData {
                 vmc_id: Some(vmc_id),
@@ -719,21 +751,18 @@ pub async fn revoke(
 
     info!(member_did = %member_did, reason, "personhood revoked");
 
-    Ok((
-        StatusCode::OK,
-        Json(RevokeResponse {
-            did: member_did,
-            personhood: false,
-            vmc: Some(
-                serde_json::to_value(&vmc)
-                    .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
-            ),
-            role_vec: Some(
-                serde_json::to_value(&role_vec)
-                    .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
-            ),
-        }),
-    ))
+    Ok(RevokeResponse {
+        did: member_did,
+        personhood: false,
+        vmc: Some(
+            serde_json::to_value(&vmc)
+                .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
+        ),
+        role_vec: Some(
+            serde_json::to_value(&role_vec)
+                .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
+        ),
+    })
 }
 
 // ---------------------------------------------------------------------------

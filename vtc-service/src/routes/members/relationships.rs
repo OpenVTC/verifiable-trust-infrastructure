@@ -62,22 +62,37 @@ pub async fn list(
     Path(did): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Paginated<Relationship>>, TaskError> {
-    vti_common::identifier::validate_did("did", &did)?;
+    Ok(Json(
+        list_inner(&state, &did, query.cursor.as_deref(), query.limit).await?,
+    ))
+}
+
+/// One page of `did`'s relationships — the operation behind the bearer route
+/// above and the `vtc/relationships/list/0.2` Trust Task. Who may read is the
+/// door's decision; this validates the subject, resolves it (`notFound`) and
+/// applies the §12.3 strip.
+pub(crate) async fn list_inner(
+    state: &AppState,
+    did: &str,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+) -> Result<Paginated<Relationship>, TaskError> {
+    vti_common::identifier::validate_did("did", did)?;
     // `relationships/list:notFound` — no member with this DID. The same
     // predicate the strip below applies to the other party: a DID with neither
     // an ACL entry nor a member row (never admitted, or purged) is nobody
     // here. A departed member's tombstone still counts, and so does their
     // history. This used to answer an empty page, indistinguishable from a
     // member with no relationships.
-    if get_acl_entry(&state.acl_ks, &did).await?.is_none()
-        && get_member(&state.members_ks, &did).await?.is_none()
+    if get_acl_entry(&state.acl_ks, did).await?.is_none()
+        && get_member(&state.members_ks, did).await?.is_none()
     {
         return Err(TaskError::declared(
             LIST_ERR_NOT_FOUND,
             AppError::NotFound(format!("member not found: {did}")),
         ));
     }
-    let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
+    let limit = limit.unwrap_or(50).clamp(1, MAX_LIMIT);
     let audit_key = state
         .audit_writer
         .as_ref()
@@ -85,9 +100,7 @@ pub async fn list(
         .active_key()
         .await?;
 
-    let cursor = query
-        .cursor
-        .as_deref()
+    let cursor = cursor
         .map(|c| Cursor::decode(c, &audit_key.key))
         .transpose()
         .map_err(|e| AppError::Validation(format!("invalid cursor: {e}")))?;
@@ -96,7 +109,7 @@ pub async fn list(
         &state.relationships_ks,
         &state.relationships_by_did_ks,
         &audit_key,
-        &did,
+        did,
         cursor.as_ref(),
         limit,
     )
@@ -121,9 +134,9 @@ pub async fn list(
         }
     }
 
-    Ok(Json(Paginated {
+    Ok(Paginated {
         items: filtered,
         next_cursor: page.next_cursor,
         total_estimate: page.total_estimate,
-    }))
+    })
 }

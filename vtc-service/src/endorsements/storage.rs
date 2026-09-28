@@ -127,6 +127,29 @@ pub async fn list_endorsements(
     paginate(pairs, cursor, limit, &audit_key.key, snapshot_id, decode)
 }
 
+/// As [`list_endorsements`], over only the rows `keep` accepts.
+///
+/// The filter runs **before** pagination, so a page is `limit` matching rows
+/// and `nextCursor` continues through matching rows — filtering a page after
+/// it was cut would return short pages and could end the walk early.
+/// `vtc/endorsements/list/0.1` names the filters (`subjectDid`, `typeUri`,
+/// `includeRevoked`) and requires the consumer to apply them.
+pub async fn list_endorsements_matching(
+    ks: &KeyspaceHandle,
+    audit_key: &AuditKey,
+    cursor: Option<&Cursor>,
+    limit: usize,
+    keep: impl Fn(&Endorsement) -> bool,
+) -> Result<Paginated<Endorsement>, AppError> {
+    let mut pairs = ks.prefix_iter_raw(ENDORSEMENTS_PREFIX.to_vec()).await?;
+    // A row that does not decode is kept, so pagination reports it exactly as
+    // the unfiltered listing does rather than hiding a corrupt row.
+    pairs.retain(|(_, v)| decode(v).map(|row| keep(&row)).unwrap_or(true));
+    pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let snapshot_id: u64 = pairs.len() as u64;
+    paginate(pairs, cursor, limit, &audit_key.key, snapshot_id, decode)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

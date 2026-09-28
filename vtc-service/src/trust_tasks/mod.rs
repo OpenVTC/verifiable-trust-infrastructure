@@ -42,8 +42,8 @@
 //! JWT-gated REST routes, and moving them is what the rest of phase 2 is.
 //!
 //! The personhood pair (`members/personhood/{challenge,assert}`) is the
-//! member-facing half of a family whose `revoke` verb stays operator-side on
-//! REST. Both carry their own gate — challenge requires the caller to be a
+//! member-facing half of the family; its `revoke` verb is served here too,
+//! with the rest of the member-facing verbs, by [`member_tasks`]. Both carry their own gate — challenge requires the caller to be a
 //! member, assert requires the sender to *be* the subject — because "an
 //! authenticated session", which is what the REST routes rest on, has no
 //! equivalent on a transport that only proves who sent the bytes.
@@ -63,6 +63,11 @@ mod credential_exchange;
 // The canonical `acl/{show,list,update,revoke}` tasks, and the operation-bound
 // gate `acl/grant` shares with `acl/update`.
 mod acl_tasks;
+
+// The member-facing verbs that were HTTPS REST only: renewal, DID rotation,
+// personhood revocation, the relationship graph's member verbs and the
+// endorsement verbs. Each calls the operation its bearer route calls.
+mod member_tasks;
 
 // The node-neutral `backup/*` family (#1641): a backup too large for one
 // document moves as a chunked bundle. `pub(crate)` for `blob_dir`, which the
@@ -811,6 +816,13 @@ async fn dispatch_typed(
                 }
             }
         }
+        uri if member_tasks::URIS.contains(&uri) => {
+            match member_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("member_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
         uri if crate::git_ns::tasks::serves(uri) => {
             crate::git_ns::tasks::dispatch(
                 state,
@@ -1366,7 +1378,7 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            52,
+            60,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1387,7 +1399,12 @@ mod spine_proof_tests {
              `auth/step-up/approve-response/0.4` \
              is dispatched and declares no proof: its gate is the WebAuthn \
              assertion it carries (its handler still requires the approver's \
-             assertionMethod proof); got {required:?}"
+             assertionMethod proof) + the 8 member-facing verbs `member_tasks` \
+             moved that declare one (`members/{{renew,rotate-challenge,rotate}}`, \
+             `members/personhood/revoke`, `relationships/{{publish,revoke}}`, \
+             `endorsements/{{issue,revoke}}`; `relationships/list` and \
+             `endorsements/{{list,show}}` declare none, and their handlers refuse \
+             an unsigned one regardless); got {required:?}"
         );
     }
 
@@ -1772,6 +1789,22 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     backup_tasks::PUT_CHUNK_TYPE,
     backup_tasks::FINALIZE_IMPORT_TYPE,
     backup_tasks::ABORT_TYPE,
+    // The member-facing verbs, each also still mounted on its REST route:
+    // renewal and DID rotation (the member's own), personhood revocation (the
+    // subject or an admin), the relationship graph's list / publish / revoke,
+    // and the endorsement verbs an Admin or Issuer performs. Before these, a
+    // member on TSP or DIDComm could join and then do none of this.
+    member_tasks::RENEW_TYPE,
+    member_tasks::ROTATE_CHALLENGE_TYPE,
+    member_tasks::ROTATE_TYPE,
+    member_tasks::PERSONHOOD_REVOKE_TYPE,
+    member_tasks::RELATIONSHIPS_LIST_TYPE,
+    member_tasks::RELATIONSHIPS_PUBLISH_TYPE,
+    member_tasks::RELATIONSHIPS_REVOKE_TYPE,
+    member_tasks::ENDORSEMENTS_ISSUE_TYPE,
+    member_tasks::ENDORSEMENTS_LIST_TYPE,
+    member_tasks::ENDORSEMENTS_SHOW_TYPE,
+    member_tasks::ENDORSEMENTS_REVOKE_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -3988,6 +4021,17 @@ mod tests {
             backup_tasks::PUT_CHUNK_TYPE,
             backup_tasks::FINALIZE_IMPORT_TYPE,
             backup_tasks::ABORT_TYPE,
+            <trust_tasks_rs::specs::vtc::members::renew::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::members::rotate_challenge::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::members::rotate::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::members::personhood::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::relationships::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::relationships::publish::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::relationships::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::endorsements::issue::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::endorsements::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::endorsements::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::endorsements::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.
