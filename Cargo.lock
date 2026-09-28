@@ -2682,7 +2682,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "chrono",
@@ -11000,7 +11000,7 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "ipnetwork",
  "serde",
@@ -11565,7 +11565,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinidi-data-integrity",
