@@ -3223,9 +3223,13 @@ async fn handle_config_export(
 /// `vtc/config/import/0.1` — preview (`confirm: false`, the default) or apply
 /// a portable configuration.
 ///
-/// Administrator only, from the signer's ACL entry — the `AdminAuth` question
-/// the removed bearer route asked. The audit rows name the signer. This is the
-/// task's only binding; see [`handle_config_export`].
+/// An **unrestricted** administrator only, from the signer's ACL entry. The
+/// removed bearer route asked only `AdminAuth`, but an import writes the same
+/// community-wide overrides `config/patch` does — the unrestricted-admin
+/// consent threshold among them — so it takes what `config/patch` takes, or a
+/// context admin could reach through the import what the patch refuses it. The
+/// audit rows name the signer. This is the task's only binding; see
+/// [`handle_config_export`].
 ///
 /// # Why the payload is read twice
 ///
@@ -3254,6 +3258,9 @@ async fn handle_config_import(
         Ok(a) => a,
         Err(reject) => return reject,
     };
+    if let Err(e) = actor.require_super_admin() {
+        return app_error_to_reject(&doc, &e);
+    }
     let _checked: config_import::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,

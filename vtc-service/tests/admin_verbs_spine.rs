@@ -74,7 +74,9 @@ fn failed_job() -> SyncJob {
 }
 
 /// Every moved verb, with a payload it succeeds on against [`vtc`] (after
-/// [`prepare`]), and whether the bearer route asked for an unrestricted admin.
+/// [`prepare`]), and whether it takes an unrestricted admin: the bearer
+/// route's `SuperAdminAuth`, and the community-wide configuration writes and
+/// admin-invite management, which the bearer routes left to any admin.
 fn verbs(job_id: &str, jti: &str) -> Vec<(&'static str, Value, bool)> {
     vec![
         (DIAGNOSTICS, json!({}), false),
@@ -88,13 +90,13 @@ fn verbs(job_id: &str, jti: &str) -> Vec<(&'static str, Value, bool)> {
         (
             CONFIG_PATCH,
             json!({ "overrides": { "log.level": "debug" } }),
-            false,
+            true,
         ),
-        (CONFIG_RELOAD, json!({}), false),
-        (CONFIG_RESTART, json!({}), false),
-        (INVITES_LIST, json!({}), false),
+        (CONFIG_RELOAD, json!({}), true),
+        (CONFIG_RESTART, json!({}), true),
+        (INVITES_LIST, json!({}), true),
         (INVITES_CREATE, json!({ "did": INVITEE }), true),
-        (INVITES_REVOKE, json!({ "jti": jti }), false),
+        (INVITES_REVOKE, json!({ "jti": jti }), true),
     ]
 }
 
@@ -172,8 +174,8 @@ async fn every_moved_verb_refuses_a_member() {
     }
 }
 
-/// `SuperAdminAuth` on the bearer routes: a context-scoped admin is refused
-/// the audit log and admin invites, and admitted to the rest.
+/// A context-scoped admin is refused the audit log, the configuration writes
+/// and admin invites, and admitted to the rest.
 #[tokio::test]
 async fn the_unrestricted_verbs_refuse_a_context_admin() {
     let vtc = vtc().await;
