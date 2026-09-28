@@ -493,6 +493,18 @@ already in flight). The re-assertion itself is a keepalive round-trip per pair,
 so it is the client-side timeout-loop work (D6) applied proactively at boot
 rather than reactively on first failure.
 
+### Operator tooling — clearing relationship state by hand
+
+Everything above heals without an operator. When one does need to intervene —
+to reproduce a first contact, or to clear a relationship a peer will never
+honour — `vta tsp-relationships list | reset --peer <did> | delete --peer <did>
+| delete --all [--yes]` works on the stopped VTA's store. `reset` is the D4
+stale-half reset (`None` + cleared digests, capability kept); `delete` is the D5
+eviction's `forget`; `--all` also removes half-formed records, which D9's
+enumeration cannot see. Each endpoint holds its own half and the mediator holds
+none, so a clean re-handshake means clearing both ends — the DID hosting service
+has the equivalent `tsp-relationship-*` commands.
+
 ## Where the changes land
 
 | Change | Crate / file | Kind |

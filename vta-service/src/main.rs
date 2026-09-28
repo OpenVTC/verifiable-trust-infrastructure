@@ -12,6 +12,8 @@ mod keys_cli;
 mod services_cli;
 #[cfg(feature = "setup")]
 mod setup;
+#[cfg(feature = "tsp")]
+mod tsp_relationships_cli;
 mod vault_cli;
 #[cfg(feature = "webvh")]
 mod webvh_cli;
@@ -346,6 +348,51 @@ enum Commands {
     Services {
         #[command(subcommand)]
         command: ServicesCommands,
+    },
+    /// Inspect and clear this VTA's persisted TSP relationships (offline).
+    ///
+    /// Each endpoint keeps its own half of every relationship; the mediator
+    /// holds none, so wiping it resets nothing. To make this VTA and a peer
+    /// meet as strangers again, clear both halves — here and on the peer.
+    /// Daemon must be stopped; `reset` and `delete` are refused when sealed.
+    #[cfg(feature = "tsp")]
+    TspRelationships {
+        #[command(subcommand)]
+        command: TspRelationshipCommands,
+    },
+}
+
+#[cfg(feature = "tsp")]
+#[derive(Subcommand)]
+enum TspRelationshipCommands {
+    /// List the established relationships, with when each was last active.
+    List,
+    /// Reset our half of a relationship to `None`, so the next send to the peer
+    /// re-invites. Keeps the cached peer capability.
+    Reset {
+        /// The peer's DID (its TSP VID).
+        #[arg(long)]
+        peer: String,
+        /// This VTA's VID for the pair. Needed only for a half-formed
+        /// relationship, which `list` cannot show.
+        #[arg(long)]
+        our: Option<String>,
+    },
+    /// Delete relationship records outright.
+    Delete {
+        /// The peer's DID (its TSP VID).
+        #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+        peer: Option<String>,
+        /// This VTA's VID for the pair. Needed only for a half-formed
+        /// relationship, which `list` cannot show.
+        #[arg(long, requires = "peer", conflicts_with = "all")]
+        our: Option<String>,
+        /// Delete every record, established or half-formed.
+        #[arg(long)]
+        all: bool,
+        /// Confirm `--all`. Without it, only reports what would be deleted.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -2224,6 +2271,36 @@ async fn main() {
             }
         }
         #[cfg(feature = "webvh")]
+        #[cfg(feature = "tsp")]
+        Some(Commands::TspRelationships { command }) => {
+            // SEALED CHECK: reset and delete write the relationships keyspace.
+            if !matches!(command, TspRelationshipCommands::List) {
+                check_seal(&cli.config).await;
+            }
+            let result = match command {
+                TspRelationshipCommands::List => tsp_relationships_cli::run_list(cli.config).await,
+                TspRelationshipCommands::Reset { peer, our } => {
+                    tsp_relationships_cli::run_reset(cli.config, peer, our).await
+                }
+                TspRelationshipCommands::Delete {
+                    peer,
+                    our,
+                    all,
+                    yes,
+                } => {
+                    use tsp_relationships_cli::Target;
+                    let target = match peer {
+                        Some(peer) if !all => Target::Peer { peer, our },
+                        _ => Target::All,
+                    };
+                    tsp_relationships_cli::run_delete(cli.config, target, yes).await
+                }
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Services { command }) => {
             // SEALED CHECK: every service mutation modifies the
             // VTA's state on disk + publishes a new LogEntry.
