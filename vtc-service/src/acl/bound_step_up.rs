@@ -192,6 +192,19 @@ pub enum EvidencedGate {
     Required(Box<approve_request::Payload>),
 }
 
+/// Read and remove `key` in one step ([`KeyspaceHandle::take_raw`]), so of two
+/// concurrent callers exactly one gets the row.
+async fn take<T: serde::de::DeserializeOwned>(
+    ks: &KeyspaceHandle,
+    key: String,
+) -> Result<Option<T>, AppError> {
+    ks.take_raw(key)
+        .await?
+        .map(|raw| serde_json::from_slice(&raw))
+        .transpose()
+        .map_err(|e| AppError::Internal(format!("step-up mark does not parse: {e}")))
+}
+
 fn pending_key(challenge: &str) -> String {
     format!("{PENDING_PREFIX}{challenge}")
 }
@@ -252,15 +265,14 @@ pub async fn redeem_or_request_with_evidence(
     // Removed before it is honoured, so two concurrent re-sends of the same
     // document cannot both find it. An expired mark is removed the same way and
     // then treated as absent.
-    if let Some(mark) = ks.get::<RedeemableMark>(key.clone()).await? {
-        ks.remove(key).await?;
-        if now_epoch() < mark.expires_at {
-            info!(admin = %admin_did, task = %type_uri, "operation-bound step-up spent");
-            return Ok(EvidencedGate::Satisfied(StepUpEvidence {
-                credential_id: mark.credential_id.unwrap_or_default(),
-                bound_to: mark.bound_to.unwrap_or_default(),
-            }));
-        }
+    if let Some(mark) = take::<RedeemableMark>(ks, key).await?
+        && now_epoch() < mark.expires_at
+    {
+        info!(admin = %admin_did, task = %type_uri, "operation-bound step-up spent");
+        return Ok(EvidencedGate::Satisfied(StepUpEvidence {
+            credential_id: mark.credential_id.unwrap_or_default(),
+            bound_to: mark.bound_to.unwrap_or_default(),
+        }));
     }
 
     let webauthn = state.webauthn.as_ref().ok_or_else(|| {
@@ -390,13 +402,9 @@ pub async fn spend_mark(
 ) -> Result<bool, AppError> {
     let key = mark_key(admin_did, &operation_digest(type_uri, payload)?);
     let ks = &state.step_up_marks_ks;
-    match ks.get::<RedeemableMark>(key.clone()).await? {
-        Some(mark) => {
-            ks.remove(key).await?;
-            Ok(now_epoch() < mark.expires_at)
-        }
-        None => Ok(false),
-    }
+    Ok(take::<RedeemableMark>(ks, key)
+        .await?
+        .is_some_and(|mark| now_epoch() < mark.expires_at))
 }
 
 /// Whether a recorded gesture for `(admin_did, this operation)` is waiting,
@@ -535,10 +543,13 @@ pub async fn approve(
     let ks = &state.step_up_marks_ks;
     let challenge = payload.challenge.to_string();
     let key = pending_key(&challenge);
-    let Some(pending) = ks.get::<PendingMark>(key.clone()).await? else {
+    // Taken atomically: an unsigned answer carries no proof, so its `id` is
+    // the sender's to choose and the spine's replay cache cannot stop two
+    // concurrent copies of one assertion. Only one of them may find the
+    // ceremony, or a second mark could be recorded after the first is spent.
+    let Some(pending) = take::<PendingMark>(ks, key).await? else {
         return Err(ApproveError::ChallengeUnknown);
     };
-    ks.remove(key).await?;
     if now_epoch() >= pending.expires_at {
         return Err(ApproveError::ChallengeExpired);
     }
@@ -844,5 +855,23 @@ mod tests {
         assert_eq!(v["webauthn"]["challenge"], v["challenge"]);
         assert_eq!(v["webauthn"]["userVerification"], "required");
         assert_eq!(v["acceptableEvidence"], json!(["webauthn"]));
+    }
+
+    /// A recorded gesture is spent once, however many copies of the act race
+    /// for it — the take is atomic, not a read followed by a remove.
+    #[tokio::test]
+    async fn concurrent_spends_of_one_mark_succeed_once() {
+        let tv = crate::test_support::build_test_vtc().await;
+        let p = payload("did:key:zRaced");
+        record_mark_for_test(&tv.state, "did:key:zAdmin", GRANT, &p)
+            .await
+            .unwrap();
+        let spends = (0..16).map(|_| spend_mark(&tv.state, "did:key:zAdmin", GRANT, &p));
+        let won = futures_util::future::join_all(spends)
+            .await
+            .into_iter()
+            .filter(|r| matches!(r, Ok(true)))
+            .count();
+        assert_eq!(won, 1);
     }
 }
