@@ -727,13 +727,16 @@ async fn graph_separates_complete_edges_from_half_edges() {
 #[tokio::test]
 async fn graph_is_admin_only() {
     let fix = build_fixture().await;
-    let member = common::signed::party_with_role(&fix._vtc, VtcRole::Member, &[]).await;
-    let (_, doc) = common::signed::call(&fix._vtc, &member, GRAPH_TASK, json!({})).await;
-    assert_eq!(
-        common::signed::error_code(&doc),
-        Some("permissionDenied"),
-        "{doc}"
-    );
+    // The route refused an `Issuer`'s session; a plain member is refused too.
+    for role in [VtcRole::Issuer, VtcRole::Member] {
+        let party = common::signed::party_with_role(&fix._vtc, role.clone(), &[]).await;
+        let (_, doc) = common::signed::call(&fix._vtc, &party, GRAPH_TASK, json!({})).await;
+        assert_eq!(
+            common::signed::error_code(&doc),
+            Some("permissionDenied"),
+            "{role}: {doc}"
+        );
+    }
 }
 
 // ─── Publish under a pairwise relationship DID ────────────

@@ -13,7 +13,7 @@
 //! | `vtc/members/{list,removed,show,solicit-vmc}/0.1` | `Admin` |
 //! | `vtc/join-requests/{list,show}/0.1` | `Admin` |
 //! | `vtc/relationships/graph/0.2` | `Admin` |
-//! | `vtc/invitations/{issue,list,revoke,deliver}/0.1` | `Admin`, `Moderator` or `Issuer` |
+//! | `vtc/invitations/{issue,list,revoke,deliver}/0.1` | `Admin`, `Moderator` or `Issuer`; below `Admin`, only the invitations the signer issued, and no role conferred by invitation |
 //!
 //! Every one arrives here the same way over TSP, DIDComm or HTTPS. The bearer
 //! routes of `members/list` and `join-requests/list` stay while `vtc-client`
@@ -390,7 +390,10 @@ async fn handle_relationships_graph(
 // ─── invitation credentials ──────────────────────────────────────────────
 //
 // The operations read the signer's ACL row themselves (`Admin`, `Moderator`
-// or `Issuer`), as the bearer routes did; the arms only establish who signed.
+// or `Issuer`); the arms only establish who signed. The bearer routes were
+// reachable by an administrator's session only, so the operations also bound
+// what a `Moderator` or `Issuer` may do now that it can sign: list, revoke
+// and deliver only the invitations it issued, and invite members only.
 
 async fn handle_invitations_issue(
     state: &AppState,

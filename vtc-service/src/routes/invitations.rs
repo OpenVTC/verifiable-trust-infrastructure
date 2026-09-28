@@ -129,6 +129,14 @@ pub(crate) async fn issue(
                 "an invitation may not grant `admin` (no admin via join)".into(),
             ));
         }
+        // Conferring a role is an administrator's authority. A `Moderator` or
+        // `Issuer` invites members; it cannot mint an invitation that seats
+        // someone as a moderator or issuer, or as any custom role.
+        if !matches!(parsed, VtcRole::Member) && !matches!(acl.role, VtcRole::Admin) {
+            return Err(AppError::Forbidden(format!(
+                "only an administrator can invite with the role `{role}`"
+            )));
+        }
     }
 
     let vic = issue_invitation(
@@ -243,30 +251,50 @@ pub struct InvitationListResponse {
     pub invitations: Vec<InvitationListItem>,
 }
 
-/// Auth gate shared by the invitation ops: Admin / Moderator / Issuer.
-async fn require_inviter(state: &AppState, did: &str) -> Result<(), AppError> {
+/// What an inviter may manage: every invitation (an `Admin`), or only the
+/// ones it issued itself (a `Moderator` or `Issuer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InviterScope {
+    All,
+    OwnOnly,
+}
+
+impl InviterScope {
+    fn covers(self, record: &InvitationRecord, actor: &str) -> bool {
+        self == Self::All || record.issued_by == actor
+    }
+}
+
+/// Auth gate shared by the invitation ops: Admin / Moderator / Issuer, and
+/// how far the caller's authority over issued invitations reaches.
+///
+/// A `Moderator` or `Issuer` grows the community by inviting; it does not
+/// manage the invitations other inviters (an administrator included) issued.
+/// Their invitees, revocations and offers are not its to see or act on, so
+/// an invitation outside its scope answers exactly as one that does not
+/// exist.
+async fn require_inviter(state: &AppState, did: &str) -> Result<InviterScope, AppError> {
     let acl = get_acl_entry(&state.acl_ks, did)
         .await?
         .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
-    if !matches!(
-        acl.role,
-        VtcRole::Admin | VtcRole::Moderator | VtcRole::Issuer
-    ) {
-        return Err(AppError::Forbidden(
+    match acl.role {
+        VtcRole::Admin => Ok(InviterScope::All),
+        VtcRole::Moderator | VtcRole::Issuer => Ok(InviterScope::OwnOnly),
+        _ => Err(AppError::Forbidden(
             "only Admin, Moderator, or Issuer members can manage invitations".into(),
-        ));
+        )),
     }
-    Ok(())
 }
 
 pub(crate) async fn list(
     state: &AppState,
     actor: &str,
 ) -> Result<InvitationListResponse, AppError> {
-    require_inviter(state, actor).await?;
+    let scope = require_inviter(state, actor).await?;
     let invitations = list_invitations(&state.invitations_ks)
         .await?
         .into_iter()
+        .filter(|r| scope.covers(r, actor))
         .map(InvitationListItem::from)
         .collect();
     Ok(InvitationListResponse { invitations })
@@ -288,10 +316,11 @@ pub(crate) async fn revoke(
     actor: &str,
     id: String,
 ) -> Result<RevokeResponse, AppError> {
-    require_inviter(state, actor).await?;
+    let scope = require_inviter(state, actor).await?;
 
     let mut record = get_invitation(&state.invitations_ks, &id)
         .await?
+        .filter(|r| scope.covers(r, actor))
         .ok_or_else(|| AppError::NotFound(format!("no invitation with id {id}")))?;
 
     // Idempotent: an already-revoked invite reports its prior revocation.
@@ -422,7 +451,7 @@ pub(crate) async fn deliver(
 ) -> Result<trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::Response, DeliverError> {
     use trust_tasks_rs::specs::vtc::invitations::deliver::v0_1 as spec;
 
-    require_inviter(state, actor).await?;
+    let scope = require_inviter(state, actor).await?;
     let payload = body;
     let id = payload.id.to_string();
     // The generated channel is `#[non_exhaustive]`: a channel a later
@@ -440,6 +469,7 @@ pub(crate) async fn deliver(
 
     let mut record = get_invitation(&state.invitations_ks, &id)
         .await?
+        .filter(|r| scope.covers(r, actor))
         .ok_or_else(|| DeliverError::NotFound(format!("no invitation with id {id}")))?;
     if record.is_revoked() {
         return Err(DeliverError::Revoked(format!(
