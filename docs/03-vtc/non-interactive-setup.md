@@ -62,7 +62,11 @@ Run the printed command on a host with `pnm` authenticated to the VTA (or
 if the context already exists). The `--admin-expires 1h` grant is a one-time
 hand-off (VTI-ACL-054): in phase 2 the setup DID rolls over, once, to a
 long-term admin DID the VTA mints, bounded by your own authority. Without
-`--admin-handoff` the VTA refuses that rollover. See
+`--admin-handoff` the VTA refuses that rollover, and phase 2 fails with
+`provision-integration call failed: forbidden: … carries no one-time hand-off`.
+The marker can only be set when the entry is created, so the error prints the
+re-grant — `pnm acl delete --did <setup-did>`, then the `pnm acl create … --handoff`
+above — after which you rerun phase 2 unchanged. See
 [the hand-off](../02-vta/provision-integration.md#who-writes-the-long-term-row-the-one-time-hand-off).
 
 ## Phase 2 — provision
