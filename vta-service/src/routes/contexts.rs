@@ -169,9 +169,14 @@ pub async fn update_context_did_handler(
     Path(id): Path<String>,
     Json(req): Json<UpdateDidRequest>,
 ) -> Result<Json<CreateContextResultBody>, AppError> {
-    let result =
-        operations::contexts::update_context_did(&state.contexts_ks, &auth.0, &id, req.did, "rest")
-            .await?;
+    let result = operations::contexts::update_context_did(
+        &state.contexts_ks,
+        &auth.0,
+        &id,
+        Some(req.did),
+        "rest",
+    )
+    .await?;
     Ok(Json(result))
 }
 

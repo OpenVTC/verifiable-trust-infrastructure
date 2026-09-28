@@ -39,11 +39,24 @@ pub(crate) async fn run(
             id,
             name,
             did,
+            clear_did,
             description,
-        } => contexts::cmd_context_update(client, &id, name, did, description).await,
-        ContextCommands::UpdateDid { id, did } => {
-            contexts::cmd_context_update_did(client, &id, &did).await
+        } => {
+            // The identity change goes through update-did, never
+            // `contexts/update` — which cannot clear and needs super-admin.
+            if clear_did {
+                if name.is_some() || description.is_some() {
+                    contexts::cmd_context_update(client, &id, name, None, description).await?;
+                }
+                contexts::cmd_context_clear_did(client, &id).await
+            } else {
+                contexts::cmd_context_update(client, &id, name, did, description).await
+            }
         }
+        ContextCommands::UpdateDid { id, did, clear } => match did {
+            Some(did) if !clear => contexts::cmd_context_update_did(client, &id, &did).await,
+            _ => contexts::cmd_context_clear_did(client, &id).await,
+        },
         ContextCommands::Delete { id, yes } => contexts::cmd_context_delete(client, &id, yes).await,
         ContextCommands::Bootstrap {
             id,

@@ -332,6 +332,13 @@ pub const TASK_CONTEXTS_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/cont
 pub const TASK_CONTEXTS_UPDATE_DID_1_0: &str =
     "https://trusttasks.org/spec/vta/contexts/update-did/1.0";
 
+/// `spec/vta/contexts/update-did/1.1` — as 1.0, except `did` may be `null`,
+/// which clears the context's DID, and a string `did` must be a DID (DID Core
+/// §3.1). The only way to retire a context's last DID: `webvh/dids/delete`
+/// refuses a DID a context still acts as. Same payload type and handler as 1.0.
+pub const TASK_CONTEXTS_UPDATE_DID_1_1: &str =
+    <trust_tasks_rs::specs::vta::contexts::update_did::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/contexts/preview-delete/1.0` — preview resources affected
 /// by deletion. Payload:
 /// [`crate::protocols::context_management::delete::DeleteContextPreviewBody`].
@@ -2134,6 +2141,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONTEXTS_GET_1_0,
     TASK_CONTEXTS_UPDATE_1_0,
     TASK_CONTEXTS_UPDATE_DID_1_0,
+    TASK_CONTEXTS_UPDATE_DID_1_1,
     TASK_CONTEXTS_SECRETS_1_0,
     TASK_CONTEXTS_PREVIEW_DELETE_1_0,
     TASK_CONTEXTS_DELETE_1_0,
