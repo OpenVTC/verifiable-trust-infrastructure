@@ -22,21 +22,22 @@
 //!   [`VtcClient::import_backup`]) is the `backup/*` Trust Task family and goes
 //!   **only over the session**: the VTC refuses it over HTTPS, where the
 //!   password and the bundle would exist in plaintext wherever TLS terminates.
-//! - Those whose tasks the VTC binds as signed documents — a join decision,
-//!   `members/{update,admin-remove,credentials}`, the whole `acl/*` family
-//!   ([`acl`]) — go as documents too: over the session when there is one,
-//!   otherwise signed with the operator's own key (the one
-//!   [`VtcClient::connect`] authenticated with)
-//!   and posted to `POST {base}/trust-tasks`. A client holding that key never
-//!   falls back to the bearer route for them, even against a VTC too old to
-//!   serve the document. A client built from a token alone
-//!   ([`VtcClient::with_token`]) holds no key and uses the bearer routes.
+//! - Every other admin verb this client sends is a **signed Trust Task**: the
+//!   roster, the join queue and its decisions, `members/{update,admin-remove,
+//!   credentials}`, policy, the community's DID log, audit verification,
+//!   vetter grants and endorsement revocation, the whole `acl/*` family
+//!   ([`acl`]). It goes over the session when there is one, otherwise signed
+//!   with the operator's own key ([`VtcClient::connect`] or
+//!   [`VtcClient::with_key`]) and posted to `POST {base}/trust-tasks`. There is
+//!   no bearer route behind any of them: a client with neither a session nor
+//!   a key answers [`VtcError::NotAuthenticated`].
 //! - The `git-ns/*` family ([`git_ns`]) is signed with the [`HolderKey`] the
 //!   caller passes, and goes over the session when there is one — whose
 //!   identity that key must be — otherwise posted to `POST {base}/trust-tasks`.
-//! - The rest are gated on a bearer token *and* a per-route `Trust-Task`
-//!   header, which is a URL-shaped surface; a session-only client answers them
-//!   with [`VtcError::NoRestTransport`] rather than failing obscurely.
+//! - A few vetting admin reads and writes (the grant listing, automatic
+//!   grants, branding, requested attributes, statement withdrawals) have no
+//!   Trust Task served yet and stay on bearer REST until they do; a
+//!   session-only client answers them with [`VtcError::NoRestTransport`].
 //!
 //! The session transports are **delegated to `vta_sdk::client::VtaClient`**,
 //! which already owns session setup, `thid` demultiplexing, retry under one
@@ -65,18 +66,15 @@
 //! ## Mount path
 //!
 //! A VTC mounts its API under a configurable base (default `/v1`). Pass the
-//! **full** API base to [`VtcClient::connect`] / [`VtcClient::with_token`] —
-//! e.g. `https://vtc.example.com/v1` — so both `/auth/*` and `/members` resolve.
+//! **full** API base to [`VtcClient::connect`] / [`VtcClient::with_key`] —
+//! e.g. `https://vtc.example.com/v1` — so both `/auth/*` and `/trust-tasks` resolve.
 //!
-//! ## The `Trust-Task` header is mandatory
+//! ## A new verb is a document
 //!
-//! The VTC gates **every** route on a per-route `Trust-Task` URL header
-//! (`vtc-service/src/routes/mod.rs`, the `tt(...)` wrapper) and answers `400`
-//! without it — only `/health` and the browser wallet's `/wallet/auth/*`
-//! aliases are exempt. This client sent it on nothing, so every method failed
-//! at the transport layer regardless of its body. [`task`] holds the URL for
-//! each route and `VtcClient::tt` attaches it; a new method must go through
-//! that helper, not a bare `self.http.get(...)`.
+//! A verb this client adds is a signed Trust Task sent through
+//! `VtcClient::document`, which picks the session or the document endpoint.
+//! [`task`] holds the type URI of each verb, so the mapping is auditable
+//! against the VTC's dispatcher in one read.
 //!
 //! ## Scope
 //!
@@ -109,16 +107,14 @@ const SESSION_TIMEOUT_SECS: u64 = 60;
 
 pub mod acl;
 pub mod git_ns;
-
-/// The `Trust-Task` URL each route this client calls is gated on, as declared
-/// in `vtc-service/src/routes/mod.rs`.
-///
-/// Kept as one block so the mapping is auditable against the server's router in
-/// a single read, rather than scattered as string literals down the file. A URL
-/// that drifts from the server's is a 400 at runtime, so this list is part of
-/// the client's contract, not decoration.
 pub mod rooms;
 
+/// The Trust Task type URI of each admin verb this client sends as a signed
+/// document.
+///
+/// Kept as one block so the mapping is auditable against the VTC's dispatcher
+/// (`vtc-service/src/trust_tasks`) in a single read, rather than scattered as
+/// string literals down the file.
 pub mod task {
     pub const MEMBERS_LIST: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
     pub const MEMBERS_UPDATE: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
@@ -133,14 +129,14 @@ pub mod task {
     pub const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
     pub const VETTING_VETTERS_GRANT: &str =
         "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
-    pub const VETTING_VETTERS_RESEND: &str =
-        "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1";
     pub const VETTING_VETTERS_SHOW: &str =
         "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1";
     pub const ENDORSEMENTS_REVOKE: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
     pub const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
     pub const MEMBERS_CREDENTIALS: &str =
         <super::members_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const DID_REGISTER: &str =
+        <super::did_register::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 }
 
 /// DID-document service `type` under which a VTC advertises its REST API base
@@ -268,9 +264,12 @@ pub const POLICY_PURPOSE_EXT_KEY: &str = "org.openvtc.purpose";
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum VtcError {
-    /// A request needed a bearer token but the client has none — call
-    /// [`VtcClient::connect`] (or construct via [`VtcClient::with_token`]).
-    #[error("not authenticated — call VtcClient::connect first")]
+    /// The client can neither sign a document nor present a bearer token —
+    /// build it with [`VtcClient::connect`] or [`VtcClient::with_key`], or
+    /// over a session.
+    #[error(
+        "not authenticated — build the client with a key (VtcClient::connect or VtcClient::with_key) or over a session"
+    )]
     NotAuthenticated,
     /// The VTC returned a non-success HTTP status.
     #[error("VTC returned HTTP {status}: {body}")]
@@ -304,11 +303,10 @@ pub enum VtcError {
     /// A verb that only exists on the HTTPS surface was called on a client
     /// built with no REST base.
     ///
-    /// The admin verbs without a signed binding are gated on a bearer token
-    /// *and* a per-route `Trust-Task` header, which is a URL-shaped surface —
-    /// they cannot ride a session. Rather than fail at the transport with
-    /// something obscure, say so: pass `rest_url` to the `connect_*`
-    /// constructor.
+    /// The few admin verbs with no Trust Task served yet are bearer REST, a
+    /// URL-shaped surface — they cannot ride a session. Rather than fail at the
+    /// transport with something obscure, say so: pass `rest_url` to the
+    /// `connect_*` constructor.
     #[error("this client has no REST base — {0} needs one; pass rest_url when connecting")]
     NoRestTransport(&'static str),
     /// The VTC answered 404 with an error `code` the called task's
@@ -504,8 +502,8 @@ struct VettingRevocationList {
     revocations: Vec<VettingRevocation>,
 }
 
-/// A client bound to one VTC's API base, holding a bearer token once
-/// authenticated.
+/// A client bound to one VTC: its API base, and a session or the operator's
+/// own key to sign its Trust Tasks with.
 #[derive(Clone)]
 pub struct VtcClient {
     http: reqwest::Client,
@@ -514,18 +512,15 @@ pub struct VtcClient {
     base_url: String,
     /// The VTC's own DID (the authentication audience / DIDComm recipient).
     vtc_did: String,
-    /// Bearer access token, set after [`connect`](Self::connect).
+    /// Bearer access token, set after [`connect`](Self::connect). Read only by
+    /// the vetting admin verbs that have no Trust Task served yet.
     token: Option<String>,
     /// The operator's own key, held by a client built with
-    /// [`connect`](Self::connect).
+    /// [`connect`](Self::connect) or [`with_key`](Self::with_key).
     ///
-    /// The admin verbs whose tasks the VTC serves as signed documents are sent
-    /// signed with it, and **only** that way: a client holding a key does not
-    /// fall back to the bearer route, even against a VTC too old to serve the
-    /// document. The VTC reads the signer's own ACL entry, so this is the
-    /// operator acting as themselves — no delegation is involved. A client
-    /// built from a token alone ([`with_token`](Self::with_token)) has no key
-    /// and keeps using the bearer routes.
+    /// Every admin verb is a Trust Task signed with it when there is no
+    /// session. The VTC reads the signer's own ACL entry, so this is the
+    /// operator acting as themselves — no delegation is involved.
     ///
     /// Never printed: `VtcClient`'s `Debug` reports only whether one is held.
     signer: Option<HolderKey>,
@@ -533,10 +528,9 @@ pub struct VtcClient {
     ///
     /// Present only on a client built by [`connect_didcomm`](Self::connect_didcomm)
     /// or [`connect_tsp`](Self::connect_tsp). When it is set, the **holder
-    /// verbs** — the ones the VTC routes by document `type` rather than by URL —
-    /// go over it instead of to `POST {base}/trust-tasks`. The admin verbs keep
-    /// using HTTPS regardless: they are gated on a bearer token and a
-    /// `Trust-Task` header, which is a URL-shaped surface.
+    /// verbs** and the **admin verbs** — every one a document routed by its
+    /// `type` rather than by URL — go over it instead of to
+    /// `POST {base}/trust-tasks`.
     ///
     /// A `VtaClient` rather than a session of our own, and the name is the only
     /// awkward part: that type is the SDK's *Trust-Task* client and the peer it
@@ -591,9 +585,8 @@ impl VtcClient {
         // has neither, so a blackholed VTC would hang an operator forever.
         let http = vta_sdk::http::rest_client();
         let base_url = base_url.trim_end_matches('/').to_string();
-        // The same key signs the admin verbs that have a signed binding. Built
-        // first, so a key that cannot sign fails here rather than on the first
-        // admin call.
+        // The same key signs every admin verb. Built first, so a key that
+        // cannot sign fails here rather than on the first admin call.
         let signer = HolderKey::from_did_key(client_did, private_key_multibase)
             .map_err(|e| VtcError::Signing(e.to_string()))?;
         let auth = vta_sdk::auth_light::challenge_response_light(
@@ -617,15 +610,20 @@ impl VtcClient {
         })
     }
 
-    /// Construct a client from an already-obtained bearer token (e.g. a token
-    /// minted out of band, or for testing). `base_url` includes the mount.
-    pub fn with_token(base_url: &str, vtc_did: &str, token: impl Into<String>) -> Self {
+    /// Construct an HTTPS client that signs every Trust Task with `key` and
+    /// holds no bearer token. `base_url` includes the mount.
+    ///
+    /// No round trip: nothing is authenticated until a document arrives, and
+    /// the VTC authorizes each one against the signer's own ACL entry. The
+    /// vetting admin verbs with no Trust Task served yet need
+    /// [`connect`](Self::connect) instead.
+    pub fn with_key(base_url: &str, vtc_did: &str, key: HolderKey) -> Self {
         Self {
             http: vta_sdk::http::rest_client(),
             base_url: base_url.trim_end_matches('/').to_string(),
             vtc_did: vtc_did.to_string(),
-            token: Some(token.into()),
-            signer: None,
+            token: None,
+            signer: Some(key),
             #[cfg(feature = "didcomm")]
             documents: None,
             #[cfg(feature = "didcomm")]
@@ -638,9 +636,9 @@ impl VtcClient {
     ///
     /// [`submit_join`](Self::submit_join) authenticates with the document's own
     /// holder proof, so an applicant — who is by definition not yet a member and
-    /// has no token to get — needs exactly this. Every other method returns
-    /// [`VtcError::NotAuthenticated`], which is the honest answer rather than a
-    /// 401 from the server.
+    /// has no key the community knows — needs exactly this. Every admin method
+    /// returns [`VtcError::NotAuthenticated`], which is the honest answer
+    /// rather than a refusal from the server.
     ///
     /// `vtc_did` still matters: it is the audience the submitted document is
     /// addressed to, and the VTC rejects a document addressed elsewhere.
@@ -667,12 +665,11 @@ impl VtcClient {
     /// `did:key` (`vtc-service/src/trust_tasks/mod.rs::resolve_holder` short-
     /// circuits on `sender_did`).
     ///
-    /// `rest_url` is the HTTPS base, and stays optional but useful. The admin
-    /// verbs the VTC serves as signed documents ride the session like the
-    /// holder verbs do; the rest are token-and-header gated on a URL surface,
-    /// so a client built with `None` here answers those with
-    /// [`VtcError::NoRestTransport`]. Passing the base gives one client that can
-    /// do both.
+    /// `rest_url` is the HTTPS base, and stays optional. Every signed verb
+    /// rides the session; only the vetting admin verbs with no Trust Task
+    /// served yet are bearer REST, and a session client holds no token, so it
+    /// answers those with [`VtcError::NotAuthenticated`] (or
+    /// [`VtcError::NoRestTransport`] with no base).
     #[cfg(feature = "didcomm")]
     pub async fn connect_didcomm(
         client_did: &str,
@@ -763,69 +760,38 @@ impl VtcClient {
         &self.vtc_did
     }
 
-    /// Start a request carrying the route's `Trust-Task` URL header and the
-    /// bearer token.
-    ///
-    /// Every authenticated call goes through here. The VTC rejects a request
-    /// with no `Trust-Task` header (400) before any handler sees it, so a
-    /// method that builds its request by hand is broken on arrival — which is
-    /// how every method in this client came to be.
-    fn tt(
-        &self,
-        method: reqwest::Method,
-        url: impl reqwest::IntoUrl,
-        task: &str,
-    ) -> Result<reqwest::RequestBuilder, VtcError> {
-        // Said here rather than at each call site, because every admin verb
-        // reaches the URL surface through this one helper. A client built for a
-        // session and given no REST base would otherwise request against an
-        // empty base and fail as a malformed URL — a fault that reads as a bug
-        // in this crate rather than as a missing argument at the constructor.
-        if self.base_url.is_empty() {
-            return Err(VtcError::NoRestTransport("this verb"));
-        }
-        let token = self.token()?;
-        Ok(self
-            .http
-            .request(method, url)
-            .header("Trust-Task", task)
-            .bearer_auth(token))
-    }
-
-    /// Send an admin verb as a Trust Task document, when this client can.
-    ///
-    /// Answers `Some(payload)` — the `#response` document's payload — when the
-    /// verb went as a document, and `None` when this client holds neither a
-    /// session nor a key, so the caller uses the task's bearer route.
+    /// Send an admin verb as a signed Trust Task document and return the
+    /// `#response` document's payload.
     ///
     /// - **Over a session** the document goes on it, signed by the session's
     ///   own key, exactly as the holder verbs do.
-    /// - **With a key** ([`connect`](Self::connect)) it is signed as the
-    ///   operator and posted to `POST {base}/trust-tasks`. There is no fallback
-    ///   from here to the bearer route: a VTC that answers `unsupportedType`
-    ///   predates the task's signed binding, and that is reported as it is.
+    /// - **With a key** ([`connect`](Self::connect),
+    ///   [`with_key`](Self::with_key)) it is signed as the operator and posted
+    ///   to `POST {base}/trust-tasks`.
+    ///
+    /// There is no bearer route behind it: a client with neither is
+    /// [`VtcError::NotAuthenticated`], and a VTC that answers
+    /// `unsupportedType` predates the task and is reported as it is.
     ///
     /// `declared` is the task's declared error codes, so a refusal the VTC
-    /// marks as "no such resource" becomes [`VtcError::NotFound`] on this path
-    /// as it does on the bearer route. `max_bytes` bounds the reply read over
-    /// HTTPS.
-    async fn admin_document(
+    /// marks as "no such resource" becomes [`VtcError::NotFound`].
+    /// `max_bytes` bounds the reply read over HTTPS.
+    async fn document(
         &self,
         type_uri: &str,
         payload: serde_json::Value,
         declared: &[trust_tasks_rs::DeclaredErrorCode],
         max_bytes: usize,
-    ) -> Result<Option<serde_json::Value>, VtcError> {
+    ) -> Result<serde_json::Value, VtcError> {
         #[cfg(feature = "didcomm")]
         if let Some(documents) = &self.documents {
             return documents
                 .dispatch_trust_task(type_uri, payload, SESSION_TIMEOUT_SECS)
                 .await
-                .map(Some)
                 .map_err(|e| VtcError::Session(e.to_string()));
         }
         let Some(key) = &self.signer else {
-            return Ok(None);
+            return Err(VtcError::NotAuthenticated);
         };
         if self.base_url.is_empty() {
             return Err(VtcError::NoRestTransport("this verb"));
@@ -834,7 +800,35 @@ impl VtcClient {
             vta_sdk::trust_task_sign::build_signed_with(type_uri, payload, key, &self.vtc_did)
                 .await
                 .map_err(|e| VtcError::Signing(e.to_string()))?;
-        self.post_document(doc, declared, max_bytes).await.map(Some)
+        self.post_document(doc, declared, max_bytes).await
+    }
+
+    /// Follow a paginated listing task to its end: `payload` is sent with each
+    /// page's `cursor`, and every page's `items` are collected.
+    async fn document_pages<T: serde::de::DeserializeOwned>(
+        &self,
+        type_uri: &str,
+        payload: serde_json::Value,
+        verb: &str,
+    ) -> Result<Vec<T>, VtcError> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut page_payload = payload.clone();
+            if let Some(cursor) = &cursor {
+                page_payload["cursor"] = serde_json::json!(cursor);
+            }
+            let reply = self
+                .document(type_uri, page_payload, &[], MAX_DOCUMENT_RESPONSE_BYTES)
+                .await?;
+            let page: Page<T> = decode_payload(reply, verb)?;
+            out.extend(page.items);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(out)
     }
 
     /// POST a signed document to the VTC's document endpoint and return the
@@ -891,84 +885,31 @@ impl VtcClient {
     }
 
     /// List every community member, optionally filtered by `role`, following the
-    /// cursor to completion. Requires an admin token. This is the fleet roster
-    /// when the community's members are managed VTAs.
+    /// cursor to completion (`vtc/members/list/0.1`). Administrator. This is
+    /// the fleet roster when the community's members are managed VTAs.
     pub async fn list_members(&self, role: Option<&str>) -> Result<Vec<MemberRecord>, VtcError> {
-        let mut out: Vec<MemberRecord> = Vec::new();
-        let mut cursor: Option<String> = None;
-
-        loop {
-            let mut params: Vec<(&str, &str)> = Vec::new();
-            if let Some(role) = role {
-                params.push(("role", role));
-            }
-            if let Some(cursor) = &cursor {
-                params.push(("cursor", cursor.as_str()));
-            }
-            let url =
-                reqwest::Url::parse_with_params(&format!("{}/members", self.base_url), &params)
-                    .map_err(|e| VtcError::Url(e.to_string()))?;
-
-            let resp = self
-                .tt(reqwest::Method::GET, url, task::MEMBERS_LIST)?
-                .send()
-                .await?;
-            if !resp.status().is_success() {
-                let status = resp.status().as_u16();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(VtcError::Http { status, body });
-            }
-
-            let page: Page<MemberRecord> = resp.json().await?;
-            out.extend(page.items);
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
+        let mut payload = serde_json::json!({});
+        if let Some(role) = role {
+            payload["role"] = serde_json::json!(role);
         }
-        Ok(out)
+        self.document_pages(task::MEMBERS_LIST, payload, "members/list")
+            .await
     }
 
     /// List join requests (the admin work queue), optionally filtered by
-    /// `status` (e.g. `"pending"`). Requires an admin token. For a fleet, these
-    /// are VTAs awaiting enrollment.
+    /// `status` (e.g. `"pending"`), following the cursor to completion
+    /// (`vtc/join-requests/list/0.1`). Administrator. For a fleet, these are
+    /// VTAs awaiting enrollment.
     pub async fn list_join_requests(
         &self,
         status: Option<&str>,
     ) -> Result<Vec<JoinRequestSummary>, VtcError> {
-        let mut out: Vec<JoinRequestSummary> = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let mut params: Vec<(&str, &str)> = Vec::new();
-            if let Some(status) = status {
-                params.push(("status", status));
-            }
-            if let Some(cursor) = &cursor {
-                params.push(("cursor", cursor.as_str()));
-            }
-            let url = reqwest::Url::parse_with_params(
-                &format!("{}/join-requests", self.base_url),
-                &params,
-            )
-            .map_err(|e| VtcError::Url(e.to_string()))?;
-
-            let resp = self
-                .tt(reqwest::Method::GET, url, task::JOIN_REQUESTS_LIST)?
-                .send()
-                .await?;
-            if !resp.status().is_success() {
-                let status = resp.status().as_u16();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(VtcError::Http { status, body });
-            }
-            let page: Page<JoinRequestSummary> = resp.json().await?;
-            out.extend(page.items);
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
+        let mut payload = serde_json::json!({});
+        if let Some(status) = status {
+            payload["status"] = serde_json::json!(status);
         }
-        Ok(out)
+        self.document_pages(task::JOIN_REQUESTS_LIST, payload, "join-requests/list")
+            .await
     }
 
     /// Approve a join request — admit the applicant and issue its membership
@@ -988,14 +929,8 @@ impl VtcClient {
         self.decide(request_id, "rejected", reason).await
     }
 
-    /// `POST /join-requests/{id}/decide` with `{ decision, reason? }`.
-    ///
-    /// The VTC previously exposed a `/approve` + `/reject` mount pair; both were
-    /// retired in favour of this single endpoint carrying the decision in the
-    /// body, and the old mounts are **gone** — this client was still posting to
-    /// them, so approve and reject were 404s independent of the missing header.
-    /// `decision` is the server's `Decision` enum on the wire (`approved` /
-    /// `rejected`), not the imperative verb the old paths used.
+    /// `vtc/join-requests/decide/0.1` with `{ id, decision, reason? }`;
+    /// `decision` is `approved` or `rejected`.
     async fn decide(
         &self,
         request_id: &str,
@@ -1006,34 +941,15 @@ impl VtcClient {
         if let Some(reason) = reason {
             document["reason"] = serde_json::json!(reason);
         }
-        if let Some(payload) = self
-            .admin_document(
+        let payload = self
+            .document(
                 task::JOIN_REQUESTS_DECIDE,
                 document,
                 &[],
                 MAX_DOCUMENT_RESPONSE_BYTES,
             )
-            .await?
-        {
-            return decode_payload(payload, "decide");
-        }
-
-        let url = format!("{}/join-requests/{request_id}/decide", self.base_url);
-        let mut body = serde_json::json!({ "decision": decision });
-        if let Some(reason) = reason {
-            body["reason"] = serde_json::json!(reason);
-        }
-        let resp = self
-            .tt(reqwest::Method::POST, url, task::JOIN_REQUESTS_DECIDE)?
-            .json(&body)
-            .send()
             .await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtcError::Http { status, body });
-        }
-        Ok(resp.json().await?)
+        decode_payload(payload, "decide")
     }
 
     /// Answer a `task-consent/request/0.1` the VTC raised — the approver's half
@@ -1044,8 +960,8 @@ impl VtcClient {
     /// ([`vta_sdk::task_consent::VerifiedConsentRequest::decision`]); the VTC
     /// matches it to its pending request by the challenge and digest it echoes.
     /// The document is signed by this client's own key, which must belong to
-    /// an unrestricted administrator other than the requester. There is no
-    /// bearer path: the proof is the approver's authority.
+    /// an unrestricted administrator other than the requester: the proof is the
+    /// approver's authority.
     pub async fn decide_task_consent(
         &self,
         decision: &trust_tasks_rs::specs::task_consent::decision::v0_1::Payload,
@@ -1054,21 +970,20 @@ impl VtcClient {
         let payload =
             serde_json::to_value(decision).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
         let reply = self
-            .admin_document(
+            .document(
                 vta_sdk::task_consent::DECISION_TYPE,
                 payload,
                 spec::ERROR_CODES,
                 MAX_DOCUMENT_RESPONSE_BYTES,
             )
-            .await?
-            .ok_or(VtcError::NotAuthenticated)?;
+            .await?;
         decode_payload(reply, "task-consent decision")
     }
 
-    /// Remove a member (offboarding). The VTC applies its removal disposition and
-    /// flips the member's status-list revocation bit. `reason` is an optional
-    /// admin note. Requires an admin token. For a fleet, this decommissions a
-    /// managed VTA.
+    /// Remove a member (offboarding, `vtc/members/admin-remove/0.1`). The VTC
+    /// applies its removal disposition and flips the member's status-list
+    /// revocation bit. `reason` is an optional admin note. Administrator. For a
+    /// fleet, this decommissions a managed VTA.
     pub async fn remove_member(
         &self,
         did: &str,
@@ -1078,68 +993,34 @@ impl VtcClient {
         if let Some(reason) = reason {
             document["reason"] = serde_json::json!(reason);
         }
-        if let Some(payload) = self
-            .admin_document(
+        let payload = self
+            .document(
                 task::MEMBERS_ADMIN_REMOVE,
                 document,
                 &[],
                 MAX_DOCUMENT_RESPONSE_BYTES,
             )
-            .await?
-        {
-            return decode_payload(payload, "admin-remove");
-        }
-
-        let url = format!("{}/members/{did}", self.base_url);
-        let mut req = self.tt(reqwest::Method::DELETE, url, task::MEMBERS_ADMIN_REMOVE)?;
-        if let Some(reason) = reason {
-            req = req.json(&serde_json::json!({ "reason": reason }));
-        }
-        let resp = req.send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtcError::Http { status, body });
-        }
-        Ok(resp.json().await?)
+            .await?;
+        decode_payload(payload, "admin-remove")
     }
 
-    /// Update a member's community-defined `extensions` (opaque JSON) via
-    /// `PATCH /members/{did}`. A fleet manager records per-member operational
-    /// state here — e.g. the assigned `fleet_index` at enrollment, which the
-    /// roster then carries (see [`MemberRecord::extensions`]). Admin token.
+    /// Update a member's community-defined `extensions` (opaque JSON,
+    /// `vtc/members/update/0.1`). A fleet manager records per-member
+    /// operational state here — e.g. the assigned `fleet_index` at enrollment,
+    /// which the roster then carries (see [`MemberRecord::extensions`]).
+    /// Administrator.
     pub async fn update_member_extensions(
         &self,
         did: &str,
         extensions: serde_json::Value,
     ) -> Result<(), VtcError> {
-        if self
-            .admin_document(
-                task::MEMBERS_UPDATE,
-                serde_json::json!({ "did": did, "extensions": extensions }),
-                &[],
-                MAX_DOCUMENT_RESPONSE_BYTES,
-            )
-            .await?
-            .is_some()
-        {
-            return Ok(());
-        }
-
-        let resp = self
-            .tt(
-                reqwest::Method::PATCH,
-                format!("{}/members/{did}", self.base_url),
-                task::MEMBERS_UPDATE,
-            )?
-            .json(&serde_json::json!({ "extensions": extensions }))
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtcError::Http { status, body });
-        }
+        self.document(
+            task::MEMBERS_UPDATE,
+            serde_json::json!({ "did": did, "extensions": extensions }),
+            &[],
+            MAX_DOCUMENT_RESPONSE_BYTES,
+        )
+        .await?;
         Ok(())
     }
 
@@ -1154,7 +1035,7 @@ impl VtcClient {
     /// applicant and requires the document `issuer` to match it
     /// (`vtc-service/src/trust_tasks/mod.rs::resolve_holder`). So this is the
     /// one method that works on a client built with neither
-    /// [`connect`](Self::connect) nor [`with_token`](Self::with_token) — an
+    /// [`connect`](Self::connect) nor [`with_key`](Self::with_key) — an
     /// applicant is by definition not yet a member.
     ///
     /// `applicant_did` is a `did:key` whose seed is `private_key_multibase`. It
@@ -1256,40 +1137,15 @@ impl VtcClient {
         })
     }
 
-    /// List the community's policies (opaque JSON descriptors). Admin token.
+    /// List the community's policies (opaque JSON descriptors,
+    /// `policy/list/0.2`), following the cursor to completion. Administrator.
     pub async fn list_policies(&self) -> Result<Vec<serde_json::Value>, VtcError> {
-        let mut out = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let mut params: Vec<(&str, &str)> = Vec::new();
-            if let Some(cursor) = &cursor {
-                params.push(("cursor", cursor.as_str()));
-            }
-            let url =
-                reqwest::Url::parse_with_params(&format!("{}/policies", self.base_url), &params)
-                    .map_err(|e| VtcError::Url(e.to_string()))?;
-            let resp = self
-                .tt(reqwest::Method::GET, url, task::POLICY_LIST)?
-                .send()
-                .await?;
-            if !resp.status().is_success() {
-                let status = resp.status().as_u16();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(VtcError::Http { status, body });
-            }
-            let page: Page<serde_json::Value> = resp.json().await?;
-            out.extend(page.items);
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-        Ok(out)
+        self.document_pages(task::POLICY_LIST, serde_json::json!({}), "policy/list")
+            .await
     }
 
     /// The membership pair's **bodies** for one member
-    /// (`vtc/members/credentials/0.1`, over `GET /members/{did}/credentials`).
-    /// Admin token.
+    /// (`vtc/members/credentials/0.1`). Administrator.
     ///
     /// [`list_members`](Self::list_members) answers "who is a member" with
     /// identifiers; this answers "what did the community issue this member,
@@ -1308,37 +1164,33 @@ impl VtcClient {
         &self,
         did: &str,
     ) -> Result<members_credentials::Response, VtcError> {
-        if let Some(payload) = self
-            .admin_document(
+        let payload = self
+            .document(
                 task::MEMBERS_CREDENTIALS,
                 serde_json::json!({ "did": did }),
                 members_credentials::ERROR_CODES,
                 MAX_DOCUMENT_RESPONSE_BYTES,
             )
-            .await?
-        {
-            return decode_payload(payload, "members/credentials");
-        }
-
-        let url = self.api_url(&["members", did, "credentials"])?;
-        let resp = self
-            .tt(reqwest::Method::GET, url, task::MEMBERS_CREDENTIALS)?
-            .send()
             .await?;
-        let resp = expect_success_declaring(resp, members_credentials::ERROR_CODES).await?;
-        Ok(resp.json().await?)
+        decode_payload(payload, "members/credentials")
     }
 
-    /// Fetch one policy by id (opaque JSON, incl. the Rego source). Admin token.
+    /// Fetch one policy revision by id (`policy/get/0.1`): the `{ policy }`
+    /// response, whose module carries the Rego source. Administrator.
     pub async fn get_policy(&self, id: &str) -> Result<serde_json::Value, VtcError> {
-        self.get_json(&format!("policies/{id}"), task::POLICY_GET)
-            .await
+        self.document(
+            task::POLICY_GET,
+            serde_json::json!({ "id": id }),
+            &[],
+            MAX_DOCUMENT_RESPONSE_BYTES,
+        )
+        .await
     }
 
     /// Upload a new Rego policy module for `purpose` (`"join"`, `"removal"`,
     /// …) — `policy/upsert/0.2`. Returns the `policy/upsert` response
     /// (`{ policy, created }`, with the id, version and source hash on
-    /// `policy`). Admin token. Upload alone does not activate it — call
+    /// `policy`). Administrator. Upload alone does not activate it — call
     /// [`activate_policy`](Self::activate_policy).
     ///
     /// The body is the generated [`policy_upsert::Payload`]: `name` (the
@@ -1354,16 +1206,35 @@ impl VtcClient {
         let payload = policy_upload_payload(purpose, rego_source)?;
         let body =
             serde_json::to_value(&payload).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
-        self.post_json("policies", task::POLICY_UPSERT, &body).await
+        self.document(task::POLICY_UPSERT, body, &[], MAX_DOCUMENT_RESPONSE_BYTES)
+            .await
     }
 
-    /// Activate a previously-uploaded policy (make it live for decisions of its
-    /// purpose). Admin token.
+    /// Activate a previously-uploaded policy revision (make it live for
+    /// decisions of its purpose, `policy/activate/0.1`). Administrator.
+    ///
+    /// The task names the purpose the revision is bound to, and this method
+    /// takes only the id, so it reads the revision first
+    /// ([`get_policy`](Self::get_policy)) for the purpose its upload recorded
+    /// under [`POLICY_PURPOSE_EXT_KEY`].
     pub async fn activate_policy(&self, id: &str) -> Result<serde_json::Value, VtcError> {
-        self.post_json(
-            &format!("policies/{id}/activate"),
+        let revision = self.get_policy(id).await?;
+        let purpose = revision
+            .pointer("/policy/ext")
+            .and_then(|ext| ext.get(POLICY_PURPOSE_EXT_KEY))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| VtcError::Http {
+                status: 200,
+                body: format!(
+                    "policy {id} names no purpose under ext.{POLICY_PURPOSE_EXT_KEY}: {revision}"
+                ),
+            })?
+            .to_string();
+        self.document(
             task::POLICY_ACTIVATE,
-            &serde_json::json!({}),
+            serde_json::json!({ "id": id, "purpose": purpose }),
+            &[],
+            MAX_DOCUMENT_RESPONSE_BYTES,
         )
         .await
     }
@@ -1384,8 +1255,7 @@ impl VtcClient {
     }
 
     /// Install a delivered log for the community's own self-hosted DID
-    /// (`did-management/did/register/0.1`, over `POST /admin/did/register`).
-    /// Super-admin token.
+    /// (`did-management/did/register/0.1`). Unrestricted administrator.
     ///
     /// `register` carries the DID's complete `did:webvh` log as `didData`, at
     /// `path: ".well-known"` — the one slot a self-hosted community serves.
@@ -1399,46 +1269,59 @@ impl VtcClient {
         &self,
         register: &did_register::v0_1::Payload,
     ) -> Result<did_register::v0_1::Response, VtcError> {
-        let url = self.api_url(&["admin", "did", "register"])?;
-        let resp = self
-            .tt(
-                reqwest::Method::POST,
-                url,
-                <did_register::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            )?
-            .json(register)
-            .send()
+        let payload =
+            serde_json::to_value(register).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
+        let reply = self
+            .document(
+                task::DID_REGISTER,
+                payload,
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
             .await?;
-        Ok(expect_success(resp).await?.json().await?)
+        decode_payload(reply, "did/register")
     }
 
-    /// Name a current member a vetter (`vtc/vetting/vetters/grant/0.1`, over
-    /// `POST /vetting/vetters`). Admin token.
+    /// Name a current member a vetter (`vtc/vetting/vetters/grant/0.1`).
+    /// Administrator.
     ///
     /// `grant` is the task's payload: `validitySeconds` is one day to two
     /// years, and absent takes the community's default of one year. A member
     /// already holding a live grant gets that grant back with
     /// [`VetterGrant::created`] `false`.
+    ///
+    /// The task's response does not say which happened, so this asks first
+    /// ([`show_vetter`](Self::show_vetter)): `created` is `false` when the
+    /// member held a live grant before the call. It is a reading for the
+    /// operator's message, not a guarantee — a grant made by someone else
+    /// between the two calls is reported as this call's.
     pub async fn grant_vetter(
         &self,
         grant: &vetting::vetters::grant::v0_1::Payload,
     ) -> Result<VetterGrant, VtcError> {
-        let url = self.api_url(&["vetting", "vetters"])?;
-        let resp = self
-            .tt(reqwest::Method::POST, url, task::VETTING_VETTERS_GRANT)?
-            .json(grant)
-            .send()
+        let before = self.show_vetter(grant.member_did.as_str()).await?;
+        let already_live = matches!(
+            before.status,
+            vetting::vetters::show::v0_1::GrantStatus::Live
+        );
+        let payload =
+            serde_json::to_value(grant).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
+        let reply = self
+            .document(
+                task::VETTING_VETTERS_GRANT,
+                payload,
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
             .await?;
-        let resp = expect_success(resp).await?;
-        let created = resp.status() == reqwest::StatusCode::CREATED;
         Ok(VetterGrant {
-            created,
-            grant: resp.json().await?,
+            created: !already_live,
+            grant: decode_payload(reply, "vetting/vetters/grant")?,
         })
     }
 
-    /// One vetter's grant status by DID (`vtc/vetting/vetters/show/0.1`, over
-    /// `POST /vetting/vetters/show`). Admin token.
+    /// One vetter's grant status by DID (`vtc/vetting/vetters/show/0.1`).
+    /// Administrator, or any identified caller.
     ///
     /// This is the question the grant listing cannot answer: a vetter who never
     /// published a profile and one whose grant was revoked are both simply
@@ -1457,48 +1340,33 @@ impl VtcClient {
         &self,
         vetter_did: &str,
     ) -> Result<vetting::vetters::show::v0_1::Response, VtcError> {
-        let url = self.api_url(&["vetting", "vetters", "show"])?;
-        let resp = self
-            .tt(reqwest::Method::POST, url, task::VETTING_VETTERS_SHOW)?
-            .json(&serde_json::json!({ "vetterDid": vetter_did }))
-            .send()
+        let reply = self
+            .document(
+                task::VETTING_VETTERS_SHOW,
+                serde_json::json!({ "vetterDid": vetter_did }),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
             .await?;
-        Ok(expect_success(resp).await?.json().await?)
+        decode_payload(reply, "vetting/vetters/show")
     }
 
-    /// Revoke an endorsement by id (`vtc/endorsements/revoke/0.1`, over
-    /// `DELETE /credentials/endorsements/{id}`) — how a vetter grant is
-    /// withdrawn. Admin token. Revoking a grant also deletes the vetter's
-    /// profile.
+    /// Revoke an endorsement by id (`vtc/endorsements/revoke/0.1`) — how a
+    /// vetter grant is withdrawn. Administrator or Issuer. Revoking a grant
+    /// also deletes the vetter's profile.
     pub async fn revoke_endorsement(
         &self,
         endorsement_id: &str,
     ) -> Result<EndorsementRevocation, VtcError> {
-        let url = self.api_url(&["credentials", "endorsements", endorsement_id])?;
-        let resp = self
-            .tt(reqwest::Method::DELETE, url, task::ENDORSEMENTS_REVOKE)?
-            .send()
+        let reply = self
+            .document(
+                task::ENDORSEMENTS_REVOKE,
+                serde_json::json!({ "endorsementId": endorsement_id }),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
             .await?;
-        Ok(expect_success(resp).await?.json().await?)
-    }
-
-    /// Deliver a vetter's live grant credential again
-    /// (`vtc/vetting/vetters/resend/0.1`, over
-    /// `POST /vetting/vetters/{memberDid}/resend`). Admin token.
-    ///
-    /// Success means the community handed the credential to its messaging
-    /// transport — not that the member's wallet has it. A member with no live
-    /// grant is a 404; a transport that would not take the delivery is a 503.
-    pub async fn resend_vetter_grant(
-        &self,
-        member_did: &str,
-    ) -> Result<vetting::vetters::resend::v0_1::Response, VtcError> {
-        let url = self.api_url(&["vetting", "vetters", member_did, "resend"])?;
-        let resp = self
-            .tt(reqwest::Method::POST, url, task::VETTING_VETTERS_RESEND)?
-            .send()
-            .await?;
-        Ok(expect_success(resp).await?.json().await?)
+        decode_payload(reply, "endorsements/revoke")
     }
 
     /// The automatic vetter-grant configuration and the last sweep
@@ -1594,18 +1462,19 @@ impl VtcClient {
     // -----------------------------------------------------------------------
 
     /// Walk the community's audit hash chain and its signed checkpoints
-    /// (`audit/verify/0.1`, over `GET /audit/verify`). Super-admin token.
+    /// (`audit/verify/0.1`). Unrestricted administrator.
     ///
     /// Returns the report as the VTC sends it (`verified`, `entriesExamined`,
-    /// `checkpoints`, `chainBreak`, …). A `200` is a report, not a pass: read
+    /// `checkpoints`, `chainBreak`, …). A report is not a pass: read
     /// `verified` and `checkpoints.status`.
     pub async fn audit_verify(&self) -> Result<serde_json::Value, VtcError> {
-        let url = self.api_url(&["audit", "verify"])?;
-        let resp = self
-            .tt(reqwest::Method::GET, url, task::AUDIT_VERIFY)?
-            .send()
-            .await?;
-        read_json_capped(expect_success(resp).await?, MAX_AUDIT_VERIFY_RESPONSE_BYTES).await
+        self.document(
+            task::AUDIT_VERIFY,
+            serde_json::json!({}),
+            &[],
+            MAX_AUDIT_VERIFY_RESPONSE_BYTES,
+        )
+        .await
     }
 
     /// Export the community's state as an encrypted `vtc-backup-v1` envelope.
@@ -1791,9 +1660,8 @@ impl VtcClient {
         #[cfg(feature = "didcomm")]
         if self.documents.is_some() {
             return self
-                .admin_document(type_uri, payload, declared, MAX_BACKUP_RESPONSE_BYTES)
-                .await?
-                .ok_or_else(|| VtcError::Session("the session returned no reply".into()));
+                .document(type_uri, payload, declared, MAX_BACKUP_RESPONSE_BYTES)
+                .await;
         }
         let _ = (type_uri, payload, declared);
         Err(VtcError::Session(
@@ -1841,49 +1709,6 @@ impl VtcClient {
         Ok(self.http.request(method, url).bearer_auth(token))
     }
 
-    /// Authenticated GET returning JSON, carrying `task` as the Trust-Task URL.
-    async fn get_json(&self, path: &str, task: &str) -> Result<serde_json::Value, VtcError> {
-        let resp = self
-            .tt(
-                reqwest::Method::GET,
-                format!("{}/{path}", self.base_url),
-                task,
-            )?
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtcError::Http { status, body });
-        }
-        Ok(resp.json().await?)
-    }
-
-    /// Authenticated POST of a JSON body returning JSON, carrying `task` as the
-    /// Trust-Task URL.
-    async fn post_json(
-        &self,
-        path: &str,
-        task: &str,
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value, VtcError> {
-        let resp = self
-            .tt(
-                reqwest::Method::POST,
-                format!("{}/{path}", self.base_url),
-                task,
-            )?
-            .json(body)
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(VtcError::Http { status, body });
-        }
-        Ok(resp.json().await?)
-    }
-
     /// Bearer token or [`VtcError::NotAuthenticated`].
     fn token(&self) -> Result<&str, VtcError> {
         self.token.as_deref().ok_or(VtcError::NotAuthenticated)
@@ -1902,49 +1727,6 @@ async fn expect_success(resp: reqwest::Response) -> Result<reqwest::Response, Vt
     Err(VtcError::Http { status, body })
 }
 
-/// Like [`expect_success`], but a 404 whose JSON body carries one of
-/// `declared` as its `code` becomes [`VtcError::NotFound`].
-///
-/// Only the task's *declared* codes are honoured, so a 404 cannot be mistaken
-/// for "no such resource" merely because it is a 404.
-async fn expect_success_declaring(
-    resp: reqwest::Response,
-    declared: &[trust_tasks_rs::DeclaredErrorCode],
-) -> Result<reqwest::Response, VtcError> {
-    if resp.status().is_success() {
-        return Ok(resp);
-    }
-    let status = resp.status().as_u16();
-    let body = resp.text().await.unwrap_or_default();
-    Err(typed_error(status, body, declared))
-}
-
-/// Classify a non-success answer: [`VtcError::NotFound`] for a 404 naming a
-/// declared code, [`VtcError::Http`] for everything else.
-fn typed_error(
-    status: u16,
-    body: String,
-    declared: &[trust_tasks_rs::DeclaredErrorCode],
-) -> VtcError {
-    if status == 404
-        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&body)
-        && let Some(code) = v.get("code").and_then(serde_json::Value::as_str)
-        && declared.iter().any(|d| d.code == code)
-    {
-        let message = v
-            .get("error")
-            .or_else(|| v.get("message"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        return VtcError::NotFound {
-            code: code.to_string(),
-            message,
-        };
-    }
-    VtcError::Http { status, body }
-}
-
 /// Read a `#response` document's payload as the verb's result type.
 fn decode_payload<T: serde::de::DeserializeOwned>(
     payload: serde_json::Value,
@@ -1956,8 +1738,7 @@ fn decode_payload<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// Classify a `trust-task-error` document from the document endpoint, the
-/// counterpart of [`typed_error`] for the bearer routes.
+/// Classify a `trust-task-error` document from the document endpoint.
 ///
 /// [`VtcError::NotFound`] when the refusal carries one of the task's declared
 /// codes **and** says the thing is absent — the spine marks that with
@@ -2012,28 +1793,6 @@ fn policy_upload_payload(
     .map_err(|e| VtcError::InvalidPayload(e.to_string()))
 }
 
-/// A success response's JSON body, refusing one larger than `max` bytes. The
-/// oversized body is never fully buffered.
-async fn read_json_capped(
-    resp: reqwest::Response,
-    max: usize,
-) -> Result<serde_json::Value, VtcError> {
-    let status = resp.status().as_u16();
-    let bytes = vta_sdk::http::read_body_capped(resp, max)
-        .await
-        .map_err(|e| VtcError::Http {
-            status,
-            body: e.to_string(),
-        })?;
-    serde_json::from_slice(&bytes).map_err(|e| VtcError::Http {
-        status,
-        body: format!(
-            "response is not JSON ({e}): {}",
-            String::from_utf8_lossy(&bytes)
-        ),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2063,18 +1822,13 @@ mod tests {
     /// A DID or id placed in a path is one segment, whatever it contains.
     #[test]
     fn path_segments_are_encoded_not_interpolated() {
-        let client = VtcClient::with_token("https://vtc.example.com/v1/", "did:web:vtc", "t");
+        let client = VtcClient::anonymous("https://vtc.example.com/v1/", "did:web:vtc");
         let url = client
-            .api_url(&[
-                "vetting",
-                "vetters",
-                "did:webvh:Qm:x.example/../admin?x",
-                "resend",
-            ])
+            .api_url(&["vetting", "did:webvh:Qm:x.example/../admin?x", "x"])
             .unwrap();
         assert_eq!(
             url.as_str(),
-            "https://vtc.example.com/v1/vetting/vetters/did:webvh:Qm:x.example%2F..%2Fadmin%3Fx/resend"
+            "https://vtc.example.com/v1/vetting/did:webvh:Qm:x.example%2F..%2Fadmin%3Fx/x"
         );
     }
 
@@ -2096,10 +1850,6 @@ mod tests {
         ));
         assert!(matches!(
             client.revoke_endorsement("e1").await,
-            Err(VtcError::NotAuthenticated)
-        ));
-        assert!(matches!(
-            client.resend_vetter_grant("did:key:z").await,
             Err(VtcError::NotAuthenticated)
         ));
         assert!(matches!(
@@ -2168,13 +1918,6 @@ mod tests {
         assert!(HolderKey::new("did:webvh:QmScid:example.com:glenn", "z3u2").is_err());
     }
 
-    /// The admin verbs say which argument is missing rather than failing as a
-    /// malformed URL.
-    ///
-    /// A session-only client has no REST base, and every admin verb reaches the
-    /// URL surface through `tt`. Without this the request is built against an
-    /// empty base and the error reads as a bug in this crate rather than as a
-    /// constructor that was not given `rest_url`.
     /// A refusal from the document endpoint that names a declared code and
     /// carries the `not_found` marker is the typed `NotFound` — whatever HTTP
     /// status it came with (the VTC answers a declared refusal with 422).
@@ -2226,21 +1969,20 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn an_admin_verb_without_a_rest_base_says_so() {
-        let client = VtcClient {
-            http: vta_sdk::http::rest_client(),
-            base_url: String::new(),
-            vtc_did: "did:webvh:QmScid:example.com:acme".to_string(),
-            token: Some("t".to_string()),
-            signer: None,
-            #[cfg(feature = "didcomm")]
-            documents: None,
-            #[cfg(feature = "didcomm")]
-            session_did: None,
-        };
+    /// The admin verbs say which argument is missing rather than failing as a
+    /// malformed URL: a key-holding client with no REST base (and no session)
+    /// has nowhere to post the signed document.
+    #[tokio::test]
+    async fn an_admin_verb_without_a_rest_base_says_so() {
+        let key = HolderKey::from_did_key(
+            "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG",
+            "z3u2en7t5LR2WtQH5PfFqMqwVHBeXouLzo6haApm8XHqvjxq",
+        )
+        .unwrap();
+        let client = VtcClient::with_key("", "did:webvh:QmScid:example.com:acme", key);
         let err = client
-            .tt(reqwest::Method::GET, "http://x/members", task::MEMBERS_LIST)
+            .list_members(None)
+            .await
             .expect_err("no REST base means no admin verb");
         assert!(
             matches!(err, VtcError::NoRestTransport(_)),
@@ -2254,11 +1996,13 @@ mod tests {
     /// thing worth reporting is whether one is held.
     #[test]
     fn debug_does_not_leak_the_token() {
-        let client = VtcClient::with_token(
-            "https://vtc.example.com/v1",
-            "did:webvh:QmScid:example.com:acme",
-            "super-secret-bearer-token",
-        );
+        let client = VtcClient {
+            token: Some("super-secret-bearer-token".to_string()),
+            ..VtcClient::anonymous(
+                "https://vtc.example.com/v1",
+                "did:webvh:QmScid:example.com:acme",
+            )
+        };
         let rendered = format!("{client:?}");
         assert!(
             !rendered.contains("super-secret-bearer-token"),
@@ -2299,7 +2043,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_members_without_token_is_not_authenticated() {
+    async fn list_members_without_a_key_is_not_authenticated() {
         let client = VtcClient {
             http: reqwest::Client::new(),
             base_url: "https://vtc.example.com/v1".into(),
@@ -2311,7 +2055,7 @@ mod tests {
             #[cfg(feature = "didcomm")]
             session_did: None,
         };
-        // The token guard returns before any network I/O.
+        // With neither a session nor a key, nothing is sent.
         let err = client.list_members(None).await;
         assert!(matches!(err, Err(VtcError::NotAuthenticated)), "{err:?}");
     }
@@ -2354,7 +2098,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_methods_without_token_are_not_authenticated() {
+    async fn admin_methods_without_a_key_are_not_authenticated() {
         let client = VtcClient {
             http: reqwest::Client::new(),
             base_url: "https://vtc.example.com/v1".into(),
@@ -2396,7 +2140,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_admin_methods_without_token_are_not_authenticated() {
+    async fn policy_admin_methods_without_a_key_are_not_authenticated() {
         let client = VtcClient {
             http: reqwest::Client::new(),
             base_url: "https://vtc.example.com/v1".into(),
@@ -2463,48 +2207,11 @@ mod tests {
         ));
     }
 
-    /// Only a 404 naming a *declared* code is a typed not-found; a bare 404 is
-    /// not evidence the member is absent.
-    #[test]
-    fn only_a_declared_not_found_code_is_typed() {
-        let declared = members_credentials::ERROR_CODES;
-        let code = members_credentials::error_codes::NOT_FOUND.code;
-        let typed = typed_error(
-            404,
-            serde_json::json!({ "error": "not found: x", "code": code }).to_string(),
-            declared,
-        );
-        assert!(
-            matches!(&typed, VtcError::NotFound { code: c, message } if c == code && message == "not found: x"),
-            "{typed:?}"
-        );
-        for (status, body) in [
-            (404, serde_json::json!({ "error": "not found" }).to_string()),
-            (404, "no route".to_string()),
-            (
-                404,
-                serde_json::json!({ "error": "x", "code": "vtc/other:notFound" }).to_string(),
-            ),
-            (
-                403,
-                serde_json::json!({ "error": "x", "code": code }).to_string(),
-            ),
-        ] {
-            assert!(
-                matches!(
-                    typed_error(status, body.clone(), declared),
-                    VtcError::Http { .. }
-                ),
-                "{status} {body} must stay Http"
-            );
-        }
-    }
-
     /// A client with no session refuses a backup before anything is sent: the
     /// VTC serves a backup only over DIDComm or TSP.
     #[tokio::test]
     async fn a_backup_needs_a_session() {
-        let client = VtcClient::with_token("https://vtc.example.com/v1", "did:web:vtc", "t");
+        let client = VtcClient::anonymous("https://vtc.example.com/v1", "did:web:vtc");
         for err in [
             client
                 .export_backup("a-long-enough-password", false)

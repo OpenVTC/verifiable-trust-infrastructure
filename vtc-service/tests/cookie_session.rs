@@ -31,8 +31,8 @@ use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
 const ADMIN_DID: &str = "did:key:z6MkAdminCookie";
-/// A protected route that stays a bearer route: `audit/verify`, which `vtc-client` calls.
-const PROTECTED_TASK: &str = "https://trusttasks.org/spec/audit/verify/0.1";
+/// A protected route that stays a bearer route: `auth/whoami`, which reads the session.
+const PROTECTED_TASK: &str = "https://trusttasks.org/spec/auth/whoami/0.1";
 
 struct Fixture {
     router: axum::Router,
@@ -135,7 +135,7 @@ async fn admin_cookie_authenticates_protected_route() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/audit/verify")
+        .uri("/v1/auth/whoami")
         .header("Trust-Task", PROTECTED_TASK)
         .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}"))
         .body(Body::empty())
@@ -155,7 +155,7 @@ async fn wrong_cookie_name_returns_401() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/audit/verify")
+        .uri("/v1/auth/whoami")
         .header("Trust-Task", PROTECTED_TASK)
         // Wrong cookie name — the fallback path requires the
         // exact `vtc_admin_session` cookie. A bare
@@ -174,7 +174,7 @@ async fn cookie_alongside_other_cookies_authenticates() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/audit/verify")
+        .uri("/v1/auth/whoami")
         .header("Trust-Task", PROTECTED_TASK)
         // Order + presence of other cookies must not break the
         // session-cookie parser.
@@ -199,7 +199,7 @@ async fn bearer_takes_precedence_over_cookie() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/audit/verify")
+        .uri("/v1/auth/whoami")
         .header("Trust-Task", PROTECTED_TASK)
         .header("Authorization", format!("Bearer {valid_bearer}"))
         .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={foreign_cookie}"))
@@ -224,7 +224,7 @@ async fn foreign_audience_cookie_rejected() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/audit/verify")
+        .uri("/v1/auth/whoami")
         .header("Trust-Task", PROTECTED_TASK)
         .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={foreign}"))
         .body(Body::empty())
@@ -252,7 +252,7 @@ async fn cookie_session_mutation_without_csrf_token_is_forbidden() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/v1/audit/verify")
+        .uri("/v1/auth/whoami")
         .header("Trust-Task", PROTECTED_TASK)
         .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}"))
         .body(Body::empty())
@@ -276,7 +276,7 @@ async fn cookie_session_mutation_with_same_origin_passes_csrf() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/v1/audit/verify")
+        .uri("/v1/auth/whoami")
         .header("Trust-Task", PROTECTED_TASK)
         .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}"))
         .header("Sec-Fetch-Site", "same-origin")
@@ -299,7 +299,7 @@ async fn bearer_mutation_bypasses_csrf() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/v1/audit/verify")
+        .uri("/v1/auth/whoami")
         .header("Trust-Task", PROTECTED_TASK)
         .header("Authorization", format!("Bearer {jwt}"))
         .body(Body::empty())

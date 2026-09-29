@@ -1,5 +1,5 @@
-//! Integration coverage for `GET /v1/audit/verify` — the audit
-//! hash-chain verification surface (#537 tier 3).
+//! Integration coverage for `audit/verify/0.1` — the audit hash-chain
+//! verification surface (#537 tier 3), a signed Trust Task.
 //!
 //! The chain itself is unit-tested in `vti_common::audit::envelope`;
 //! what matters here is that the endpoint walks the *store* in the
@@ -8,12 +8,14 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+mod common;
+
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
+use vti_rooms_dtg::test_support::Party;
 
 const VERIFY_TASK: &str = "https://trusttasks.org/spec/audit/verify/0.1";
 const PROFILE_TASK: &str = "https://trusttasks.org/spec/vtc/community/profile/update/0.1";
@@ -34,34 +36,25 @@ async fn build() -> Fixture {
 }
 
 /// Super-admin = Admin role with empty `allowed_contexts`.
-async fn super_admin_token(fix: &Fixture) -> String {
-    fix.vtc.token("did:key:z6MkAdmin", "admin", vec![]).await
+async fn super_admin_token(fix: &Fixture) -> Party {
+    common::signed::admin(&fix.vtc).await
 }
 
-async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let v: Value = serde_json::from_slice(&bytes)
-        .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes) }));
-    (status, v)
-}
-
-async fn verify(fix: &Fixture, token: &str) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/audit/verify")
-        .header("Trust-Task", VERIFY_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+/// `audit/verify/0.1` signed by `from`: `200` and the report, or the refusal's
+/// status and `trust-task-error` document.
+async fn verify(fix: &Fixture, from: &Party) -> (StatusCode, Value) {
+    let (status, doc) = common::signed::call(&fix.vtc, from, VERIFY_TASK, json!({})).await;
+    if common::signed::error_code(&doc).is_some() {
+        return (status, doc);
+    }
+    (StatusCode::OK, doc["payload"].clone())
 }
 
 /// Emit real `CommunityProfileUpdated` envelopes through the live document
 /// endpoint: signed `vtc/community/profile/update/0.1` documents from an
 /// administrator with a real key. Returns that administrator's DID — the
 /// envelopes' actor.
-async fn seed_audit_rows(fix: &Fixture, _token: &str, count: usize) -> String {
+async fn seed_audit_rows(fix: &Fixture, _token: &Party, count: usize) -> String {
     let profile = vtc_service::community::CommunityProfile::new(
         "did:webvh:vtc.example.com:abc",
         "Example Community",
@@ -225,15 +218,14 @@ async fn a_dropped_envelope_breaks_the_link() {
 async fn non_super_admin_is_refused() {
     let fix = build().await;
     // Context-scoped admin: Admin role, but not community-wide.
-    let scoped = fix
-        .vtc
-        .token("did:key:z6MkScoped", "admin", vec!["some-ctx".into()])
-        .await;
-    let (status, _) = verify(&fix, &scoped).await;
+    let scoped =
+        common::signed::party_with_role(&fix.vtc, vtc_service::acl::VtcRole::Admin, &["some-ctx"])
+            .await;
+    let (_, doc) = verify(&fix, &scoped).await;
     assert_eq!(
-        status,
-        StatusCode::FORBIDDEN,
-        "the audit chain is the community-wide god view"
+        common::signed::error_code(&doc),
+        Some("permissionDenied"),
+        "the audit chain is the community-wide god view: {doc}"
     );
 }
 

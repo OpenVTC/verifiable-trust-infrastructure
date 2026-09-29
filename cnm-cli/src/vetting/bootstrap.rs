@@ -114,6 +114,7 @@ pub(super) async fn run(
     args: BootstrapPgpArgs,
     keyring_key: &str,
     target: &crate::vtc::VtcTarget,
+    transport: vta_sdk::session::TransportChoice,
 ) -> CliResult {
     let validity = args
         .validity
@@ -148,123 +149,133 @@ pub(super) async fn run(
         .collect();
     mark_ambiguous(&mut checks);
 
-    let vtc = super::connect(keyring_key, target).await?;
-    let members: BTreeSet<String> = vtc
-        .list_members(None)
-        .await
-        .map_err(|e| guidance(e, Op::Members))?
-        .into_iter()
-        .map(|m| m.did)
-        .collect();
-    let live_grants: BTreeMap<String, String> = vtc
-        .list_vetter_grants()
-        .await
-        .map_err(|e| guidance(e, Op::VettersList))?
-        .vetters
-        .into_iter()
-        .filter(|g| g.live)
-        .map(|g| (g.member_did, g.endorsement_id))
-        .collect();
+    // The roster read and the grants are signed Trust Tasks; the grant listing
+    // has no Trust Task served yet and takes a bearer token.
+    let vtc = crate::vtc::connect_for_tasks(keyring_key, target, transport)
+        .await?
+        .client;
+    let outcome: CliResult = async {
+        let members: BTreeSet<String> = vtc
+            .list_members(None)
+            .await
+            .map_err(|e| guidance(e, Op::Members))?
+            .into_iter()
+            .map(|m| m.did)
+            .collect();
+        let live_grants: BTreeMap<String, String> = super::connect(keyring_key, target)
+            .await?
+            .list_vetter_grants()
+            .await
+            .map_err(|e| guidance(e, Op::VettersList))?
+            .vetters
+            .into_iter()
+            .filter(|g| g.live)
+            .map(|g| (g.member_did, g.endorsement_id))
+            .collect();
 
-    let rows = plan(
-        &checks,
-        &keyring,
-        &reach,
-        Roster {
-            members: &members,
-            live_grants: &live_grants,
-        },
-        args.max_depth,
-    );
-    let summary = Summary {
-        keys: keyring.keys().len(),
-        unusable_keys: keyring
-            .keys()
+        let rows = plan(
+            &checks,
+            &keyring,
+            &reach,
+            Roster {
+                members: &members,
+                live_grants: &live_grants,
+            },
+            args.max_depth,
+        );
+        let summary = Summary {
+            keys: keyring.keys().len(),
+            unusable_keys: keyring
+                .keys()
+                .iter()
+                .filter(|k| k.problem.is_some())
+                .count(),
+            skipped: keyring.skipped.clone(),
+            roots,
+            reachable_keys: reach.len(),
+            within_max_depth: reach.values().filter(|r| r.depth <= args.max_depth).count(),
+            max_depth: args.max_depth,
+            certifications: stats,
+            links: checks.len(),
+        };
+
+        if args.dry_run {
+            if is_json_output() {
+                print_json(&json!({ "dryRun": true, "summary": summary, "rows": rows }))?;
+            } else {
+                print_summary(&summary);
+                print_rows(&rows, None);
+                let to_grant = rows.iter().filter(|r| r.action == Action::Grant).count();
+                println!(
+                    "\n{YELLOW}Dry run — nothing was granted.{RESET} Re-run without --dry-run to \
+                 grant the {to_grant} row(s) marked `grant`."
+                );
+            }
+            return Ok(());
+        }
+
+        let mut outcomes: Vec<Option<GrantOutcome>> = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let (Action::Grant, Some(did)) = (&row.action, &row.member_did) else {
+                outcomes.push(None);
+                continue;
+            };
+            let payload = super::grant_payload(did, validity).map_err(|e| e.to_string());
+            let outcome = match payload {
+                Err(error) => GrantOutcome::Failed { error },
+                Ok(payload) => match vtc.grant_vetter(&payload).await {
+                    Ok(g) if g.created => GrantOutcome::Granted {
+                        endorsement_id: g.grant.endorsement_id.into(),
+                    },
+                    Ok(g) => GrantOutcome::AlreadyGranted {
+                        endorsement_id: g.grant.endorsement_id.into(),
+                    },
+                    Err(e) => GrantOutcome::Failed {
+                        error: guidance(e, Op::Grant { member_did: did }).to_string(),
+                    },
+                },
+            };
+            outcomes.push(Some(outcome));
+        }
+        let failed = outcomes
             .iter()
-            .filter(|k| k.problem.is_some())
-            .count(),
-        skipped: keyring.skipped.clone(),
-        roots,
-        reachable_keys: reach.len(),
-        within_max_depth: reach.values().filter(|r| r.depth <= args.max_depth).count(),
-        max_depth: args.max_depth,
-        certifications: stats,
-        links: checks.len(),
-    };
+            .filter(|o| matches!(o, Some(GrantOutcome::Failed { .. })))
+            .count();
 
-    if args.dry_run {
         if is_json_output() {
-            print_json(&json!({ "dryRun": true, "summary": summary, "rows": rows }))?;
+            let results: Vec<_> = rows
+                .iter()
+                .zip(&outcomes)
+                .map(|(row, outcome)| {
+                    let mut value = serde_json::to_value(row).unwrap_or_default();
+                    if let Some(outcome) = outcome {
+                        value["grant"] = serde_json::to_value(outcome).unwrap_or_default();
+                    }
+                    value
+                })
+                .collect();
+            print_json(&json!({ "dryRun": false, "summary": summary, "rows": results }))?;
         } else {
             print_summary(&summary);
-            print_rows(&rows, None);
-            let to_grant = rows.iter().filter(|r| r.action == Action::Grant).count();
-            println!(
-                "\n{YELLOW}Dry run — nothing was granted.{RESET} Re-run without --dry-run to \
-                 grant the {to_grant} row(s) marked `grant`."
-            );
+            print_rows(&rows, Some(&outcomes));
+            let granted = outcomes
+                .iter()
+                .filter(|o| matches!(o, Some(GrantOutcome::Granted { .. })))
+                .count();
+            println!("\n{GREEN}{granted}{RESET} vetter(s) granted, {RED}{failed}{RESET} failed.");
         }
-        return Ok(());
-    }
-
-    let mut outcomes: Vec<Option<GrantOutcome>> = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let (Action::Grant, Some(did)) = (&row.action, &row.member_did) else {
-            outcomes.push(None);
-            continue;
-        };
-        let payload = super::grant_payload(did, validity).map_err(|e| e.to_string());
-        let outcome = match payload {
-            Err(error) => GrantOutcome::Failed { error },
-            Ok(payload) => match vtc.grant_vetter(&payload).await {
-                Ok(g) if g.created => GrantOutcome::Granted {
-                    endorsement_id: g.grant.endorsement_id.into(),
-                },
-                Ok(g) => GrantOutcome::AlreadyGranted {
-                    endorsement_id: g.grant.endorsement_id.into(),
-                },
-                Err(e) => GrantOutcome::Failed {
-                    error: guidance(e, Op::Grant { member_did: did }).to_string(),
-                },
-            },
-        };
-        outcomes.push(Some(outcome));
-    }
-    let failed = outcomes
-        .iter()
-        .filter(|o| matches!(o, Some(GrantOutcome::Failed { .. })))
-        .count();
-
-    if is_json_output() {
-        let results: Vec<_> = rows
-            .iter()
-            .zip(&outcomes)
-            .map(|(row, outcome)| {
-                let mut value = serde_json::to_value(row).unwrap_or_default();
-                if let Some(outcome) = outcome {
-                    value["grant"] = serde_json::to_value(outcome).unwrap_or_default();
-                }
-                value
-            })
-            .collect();
-        print_json(&json!({ "dryRun": false, "summary": summary, "rows": results }))?;
-    } else {
-        print_summary(&summary);
-        print_rows(&rows, Some(&outcomes));
-        let granted = outcomes
-            .iter()
-            .filter(|o| matches!(o, Some(GrantOutcome::Granted { .. })))
-            .count();
-        println!("\n{GREEN}{granted}{RESET} vetter(s) granted, {RED}{failed}{RESET} failed.");
-    }
-    if failed > 0 {
-        return Err(format!(
-            "{failed} grant(s) failed — see the result column. Fix the cause and run the same \
+        if failed > 0 {
+            return Err(format!(
+                "{failed} grant(s) failed — see the result column. Fix the cause and run the same \
              command again: members already granted are skipped."
-        )
-        .into());
+            )
+            .into());
+        }
+        Ok(())
     }
-    Ok(())
+    .await;
+    vtc.shutdown().await;
+    outcome
 }
 
 /// Every regular, non-hidden file in `dir`, sorted by name, with its text or

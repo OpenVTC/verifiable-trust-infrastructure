@@ -51,6 +51,25 @@
 //! HTTPS door additionally caps its request body at
 //! [`largest_max_document_bytes`], so no body larger than any served type
 //! accepts is ever buffered.
+//!
+//! # A claimed issuer is not a verified one
+//!
+//! [`check_for_known_issuer`] grants the raised limit to a document whose
+//! in-band `issuer` merely *names* a DID with standing here — the field is
+//! read straight off the unparsed body, before any proof is checked. That is
+//! deliberate (a stranger could never be authorised for a raised task anyway,
+//! so refusing it earlier costs it nothing legitimate), but taken alone it is
+//! a DoS amplifier: anyone who has ever seen an administrator's DID can claim
+//! it as `issuer` and buy themselves the full raised limit's worth of parsing
+//! and proof verification, over and over, whether or not they can actually
+//! sign for it. [`LargeDocumentBudget`] closes that gap — the caller charges
+//! one address-scoped budget (client IP over HTTPS, sender VID over DIDComm
+//! and TSP) before granting the raised limit, and
+//! [`settle_large_document_charge`] doubles that address's next cost whenever
+//! the claim does not pan out (a verification failure, or a verified issuer
+//! that turns out to be someone else). A service-wide cap on top bounds how
+//! many raised-limit documents run the parse-and-verify path per window,
+//! however many addresses — or freshly minted VIDs — a caller spreads across.
 
 use trust_tasks_rs::{ErrorPayload, Payload, RejectReason};
 
@@ -137,23 +156,229 @@ fn max_in(type_uri: &str, served: &[&str], declared: impl Fn(&str) -> Option<usi
     }
 }
 
+/// Large documents (over [`DEFAULT_MAX_DOCUMENT_BYTES`]) a single address may
+/// have [`check_for_known_issuer`] grant the raised limit to per minute,
+/// before its claimed issuer's proof has even been read. See the module docs:
+/// this is what keeps naming a known administrator's DID from being free rein
+/// to make this node parse and verify a raised-limit document indefinitely. 5
+/// is generous for a legitimate high-frequency caller and cheap to hold an
+/// attacker to.
+pub(crate) const LARGE_DOCUMENT_BUDGET_PER_WINDOW: u64 = 5;
+
+/// Fixed-window length, in seconds, for [`LargeDocumentBudget`].
+pub(crate) const LARGE_DOCUMENT_BUDGET_WINDOW_SECS: u64 = 60;
+
+/// Large documents admitted per window across *every* address together.
+///
+/// The per-address budget is keyed on something a caller can vary — a client
+/// IP behind a large pool, or on the messaging transports a sender VID anyone
+/// can mint — so it bounds one address, not the node. This bounds the node:
+/// however many addresses a caller spreads across, the raised-limit
+/// parse-and-verify path runs at most this many times a window. A legitimate
+/// deployment sends far fewer raised-limit documents than this per minute.
+pub(crate) const LARGE_DOCUMENT_GLOBAL_BUDGET_PER_WINDOW: u64 = 60;
+
+/// Hard cap on tracked-address map size. Past it, addresses with nothing at
+/// stake — an expired window and no penalty — are evicted; if the map is
+/// still full, a new address is refused rather than tracked. Clearing the map
+/// wholesale would also wipe every penalty, which a novel-address flood could
+/// then trigger on purpose.
+const MAX_TRACKED_ADDRESSES: usize = 10_000;
+
+#[derive(Debug, Clone, Copy)]
+struct Bucket {
+    /// Cost units spent in the current window.
+    spent: u64,
+    /// `now` (epoch seconds) of the window start.
+    window_start: u64,
+    /// The cost of this address's *next* charge — 1 until
+    /// [`LargeDocumentBudget::penalize`] doubles it.
+    cost: u64,
+}
+
+/// Per-address budget for documents [`check_for_known_issuer`] grants the
+/// raised limit to before their claimed issuer is verified. See the module
+/// docs.
+// `pub`, not `pub(crate)`: `AppState::large_document_budget` holds one, and a
+// couple of integration-test crates build an `AppState` literal directly, so
+// they need to name this type and construct it. Everything else below stays
+// `pub(crate)`.
+#[derive(Debug, Default)]
+pub struct LargeDocumentBudget {
+    inner: std::sync::Mutex<BudgetState>,
+}
+
+#[derive(Debug, Default)]
+struct BudgetState {
+    buckets: std::collections::HashMap<String, Bucket>,
+    /// The every-address window: see [`LARGE_DOCUMENT_GLOBAL_BUDGET_PER_WINDOW`].
+    global_spent: u64,
+    global_window_start: u64,
+}
+
+impl LargeDocumentBudget {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Charge `address` for one large document, at its current per-charge
+    /// cost. `Err` is the number of seconds until the window rolls over, once
+    /// spending would exceed [`LARGE_DOCUMENT_BUDGET_PER_WINDOW`] for the
+    /// current one (or the service-wide window is spent).
+    fn try_charge(&self, address: &str, now: u64) -> Result<(), u64> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state = &mut *state;
+
+        if now.saturating_sub(state.global_window_start) >= LARGE_DOCUMENT_BUDGET_WINDOW_SECS {
+            state.global_spent = 0;
+            state.global_window_start = now;
+        }
+        let global_retry =
+            (state.global_window_start + LARGE_DOCUMENT_BUDGET_WINDOW_SECS).saturating_sub(now);
+        if state.global_spent >= LARGE_DOCUMENT_GLOBAL_BUDGET_PER_WINDOW {
+            return Err(global_retry);
+        }
+
+        let buckets = &mut state.buckets;
+        if buckets.len() >= MAX_TRACKED_ADDRESSES && !buckets.contains_key(address) {
+            buckets.retain(|_, b| {
+                b.cost > 1 || now.saturating_sub(b.window_start) < LARGE_DOCUMENT_BUDGET_WINDOW_SECS
+            });
+            if buckets.len() >= MAX_TRACKED_ADDRESSES {
+                return Err(global_retry);
+            }
+        }
+
+        let entry = buckets.entry(address.to_string()).or_insert(Bucket {
+            spent: 0,
+            window_start: now,
+            cost: 1,
+        });
+
+        if now.saturating_sub(entry.window_start) >= LARGE_DOCUMENT_BUDGET_WINDOW_SECS {
+            entry.spent = 0;
+            entry.window_start = now;
+        }
+
+        if entry.spent.saturating_add(entry.cost) > LARGE_DOCUMENT_BUDGET_PER_WINDOW {
+            let retry_after_secs =
+                (entry.window_start + LARGE_DOCUMENT_BUDGET_WINDOW_SECS).saturating_sub(now);
+            return Err(retry_after_secs);
+        }
+        entry.spent += entry.cost;
+        state.global_spent += 1;
+        Ok(())
+    }
+
+    /// Double `address`'s per-charge cost — called once a claimed issuer this
+    /// budget let through turns out to have failed verification, or proven to
+    /// be someone else. Persists across windows (a penalty is against the
+    /// address, not the minute it earned it); capped well short of overflow,
+    /// since a handful of doublings already exhausts the window on its own.
+    fn penalize(&self, address: &str) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = state.buckets.entry(address.to_string()).or_insert(Bucket {
+            spent: 0,
+            window_start: 0,
+            cost: 1,
+        });
+        entry.cost = entry.cost.saturating_mul(2).min(1 << 20);
+    }
+
+    #[cfg(test)]
+    fn cost(&self, address: &str) -> u64 {
+        self.inner
+            .lock()
+            .unwrap()
+            .buckets
+            .get(address)
+            .map(|b| b.cost)
+            .unwrap_or(1)
+    }
+}
+
+/// A per-address [`LargeDocumentBudget`] charge [`check_for_known_issuer`]
+/// made before this document's proof was verified. Pass it to
+/// [`settle_large_document_charge`] once the caller's own verification
+/// concludes.
+#[derive(Debug)]
+pub(crate) struct LargeDocumentCharge {
+    address: String,
+    claimed_issuer: String,
+}
+
 /// Admit `body`, or refuse it for its size before it is parsed.
 ///
 /// A document above the default is held to its type's limit only when its
-/// claimed `issuer` is known here ([`is_known_issuer`]); a stranger's is held to
-/// the default.
-pub(crate) async fn check(state: &AppState, body: &[u8]) -> Result<(), TrustTaskOutcome> {
+/// claimed `issuer` is known here ([`is_known_issuer`]) — and even then, only
+/// while `address`'s [`LargeDocumentBudget`] has room for it. A stranger's
+/// large document is held to the default, with no charge against the budget:
+/// the ACL/delegation lookup alone already holds it to the cheap path.
+///
+/// A known claimed issuer past its address's budget is refused `unavailable`
+/// rather than admitted, even one that would have gone on to verify
+/// correctly; that trade-off is what a budget is for.
+///
+/// Returns the charge to settle once verification concludes
+/// ([`settle_large_document_charge`]), or `None` when no charge was made.
+pub(crate) async fn check_for_known_issuer(
+    state: &AppState,
+    body: &[u8],
+    address: &str,
+    now: u64,
+) -> Result<Option<LargeDocumentCharge>, TrustTaskOutcome> {
     if body.len() <= DEFAULT_MAX_DOCUMENT_BYTES {
-        return Ok(());
+        return Ok(None);
     }
-    let known = match peek_issuer(body) {
-        Some(issuer) => is_known_issuer(state, &issuer).await,
-        None => false,
+    let claimed_issuer = match peek_issuer(body) {
+        Some(issuer) if is_known_issuer(state, &issuer).await => Some(issuer),
+        _ => None,
     };
-    if known {
-        check_with(body, max_document_bytes)
-    } else {
-        check_with(body, |_| DEFAULT_MAX_DOCUMENT_BYTES)
+    let Some(claimed_issuer) = claimed_issuer else {
+        check_with(body, |_| DEFAULT_MAX_DOCUMENT_BYTES)?;
+        return Ok(None);
+    };
+    if let Err(retry_after_secs) = state.large_document_budget.try_charge(address, now) {
+        let payload: ErrorPayload = RejectReason::Unavailable {
+            retry_after: Some(
+                chrono::Utc::now() + chrono::Duration::seconds(retry_after_secs as i64),
+            ),
+        }
+        .into();
+        return Err(unrouted_error_response(payload));
+    }
+    check_with(body, max_document_bytes)?;
+    Ok(Some(LargeDocumentCharge {
+        address: address.to_string(),
+        claimed_issuer,
+    }))
+}
+
+/// Settle a [`LargeDocumentCharge`] once the caller's own proof verification
+/// concludes. `verified_issuer` is the proven signer on success, or `None` on
+/// any verification failure (including no proof at all). A `verified_issuer`
+/// that is not exactly the one the charge was granted against — including a
+/// failure, which proves none at all — doubles the address's cost for its
+/// next large document ([`LargeDocumentBudget::penalize`]). A charge that
+/// verified to exactly its claimed issuer costs nothing extra.
+///
+/// A no-op when `charge` is `None` — the document never carried one.
+pub(crate) fn settle_large_document_charge(
+    budget: &LargeDocumentBudget,
+    charge: Option<&LargeDocumentCharge>,
+    verified_issuer: Option<&str>,
+) {
+    let Some(charge) = charge else {
+        return;
+    };
+    if verified_issuer != Some(charge.claimed_issuer.as_str()) {
+        budget.penalize(&charge.address);
     }
 }
 
@@ -278,6 +503,12 @@ mod tests {
 
     fn refusal(outcome: TrustTaskOutcome) -> serde_json::Value {
         assert_eq!(outcome.status, axum::http::StatusCode::BAD_REQUEST);
+        payload_of(outcome)
+    }
+
+    /// [`refusal`], without asserting the status code — for a refusal that is
+    /// not `malformedRequest` (400), such as the budget's `unavailable` (503).
+    fn payload_of(outcome: TrustTaskOutcome) -> serde_json::Value {
         let doc: serde_json::Value = serde_json::from_slice(&outcome.body).unwrap();
         doc["payload"].clone()
     }
@@ -451,11 +682,10 @@ mod tests {
         );
     }
 
-    /// A raised limit is for a known issuer: a stranger's large document, and
-    /// one naming no issuer, are held to the default; an administrator's, and
-    /// a signing key's delegated by one, are admitted at the type's limit.
-    #[tokio::test]
-    async fn a_raised_limit_needs_an_issuer_with_standing() {
+    /// Seed an ACL with one live administrator and a delegated console key,
+    /// mirroring the fixture `a_raised_limit_needs_an_issuer_with_standing`
+    /// used before the budget existed.
+    async fn vtc_with_known_admin() -> (crate::test_support::TestVtc, &'static str, &'static str) {
         use crate::acl::{VtcAclEntry, VtcRole, store_acl_entry};
         let vtc = crate::test_support::TestVtc::builder().build().await;
         let admin = "did:key:z6MkSizeKnownAdmin";
@@ -486,30 +716,209 @@ mod tests {
         )
         .await
         .unwrap();
+        (vtc, admin, key)
+    }
 
+    /// A raised limit is for a known issuer: a stranger's large document, and
+    /// one naming no issuer, are held to the default (and never charge the
+    /// budget); an administrator's, and a signing key's delegated by one, are
+    /// admitted at the type's limit.
+    #[tokio::test]
+    async fn a_raised_limit_needs_an_issuer_with_standing() {
+        let (vtc, admin, key) = vtc_with_known_admin().await;
         let len = DEFAULT_MAX_DOCUMENT_BYTES + 1;
         assert!(served_upsert(POLICY_UPSERT) >= len);
         let limit_for = |issuer: &str| document_from(issuer, POLICY_UPSERT, len);
         // `policy/upsert` is served on this build.
         assert!(super::super::DISPATCHED_URIS.contains(&POLICY_UPSERT));
-        for issuer in [admin, key] {
+        for (i, issuer) in [admin, key].into_iter().enumerate() {
             assert!(
-                check(&vtc.state, &limit_for(issuer)).await.is_ok(),
+                check_for_known_issuer(&vtc.state, &limit_for(issuer), &format!("ip:{i}"), 0)
+                    .await
+                    .is_ok(),
                 "{issuer}"
             );
         }
         let stranger = refusal(
-            check(&vtc.state, &limit_for("did:key:z6MkSizeStranger"))
-                .await
-                .unwrap_err(),
+            check_for_known_issuer(
+                &vtc.state,
+                &limit_for("did:key:z6MkSizeStranger"),
+                "ip:stranger",
+                0,
+            )
+            .await
+            .unwrap_err(),
         );
         assert_eq!(
             stranger["details"][DETAILS_MAX_BYTES],
             DEFAULT_MAX_DOCUMENT_BYTES
         );
+        assert_eq!(
+            vtc.state.large_document_budget.cost("ip:stranger"),
+            1,
+            "an unknown issuer never charges the budget"
+        );
         let pad = "x".repeat(DEFAULT_MAX_DOCUMENT_BYTES);
         let anonymous = format!(r#"{{"type":"{POLICY_UPSERT}","payload":{{"pad":"{pad}"}}}}"#);
-        assert!(check(&vtc.state, anonymous.as_bytes()).await.is_err());
+        assert!(
+            check_for_known_issuer(&vtc.state, anonymous.as_bytes(), "ip:anon", 0)
+                .await
+                .is_err(),
+            "a document naming no issuer at all is held to the default"
+        );
+    }
+
+    /// A document at or under the default is never charged against the
+    /// budget, whatever it claims — the whole point of the default is that
+    /// every type accepts that much for free.
+    #[tokio::test]
+    async fn small_documents_are_never_charged() {
+        let (vtc, admin, _) = vtc_with_known_admin().await;
+        let small = document_from(admin, POLICY_UPSERT, DEFAULT_MAX_DOCUMENT_BYTES);
+        for _ in 0..(LARGE_DOCUMENT_BUDGET_PER_WINDOW * 3) {
+            let charge = check_for_known_issuer(&vtc.state, &small, "ip:small", 0)
+                .await
+                .expect("small document admitted");
+            assert!(
+                charge.is_none(),
+                "a small document never charges the budget"
+            );
+        }
+    }
+
+    /// Repeated raised-limit documents from one address, all naming the same
+    /// known (but not yet verified) issuer, are refused once the address's
+    /// budget is spent — the DoS amplification the module docs describe.
+    #[tokio::test]
+    async fn repeated_large_documents_from_one_address_are_refused_past_the_budget() {
+        let (vtc, admin, _) = vtc_with_known_admin().await;
+        let len = DEFAULT_MAX_DOCUMENT_BYTES + 1;
+        let doc = document_from(admin, POLICY_UPSERT, len);
+        for _ in 0..LARGE_DOCUMENT_BUDGET_PER_WINDOW {
+            assert!(
+                check_for_known_issuer(&vtc.state, &doc, "ip:9.9.9.9", 0)
+                    .await
+                    .is_ok()
+            );
+        }
+        let err = check_for_known_issuer(&vtc.state, &doc, "ip:9.9.9.9", 0)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(payload_of(err)["code"], "unavailable");
+        // A different address is unaffected.
+        assert!(
+            check_for_known_issuer(&vtc.state, &doc, "ip:1.1.1.1", 0)
+                .await
+                .is_ok()
+        );
+    }
+
+    /// A verified known issuer, still within its address's budget, settles
+    /// for free — no penalty when the verified issuer is exactly the one it
+    /// claimed.
+    #[tokio::test]
+    async fn a_verified_known_issuer_within_its_budget_settles_for_free() {
+        let (vtc, admin, _) = vtc_with_known_admin().await;
+        let len = DEFAULT_MAX_DOCUMENT_BYTES + 1;
+        let doc = document_from(admin, POLICY_UPSERT, len);
+        let charge = check_for_known_issuer(&vtc.state, &doc, "ip:1.2.3.4", 0)
+            .await
+            .expect("within budget")
+            .expect("a large document charges the budget");
+        settle_large_document_charge(&vtc.state.large_document_budget, Some(&charge), Some(admin));
+        assert_eq!(
+            vtc.state.large_document_budget.cost("ip:1.2.3.4"),
+            1,
+            "a verified claim is not penalised"
+        );
+    }
+
+    /// Settling a charge whose claimed issuer did not verify — a mismatch, or
+    /// an outright verification failure (`None`) — doubles the address's next
+    /// cost, so repeating the same lie exhausts its budget faster.
+    #[test]
+    fn an_unverified_or_mismatched_issuer_penalises_the_address() {
+        let budget = LargeDocumentBudget::new();
+        let charge = LargeDocumentCharge {
+            address: "ip:1.2.3.4".to_string(),
+            claimed_issuer: "did:key:z6MkSizeKnownAdmin".to_string(),
+        };
+        settle_large_document_charge(&budget, Some(&charge), None);
+        assert_eq!(budget.cost("ip:1.2.3.4"), 2);
+        settle_large_document_charge(&budget, Some(&charge), Some("did:key:z6MkSizeSomeoneElse"));
+        assert_eq!(budget.cost("ip:1.2.3.4"), 4);
+        // A `None` charge (no large document was charged) never touches the
+        // budget.
+        settle_large_document_charge(&budget, None, None);
+        assert_eq!(budget.cost("ip:1.2.3.4"), 4);
+    }
+
+    /// Many addresses together are held to the global budget: however many
+    /// distinct addresses (or freshly minted VIDs) a caller spreads across,
+    /// the raised-limit path runs at most the service-wide cap times a
+    /// window.
+    #[test]
+    fn many_addresses_together_are_held_to_the_global_budget() {
+        let budget = LargeDocumentBudget::new();
+        for i in 0..LARGE_DOCUMENT_GLOBAL_BUDGET_PER_WINDOW {
+            assert!(budget.try_charge(&format!("vid:{i}"), 1_000).is_ok());
+        }
+        assert!(
+            budget.try_charge("vid:fresh", 1_000).is_err(),
+            "a fresh address does not escape the service-wide cap"
+        );
+        assert!(
+            budget
+                .try_charge("vid:fresh", 1_000 + LARGE_DOCUMENT_BUDGET_WINDOW_SECS)
+                .is_ok(),
+            "the next window has room again"
+        );
+    }
+
+    #[test]
+    fn a_full_map_keeps_its_penalties() {
+        let budget = LargeDocumentBudget::new();
+        budget.penalize("ip:abuser");
+        {
+            let mut state = budget.inner.lock().unwrap();
+            for i in 0..MAX_TRACKED_ADDRESSES {
+                state.buckets.insert(
+                    format!("ip:{i}"),
+                    Bucket {
+                        spent: 0,
+                        window_start: 0,
+                        cost: 1,
+                    },
+                );
+            }
+        }
+        // Every filler's window has expired: they are evicted, the penalty is not.
+        assert!(budget.try_charge("ip:new", 10_000).is_ok());
+        assert_eq!(budget.cost("ip:abuser"), 2);
+    }
+
+    #[test]
+    fn a_full_map_of_live_addresses_refuses_a_new_one() {
+        let budget = LargeDocumentBudget::new();
+        {
+            let mut state = budget.inner.lock().unwrap();
+            for i in 0..MAX_TRACKED_ADDRESSES {
+                state.buckets.insert(
+                    format!("ip:{i}"),
+                    Bucket {
+                        spent: 1,
+                        window_start: 10_000,
+                        cost: 1,
+                    },
+                );
+            }
+        }
+        assert!(budget.try_charge("ip:new", 10_000).is_err());
+        assert!(
+            budget.try_charge("ip:0", 10_000).is_ok(),
+            "a tracked address still charges"
+        );
     }
 
     /// The gate is the spine's, so a transport that is not HTTPS — which has

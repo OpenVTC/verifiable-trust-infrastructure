@@ -613,10 +613,18 @@ impl<S: AuthState> FromRequestParts<S> for StepUpAuth {
 /// The step-up rule itself, so the extractor and the in-handler check below
 /// can never drift apart.
 fn check_fresh_step_up(claims: &AuthClaims, session: &Session) -> Result<(), AppError> {
-    if claims.acr != "aal2" {
+    // The level is read off the session row, never the token. A step-up
+    // (`auth/passkey/login/finish/0.2`, `purpose: stepUp`) elevates the row and
+    // mints no new token — the spec has the caller's existing tokens "pick up
+    // the elevation at the next introspection". A session that signed in at
+    // `aal1` (SIOPv2, DID-signed authenticate) carries an `aal1` token for its
+    // whole life, so gating on `claims.acr` made step-up unsatisfiable for it.
+    // The window below is what a step-up alone can write, so it stays the
+    // authority; the row's `acr` only has to agree that it happened.
+    if session.acr != "aal2" {
         warn!(
             did = %claims.did,
-            acr = %claims.acr,
+            acr = %session.acr,
             "auth rejected: step-up (aal2) required",
         );
         return Err(AppError::StepUpRequired(
@@ -852,6 +860,30 @@ mod tests {
             matches!(err, AppError::StepUpRequired(_)),
             "expected StepUpRequired, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn step_up_accepts_an_aal1_token_whose_session_was_elevated() {
+        // A SIOPv2 / DID-signed login mints an `aal1` token. A passkey step-up
+        // elevates the session row and mints nothing, so the token stays `aal1`
+        // while the row reads `aal2` with a live window. That must satisfy the
+        // gate, or step-up is unreachable for every non-passkey login.
+        let (state, _dir) = test_state();
+        let mut parts = authed_parts(&state, "aal1", None).await;
+        let did = "did:key:zStepUp";
+        let mut session = get_session(&state.sessions, did)
+            .await
+            .expect("read session")
+            .expect("session exists");
+        session.acr = "aal2".to_string();
+        session.acr_expires_at = Some(now_epoch() + 900);
+        store_session(&state.sessions, &session)
+            .await
+            .expect("store elevated session");
+        let auth = StepUpAuth::from_request_parts(&mut parts, &state)
+            .await
+            .expect("an elevated row must satisfy the gate whatever the token's acr");
+        assert_eq!(auth.0.acr, "aal1", "the token is untouched by step-up");
     }
 
     #[tokio::test]

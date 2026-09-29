@@ -1,8 +1,8 @@
-//! `POST /v1/admin/did/register` — a self-hosted community installs a
-//! delivered log for its own DID (`did-management/did/register/0.1`,
-//! Keyring VTI-35). The verification rules themselves are unit-tested in
-//! `did_log_install`; this covers the route: authority, slot, and that an
-//! accepted log is what `/.well-known/did.jsonl` then serves.
+//! `did-management/did/register/0.1` — a self-hosted community installs a
+//! delivered log for its own DID (Keyring VTI-35), as a signed Trust Task.
+//! The verification rules themselves are unit-tested in `did_log_install`;
+//! this covers the task: authority, slot, and that an accepted log is what
+//! `/.well-known/did.jsonl` then serves.
 
 mod common;
 
@@ -19,6 +19,7 @@ use tower::ServiceExt;
 use vtc_client::VtcClient;
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::{MockVtc, TestVtc};
+use vti_rooms_dtg::test_support::Party;
 
 const TASK: &str = "https://trusttasks.org/spec/did-management/did/register/0.1";
 const HOST: &str = "vtc.example.com";
@@ -79,28 +80,15 @@ async fn vtc_serving(did: &str, served: &str) -> TestVtc {
     vtc
 }
 
-async fn post(vtc: &TestVtc, token: &str, body: Value) -> (StatusCode, Value) {
-    let res = vtc
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/admin/did/register")
-                .header("Trust-Task", TASK)
-                .header("Authorization", format!("Bearer {token}"))
-                .header("Content-Type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
+/// The task signed by `from`: `200` and the response payload, or the status
+/// the retired route answered the refusal with and its payload.
+async fn post(vtc: &TestVtc, from: &Party, body: Value) -> (StatusCode, Value) {
+    let (_, doc) = common::signed::call(vtc, from, TASK, body).await;
+    let payload = doc["payload"].clone();
+    if common::signed::error_code(&doc).is_some() {
+        return (common::legacy::legacy_status(&payload), payload);
+    }
+    (StatusCode::OK, payload)
 }
 
 async fn served(vtc: &TestVtc) -> String {
@@ -127,7 +115,7 @@ fn register(did_data: &str) -> Value {
 async fn a_delivered_extension_is_served() {
     let (did, lines) = mint().await;
     let vtc = vtc_serving(&did, &log(&lines[..1])).await;
-    let token = vtc.admin_token().await;
+    let token = common::signed::admin(&vtc).await;
 
     let (status, body) = post(&vtc, &token, register(&log(&lines))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -147,7 +135,7 @@ async fn a_delivered_extension_is_served() {
 async fn a_non_admin_is_refused() {
     let (did, lines) = mint().await;
     let vtc = vtc_serving(&did, &log(&lines[..1])).await;
-    let token = vtc.token("did:key:z6MkReader", "reader", Vec::new()).await;
+    let token = common::signed::party_with_role(&vtc, VtcRole::Member, &[]).await;
     let (status, _) = post(&vtc, &token, register(&log(&lines))).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(served(&vtc).await, log(&lines[..1]));
@@ -158,7 +146,7 @@ async fn a_non_admin_is_refused() {
 async fn a_shorter_log_is_a_conflict() {
     let (did, lines) = mint().await;
     let vtc = vtc_serving(&did, &log(&lines)).await;
-    let token = vtc.admin_token().await;
+    let token = common::signed::admin(&vtc).await;
     let (status, body) = post(&vtc, &token, register(&log(&lines[..1]))).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(served(&vtc).await, log(&lines));
@@ -169,7 +157,7 @@ async fn a_shorter_log_is_a_conflict() {
 async fn another_slot_is_refused() {
     let (did, lines) = mint().await;
     let vtc = vtc_serving(&did, &log(&lines[..1])).await;
-    let token = vtc.admin_token().await;
+    let token = common::signed::admin(&vtc).await;
     let body = json!({ "path": "somewhere", "method": "webvh", "didData": log(&lines) });
     let (status, body) = post(&vtc, &token, body).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -185,15 +173,14 @@ async fn a_hosted_community_is_not_self_hosted() {
         .vtc_did("did:webvh:QmScid:dids.example.com:community")
         .build()
         .await;
-    let token = vtc.admin_token().await;
+    let token = common::signed::admin(&vtc).await;
     let (status, body) = post(&vtc, &token, register(&log(&lines))).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
 
-/// Over the wire, as `cnm did-log install` does it: authenticate to the
-/// community with the community's DID as the audience (not the VTA's — a
-/// VTC refuses that), then deliver. The route tests above bypass auth with a
-/// minted token; this is the path an operator actually takes.
+/// Over the wire, as `cnm did-log install` does it over HTTPS: a document
+/// signed by the operator and addressed to the community's DID (not the
+/// VTA's — a VTC refuses that).
 #[tokio::test]
 async fn vtc_client_authenticates_and_installs() {
     let (did, lines) = mint().await;
@@ -227,9 +214,8 @@ async fn vtc_client_authenticates_and_installs() {
 
     let mock = MockVtc::start_with(vtc).await;
     let base = format!("{}/v1", mock.base_url());
-    let client = VtcClient::connect(&base, &did, &admin, &private_key)
-        .await
-        .expect("authenticate to the community as its super-admin");
+    let key = vtc_client::HolderKey::from_did_key(&admin, &private_key).unwrap();
+    let client = VtcClient::with_key(&base, &did, key);
     let payload: vtc_client::did_register::v0_1::Payload =
         serde_json::from_value(register(&log(&lines))).unwrap();
     let response = client.install_did_log(&payload).await.expect("install");
