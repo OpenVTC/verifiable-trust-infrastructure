@@ -28,6 +28,65 @@
 //! separately signed (VTI-CMP-070): distinct vetters are distinct *members*.
 
 pub mod auto_grant;
+/// The member of a join submission's `extensions` a hidden-vetting proof rides in.
+///
+/// Spelled here rather than imported so that [`redact_hidden_submission`] runs whether or not
+/// this build implements the suite: a community that never verifies one still has no reason to
+/// keep it. `vetting::pcs`'s tests pin it against the crate's own constant.
+pub const HIDDEN_VETTING_MEMBER: &str = "hiddenVetting";
+
+/// Replace a hidden-vetting proof with a digest of itself, once it has been decided.
+///
+/// A proof is evidence for exactly one decision, and after that it is a liability: it carries
+/// the tags, and a tag is one discrete log from the vetter who made it (`docs/design/
+/// vetting-hidden-vetters-pcs.md` §18). The facts row is what every reader downstream actually
+/// uses; the submission is not read again.
+///
+/// What stays is enough to answer "was this decided on the evidence we think" — the suite, the
+/// size, and a SHA-256 of the canonical bytes — and nothing that links a vetter to anything.
+///
+/// Returns true when there was a proof to redact.
+pub fn redact_hidden_submission(extensions: &mut JsonValue) -> bool {
+    let Some(obj) = extensions.as_object_mut() else {
+        return false;
+    };
+    let Some(proof) = obj.get(HIDDEN_VETTING_MEMBER) else {
+        return false;
+    };
+    let bytes = serde_json::to_vec(proof).unwrap_or_default();
+    let suite = proof
+        .get("suite")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes));
+    obj.insert(
+        HIDDEN_VETTING_MEMBER.to_string(),
+        serde_json::json!({
+            "redacted": true,
+            "suite": suite,
+            "bytes": bytes.len(),
+            "sha256": digest,
+        }),
+    );
+    true
+}
+
+/// Hidden-vetter admission (ZKP), development branch `zkp-pcs`.
+#[cfg(feature = "vetting-pcs")]
+pub mod pcs;
+/// The VTC-issued challenge a hidden submission is bound to.
+#[cfg(feature = "vetting-pcs")]
+pub mod pcs_challenge;
+/// Event mode: the exception to the constant drip, and the gate that keeps it survivable.
+#[cfg(feature = "vetting-pcs")]
+pub mod pcs_event;
+/// The community's minting half: vetter enrolment and the token drip.
+#[cfg(feature = "vetting-pcs")]
+pub mod pcs_issue;
+/// The Trust Tasks that carry the community half.
+#[cfg(feature = "vetting-pcs")]
+pub mod pcs_tasks;
 pub mod profiles;
 pub mod revocation;
 pub mod vetters;
@@ -133,7 +192,7 @@ pub async fn vetting_facts(
     let mut projected = Vec::new();
     for stored in list_accepts(&state.schemas_ks).await? {
         if stored.vetting.is_some() {
-            projected.push(manifest_criterion(stored)?);
+            projected.push(manifest_criterion(stored)?.criterion);
         }
     }
     let applicant_digest = extensions
@@ -151,6 +210,26 @@ pub async fn vetting_facts(
         .vtc_did
         .clone()
         .unwrap_or_default();
+
+    // Hidden-vetter admission (development branch `zkp-pcs`): when the criterion publishes
+    // anonymity parameters AND this submission carries a proof, the facts come from the proof
+    // instead of from named statements. Everything downstream — `evaluate`, the needs
+    // expansion, `join.rego` — is the same, because the facts are the same shape with each
+    // vetter's tag where their DID would be.
+    #[cfg(feature = "vetting-pcs")]
+    if let Some(facts) = hidden_facts(
+        state,
+        &community_did,
+        applicant_did,
+        &selected,
+        requirements,
+        extensions,
+        now,
+    )
+    .await?
+    {
+        return Ok(Some(facts));
+    }
     let resolver = state.trust_task_vm_resolver();
 
     let mut to_count = Vec::new();
@@ -284,6 +363,85 @@ pub async fn vetting_facts(
     }))
 }
 
+/// The hidden-vetter path (development branch `zkp-pcs`).
+///
+/// `Ok(None)` when this criterion publishes no anonymity parameters, or when the submission
+/// carries no proof — which is every named-path submission, including one to a community that
+/// runs both.
+#[cfg(feature = "vetting-pcs")]
+async fn hidden_facts(
+    state: &AppState,
+    community_did: &str,
+    applicant_did: &str,
+    selected: &Selected,
+    requirements: &VettingRequirements,
+    extensions: &JsonValue,
+    now: DateTime<Utc>,
+) -> Result<Option<VettingFacts>, AppError> {
+    let Some(stored) =
+        crate::schemas::accepts::get_accepts(&state.schemas_ks, &selected.criterion_id).await?
+    else {
+        return Ok(None);
+    };
+    let Some(raw) = stored.hidden_vetting else {
+        return Ok(None);
+    };
+    let config: crate::vetting::pcs::HiddenVettingConfig = serde_json::from_value(raw)
+        .map_err(|e| AppError::Validation(format!("hidden-vetting parameters: {e}")))?;
+    let decision = crate::vetting::pcs::decide(
+        state,
+        community_did,
+        applicant_did,
+        requirements,
+        &selected.digest,
+        &config,
+        extensions,
+        now,
+    )
+    .await
+    .map_err(|e| AppError::Validation(format!("hidden vetting: {e}")))?;
+    let Some(decision) = decision else {
+        return Ok(None);
+    };
+    let evaluation = &decision.evaluation;
+    Ok(Some(VettingFacts {
+        criterion_id: selected.criterion_id.clone(),
+        requirements_digest: selected.digest.clone(),
+        applicant_digest_matches: selected.applicant_digest_matches,
+        statements: decision
+            .statements
+            .iter()
+            .map(|s| VettingStatementFact {
+                id: Some(s.id.clone()),
+                // The tag, not a DID: distinct tags are distinct vetters (design §2), and
+                // that is all the community learns.
+                issuer: Some(s.issuer.clone()),
+                verified: s.verified,
+                eligible: s.eligible,
+                revoked: s.revoked,
+                method: Some(s.method.to_string()),
+                declared_relationship: Some(s.declared_relationship.to_string()),
+                counted: s.counted,
+                failures: s.failures.clone(),
+            })
+            .collect(),
+        distinct_counted_vetters: u32::try_from(evaluation.distinct_vetters()).unwrap_or(u32::MAX),
+        by_method: evaluation
+            .by_method
+            .iter()
+            .map(|(m, n)| (m.to_string(), *n))
+            .collect(),
+        commitments_consistent: evaluation.commitments_consistent,
+        independence_ok: evaluation.independence_ok,
+        invitation_required: matches!(
+            requirements.invitation,
+            Some(VettingRequirementsInvitation::Required)
+        ),
+        satisfied: evaluation.satisfied(),
+        needs: evaluation.needs.iter().map(|n| n.to_wire()).collect(),
+    }))
+}
+
 /// Replace a policy's generic [`NEED_VETTING`] with the precise shortfall the
 /// facts record. A policy authored in the visual editor can only return a
 /// static `needs` list; this is where it becomes something an applicant can act
@@ -368,7 +526,7 @@ fn issuer_of(vc: &JsonValue) -> Option<String> {
 /// withdrawn after a statement was signed stops that statement counting. That
 /// errs toward not admitting, and it is what an operator withdrawing a vetter
 /// they no longer trust means.
-async fn vetter_eligible(
+pub(crate) async fn vetter_eligible(
     state: &AppState,
     issuer: &str,
     role: &str,
@@ -397,6 +555,46 @@ async fn vetter_eligible(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A decided proof is replaced by a digest of itself: enough to say what was decided on,
+    /// nothing that links a vetter.
+    #[test]
+    fn a_decided_hidden_proof_is_redacted_to_a_digest() {
+        let mut extensions = json!({
+            "requirementsDigest": "zQmDigest",
+            HIDDEN_VETTING_MEMBER: {
+                "suite": "ps-ddh-bls12381",
+                "id": "z7Applicant",
+                "proof": "zTheWholeProofWithTagsInside",
+                "statements": [{ "meta": {}, "token": {} }],
+            },
+        });
+        assert!(redact_hidden_submission(&mut extensions));
+
+        let left = &extensions[HIDDEN_VETTING_MEMBER];
+        assert_eq!(left["redacted"], json!(true));
+        assert_eq!(left["suite"], json!("ps-ddh-bls12381"));
+        assert!(left["bytes"].as_u64().unwrap() > 0);
+        assert_eq!(left["sha256"].as_str().unwrap().len(), 64);
+        // Nothing of the proof survives.
+        let text = serde_json::to_string(&extensions).unwrap();
+        assert!(!text.contains("zTheWholeProofWithTagsInside"), "{text}");
+        assert!(!text.contains("z7Applicant"), "{text}");
+        // Everything beside it does.
+        assert_eq!(extensions["requirementsDigest"], json!("zQmDigest"));
+    }
+
+    /// A named-path submission has nothing to redact, and is left exactly as it was.
+    #[test]
+    fn redaction_leaves_a_named_submission_alone() {
+        let before = json!({ "requirementsDigest": "zQmDigest" });
+        let mut after = before.clone();
+        assert!(!redact_hidden_submission(&mut after));
+        assert_eq!(before, after);
+        // And a submission that is not an object at all is not a panic.
+        let mut odd = json!("not an object");
+        assert!(!redact_hidden_submission(&mut odd));
+    }
 
     /// A digest-shaped value per criterion id.
     fn digest(id: &str) -> String {

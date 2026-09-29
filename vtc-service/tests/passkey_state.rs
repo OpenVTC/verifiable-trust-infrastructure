@@ -101,6 +101,8 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         endorsement_types_ks: endorsement_types_ks.clone(),
         vetting_revocations_ks: store.keyspace("vetting_revocations").unwrap(),
         vetter_profiles_ks: store.keyspace("vetter_profiles").unwrap(),
+        vetting_pcs_spent_ks: store.keyspace("vetting_pcs_spent").unwrap(),
+        vetting_pcs_issue_ks: store.keyspace("vetting_pcs_issue").unwrap(),
         accepted_ids_ks: store.keyspace("accepted_ids").unwrap(),
         console_keys_ks: store.keyspace("console_keys").unwrap(),
         step_up_marks_ks: store.keyspace("step_up_marks").unwrap(),

@@ -980,6 +980,18 @@ export interface components {
             createdByDid: string;
             /** @description Free-form description shown in admin UIs. */
             description?: string | null;
+            /**
+             * @description Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published
+             *     parameters an applicant proves against, and this VTC checks — `hvk`, `tvk`
+             *     and the live labels (`crate::vetting::pcs::HiddenVettingConfig`).
+             *
+             *     Held as raw JSON so the field costs nothing when the feature is off, and
+             *     so a criterion registered by a build that has it stays readable by one
+             *     that does not. It does NOT reach the 0.2 manifest: `Criterion` is a
+             *     generated `deny_unknown_fields` type, so a client gets these out of band
+             *     until the spec carries them.
+             */
+            hiddenVetting?: Record<string, never> | null;
             /** @description Criterion id (e.g. a ceremony purpose or a named manifest). Primary key. */
             id: string;
             /**
@@ -3702,6 +3714,11 @@ export interface components {
         };
         RegisterAcceptsBody: {
             description?: string | null;
+            /**
+             * @description Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published
+             *     parameters, stored verbatim (`crate::vetting::pcs::HiddenVettingConfig`).
+             */
+            hiddenVetting?: Record<string, never> | null;
             id: string;
             query: components["schemas"]["Value"];
             vetting?: null | components["schemas"]["VtcJoinRequestsManifestV0_2VettingRequirements"];
