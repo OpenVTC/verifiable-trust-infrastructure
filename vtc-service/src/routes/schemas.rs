@@ -136,6 +136,11 @@ pub struct RegisterAcceptsBody {
     #[serde(default)]
     #[schema(value_type = Option<vta_sdk::openapi::JoinManifest02VettingRequirements>)]
     pub vetting: Option<VettingRequirements>,
+    /// Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published
+    /// parameters, stored verbatim (`crate::vetting::pcs::HiddenVettingConfig`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub hidden_vetting: Option<serde_json::Value>,
 }
 
 /// `POST /v1/schemas/accepts` — register (or update) an Accepts criterion. The
@@ -173,6 +178,7 @@ pub(crate) async fn register_accepts_inner(
         query: body.query,
         description: body.description,
         vetting: body.vetting,
+        hidden_vetting: body.hidden_vetting,
         created_at: Utc::now(),
         created_by_did: actor.to_string(),
     };

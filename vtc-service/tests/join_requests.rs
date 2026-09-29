@@ -1581,6 +1581,7 @@ async fn admin_query_send_prepares_a_dcql_query_and_issues_a_challenge() {
         }),
         description: Some("present a MembershipCredential to join".into()),
         vetting: None,
+        hidden_vetting: None,
         created_at: chrono::Utc::now(),
         created_by_did: ADMIN_DID.into(),
     };
@@ -1884,6 +1885,7 @@ async fn store_join_criterion(fix: &Fixture) {
         }),
         description: Some("present a MembershipCredential to join".into()),
         vetting: None,
+        hidden_vetting: None,
         created_at: chrono::Utc::now(),
         created_by_did: ADMIN_DID.into(),
     };
@@ -1940,6 +1942,7 @@ async fn manifest_0_2_advertises_vetting_requirements_and_their_digest() {
             }]
         }),
         description: Some("Two vetters, one in person".into()),
+        hidden_vetting: None,
         vetting: Some(
             serde_json::from_value(json!({
                 "version": "0.1",
@@ -2075,6 +2078,7 @@ async fn store_vetting_criterion(fix: &Fixture) {
                 }]
             }),
             description: Some("Two vetters".into()),
+            hidden_vetting: None,
             vetting: Some(
                 serde_json::from_value(json!({
                     "version": "0.1",

@@ -437,6 +437,9 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // and served ahead of their release here, and went back to zero with
     // trust-tasks-rs 0.23, which generates both.
     //
+    // Hidden vetting's four tasks (`zkp-pcs`) were bound ahead of the 0.22 line reaching this
+    // graph, and went back to zero with it: trust-tasks-rs 0.22.2 serves all four.
+    //
     // Peer identity vetting (`vetting/*`, `vtc/vetting/*`) and join manifest
     // 0.2 were bound ahead of their specs here, and went back to zero with
     // trust-tasks-rs 0.20.4, which serves all nine and generates their wire

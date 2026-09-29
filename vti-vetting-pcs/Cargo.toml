@@ -1,0 +1,38 @@
+[package]
+name = "vti-vetting-pcs"
+description = "Hidden-vetter admission (ZKP): the VTC's half of the Predicate Credential System vetting path"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Development branch `zkp-pcs`. `vtc-service` is `publish = false` too, so
+# nothing in the release train is affected.
+publish = false
+
+[dependencies]
+predicate-credential-system = { version = "0.1", features = ["serde"] }
+ark-bls12-381 = { version = "0.6.0", default-features = false, features = ["curve", "std"] }
+ark-ec = { version = "0.6.0", default-features = false, features = ["std"] }
+ark-ff = { version = "0.6.0", default-features = false, features = ["std"] }
+ark-serialize = { version = "0.6.0", default-features = false, features = ["std"] }
+# MUST stay 0.8, whatever the workspace pins: `ark_std::rand` re-exports rand 0.8
+# and the randomized algorithms take its traits.
+rand = { version = "0.8", features = ["std", "std_rng", "getrandom"] }
+# Pairs with rand 0.8. Used for ONE thing: deriving a community's keys from a
+# secret over a specified stream, so the same secret gives the same keys on any
+# build (`issuer::Issuer::derive`).
+rand_chacha = "0.3"
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+# The counting rule the VTC already uses: `requirements::evaluate` and
+# `StatementFacts`, unchanged.
+vta-sdk = { path = "../vta-sdk", features = ["vetting"] }
+
+[dev-dependencies]
+rand = { version = "0.8", features = ["std", "std_rng"] }

@@ -112,6 +112,12 @@ pub struct AppState {
     pub vetting_revocations_ks: KeyspaceHandle,
     /// Vetter profiles, keyed by vetter DID (`crate::vetting::profiles`).
     pub vetter_profiles_ks: KeyspaceHandle,
+    /// Hidden-vetter admission (development branch `zkp-pcs`): spent attestation
+    /// tokens, keyed by token label + serial (`crate::vetting::pcs`).
+    pub vetting_pcs_spent_ks: KeyspaceHandle,
+    /// Hidden-vetter admission (development branch `zkp-pcs`): what the community
+    /// minted — vetter enrolments and served drip ticks (`crate::vetting::pcs_issue`).
+    pub vetting_pcs_issue_ks: KeyspaceHandle,
     /// The accepted-document-id record (VTI-OPS-025…027). One row per Trust
     /// Task document `id` accepted for execution. Held in the store rather
     /// than in a process-local map because VTI-OPS-027 requires the record to
@@ -449,6 +455,8 @@ pub async fn run(
     let endorsement_types_ks = store.keyspace(keyspaces::ENDORSEMENT_TYPES)?;
     let vetting_revocations_ks = store.keyspace(keyspaces::VETTING_REVOCATIONS)?;
     let vetter_profiles_ks = store.keyspace(keyspaces::VETTER_PROFILES)?;
+    let vetting_pcs_spent_ks = store.keyspace(keyspaces::VETTING_PCS_SPENT)?;
+    let vetting_pcs_issue_ks = store.keyspace(keyspaces::VETTING_PCS_ISSUE)?;
     let accepted_ids_ks = store.keyspace(keyspaces::ACCEPTED_IDS)?;
     let console_keys_ks = store.keyspace(keyspaces::CONSOLE_KEYS)?;
     let step_up_marks_ks = store.keyspace(keyspaces::STEP_UP_MARKS)?;
@@ -768,6 +776,8 @@ pub async fn run(
         endorsement_types_ks,
         vetting_revocations_ks,
         vetter_profiles_ks,
+        vetting_pcs_spent_ks,
+        vetting_pcs_issue_ks,
         accepted_ids_ks: accepted_ids_ks.clone(),
         console_keys_ks,
         step_up_marks_ks,

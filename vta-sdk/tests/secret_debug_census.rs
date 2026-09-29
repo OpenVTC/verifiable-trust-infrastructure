@@ -86,15 +86,37 @@ const NOT_SECRET: &[(&str, &str, &str, &str)] = &[
         "a webvh host's path label for the DID, not a BIP-39 phrase",
     ),
     (
+        "vtc-service/src/routes/vetting_hidden.rs",
+        "PublishHiddenVettingBody",
+        "live_token_labels",
+        "class-period labels like `token/2026-09`, the community's published drip schedule, not \
+         token material",
+    ),
+    (
+        "vtc-service/src/vetting/pcs.rs",
+        "HiddenVettingConfig",
+        "live_token_labels",
+        "class-period labels like `token/2026-09`, the community's published drip schedule, not \
+         token material",
+    ),
+    (
         "vti-common/src/setup/secrets_prompt.rs",
         "SecretsBackendChoice",
         "secret_key",
         "the name of the entry in the secret store, not its value",
     ),
+    (
+        "vti-vetting-pcs/src/meta.rs",
+        "StatementMeta",
+        "token_serial",
+        "a spent token's redemption-time double-spend serial, part of `StatementMeta`'s own \
+         public metadata (its doc comment says so) bound into the attestation, not the token's \
+         secret",
+    ),
 ];
 
 /// The size of [`NOT_SECRET`], asserted so the list cannot grow quietly.
-const NOT_SECRET_COUNT: usize = 8;
+const NOT_SECRET_COUNT: usize = 11;
 
 /// Field names that are exactly one of these are record or index keys, not
 /// key material.

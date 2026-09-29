@@ -32,6 +32,9 @@ members = [
   "vti-rooms-wasm",
   "vti-secrets",
   "vti-webauthn",
+  # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: `publish = false`,
+  # reached only from `vtc-service`'s off-by-default `vetting-pcs` feature.
+  "vti-vetting-pcs",
 ]
 # `vta-mobile-core` is a UniFFI client crate that cross-compiles to Android/iOS.
 # Keep it out of `default-members` so a bare `cargo build`/`test` for the server
@@ -65,7 +68,9 @@ default-members = [
   "vti-secrets",
   "vti-webauthn",
 ]
-exclude = ["deploy/nitro/enclave-proxy"]
+exclude = [
+  "deploy/nitro/enclave-proxy",
+]
 resolver = "3"
 
 [workspace.package]

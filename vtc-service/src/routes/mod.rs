@@ -28,6 +28,9 @@ pub(crate) mod schemas;
 pub(crate) mod status_lists;
 pub mod trust_tasks;
 pub(crate) mod vetting;
+/// Hidden-vetter admission: the operator's publish route (development branch `zkp-pcs`).
+#[cfg(feature = "vetting-pcs")]
+pub mod vetting_hidden;
 #[cfg(feature = "website")]
 pub(crate) mod website;
 
@@ -714,7 +717,21 @@ fn build_api_chain(
         // #1651) is a signed document only.
         .routes(routes!(vetting::list_vetters))
         .routes(routes!(vetting::get_auto_grant, vetting::put_auto_grant))
-        .routes(routes!(vetting::list_revocations));
+        .routes(routes!(vetting::list_revocations))
+        // Hidden-vetter admission (development branch `zkp-pcs`): derive this
+        // community's PCS keys and publish them on a criterion. Admin REST with
+        // no Trust Task of its own — turning the mode on is an act of
+        // administration, not a task a member can ask for.
+        .merge({
+            #[cfg(feature = "vetting-pcs")]
+            {
+                OpenApiRouter::new().routes(routes!(vetting_hidden::publish_hidden_vetting))
+            }
+            #[cfg(not(feature = "vetting-pcs"))]
+            {
+                OpenApiRouter::new()
+            }
+        });
     // A member's update and removal (`vtc/members/{update,admin-remove}/0.1`)
     // are signed documents only.
     // Join requests (Phase 1 M1.7–M1.10). The admin queue

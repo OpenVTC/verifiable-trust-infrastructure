@@ -1878,6 +1878,13 @@
             ],
             "description": "Free-form description shown in admin UIs."
           },
+          "hiddenVetting": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published\nparameters an applicant proves against, and this VTC checks — `hvk`, `tvk`\nand the live labels (`crate::vetting::pcs::HiddenVettingConfig`).\n\nHeld as raw JSON so the field costs nothing when the feature is off, and\nso a criterion registered by a build that has it stays readable by one\nthat does not. It does NOT reach the 0.2 manifest: `Criterion` is a\ngenerated `deny_unknown_fields` type, so a client gets these out of band\nuntil the spec carries them."
+          },
           "id": {
             "type": "string",
             "description": "Criterion id (e.g. a ceremony purpose or a named manifest). Primary key."
@@ -6324,6 +6331,13 @@
               "string",
               "null"
             ]
+          },
+          "hiddenVetting": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published\nparameters, stored verbatim (`crate::vetting::pcs::HiddenVettingConfig`)."
           },
           "id": {
             "type": "string"
