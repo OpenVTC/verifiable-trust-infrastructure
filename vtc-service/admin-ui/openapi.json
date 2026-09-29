@@ -1070,236 +1070,6 @@
         ]
       }
     },
-    "/v1/git-ns/accounts": {
-      "get": {
-        "tags": [
-          "git-ns"
-        ],
-        "operationId": "gitNsAccountsList",
-        "responses": {
-          "200": {
-            "description": "Members' linked forge accounts",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitNsAccountList"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not a community administrator"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/git-ns/activity": {
-      "get": {
-        "tags": [
-          "git-ns"
-        ],
-        "operationId": "gitNsActivity",
-        "parameters": [
-          {
-            "name": "namespace",
-            "in": "query",
-            "description": "Only this namespace (its identifier).",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "At most this many items, newest first. Default 100, at most 500.",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 0
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Recent activity in the namespaces the caller administers",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitNsActivity"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "The caller administers no namespace (or not the one named)"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/git-ns/jobs": {
-      "get": {
-        "tags": [
-          "git-ns"
-        ],
-        "operationId": "gitNsJobsList",
-        "responses": {
-          "200": {
-            "description": "Bridge jobs, oldest first",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitNsJobList"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/git-ns/projection": {
-      "get": {
-        "tags": [
-          "git-ns"
-        ],
-        "operationId": "gitNsProjection",
-        "responses": {
-          "200": {
-            "description": "What is published to the Trust Registry",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitNsProjection"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not a community administrator"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/git-ns/rights": {
-      "get": {
-        "tags": [
-          "git-ns"
-        ],
-        "operationId": "gitNsRightsList",
-        "parameters": [
-          {
-            "name": "resource",
-            "in": "query",
-            "description": "Only rights on this resource or inside it.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "subject",
-            "in": "query",
-            "description": "Only rights held by this DID.",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Recorded and role-derived git rights",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitNsRightList"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "The resource is not a forge-qualified resource"
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not a community administrator"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/git-ns/rights/issued-by-departed": {
-      "get": {
-        "tags": [
-          "git-ns"
-        ],
-        "operationId": "gitNsRightsIssuedByDeparted",
-        "responses": {
-          "200": {
-            "description": "Grants whose granter has left the community",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitNsDepartedGrants"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not a community administrator"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/install/claim/finish": {
       "post": {
         "tags": [
@@ -3494,6 +3264,12 @@
             "items": {
               "$ref": "#/components/schemas/GitNsAccountRow"
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -3502,28 +3278,18 @@
         "description": "One member's account on one forge, as linked through `git-ns/account/link`.",
         "required": [
           "member",
-          "forge",
-          "id",
-          "login",
+          "account",
           "memberCurrent"
         ],
         "properties": {
-          "forge": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string",
-            "description": "The forge's id for the account — authoritative."
+          "account": {
+            "$ref": "#/components/schemas/GitNsForgeAccount"
           },
           "linkedAt": {
             "type": [
               "string",
               "null"
             ]
-          },
-          "login": {
-            "type": "string",
-            "description": "The login — display only: logins are renamed and re-registered."
           },
           "member": {
             "type": "string"
@@ -3545,6 +3311,12 @@
             "items": {
               "$ref": "#/components/schemas/GitNsActivityItem"
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -3635,7 +3407,7 @@
       },
       "GitNsBreakGlassMark": {
         "type": "object",
-        "description": "A record's `breakGlass` (`git-ns/_shared/0.4` `BreakGlass`).",
+        "description": "A record's `breakGlass` (`git-ns/_shared/0.5` `BreakGlass`).",
         "required": [
           "by",
           "at",
@@ -3706,6 +3478,34 @@
             "items": {
               "$ref": "#/components/schemas/GitNsDepartedGranter"
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "GitNsForgeAccount": {
+        "type": "object",
+        "description": "A member's account on one forge (the shared `ForgeAccount` shape).",
+        "required": [
+          "forge",
+          "id",
+          "login"
+        ],
+        "properties": {
+          "forge": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "The forge's id for the account — authoritative."
+          },
+          "login": {
+            "type": "string",
+            "description": "The login — display only: logins are renamed and re-registered."
           }
         }
       },
@@ -3795,12 +3595,18 @@
             "items": {
               "$ref": "#/components/schemas/GitNsJobRow"
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
       "GitNsJobRow": {
         "type": "object",
-        "description": "One bridge job.",
+        "description": "One bridge job, as the administrator's console shows it.",
         "required": [
           "jobId",
           "namespace",
@@ -4038,9 +3844,15 @@
           "pendingChanges"
         ],
         "properties": {
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "pendingChanges": {
             "type": "integer",
-            "description": "Records that should be published and are not yet, or that are\npublished and should not be — what the next pass will change.",
+            "description": "Records that should be published and are not yet, or that are\npublished and should not be — what the next pass will change. Counted\nacross the whole VTC, regardless of `resource` or paging.",
             "minimum": 0
           },
           "published": {
@@ -4242,6 +4054,12 @@
           "rights"
         ],
         "properties": {
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "rights": {
             "type": "array",
             "items": {
@@ -4252,7 +4070,7 @@
       },
       "GitNsRightRow": {
         "type": "object",
-        "description": "One git right, recorded or role-derived.",
+        "description": "One git right, recorded or role-derived — `AdminRightRow` of the shared\nschema. Both tasks below produce it; only `git-ns/right/list` fills\n`resource` outside a `DepartedGranter` grouping (the response schemas are\notherwise identical row for row).",
         "required": [
           "subject",
           "right",

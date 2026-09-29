@@ -722,6 +722,12 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/view/0.5",
     "https://trusttasks.org/spec/git-ns/namespace/list/0.1",
     "https://trusttasks.org/spec/git-ns/repo/list/0.1",
+    "https://trusttasks.org/spec/git-ns/right/list/0.1",
+    "https://trusttasks.org/spec/git-ns/right/issued-by-departed/0.1",
+    "https://trusttasks.org/spec/git-ns/bridge/job/list/0.1",
+    "https://trusttasks.org/spec/git-ns/projection/show/0.1",
+    "https://trusttasks.org/spec/git-ns/account/list/0.1",
+    "https://trusttasks.org/spec/git-ns/activity/list/0.1",
 ];
 
 /// Document types the console sends that the *spine* dispatches rather than

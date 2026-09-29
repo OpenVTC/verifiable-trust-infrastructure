@@ -453,11 +453,18 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # a context's DID is cleared. Below it `TASK_CONTEXTS_UPDATE_DID_1_1` does not
 # compile, and the dispatch spine has no schema to hold `did: null` to.
 # `trust-tasks-capability-client` is pinned to match, as before.
-trust-tasks-rs = { version = "0.24.6", default-features = false, features = [
+#
+# 0.24.7 raises it again: it is the first release carrying the six `git-ns`
+# administrator reads (trustoverip/dtgwg-trust-tasks-tf#686) —
+# `right/list/0.1`, `right/issued-by-departed/0.1`, `bridge/job/list/0.1`,
+# `projection/show/0.1`, `account/list/0.1` and `activity/list/0.1` — which
+# `vtc-service/src/git_ns/admin_reads.rs` serves in place of the REST routes
+# `routes/git_ns.rs` once carried for them.
+trust-tasks-rs = { version = "0.24.7", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.24.6"
+trust-tasks-capability-client = "0.24.7"
 trust-tasks-https = { version = "0.24", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —

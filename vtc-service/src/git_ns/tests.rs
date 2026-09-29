@@ -1681,23 +1681,14 @@ async fn a_forge_account_already_linked_to_a_member_cannot_be_linked_to_another(
     assert_eq!(link_state(&f, &f.carol, id).await, "failed");
     // The console's read says whose account it is and that they are not
     // current, so it offers no adoption for it.
-    let list = crate::routes::git_ns::accounts_list(
-        vti_common::auth::SuperAdminAuth(vti_common::auth::extractor::AuthClaims {
-            did: f.admin.did.clone(),
-            role: vti_common::acl::Role::Admin,
-            ..Default::default()
-        }),
-        axum::extract::State(f.vtc.state.clone()),
-    )
-    .await
-    .unwrap()
-    .0;
-    let row = list
-        .accounts
+    let list = ok(&send(&f.vtc.state, &f.admin, "account/list", json!({})).await);
+    let row = list["accounts"]
+        .as_array()
+        .unwrap()
         .iter()
-        .find(|a| a.member == f.bob.did)
+        .find(|a| a["member"] == json!(f.bob.did))
         .unwrap();
-    assert!(!row.member_current);
+    assert_eq!(row["memberCurrent"], false);
 
     // And Bob may still unlink it himself — after which it is no longer
     // his, and a current member who proves control of it may link it.
@@ -2056,27 +2047,6 @@ async fn the_bridges_ext_report_reaches_the_admin_rows() {
 
 // ── the admin and activity reads ────────────────────────────────────────────
 
-/// A REST read under a session. `contexts` empty is a community-wide admin;
-/// a named context is an admin session scoped narrower than the community —
-/// the only other kind a VTC authenticates (it admits the admin role alone).
-async fn get(f: &Fixture, did: &str, contexts: Vec<String>, path: &str) -> (u16, Value) {
-    use tower::ServiceExt;
-    let token = f.vtc.token(did, "admin", contexts).await;
-    let req = axum::http::Request::builder()
-        .uri(format!("/v1{path}"))
-        .header("authorization", format!("Bearer {token}"));
-    let req = req.body(axum::body::Body::empty()).unwrap();
-    let resp = f.vtc.router.clone().oneshot(req).await.unwrap();
-    let status = resp.status().as_u16();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
-}
-
 #[tokio::test]
 async fn a_namespace_admin_reads_their_activity_and_nobody_elses() {
     let f = fixture().await;
@@ -2084,20 +2054,18 @@ async fn a_namespace_admin_reads_their_activity_and_nobody_elses() {
     ok(&grant(&f, &f.admin, &f.bob.did, "git.ns.admin", "github.com/acme").await);
 
     // Bob administers the namespace; he is not a community administrator.
-    let (status, body) = get(&f, &f.bob.did, vec!["ops".into()], "/git-ns/activity").await;
-    assert_eq!(status, 200, "{body}");
+    let body = ok(&send(&f.vtc.state, &f.bob, "activity/list", json!({})).await);
     let items = body["items"].as_array().unwrap();
     assert!(items.iter().any(|i| i["action"] == "gitNs.right.granted"
         && i["subject"] == json!(f.bob.did)
         && i["namespace"] == json!(ns)));
 
     // Carol administers nothing.
-    let (status, _) = get(&f, &f.carol.did, vec!["ops".into()], "/git-ns/activity").await;
-    assert_eq!(status, 403);
+    let out = send(&f.vtc.state, &f.carol, "activity/list", json!({})).await;
+    assert_eq!(code(&out), "git-ns/activity/list:notAdministrator");
 
     // The community administrator reads the linked accounts.
-    let (status, body) = get(&f, &f.admin.did, vec![], "/git-ns/accounts").await;
-    assert_eq!(status, 200, "{body}");
+    let body = ok(&send(&f.vtc.state, &f.admin, "account/list", json!({})).await);
     assert!(body["accounts"].as_array().unwrap().is_empty());
 }
 
@@ -2495,27 +2463,58 @@ async fn finding_3_verify_repairs_the_registry_and_rebuilds_a_lost_mirror() {
 
 // Finding 4 — the console reads are for community administrators.
 
+/// The four community-wide reads' own task slugs (short form, `uri()`
+/// resolves each to its `/0.1`).
+const COMMUNITY_ADMIN_READS: [&str; 4] = [
+    "right/list",
+    "account/list",
+    "right/issued-by-departed",
+    "projection/show",
+];
+
 #[tokio::test]
 async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
     let f = fixture().await;
     bind_manual(&f).await;
-    for path in [
-        "/git-ns/rights",
-        "/git-ns/accounts",
-        "/git-ns/rights/issued-by-departed",
-        "/git-ns/projection",
-    ] {
-        let (status, body) = get(&f, &f.admin.did, vec!["ops".into()], path).await;
-        assert_eq!(status, 403, "{path}: {body}");
+
+    // An admin whose ACL row is scoped to one context: holds the `admin`
+    // role, but not the community-administrator capability these reads need.
+    let scoped = Party::new();
+    store_acl_entry(
+        &f.vtc.state.acl_ks,
+        &VtcAclEntry {
+            did: scoped.did.clone(),
+            role: VtcRole::Admin,
+            label: None,
+            allowed_contexts: vec!["ops".into()],
+            created_at: 0,
+            created_by: "test".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    crate::members::store_member(
+        &f.vtc.state.members_ks,
+        &crate::members::Member::fresh(&scoped.did),
+    )
+    .await
+    .unwrap();
+
+    for task in COMMUNITY_ADMIN_READS {
+        let out = send(&f.vtc.state, &scoped, task, json!({})).await;
+        assert!(
+            code(&out).ends_with(":notCommunityAdministrator"),
+            "{task}: {}",
+            code(&out)
+        );
     }
-    for path in [
-        "/git-ns/rights",
-        "/git-ns/accounts",
-        "/git-ns/rights/issued-by-departed",
-        "/git-ns/projection",
-    ] {
-        let (status, body) = get(&f, &f.admin.did, vec![], path).await;
-        assert_eq!(status, 200, "{path}: {body}");
+    // `f.admin`'s own ACL row (`seed_acl`) carries no `allowed_contexts`: the
+    // community-administrator capability, which each of these answers.
+    for task in COMMUNITY_ADMIN_READS {
+        ok(&send(&f.vtc.state, &f.admin, task, json!({})).await);
     }
 }
 
@@ -6098,8 +6097,7 @@ async fn view_0_4_shows_an_unratified_break_glass_to_every_administrator_it_conc
     )
     .await;
     assert_eq!(code(&out), view_v0_5::error_codes::NOT_ADMINISTRATOR.code);
-    let (status, body) = get(&f, &f.admin.did, vec![], "/git-ns/rights").await;
-    assert_eq!(status, 200);
+    let body = ok(&send(&f.vtc.state, &f.admin, "right/list", json!({})).await);
     assert!(
         body["rights"]
             .as_array()
@@ -6107,7 +6105,7 @@ async fn view_0_4_shows_an_unratified_break_glass_to_every_administrator_it_conc
             .iter()
             .any(|r| r["breakGlass"]["by"] == json!(f.carol.did))
     );
-    let (_, act) = get(&f, &f.admin.did, vec![], "/git-ns/activity").await;
+    let act = ok(&send(&f.vtc.state, &f.admin, "activity/list", json!({})).await);
     assert!(
         act["items"]
             .as_array()

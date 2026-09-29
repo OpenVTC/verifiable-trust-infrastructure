@@ -17,8 +17,14 @@ import {
   isChange,
   POLICY_ACTIVE_TASK,
 } from "@/plugins/repos/fixtures.test-data";
-import { TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW } from "@/plugins/repos/api";
-import { MEMBERS_LIST_TASK, mockFetch, renderWithProviders } from "@/test/render";
+import {
+  TASK_NAMESPACE_LIST,
+  TASK_REPO_LIST,
+  TASK_RIGHT_ISSUED_BY_DEPARTED,
+  TASK_RIGHT_LIST,
+  TASK_VIEW,
+} from "@/plugins/repos/api";
+import { MEMBERS_LIST_TASK, mockFetch, renderWithProviders, taskRoute } from "@/test/render";
 
 // The browser's signing door, controlled per test: jsdom has no IndexedDB to
 // hold a console key, and whether the key exists is exactly what these tests
@@ -53,14 +59,14 @@ const COMMUNITY_ADMIN = signedInAs(["admin"], []);
 const CONTEXT_ADMIN = signedInAs(["admin"], ["ctx-a"]);
 
 describe("Repos plugin — overview", () => {
-  it("sends the administrator's reads as Trust Tasks, the projections with no header, and changes nothing", async () => {
+  it("sends the administrator's reads as signed Trust Tasks, and changes nothing", async () => {
     const requests = mockFetch(gitNsRoutes());
     mount();
 
     expect(await screen.findByRole("link", { name: "github.com/acme" })).toBeTruthy();
     await screen.findByText("acme/widgets");
-    // The namespaces and repositories are signed reads on the document
-    // endpoint — no bearer view serves them any more.
+    // The namespaces, repositories and rights are signed reads on the
+    // document endpoint — no bearer view serves any of them any more.
     const reads = requests.filter((r) => r.url === "/v1/trust-tasks");
     const types = new Set(reads.map((r) => (r.body as { type: string }).type));
     // …beside the name book's `acl/list`, the console-wide read every page makes.
@@ -69,21 +75,17 @@ describe("Repos plugin — overview", () => {
         TASK_NAMESPACE_LIST,
         TASK_REPO_LIST,
         TASK_VIEW,
+        TASK_RIGHT_LIST,
+        TASK_RIGHT_ISSUED_BY_DEPARTED,
         ACL_LIST_TASK,
         MEMBERS_LIST_TASK,
         POLICY_ACTIVE_TASK,
       ]),
     );
     for (const r of reads) expect(r.method).toBe("POST");
-    expect(requests.some((r) => /^\/v1\/git-ns\/(namespaces|repos|view|break-glass)/.test(r.url))).toBe(false);
-    // The projections are mounted with no binding, and sending one would
-    // claim a contract.
-    const gitNs = requests.filter((r) => r.url.startsWith("/v1/git-ns/"));
-    expect(gitNs.length).toBeGreaterThan(0);
-    for (const r of gitNs) {
-      expect(r.method).toBe("GET");
-      expect(r.headers.get("Trust-Task")).toBeNull();
-    }
+    // Nothing is left on the bearer door: every git-ns read this overview
+    // makes is one of the signed reads above.
+    expect(requests.some((r) => r.url.startsWith("/v1/git-ns/"))).toBe(false);
     expect(vi.mocked(postSignedTrustTask)).not.toHaveBeenCalled();
   });
 
@@ -188,7 +190,11 @@ describe("Repos plugin — overview", () => {
 
   it("claims nothing that rests on the rights while they cannot be read", async () => {
     mockFetch([
-      { path: "/v1/git-ns/rights", status: 403, body: { error: "super admin required" } },
+      taskRoute(
+        TASK_RIGHT_LIST,
+        { code: "git-ns/right/list:notCommunityAdministrator", message: "super admin required" },
+        422,
+      ),
       ...gitNsRoutes(),
     ]);
     mount();

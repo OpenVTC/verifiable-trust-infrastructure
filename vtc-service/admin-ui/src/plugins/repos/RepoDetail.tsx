@@ -73,7 +73,7 @@ import {
   BreakGlassChip,
   errorMessage,
   readErrorMessage,
-  errorStatus,
+  isNotAdministrator,
   formatDay,
   memberPath,
   namespacePath,
@@ -433,7 +433,7 @@ function Activity({ ns, resource }: { ns: GitNsNamespaceRow; resource: string })
       <h3 id="gitns-activity">Recent activity</h3>
       {q.isPending && <p>Loading activity…</p>}
       {q.isError &&
-        (errorStatus(q.error) === 403 ? (
+        (isNotAdministrator(q.error) ? (
           <p className="muted">
             Activity is shown to this namespace's admins, and this session's DID does
             not hold <code>git.ns.admin</code> on {ns.resource}.
