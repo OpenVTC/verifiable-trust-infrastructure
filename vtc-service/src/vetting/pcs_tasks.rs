@@ -2,35 +2,21 @@
 //!
 //! [`super::pcs_issue`] mints, [`super::pcs_challenge`] issues and [`super::pcs_event`] decides
 //! who may draw at an event's rate; this is how a vetter and an applicant reach them. Four
-//! exchanges, each a published specification:
+//! exchanges, each a published specification, generated (`trust-tasks-rs` 0.22+) rather than
+//! hand-written — see [`trust_tasks_rs::specs::vtc::vetting`]:
 //!
 //! - `vtc/vetting/vetters/pcs-root/0.1` — a vetter enrols for a class label.
 //! - `vtc/vetting/vetters/pcs-tokens/0.1` — a vetter draws its tick of the drip.
 //! - `vtc/vetting/vetters/event-mode/0.1` — a vetter asks to vet at a named event.
 //! - `vtc/vetting/pcs-challenge/0.1` — an applicant asks for the nonce its proof must bind.
-//!
-//! # Why these payload types are hand-written
-//!
-//! All four specifications are merged upstream (`dtgwg-trust-tasks-tf` #618 and #620) and their
-//! bindings generated — into `trust-tasks-rs` **0.22**. This graph is on **0.21.17**, and not by choice:
-//! `affinidi-messaging-sdk`, the mediator, and the `trust-tasks-{proof,https,tsp,
-//! capability-client}` companions all sit on the 0.21 line and carry `trust-tasks-rs` types in
-//! their own public APIs. Two nodes of it cannot unify, so a `patch.crates-io` bridges nothing.
-//!
-//! So the wait is **not** for a release of `trust-tasks-rs` — 0.22 is already published, and the
-//! open release PR publishes the line carrying these specs. It is for the 0.22 line to reach this graph,
-//! which means those five crates moving first. Until then, the types are written here.
-//!
-//! That is a hazard the workspace has a rule against, so it is held down rather than waved at:
-//! [`tests`] validates every one of these types against the **published schema**, carried in
-//! `schemas/` as a verbatim copy of the spec repo's `payload.schema.json`. A member that drifts
-//! from the specification fails a test here rather than in a deployment. When the release lands,
-//! these types are deleted and the generated ones imported; the handlers do not change.
 
-use chrono::{Duration, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
+use chrono::{Duration, Utc};
 use serde_json::Value as JsonValue;
 use trust_tasks_rs::TrustTask;
+use trust_tasks_rs::specs::vtc::vetting::pcs_challenge::v0_1 as pcs_challenge_spec;
+use trust_tasks_rs::specs::vtc::vetting::vetters::event_mode::v0_1 as event_mode_spec;
+use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_root::v0_1 as pcs_root_spec;
+use trust_tasks_rs::specs::vtc::vetting::vetters::pcs_tokens::v0_1 as pcs_tokens_spec;
 
 use vti_vetting_pcs::issuer::{
     RootCredentialWire, RootRequestWire, TokenBatchRequestWire, TokenBatchWire, TokenRequestWire,
@@ -91,129 +77,6 @@ pub const EVENT_ERR_EVENT_CLOSED: &str = "vtc/vetting/vetters/event-mode:eventCl
 /// `vtc/vetting/pcs-challenge:notHiddenVetting`
 pub const CHALLENGE_ERR_NOT_HIDDEN: &str = "vtc/vetting/pcs-challenge:notHiddenVetting";
 
-// --- payloads --------------------------------------------------------------------------------
-
-/// `vtc/vetting/vetters/pcs-root/0.1` request payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PcsRootPayload {
-    /// The class label asked for, `vetter/<YYYY-MM>`.
-    pub label: String,
-    /// The vetter's PCS identifier, multibase.
-    pub id: String,
-    /// The blinded root request, as the suite serialises it.
-    pub request: JsonValue,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ext: Option<JsonValue>,
-}
-
-/// `vtc/vetting/vetters/pcs-root/0.1#response` payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PcsRootResponse {
-    pub label: String,
-    pub pre_credential: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ext: Option<JsonValue>,
-}
-
-/// `vtc/vetting/vetters/pcs-tokens/0.1` request payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PcsTokensPayload {
-    pub label: String,
-    pub tick: u32,
-    pub requests: Vec<PcsTokenRequest>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ext: Option<JsonValue>,
-}
-
-/// One blinded serial with its opening proof.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PcsTokenRequest {
-    pub commitment: String,
-    pub opening_proof: String,
-}
-
-/// `vtc/vetting/vetters/pcs-tokens/0.1#response` payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PcsTokensResponse {
-    pub label: String,
-    pub tick: u32,
-    pub pre_credentials: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ext: Option<JsonValue>,
-}
-
-/// `vtc/vetting/vetters/event-mode/0.1` request payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EventModePayload {
-    pub event_id: String,
-    pub tier: String,
-    pub window: EventWindow,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ext: Option<JsonValue>,
-}
-
-/// The days a vetter expects to be vetting at an event.
-///
-/// Dates, never timestamps, for the same reason an attestation carries dates: an hour would say
-/// when a particular vetter expects to be at a desk.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EventWindow {
-    pub start_date: NaiveDate,
-    pub end_date: NaiveDate,
-}
-
-/// `vtc/vetting/vetters/event-mode/0.1#response` payload.
-///
-/// `group_size` is a count and never a list: who else is at the event **is** the anonymity set,
-/// so the number is the most a member may be told — enough to tell "nobody has approved it" from
-/// "not enough people have asked", which are the two reasons a request sits pending.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EventModeResponse {
-    pub event_id: String,
-    pub state: String,
-    pub tier: String,
-    pub window: EventWindow,
-    pub group_size: usize,
-    pub group_floor: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub drip_per_tick: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub closes_after: Option<NaiveDate>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ext: Option<JsonValue>,
-}
-
-/// `vtc/vetting/pcs-challenge/0.1` request payload. Every member is optional: the applicant is
-/// identified by `issuer`, and that is the whole input.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PcsChallengePayload {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub criterion_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ext: Option<JsonValue>,
-}
-
-/// `vtc/vetting/pcs-challenge/0.1#response` payload.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PcsChallengeResponse {
-    pub challenge: String,
-    pub expires_at: chrono::DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ext: Option<JsonValue>,
-}
-
 // --- handlers --------------------------------------------------------------------------------
 
 /// Where this community's hidden-vetting parameters come from at request time.
@@ -254,23 +117,29 @@ pub async fn handle_pcs_root(
     member_did: &str,
     doc: &TrustTask<JsonValue>,
 ) -> Result<JsonValue, TaskError> {
-    let payload: PcsRootPayload = parse(doc)?;
+    let payload: pcs_root_spec::Payload = parse(doc)?;
     let config = config_for(state).await?;
     let community = community_did(state).await;
     let request = RootRequestWire {
-        label: payload.label.clone(),
-        id: payload.id.clone(),
-        request: payload.request.clone(),
+        label: payload.label.to_string(),
+        id: payload.id.to_string(),
+        // Opaque to `pcs_issue::enrol` beyond verifying it, so the generated, validated shape is
+        // re-serialised rather than read apart — the library's own suite defines its members.
+        request: serde_json::to_value(&payload.request).map_err(|e| {
+            TaskError::from(vti_common::error::AppError::Validation(format!(
+                "request: {e}"
+            )))
+        })?,
     };
     let answer: RootCredentialWire =
         pcs_issue::enrol(state, &community, &config, member_did, &request, Utc::now())
             .await
             .map_err(root_error)?;
-    to_value(PcsRootResponse {
-        label: answer.label,
-        pre_credential: answer.pre_credential,
-        ext: None,
-    })
+    to_value(build::<_, pcs_root_spec::Response>(
+        pcs_root_spec::Response::builder()
+            .label(answer.label)
+            .pre_credential(answer.pre_credential),
+    )?)
 }
 
 /// Serve a vetter's drip tick.
@@ -283,18 +152,22 @@ pub async fn handle_pcs_tokens(
     member_did: &str,
     doc: &TrustTask<JsonValue>,
 ) -> Result<JsonValue, TaskError> {
-    let payload: PcsTokensPayload = parse(doc)?;
+    let payload: pcs_tokens_spec::Payload = parse(doc)?;
     let config = config_for(state).await?;
     let community = community_did(state).await;
     let batch = TokenBatchRequestWire {
-        label: payload.label.clone(),
-        tick: payload.tick,
+        label: payload.label.to_string(),
+        // The wire batch is `u32` (a request never asks for more tokens than the drip could ever
+        // hand out); the specification's `u64` is the JSON integer's full range. `pcs_issue::drip`
+        // itself refuses an over-quota `tick`, so a value that cannot fit is refused there, not
+        // silently truncated here.
+        tick: u32::try_from(payload.tick).unwrap_or(u32::MAX),
         requests: payload
             .requests
             .iter()
             .map(|r| TokenRequestWire {
-                commitment: r.commitment.clone(),
-                opening_proof: r.opening_proof.clone(),
+                commitment: r.commitment.to_string(),
+                opening_proof: r.opening_proof.to_string(),
             })
             .collect(),
     };
@@ -302,12 +175,14 @@ pub async fn handle_pcs_tokens(
         pcs_issue::drip(state, &community, &config, member_did, &batch, Utc::now())
             .await
             .map_err(tokens_error)?;
-    to_value(PcsTokensResponse {
-        label: served.label,
-        tick: served.tick,
-        pre_credentials: served.pre_credentials,
-        ext: None,
-    })
+    let pre_credentials: Vec<pcs_tokens_spec::ResponsePreCredentialsItem> =
+        convert_vec(served.pre_credentials)?;
+    to_value(build::<_, pcs_tokens_spec::Response>(
+        pcs_tokens_spec::Response::builder()
+            .label(served.label)
+            .tick(u64::from(served.tick))
+            .pre_credentials(pre_credentials),
+    )?)
 }
 
 /// Record a vetter's request to vet at a named event, and say where it stands.
@@ -325,14 +200,16 @@ pub async fn handle_event_mode(
     member_did: &str,
     doc: &TrustTask<JsonValue>,
 ) -> Result<JsonValue, TaskError> {
-    let payload: EventModePayload = parse(doc)?;
+    let payload: event_mode_spec::Payload = parse(doc)?;
     let config = config_for(state).await?;
+    let event_id = payload.event_id.to_string();
+    let tier = payload.tier.to_string();
     let (event_state, group_size, event) = pcs_event::request(
         state,
         &config,
         member_did,
-        &payload.event_id,
-        &payload.tier,
+        &event_id,
+        &tier,
         (payload.window.start_date, payload.window.end_date),
         Utc::now(),
     )
@@ -340,22 +217,38 @@ pub async fn handle_event_mode(
     .map_err(event_error)?;
 
     let approved = event_state == pcs_event::EventState::Approved;
-    to_value(EventModeResponse {
-        event_id: payload.event_id,
-        state: event_state.as_str().to_string(),
-        tier: payload.tier.clone(),
-        window: payload.window,
-        group_size,
-        group_floor: event.group_floor,
-        // The three members that only mean anything once the label is live. Sending them while
-        // the request is pending would read as permission to draw.
-        label: approved.then(|| event.label()),
-        drip_per_tick: approved
-            .then(|| event.tier(&payload.tier).map(|t| t.drip_per_tick))
-            .flatten(),
-        closes_after: approved.then(|| event.closes_after()),
-        ext: None,
-    })
+    let mut builder = event_mode_spec::Response::builder()
+        .event_id(event_id.clone())
+        .state(event_state.as_str())
+        .tier(tier.clone())
+        .window(payload.window)
+        .group_size(group_size as u64)
+        // `usize` here is always small (a community's own approver-configured floor), so the
+        // generated `i64` never actually truncates; the cast is honest about the type, not the
+        // range.
+        .group_floor(i64::try_from(event.group_floor).unwrap_or(i64::MAX));
+    // The three members that only mean anything once the label is live. Sending them while the
+    // request is pending would read as permission to draw.
+    if approved {
+        let label: event_mode_spec::ResponseLabel =
+            event
+                .label()
+                .try_into()
+                .map_err(|e: event_mode_spec::error::ConversionError| {
+                    TaskError::from(vti_common::error::AppError::Internal(format!(
+                        "response: {e}"
+                    )))
+                })?;
+        builder = builder
+            .label(Some(label))
+            .drip_per_tick(
+                event
+                    .tier(&tier)
+                    .and_then(|t| std::num::NonZeroU64::new(t.drip_per_tick as u64)),
+            )
+            .closes_after(event.closes_after());
+    }
+    to_value(build::<_, event_mode_spec::Response>(builder)?)
 }
 
 /// Issue an applicant the challenge its proof must bind.
@@ -371,7 +264,7 @@ pub async fn handle_pcs_challenge(
     applicant_did: &str,
     doc: &TrustTask<JsonValue>,
 ) -> Result<JsonValue, TaskError> {
-    let _payload: PcsChallengePayload = parse(doc)?;
+    let _payload: pcs_challenge_spec::Payload = parse(doc)?;
     // Refuses with the declared code when there is nothing to challenge for.
     config_for(state).await?;
     let now = Utc::now();
@@ -379,11 +272,11 @@ pub async fn handle_pcs_challenge(
     let challenge = pcs_challenge::issue(&state.join_requests_ks, applicant_did, ttl, now)
         .await
         .map_err(TaskError::from)?;
-    to_value(PcsChallengeResponse {
-        challenge,
-        expires_at: now + ttl,
-        ext: None,
-    })
+    to_value(build::<_, pcs_challenge_spec::Response>(
+        pcs_challenge_spec::Response::builder()
+            .challenge(challenge)
+            .expires_at(now + ttl),
+    )?)
 }
 
 // --- plumbing --------------------------------------------------------------------------------
@@ -406,12 +299,46 @@ fn parse<P: serde::de::DeserializeOwned>(doc: &TrustTask<JsonValue>) -> Result<P
     })
 }
 
-fn to_value<T: Serialize>(response: T) -> Result<JsonValue, TaskError> {
+fn to_value<T: serde::Serialize>(response: T) -> Result<JsonValue, TaskError> {
     serde_json::to_value(response).map_err(|e| {
         TaskError::from(vti_common::error::AppError::Internal(format!(
             "response: {e}"
         )))
     })
+}
+
+/// Finish a generated response builder into its `#[non_exhaustive]` type. The generated types
+/// cannot be built as struct literals from outside their crate; this is the `TryFrom<Builder>`
+/// conversion every one of them defines, with the field-validation failure (a value that does
+/// not match the specification's own pattern, which should never happen for a value this service
+/// produced itself) mapped onto the same error vocabulary as a bad request.
+fn build<B, T: TryFrom<B>>(builder: B) -> Result<T, TaskError>
+where
+    T::Error: std::fmt::Display,
+{
+    T::try_from(builder).map_err(|e| {
+        TaskError::from(vti_common::error::AppError::Internal(format!(
+            "response: {e}"
+        )))
+    })
+}
+
+/// Convert every element of a plain `Vec` into a generated newtype, for a builder field the
+/// codegen does not give a blanket `Vec<String> -> Vec<Item>` conversion for.
+fn convert_vec<T, U: TryFrom<T>>(items: Vec<T>) -> Result<Vec<U>, TaskError>
+where
+    U::Error: std::fmt::Display,
+{
+    items
+        .into_iter()
+        .map(|item| {
+            U::try_from(item).map_err(|e| {
+                TaskError::from(vti_common::error::AppError::Internal(format!(
+                    "response: {e}"
+                )))
+            })
+        })
+        .collect()
 }
 
 /// Map an enrolment refusal onto the code the specification declares for it.
@@ -488,218 +415,4 @@ pub use pcs_challenge::DEFAULT_CHALLENGE_TTL as CHALLENGE_TTL;
 #[must_use]
 pub fn challenge_window() -> Duration {
     CHALLENGE_TTL
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The published schemas, carried verbatim from the spec repo. These are the pin: a member
-    /// that drifts from the specification fails here.
-    const ROOT_SCHEMA: &str = include_str!("schemas/pcs-root-0.1.payload.schema.json");
-    const TOKENS_SCHEMA: &str = include_str!("schemas/pcs-tokens-0.1.payload.schema.json");
-    const CHALLENGE_SCHEMA: &str = include_str!("schemas/pcs-challenge-0.1.payload.schema.json");
-    const EVENT_SCHEMA: &str = include_str!("schemas/event-mode-0.1.payload.schema.json");
-
-    /// Validate `value` against the request half of `schema`, with `$ref`s to the framework's
-    /// shared `Ext` stripped: those resolve by relative path in the spec repo's tree and carry
-    /// nothing this check is about (`ext` is an open object either way).
-    fn check(schema: &str, value: &serde_json::Value, response: bool) {
-        let mut doc: serde_json::Value = serde_json::from_str(schema).expect("schema parses");
-        strip_ext_refs(&mut doc);
-        let sub = if response {
-            // A `$ref` into the spec's own `$defs` (`#/$defs/Window`) only resolves if `$defs`
-            // travels with the extracted sub-schema, so the response is validated as a reference
-            // into the whole document rather than as a document of its own.
-            doc.get("$defs")
-                .and_then(|d| d.get("Response"))
-                .expect("the spec declares a response");
-            serde_json::json!({
-                "$defs": doc.get("$defs").cloned().unwrap_or_default(),
-                "$ref": "#/$defs/Response",
-            })
-        } else {
-            doc
-        };
-        let compiled = jsonschema::validator_for(&sub).expect("schema compiles");
-        if let Err(e) = compiled.validate(value) {
-            panic!("{value:#} does not satisfy the published schema: {e}");
-        }
-    }
-
-    fn strip_ext_refs(value: &mut serde_json::Value) {
-        match value {
-            serde_json::Value::Object(map) => {
-                if map
-                    .get("$ref")
-                    .and_then(|r| r.as_str())
-                    .is_some_and(|r| r.contains("framework.schema.json"))
-                {
-                    map.clear();
-                    map.insert("type".into(), serde_json::json!("object"));
-                    return;
-                }
-                for (_, v) in map.iter_mut() {
-                    strip_ext_refs(v);
-                }
-            }
-            serde_json::Value::Array(items) => items.iter_mut().for_each(strip_ext_refs),
-            _ => {}
-        }
-    }
-
-    #[test]
-    fn the_root_types_match_the_published_schema() {
-        let request = PcsRootPayload {
-            label: "vetter/2026-09".into(),
-            id: "z5jokfsiZx1sk1mJyQnBnR519B9mcQhw9a8LrF9VQdAj".into(),
-            request: serde_json::json!({ "proof": "zSzFTCny3qaXpSHTsTE877ffQfSuF9T5zo53iuZ" }),
-            ext: None,
-        };
-        check(ROOT_SCHEMA, &serde_json::to_value(&request).unwrap(), false);
-
-        let response = PcsRootResponse {
-            label: "vetter/2026-09".into(),
-            pre_credential: "z3Xef1JY2x1s2vY6yKWfLu8Ap2vKuoZGwaQLZ2tjq8Qk".into(),
-            ext: None,
-        };
-        check(ROOT_SCHEMA, &serde_json::to_value(&response).unwrap(), true);
-    }
-
-    #[test]
-    fn the_token_types_match_the_published_schema() {
-        let request = PcsTokensPayload {
-            label: "token/2026-09".into(),
-            tick: 1,
-            requests: vec![PcsTokenRequest {
-                commitment: "z2umykFwGKzcv489j6kMGJnPTgKqAqMvCSPVkpyPCqAKA".into(),
-                opening_proof: "zP3kHy6ZpnVAaRt7Y3PQRa2AeKkFSHJpQnoAneHhnDQxEJ".into(),
-            }],
-            ext: None,
-        };
-        check(
-            TOKENS_SCHEMA,
-            &serde_json::to_value(&request).unwrap(),
-            false,
-        );
-
-        let response = PcsTokensResponse {
-            label: "token/2026-09".into(),
-            tick: 1,
-            pre_credentials: vec!["z26q5oFrp6i2aTKLp6Y6jsLESJMoNfZQwk8VKXc37c24".into()],
-            ext: None,
-        };
-        check(
-            TOKENS_SCHEMA,
-            &serde_json::to_value(&response).unwrap(),
-            true,
-        );
-    }
-
-    #[test]
-    fn the_challenge_types_match_the_published_schema() {
-        let request = PcsChallengePayload {
-            criterion_id: Some("kernel-developer-private".into()),
-            ext: None,
-        };
-        check(
-            CHALLENGE_SCHEMA,
-            &serde_json::to_value(&request).unwrap(),
-            false,
-        );
-
-        // The challenge is 16 bytes as lowercase hex, and the schema says so with a pattern —
-        // this is the member most likely to drift, because "a random string" is the obvious
-        // implementation and it is not what the specification says.
-        let response = PcsChallengeResponse {
-            challenge: "a961aa3e63df4d15c9ad565feed87c46".into(),
-            expires_at: Utc::now(),
-            ext: None,
-        };
-        check(
-            CHALLENGE_SCHEMA,
-            &serde_json::to_value(&response).unwrap(),
-            true,
-        );
-    }
-
-    #[test]
-    fn the_event_mode_types_match_the_published_schema() {
-        let window = EventWindow {
-            start_date: NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2026, 10, 14).unwrap(),
-        };
-        let request = EventModePayload {
-            event_id: "kernel-summit-2026".into(),
-            tier: "desk".into(),
-            window,
-            ext: None,
-        };
-        check(
-            EVENT_SCHEMA,
-            &serde_json::to_value(&request).unwrap(),
-            false,
-        );
-
-        // Pending: the three members that only mean anything once the label is live are absent,
-        // and the schema has to accept that — a response carrying `label` while `state` is
-        // `pending` would read as permission to draw.
-        let pending = EventModeResponse {
-            event_id: "kernel-summit-2026".into(),
-            state: pcs_event::EventState::Pending.as_str().into(),
-            tier: "desk".into(),
-            window: EventWindow {
-                start_date: NaiveDate::from_ymd_opt(2026, 10, 12).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(2026, 10, 14).unwrap(),
-            },
-            group_size: 2,
-            group_floor: 3,
-            label: None,
-            drip_per_tick: None,
-            closes_after: None,
-            ext: None,
-        };
-        check(EVENT_SCHEMA, &serde_json::to_value(&pending).unwrap(), true);
-
-        let approved = EventModeResponse {
-            state: pcs_event::EventState::Approved.as_str().into(),
-            group_size: 5,
-            label: Some("token/event/kernel-summit-2026".into()),
-            drip_per_tick: Some(20),
-            closes_after: Some(NaiveDate::from_ymd_opt(2026, 10, 28).unwrap()),
-            ..pending
-        };
-        check(
-            EVENT_SCHEMA,
-            &serde_json::to_value(&approved).unwrap(),
-            true,
-        );
-    }
-
-    /// The two words the specification allows, and nothing else. `state` is a plain `String` on
-    /// the response type — a member the schema constrains and the type does not — so the values
-    /// it is built from are pinned here.
-    #[test]
-    fn the_event_states_are_the_two_the_schema_names() {
-        let schema: serde_json::Value = serde_json::from_str(EVENT_SCHEMA).unwrap();
-        let states = schema["$defs"]["Response"]["properties"]["state"]["enum"]
-            .as_array()
-            .expect("the schema constrains `state`")
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(states, ["pending", "approved"]);
-        assert_eq!(pcs_event::EventState::Pending.as_str(), "pending");
-        assert_eq!(pcs_event::EventState::Approved.as_str(), "approved");
-    }
-
-    /// An empty request is legal: the applicant is identified by `issuer`.
-    #[test]
-    fn a_challenge_request_needs_nothing_at_all() {
-        check(
-            CHALLENGE_SCHEMA,
-            &serde_json::to_value(PcsChallengePayload::default()).unwrap(),
-            false,
-        );
-    }
 }

@@ -2072,86 +2072,135 @@ fn table() -> Vec<Conformance> {
 
 /// Hidden vetting's four exchanges (`zkp-pcs`), witnessed only where they are bound.
 ///
-/// Built from the handler's own wire structs in `vetting::pcs_tasks`, which are hand-written
-/// rather than generated. The multibase values are placeholders of the right alphabet: whether
-/// the library's real encoding of a root request and a token batch meets these schemas is
-/// asserted against live output in `vetting::pcs_issue`'s enrolment test, where one exists.
+/// Built directly from the generated types (`trust-tasks-rs` 0.22+): the same ones
+/// `vetting::pcs_tasks`'s handlers use. The multibase values are placeholders of the right
+/// alphabet; whether the library's real encoding of a root request and a token batch meets
+/// these schemas is asserted against live output in `vetting::pcs_issue`'s enrolment test,
+/// where one exists.
 #[cfg(feature = "vetting-pcs")]
 fn pcs_witnesses() -> Vec<Conformance> {
-    use crate::vetting::pcs_tasks as pcs;
     use trust_tasks_rs::specs::vtc as s;
+
+    /// Finish a generated builder into its `#[non_exhaustive]` type. Fixture data, so a
+    /// validation failure (a placeholder that stopped matching the specification's own pattern)
+    /// panics rather than threading a `Result` through every witness below.
+    fn finish<B, T: TryFrom<B>>(builder: B) -> T
+    where
+        T::Error: std::fmt::Display,
+    {
+        T::try_from(builder).unwrap_or_else(|e| panic!("fixture builds: {e}"))
+    }
+
     const MB: &str = "z3yZe7d4yBMmB6ifs9NAJ3Z6z1pkcvXq5j3HLMdjU8uK";
     let date = |d: &str| d.parse::<chrono::NaiveDate>().expect("fixture date");
-    let window = || pcs::EventWindow {
-        start_date: date("2026-10-05"),
-        end_date: date("2026-10-07"),
+    let window = || {
+        finish::<_, s::vetting::vetters::event_mode::v0_1::Window>(
+            s::vetting::vetters::event_mode::v0_1::Window::builder()
+                .start_date(date("2026-10-05"))
+                .end_date(date("2026-10-07")),
+        )
     };
     vec![
         checked!(
             s::vetting::vetters::pcs_root::v0_1::Payload,
             s::vetting::vetters::pcs_root::v0_1::Response,
-            to_v(pcs::PcsRootPayload {
-                label: "vetter/2026-09".into(),
-                id: MB.into(),
-                request: json!({ "encoding": MB, "t0": MB, "proof": MB }),
-                ext: None,
-            }),
-            to_v(pcs::PcsRootResponse {
-                label: "vetter/2026-09".into(),
-                pre_credential: MB.into(),
-                ext: None,
-            })
+            to_v(finish::<_, s::vetting::vetters::pcs_root::v0_1::Payload>(
+                s::vetting::vetters::pcs_root::v0_1::Payload::builder()
+                    .label("vetter/2026-09")
+                    .id(MB)
+                    .request(finish::<
+                        _,
+                        s::vetting::vetters::pcs_root::v0_1::PayloadRequest,
+                    >(
+                        s::vetting::vetters::pcs_root::v0_1::PayloadRequest::builder()
+                            .encoding(finish::<
+                                _,
+                                s::vetting::vetters::pcs_root::v0_1::PayloadRequestEncoding,
+                            >(MB.to_string()))
+                            .t0(finish::<
+                                _,
+                                s::vetting::vetters::pcs_root::v0_1::PayloadRequestT0,
+                            >(MB.to_string()))
+                            .proof(finish::<
+                                _,
+                                s::vetting::vetters::pcs_root::v0_1::PayloadRequestProof,
+                            >(MB.to_string())),
+                    ))
+            )),
+            to_v(finish::<_, s::vetting::vetters::pcs_root::v0_1::Response>(
+                s::vetting::vetters::pcs_root::v0_1::Response::builder()
+                    .label("vetter/2026-09")
+                    .pre_credential(MB)
+            ))
         ),
         checked!(
             s::vetting::vetters::pcs_tokens::v0_1::Payload,
             s::vetting::vetters::pcs_tokens::v0_1::Response,
-            to_v(pcs::PcsTokensPayload {
-                label: "vetting-token/2026-09".into(),
-                tick: 3,
-                requests: vec![pcs::PcsTokenRequest {
-                    commitment: MB.into(),
-                    opening_proof: MB.into(),
-                }],
-                ext: None,
-            }),
-            to_v(pcs::PcsTokensResponse {
-                label: "vetting-token/2026-09".into(),
-                tick: 3,
-                pre_credentials: vec![MB.into()],
-                ext: None,
-            })
+            to_v(finish::<_, s::vetting::vetters::pcs_tokens::v0_1::Payload>(
+                s::vetting::vetters::pcs_tokens::v0_1::Payload::builder()
+                    .label("vetting-token/2026-09")
+                    .tick(3u64)
+                    .requests(vec![finish::<
+                        _,
+                        s::vetting::vetters::pcs_tokens::v0_1::PayloadRequestsItem,
+                    >(
+                        s::vetting::vetters::pcs_tokens::v0_1::PayloadRequestsItem::builder()
+                            .commitment(MB.to_string())
+                            .opening_proof(MB.to_string()),
+                    )])
+            )),
+            to_v(
+                finish::<_, s::vetting::vetters::pcs_tokens::v0_1::Response>(
+                    s::vetting::vetters::pcs_tokens::v0_1::Response::builder()
+                        .label("vetting-token/2026-09")
+                        .tick(3u64)
+                        .pre_credentials(vec![finish::<
+                            _,
+                            s::vetting::vetters::pcs_tokens::v0_1::ResponsePreCredentialsItem,
+                        >(MB.to_string())])
+                )
+            )
         ),
         checked!(
             s::vetting::vetters::event_mode::v0_1::Payload,
             s::vetting::vetters::event_mode::v0_1::Response,
-            to_v(pcs::EventModePayload {
-                event_id: "devcon-2026".into(),
-                tier: "desk".into(),
-                window: window(),
-                ext: None,
-            }),
-            to_v(pcs::EventModeResponse {
-                event_id: "devcon-2026".into(),
-                state: "approved".into(),
-                tier: "desk".into(),
-                window: window(),
-                group_size: 4,
-                group_floor: 3,
-                label: Some("vetting-token/devcon-2026/desk".into()),
-                drip_per_tick: Some(5),
-                closes_after: Some(date("2026-10-08")),
-                ext: None,
-            })
+            to_v(finish::<_, s::vetting::vetters::event_mode::v0_1::Payload>(
+                s::vetting::vetters::event_mode::v0_1::Payload::builder()
+                    .event_id("devcon-2026")
+                    .tier("desk")
+                    .window(window())
+            )),
+            to_v(
+                finish::<_, s::vetting::vetters::event_mode::v0_1::Response>(
+                    s::vetting::vetters::event_mode::v0_1::Response::builder()
+                        .event_id("devcon-2026")
+                        .state("approved")
+                        .tier("desk")
+                        .window(window())
+                        .group_size(4u64)
+                        .group_floor(3i64)
+                        .label(Some(finish::<
+                            _,
+                            s::vetting::vetters::event_mode::v0_1::ResponseLabel,
+                        >(
+                            "vetting-token/devcon-2026/desk".to_string()
+                        )))
+                        .drip_per_tick(std::num::NonZeroU64::new(5))
+                        .closes_after(Some(date("2026-10-08")))
+                )
+            )
         ),
         checked!(
             s::vetting::pcs_challenge::v0_1::Payload,
             s::vetting::pcs_challenge::v0_1::Response,
-            to_v(pcs::PcsChallengePayload::default()),
-            to_v(pcs::PcsChallengeResponse {
-                challenge: "0123456789abcdef0123456789abcdef".into(),
-                expires_at: TS.parse::<DateTime<chrono::Utc>>().unwrap(),
-                ext: None,
-            })
+            to_v(finish::<_, s::vetting::pcs_challenge::v0_1::Payload>(
+                s::vetting::pcs_challenge::v0_1::Payload::builder()
+            )),
+            to_v(finish::<_, s::vetting::pcs_challenge::v0_1::Response>(
+                s::vetting::pcs_challenge::v0_1::Response::builder()
+                    .challenge("0123456789abcdef0123456789abcdef")
+                    .expires_at(TS.parse::<DateTime<chrono::Utc>>().unwrap())
+            ))
         ),
     ]
 }
