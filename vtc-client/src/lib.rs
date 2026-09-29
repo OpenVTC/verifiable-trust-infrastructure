@@ -132,6 +132,18 @@ pub mod task {
     pub const VETTING_VETTERS_SHOW: &str =
         "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1";
     pub const ENDORSEMENTS_REVOKE: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
+    pub const ENDORSEMENTS_ISSUE: &str = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1";
+    pub const MEMBERS_RENEW: &str = "https://trusttasks.org/spec/vtc/members/renew/0.1";
+    pub const MEMBERS_ROTATE_CHALLENGE: &str =
+        "https://trusttasks.org/spec/vtc/members/rotate-challenge/0.1";
+    pub const MEMBERS_ROTATE: &str = "https://trusttasks.org/spec/vtc/members/rotate/0.1";
+    pub const MEMBERS_PERSONHOOD_REVOKE: &str =
+        "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1";
+    pub const RELATIONSHIPS_LIST: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.2";
+    pub const RELATIONSHIPS_PUBLISH: &str =
+        "https://trusttasks.org/spec/vtc/relationships/publish/0.2";
+    pub const RELATIONSHIPS_REVOKE: &str =
+        "https://trusttasks.org/spec/vtc/relationships/revoke/0.1";
     pub const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
     pub const MEMBERS_CREDENTIALS: &str =
         <super::members_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -467,6 +479,157 @@ pub struct RevocationDetail {
     pub credential_id: String,
     /// When the revocation took effect (RFC 3339).
     pub revoked_at: String,
+}
+
+/// The result of renewing the caller's own membership
+/// (`vtc/members/renew/0.1`) — re-issued VMC + role VEC, and whether
+/// personhood flipped on the reissue.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct MemberRenewal {
+    pub did: String,
+    pub vmc: serde_json::Value,
+    pub role_vec: serde_json::Value,
+    pub personhood: bool,
+    pub personhood_changed: bool,
+}
+
+/// A single-use DID-rotation ceremony, opened by
+/// [`VtcClient::rotate_challenge`] and completed by [`VtcClient::rotate`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct RotationChallenge {
+    pub rotation_id: String,
+    pub expires_at: String,
+    /// Canonical payload bytes the old and new keys must each sign over,
+    /// hex-encoded.
+    pub signing_payload_hex: String,
+    /// The canonical payload with `newDid` still a placeholder — substitute
+    /// the chosen `newDid` and hash the result to get the exact bytes
+    /// [`signing_payload_hex`](Self::signing_payload_hex) already gives you.
+    pub canonical_template: serde_json::Value,
+}
+
+/// Why a member is rotating their DID (`vtc/members/rotate-challenge/0.1`'s
+/// `reason`) — self-asserted, bound to the signer and recorded on the audit
+/// envelope; NOT covered by either rotation signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RotationReason {
+    /// Routine hygiene — no suspected compromise.
+    Routine,
+    /// The old key is believed exposed.
+    Compromise,
+    /// The device holding the old key was lost, destroyed or replaced.
+    DeviceLoss,
+    /// Moving between DID methods or hosts, the identity otherwise unchanged.
+    Migration,
+    /// No reason given.
+    Unspecified,
+}
+
+/// The result of completing a DID rotation (`vtc/members/rotate/0.1`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct MemberRotated {
+    pub new_did: String,
+    pub method: String,
+    pub vmc: serde_json::Value,
+    pub role_vec: serde_json::Value,
+}
+
+/// The result of clearing a member's personhood flag
+/// (`vtc/members/personhood/revoke/0.1`). `vmc` / `role_vec` are absent when
+/// the member's personhood was already unset — an idempotent no-op.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct PersonhoodRevocation {
+    pub did: String,
+    pub personhood: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vmc: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_vec: Option<serde_json::Value>,
+}
+
+/// One Verifiable Relationship Credential recorded for a member
+/// (`vtc/relationships/list/0.2`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct RelationshipRecord {
+    pub id: String,
+    pub issuer_did: String,
+    pub subject_did: String,
+    /// The VRC body verbatim (JSON-LD, including its data-integrity proof).
+    pub vrc_jsonld: serde_json::Value,
+    pub vrc_digest_multibase: String,
+    pub created_at: String,
+}
+
+/// The result of publishing a Verifiable Relationship Credential
+/// (`vtc/relationships/publish/0.2`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct RelationshipPublished {
+    pub id: String,
+    pub issuer_did: String,
+    pub subject_did: String,
+    pub vrc_digest_multibase: String,
+}
+
+/// The result of revoking a Verifiable Relationship Credential
+/// (`vtc/relationships/revoke/0.1`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct RelationshipRevoked {
+    pub id: String,
+}
+
+/// A newly minted Verifiable Endorsement Credential
+/// (`vtc/endorsements/issue/0.1`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct EndorsementIssued {
+    pub endorsement: IssuedEndorsement,
+    /// The signed credential just minted — returned here and nowhere else;
+    /// a later read carries only [`IssuedEndorsement::issued`], the
+    /// reference.
+    pub credential: serde_json::Value,
+}
+
+/// The endorsement record embedded in [`EndorsementIssued`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct IssuedEndorsement {
+    pub endorsement_id: String,
+    pub type_uri: String,
+    pub subject_did: String,
+    pub issued: IssuedCredentialRef,
+    pub status_list_index: u32,
+    pub claim: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<String>,
+}
+
+/// A pointer to the issued VEC: its identifier and lifetime, not its bytes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[non_exhaustive]
+pub struct IssuedCredentialRef {
+    pub credential_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issued_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
 }
 
 /// One vetting statement withdrawal notice, as `GET /vetting/revocations`
@@ -1367,6 +1530,172 @@ impl VtcClient {
             )
             .await?;
         decode_payload(reply, "endorsements/revoke")
+    }
+
+    /// Renew the caller's own membership (`vtc/members/renew/0.1`) —
+    /// re-issues the VMC + role VEC. Self-service: the signer renews
+    /// **their own** membership; there is no console-key delegation.
+    pub async fn renew(&self) -> Result<MemberRenewal, VtcError> {
+        let reply = self
+            .document(
+                task::MEMBERS_RENEW,
+                serde_json::json!({}),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload(reply, "members/renew")
+    }
+
+    /// Open a DID-rotation ceremony for the caller's own membership
+    /// (`vtc/members/rotate-challenge/0.1`). `reason` is self-asserted and
+    /// not covered by either rotation signature. Complete with
+    /// [`Self::rotate`].
+    pub async fn rotate_challenge(
+        &self,
+        reason: Option<RotationReason>,
+    ) -> Result<RotationChallenge, VtcError> {
+        let mut payload = serde_json::json!({});
+        if let Some(reason) = reason {
+            payload["reason"] = serde_json::to_value(reason)
+                .map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
+        }
+        let reply = self
+            .document(
+                task::MEMBERS_ROTATE_CHALLENGE,
+                payload,
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload(reply, "members/rotate-challenge")
+    }
+
+    /// Complete a DID rotation opened by [`Self::rotate_challenge`]
+    /// (`vtc/members/rotate/0.1`). The signer must be `old_did`;
+    /// `old_signature` and `new_signature` are each a hex-encoded Ed25519
+    /// signature over the challenge's canonical payload (its
+    /// `signingPayloadHex`, with `newDid` substituted into
+    /// `canonicalTemplate`) — proving control of both keys.
+    pub async fn rotate(
+        &self,
+        rotation_id: &str,
+        old_did: &str,
+        new_did: &str,
+        old_signature: &str,
+        new_signature: &str,
+    ) -> Result<MemberRotated, VtcError> {
+        let reply = self
+            .document(
+                task::MEMBERS_ROTATE,
+                serde_json::json!({
+                    "rotationId": rotation_id,
+                    "oldDid": old_did,
+                    "newDid": new_did,
+                    "oldSignature": old_signature,
+                    "newSignature": new_signature,
+                }),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload(reply, "members/rotate")
+    }
+
+    /// Clear a member's personhood flag
+    /// (`vtc/members/personhood/revoke/0.1`). The subject themselves, or an
+    /// administrator.
+    pub async fn revoke_personhood(&self, did: &str) -> Result<PersonhoodRevocation, VtcError> {
+        let reply = self
+            .document(
+                task::MEMBERS_PERSONHOOD_REVOKE,
+                serde_json::json!({ "did": did }),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload(reply, "members/personhood/revoke")
+    }
+
+    /// List the Verifiable Relationship Credentials recorded for member
+    /// `did`, following the cursor to completion
+    /// (`vtc/relationships/list/0.2`). Any current member or administrator.
+    pub async fn list_relationships(&self, did: &str) -> Result<Vec<RelationshipRecord>, VtcError> {
+        self.document_pages(
+            task::RELATIONSHIPS_LIST,
+            serde_json::json!({ "did": did }),
+            "relationships/list",
+        )
+        .await
+    }
+
+    /// Publish a self-issued Verifiable Relationship Credential
+    /// (`vtc/relationships/publish/0.2`). `pop` proves control of the VRC's
+    /// `issuer` key when that is not the caller's own membership DID — an
+    /// edge issued under a pairwise relationship DID; omit it otherwise.
+    pub async fn publish_relationship(
+        &self,
+        vrc: serde_json::Value,
+        pop: Option<serde_json::Value>,
+    ) -> Result<RelationshipPublished, VtcError> {
+        let mut payload = serde_json::json!({ "vrc": vrc });
+        if let Some(pop) = pop {
+            payload["pop"] = pop;
+        }
+        let reply = self
+            .document(
+                task::RELATIONSHIPS_PUBLISH,
+                payload,
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload(reply, "relationships/publish")
+    }
+
+    /// Revoke a Verifiable Relationship Credential by id
+    /// (`vtc/relationships/revoke/0.1`). The edge's own issuer, or an
+    /// administrator; any other caller gets the same `notFound` a missing id
+    /// would (anti-probing).
+    pub async fn revoke_relationship(&self, id: &str) -> Result<RelationshipRevoked, VtcError> {
+        let reply = self
+            .document(
+                task::RELATIONSHIPS_REVOKE,
+                serde_json::json!({ "id": id }),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload(reply, "relationships/revoke")
+    }
+
+    /// Mint a Verifiable Endorsement Credential of a registered type
+    /// (`vtc/endorsements/issue/0.1`). An `Admin` or `Issuer` ACL row.
+    /// `valid_for_seconds` overrides the community's default (30 days).
+    pub async fn issue_endorsement(
+        &self,
+        subject_did: &str,
+        type_uri: &str,
+        claim: serde_json::Value,
+        valid_for_seconds: Option<u64>,
+    ) -> Result<EndorsementIssued, VtcError> {
+        let mut payload = serde_json::json!({
+            "subjectDid": subject_did,
+            "typeUri": type_uri,
+            "claim": claim,
+        });
+        if let Some(secs) = valid_for_seconds {
+            payload["validitySeconds"] = serde_json::json!(secs);
+        }
+        let reply = self
+            .document(
+                task::ENDORSEMENTS_ISSUE,
+                payload,
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload(reply, "endorsements/issue")
     }
 
     /// The automatic vetter-grant configuration and the last sweep
