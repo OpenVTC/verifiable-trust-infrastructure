@@ -256,11 +256,22 @@ async fn a_large_module_is_admitted_from_an_administrator_only() {
 }
 
 #[tokio::test]
-async fn the_moved_bearer_routes_are_gone_and_the_client_routes_stay() {
+async fn the_bearer_routes_are_gone() {
     let vtc = vtc().await;
     assert!(!bearer_route_served_as(&vtc, "GET", "/v1/policies/active", ACTIVE).await);
     let id = uuid::Uuid::new_v4();
     assert!(!bearer_route_served_as(&vtc, "POST", &format!("/v1/policies/{id}/test"), TEST).await);
-    // `vtc-client` still calls these.
-    assert!(bearer_route_served_as(&vtc, "GET", "/v1/policies", LIST).await);
+    assert!(!bearer_route_served_as(&vtc, "GET", "/v1/policies", LIST).await);
+    assert!(!bearer_route_served_as(&vtc, "POST", "/v1/policies", UPSERT).await);
+    assert!(!bearer_route_served_as(&vtc, "GET", &format!("/v1/policies/{id}"), GET).await);
+    assert!(
+        !bearer_route_served_as(
+            &vtc,
+            "POST",
+            &format!("/v1/policies/{id}/activate"),
+            ACTIVATE
+        )
+        .await
+    );
+    assert!(!bearer_route_served_as(&vtc, "POST", "/v1/admin/did/register", DID_REGISTER).await);
 }

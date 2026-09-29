@@ -4,12 +4,14 @@
 //! VTA's own audit tail, which lives on `pnm`), so the verification
 //! surface belongs here.
 //!
-//! Like `cnm backup`, this is a super-admin route on the VTC, so it
-//! authenticates to the VTC itself — with the VTC's DID as the audience, as
-//! [`crate::vtc`] explains — rather than riding the profile's VTA session.
+//! It is the `audit/verify/0.1` Trust Task, signed as the profile's own DID
+//! and addressed to the VTC — over TSP, DIDComm or HTTPS as the VTC
+//! advertises and `--transport` allows — rather than riding the profile's VTA
+//! session. The VTC answers it for an unrestricted administrator.
 
 use serde_json::Value;
 use vta_cli_common::render::{DIM, GREEN, RED, RESET, bin_name};
+use vta_sdk::session::TransportChoice;
 
 use crate::vtc::{self, VtcTarget};
 
@@ -20,9 +22,12 @@ use crate::vtc::{self, VtcTarget};
 pub async fn cmd_verify(
     keyring_key: &str,
     target: &VtcTarget,
+    transport: TransportChoice,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let vtc = vtc::connect(keyring_key, target).await?;
-    let body: Value = vtc.client.audit_verify().await.map_err(|e| {
+    let vtc = vtc::connect_for_tasks(keyring_key, target, transport).await?;
+    let outcome = vtc.client.audit_verify().await;
+    vtc.client.shutdown().await;
+    let body: Value = outcome.map_err(|e| {
         vtc::super_admin_call_error("VTC audit verify", e, &vtc.client_did, bin_name())
     })?;
 

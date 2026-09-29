@@ -27,9 +27,6 @@
 
 use std::sync::LazyLock;
 
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -40,7 +37,6 @@ use uuid::Uuid;
 use vti_common::audit::{AuditEvent, PolicyActivatedData, PolicyUploadedData};
 use vti_common::error::AppError;
 
-use crate::auth::AdminAuth;
 use crate::error::TaskError;
 use crate::policy::POLICY_SOURCE_MAX_BYTES;
 use crate::policy::{
@@ -216,32 +212,6 @@ pub struct TestResponse {
 // POST /v1/policies — upload
 // ---------------------------------------------------------------------------
 
-/// Compile + persist a new policy revision. Does NOT activate it —
-/// `POST /v1/policies/{id}/activate` is a separate call.
-#[utoipa::path(
-    post, path = "/policies", tag = "policies",
-    security(("bearer_jwt" = [])),
-    request_body = UploadBody,
-    responses(
-        (status = 201, description = "Policy revision compiled + stored", body = UploadResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn upload(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<UploadBody>,
-) -> Result<(StatusCode, Json<UploadResponse>), AppError> {
-    let response = upload_inner(&state, &admin.0.did, body).await?;
-    let status = if response.created {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
-    };
-    Ok((status, Json(response)))
-}
-
 /// Compile, check and store a revision as `actor` — `policy/upsert/0.2`, on the
 /// route and the spine alike.
 pub(crate) async fn upload_inner(
@@ -338,27 +308,6 @@ pub(crate) async fn upload_inner(
 // ---------------------------------------------------------------------------
 // POST /v1/policies/{id}/activate
 // ---------------------------------------------------------------------------
-
-#[utoipa::path(
-    post, path = "/policies/{id}/activate", tag = "policies",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Policy revision id")),
-    responses(
-        (status = 200, description = "Policy revision activated", body = ActivateResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Policy not found"),
-    ),
-)]
-pub async fn activate(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<ActivateResponse>, AppError> {
-    activate_inner(&state, &admin.0.did, id, None)
-        .await
-        .map(Json)
-}
 
 /// Make revision `id` live for its purpose, as `actor` — `policy/activate/0.1`,
 /// on the route and the spine alike.

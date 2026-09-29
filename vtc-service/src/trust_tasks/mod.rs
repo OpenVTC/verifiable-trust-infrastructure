@@ -1909,13 +1909,12 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     vta_sdk::protocols::credential_exchange::PRESENT,
     // A vetter withdrawing a statement (OpenVTC vetting design §9.6).
     vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
-    // An admin naming a vetter. Its REST route `POST /v1/vetting/vetters`
-    // stays only until `vtc-client` sends it signed.
+    // An admin naming a vetter. It has no REST route.
     vetting_wire::VETTING_VETTER_GRANT_TYPE,
     // The vetter registry: a vetter publishing a profile, anyone identified
     // finding vetters, and a vetter asking for their grant credential again
-    // (resend and show keep their admin REST routes only until `vtc-client`
-    // sends them signed; the listing has none).
+    // (only resend keeps an admin REST route, for resending another member's
+    // grant, which this task cannot express).
     vetting_wire::VETTING_VETTER_PROFILE_TYPE,
     vetting_wire::VETTING_VETTER_LIST_TYPE,
     vetting_wire::VETTING_VETTER_SHOW_TYPE,
@@ -1924,15 +1923,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     PERSONHOOD_ASSERT_TYPE,
     // The admin-facing member verbs (#1641 phase 2): the binding that holds the
     // document requirements their specifications declare — proof, recipient,
-    // `issuedAt`, and the accepted-id record. `purge` has no REST route; the
-    // other three keep theirs only until `vtc-client` sends them signed.
+    // `issuedAt`, and the accepted-id record. None has a REST route.
     MEMBER_CREDENTIALS_TYPE,
     MEMBER_UPDATE_TYPE,
     MEMBER_ADMIN_REMOVE_TYPE,
     MEMBER_PURGE_TYPE,
     // Batch 2: the join decision and the community-profile edit, on the same
-    // terms. The profile edit has no REST route; `decide` keeps its route only
-    // until `vtc-client` sends it signed.
+    // terms. Neither has a REST route.
     JOIN_DECIDE_TYPE,
     COMMUNITY_PROFILE_UPDATE_TYPE,
     // Batch 3: the portable-configuration pair, on the same terms.
@@ -1997,8 +1994,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     member_tasks::ENDORSEMENTS_REVOKE_TYPE,
     // The administrator's operational verbs, which had only bearer REST: the
     // registry reconciler, the audit log, the runtime configuration, admin
-    // invites, and the auth service's sessions. `audit/verify` keeps its route
-    // while `vtc-client` calls it; none of the others has one.
+    // invites, and the auth service's sessions. None has a REST route.
     admin_tasks::DIAGNOSTICS_TYPE,
     admin_tasks::SYNC_JOBS_LIST_TYPE,
     admin_tasks::SYNC_JOBS_RETRY_TYPE,
@@ -2015,9 +2011,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     admin_tasks::INVITES_REVOKE_TYPE,
     admin_tasks::SESSIONS_LIST_TYPE,
     admin_tasks::REVOKE_SESSION_TYPE,
-    // The administrator's community verbs, which had only bearer REST. The
-    // member and join-request listings keep their routes while `vtc-client`
-    // calls them; none of the others has one.
+    // The administrator's community verbs, which had only bearer REST. None
+    // has a REST route now.
     community_tasks::PROFILE_SHOW_TYPE,
     community_tasks::CEREMONIES_LIST_TYPE,
     community_tasks::DIRECTORY_QUERY_TYPE,
@@ -2034,9 +2029,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_tasks::INVITATIONS_LIST_TYPE,
     community_tasks::INVITATIONS_REVOKE_TYPE,
     community_tasks::INVITATIONS_DELIVER_TYPE,
-    // The policy log and the community's own DID log. `policy/{list,get,
-    // upsert,activate}` and `did/register` keep their routes while `vtc-client`
-    // calls them.
+    // The policy log and the community's own DID log. None has a REST route.
     policy_tasks::POLICY_LIST_TYPE,
     policy_tasks::POLICY_GET_TYPE,
     policy_tasks::POLICY_ACTIVE_TYPE,

@@ -19,16 +19,13 @@
 //! mirror of it.
 
 use axum::Json;
-use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value as JsonValue};
 use trust_tasks_rs::specs::vtc::members::credentials::v0_1 as wire;
-use vta_sdk::openapi::MemberCredentials01Response;
 use vti_common::audit::{AuditEvent, MemberCredentialsReadData};
 
 use crate::acl::get_acl_entry;
-use crate::auth::AdminAuth;
 use crate::error::AppError;
 use crate::members::{Member, get_member};
 use crate::server::AppState;
@@ -186,10 +183,9 @@ fn disclosed(response: &wire::Response) -> Vec<String> {
 /// Read one member's credential bodies on behalf of `actor_did`, auditing the
 /// disclosure — the whole of the operation, with no transport in it.
 ///
-/// Both doors call this: the bearer REST route below, and the signed-document
-/// arm in [`crate::trust_tasks`] (#1641 phase 2). Keeping the body here is what
-/// stops the two answering differently — the "is a member" rule, the audit row
-/// and the declared not-found are decided once.
+/// The signed-document arm in [`crate::trust_tasks`] (#1641 phase 2) calls
+/// this, on every transport: the "is a member" rule, the audit row and the
+/// declared not-found are decided here.
 ///
 /// Unknown member → [`CredentialsError::NotFound`], which carries
 /// `vtc/members/credentials:notFound` on both surfaces. A member who holds no
@@ -240,54 +236,6 @@ pub(crate) async fn read_member_credentials(
         .await?;
 
     Ok(response)
-}
-
-/// GET /members/{did}/credentials — the membership pair's bodies. Auth: Admin.
-///
-/// Unknown member → 404 carrying `vtc/members/credentials:notFound`. A member
-/// who holds no credentials is **not** that: it is a 200 with every document
-/// absent and `memberVmcBound: false`, which is the case the task exists to
-/// make visible.
-///
-/// "Unknown" is judged exactly as `members/show` judges it — a member row
-/// **and** its ACL row. A departed (tombstoned) member keeps a row but not an
-/// ACL entry, and tombstoning clears every credential body anyway; answering
-/// for one here while `show` says not-found would be two definitions of "is a
-/// member" one route apart.
-///
-/// Every successful read is audited (`MemberCredentialsRead`): the
-/// specification says a maintainer SHOULD record it, and a disclosure of
-/// credential bodies that leaves no trace cannot be reviewed afterwards. The
-/// audit write happens before the bodies are returned — a read that could not
-/// be recorded is refused rather than disclosed silently.
-///
-/// **Transitional bearer-token path (#1641).** `vtc/members/credentials/0.1`
-/// declares `proof` REQUIRED, and the authoritative binding is the signed
-/// Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
-/// the administrator and their authority is read from their ACL entry. This
-/// route authenticates by bearer JWT and verifies no document proof; it is kept
-/// only until the admin console can sign a Trust Task document, and is removed
-/// in the same change that gives it that.
-#[utoipa::path(
-    get, path = "/members/{did}/credentials",
-    operation_id = "memberCredentials", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(("did" = String, Path, description = "Member DID")),
-    responses(
-        (status = 200, description = "The credential documents the community holds for this member", body = MemberCredentials01Response),
-        (status = 400, description = "`did` is not a DID"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "No such member (`vtc/members/credentials:notFound`)"),
-    ),
-)]
-pub async fn credentials(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Path(did): Path<String>,
-) -> Result<Json<MemberCredentials01Response>, CredentialsError> {
-    let response = read_member_credentials(&state, &auth.0.did, &did).await?;
-    Ok(Json(response.into()))
 }
 
 #[cfg(test)]

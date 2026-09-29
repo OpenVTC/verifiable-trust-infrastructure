@@ -1,39 +1,39 @@
-//! Integration coverage for `/v1/policies/*` (Phase 2 M2.3).
+//! Integration coverage for the `policy/*` Trust Tasks (Phase 2 M2.3).
 //!
 //! Acceptance bullets from `phase-2-todo.md` M2.3.1:
 //! - Happy upload + bad-Rego rejection.
 //! - Activate-after-upload swaps the active pointer.
 //! - Test-without-activate doesn't mutate state.
 //!
-//! Plus auxiliary coverage: re-activate-same-id 409, activate
-//! unknown id 404, and audit envelope emission on the two
+//! Plus auxiliary coverage: re-activate-same-id conflict, activate
+//! unknown id not-found, and audit envelope emission on the two
 //! state-changing endpoints.
+//!
+//! The admin bearer routes these tests used to drive are gone (#1834): every
+//! verb here is a signed document, sent with [`common::signed::call`] and
+//! read back through [`reply`], which recovers the REST status the retired
+//! route answered with — success from the verb's own contract, and a
+//! refusal from the error code the signed door still carries.
 
 mod common;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use tower::ServiceExt;
 use uuid::Uuid;
 use vti_common::store::KeyspaceHandle;
+use vti_rooms_dtg::test_support::Party;
 
-use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
+use axum::http::StatusCode;
 use vtc_service::policy::{PolicyPurpose, get_active_policy_id, get_policy};
 use vtc_service::test_support::TestVtc;
 
 const UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
-/// `/v1/policies` (list) + `/v1/policies/{id}` (show) share their
-/// HTTP mounts with the upload + activate POSTs respectively —
-/// TrustTaskRouter doesn't yet support per-method selectors, so
-/// the GET requests carry the upload task header. See
-/// `vtc-service/src/routes/mod.rs` comment block.
 const LIST_TASK: &str = "https://trusttasks.org/spec/policy/list/0.2";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/policy/get/0.1";
-
-const ADMIN_DID: &str = "did:key:zPolicyAdmin";
+/// Replaces the old REST simulator's `?purpose=X&status=active` lookup: the
+/// per-purpose active binding, read directly off the active pointers rather
+/// than filtered out of a paginated listing.
+const ACTIVE_TASK: &str = "https://trusttasks.org/spec/policy/active/0.1";
 
 // Test fixtures must live in the package their declared purpose expects
 // (P1.5: a join policy in `vtc.test` is now rejected at upload as a
@@ -66,46 +66,27 @@ default allow := true
 ";
 
 struct Fixture {
-    router: axum::Router,
-    admin_token: String,
+    /// The key every document here is signed by: an unrestricted
+    /// administrator (`policy/*` reads its authority from the signer's own
+    /// ACL row now, not a bearer session).
+    signer: Party,
     policies_ks: KeyspaceHandle,
     active_policies_ks: KeyspaceHandle,
     audit_ks: KeyspaceHandle,
-    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    // Owns the temp data dir + serves the router; must outlive them.
     _vtc: TestVtc,
 }
 
 async fn build_fixture() -> Fixture {
     let vtc = TestVtc::builder().with_audit(true).build().await;
-
-    let now = vtc_service::auth::session::now_epoch();
-    store_acl_entry(
-        &vtc.state.acl_ks,
-        &VtcAclEntry {
-            did: ADMIN_DID.into(),
-            role: VtcRole::Admin,
-            label: Some("test admin".into()),
-            allowed_contexts: vec![],
-            created_at: now,
-            created_by: "did:key:vtc-install".into(),
-            updated_at: None,
-            updated_by: None,
-            expires_at: None,
-        },
-    )
-    .await
-    .unwrap();
-
-    let admin_token = vtc.token(ADMIN_DID, "admin", vec![]).await;
+    let signer = common::signed::admin(&vtc).await;
 
     let policies_ks = vtc.state.policies_ks.clone();
     let active_policies_ks = vtc.state.active_policies_ks.clone();
     let audit_ks = vtc.state.audit_ks.clone();
-    let router = vtc.router.clone();
 
     Fixture {
-        router,
-        admin_token,
+        signer,
         policies_ks,
         active_policies_ks,
         audit_ks,
@@ -113,43 +94,105 @@ async fn build_fixture() -> Fixture {
     }
 }
 
-async fn body_json(body: Body) -> Value {
-    let bytes = body.collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-        let raw = String::from_utf8_lossy(&bytes);
-        panic!("response body was not JSON ({e}): {raw}")
-    })
+/// The status the retired REST route would have answered with: `success` on
+/// the happy path, or the status its equivalent error used to carry, read off
+/// the signed door's error `code` (there is no REST status to read anymore).
+fn status_for_code(code: &str) -> StatusCode {
+    if code.ends_with(":notFound") {
+        StatusCode::NOT_FOUND
+    } else if code.ends_with(":versionConflict") || code.ends_with(":alreadyActive") {
+        StatusCode::CONFLICT
+    } else if code == "permissionDenied" {
+        StatusCode::FORBIDDEN
+    } else if code == "malformedRequest" || code.contains(':') {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    }
 }
 
-fn auth_request(method: &str, uri: &str, task: &str, token: &str, body: Value) -> Request<Body> {
-    Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
-        .header("trust-task", task)
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap()
+/// A signed document's reply, as the retired REST route would have answered
+/// it: `success` on a `#response`, or the mapped status + a REST-shaped
+/// `{"error": ...}` body on a `trust-task-error`.
+fn reply(doc: &Value, success: StatusCode) -> (StatusCode, Value) {
+    match common::signed::error_code(doc) {
+        Some(code) => {
+            let payload = &doc["payload"];
+            (
+                status_for_code(code),
+                json!({ "error": payload["message"] }),
+            )
+        }
+        None => (success, doc["payload"].clone()),
+    }
+}
+
+async fn upsert(fix: &Fixture, body: Value) -> (StatusCode, Value) {
+    let (_, doc) = common::signed::call(&fix._vtc, &fix.signer, UPLOAD_TASK, body).await;
+    let success = if doc["payload"]["created"] == false {
+        StatusCode::OK
+    } else {
+        StatusCode::CREATED
+    };
+    reply(&doc, success)
+}
+
+async fn show(fix: &Fixture, id: &str) -> (StatusCode, Value) {
+    let (_, doc) =
+        common::signed::call(&fix._vtc, &fix.signer, SHOW_TASK, json!({ "id": id })).await;
+    reply(&doc, StatusCode::OK)
+}
+
+/// Activate `id`. `purpose` mirrors what a caller supplies; `None` reads it
+/// off the stored revision first, exactly as the retired route did.
+async fn activate(fix: &Fixture, id: &str, purpose: Option<&str>) -> (StatusCode, Value) {
+    let mut payload = json!({ "id": id });
+    match purpose {
+        Some(p) => payload["purpose"] = json!(p),
+        None => {
+            let (_, got) = show(fix, id).await;
+            if let Some(p) = got["policy"]["ext"]["org.openvtc.purpose"].as_str() {
+                payload["purpose"] = json!(p);
+            }
+        }
+    }
+    let (_, doc) = common::signed::call(&fix._vtc, &fix.signer, ACTIVATE_TASK, payload).await;
+    reply(&doc, StatusCode::OK)
+}
+
+/// List policies, optionally narrowed by purpose (`ext.org.openvtc.purpose`
+/// — canonical `policy/list/0.2` has no purpose field of its own).
+async fn list(fix: &Fixture, purpose: Option<&str>) -> (StatusCode, Value) {
+    let mut payload = json!({});
+    if let Some(p) = purpose {
+        payload["ext"] = json!({ "org.openvtc.purpose": p });
+    }
+    let (_, doc) = common::signed::call(&fix._vtc, &fix.signer, LIST_TASK, payload).await;
+    reply(&doc, StatusCode::OK)
+}
+
+/// `policy/active/0.1`: the per-purpose active bindings, optionally narrowed
+/// to one purpose.
+async fn active(fix: &Fixture, purpose: Option<&str>) -> (StatusCode, Value) {
+    let mut payload = json!({});
+    if let Some(p) = purpose {
+        payload["purpose"] = json!(p);
+    }
+    let (_, doc) = common::signed::call(&fix._vtc, &fix.signer, ACTIVE_TASK, payload).await;
+    reply(&doc, StatusCode::OK)
 }
 
 async fn upload_policy(fix: &Fixture, purpose: &str, source: &str) -> Value {
-    let req = auth_request(
-        "POST",
-        "/v1/policies",
-        UPLOAD_TASK,
-        &fix.admin_token,
+    let (status, body) = upsert(
+        fix,
         json!({ "name": purpose, "module": source, "ext": { "org.openvtc.purpose": purpose } }),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    )
+    .await;
     // Canonical upsert: 201 on a new lineage, 200 on a revision.
     assert!(
-        resp.status() == StatusCode::CREATED || resp.status() == StatusCode::OK,
-        "expected 201/200 from upsert, got {}",
-        resp.status(),
+        status == StatusCode::CREATED || status == StatusCode::OK,
+        "expected 201/200 from upsert, got {status}",
     );
-    // Unwrap the canonical `{policy, created}` envelope so callers can
-    // keep reading module fields directly.
-    let body = body_json(resp.into_body()).await;
     body["policy"].clone()
 }
 
@@ -197,22 +240,18 @@ async fn upload_happy_path_persists_policy() {
 }
 
 /// Acceptance bullet 1b: bad-Rego rejection. A malformed source
-/// surfaces from the harness as 400 (AppError::Validation) and the
-/// id from the error message is meaningful for the operator.
+/// surfaces as a refusal, and the id from the error message is
+/// meaningful for the operator.
 #[tokio::test]
 async fn upload_bad_rego_returns_400() {
     let fix = build_fixture().await;
-    let req = auth_request(
-        "POST",
-        "/v1/policies",
-        UPLOAD_TASK,
-        &fix.admin_token,
+    let (status, body) = upsert(
+        &fix,
         json!({ "name": "join", "module": "@@@ not rego @@@", "ext": { "org.openvtc.purpose": "join" } }),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    let body = body_json(resp.into_body()).await;
     let msg = body["error"].as_str().unwrap_or_default();
     assert!(
         msg.contains("rego compile failed"),
@@ -229,16 +268,12 @@ async fn upload_rejects_purpose_package_mismatch() {
     let fix = build_fixture().await;
     // purpose=join, but the module lives in vtc.removal.
     let mismatched = "package vtc.removal\nimport rego.v1\ndefault allow := false\n";
-    let req = auth_request(
-        "POST",
-        "/v1/policies",
-        UPLOAD_TASK,
-        &fix.admin_token,
+    let (status, body) = upsert(
+        &fix,
         json!({ "name": "join", "module": mismatched, "ext": { "org.openvtc.purpose": "join" } }),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp.into_body()).await;
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let msg = body["error"].as_str().unwrap_or_default();
     assert!(
         msg.contains("vtc.join"),
@@ -254,17 +289,9 @@ async fn activate_swaps_active_pointer() {
     let uploaded = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
     let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
 
-    let req = auth_request(
-        "POST",
-        &format!("/v1/policies/{id}/activate"),
-        ACTIVATE_TASK,
-        &fix.admin_token,
-        json!({}),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, body) = activate(&fix, &id.to_string(), None).await;
+    assert_eq!(status, StatusCode::OK);
 
-    let body = body_json(resp.into_body()).await;
     assert_eq!(body["activated"], id.to_string());
     assert_eq!(body["purpose"], "join");
     assert!(
@@ -286,25 +313,18 @@ async fn activate_swaps_active_pointer() {
     );
 }
 
-/// Second activation of the same id for the same purpose returns
-/// 409. Re-activating a *different* id later swaps cleanly (covered
-/// in `activate_replaces_predecessor`).
+/// Second activation of the same id for the same purpose is refused
+/// (`policy/activate:alreadyActive`). Re-activating a *different* id
+/// later swaps cleanly (covered in `activate_replaces_predecessor`).
 #[tokio::test]
 async fn activate_same_id_twice_returns_409() {
     let fix = build_fixture().await;
     let uploaded = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
-    let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
+    let id = uploaded["id"].as_str().unwrap().to_string();
 
     for expected in [StatusCode::OK, StatusCode::CONFLICT] {
-        let req = auth_request(
-            "POST",
-            &format!("/v1/policies/{id}/activate"),
-            ACTIVATE_TASK,
-            &fix.admin_token,
-            json!({}),
-        );
-        let resp = fix.router.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), expected);
+        let (status, body) = activate(&fix, &id, None).await;
+        assert_eq!(status, expected, "{body}");
     }
 }
 
@@ -314,22 +334,15 @@ async fn activate_same_id_twice_returns_409() {
 async fn activate_replaces_predecessor() {
     let fix = build_fixture().await;
     let first = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
-    let first_id: Uuid = first["id"].as_str().unwrap().parse().unwrap();
+    let first_id = first["id"].as_str().unwrap().to_string();
     let second = upload_policy(&fix, "join", JOIN_ALT_POLICY).await;
-    let second_id: Uuid = second["id"].as_str().unwrap().parse().unwrap();
+    let second_id = second["id"].as_str().unwrap().to_string();
     assert_eq!(second["version"], 2, "second upload bumps version");
 
     // Activate first, then second.
-    for id in [first_id, second_id] {
-        let req = auth_request(
-            "POST",
-            &format!("/v1/policies/{id}/activate"),
-            ACTIVATE_TASK,
-            &fix.admin_token,
-            json!({}),
-        );
-        let resp = fix.router.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "activating {id}");
+    for id in [&first_id, &second_id] {
+        let (status, _) = activate(&fix, id, None).await;
+        assert_eq!(status, StatusCode::OK, "activating {id}");
     }
 
     // Active pointer is now second; predecessor returned by the
@@ -338,24 +351,19 @@ async fn activate_replaces_predecessor() {
         get_active_policy_id(&fix.active_policies_ks, PolicyPurpose::Join)
             .await
             .unwrap(),
-        Some(second_id)
+        Some(second_id.parse().unwrap())
     );
 }
 
-/// Activating an unknown id returns 404.
+/// Activating an unknown id is refused with `policy/activate:notFound`.
 #[tokio::test]
 async fn activate_unknown_id_returns_404() {
     let fix = build_fixture().await;
     let ghost = Uuid::new_v4();
-    let req = auth_request(
-        "POST",
-        &format!("/v1/policies/{ghost}/activate"),
-        ACTIVATE_TASK,
-        &fix.admin_token,
-        json!({}),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // No stored revision to read a purpose off, so name one explicitly —
+    // the not-found refusal is about the id, not the purpose.
+    let (status, _) = activate(&fix, &ghost.to_string(), Some("join")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// Upload + activate each emit one audit envelope. The audit
@@ -372,7 +380,7 @@ async fn upload_and_activate_emit_audit_envelopes() {
         .len();
 
     let uploaded = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
-    let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
+    let id = uploaded["id"].as_str().unwrap().to_string();
     let after_upload = fix
         .audit_ks
         .prefix_iter_raw(Vec::new())
@@ -385,15 +393,8 @@ async fn upload_and_activate_emit_audit_envelopes() {
         "upload must emit exactly one audit envelope"
     );
 
-    let req = auth_request(
-        "POST",
-        &format!("/v1/policies/{id}/activate"),
-        ACTIVATE_TASK,
-        &fix.admin_token,
-        json!({}),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, _) = activate(&fix, &id, None).await;
+    assert_eq!(status, StatusCode::OK);
 
     let after_activate = fix
         .audit_ks
@@ -412,202 +413,116 @@ async fn upload_and_activate_emit_audit_envelopes() {
 // Read endpoints (M2.4)
 // ---------------------------------------------------------------------------
 
-fn auth_get(uri: &str, task: &str, token: &str) -> Request<Body> {
-    Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
-        .header("trust-task", task)
-        .body(Body::empty())
-        .unwrap()
-}
-
-/// `GET /v1/policies` returns every uploaded policy. Each item
-/// carries the full row + an `isActive` flag.
+/// Every uploaded policy comes back. Each item carries the full row.
 #[tokio::test]
 async fn list_returns_all_policies() {
     let fix = build_fixture().await;
     let a = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
     let _b = upload_policy(&fix, "removal", REMOVAL_POLICY).await;
-    let a_id = a["id"].as_str().unwrap();
+    let a_id = a["id"].as_str().unwrap().to_string();
 
-    // Activate one of them so the isActive flag has signal.
-    let req = auth_request(
-        "POST",
-        &format!("/v1/policies/{a_id}/activate"),
-        ACTIVATE_TASK,
-        &fix.admin_token,
-        json!({}),
-    );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // Activate one of them — exercised for its own sake below via
+    // `list_filters_by_status`; here it's just part of a realistic fixture.
+    let (status, _) = activate(&fix, &a_id, None).await;
+    assert_eq!(status, StatusCode::OK);
 
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(auth_get("/v1/policies", LIST_TASK, &fix.admin_token))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, body) = list(&fix, None).await;
+    assert_eq!(status, StatusCode::OK);
 
-    let body = body_json(resp.into_body()).await;
     let items = body["policies"].as_array().expect("items array");
     assert_eq!(items.len(), 2);
-    // `isActive` is not a canonical PolicyModule field — activeness is
-    // expressed by the `status=active` filter and by policy/active's
-    // bindings, both covered below.
     assert!(items.iter().any(|i| i["id"] == a_id));
     // Full row visibility — Rego source is in the response.
     assert!(items.iter().all(|i| i["module"].is_string()));
 }
 
-/// `?purpose=removal` filters list to that purpose only.
+/// A purpose filter (`ext.org.openvtc.purpose`) narrows the listing to that
+/// purpose only.
 #[tokio::test]
 async fn list_filters_by_purpose() {
     let fix = build_fixture().await;
     upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
     upload_policy(&fix, "removal", REMOVAL_POLICY).await;
 
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(auth_get(
-            "/v1/policies?purpose=removal",
-            LIST_TASK,
-            &fix.admin_token,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp.into_body()).await;
+    let (status, body) = list(&fix, Some("removal")).await;
+    assert_eq!(status, StatusCode::OK);
     let items = body["policies"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["ext"]["org.openvtc.purpose"], "removal");
 }
 
-/// `?status=active` returns only rows pointed at by their
-/// per-purpose active pointer. `?status=archived` returns the
-/// complement.
+/// The active/archived distinction, read the way a canonical caller reads it
+/// now: `policy/active/0.1` for "what is active for this purpose", and a
+/// purpose-scoped listing for everything else that purpose has on file. The
+/// retired route's own `status=active`/`status=archived` filters had no
+/// canonical equivalent (`policy/list/0.2` carries no `status` field) and are
+/// gone with it.
 #[tokio::test]
 async fn list_filters_by_status() {
     let fix = build_fixture().await;
     let join = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
     let removal = upload_policy(&fix, "removal", REMOVAL_POLICY).await;
-    let join_id = join["id"].as_str().unwrap();
-    let _removal_id = removal["id"].as_str().unwrap();
+    let join_id = join["id"].as_str().unwrap().to_string();
+    let removal_id = removal["id"].as_str().unwrap().to_string();
 
     // Activate only the join row.
-    let req = auth_request(
-        "POST",
-        &format!("/v1/policies/{join_id}/activate"),
-        ACTIVATE_TASK,
-        &fix.admin_token,
-        json!({}),
-    );
-    fix.router.clone().oneshot(req).await.unwrap();
+    let (status, _) = activate(&fix, &join_id, None).await;
+    assert_eq!(status, StatusCode::OK);
 
-    // status=active → just the join row.
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(auth_get(
-            "/v1/policies?status=active",
-            LIST_TASK,
-            &fix.admin_token,
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp.into_body()).await;
-    let items = body["policies"].as_array().unwrap();
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["id"], join_id);
+    // "active" → policy/active/0.1 names just the join binding.
+    let (status, active_body) = active(&fix, Some("join")).await;
+    assert_eq!(status, StatusCode::OK);
+    let bindings = active_body["bindings"].as_array().unwrap();
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0]["policy"]["id"], join_id);
 
-    // status=archived → just the removal row.
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(auth_get(
-            "/v1/policies?status=archived",
-            LIST_TASK,
-            &fix.admin_token,
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp.into_body()).await;
-    let items = body["policies"].as_array().unwrap();
+    // "archived" → the removal purpose's own listing, none of which is
+    // active (nothing under `removal` was ever activated here).
+    let (status, removal_list) = list(&fix, Some("removal")).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = removal_list["policies"].as_array().unwrap();
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["ext"]["org.openvtc.purpose"], "removal");
-    // The `archived` filter having returned it is the assertion — a
-    // canonical PolicyModule carries no isActive field.
+    assert_eq!(items[0]["id"], removal_id);
 }
 
-/// Regression: the simulator's active-policy lookup
-/// (`?purpose=X&status=active&limit=1`) must return X's active row even
-/// when several purposes have active policies. The purpose/status
-/// filters run *after* pagination, so `limit=1` used to fetch one
-/// arbitrary keyspace row and filter it — surfacing the active policy
-/// for a single purpose only (whichever sorted first). status=active is
-/// now resolved from the per-purpose active pointers directly.
+/// `policy/active/0.1` names each purpose's own binding exactly, whichever
+/// purpose is asked for — the direct replacement for the old REST
+/// simulator's `?purpose=X&status=active&limit=1` lookup. That lookup's
+/// pagination bug (a small `limit` could drop a purpose's active row
+/// entirely) has no analogue here: this task reads the per-purpose active
+/// pointers directly rather than filtering a paginated scan.
 #[tokio::test]
-async fn list_active_by_purpose_is_exact_under_limit_one() {
+async fn active_binding_is_exact_per_purpose() {
     let fix = build_fixture().await;
     let join = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
     let removal = upload_policy(&fix, "removal", REMOVAL_POLICY).await;
-    let join_id = join["id"].as_str().unwrap();
-    let removal_id = removal["id"].as_str().unwrap();
+    let join_id = join["id"].as_str().unwrap().to_string();
+    let removal_id = removal["id"].as_str().unwrap().to_string();
 
-    // Activate a policy for both purposes.
-    for id in [join_id, removal_id] {
-        let req = auth_request(
-            "POST",
-            &format!("/v1/policies/{id}/activate"),
-            ACTIVATE_TASK,
-            &fix.admin_token,
-            json!({}),
-        );
-        fix.router.clone().oneshot(req).await.unwrap();
+    for id in [&join_id, &removal_id] {
+        let (status, _) = activate(&fix, id, None).await;
+        assert_eq!(status, StatusCode::OK);
     }
 
-    // Each purpose's active lookup returns ITS row, despite limit=1.
-    for (purpose, id) in [("join", join_id), ("removal", removal_id)] {
-        let resp = fix
-            .router
-            .clone()
-            .oneshot(auth_get(
-                &format!("/v1/policies?purpose={purpose}&status=active&limit=1"),
-                LIST_TASK,
-                &fix.admin_token,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_json(resp.into_body()).await;
-        let items = body["policies"].as_array().unwrap();
-        assert_eq!(items.len(), 1, "{purpose}: active lookup returns one row");
-        assert_eq!(items[0]["id"], id, "{purpose}: active id");
+    for (purpose, id) in [("join", &join_id), ("removal", &removal_id)] {
+        let (status, body) = active(&fix, Some(purpose)).await;
+        assert_eq!(status, StatusCode::OK);
+        let bindings = body["bindings"].as_array().unwrap();
+        assert_eq!(bindings.len(), 1, "{purpose}: exactly one binding");
+        assert_eq!(bindings[0]["policy"]["id"], *id, "{purpose}: active id");
     }
 }
 
-/// `GET /v1/policies/{id}` returns the full row + isActive flag.
+/// `policy/get/0.1` returns the full row.
 #[tokio::test]
 async fn show_returns_full_row() {
     let fix = build_fixture().await;
     let uploaded = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
     let id = uploaded["id"].as_str().unwrap();
 
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(auth_get(
-            &format!("/v1/policies/{id}"),
-            SHOW_TASK,
-            &fix.admin_token,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, outer) = show(&fix, id).await;
+    assert_eq!(status, StatusCode::OK);
 
-    let outer = body_json(resp.into_body()).await;
     let body = &outer["policy"];
     assert_eq!(body["id"], id);
     assert_eq!(body["ext"]["org.openvtc.purpose"], "join");
@@ -615,42 +530,11 @@ async fn show_returns_full_row() {
     assert!(body["module"].as_str().unwrap().contains("default allow"));
 }
 
-/// `GET /v1/policies/{id}` returns 404 for unknown ids.
+/// `policy/get/0.1` is refused for unknown ids (`policy/get:notFound`).
 #[tokio::test]
 async fn show_unknown_id_returns_404() {
     let fix = build_fixture().await;
     let ghost = Uuid::new_v4();
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(auth_get(
-            &format!("/v1/policies/{ghost}"),
-            SHOW_TASK,
-            &fix.admin_token,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-}
-
-// ---------------------------------------------------------------------------
-// Misc
-// ---------------------------------------------------------------------------
-
-/// Auth gate: an unauthenticated upload returns 401. Confirms the
-/// `AdminAuth` extractor is wired through the route.
-#[tokio::test]
-async fn upload_without_token_returns_401() {
-    let fix = build_fixture().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/policies")
-        .header("trust-task", UPLOAD_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "name": "join", "module": JOIN_ALLOW_POLICY, "ext": { "org.openvtc.purpose": "join" } }).to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let (status, _) = show(&fix, &ghost.to_string()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

@@ -10,7 +10,6 @@ mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -39,14 +38,6 @@ async fn build() -> Fixture {
 /// administrator, anything else for a member.
 async fn super_admin_token(_fix: &Fixture) -> String {
     "admin".into()
-}
-
-async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let v: Value = serde_json::from_slice(&bytes)
-        .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes) }));
-    (status, v)
 }
 
 /// `audit/list/0.1` signed by the party `who` names, with the filters in
@@ -177,15 +168,15 @@ async fn entry_hash_and_audit_verify_head_agree() {
     let (_, list_body) = list(&fix, &token, "").await;
     let newest = list_body["entries"][0]["entryHash"].as_str().unwrap();
 
-    let bearer = fix.vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/audit/verify")
-        .header("Trust-Task", "https://trusttasks.org/spec/audit/verify/0.1")
-        .header("Authorization", format!("Bearer {bearer}"))
-        .body(Body::empty())
-        .unwrap();
-    let (_, verify_body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let admin = common::signed::admin(&fix.vtc).await;
+    let (_, verify_doc) = common::signed::call(
+        &fix.vtc,
+        &admin,
+        "https://trusttasks.org/spec/audit/verify/0.1",
+        json!({}),
+    )
+    .await;
+    let verify_body = &verify_doc["payload"];
 
     assert_eq!(
         verify_body["head"].as_str().unwrap(),
