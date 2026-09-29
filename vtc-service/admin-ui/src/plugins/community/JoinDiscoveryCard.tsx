@@ -1,5 +1,5 @@
 // Whether the join manifest answers a caller this community cannot identify —
-// GET + PUT /v1/community/join-discovery.
+// `vtc/community/join-discovery/{show,update}/0.1`, signed documents.
 //
 // Its own card rather than a field on the profile form, because it is its own
 // record: `vtc/community/profile/show/0.1` is a published schema that permits
@@ -9,21 +9,21 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getJsonExempt, putJsonExempt } from "@/lib/api";
+import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 
 interface JoinDiscovery {
   public: boolean;
 }
 
-const PATH = "/v1/community/join-discovery";
+const TASK_SHOW = "https://trusttasks.org/spec/vtc/community/join-discovery/show/0.1";
+const TASK_UPDATE = "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1";
 
-// Exempt, like the branding card beside it: this route carries no Trust Task
-// of its own — it is admin REST, mounted without a binding.
-const getJoinDiscovery = (): Promise<JoinDiscovery> =>
-  getJsonExempt<JoinDiscovery>(PATH);
+const getJoinDiscovery = async (): Promise<JoinDiscovery> =>
+  (await postSignedRead<{ joinDiscovery: JoinDiscovery }>(TASK_SHOW, {})).joinDiscovery;
 
-const putJoinDiscovery = (body: JoinDiscovery): Promise<JoinDiscovery> =>
-  putJsonExempt<JoinDiscovery>(PATH, body);
+const putJoinDiscovery = async (body: JoinDiscovery): Promise<JoinDiscovery> =>
+  (await postSignedTrustTask<{ joinDiscovery: JoinDiscovery }>(TASK_UPDATE, { joinDiscovery: body }))
+    .joinDiscovery;
 
 export function JoinDiscoveryCard() {
   const queryClient = useQueryClient();

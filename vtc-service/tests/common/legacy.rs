@@ -1,7 +1,8 @@
 //! Suites written against the administrator's retired bearer routes, driven
 //! through the signed door instead.
 //!
-//! The community verbs (`trust_tasks::community_tasks`) have no REST route;
+//! The community verbs (`trust_tasks::community_tasks`, and the join queue's
+//! query and vetting reads in `trust_tasks::surface_tasks`) have no REST route;
 //! they are signed documents at `POST /v1/trust-tasks`. The suites below keep
 //! their assertions — the operations' behaviour did not change — by handing
 //! each request they used to send to [`send`], which turns it into the signed
@@ -166,6 +167,12 @@ fn translate(
         ("DELETE", ["invitations", id]) => {
             (t("invitations/revoke/0.1"), json!({ "id": decode(id) }), ok)
         }
+        ("POST", ["join-requests", "query"]) => (t("join-requests/query/0.1"), body.clone(), ok),
+        ("GET", ["join-requests", id, "vetting"]) => (
+            t("join-requests/vetting/show/0.1"),
+            json!({ "id": decode(id) }),
+            ok,
+        ),
         _ => return None,
     })
 }

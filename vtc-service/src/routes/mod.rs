@@ -24,10 +24,10 @@ pub(crate) mod recognition_admin;
 pub(crate) mod registry_admin;
 pub(crate) mod relationships;
 pub(crate) mod rooms;
-mod schemas;
+pub(crate) mod schemas;
 pub(crate) mod status_lists;
 pub mod trust_tasks;
-mod vetting;
+pub(crate) mod vetting;
 #[cfg(feature = "website")]
 pub(crate) mod website;
 
@@ -131,9 +131,9 @@ use crate::server::AppState;
         invitations::RevokeResponse,
         vta_sdk::openapi::InvitationDeliver01Payload,
         vta_sdk::openapi::InvitationDeliver01Response,
-        // The verbs whose bearer routes stayed for `vtc-client` until it sent
-        // them signed: the roster and join queue, a member's credentials, the
-        // join decision, a vetter grant, and the policy log.
+        // The verbs whose shapes are documented for codegen though every
+        // bearer route is gone: the roster and join queue, a member's
+        // credentials, the join decision, a vetter grant, and the policy log.
         vti_common::pagination::Paginated<members::read::MemberResponse>,
         vti_common::pagination::Paginated<crate::join::JoinRequest>,
         vta_sdk::openapi::MemberCredentials01Response,
@@ -143,6 +143,13 @@ use crate::server::AppState;
         policies::read::PolicyModuleResponse,
         policies::admin::UploadResponse,
         crate::policy::PolicyPurpose,
+        // The administration surfaces the console signs (`trust_tasks::surface_tasks`).
+        join_requests::read::JoinRequestVettingResponse,
+        join_requests::read::JoinRequestVetting,
+        join_requests::read::JoinRequestVettingStatement,
+        crate::schemas::AcceptsCriterion,
+        schemas::RegisterAcceptsBody,
+        rooms::HostedRoom,
     )),
 )]
 pub struct ApiDoc;
@@ -518,10 +525,6 @@ fn build_api_chain(
         // identify. Admin REST with no Trust Task of its own — and not a
         // member of the profile, whose `show` response is a published schema
         // that permits no new ones.
-        .routes(routes!(
-            community::join_discovery::get_join_discovery,
-            community::join_discovery::put_join_discovery
-        ))
         // The runtime configuration (`config/{show,patch,reload,restart}/0.1`)
         // has no route: each is a signed document served by the spine
         // (`trust_tasks::admin_tasks`) on every transport.
@@ -586,8 +589,7 @@ fn build_api_chain(
         // Admin console signing keys (#1684) — the delegation that lets the
         // admin SPA author signed Trust Task documents at all.
         //
-        // Mounted **without** a Trust-Task binding, like
-        // `relationships::{suspend,restore}` and the `schemas` routes above:
+        // Mounted **without** a Trust-Task binding: until trust-tasks-rs 0.24.5
         // no published task family covers enrolling a signing-key delegation
         // (`device/register/0.1` grants a device its own capabilities, which is
         // the shape VTI-OPS-050 refuses here, and `auth/passkey/*` is WebAuthn
@@ -660,21 +662,8 @@ fn build_api_chain(
             routes!(relationships::revoke),
             "https://trusttasks.org/spec/vtc/relationships/revoke/0.1",
         ))
-        // #1079 — suspend an edge, and reverse a suspension. Temporarily
-        // ineffective is a state the graph could not previously express: an
-        // edge was published or deleted, so a community with a reason to stop
-        // relying on one had to destroy it.
-        //
-        // Mounted **without** a Trust-Task binding, unlike the three verbs
-        // above, because no canonical `spec/vtc/relationships/{suspend,
-        // restore}` URI is published yet and
-        // `tests/trust_task_manifest.rs::every_bound_canonical_task_exists_in_the_registry`
-        // requires a bound URI to resolve in `trust_tasks_rs::schema_index`.
-        // Binding a URI that does not exist would trade a real gate for a
-        // string. The spec moves first; this follows it, the same exemption
-        // the `schemas` routes below carry.
-        .routes(routes!(relationships::suspend))
-        .routes(routes!(relationships::restore))
+        // Suspend and restore (#1079) are `vtc/relationships/{suspend,restore}`
+        // on the spine (`trust_tasks::surface_tasks`), and have no route.
         // #1067 — the VPC (persona annotation) on an existing
         // edge. POST + DELETE share one task mount, the same
         // workaround the personhood assert/revoke pair uses; the
@@ -685,20 +674,8 @@ fn build_api_chain(
         ))
         // Phase 4 M4.8.1 — operator-uploaded endorsement type registry. The
         // listing is REST; `register` and `delete` are signed documents only.
-        // Phase 2 §8 — community schema store (Issues + Accepts
-        // registry). Plain admin-gated CRUD (AdminAuth extractor),
-        // exempt from the Trust-Task soft-gate. (`accepts` static
-        // segments bind before the `{type_uri}` param via matchit.)
-        .routes(routes!(
-            schemas::register_accepts,
-            schemas::list_accepts_route
-        ))
-        .routes(routes!(
-            schemas::get_accepts_route,
-            schemas::delete_accepts_route
-        ))
-        .routes(routes!(schemas::register, schemas::list))
-        .routes(routes!(schemas::get_one, schemas::delete_one))
+        // The community schema store (Issues + Accepts registry) is
+        // `vtc/schemas/*` on the spine, and has no route.
         // Phase 4 M4.8.2-4 — custom endorsement issuance +
         // retrieval + revocation. Admin OR Issuer-role member.
         .routes(tt(
@@ -746,35 +723,25 @@ fn build_api_chain(
         // #1651) is a signed document only.
         .routes(routes!(vetting::list_vetters))
         .routes(routes!(vetting::get_auto_grant, vetting::put_auto_grant))
-        .routes(routes!(vetting::list_revocations))
-        // A member's update and removal (`vtc/members/{update,admin-remove}/0.1`)
-        // are signed documents only.
-        // Join requests (Phase 1 M1.7–M1.10). The admin queue
-        // (`vtc/join-requests/list/0.1`) and its decision
-        // (`vtc/join-requests/decide/0.1`) are signed documents only.
-        // The vetting facts a request was decided on — admin REST with no Trust
-        // Task of its own.
-        .routes(routes!(join_requests::read::show_join_request_vetting))
-        // The join manifest has no route: the console reads it as the signed
-        // `vtc/join-requests/manifest/0.2` document applicants send.
-        // (Manifest discovery moved to the single `POST /v1/trust-tasks`
-        // document endpoint — `join-requests/manifest/1.0` is now a Trust
-        // Task verb, no longer a bespoke GET.)
-        // Credential-exchange query send (admin): prepare a DCQL query + issue a
-        // single-use presentation challenge for a holder. Plain admin route (no
-        // Trust-Task descriptor) — the holder answers with a
-        // `credential-exchange/present` Trust Task, over any transport.
-        .routes(routes!(join_requests::present::send_query))
-        // Policies: every verb is a signed document only
-        // (`trust_tasks::policy_tasks`).
-        // Plain REST, and deliberately not a Trust Task. Every `rooms/*` task is
-        // authorized by credentials the ROOM issued, against the room's own
-        // identifier — that is invariant I5, and it is what lets a room move
-        // hosts. This is the opposite question: what is this *operator* storing.
-        // It is answered from the host's own admin authority, so pairing it with
-        // a room task would be claiming a room governs an answer it has no view
-        // of.
-        .routes(routes!(rooms::list_rooms));
+        .routes(routes!(vetting::list_revocations));
+    // A member's update and removal (`vtc/members/{update,admin-remove}/0.1`)
+    // are signed documents only.
+    // Join requests (Phase 1 M1.7–M1.10). The admin queue
+    // (`vtc/join-requests/list/0.1`) and its decision
+    // (`vtc/join-requests/decide/0.1`) are signed documents only.
+    // The vetting facts a request was decided on — admin REST with no Trust
+    // Task of its own.
+    // The join manifest has no route: the console reads it as the signed
+    // `vtc/join-requests/manifest/0.2` document applicants send.
+    // (Manifest discovery moved to the single `POST /v1/trust-tasks`
+    // document endpoint — `join-requests/manifest/1.0` is now a Trust
+    // Task verb, no longer a bespoke GET.)
+    // The administrator's credential query (`vtc/join-requests/query`),
+    // a join request's vetting facts (`vtc/join-requests/vetting/show`) and
+    // the host's rooms (`vtc/rooms/list`) are served on the spine, and
+    // have no route.
+    // Policies: every verb is a signed document only
+    // (`trust_tasks::policy_tasks`).
 
     // Phase 5 M5.5 — public-website management routes. The
     // `route_with_task` helper accepts a pre-layered `MethodRouter`
@@ -1296,11 +1263,8 @@ mod openapi_tests {
             "/v1/auth/challenge",
             "/v1/admin/passkeys",
             "/v1/members/{did}/relationships",
-            "/v1/join-requests/{id}/vetting",
             "/v1/vetting/vetters",
-            "/v1/rooms",
             "/v1/credentials/endorsements",
-            "/v1/schemas",
             "/v1/relationships",
             "/v1/install/claim/start",
         ] {
@@ -1367,6 +1331,16 @@ mod openapi_tests {
             "/v1/admin/did/register",
             "/v1/audit/verify",
             "/v1/vetting/vetters/show",
+            "/v1/community/join-discovery",
+            "/v1/join-requests/query",
+            "/v1/join-requests/{id}/vetting",
+            "/v1/relationships/{id}/suspend",
+            "/v1/relationships/{id}/restore",
+            "/v1/rooms",
+            "/v1/schemas",
+            "/v1/schemas/accepts",
+            "/v1/schemas/accepts/{id}",
+            "/v1/schemas/{type_uri}",
         ] {
             assert!(!paths.contains_key(p), "{p} is a signed document only");
         }

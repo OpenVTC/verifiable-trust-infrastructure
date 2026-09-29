@@ -791,6 +791,21 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/policy/upsert/0.2",
     "https://trusttasks.org/spec/policy/activate/0.1",
     "https://trusttasks.org/spec/vtc/policies/test/0.1",
+    // The administration surfaces that had only bearer REST
+    // (`trust_tasks::surface_tasks`).
+    "https://trusttasks.org/spec/vtc/community/branding/show/0.1",
+    "https://trusttasks.org/spec/vtc/community/branding/update/0.1",
+    "https://trusttasks.org/spec/vtc/community/join-discovery/show/0.1",
+    "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1",
+    "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.1",
+    "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1",
+    "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1",
+    "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/list/0.1",
 ];
 
 #[test]

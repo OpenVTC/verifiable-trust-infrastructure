@@ -1,13 +1,20 @@
 import { screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { Vetting } from "@/plugins/vetting";
-import { mockFetch, NAME_BOOK_ROUTES, renderWithProviders } from "@/test/render";
+import { mockFetch, NAME_BOOK_ROUTES, renderWithProviders, taskRoute } from "@/test/render";
+
+// Signed documents reach the fetch table unsigned; there is no console key here.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+  postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+}));
 
 describe("Vetting plugin", () => {
   it("opens the section in the URL and marks its link as the current page", async () => {
     mockFetch([
-      { path: "/v1/vetting/revocations", body: { revocations: [] } },
+      taskRoute("https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1", { items: [] }),
       ...NAME_BOOK_ROUTES,
     ]);
     renderWithProviders(<Vetting />, {

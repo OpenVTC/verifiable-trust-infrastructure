@@ -128,7 +128,7 @@ pub async fn put_auto_grant(
 }
 
 /// Whether a withdrawn statement touches a standing membership.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RevocationReviewState {
     /// No current member was admitted on the statement.
@@ -190,6 +190,17 @@ pub async fn list_revocations(
     _admin: AdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<VettingRevocationListResponse>, AppError> {
+    Ok(Json(VettingRevocationListResponse {
+        revocations: revocation_rows(&state).await?,
+    }))
+}
+
+/// Every withdrawal notice, newest first, with the join requests and standing
+/// members it touches — what `vtc/vetting/revocations/list/0.1` pages, on the
+/// route and the spine alike.
+pub(crate) async fn revocation_rows(
+    state: &AppState,
+) -> Result<Vec<VettingRevocationRow>, AppError> {
     // (issuer, statement id) → approved requests that counted it.
     let mut counted_by: HashMap<(String, String), Vec<(Uuid, String)>> = HashMap::new();
     for request in list_join_requests(&state.join_requests_ks).await? {
@@ -239,5 +250,5 @@ pub async fn list_revocations(
             recorded_at: notice.recorded_at,
         });
     }
-    Ok(Json(VettingRevocationListResponse { revocations: rows }))
+    Ok(rows)
 }

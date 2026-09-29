@@ -76,6 +76,10 @@ pub(crate) mod admin_tasks;
 pub(crate) mod community_tasks;
 // The community's policy log and its self-hosted DID log.
 pub(crate) mod policy_tasks;
+// The administration surfaces that had only bearer REST: presentation to
+// applicants, the schema registry, vetting reads, edge suspend/restore, a join
+// request's vetting and credential query, and the host's rooms.
+pub(crate) mod surface_tasks;
 
 // The member-facing verbs that were HTTPS REST only: renewal, DID rotation,
 // personhood revocation, the relationship graph's member verbs and the
@@ -878,6 +882,13 @@ async fn dispatch_typed(
                 None => unreachable!("admin_tasks::URIS names {uri}, which it does not route"),
             }
         }
+        uri if surface_tasks::URIS.contains(&uri) => {
+            match surface_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("surface_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
         uri if policy_tasks::URIS.contains(&uri) => {
             match policy_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
@@ -1466,7 +1477,7 @@ mod spine_proof_tests {
 
         assert_eq!(
             required.len(),
-            75,
+            86,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1503,7 +1514,12 @@ mod spine_proof_tests {
              one regardless) + the 2 policy verbs `policy_tasks` moved that declare one \
              (`policy/{{upsert,activate}}`; the policy reads, `vtc/policies/test` and \
              `did-management/did/register` declare none as a request requirement, and \
-             their handlers refuse an unsigned one regardless); got {required:?}"
+             their handlers refuse an unsigned one regardless) + the 11 verbs \
+             `surface_tasks` moved that declare one (`vtc/community/{{branding,\
+             requested-attributes,join-discovery}}/update`, `vtc/schemas/{{register,delete}}`, \
+             `vtc/schemas/accepts/{{register,delete}}`, `vtc/vetting/auto-grant/update`, \
+             `vtc/relationships/{{suspend,restore}}`, `vtc/join-requests/query`; the reads \
+             declare none and their handlers refuse an unsigned one regardless); got {required:?}"
         );
     }
 
@@ -1946,6 +1962,32 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     policy_tasks::POLICY_ACTIVATE_TYPE,
     policy_tasks::POLICY_TEST_TYPE,
     policy_tasks::DID_REGISTER_TYPE,
+    // The administration surfaces that had only bearer REST. The branding,
+    // requested attributes, vetter grants, automatic grant and withdrawal
+    // notices keep their routes while `vtc-client` calls them.
+    surface_tasks::BRANDING_SHOW_TYPE,
+    surface_tasks::BRANDING_UPDATE_TYPE,
+    surface_tasks::REQUESTED_SHOW_TYPE,
+    surface_tasks::REQUESTED_UPDATE_TYPE,
+    surface_tasks::JOIN_DISCOVERY_SHOW_TYPE,
+    surface_tasks::JOIN_DISCOVERY_UPDATE_TYPE,
+    surface_tasks::SCHEMAS_REGISTER_TYPE,
+    surface_tasks::SCHEMAS_LIST_TYPE,
+    surface_tasks::SCHEMAS_SHOW_TYPE,
+    surface_tasks::SCHEMAS_DELETE_TYPE,
+    surface_tasks::ACCEPTS_REGISTER_TYPE,
+    surface_tasks::ACCEPTS_LIST_TYPE,
+    surface_tasks::ACCEPTS_SHOW_TYPE,
+    surface_tasks::ACCEPTS_DELETE_TYPE,
+    surface_tasks::VETTER_GRANTS_LIST_TYPE,
+    surface_tasks::AUTO_GRANT_SHOW_TYPE,
+    surface_tasks::AUTO_GRANT_UPDATE_TYPE,
+    surface_tasks::REVOCATIONS_LIST_TYPE,
+    surface_tasks::RELATIONSHIPS_SUSPEND_TYPE,
+    surface_tasks::RELATIONSHIPS_RESTORE_TYPE,
+    surface_tasks::JOIN_VETTING_SHOW_TYPE,
+    surface_tasks::JOIN_QUERY_TYPE,
+    surface_tasks::ROOMS_LIST_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -4218,6 +4260,29 @@ mod tests {
             policy_tasks::POLICY_ACTIVATE_TYPE,
             policy_tasks::POLICY_TEST_TYPE,
             policy_tasks::DID_REGISTER_TYPE,
+            surface_tasks::BRANDING_SHOW_TYPE,
+            surface_tasks::BRANDING_UPDATE_TYPE,
+            surface_tasks::REQUESTED_SHOW_TYPE,
+            surface_tasks::REQUESTED_UPDATE_TYPE,
+            surface_tasks::JOIN_DISCOVERY_SHOW_TYPE,
+            surface_tasks::JOIN_DISCOVERY_UPDATE_TYPE,
+            surface_tasks::SCHEMAS_REGISTER_TYPE,
+            surface_tasks::SCHEMAS_LIST_TYPE,
+            surface_tasks::SCHEMAS_SHOW_TYPE,
+            surface_tasks::SCHEMAS_DELETE_TYPE,
+            surface_tasks::ACCEPTS_REGISTER_TYPE,
+            surface_tasks::ACCEPTS_LIST_TYPE,
+            surface_tasks::ACCEPTS_SHOW_TYPE,
+            surface_tasks::ACCEPTS_DELETE_TYPE,
+            surface_tasks::VETTER_GRANTS_LIST_TYPE,
+            surface_tasks::AUTO_GRANT_SHOW_TYPE,
+            surface_tasks::AUTO_GRANT_UPDATE_TYPE,
+            surface_tasks::REVOCATIONS_LIST_TYPE,
+            surface_tasks::RELATIONSHIPS_SUSPEND_TYPE,
+            surface_tasks::RELATIONSHIPS_RESTORE_TYPE,
+            surface_tasks::JOIN_VETTING_SHOW_TYPE,
+            surface_tasks::JOIN_QUERY_TYPE,
+            surface_tasks::ROOMS_LIST_TYPE,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.

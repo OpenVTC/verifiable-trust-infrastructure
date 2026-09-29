@@ -37,6 +37,9 @@ const DELETE_TYPE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-type
 const ISSUE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/show/0.1";
+const SCHEMA_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/register/0.1";
+const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
+const ACCEPTS_DELETE_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
 const ADMIN_DID: &str = "did:key:zEndAdmin";
 const ISSUER_DID: &str = "did:key:zEndIssuer";
 const MEMBER_DID: &str = "did:key:zEndMember";
@@ -497,14 +500,14 @@ async fn delete_type_refused_while_a_criterion_names_it() {
     );
 
     // Removing the criterion releases the type — the guard is not sticky.
-    let req = Request::builder()
-        .method("DELETE")
-        .uri("/v1/schemas/accepts/kernel-developer")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, body) = signed_task(
+        &fix,
+        &fix.admin,
+        ACCEPTS_DELETE_TASK,
+        json!({ "id": "kernel-developer" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let (status, body) = delete_type(&fix, uri).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -613,26 +616,25 @@ async fn register_schema_refuses_an_external_ref() {
     let target = dir.path().join("ref-target.json");
     std::fs::write(&target, br#"{"type": "string"}"#).expect("write target");
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/schemas")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "typeUri": "https://example.test/ExternalRefCredential",
-                "dtgType": "ExternalRefCredential",
-                "kind": "issues",
-                "credentialSchema": { "$ref": format!("file://{}", target.display()) },
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
+    let (status, body) = signed_task(
+        &fix,
+        &fix.admin,
+        SCHEMA_REGISTER_TASK,
+        json!({
+            "typeUri": "https://example.test/ExternalRefCredential",
+            "dtgType": "ExternalRefCredential",
+            "kind": "issues",
+            "credentialSchema": { "$ref": format!("file://{}", target.display()) },
+        }),
+    )
+    .await;
+    assert!(
+        !status.is_success(),
         "a schema with a file:// $ref must be refused, not resolved: {body}"
+    );
+    assert_eq!(
+        body["code"], "vtc/schemas/register:invalidCredentialSchema",
+        "{body}"
     );
 }
 
@@ -640,30 +642,24 @@ async fn register_schema_refuses_an_external_ref() {
 /// query references `EndorsementCredential`, so that per-type schema is
 /// registered first — `store_accepts` refuses a dangling type reference.
 async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &str) {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/schemas")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "typeUri": "EndorsementCredential",
-                "dtgType": "EndorsementCredential",
-                "kind": "accepts",
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    let (status, body) = signed_task(
+        fix,
+        &fix.admin,
+        SCHEMA_REGISTER_TASK,
+        json!({
+            "typeUri": "EndorsementCredential",
+            "dtgType": "EndorsementCredential",
+            "kind": "accepts",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "register schema: {body}");
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/schemas/accepts")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
+    let (status, body) = signed_task(
+        fix,
+        &fix.admin,
+        ACCEPTS_REGISTER_TASK,
+        json!({
                 "id": id,
                 "description": "Two vetters, at least one in person",
                 "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
@@ -677,12 +673,10 @@ async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &st
                     "maxStatementAge": "P120D",
                     "eligibleVetters": { "role": "vetter" },
                 },
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(status, StatusCode::CREATED, "register criterion: {body}");
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "register criterion: {body}");
 }
 
 // ─── Revoke ──────────────────────────────────────────────

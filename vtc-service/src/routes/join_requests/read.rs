@@ -1,15 +1,12 @@
 //! `GET /v1/join-requests` + `GET /v1/join-requests/{id}` — admin
 //! read endpoints (M1.9.1).
 
-use axum::Json;
-use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, MAX_LIMIT, Paginated};
 
-use crate::auth::AdminAuth;
 use crate::error::TaskError;
 use crate::join::{JoinRequest, JoinStatus, get_join_request, list_join_requests_paginated};
 use crate::server::AppState;
@@ -79,31 +76,18 @@ pub(crate) async fn show_join_request(
 }
 
 /// The vetting facts a join request was decided on.
-#[utoipa::path(
-    get, path = "/join-requests/{id}/vetting", tag = "join-requests",
-    operation_id = "joinRequestVettingShow",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Join request id")),
-    responses(
-        (status = 200, description = "The vetting facts recorded for the request; `vetting` is absent when none were", body = JoinRequestVettingResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Join request not found"),
-    ),
-)]
-pub async fn show_join_request_vetting(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<JoinRequestVettingResponse>, AppError> {
+pub(crate) async fn vetting_of(
+    state: &AppState,
+    id: Uuid,
+) -> Result<JoinRequestVettingResponse, AppError> {
     get_join_request(&state.join_requests_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("join request not found: {id}")))?;
     let Some(stored) = crate::join::get_vetting_facts(&state.join_requests_ks, id).await? else {
-        return Ok(Json(JoinRequestVettingResponse {
+        return Ok(JoinRequestVettingResponse {
             request_id: id,
             vetting: None,
-        }));
+        });
     };
     let withdrawn: std::collections::HashSet<(String, String)> =
         crate::vetting::revocation::list_notices(&state.vetting_revocations_ks)
@@ -112,7 +96,7 @@ pub async fn show_join_request_vetting(
             .map(|n| (n.issuer, n.statement_id))
             .collect();
     let facts = stored.facts;
-    Ok(Json(JoinRequestVettingResponse {
+    Ok(JoinRequestVettingResponse {
         request_id: id,
         vetting: Some(JoinRequestVetting {
             criterion_id: facts.criterion_id,
@@ -148,7 +132,7 @@ pub async fn show_join_request_vetting(
             needs: facts.needs,
             recorded_at: stored.recorded_at,
         }),
-    }))
+    })
 }
 
 /// `GET /v1/join-requests/{id}/vetting` response.

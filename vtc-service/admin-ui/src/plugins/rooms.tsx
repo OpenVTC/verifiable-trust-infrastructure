@@ -62,7 +62,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { DoorOpen, RefreshCw } from "lucide-react";
 
-import { getJsonExempt, postSignedRead } from "@/lib/api";
+import { postSignedRead } from "@/lib/api";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { formatEpoch, shorten } from "@/lib/format";
 import { NamedDid } from "@/components/NamedDid";
@@ -70,6 +70,9 @@ import { useNameBook } from "@/lib/names";
 import type { HostedRoom, PolicyTestResponse } from "@/lib/wire-types";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
+/** `vtc/rooms/list/0.1` — under `vtc/`, not `rooms/`: it is answered from the
+ *  host's own admin authority, which invariant I5 forbids any `rooms/*` task. */
+const TRUST_TASK_ROOMS_LIST = "https://trusttasks.org/spec/vtc/rooms/list/0.1";
 
 /** The query the real creation path evaluates. Anything else probes a different rule. */
 const DECISION_QUERY = "data.vtc.rooms.decision";
@@ -86,18 +89,25 @@ const TIER_BLURB: Record<Tier, string> = {
 /**
  * The rooms this community hosts.
  *
- * **Exempt on purpose, and the one place in a plugin where that is not a
- * smell.** Every `rooms/*` Trust Task is authorised by a credential the ROOM
- * issued, checked against the room's own identifier — invariant I5, and what
- * lets a room change hosts. This asks the opposite question: what is this
- * *operator* storing. It is answered from the host's own admin authority, so
- * pairing it with a room task would claim a room governs an answer it has no
- * view of. The daemon mounts it off the Trust-Task router for exactly that
- * reason, so sending a header here would be inventing a task URI that names
- * nothing.
+ * A signed read of the host's own admin view: `vtc/rooms/list/0.1`, not a
+ * `rooms/*` task. Every `rooms/*` task is authorised by a credential the ROOM
+ * issued, checked against the room's own identifier (invariant I5); this asks
+ * the opposite question — what is this *operator* storing — from the host's
+ * admin authority.
  */
 async function fetchRooms(): Promise<HostedRoom[]> {
-  return getJsonExempt<HostedRoom[]>("/v1/rooms");
+  const rooms: HostedRoom[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < 20; page++) {
+    const body: { items: HostedRoom[]; nextCursor?: string | null } = await postSignedRead(
+      TRUST_TASK_ROOMS_LIST,
+      { limit: 100, ...(cursor ? { cursor } : {}) },
+    );
+    rooms.push(...body.items);
+    cursor = body.nextCursor ?? null;
+    if (!cursor) break;
+  }
+  return rooms;
 }
 
 /**

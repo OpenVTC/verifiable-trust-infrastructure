@@ -15,12 +15,9 @@
 //! So this returns the row and nothing derived from the room's contents. There is no
 //! endpoint here that returns records, and there is no member list to return.
 
-use axum::Json;
-use axum::extract::State;
 use serde::Serialize;
 use vti_common::error::AppError;
 
-use crate::auth::AdminAuth;
 use crate::server::AppState;
 
 /// One room, as its host can honestly describe it.
@@ -52,52 +49,36 @@ pub struct HostedRoom {
 }
 
 /// `GET /v1/rooms` — every room this community hosts.
-#[utoipa::path(
-    get,
-    path = "/rooms",
-    tag = "rooms",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Rooms hosted here", body = [HostedRoom]),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_rooms(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<Vec<HostedRoom>>, AppError> {
+pub(crate) async fn hosted_rooms(state: &AppState) -> Result<Vec<HostedRoom>, AppError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
     let rooms = vti_rooms::storage::list_rooms(&state.rooms_ks).await?;
-    Ok(Json(
-        rooms
-            .into_iter()
-            .map(|r| HostedRoom {
-                lifecycle: r.lifecycle(now).as_str().to_string(),
-                room_id: r.room_id,
-                owner_did: r.owner_did,
-                visibility: match r.visibility {
-                    vti_rooms::Visibility::Open => "open",
-                    vti_rooms::Visibility::Attributed => "attributed",
-                    vti_rooms::Visibility::Private => "private",
-                }
-                .to_string(),
-                retention_policy: match r.retention_policy {
-                    vti_rooms::RetentionPolicy::Chained => "chained",
-                    vti_rooms::RetentionPolicy::FromJoin => "fromJoin",
-                }
-                .to_string(),
-                epoch: r.epoch,
-                epoch_expires_at: r.epoch_expires_at,
-                retention_days: r.retention_days,
-                mirror_of: r.mirror_of,
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-            })
-            .collect(),
-    ))
+    Ok(rooms
+        .into_iter()
+        .map(|r| HostedRoom {
+            lifecycle: r.lifecycle(now).as_str().to_string(),
+            room_id: r.room_id,
+            owner_did: r.owner_did,
+            visibility: match r.visibility {
+                vti_rooms::Visibility::Open => "open",
+                vti_rooms::Visibility::Attributed => "attributed",
+                vti_rooms::Visibility::Private => "private",
+            }
+            .to_string(),
+            retention_policy: match r.retention_policy {
+                vti_rooms::RetentionPolicy::Chained => "chained",
+                vti_rooms::RetentionPolicy::FromJoin => "fromJoin",
+            }
+            .to_string(),
+            epoch: r.epoch,
+            epoch_expires_at: r.epoch_expires_at,
+            retention_days: r.retention_days,
+            mirror_of: r.mirror_of,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+        })
+        .collect())
 }

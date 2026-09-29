@@ -34,8 +34,6 @@
 use std::sync::Arc;
 
 use affinidi_openid4vp::DcqlQuery;
-use axum::Json;
-use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
@@ -43,7 +41,6 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use vta_sdk::protocols::credential_exchange::{QUERY as CREDENTIAL_QUERY_TYPE, QueryBody};
 
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use crate::ceremony::{Credential, CredentialStatus, Presentation};
@@ -238,29 +235,16 @@ pub struct SendQueryResponse {
 /// consumes the challenge.
 /// POST /join-requests/query — prepare + push a credential-exchange query to
 /// a holder for a registered Accepts criterion. Auth: Admin.
-#[utoipa::path(
-    post, path = "/join-requests/query", tag = "join-requests",
-    security(("bearer_jwt" = [])),
-    request_body = SendQueryRequest,
-    responses(
-        (status = 200, description = "Prepared query + thread to present on", body = SendQueryResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "No such Accepts criterion registered"),
-    ),
-)]
-pub async fn send_query(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<SendQueryRequest>,
-) -> Result<Json<SendQueryResponse>, AppError> {
+pub(crate) async fn send_query_inner(
+    state: &AppState,
+    body: SendQueryRequest,
+) -> Result<SendQueryResponse, AppError> {
     let thread_id = Uuid::new_v4().to_string();
-    let query = prepare_join_query(&state, &thread_id, &body.criterion_id, Utc::now()).await?;
+    let query = prepare_join_query(state, &thread_id, &body.criterion_id, Utc::now()).await?;
 
     // Best-effort DIDComm push. A failure (no mediator, unreachable holder) is not
     // fatal — the query is still returned for relay delivery.
-    let delivered = match push_credential_query(&state, &body.holder_did, &thread_id, &query).await
-    {
+    let delivered = match push_credential_query(state, &body.holder_did, &thread_id, &query).await {
         Ok(()) => {
             info!(holder = %body.holder_did, thread = %thread_id, "queued credential query for guaranteed delivery");
             true
@@ -271,12 +255,12 @@ pub async fn send_query(
         }
     };
 
-    Ok(Json(SendQueryResponse {
+    Ok(SendQueryResponse {
         thread_id,
         holder_did: body.holder_did,
         query,
         delivered,
-    }))
+    })
 }
 
 /// Push a signed `credential-exchange/query` to `holder_did`, over whichever

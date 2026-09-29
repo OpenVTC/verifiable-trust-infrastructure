@@ -11,7 +11,7 @@
 //!   2. applicant `manifest` over DIDComm               → real `manifest_inner`, DCQL criteria
 //!   3. manifest DCQL → `vp_token` via `vta_sdk::vp`     → the OpenVTC **D4** capability
 //!   4. applicant `status` over DIDComm                 → real `status_inner`, still pending
-//!   5. admin `approve` over REST                        → real ceremony issues the VMC + role VEC
+//!   5. admin `approve` as a signed document              → real ceremony issues the VMC + role VEC
 //!   6. VMC delivered to the applicant **over DIDComm**  → `credential-exchange/issue` lands
 //!
 //! This is the template a downstream consumer (OpenVTC) copies to test its join
@@ -87,11 +87,8 @@ fn init_tracing() {
 /// see the comment at the assertion for why the previous 20s was marginal.
 const CREDENTIAL_PUSH_TIMEOUT: Duration = Duration::from_secs(60);
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
-use serde_json::{Value, json};
-use tower::ServiceExt;
+use axum::http::StatusCode;
+use serde_json::json;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::auth::session::now_epoch;
@@ -183,40 +180,6 @@ async fn seed_join_ceremony(mock: &MockVtcDidcomm) -> String {
     .expect("store Accepts criterion");
 
     mock.vtc.token(ADMIN_DID, "admin", vec![]).await
-}
-
-/// `POST` a Trust-Task against the VTC's REST router (the admin surface).
-async fn rest_post(
-    mock: &MockVtcDidcomm,
-    uri: &str,
-    trust_task: &str,
-    token: &str,
-    body: Value,
-) -> (StatusCode, Value) {
-    let res = mock
-        .vtc
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("Trust-Task", trust_task)
-                .header("Authorization", format!("Bearer {token}"))
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .expect("oneshot");
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-    };
-    (status, json)
 }
 
 #[tokio::test]
@@ -776,18 +739,19 @@ async fn a_delivered_invitation_arrives_as_an_offer() {
 async fn a_join_query_is_answered_by_a_present_on_its_thread() {
     init_tracing();
     let mock = MockVtcDidcomm::start().await;
-    let admin_token = seed_join_ceremony(&mock).await;
+    seed_join_ceremony(&mock).await;
     let vtc_did = mock.vtc_did().to_string();
     let holder = mock.client.did().to_string();
 
-    let (status, sent) = rest_post(
-        &mock,
-        "/v1/join-requests/query",
-        "x",
-        &admin_token,
+    let admin = common::signed::admin(&mock.vtc).await;
+    let (status, sent) = common::signed::call(
+        &mock.vtc,
+        &admin,
+        "https://trusttasks.org/spec/vtc/join-requests/query/0.1",
         json!({ "holderDid": holder, "criterionId": "membership" }),
     )
     .await;
+    let sent = sent["payload"].clone();
     assert_eq!(status, StatusCode::OK, "{sent}");
     assert_eq!(
         sent["delivered"], true,
