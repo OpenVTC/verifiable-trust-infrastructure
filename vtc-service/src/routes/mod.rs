@@ -1278,12 +1278,11 @@ mod openapi_tests {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
         }
         assert!(
-            // Was 45; five REST-only paths (renew, rotate, rotate-challenge,
-            // personhood/revoke, members/{did}/relationships) were retired
-            // once the signed-document spine covered them and their bearer
-            // callers moved onto it (#1809 + this PR).
-            paths.len() >= 40,
-            "expected the documented surface to be >= 40 paths, got {}",
+            // Was 45; REST-only paths keep retiring as the signed-document
+            // spine covers them and their bearer callers move onto it
+            // (#1809, #1841 and this PR) — the floor falls with them.
+            paths.len() >= 30,
+            "expected the documented surface to be >= 30 paths, got {}",
             paths.len()
         );
     }

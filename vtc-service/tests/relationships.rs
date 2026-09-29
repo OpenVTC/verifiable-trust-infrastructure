@@ -421,6 +421,16 @@ async fn graph_as_admin(vtc: &TestVtc) -> (StatusCode, Value) {
     (status, doc["payload"].clone())
 }
 
+/// `vtc/relationships/list/0.2` for `did`, signed by a fresh unrestricted
+/// administrator — any current member or administrator may read it, so who
+/// signs is unrelated to whose edges are being listed.
+async fn list_relationships(fix: &Fixture, did: &str) -> (StatusCode, Value) {
+    let admin = common::signed::admin(&fix._vtc).await;
+    let (status, doc) =
+        common::signed::call(&fix._vtc, &admin, LIST_TASK, json!({ "did": did })).await;
+    (status, doc["payload"].clone())
+}
+
 /// Whether the community graph currently reports the pair as a mutual
 /// relationship. Read through the admin surface rather than the keyspace,
 /// because the claim is about what an operator is told.
@@ -614,15 +624,7 @@ async fn list_returns_issued_and_received_edges() {
         .unwrap();
     let _r3 = seed_relationship(&fix, STRANGER_DID, SUBJECT_DID).await;
 
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/v1/members/{ISSUER_DID}/relationships"))
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", LIST_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = list_relationships(&fix, ISSUER_DID).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     let items = v["items"].as_array().expect("items array");
     assert_eq!(items.len(), 2, "issuer's list = own issued + received");
@@ -640,15 +642,11 @@ async fn list_returns_issued_and_received_edges() {
 #[tokio::test]
 async fn list_for_a_did_that_is_not_a_member_is_the_declared_not_found() {
     let fix = build_fixture().await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/members/did:key:zNeverAdmitted/relationships")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", LIST_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    // `notFound` is a declared code, so it rides the framework's flat 422
+    // bucket for extended codes over the signed door (not the REST route's
+    // old 404).
+    let (status, body) = list_relationships(&fix, "did:key:zNeverAdmitted").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), LIST_ERR_NOT_FOUND, "{body}");
 }
 
@@ -661,16 +659,8 @@ async fn list_strips_rows_where_other_party_purged() {
     delete_acl_entry(&fix.acl_ks, SUBJECT_DID).await.unwrap();
     delete_member(&fix.members_ks, SUBJECT_DID).await.unwrap();
 
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/v1/members/{ISSUER_DID}/relationships"))
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", LIST_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, v) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, v) = list_relationships(&fix, ISSUER_DID).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
     let items = v["items"].as_array().unwrap();
     assert!(
         items.is_empty(),
@@ -691,16 +681,8 @@ async fn list_keeps_rows_for_tombstoned_other_party() {
     m.tombstone();
     store_member(&fix.members_ks, &m).await.unwrap();
 
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/v1/members/{ISSUER_DID}/relationships"))
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", LIST_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, v) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, v) = list_relationships(&fix, ISSUER_DID).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
     let items = v["items"].as_array().unwrap();
     assert_eq!(
         items.len(),
