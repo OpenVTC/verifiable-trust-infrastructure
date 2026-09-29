@@ -12,7 +12,6 @@ pub(crate) mod did_log;
 pub(crate) mod directory;
 pub(crate) mod endorsement_types;
 pub(crate) mod endorsements;
-pub(crate) mod git_ns;
 pub(crate) mod health;
 pub(crate) mod install;
 pub(crate) mod invitations;
@@ -90,6 +89,12 @@ use crate::server::AppState;
         policies::read::PolicyStatusFilter,
         crate::git_ns::admin_reads::GitNsNamespaceList,
         crate::git_ns::admin_reads::GitNsRepoList,
+        crate::git_ns::admin_reads::GitNsRightList,
+        crate::git_ns::admin_reads::GitNsDepartedGrants,
+        crate::git_ns::admin_reads::GitNsJobList,
+        crate::git_ns::admin_reads::GitNsProjection,
+        crate::git_ns::admin_reads::GitNsAccountList,
+        crate::git_ns::admin_reads::GitNsActivity,
         // A repository's drift, as `git-ns/view/0.5`'s `repos[].sync` carries it.
         vta_sdk::openapi::GitNsView01DriftItem,
         acl::AclListResponse,
@@ -437,30 +442,14 @@ fn build_api_chain(
     // the POST task on the shared mount.
 
     let api = OpenApiRouter::<AppState>::new()
-        // The administrator's read surface over the git namespaces — the
-        // admin console's Repos plugin. Mutations are not here: each is a
-        // signed `git-ns/*` Trust Task, authorized by the signer's git rights,
-        // on the document endpoint.
-        //
-        // These are console projections no specification defines; gating them
-        // on a `git-ns/*` URL would claim a response shape they do not have
-        // (the conformance layer refuses exactly that), and binding a URI the
-        // registry does not publish is what `trust_task_manifest` refuses.
-        // They stay behind the admin session (and, for `activity`, any
-        // session, narrowed to the namespaces the caller administers).
-        //
-        // The administrator's view, the namespace and repository listings,
-        // the break-glass list and each repository's drift have no route:
-        // they are the signed `git-ns/view/0.5` (`scope: administrator`, whose
-        // `repos[].sync` carries the drift), `git-ns/namespace/list/0.1` and
-        // `git-ns/repo/list/0.1`, answered to a namespace's administrators
-        // on the document endpoint (`git_ns::admin_reads`).
-        .routes(routes!(git_ns::rights_list))
-        .routes(routes!(git_ns::issued_by_departed))
-        .routes(routes!(git_ns::jobs_list))
-        .routes(routes!(git_ns::projection_show))
-        .routes(routes!(git_ns::accounts_list))
-        .routes(routes!(git_ns::activity))
+        // The git namespace family has no REST route at all: every mutation
+        // and every read — the administrator's view, the namespace and
+        // repository listings, the break-glass list, each repository's
+        // drift, the rights lists, the bridge job queue, the Trust Registry
+        // projection, the linked-account roster and the activity feed alike
+        // — is a signed `git-ns/*` Trust Task on the document endpoint
+        // (`git_ns::admin_reads`, `git_ns::tasks`), authorized by the
+        // signer's own git rights or ACL capability.
         // BitstringStatusList publication (M2.11). Trust-Task-
         // exempt — external verifiers don't carry our extension
         // header (same rationale as `did.jsonl`).
@@ -1287,9 +1276,11 @@ mod openapi_tests {
         ] {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
         }
+        // A floor, not a count: it catches the spec losing whole groups, and
+        // falls as REST routes move to signed-only Trust Tasks.
         assert!(
-            paths.len() >= 45,
-            "expected the documented surface to be >= 45 paths, got {}",
+            paths.len() >= 30,
+            "expected the documented surface to be >= 30 paths, got {}",
             paths.len()
         );
     }
@@ -1325,6 +1316,12 @@ mod openapi_tests {
             "/v1/auth/sessions",
             "/v1/auth/sessions/{session_id}",
             "/v1/git-ns/drift",
+            "/v1/git-ns/rights",
+            "/v1/git-ns/rights/issued-by-departed",
+            "/v1/git-ns/jobs",
+            "/v1/git-ns/projection",
+            "/v1/git-ns/accounts",
+            "/v1/git-ns/activity",
             "/v1/community/profile",
             "/v1/ceremonies",
             "/v1/directory/{did}",

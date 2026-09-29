@@ -47,6 +47,11 @@ use trust_tasks_rs::specs::git_ns::roles::reproject::v0_1 as reproject;
 use trust_tasks_rs::specs::git_ns::view::{v0_1 as view, v0_2 as view2, v0_4 as view4};
 use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 
+use super::admin_reads::{
+    account_list_v0_1, activity_list_v0_1, bridge_job_list_v0_1, projection_show_v0_1,
+    right_issued_by_departed_v0_1, right_list_v0_1,
+};
+
 use crate::server::AppState;
 use crate::trust_tasks::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
@@ -139,6 +144,15 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_event)
         .on_async(handle_event_v2)
         .on_async(handle_event_v3)
+        // The six community-administrator and administrator reads that once
+        // had only bearer REST (`super::admin_reads`, trust-tasks-rs 0.24.7,
+        // trustoverip/dtgwg-trust-tasks-tf#686).
+        .on_async(handle_right_list)
+        .on_async(handle_right_issued_by_departed)
+        .on_async(handle_bridge_job_list)
+        .on_async(handle_projection_show)
+        .on_async(handle_account_list)
+        .on_async(handle_activity_list)
 }
 
 /// Render an operation's outcome.
@@ -331,6 +345,38 @@ signed_handler!(
     handle_repo_list,
     super::admin_reads::repo_list_v0_1::Payload,
     super::admin_reads::repo_list
+);
+// The six reads that once had only bearer REST (`super::admin_reads`,
+// trust-tasks-rs 0.24.7, trustoverip/dtgwg-trust-tasks-tf#686).
+signed_handler!(
+    handle_right_list,
+    right_list_v0_1::Payload,
+    super::admin_reads::right_list
+);
+signed_handler!(
+    handle_right_issued_by_departed,
+    right_issued_by_departed_v0_1::Payload,
+    super::admin_reads::right_issued_by_departed
+);
+signed_handler!(
+    handle_bridge_job_list,
+    bridge_job_list_v0_1::Payload,
+    super::admin_reads::bridge_job_list
+);
+signed_handler!(
+    handle_projection_show,
+    projection_show_v0_1::Payload,
+    super::admin_reads::projection_show
+);
+signed_handler!(
+    handle_account_list,
+    account_list_v0_1::Payload,
+    super::admin_reads::account_list
+);
+signed_handler!(
+    handle_activity_list,
+    activity_list_v0_1::Payload,
+    super::admin_reads::activity_list
 );
 signed_handler!(
     handle_reproject,
