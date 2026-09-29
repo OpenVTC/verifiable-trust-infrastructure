@@ -6,6 +6,7 @@ mod config;
 mod consent;
 mod did_log;
 mod git;
+mod member;
 mod setup;
 mod vetting;
 mod vtc;
@@ -211,6 +212,14 @@ enum Commands {
     Access {
         #[command(subcommand)]
         command: access::AccessCommands,
+    },
+
+    /// Member-facing verbs on your own membership and relationships: renew,
+    /// rotate, personhood revoke, relationships list/publish/revoke, and
+    /// issuing a custom endorsement (Admin or Issuer).
+    Member {
+        #[command(subcommand)]
+        command: member::MemberCommands,
     },
 
     /// Answer the community's consent requests: making or widening an
@@ -938,6 +947,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Git { .. }
             | Commands::Consent { .. }
             | Commands::Access { .. }
+            | Commands::Member { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
     )
@@ -1522,6 +1532,14 @@ async fn main() {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => {
                     access::run(command, &key, &target, cli.transport.into()).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Member { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    member::run(command, &key, &target, cli.transport.into()).await
                 }
                 Err(e) => Err(e),
             }
