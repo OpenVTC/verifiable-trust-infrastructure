@@ -76,6 +76,8 @@ impl ListenerProver for DIDCommServiceProver {
         resolved: &ResolvedMediator,
         vta_did: &str,
         timeout: Duration,
+        setup_acl: bool,
+        channel: &str,
     ) -> Result<(), ProverFailure> {
         let service = self
             .bridge
@@ -131,7 +133,16 @@ impl ListenerProver for DIDCommServiceProver {
         };
 
         let outcome = self
-            .connect_and_ping(&atm, &service, &profile, &candidate_id, vta_did, timeout)
+            .connect_and_ping(
+                &atm,
+                &service,
+                &profile,
+                &candidate_id,
+                vta_did,
+                timeout,
+                setup_acl,
+                channel,
+            )
             .await;
 
         if let Err(failure) = outcome {
@@ -163,6 +174,8 @@ impl DIDCommServiceProver {
         candidate_id: &str,
         vta_did: &str,
         timeout: Duration,
+        setup_acl: bool,
+        channel: &str,
     ) -> Result<(), ProverFailure> {
         let connect_fail = |cause: String| ProverFailure {
             stage: HandshakeStage::Connect,
@@ -177,6 +190,11 @@ impl DIDCommServiceProver {
                     "timeout enabling candidate mediator websocket".to_string(),
                 ));
             }
+        }
+
+        if setup_acl {
+            vta_sdk::acl_setup::set_client_acl_with_profile(atm, profile, vta_did, channel, "VTA")
+                .await;
         }
 
         let transport: Arc<dyn MessageTransport> =

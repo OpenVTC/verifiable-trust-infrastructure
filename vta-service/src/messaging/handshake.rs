@@ -107,6 +107,11 @@ impl HandshakeError {
 #[derive(Debug, Clone)]
 pub struct HandshakeOptions {
     pub timeout: Duration,
+    /// Provision the VTA's account ACL on the candidate mediator before the
+    /// forwarded self trust-ping.
+    pub setup_acl: bool,
+    /// Audit/logging channel used by mediator ACL provisioning.
+    pub channel: String,
     /// Skip steps 2–5. Step 1 (DID resolution) is always performed —
     /// a malformed or unresolvable DID is always a hard failure.
     pub force: bool,
@@ -116,6 +121,8 @@ impl Default for HandshakeOptions {
     fn default() -> Self {
         Self {
             timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            setup_acl: false,
+            channel: "protocol-management".to_string(),
             force: false,
         }
     }
@@ -137,6 +144,8 @@ pub trait ListenerProver: Send + Sync {
         resolved: &ResolvedMediator,
         vta_did: &str,
         timeout: Duration,
+        setup_acl: bool,
+        channel: &str,
     ) -> Result<(), ProverFailure>;
 }
 
@@ -175,7 +184,16 @@ pub async fn mediator_handshake(
     }
 
     // Steps 2–5 via the prover.
-    if let Err(failure) = prover.prove(&resolved, vta_did, opts.timeout).await {
+    if let Err(failure) = prover
+        .prove(
+            &resolved,
+            vta_did,
+            opts.timeout,
+            opts.setup_acl,
+            &opts.channel,
+        )
+        .await
+    {
         emit_failed(telemetry, mediator_did, failure.stage, &failure.cause).await;
         return Err(HandshakeError::Failed {
             stage: failure.stage,
@@ -259,6 +277,8 @@ impl ListenerProver for AlwaysOkProver {
         _resolved: &ResolvedMediator,
         _vta_did: &str,
         _timeout: Duration,
+        _setup_acl: bool,
+        _channel: &str,
     ) -> Result<(), ProverFailure> {
         Ok(())
     }
@@ -279,6 +299,8 @@ impl ListenerProver for FailingProver {
         _resolved: &ResolvedMediator,
         _vta_did: &str,
         _timeout: Duration,
+        _setup_acl: bool,
+        _channel: &str,
     ) -> Result<(), ProverFailure> {
         Err(ProverFailure {
             stage: self.stage,
@@ -404,7 +426,13 @@ mod tests {
             endpoint: "wss://fake".into(),
         };
         let failure = prover
-            .prove(&resolved, "did:webvh:vta", Duration::from_secs(1))
+            .prove(
+                &resolved,
+                "did:webvh:vta",
+                Duration::from_secs(1),
+                false,
+                "test",
+            )
             .await
             .unwrap_err();
         assert_eq!(failure.stage, HandshakeStage::TrustPing);

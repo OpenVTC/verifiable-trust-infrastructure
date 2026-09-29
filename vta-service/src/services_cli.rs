@@ -503,6 +503,7 @@ pub async fn run_services_didcomm_enable(
         &d.auth,
         EnableDidcommParams {
             mediator_did,
+            setup_acl: false,
             force,
             handshake_timeout: timeout,
         },
@@ -539,6 +540,7 @@ pub async fn run_services_didcomm_update(
         UpdateDidcommParams {
             new_mediator_did,
             drain_ttl: std::time::Duration::from_secs(drain_ttl_secs),
+            setup_acl: false,
             force,
             handshake_timeout: std::time::Duration::from_secs(handshake_timeout_secs.unwrap_or(10)),
             audit_kind: MigrateAuditKind::Forward,

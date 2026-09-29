@@ -53,6 +53,126 @@ fn resolver(state: &AppState) -> Result<affinidi_did_resolver_cache_sdk::DIDCach
         .ok_or_else(|| AppError::Internal("DID resolver not available".into()))
 }
 
+fn setup_acl_from_ext<T: serde::Serialize>(ext: Option<&T>) -> Result<bool, AppError> {
+    let Some(ext) = ext else { return Ok(false) };
+    let value = serde_json::to_value(ext)
+        .map_err(|e| AppError::Validation(format!("invalid service extension: {e}")))?;
+    match value
+        .get("org.openvtc")
+        .and_then(|namespace| namespace.get("setupAcl"))
+    {
+        None => Ok(false),
+        Some(Value::Bool(enabled)) => Ok(*enabled),
+        Some(_) => Err(AppError::Validation(
+            "ext.org.openvtc.setupAcl must be a boolean".into(),
+        )),
+    }
+}
+
+/// Assemble the live mediator prover for a DIDComm update when the VTA's
+/// running delivery layer is available. Trust Task service updates can arrive
+/// over REST, DIDComm, or TSP, but the DIDComm operation still needs the VTA's
+/// existing mediator session to prove the candidate before promotion.
+#[cfg(feature = "didcomm")]
+async fn live_didcomm_prover(
+    state: &AppState,
+) -> Option<crate::messaging::live_prover::DIDCommServiceProver> {
+    let vta_did = {
+        let config = state.config.read().await;
+        config.vta_did.clone()?
+    };
+    crate::messaging::live_prover::try_build_from_parts(
+        &state.didcomm_bridge,
+        &vta_did,
+        state.secrets_resolver.as_ref()?,
+        state.signing_vm_id.as_ref()?,
+        state.ka_vm_id.as_ref()?,
+    )
+    .await
+}
+
+#[cfg(feature = "didcomm")]
+async fn run_first_enable_handshake(
+    state: &AppState,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    mediator_did: &str,
+    timeout: std::time::Duration,
+    setup_acl: bool,
+) -> Result<(), crate::messaging::handshake::HandshakeError> {
+    use crate::messaging::handshake::{HandshakeError, HandshakeOptions, HandshakeStage};
+    use crate::messaging::transient_handshake::{
+        TransientHandshakeContext, run_transient_handshake,
+    };
+    use affinidi_tdk::common::config::TDKConfig;
+    use affinidi_tdk::secrets_resolver::SecretsResolver;
+
+    let missing = |name: &str| HandshakeError::Failed {
+        stage: HandshakeStage::Connect,
+        cause: format!("first-enable handshake prerequisite missing: {name}"),
+    };
+    let secrets_resolver = state
+        .secrets_resolver
+        .as_ref()
+        .ok_or_else(|| missing("secrets resolver"))?;
+    let signing_vm_id = state
+        .signing_vm_id
+        .as_ref()
+        .ok_or_else(|| missing("signing verification method"))?;
+    let ka_vm_id = state
+        .ka_vm_id
+        .as_ref()
+        .ok_or_else(|| missing("key-agreement verification method"))?;
+    let vta_did = state
+        .config
+        .read()
+        .await
+        .vta_did
+        .clone()
+        .ok_or_else(|| missing("VTA DID"))?;
+
+    let mut secrets = Vec::with_capacity(2);
+    if let Some(secret) = secrets_resolver.get_secret(signing_vm_id).await {
+        secrets.push(secret);
+    }
+    if let Some(secret) = secrets_resolver.get_secret(ka_vm_id).await {
+        secrets.push(secret);
+    }
+    if secrets.is_empty() {
+        return Err(missing("VTA signing and key-agreement secrets"));
+    }
+
+    let mut resolver = resolver.clone();
+    crate::server::preload_self_did_document(&mut resolver, &vta_did, Some(&state.webvh_ks)).await;
+
+    let tdk_config = TDKConfig::builder()
+        .with_did_resolver(resolver.clone())
+        .with_load_environment(false)
+        .build()
+        .map_err(|e| HandshakeError::Failed {
+            stage: HandshakeStage::Connect,
+            cause: format!("build resolver-backed TDK config: {e}"),
+        })?;
+
+    run_transient_handshake(
+        TransientHandshakeContext {
+            vta_did,
+            secrets,
+            tdk_config: Some(tdk_config),
+        },
+        &resolver,
+        &state.telemetry,
+        mediator_did,
+        HandshakeOptions {
+            timeout,
+            setup_acl,
+            channel: TRANSPORT_TRUST_TASK.to_string(),
+            force: false,
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
 /// Map one SDK state record onto the published shape.
 ///
 /// `drains_until` has no SDK counterpart on the state record — a drain is
@@ -349,6 +469,10 @@ pub(super) async fn handle_enable(
     };
     let deps = ServiceOpDeps::from_app_state(state_, &resolver);
     use spec::enable::v1_0::ServiceKind as K;
+    let setup_acl = match setup_acl_from_ext(req.ext.as_ref()) {
+        Ok(value) => value,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
 
     let result = match req.service {
         K::Rest => {
@@ -404,22 +528,35 @@ pub(super) async fn handle_enable(
             mutation(r.new_version_id, r.vta_did, r.serverless, None, None)
         }
         K::Didcomm => {
-            // `AlwaysOkProver` for the same reason the REST enable route uses
-            // it: the handshake's steps 2-5 need a running `DIDCommService`,
-            // and at first-enable there is not one yet. The steady-state case
-            // — where DIDComm is already up — goes through `update`, which
-            // builds a live prover.
+            // The transient handshake below proves the candidate before the
+            // operation's AlwaysOkProver avoids repeating that work.
             let mediator_did =
                 match need_mediator(req.config.mediator_did.clone().map(String::from)) {
                     Ok(m) => m,
                     Err(e) => return app_error_to_reject(&doc, e),
                 };
+            let force = req.config.force.unwrap_or(false);
+            let handshake_timeout = std::time::Duration::from_secs(
+                req.config.handshake_timeout_secs.map_or(10, u64::from),
+            );
+            #[cfg(feature = "didcomm")]
+            if !force
+                && let Err(error) = run_first_enable_handshake(
+                    state_,
+                    &resolver,
+                    &mediator_did,
+                    handshake_timeout,
+                    setup_acl,
+                )
+                .await
+            {
+                return app_error_to_reject(&doc, AppError::Conflict(error.to_string()));
+            }
             let params = crate::operations::protocol::enable_didcomm::EnableDidcommParams {
                 mediator_did,
-                force: req.config.force.unwrap_or(false),
-                handshake_timeout: std::time::Duration::from_secs(
-                    req.config.handshake_timeout_secs.map_or(10, u64::from),
-                ),
+                setup_acl,
+                force,
+                handshake_timeout,
             };
             let prover = crate::messaging::handshake::AlwaysOkProver;
             let r = op!(
@@ -492,6 +629,10 @@ pub(super) async fn handle_update(
         Err(e) => return app_error_to_reject(&doc, e),
     };
     let deps = ServiceOpDeps::from_app_state(state_, &resolver);
+    let setup_acl = match setup_acl_from_ext(req.ext.as_ref()) {
+        Ok(value) => value,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
 
     let result = match req.service {
         K::Rest => {
@@ -555,7 +696,40 @@ pub(super) async fn handle_update(
                     Ok(m) => m,
                     Err(e) => return app_error_to_reject(&doc, e),
                 };
-            let prover = crate::messaging::handshake::AlwaysOkProver;
+            let force = req.config.force.unwrap_or(false);
+            #[cfg(feature = "didcomm")]
+            let live_prover = live_didcomm_prover(state_).await;
+            let always_ok = crate::messaging::handshake::AlwaysOkProver;
+            let prover: &(dyn crate::messaging::handshake::ListenerProver + Send + Sync) = {
+                #[cfg(feature = "didcomm")]
+                if force {
+                    &always_ok
+                } else if let Some(prover) = live_prover.as_ref() {
+                    prover
+                } else {
+                    return app_error_to_reject(
+                        &doc,
+                        AppError::ServiceError {
+                            status: axum::http::StatusCode::BAD_GATEWAY,
+                            message: "DIDComm messaging is not running; cannot prove the candidate mediator"
+                                .into(),
+                        },
+                    );
+                }
+                #[cfg(not(feature = "didcomm"))]
+                if force {
+                    &always_ok
+                } else {
+                    return app_error_to_reject(
+                        &doc,
+                        AppError::ServiceError {
+                            status: axum::http::StatusCode::BAD_GATEWAY,
+                            message: "DIDComm support is not compiled in; cannot prove the candidate mediator"
+                                .into(),
+                        },
+                    );
+                }
+            };
             // `update/1.1`'s window when one is asked for, else the floor. Over
             // a request that arrived through the mediator being replaced, a
             // value below the floor is raised to it rather than refused — the
@@ -577,7 +751,8 @@ pub(super) async fn handle_update(
             let params = crate::operations::protocol::update_didcomm::UpdateDidcommParams {
                 new_mediator_did: mediator_did,
                 drain_ttl,
-                force: req.config.force.unwrap_or(false),
+                setup_acl,
+                force,
                 handshake_timeout: std::time::Duration::from_secs(
                     req.config.handshake_timeout_secs.map_or(10, u64::from),
                 ),
@@ -588,7 +763,7 @@ pub(super) async fn handle_update(
                 &doc,
                 crate::operations::protocol::update_didcomm::update_didcomm(
                     &deps,
-                    &prover,
+                    prover,
                     auth,
                     params,
                     OpContext::Direct,
@@ -1109,5 +1284,32 @@ pub(super) async fn handle_report(
             &doc,
             AppError::Internal(format!("report does not match its schema: {e}")),
         ),
+    }
+}
+
+#[cfg(test)]
+mod setup_acl_extension_tests {
+    use super::*;
+
+    #[test]
+    fn reads_setup_acl_from_the_openvtc_extension() {
+        let payload: spec::update::v1_1::Payload = serde_json::from_value(serde_json::json!({
+            "service": "didcomm",
+            "config": { "mediatorDid": "did:web:mediator.example" },
+            "ext": { "org.openvtc": { "setupAcl": true } }
+        }))
+        .unwrap();
+        assert!(setup_acl_from_ext(payload.ext.as_ref()).unwrap());
+    }
+
+    #[test]
+    fn rejects_a_non_boolean_setup_acl_extension() {
+        let payload: spec::update::v1_1::Payload = serde_json::from_value(serde_json::json!({
+            "service": "didcomm",
+            "config": { "mediatorDid": "did:web:mediator.example" },
+            "ext": { "org.openvtc": { "setupAcl": "yes" } }
+        }))
+        .unwrap();
+        assert!(setup_acl_from_ext(payload.ext.as_ref()).is_err());
     }
 }

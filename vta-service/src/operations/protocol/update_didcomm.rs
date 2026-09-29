@@ -29,7 +29,7 @@ use chrono::Utc;
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use vti_common::config::MessagingConfig;
 use vti_common::telemetry::{TelemetryEvent, TelemetryKind};
@@ -70,6 +70,7 @@ impl MigrateAuditKind {
 pub struct UpdateDidcommParams {
     pub new_mediator_did: String,
     pub drain_ttl: Duration,
+    pub setup_acl: bool,
     pub force: bool,
     pub handshake_timeout: Duration,
     pub audit_kind: MigrateAuditKind,
@@ -96,6 +97,10 @@ pub struct UpdateDidcommResult {
 
 #[derive(Debug, Error)]
 pub enum UpdateDidcommError {
+    #[error(
+        "`setup_acl` cannot be combined with `force` because ACL provisioning requires a live mediator connection"
+    )]
+    SetupAclWithForce,
     #[error(
         "DIDComm is not currently enabled. Use `pnm services didcomm enable --mediator-did <did>` first."
     )]
@@ -171,6 +176,10 @@ pub async fn update_didcomm(
     auth.require_super_admin()
         .map_err(|e| UpdateDidcommError::Auth(e.to_string()))?;
 
+    if params.setup_acl && params.force {
+        return Err(UpdateDidcommError::SetupAclWithForce);
+    }
+
     let _guard = PROTOCOL_LOCK.lock().await;
 
     // 0. Drain-TTL bounds check — centralised in `protocol::
@@ -222,6 +231,8 @@ pub async fn update_didcomm(
         &vta_did,
         HandshakeOptions {
             timeout: params.handshake_timeout,
+            setup_acl: params.setup_acl,
+            channel: channel.to_string(),
             force: params.force,
         },
     )
@@ -246,7 +257,13 @@ pub async fn update_didcomm(
     .await?;
 
     // Persist config: messaging.mediator_did = new.
-    persist_new_mediator(deps.config, &resolved.mediator_did, &resolved.endpoint).await?;
+    persist_new_mediator(
+        deps.config,
+        &resolved.mediator_did,
+        &resolved.endpoint,
+        params.setup_acl,
+    )
+    .await?;
 
     // Promote new mediator; place prior in drain. The
     // record_activate call evicts any drain entry for the new
@@ -257,6 +274,25 @@ pub async fn update_didcomm(
             endpoint: resolved.endpoint.clone(),
         })
         .await;
+
+    // The registry records which mediator is active; the delivery service owns
+    // the socket every outbound `send` picks. Both have to move, or replies go
+    // out over the mediator this operation just drained while clients — reading
+    // the DID document we published above — are already on the new one.
+    //
+    // When the request arrived over DIDComm it still has a reply to send, and
+    // `handle_didcomm` sends that over the primary *after* this function
+    // returns — so switching inline routes the reply to a mediator the caller
+    // has not joined yet, and the mediator refuses it as `access_list denied`.
+    {
+        use crate::operations::protocol::disable_didcomm::DisableTransport;
+        match params.transport {
+            DisableTransport::Didcomm => {
+                promote_delivery_primary_after_reply(deps, resolved.mediator_did.clone())
+            }
+            DisableTransport::Rest => promote_delivery_primary(deps, &resolved.mediator_did),
+        }
+    }
 
     let deadline = Utc::now()
         + chrono::Duration::from_std(params.drain_ttl).map_err(|e| {
@@ -350,6 +386,7 @@ async fn persist_new_mediator(
     config: &Arc<RwLock<AppConfig>>,
     mediator_did: &str,
     mediator_endpoint: &str,
+    setup_acl: bool,
 ) -> Result<(), UpdateDidcommError> {
     let (contents, path) = {
         let mut cfg = config.write().await;
@@ -357,9 +394,7 @@ async fn persist_new_mediator(
             mediator_url: mediator_endpoint.to_string(),
             mediator_did: mediator_did.to_string(),
             mediator_host: None,
-            // Preserve the existing setup_acl setting if the config already has
-            // a messaging section; otherwise default to false.
-            setup_acl: cfg.messaging.as_ref().is_some_and(|m| m.setup_acl),
+            setup_acl: setup_acl || cfg.messaging.as_ref().is_some_and(|m| m.setup_acl),
             drain_inbox_on_start: cfg
                 .messaging
                 .as_ref()
@@ -379,6 +414,63 @@ async fn best_effort_endpoint(resolver: &DIDCacheClient, mediator_did: &str) -> 
     match crate::messaging::handshake::resolve_mediator(resolver, mediator_did).await {
         Ok(r) => r.endpoint,
         Err(_) => String::new(),
+    }
+}
+
+/// Switch the delivery layer's outbound primary to the newly-activated mediator.
+///
+/// Best-effort: the transport only exists when the live prover ran, so a `force`
+/// or fixture-prover update has nothing to promote. Warning rather than failing
+/// is deliberate — the LogEntry is already published by this point, so refusing
+/// here would leave the advertised document and the runtime disagreeing with no
+/// way back.
+fn promote_delivery_primary(deps: &ServiceOpDeps<'_>, mediator_did: &str) {
+    match deps.didcomm_bridge.messaging_handle() {
+        Some(service) => log_promote(&service, mediator_did),
+        None => debug!(
+            mediator = %mediator_did,
+            "DIDComm messaging is not running; nothing to promote"
+        ),
+    }
+}
+
+/// Grace period before switching the primary when the migrating request arrived
+/// over DIDComm.
+///
+/// A reply has to leave over the mediator it came in on, and the delivery layer
+/// gives subscribers no way to say so: `deliver_unsolicited` broadcasts the
+/// `Inbound` without the source `TransportId` it used for the ack, so
+/// `handle_didcomm` can only send over the primary. Until that is fixed
+/// upstream, the switch waits instead.
+///
+/// Bounded by the drain: `MIN_DRAIN_TTL_OVER_DIDCOMM` keeps the prior transport
+/// installed for at least an hour on this path, so seconds here cost nothing.
+const PROMOTE_GRACE_OVER_DIDCOMM: Duration = Duration::from_secs(5);
+
+/// [`promote_delivery_primary`], delayed past the in-flight reply.
+fn promote_delivery_primary_after_reply(deps: &ServiceOpDeps<'_>, mediator_did: String) {
+    let bridge = Arc::clone(deps.didcomm_bridge);
+    tokio::spawn(async move {
+        tokio::time::sleep(PROMOTE_GRACE_OVER_DIDCOMM).await;
+        match bridge.messaging_handle() {
+            Some(service) => log_promote(&service, &mediator_did),
+            None => debug!(
+                mediator = %mediator_did,
+                "DIDComm messaging is not running; nothing to promote"
+            ),
+        }
+    });
+}
+
+fn log_promote(service: &affinidi_messaging_delivery::MessagingService, mediator_did: &str) {
+    match service.promote(mediator_did) {
+        Ok(()) => info!(mediator = %mediator_did, "outbound primary transport promoted"),
+        Err(e) => warn!(
+            mediator = %mediator_did,
+            error = %e,
+            "could not promote the new mediator's transport — outbound traffic keeps using the \
+             prior mediator until the VTA restarts"
+        ),
     }
 }
 
@@ -451,6 +543,44 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn persistence_enables_setup_acl_when_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = fresh_config(dir.path(), true);
+
+        persist_new_mediator(&config, "did:web:new.example", "wss://new.example/ws", true)
+            .await
+            .unwrap();
+
+        assert!(config.read().await.messaging.as_ref().unwrap().setup_acl);
+        let persisted = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(persisted.contains("setup_acl = true"));
+    }
+
+    #[tokio::test]
+    async fn persistence_does_not_disable_existing_setup_acl() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = fresh_config(dir.path(), true);
+        config.write().await.messaging = Some(MessagingConfig {
+            mediator_url: "wss://old.example/ws".into(),
+            mediator_did: "did:web:old.example".into(),
+            mediator_host: None,
+            setup_acl: true,
+            drain_inbox_on_start: false,
+        });
+
+        persist_new_mediator(
+            &config,
+            "did:web:new.example",
+            "wss://new.example/ws",
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(config.read().await.messaging.as_ref().unwrap().setup_acl);
     }
 
     /// Owns every keyspace + shared infra and hands out a borrowed
@@ -533,11 +663,36 @@ mod tests {
         UpdateDidcommParams {
             new_mediator_did: new_mediator.into(),
             drain_ttl: Duration::from_secs(3600),
+            setup_acl: false,
             force: false,
             handshake_timeout: Duration::from_secs(1),
             audit_kind: MigrateAuditKind::Forward,
             transport: crate::operations::protocol::disable_didcomm::DisableTransport::Rest,
         }
+    }
+
+    #[tokio::test]
+    async fn setup_acl_with_force_is_rejected_before_handshake() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = fresh_config(dir.path(), true);
+        let env = TestEnv::new(dir.path(), config).await;
+        let prover = AlwaysOkProver;
+        let mut params = forward_params("did:peer:2.candidate");
+        params.setup_acl = true;
+        params.force = true;
+
+        let err = update_didcomm(
+            &env.deps(),
+            &prover,
+            &super_admin(),
+            params,
+            OpContext::Direct,
+            "test",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, UpdateDidcommError::SetupAclWithForce));
     }
 
     #[tokio::test]

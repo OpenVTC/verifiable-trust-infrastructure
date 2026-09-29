@@ -1984,6 +1984,9 @@ pub(crate) enum DidcommCommands {
     Enable {
         #[arg(long)]
         mediator_did: String,
+        /// Provision this VTA's ACL on the target mediator before the handshake.
+        #[arg(long, conflicts_with = "force")]
+        setup_acl: bool,
         /// Skip handshake steps 2-5 (DID resolution always runs).
         #[arg(long)]
         force: bool,
@@ -1998,6 +2001,9 @@ pub(crate) enum DidcommCommands {
     Update {
         #[arg(long = "mediator-did", visible_alias = "to")]
         new_mediator_did: String,
+        /// Provision this VTA's ACL on the target mediator before the handshake.
+        #[arg(long, conflicts_with = "force")]
+        setup_acl: bool,
         /// Drain window for the prior mediator (seconds).
         /// Default: 24h per spec §3.6.
         #[arg(long, default_value_t = 86_400)]
@@ -3358,6 +3364,64 @@ mod bootstrap_connect_flag_tests {
         .err()
         .unwrap();
         assert_eq!(conflicting.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn didcomm_enable_accepts_setup_acl_but_not_with_force() {
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "services",
+                "didcomm",
+                "enable",
+                "--mediator-did",
+                "did:web:mediator.example",
+                "--setup-acl",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "services",
+                "didcomm",
+                "enable",
+                "--mediator-did",
+                "did:web:mediator.example",
+                "--setup-acl",
+                "--force",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn didcomm_update_accepts_setup_acl_but_not_with_force() {
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "services",
+                "didcomm",
+                "update",
+                "--mediator-did",
+                "did:web:mediator.example",
+                "--setup-acl",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "services",
+                "didcomm",
+                "update",
+                "--mediator-did",
+                "did:web:mediator.example",
+                "--setup-acl",
+                "--force",
+            ])
+            .is_err()
+        );
     }
 }
 

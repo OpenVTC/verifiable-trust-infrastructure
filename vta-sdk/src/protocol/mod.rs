@@ -22,11 +22,15 @@ use crate::client::VtaClient;
 #[cfg(feature = "client")]
 use crate::error::VtaError;
 
-/// Request body for `POST /services/didcomm/enable`.
+/// Typed input for the `vta/services/enable/1.0` DIDComm service task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[must_use]
 pub struct EnableDidcommRequest {
     pub mediator_did: String,
+    /// Provision this VTA's allow-all account ACL on the target mediator before
+    /// the handshake trust-ping. Required for mediators using ExplicitAllow.
+    #[serde(default)]
+    pub setup_acl: bool,
     /// Skip handshake steps 2-5 (DID resolution always runs).
     /// Emits a `MediatorHandshakeBypassed` telemetry event when set.
     #[serde(default)]
@@ -40,9 +44,15 @@ impl EnableDidcommRequest {
     pub fn new(mediator_did: impl Into<String>) -> Self {
         Self {
             mediator_did: mediator_did.into(),
+            setup_acl: false,
             force: false,
             handshake_timeout_secs: None,
         }
+    }
+
+    pub fn setup_acl(mut self, setup_acl: bool) -> Self {
+        self.setup_acl = setup_acl;
+        self
     }
 
     pub fn force(mut self, force: bool) -> Self {
@@ -184,6 +194,7 @@ mod via_trust_tasks {
             mediator_did: String,
             force: Option<bool>,
             handshake_timeout_secs: Option<u64>,
+            setup_acl: Option<bool>,
         },
     }
 
@@ -195,6 +206,7 @@ mod via_trust_tasks {
                     mediator_did,
                     force,
                     handshake_timeout_secs,
+                    setup_acl: _,
                 } => {
                     let mut c = json!({ "mediatorDid": mediator_did });
                     if let Some(f) = force {
@@ -207,6 +219,22 @@ mod via_trust_tasks {
                 }
             }
         }
+
+        fn setup_acl(&self) -> Option<bool> {
+            match self {
+                Config::Mediator { setup_acl, .. } => *setup_acl,
+                Config::Url(_) => None,
+            }
+        }
+    }
+
+    fn service_payload(kind: Kind, config: Config) -> Value {
+        let setup_acl = config.setup_acl();
+        let mut payload = json!({ "service": kind.wire(), "config": config.to_json() });
+        if let Some(setup_acl) = setup_acl {
+            payload["ext"] = json!({ "org.openvtc": { "setupAcl": setup_acl } });
+        }
+        payload
     }
 
     /// A mutation's result, in the shape every verb shares.
@@ -256,7 +284,7 @@ mod via_trust_tasks {
             config: Config,
             timeout: u64,
         ) -> Result<Mutation, VtaError> {
-            let payload = json!({ "service": kind.wire(), "config": config.to_json() });
+            let payload = service_payload(kind, config);
             let r: MutationResponse = self
                 .rpc_tt(uri::TASK_SERVICES_ENABLE_1_0, payload, timeout)
                 .await?;
@@ -270,7 +298,7 @@ mod via_trust_tasks {
             drain_ttl_secs: Option<u64>,
             timeout: u64,
         ) -> Result<Mutation, VtaError> {
-            let mut payload = json!({ "service": kind.wire(), "config": config.to_json() });
+            let mut payload = service_payload(kind, config);
             if let Some(ttl) = drain_ttl_secs {
                 payload["drainTtlSecs"] = json!(ttl);
             }
@@ -479,6 +507,35 @@ mod via_trust_tasks {
                 serde_json::from_value(json!("noOp")).unwrap();
             assert_eq!(rollback_kind(r), "no_op");
         }
+
+        #[test]
+        fn didcomm_setup_acl_is_carried_in_the_openvtc_extension() {
+            let payload = service_payload(
+                Kind::Didcomm,
+                Config::Mediator {
+                    mediator_did: "did:web:mediator.example".into(),
+                    force: None,
+                    handshake_timeout_secs: None,
+                    setup_acl: Some(true),
+                },
+            );
+            assert_eq!(payload["ext"]["org.openvtc"]["setupAcl"], true);
+            assert!(payload["config"].get("setupAcl").is_none());
+        }
+
+        #[test]
+        fn omitted_setup_acl_does_not_emit_an_extension() {
+            let payload = service_payload(
+                Kind::Didcomm,
+                Config::Mediator {
+                    mediator_did: "did:web:mediator.example".into(),
+                    force: None,
+                    handshake_timeout_secs: None,
+                    setup_acl: None,
+                },
+            );
+            assert!(payload.get("ext").is_none());
+        }
     }
 }
 
@@ -506,6 +563,7 @@ impl VtaClient {
                     mediator_did: req.mediator_did.clone(),
                     force: req.force.then_some(true),
                     handshake_timeout_secs: req.handshake_timeout_secs,
+                    setup_acl: req.setup_acl.then_some(true),
                 },
                 60,
             )
@@ -582,6 +640,7 @@ impl VtaClient {
                     mediator_did: req.new_mediator_did.clone(),
                     force: req.force.then_some(true),
                     handshake_timeout_secs: req.handshake_timeout_secs,
+                    setup_acl: req.setup_acl.then_some(true),
                 },
                 Some(req.drain_ttl_secs),
                 120,
@@ -649,6 +708,7 @@ impl VtaClient {
                     mediator_did: req.mediator_did,
                     force: None,
                     handshake_timeout_secs: None,
+                    setup_acl: None,
                 },
                 30,
             )
@@ -668,6 +728,7 @@ impl VtaClient {
                     mediator_did: req.mediator_did,
                     force: None,
                     handshake_timeout_secs: None,
+                    setup_acl: None,
                 },
                 None,
                 30,
@@ -784,12 +845,16 @@ impl VtaClient {
     }
 }
 
-/// Request body for `POST /services/didcomm/update`.
+/// Typed input for the `vta/services/update/1.1` DIDComm service task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[must_use]
 pub struct UpdateDidcommRequest {
     pub new_mediator_did: String,
     pub drain_ttl_secs: u64,
+    /// Provision this VTA's allow-all account ACL on the target mediator before
+    /// the handshake trust-ping. Required for mediators using ExplicitAllow.
+    #[serde(default)]
+    pub setup_acl: bool,
     #[serde(default)]
     pub force: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -804,10 +869,16 @@ impl UpdateDidcommRequest {
         Self {
             new_mediator_did: new_mediator_did.into(),
             drain_ttl_secs,
+            setup_acl: false,
             force: false,
             handshake_timeout_secs: None,
             rollback: false,
         }
+    }
+
+    pub fn setup_acl(mut self, setup_acl: bool) -> Self {
+        self.setup_acl = setup_acl;
+        self
     }
 
     pub fn force(mut self, force: bool) -> Self {

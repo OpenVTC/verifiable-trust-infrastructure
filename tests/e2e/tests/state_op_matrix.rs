@@ -207,6 +207,7 @@ async fn s2_didcomm_enable_returns_already_enabled() {
         &super_admin(),
         EnableDidcommParams {
             mediator_did: fx.assumed_mediator_did.clone(),
+            setup_acl: false,
             force: false,
             handshake_timeout: std::time::Duration::from_secs(1),
         },
@@ -230,6 +231,7 @@ async fn s3_didcomm_enable_returns_already_enabled() {
         &super_admin(),
         EnableDidcommParams {
             mediator_did: fx.assumed_mediator_did.clone(),
+            setup_acl: false,
             force: false,
             handshake_timeout: std::time::Duration::from_secs(1),
         },
@@ -256,6 +258,7 @@ async fn s1_didcomm_update_returns_didcomm_not_enabled() {
         UpdateDidcommParams {
             new_mediator_did: "did:peer:2.B".into(),
             drain_ttl: std::time::Duration::from_secs(86_400),
+            setup_acl: false,
             force: false,
             handshake_timeout: std::time::Duration::from_secs(1),
             audit_kind: MigrateAuditKind::Forward,
