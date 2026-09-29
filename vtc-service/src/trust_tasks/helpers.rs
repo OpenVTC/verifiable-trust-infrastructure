@@ -44,6 +44,7 @@ use vta_sdk::protocols::join_requests::VerdictResponse;
 /// bytes (not a `serde_json::Value`) so the wire output is byte-identical to
 /// direct document serialisation (serde_json has no `preserve_order` here, so
 /// a `Value` round-trip would alphabetise object keys).
+#[derive(Debug)]
 pub(crate) struct TrustTaskOutcome {
     pub(crate) status: StatusCode,
     pub(crate) body: Vec<u8>,

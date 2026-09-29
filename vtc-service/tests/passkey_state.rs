@@ -140,6 +140,9 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         supervisor: None,
         didcomm: std::sync::Arc::new(tokio::sync::OnceCell::new()),
         git_ns: vtc_service::git_ns::GitNsHandles::open_unconnected(&store).unwrap(),
+        large_document_budget: std::sync::Arc::new(
+            vtc_service::trust_tasks::size::LargeDocumentBudget::new(),
+        ),
     };
     (state, dir)
 }
