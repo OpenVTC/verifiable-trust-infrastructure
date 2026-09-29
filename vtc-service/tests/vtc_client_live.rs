@@ -596,8 +596,11 @@ async fn signed_admin_verbs_do_not_ride_the_bearer_session() {
         state.sessions_ks.remove(key).await.expect("end session");
     }
 
+    // `list_members` is itself a signed document now (#1835), so it cannot
+    // stand in for "a bearer-only verb" any more; `list_vetter_grants` still
+    // rides the bearer session (no Trust Task serves it yet).
     assert!(
-        client.list_members(None).await.is_err(),
+        client.list_vetter_grants().await.is_err(),
         "a bearer-only verb must be refused once the session is gone, or this \
          test proves nothing about the signed ones"
     );

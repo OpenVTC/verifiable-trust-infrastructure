@@ -293,6 +293,20 @@ async fn send(
     token: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    send_signed_by(fix, method, uri, trust_task, token, body, &[]).await
+}
+
+/// [`send`], with further sessions the legacy shim may sign for: each
+/// `(token, party)` maps a bearer token to the key its document is signed with.
+async fn send_signed_by(
+    fix: &Fixture,
+    method: &str,
+    uri: &str,
+    trust_task: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+    extra: &[(&str, &Party)],
+) -> (StatusCode, Value) {
     let mut req = Request::builder()
         .method(method)
         .uri(uri)
@@ -307,7 +321,9 @@ async fn send(
                 .unwrap_or(Body::empty()),
         )
         .unwrap();
-    common::legacy::send_json(&fix._vtc, &[(fix.admin_token.as_str(), &fix.signer)], req).await
+    let mut signers: Vec<(&str, &Party)> = vec![(fix.admin_token.as_str(), &fix.signer)];
+    signers.extend_from_slice(extra);
+    common::legacy::send_json(&fix._vtc, &signers, req).await
 }
 
 // ---------------------------------------------------------------------------
@@ -706,40 +722,21 @@ async fn member_credentials_requires_authentication() {
 #[tokio::test]
 async fn member_credentials_refuses_a_non_admin() {
     let fix = build_fixture().await;
-    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
-    let token = fix._vtc.token("did:key:zM1", "application", vec![]).await;
-    let (status, body) = send(
+    let member = Party::new();
+    seed_member(&fix, &member.did, VtcRole::Member).await;
+    let token = fix._vtc.token(&member.did, "application", vec![]).await;
+    let (status, body) = send_signed_by(
         &fix,
         "GET",
-        "/v1/members/did:key:zM1/credentials",
+        &format!("/v1/members/{}/credentials", member.did),
         CREDENTIALS_TASK,
         Some(&token),
         None,
+        &[(token.as_str(), &member)],
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
     assert!(credentials_read_events(&fix).await.is_empty());
-}
-
-/// The route is bound to its own task, so the `members/show` header does not
-/// open it.
-#[tokio::test]
-async fn member_credentials_refuses_another_tasks_header() {
-    let fix = build_fixture().await;
-    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
-    let (status, _) = send(
-        &fix,
-        "GET",
-        "/v1/members/did:key:zM1/credentials",
-        SHOW_TASK,
-        Some(&fix.admin_token),
-        None,
-    )
-    .await;
-    assert!(
-        status.is_client_error(),
-        "a mismatched Trust-Task header must be refused, got {status}"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -789,13 +786,14 @@ async fn the_update_task_answers_with_the_admin_role_forbidden_code_its_spec_dec
     // Even a session carrying a live step-up gets the refusal: it is the
     // field that is forbidden here, not the caller's authentication.
     let token = stepped_up_admin_token(&fix, 900).await;
-    let (status, body) = send(
+    let (status, body) = send_signed_by(
         &fix,
         "PATCH",
         "/v1/members/did:key:zM1",
         UPDATE_TASK,
         Some(&token),
         Some(json!({ "role": "admin" })),
+        &[(token.as_str(), &fix.signer)],
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");

@@ -31,11 +31,12 @@ const ADMIN_REMOVE_TASK: &str = "https://trusttasks.org/spec/vtc/members/admin-r
 const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const POLICY_ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 
-const ADMIN_DID: &str = "did:key:zAdmin1";
-
 struct Fixture {
     router: axum::Router,
-    admin_token: String,
+    /// The fixture's built-in "primary admin". A real key, not a bearer
+    /// session — admin-remove (and the policy upload/activate it exercises)
+    /// is a signed document now (#1834), with no REST route left.
+    admin: Party,
     acl_ks: KeyspaceHandle,
     members_ks: KeyspaceHandle,
     sessions_ks: KeyspaceHandle,
@@ -75,10 +76,11 @@ async fn build_fixture() -> Fixture {
     }
 
     let now = vtc_service::auth::session::now_epoch();
+    let admin = Party::new();
     store_acl_entry(
         &vtc.state.acl_ks,
         &VtcAclEntry {
-            did: ADMIN_DID.into(),
+            did: admin.did.clone(),
             role: VtcRole::Admin,
             label: Some("primary admin".into()),
             allowed_contexts: vec![],
@@ -91,42 +93,9 @@ async fn build_fixture() -> Fixture {
     )
     .await
     .unwrap();
-    store_member(&vtc.state.members_ks, &Member::fresh(ADMIN_DID))
+    store_member(&vtc.state.members_ks, &Member::fresh(&admin.did))
         .await
         .unwrap();
-
-    let session_id = "test-admin-session";
-    store_session(
-        &vtc.state.sessions_ks,
-        &Session {
-            session_id: session_id.into(),
-            did: ADMIN_DID.into(),
-            challenge: "test".into(),
-            state: SessionState::Authenticated,
-            created_at: now,
-            last_seen: now,
-            refresh_token: None,
-            refresh_expires_at: None,
-            tee_attested: false,
-            amr: Vec::new(),
-            acr: String::new(),
-            acr_expires_at: None,
-            token_id: None,
-            session_pubkey_b58btc: None,
-        },
-    )
-    .await
-    .unwrap();
-
-    let admin_claims = vtc.jwt_keys.new_claims(
-        ADMIN_DID.into(),
-        session_id.into(),
-        "admin".into(),
-        vec![],
-        3600,
-        true,
-    );
-    let admin_token = vtc.jwt_keys.encode(&admin_claims).unwrap();
 
     let acl_ks = vtc.state.acl_ks.clone();
     let members_ks = vtc.state.members_ks.clone();
@@ -137,7 +106,7 @@ async fn build_fixture() -> Fixture {
 
     Fixture {
         router,
-        admin_token,
+        admin,
         acl_ks,
         members_ks,
         sessions_ks,
@@ -215,43 +184,6 @@ async fn seed_member_with_session(fix: &Fixture, did: &str, role: VtcRole) -> St
     fix.jwt_keys.encode(&claims).unwrap()
 }
 
-async fn send(
-    router: &axum::Router,
-    method: &str,
-    uri: &str,
-    trust_task: &str,
-    token: Option<&str>,
-    body: Option<Value>,
-) -> (StatusCode, Value) {
-    let mut req = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json")
-        .header("Trust-Task", trust_task);
-    if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {t}"));
-    }
-    let res = router
-        .clone()
-        .oneshot(
-            req.body(
-                body.map(|v| Body::from(v.to_string()))
-                    .unwrap_or(Body::empty()),
-            )
-            .unwrap(),
-        )
-        .await
-        .expect("oneshot");
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-    };
-    (status, json)
-}
-
 // ---------------------------------------------------------------------------
 // M1.11.1 — vtc/members/self-remove, a signed document
 // ---------------------------------------------------------------------------
@@ -298,6 +230,34 @@ async fn post_document(fix: &Fixture, doc: Value) -> (StatusCode, Value) {
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let doc: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, doc["payload"].clone())
+}
+
+/// Sign `payload` as the fixture's admin and post it — the signed door every
+/// admin verb moved to (#1834), replacing the bearer routes this suite used
+/// to drive.
+async fn admin_document(fix: &Fixture, type_uri: &str, payload: Value) -> (StatusCode, Value) {
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        type_uri,
+        payload,
+        &fix.admin.did,
+        vtc_service::test_support::TEST_VTC_DID,
+    )
+    .unwrap();
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(
+        &fix.admin.did,
+        &fix.admin.secret_multibase,
+    )
+    .unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .unwrap();
+    post_document(fix, serde_json::to_value(doc).unwrap()).await
+}
+
+/// `vtc/members/admin-remove/0.1`, signed by the fixture's admin.
+async fn admin_remove(fix: &Fixture, did: &str, mut body: Value) -> (StatusCode, Value) {
+    body["did"] = json!(did);
+    admin_document(fix, ADMIN_REMOVE_TASK, body).await
 }
 
 #[tokio::test]
@@ -381,7 +341,7 @@ async fn self_remove_refused_for_sole_admin() {
     // refusal is the only way a caller could end up with zero admins, and
     // the audit + admin UX rely on the message pointing at "last admin" so
     // the operator knows to promote someone first.
-    vtc_service::acl::delete_acl_entry(&fix.acl_ks, ADMIN_DID)
+    vtc_service::acl::delete_acl_entry(&fix.acl_ks, &fix.admin.did)
         .await
         .unwrap();
     let admin = seed_party(&fix, VtcRole::Admin).await;
@@ -463,15 +423,7 @@ async fn admin_remove_member_works() {
     let target = "did:key:zVictim";
     let _ = seed_member_with_session(&fix, target, VtcRole::Member).await;
 
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        &format!("/v1/members/{target}"),
-        ADMIN_REMOVE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({ "reason": "policy violation" })),
-    )
-    .await;
+    let (status, body) = admin_remove(&fix, target, json!({ "reason": "policy violation" })).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
     assert_eq!(body["disposition"], "tombstone");
     assert!(get_acl_entry(&fix.acl_ks, target).await.unwrap().is_none());
@@ -480,16 +432,9 @@ async fn admin_remove_member_works() {
 #[tokio::test]
 async fn admin_remove_self_refused_with_self_remove_hint() {
     let fix = build_fixture().await;
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        &format!("/v1/members/{ADMIN_DID}"),
-        ADMIN_REMOVE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let admin_did = fix.admin.did.clone();
+    let (status, body) = admin_remove(&fix, &admin_did, json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
     let msg = body.to_string();
     assert!(msg.contains("vtc/members/self-remove"), "got {msg}");
 }
@@ -511,24 +456,16 @@ async fn admin_remove_of_admin_target_is_denied_by_default_policy() {
     let second_admin = "did:key:zSecondAdmin";
     let _ = seed_member_with_session(&fix, second_admin, VtcRole::Admin).await;
 
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        &format!("/v1/members/{second_admin}"),
-        ADMIN_REMOVE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({ "reason": "ouster" })),
-    )
-    .await;
+    let (status, body) = admin_remove(&fix, second_admin, json!({ "reason": "ouster" })).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
-    let msg = body["error"].as_str().unwrap_or_default();
+    let msg = body["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("removal denied by policy"),
         "error body should explain the policy denial: {body}"
     );
     // Both admins still present — the policy denied the change.
     assert!(
-        get_acl_entry(&fix.acl_ks, ADMIN_DID)
+        get_acl_entry(&fix.acl_ks, &fix.admin.did)
             .await
             .unwrap()
             .is_some()
@@ -541,19 +478,22 @@ async fn admin_remove_of_admin_target_is_denied_by_default_policy() {
     );
 }
 
+/// The signed door has no REST status of its own to answer with — an
+/// extended error code is always `422` at the transport (the HTTPS
+/// binding's flat bucket, `trust-tasks-https::status::status_for_code`), so
+/// what used to be a `404` is read off the error `code` instead.
 #[tokio::test]
 async fn admin_remove_404_for_unknown_did() {
     let fix = build_fixture().await;
-    let (status, _) = send(
-        &fix.router,
-        "DELETE",
-        "/v1/members/did:key:zNobody",
-        ADMIN_REMOVE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, body) = admin_remove(&fix, "did:key:zNobody", json!({})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "got {body}");
+    assert!(
+        body["code"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with(":notFound"),
+        "got {body}"
+    );
 }
 
 #[tokio::test]
@@ -562,32 +502,22 @@ async fn admin_remove_overlong_reason_rejected() {
     let target = "did:key:zV";
     let _ = seed_member_with_session(&fix, target, VtcRole::Member).await;
 
-    let (status, _) = send(
-        &fix.router,
-        "DELETE",
-        &format!("/v1/members/{target}"),
-        ADMIN_REMOVE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({ "reason": "x".repeat(1025) })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = admin_remove(&fix, target, json!({ "reason": "x".repeat(1025) })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
 }
 
 // ---------------------------------------------------------------------------
 // M2.7 — policy step at admin-remove time
 // ---------------------------------------------------------------------------
 
-/// Upload + activate a removal policy via the admin endpoints.
+/// Upload + activate a removal policy, signed by the fixture's admin
+/// (`policy/upsert/0.2` + `policy/activate/0.1` — no REST route either).
 /// `source` is the full Rego module body.
 async fn activate_removal_policy(fix: &Fixture, source: &str) {
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/policies",
+    let (status, body) = admin_document(
+        fix,
         POLICY_UPLOAD_TASK,
-        Some(&fix.admin_token),
-        Some(json!({ "name": "removal", "module": source, "ext": { "org.openvtc.purpose": "removal" } })),
+        json!({ "name": "removal", "module": source, "ext": { "org.openvtc.purpose": "removal" } }),
     )
     .await;
     // Canonical upsert: 201 when this is the first revision for the
@@ -597,14 +527,11 @@ async fn activate_removal_policy(fix: &Fixture, source: &str) {
         status == StatusCode::CREATED || status == StatusCode::OK,
         "upload failed ({status}): {body}"
     );
-    let id = body["policy"]["id"].as_str().unwrap();
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        &format!("/v1/policies/{id}/activate"),
+    let id = body["policy"]["id"].as_str().unwrap().to_string();
+    let (status, body) = admin_document(
+        fix,
         POLICY_ACTIVATE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({})),
+        json!({ "id": id, "purpose": "removal" }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "activate failed: {body}");
@@ -625,17 +552,9 @@ async fn admin_remove_member_blocked_by_deny_all_policy() {
     let target = "did:key:zVictim2";
     let _ = seed_member_with_session(&fix, target, VtcRole::Member).await;
 
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        &format!("/v1/members/{target}"),
-        ADMIN_REMOVE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({ "reason": "policy gate test" })),
-    )
-    .await;
+    let (status, body) = admin_remove(&fix, target, json!({ "reason": "policy gate test" })).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
-    let msg = body["error"].as_str().unwrap_or_default();
+    let msg = body["message"].as_str().unwrap_or_default();
     assert!(
         msg.contains("removal denied by policy"),
         "error body should explain the policy denial: {body}"
@@ -667,15 +586,7 @@ async fn admin_remove_uses_policy_disposition_for_default() {
     // Caller does not pass `disposition`; member's preference is
     // `PolicyDefault` (the join-time default) → resolver consults
     // the policy → resolves to Purge → Member row is deleted.
-    let (status, body) = send(
-        &fix.router,
-        "DELETE",
-        &format!("/v1/members/{target}"),
-        ADMIN_REMOVE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({})),
-    )
-    .await;
+    let (status, body) = admin_remove(&fix, target, json!({})).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
     assert_eq!(body["disposition"], "purge");
     // ACL and member both gone (purge semantic).
@@ -732,15 +643,7 @@ async fn admin_remove_flips_revocation_bit() {
     assert!(!pre.is_set(slot as usize), "bit should start cleared");
 
     // Admin-remove.
-    let (status, _) = send(
-        &fix.router,
-        "DELETE",
-        &format!("/v1/members/{target}"),
-        ADMIN_REMOVE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({})),
-    )
-    .await;
+    let (status, _) = admin_remove(&fix, target, json!({})).await;
     assert_eq!(status, StatusCode::OK);
 
     // Post: the bit is set + the slot remains assigned.
