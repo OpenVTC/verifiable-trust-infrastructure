@@ -7,9 +7,11 @@
 //!   `DELETE /v1/credentials/endorsements/{endorsementId}`.
 //! - `GET /v1/vetting/vetters` — every vetter grant, with its member, validity,
 //!   revocation, origin (automatic or manual) and the vetter's profile summary.
-//! - `POST /v1/vetting/vetters/{memberDid}/resend` — deliver a vetter's live
-//!   grant credential again (`vtc/vetting/vetters/resend/0.1`, which a vetter
-//!   also sends for themselves).
+//! - Resend (`vtc/vetting/vetters/resend/{0.1,0.2}`) is a signed document
+//!   only: `0.1` for a vetter's own grant, `0.2` adding the `memberDid` an
+//!   administrator names to resend on a vetter's behalf. The admin-only REST
+//!   route had no caller once the spine dispatched `0.2` (tt-tf#689) and was
+//!   removed.
 //! - `GET`/`PUT /v1/vetting/auto-grant` — automatic vetter grants: the
 //!   configuration and the last sweep.
 //! - `GET /v1/vetting/revocations` — vetting statement withdrawal notices, with
@@ -25,13 +27,12 @@
 use std::collections::{BTreeSet, HashMap};
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
-use vta_sdk::openapi::VetterResend01Response;
 use vta_sdk::protocols::vetting::{AutoGrantConfig, AutoGrantStatus, VetterGrantListResponse};
-use vti_common::auth::{AdminAuth, AuthClaims};
+use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use crate::join::{JoinStatus, get_vetting_facts, list_join_requests};
@@ -57,32 +58,6 @@ pub async fn list_vetters(
     Ok(Json(VetterGrantListResponse {
         vetters: vetters::grant_rows(&state).await?,
     }))
-}
-
-/// Deliver a vetter's live grant credential again.
-#[utoipa::path(
-    post, path = "/vetting/vetters/{memberDid}/resend",
-    operation_id = "vettingVetterResend", tag = "vetting",
-    security(("bearer_jwt" = [])),
-    params(("memberDid" = String, Path, description = "The vetter's member DID")),
-    responses(
-        (status = 200, description = "The credential was handed to the transport for delivery", body = VetterResend01Response),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a community admin"),
-        (status = 404, description = "The member holds no live vetter grant whose credential the community kept"),
-        (status = 503, description = "The delivery could not be handed to the transport"),
-    ),
-)]
-pub async fn resend_vetter(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(member_did): Path<String>,
-) -> Result<Json<VetterResend01Response>, AppError> {
-    Ok(Json(
-        vetters::resend_as_admin(&state, &auth.did, &member_did)
-            .await?
-            .into(),
-    ))
 }
 
 /// The automatic vetter-grant configuration and the last sweep.

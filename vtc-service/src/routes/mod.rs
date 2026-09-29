@@ -158,6 +158,20 @@ use crate::server::AppState;
         crate::schemas::AcceptsCriterion,
         schemas::RegisterAcceptsBody,
         rooms::HostedRoom,
+        // The custom-endorsement reads/revoke the console signs
+        // (`vtc/endorsements/{list,show,revoke}/0.1`) — bearer REST routes for
+        // all three had no caller once the spine dispatched them (tt-tf#689)
+        // and were removed.
+        endorsements::EndorsementRow,
+        vti_common::pagination::Paginated<endorsements::EndorsementRow>,
+        endorsements::EndorsementEnvelope,
+        endorsements::RevokeResponse,
+        // The admin resend-on-behalf the console signs
+        // (`vtc/vetting/vetters/resend/0.2`) — its admin-only bearer REST
+        // route had no caller once the spine dispatched it (tt-tf#689) and
+        // was removed. `0.1`'s response shape covers `0.2`'s too: neither
+        // adds a member.
+        vta_sdk::openapi::VetterResend01Response,
     )),
 )]
 pub struct ApiDoc;
@@ -634,18 +648,16 @@ fn build_api_chain(
         // (`vtc/members/credentials/0.1`) is a signed document only.
         // Admin connections-graph view — the member-relationship (VRC) graph.
         //
-        // Relationship revoke (`vtc/relationships/revoke/0.1`) keeps its
-        // bearer REST route: unlike the other verbs retired here, its REST
-        // door authorizes a **third** capacity the signed document cannot —
-        // a `VrcRevokeAuthorization` proving control of a pairwise
-        // relationship DID, bound to the REST session — so removing it would
-        // strand a member's edge published under a relationship DID with no
-        // way to revoke it themselves (see `trust_tasks::member_tasks`'s
-        // `handle_relationships_revoke`).
-        .routes(tt(
-            routes!(relationships::revoke),
-            "https://trusttasks.org/spec/vtc/relationships/revoke/0.1",
-        ))
+        // Relationship revoke (`vtc/relationships/{revoke/0.1,revoke/0.2}`) is
+        // a signed document only. `0.1` kept a bearer REST route because it
+        // could reach only two of the three capacities the bearer route
+        // authorized — the edge's own issuer, or an administrator — and not
+        // the third: a `VrcRevokeAuthorization` proving control of a pairwise
+        // relationship DID. `0.2` (trustoverip/dtgwg-trust-tasks-tf#689) adds
+        // that as an optional `pop` bound to the document's own `id` rather
+        // than to a REST session, so the signed door now reaches all three
+        // and the REST route was removed (see `trust_tasks::member_tasks`'s
+        // `handle_relationships_revoke_v0_2`).
         // Suspend and restore (#1079) are `vtc/relationships/{suspend,restore}`
         // on the spine (`trust_tasks::surface_tasks`), and have no route.
         // #1067 — the VPC (persona annotation) on an existing
@@ -661,14 +673,10 @@ fn build_api_chain(
         // The community schema store (Issues + Accepts registry) is
         // `vtc/schemas/*` on the spine, and has no route.
         // Phase 4 M4.8.2-4 — custom endorsement issuance, retrieval and
-        // revocation. Issuance (`vtc/endorsements/issue/0.1`) is a signed
-        // document only; its bearer REST route had no caller once the spine
-        // dispatched it (#1809) and was removed. Retrieval and revocation
-        // keep their REST routes.
-        .routes(tt(
-            routes!(endorsements::list),
-            "https://trusttasks.org/spec/vtc/endorsements/list/0.1",
-        ))
+        // revocation (`vtc/endorsements/{issue,list,show,revoke}/0.1`) are
+        // all signed documents only now: each bearer REST route had no
+        // caller once the spine dispatched it and was removed (issuance,
+        // #1809; retrieval and revocation, tt-tf#689).
         // Invitation Credential (VIC) issuance + listing — the operator side of
         // the VIC auto-join ceremony. Admin / Moderator / Issuer. POST + GET on
         // /invitations share the `issue/1.0` mount; the standalone `list/1.0`
@@ -680,26 +688,18 @@ fn build_api_chain(
         // Get an issued invitation to the DID it admits: push an offer to it,
         // or return the offer for a QR code (Keyring VTI-21 / VTI-32).
         // Recognition (trust-graph) lookup — admin window into TRQP recognise.
-        .routes(tt(
-            routes!(endorsements::show),
-            "https://trusttasks.org/spec/vtc/endorsements/show/0.1",
-        ))
-        .routes(tt(
-            routes!(endorsements::revoke),
-            "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
-        ))
         // Naming vetters (`vtc/vetting/vetters/grant/0.1`, OpenVTC vetting
         // design §10) is a signed document only, withdrawn through
         // endorsements/revoke.
-        // The vetter registry's admin surface. Resend enforces the task a vetter
-        // also sends for themselves. The grant listing, the automatic-grant
-        // configuration and the withdrawal notices are admin REST with no Trust
-        // Task of their own, so — like the schemas routes — they carry no
-        // binding rather than borrowing a URI that describes something else.
-        .routes(tt(
-            routes!(vetting::resend_vetter),
-            "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1",
-        ))
+        // The vetter registry's admin surface. Resend
+        // (`vtc/vetting/vetters/resend/{0.1,0.2}`) is a signed document only:
+        // `0.1` enforces the task a vetter sends for themselves, `0.2` adds
+        // the `memberDid` an administrator names to resend on a vetter's
+        // behalf (tt-tf#689) — what let the admin-only REST resend route
+        // retire. The grant listing, the automatic-grant configuration and
+        // the withdrawal notices are admin REST with no Trust Task of their
+        // own, so — like the schemas routes — they carry no binding rather
+        // than borrowing a URI that describes something else.
         // The public listing (`vtc/vetting/vetters/list/0.1`) has no route:
         // the console sends the same signed document an applicant does.
         // The by-DID lookup the listing cannot answer (`vetters/show/0.1`,
@@ -1260,7 +1260,6 @@ mod openapi_tests {
             "/v1/auth/challenge",
             "/v1/admin/passkeys",
             "/v1/vetting/vetters",
-            "/v1/credentials/endorsements",
             "/v1/relationships",
             "/v1/install/claim/start",
         ] {
@@ -1350,14 +1349,24 @@ mod openapi_tests {
             "/v1/schemas/accepts",
             "/v1/schemas/accepts/{id}",
             "/v1/schemas/{type_uri}",
+            // Relationship revoke (`vtc/relationships/revoke/{0.1,0.2}`) lost
+            // its last route: `0.2`'s pairwise `pop` reaches the capacity the
+            // bearer route existed for (tt-tf#689).
+            "/v1/relationships/{id}",
+            // Endorsement retrieval and revocation
+            // (`vtc/endorsements/{list,show,revoke}/0.1`) had no caller left
+            // once the spine dispatched them (tt-tf#689).
+            "/v1/credentials/endorsements",
+            "/v1/credentials/endorsements/{id}",
+            // Admin resend of another member's vetter grant
+            // (`vtc/vetting/vetters/resend/0.2`'s `memberDid`) replaces the
+            // admin-only REST route (tt-tf#689).
+            "/v1/vetting/vetters/{memberDid}/resend",
         ] {
             assert!(!paths.contains_key(p), "{p} is a signed document only");
         }
         let item = |p: &str| paths.get(p).unwrap_or_else(|| panic!("{p} is documented"));
         assert!(item("/v1/vetting/vetters").post.is_none());
-        // `issue` is a signed document only; `list` keeps its REST route on
-        // the same path.
-        assert!(item("/v1/credentials/endorsements").post.is_none());
     }
 
     // ── Route-posture backstop (P2.6) ──────────────────────────────────────

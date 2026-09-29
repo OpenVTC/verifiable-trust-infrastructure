@@ -116,12 +116,14 @@ pub enum RelationshipCommands {
 
     /// Revoke a relationship credential you issued (or, as an administrator,
     /// any). Any other caller gets the same "not found" a missing id would.
-    /// Does not cover an edge published under a pairwise relationship DID
-    /// (not your own membership DID) — that still needs the VTC's bearer
-    /// route with a proof of possession, which this command does not send.
     Revoke {
         /// The relationship (VRC) id.
         id: String,
+        /// Path to a `VrcRevokeAuthorization` proof-of-possession document,
+        /// when the edge's `issuerDid` is not your own membership DID (a
+        /// pairwise relationship DID).
+        #[arg(long)]
+        pop_file: Option<String>,
     },
 }
 
@@ -234,8 +236,16 @@ async fn run_relationships(command: RelationshipCommands, vtc: &VtcClient) -> Cl
                 .map_err(member_error)?;
             report(&serde_json::to_value(&published)?, "published")
         }
-        RelationshipCommands::Revoke { id } => {
-            let revoked = vtc.revoke_relationship(&id).await.map_err(member_error)?;
+        RelationshipCommands::Revoke { id, pop_file } => {
+            let pop = pop_file
+                .map(|p| -> CliResult<Value> {
+                    Ok(serde_json::from_str(&std::fs::read_to_string(&p)?)?)
+                })
+                .transpose()?;
+            let revoked = vtc
+                .revoke_relationship(&id, pop)
+                .await
+                .map_err(member_error)?;
             report(&serde_json::to_value(&revoked)?, "revoked")
         }
     }

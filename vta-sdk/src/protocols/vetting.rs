@@ -22,6 +22,7 @@
 //! | `spec/vtc/vetting/vetters/list/0.1` | member or applicant → community | [`vetters::list::v0_1`] |
 //! | `spec/vtc/vetting/vetters/show/0.1` | member or applicant → community | [`vetters::show::v0_1`] |
 //! | `spec/vtc/vetting/vetters/resend/0.1` | vetter → community | [`vetters::resend::v0_1`] |
+//! | `spec/vtc/vetting/vetters/resend/0.2` | vetter, or administrator naming `memberDid` → community | [`vetters::resend::v0_2`] |
 //!
 //! Each module holds the task's `Payload` and, where it has one, its `Response`.
 //! The modules are versioned: a new specification version arrives beside the old
@@ -178,6 +179,16 @@ pub const VETTING_VETTER_RESEND_TYPE: &str =
 /// `#response` variant of [`VETTING_VETTER_RESEND_TYPE`].
 pub const VETTING_VETTER_RESEND_RESPONSE_TYPE: &str =
     <vetters::resend::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// Vetter → community, or administrator naming `memberDid` → community:
+/// deliver the sender's — or, on an administrator's request, the named
+/// member's — live vetter grant credential again. Adds `memberDid` to `0.1`;
+/// absent, behaviour is `0.1`'s.
+pub const VETTING_VETTER_RESEND_0_2_TYPE: &str =
+    <vetters::resend::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `#response` variant of [`VETTING_VETTER_RESEND_0_2_TYPE`].
+pub const VETTING_VETTER_RESEND_0_2_RESPONSE_TYPE: &str =
+    <vetters::resend::v0_2::Response as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ---------------------------------------------------------------------------
 // Extended error codes, as each specification's front matter declares them.
@@ -539,6 +550,8 @@ checked_by_schema!(
     vetters::profile::v0_1::Response,
     vetters::resend::v0_1::Payload,
     vetters::resend::v0_1::Response,
+    vetters::resend::v0_2::Payload,
+    vetters::resend::v0_2::Response,
 );
 
 /// Check a `vetting/request/0.1` payload: its schema — a ticket or an

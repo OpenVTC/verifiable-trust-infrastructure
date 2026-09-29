@@ -9,8 +9,6 @@
 //! - revoke: admin / non-admin-non-issuer / idempotent
 //! - show / list pagination
 
-use std::sync::Arc;
-
 use affinidi_status_list::StatusPurpose;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -20,8 +18,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 use vti_common::audit::{AuditEnvelope, AuditEvent};
-use vti_common::auth::jwt::JwtKeys;
-use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
+use vti_common::auth::session::now_epoch;
 
 use vti_rooms_dtg::test_support::Party;
 
@@ -47,14 +44,11 @@ const SUBJECT_DID: &str = "did:key:zEndSubject";
 
 struct Fixture {
     router: axum::Router,
-    /// The endorsement-type writes and endorsement issuance are signed
-    /// documents only; these sign them.
+    /// Every endorsement-type write, and every endorsement verb, is a signed
+    /// document only; these sign them.
     admin: Party,
     member: Party,
     issuer: Party,
-    admin_token: String,
-    issuer_token: String,
-    member_token: String,
     audit_ks: vti_common::store::KeyspaceHandle,
     endorsements_ks: vti_common::store::KeyspaceHandle,
     // Owns the temp data dir + serves `router`'s state; must outlive them.
@@ -110,63 +104,6 @@ async fn build() -> Fixture {
             .unwrap();
     }
 
-    async fn mint(
-        sessions: &vti_common::store::KeyspaceHandle,
-        jwt_keys: &Arc<JwtKeys>,
-        did: &str,
-        role: &str,
-        now: u64,
-    ) -> String {
-        let session_id = format!("sess-{}", Uuid::new_v4());
-        store_session(
-            sessions,
-            &Session {
-                session_id: session_id.clone(),
-                did: did.into(),
-                challenge: "test".into(),
-                state: SessionState::Authenticated,
-                created_at: now,
-                last_seen: now,
-                refresh_token: None,
-                refresh_expires_at: None,
-                tee_attested: false,
-                amr: Vec::new(),
-                acr: String::new(),
-                acr_expires_at: None,
-                token_id: None,
-                session_pubkey_b58btc: None,
-            },
-        )
-        .await
-        .unwrap();
-        let claims = jwt_keys.new_claims(did.into(), session_id, role.into(), vec![], 3600, true);
-        jwt_keys.encode(&claims).unwrap()
-    }
-    let admin_token = mint(
-        &vtc.state.sessions_ks,
-        &vtc.jwt_keys,
-        ADMIN_DID,
-        "admin",
-        now,
-    )
-    .await;
-    let issuer_token = mint(
-        &vtc.state.sessions_ks,
-        &vtc.jwt_keys,
-        ISSUER_DID,
-        "reader",
-        now,
-    )
-    .await;
-    let member_token = mint(
-        &vtc.state.sessions_ks,
-        &vtc.jwt_keys,
-        MEMBER_DID,
-        "reader",
-        now,
-    )
-    .await;
-
     let admin = Party::new();
     let member = Party::new();
     let issuer = Party::new();
@@ -202,9 +139,6 @@ async fn build() -> Fixture {
         admin,
         member,
         issuer,
-        admin_token,
-        issuer_token,
-        member_token,
         audit_ks,
         endorsements_ks,
         _vtc: vtc,
@@ -649,15 +583,14 @@ async fn revoke_issuer_can_retract() {
         .unwrap()
         .to_string();
 
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/credentials/endorsements/{id}"))
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, body) = signed_task(
+        &fix,
+        &fix.issuer,
+        REVOKE_TASK,
+        json!({ "endorsementId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // Audit: CustomEndorsementRevoked + StatusListFlipped.
     let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
@@ -692,15 +625,14 @@ async fn re_revoking_is_the_declared_already_revoked() {
         .to_string();
 
     let revoke = || {
-        Request::builder()
-            .method("DELETE")
-            .uri(format!("/v1/credentials/endorsements/{id}"))
-            .header("authorization", format!("Bearer {}", fix.admin_token))
-            .header("trust-task", REVOKE_TASK)
-            .body(Body::empty())
-            .unwrap()
+        signed_task(
+            &fix,
+            &fix.admin,
+            REVOKE_TASK,
+            json!({ "endorsementId": id }),
+        )
     };
-    let (status, body) = body_value(fix.router.clone().oneshot(revoke()).await.unwrap()).await;
+    let (status, body) = revoke().await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let audit_rows = fix
         .audit_ks
@@ -709,8 +641,10 @@ async fn re_revoking_is_the_declared_already_revoked() {
         .unwrap()
         .len();
 
-    let (status, body) = body_value(fix.router.clone().oneshot(revoke()).await.unwrap()).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    // Declared codes ride the signed door's flat 422 bucket, not the REST
+    // route's old 409.
+    let (status, body) = revoke().await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), REVOKE_ERR_ALREADY_REVOKED, "{body}");
     assert_eq!(
         fix.audit_ks
@@ -734,15 +668,14 @@ async fn revoke_non_admin_non_issuer_forbidden() {
         .unwrap()
         .to_string();
 
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/credentials/endorsements/{id}"))
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (status, body) = signed_task(
+        &fix,
+        &fix.member,
+        REVOKE_TASK,
+        json!({ "endorsementId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }
 
 /// `GET /credentials/endorsements/{id}` had **no test at all** before #1093,
@@ -759,14 +692,8 @@ async fn show_wraps_the_row_in_an_endorsement_envelope() {
     assert_eq!(status, StatusCode::OK, "{issued}");
     let id = issued["endorsement"]["endorsementId"].as_str().unwrap();
 
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/v1/credentials/endorsements/{id}"))
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", SHOW_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let (status, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let (status, v) =
+        signed_task(&fix, &fix.issuer, SHOW_TASK, json!({ "endorsementId": id })).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 
     // The envelope, not the bare row: `v["id"]` must be absent precisely
@@ -822,22 +749,6 @@ async fn issue(fix: &Fixture, type_uri: &str, claim: Value) -> (StatusCode, Valu
         json!({ "subjectDid": SUBJECT_DID, "typeUri": type_uri, "claim": claim }),
     )
     .await
-}
-
-async fn admin_get_or_delete(
-    fix: &Fixture,
-    method: &str,
-    uri: &str,
-    task: &str,
-) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", task)
-        .body(Body::empty())
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
 }
 
 /// An empty (or all-whitespace) `typeUri`, or one over 512 bytes, is
@@ -1079,45 +990,54 @@ async fn a_full_revocation_list_is_the_declared_status_list_exhausted() {
     );
 }
 
-/// A cursor this community did not sign is `invalidCursor` (400, unchanged).
+/// A cursor this community did not sign is `invalidCursor` — a declared code,
+/// so it rides the signed door's flat 422 bucket (not the REST route's old
+/// 400).
 #[tokio::test]
 async fn a_forged_cursor_is_the_declared_invalid_cursor() {
     let fix = build().await;
-    let (status, body) = admin_get_or_delete(
+    let (status, body) = signed_task(
         &fix,
-        "GET",
-        "/v1/credentials/endorsements?cursor=bm90LWEtY3Vyc29y",
+        &fix.admin,
         LIST_TASK,
+        json!({ "cursor": "bm90LWEtY3Vyc29y" }),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), LIST_ERR_INVALID_CURSOR, "{body}");
 }
 
-/// An unknown endorsement id is `notFound` to show and to revoke (404,
-/// unchanged). Revoke now checks the caller's capability first, so a member
-/// who may not revoke gets 403 whether or not the id exists.
+/// An unknown endorsement id is `notFound` to show and to revoke — a
+/// declared code (422, not the REST route's old 404). Revoke now checks the
+/// caller's capability first, so a member who may not revoke gets
+/// `permissionDenied` (403) whether or not the id exists.
 #[tokio::test]
 async fn an_unknown_endorsement_is_the_declared_not_found() {
     let fix = build().await;
-    let path = format!("/v1/credentials/endorsements/{}", Uuid::new_v4());
+    let id = Uuid::new_v4().to_string();
 
-    let (status, body) = admin_get_or_delete(&fix, "GET", &path, SHOW_TASK).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) =
+        signed_task(&fix, &fix.admin, SHOW_TASK, json!({ "endorsementId": id })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), SHOW_ERR_NOT_FOUND, "{body}");
 
-    let (status, body) = admin_get_or_delete(&fix, "DELETE", &path, REVOKE_TASK).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = signed_task(
+        &fix,
+        &fix.admin,
+        REVOKE_TASK,
+        json!({ "endorsementId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), REVOKE_ERR_NOT_FOUND, "{body}");
 
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(&path)
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let (status, body) = signed_task(
+        &fix,
+        &fix.member,
+        REVOKE_TASK,
+        json!({ "endorsementId": id }),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::FORBIDDEN,

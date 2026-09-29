@@ -1576,6 +1576,23 @@ fn table() -> Vec<Conformance> {
             // `RevokeResponse` — routes/relationships.rs:423.
             json!({ "id": REQUEST_ID })
         ),
+        checked!(
+            s::relationships::revoke::v0_2::Payload,
+            s::relationships::revoke::v0_2::Response,
+            // The pairwise route: a `VrcRevokeAuthorization` bound to this
+            // document and to the edge, same shape as `publish/0.2`'s `pop`
+            // above with `relationship` in place of `vrcDigestMultibase`.
+            json!({
+                "id": REQUEST_ID,
+                "pop": {
+                    "type": "VrcRevokeAuthorization",
+                    "documentId": REQUEST_ID,
+                    "relationship": REQUEST_ID,
+                    "proof": { "type": "DataIntegrityProof" },
+                },
+            }),
+            json!({ "id": REQUEST_ID })
+        ),
         // ─── website ─────────────────────────────────────────────────
         checked!(
             s::website::files::list::v0_1::Payload,
@@ -1800,6 +1817,21 @@ fn table() -> Vec<Conformance> {
             to_v(
                 s::vetting::vetters::resend::v0_1::Response::try_from(
                     s::vetting::vetters::resend::v0_1::Response::builder()
+                        .credential_id(format!("urn:uuid:{REQUEST_ID}"))
+                        .valid_until(TS.parse::<DateTime<chrono::Utc>>().unwrap()),
+                )
+                .expect("resend response")
+            )
+        ),
+        checked!(
+            s::vetting::vetters::resend::v0_2::Payload,
+            s::vetting::vetters::resend::v0_2::Response,
+            // The administrator's route: `memberDid` names whose grant to
+            // resend, instead of the sender's own (`0.1`'s empty payload).
+            json!({ "memberDid": OTHER_DID }),
+            to_v(
+                s::vetting::vetters::resend::v0_2::Response::try_from(
+                    s::vetting::vetters::resend::v0_2::Response::builder()
                         .credential_id(format!("urn:uuid:{REQUEST_ID}"))
                         .valid_until(TS.parse::<DateTime<chrono::Utc>>().unwrap()),
                 )

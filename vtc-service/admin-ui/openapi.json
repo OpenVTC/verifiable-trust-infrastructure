@@ -923,153 +923,6 @@
         }
       }
     },
-    "/v1/credentials/endorsements": {
-      "get": {
-        "tags": [
-          "endorsements"
-        ],
-        "operationId": "endorsementList",
-        "parameters": [
-          {
-            "name": "cursor",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "minimum": 0
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Paginated list of endorsements",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Paginated_EndorsementRow"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin or issuer"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/credentials/endorsements/{id}": {
-      "get": {
-        "tags": [
-          "endorsements"
-        ],
-        "operationId": "endorsementShow",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Endorsement id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Endorsement",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EndorsementEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin or issuer"
-          },
-          "404": {
-            "description": "Endorsement not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "endorsements"
-        ],
-        "operationId": "endorsementRevoke",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Endorsement id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Endorsement revoked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EndorsementRevokeResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin or issuer"
-          },
-          "404": {
-            "description": "Endorsement not found"
-          },
-          "409": {
-            "description": "Endorsement already revoked"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/install/claim/finish": {
       "post": {
         "tags": [
@@ -1180,64 +1033,6 @@
                 }
               }
             }
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/relationships/{id}": {
-      "delete": {
-        "tags": [
-          "relationships"
-        ],
-        "summary": "`DELETE /v1/relationships/{id}` — retract an edge.",
-        "description": "## Why there is a body here at all\n\n`revoke` kept the identity equality that `publish` replaced in #1054/#1061:\n`auth.did == rel.issuer_did`. For an edge published under a pairwise\nrelationship DID that compares a membership DID against an R-DID and is\nfalse by construction, so a member could lodge an edge and then never take\nit back — only an admin could. The property the equality was standing in\nfor is *control of the issuing key*, and once the identifier stopped being\nthe member's own, only a proof can establish it.\n\nThree routes to authorization, and the first two are exactly as before:\n\n- **attributed** — `auth.did == rel.issuer_did`. Still correct, still\n  sufficient, no proof needed. The session already demonstrates control of\n  that key.\n- **admin** — moderation, keyed on the row id and not on issuer identity.\n  Unchanged.\n- **pairwise** — a `VrcRevokeAuthorization` signed by the row's\n  `issuerDid`, bound to this row, this community, this session and this\n  moment. New.\n\nLike the publish authorization, **it is verified and discarded** — never\nstored, logged or audited. It carries `sessionId`, which is attributable to\na membership DID, and this handler writes to the audit store, so it is the\none place on the pairwise path where that linkage could plausibly become\ndurable. See `docs/05-design-notes/vrc-publish-proof-of-possession.md`.",
-        "operationId": "relationshipRevoke",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Relationship (VRC) id",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "description": "Optional. Required only for an edge issued under a pairwise relationship DID.",
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RevokeBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Relationship (VRC) revoked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RelationshipRevokeResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not the issuer or an admin"
-          },
-          "404": {
-            "description": "Relationship not found"
           }
         },
         "security": [
@@ -1562,55 +1357,6 @@
           },
           "403": {
             "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/vetting/vetters/{memberDid}/resend": {
-      "post": {
-        "tags": [
-          "vetting"
-        ],
-        "summary": "Deliver a vetter's live grant credential again.",
-        "operationId": "vettingVetterResend",
-        "parameters": [
-          {
-            "name": "memberDid",
-            "in": "path",
-            "description": "The vetter's member DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The credential was handed to the transport for delivery",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VtcVettingVettersResendV0_1Response"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not a community admin"
-          },
-          "404": {
-            "description": "The member holds no live vetter grant whose credential the community kept"
-          },
-          "503": {
-            "description": "The delivery could not be handed to the transport"
           }
         },
         "security": [
@@ -6378,17 +6124,6 @@
           }
         }
       },
-      "RelationshipRevokeResponse": {
-        "type": "object",
-        "required": [
-          "id"
-        ],
-        "properties": {
-          "id": {
-            "type": "string"
-          }
-        }
-      },
       "RelationshipsGraph": {
         "type": "object",
         "required": [
@@ -6548,22 +6283,6 @@
           "noAdmission",
           "needsReview"
         ]
-      },
-      "RevokeBody": {
-        "type": "object",
-        "properties": {
-          "pop": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Value",
-                "description": "Proof that the caller controls the key behind the row's `issuerDid`,\nwhen that is not the caller's session DID — i.e. for every edge\npublished under a pairwise relationship DID.\n\nBound to the row `id` rather than to a credential, because `DELETE\n/v1/relationships/{id}` names the row and carries no credential to\nbind to."
-              }
-            ]
-          }
-        }
       },
       "RevokeFinishRequest": {
         "type": "object",

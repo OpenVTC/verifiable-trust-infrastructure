@@ -446,38 +446,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/credentials/endorsements": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["endorsementList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/credentials/endorsements/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["endorsementShow"];
-        put?: never;
-        post?: never;
-        delete: operations["endorsementRevoke"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/install/claim/finish": {
         parameters: {
             query?: never;
@@ -529,51 +497,6 @@ export interface paths {
         put?: never;
         post: operations["publish"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/relationships/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * `DELETE /v1/relationships/{id}` — retract an edge.
-         * @description ## Why there is a body here at all
-         *
-         *     `revoke` kept the identity equality that `publish` replaced in #1054/#1061:
-         *     `auth.did == rel.issuer_did`. For an edge published under a pairwise
-         *     relationship DID that compares a membership DID against an R-DID and is
-         *     false by construction, so a member could lodge an edge and then never take
-         *     it back — only an admin could. The property the equality was standing in
-         *     for is *control of the issuing key*, and once the identifier stopped being
-         *     the member's own, only a proof can establish it.
-         *
-         *     Three routes to authorization, and the first two are exactly as before:
-         *
-         *     - **attributed** — `auth.did == rel.issuer_did`. Still correct, still
-         *       sufficient, no proof needed. The session already demonstrates control of
-         *       that key.
-         *     - **admin** — moderation, keyed on the row id and not on issuer identity.
-         *       Unchanged.
-         *     - **pairwise** — a `VrcRevokeAuthorization` signed by the row's
-         *       `issuerDid`, bound to this row, this community, this session and this
-         *       moment. New.
-         *
-         *     Like the publish authorization, **it is verified and discarded** — never
-         *     stored, logged or audited. It carries `sessionId`, which is attributable to
-         *     a membership DID, and this handler writes to the audit store, so it is the
-         *     one place on the pairwise path where that linkage could plausibly become
-         *     durable. See `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
-         */
-        delete: operations["relationshipRevoke"];
         options?: never;
         head?: never;
         patch?: never;
@@ -754,23 +677,6 @@ export interface paths {
         get: operations["vettingVetterList"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/vetting/vetters/{memberDid}/resend": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Deliver a vetter's live grant credential again. */
-        post: operations["vettingVetterResend"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3458,9 +3364,6 @@ export interface components {
             /** @description The registry's REST base URL, when one is configured. */
             url?: string | null;
         };
-        RelationshipRevokeResponse: {
-            id: string;
-        };
         RelationshipsGraph: {
             edges: components["schemas"]["GraphEdge"][];
             nodes: components["schemas"]["GraphNode"][];
@@ -3544,9 +3447,6 @@ export interface components {
          * @enum {string}
          */
         RevocationReviewState: "noAdmission" | "needsReview";
-        RevokeBody: {
-            pop?: null | components["schemas"]["Value"];
-        };
         RevokeFinishRequest: {
             revocation_id: string;
             uv_response: Record<string, never>;
@@ -5300,138 +5200,6 @@ export interface operations {
             };
         };
     };
-    endorsementList: {
-        parameters: {
-            query?: {
-                cursor?: string | null;
-                limit?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated list of endorsements */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Paginated_EndorsementRow"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin or issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    endorsementShow: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Endorsement id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Endorsement */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EndorsementEnvelope"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin or issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Endorsement not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    endorsementRevoke: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Endorsement id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Endorsement revoked */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EndorsementRevokeResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin or issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Endorsement not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Endorsement already revoked */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     claim_finish: {
         parameters: {
             query?: never;
@@ -5538,55 +5306,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RateLimitedBody"];
                 };
-            };
-        };
-    };
-    relationshipRevoke: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Relationship (VRC) id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /** @description Optional. Required only for an edge issued under a pairwise relationship DID. */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RevokeBody"];
-            };
-        };
-        responses: {
-            /** @description Relationship (VRC) revoked */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RelationshipRevokeResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not the issuer or an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Relationship not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
@@ -5914,57 +5633,6 @@ export interface operations {
             };
             /** @description Caller is not an admin */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingVetterResend: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The vetter's member DID */
-                memberDid: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The credential was handed to the transport for delivery */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcVettingVettersResendV0_1Response"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The member holds no live vetter grant whose credential the community kept */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The delivery could not be handed to the transport */
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };
