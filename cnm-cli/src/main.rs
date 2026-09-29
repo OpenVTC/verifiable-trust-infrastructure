@@ -1524,7 +1524,9 @@ async fn main() {
         }
         Commands::Consent { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
-                Ok((key, target)) => consent::run(command, &key, &target).await,
+                Ok((key, target)) => {
+                    consent::run(command, &key, &target, cli.transport.into()).await
+                }
                 Err(e) => Err(e),
             }
         }
