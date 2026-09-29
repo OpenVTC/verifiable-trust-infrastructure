@@ -1259,9 +1259,11 @@ mod openapi_tests {
         ] {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
         }
+        // A floor, not a count: it catches the spec losing whole groups, and
+        // falls as REST routes move to signed-only Trust Tasks.
         assert!(
-            paths.len() >= 45,
-            "expected the documented surface to be >= 45 paths, got {}",
+            paths.len() >= 30,
+            "expected the documented surface to be >= 30 paths, got {}",
             paths.len()
         );
     }
