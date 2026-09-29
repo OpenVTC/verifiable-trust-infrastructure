@@ -263,6 +263,10 @@ pub struct AppState {
     /// Git namespaces (`crate::git_ns`): the three keyspaces and the bridge
     /// client that sends `git-ns/bridge/job` documents.
     pub git_ns: crate::git_ns::GitNsHandles,
+    /// Per-address budget for raised-limit documents (over the framework's
+    /// default 64 KiB) a claimed — not yet verified — known issuer is granted
+    /// a raised size limit for. See [`crate::trust_tasks::size`].
+    pub large_document_budget: Arc<crate::trust_tasks::size::LargeDocumentBudget>,
 }
 
 /// Delivery deadline for a pushed credential-exchange step or other ordinary
@@ -822,6 +826,7 @@ pub async fn run(
         supervisor: detect_supervisor(),
         didcomm: didcomm_cell,
         git_ns,
+        large_document_budget: Arc::new(crate::trust_tasks::size::LargeDocumentBudget::new()),
     };
 
     // Heal missing AdminEntries: any DID with an Admin ACL grant +

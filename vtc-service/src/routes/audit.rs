@@ -15,8 +15,6 @@
 //! returned page; the next page returns entries strictly less than
 //! that key.
 
-use axum::Json;
-use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +24,6 @@ use vti_common::error::AppError;
 
 use vti_common::pagination::{Cursor, MAX_LIMIT};
 
-use crate::auth::SuperAdminAuth;
 use crate::server::AppState;
 use tracing::info;
 
@@ -655,47 +652,8 @@ pub struct ChainBreakReport {
     pub event_id: String,
 }
 
-/// GET /audit/verify — verify the audit hash chain. Auth: Super-admin.
-///
-/// Walks the whole audit keyspace in ascending (chronological) key
-/// order and folds it through [`ChainVerifier`], so memory stays
-/// constant regardless of log size.
-///
-/// **What a `verified: true` does and does not mean.** The chain
-/// links each envelope to its predecessor, so a reorder, drop, or
-/// duplicate is detected. It is *not* a signature: `chain_digest` is
-/// an unkeyed SHA-256, so an adversary with write access to the store
-/// can forge a suffix and restamp every envelope after it, and a
-/// truncation to a valid prefix is indistinguishable from a quiet
-/// period.
-///
-/// That is what the `checkpoints` block closes (#708). Read it as the
-/// load-bearing half of this response: `verified: true` with
-/// `checkpoints.status: "truncated"` means the surviving log is internally
-/// consistent *and* provably shorter than the community key attested to —
-/// i.e. exactly the attack the chain alone cannot see. See
-/// `docs/05-design-notes/vtc-audit-checkpoints.md`.
-#[utoipa::path(
-    get, path = "/audit/verify", tag = "audit",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Chain verification result", body = VerifyResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a super-admin"),
-    ),
-)]
-pub async fn verify_audit_chain(
-    auth: SuperAdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<VerifyResponse>, AppError> {
-    verify_audit_chain_inner(&state, &auth.0.did)
-        .await
-        .map(Json)
-}
-
-/// `audit/verify/0.1` for `actor`, on either door: the signed document the
-/// spine serves (`trust_tasks::admin_tasks`), and the bearer route above,
-/// which stays while `vtc-client`'s `audit_verify` calls it.
+/// `audit/verify/0.1` for `actor`: the signed document the spine serves
+/// (`trust_tasks::admin_tasks`).
 pub(crate) async fn verify_audit_chain_inner(
     state: &AppState,
     actor: &str,

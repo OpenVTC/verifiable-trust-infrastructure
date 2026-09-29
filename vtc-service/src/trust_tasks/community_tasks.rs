@@ -15,9 +15,8 @@
 //! | `vtc/relationships/graph/0.2` | `Admin` |
 //! | `vtc/invitations/{issue,list,revoke,deliver}/0.1` | `Admin`, `Moderator` or `Issuer`; below `Admin`, only the invitations the signer issued, and no role conferred by invitation |
 //!
-//! Every one arrives here the same way over TSP, DIDComm or HTTPS. The bearer
-//! routes of `members/list` and `join-requests/list` stay while `vtc-client`
-//! calls them; none of the others has one.
+//! Every one arrives here the same way over TSP, DIDComm or HTTPS. None of
+//! them has a REST route.
 //!
 //! # Where the authority comes from
 //!

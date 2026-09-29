@@ -192,7 +192,8 @@ Either way the vetter's profile is deleted.
 
 A vetter whose wallet lost the credential asks for it again with
 `vtc/vetting/vetters/resend/0.1` (payload `{}`); an admin can do the same with
-`POST /v1/vetting/vetters/{memberDid}/resend`. The community delivers the same
+`POST /v1/vetting/vetters/{memberDid}/resend` (no signed admin form yet, and no
+`cnm` command). The community delivers the same
 credential over `credential-exchange/issue` — nothing new is issued — and
 answers `{ "credentialId": "…", "validUntil": "…" }`. A sender with no live
 grant is refused with `vtc/vetting/vetters/resend:notGranted` (404 over admin
@@ -341,9 +342,8 @@ unshortened.
 | Command | Route | Prints |
 |---|---|---|
 | `cnm vetting vetters list` | `GET /v1/vetting/vetters` | member, status (`live`, `revoked`, `expired`, `not member`), origin (`manual`/`auto`), valid until, endorsement id, profile summary |
-| `cnm vetting vetters grant <memberDid> [--validity 180d]` | `POST /v1/vetting/vetters` | whether a grant was issued or an existing live one returned, its endorsement id, credential id and validity |
-| `cnm vetting vetters revoke <endorsementId>` | `DELETE /v1/credentials/endorsements/{id}` | the revoked credential and when |
-| `cnm vetting vetters resend <memberDid>` | `POST /v1/vetting/vetters/{memberDid}/resend` | the credential handed to the transport (not a delivery receipt) |
+| `cnm vetting vetters grant <memberDid> [--validity 180d]` | `vtc/vetting/vetters/grant/0.1` (signed) | whether a grant was issued or an existing live one returned, its endorsement id, credential id and validity |
+| `cnm vetting vetters revoke <endorsementId>` | `vtc/endorsements/revoke/0.1` (signed) | the revoked credential and when |
 | `cnm vetting auto-grant show` | `GET /v1/vetting/auto-grant` | enabled, sweep interval, grant validity, last sweep |
 | `cnm vetting auto-grant set [--enabled true] [--sweep-minutes 30] [--validity 365d]` | `PUT /v1/vetting/auto-grant` | the stored configuration |
 | `cnm vetting branding show` | `GET /v1/community/branding` | display name, accent colour, logo URL |
@@ -353,8 +353,7 @@ unshortened.
 Durations are `N[s|m|h|d|w]`; a grant is valid for one day to two years. `set`
 reads the current value first and changes only the flags given, so
 `--sweep-minutes 30` does not turn the sweep off. A refusal names the fix — an
-unknown endorsement id points at `vetters list`, a resend with no live grant at
-`vetters grant`, a non-member at approving their join request first.
+unknown endorsement id points at `vetters list`, a non-member at approving their join request first.
 
 ### 8. Seed vetters from a PGP web of trust (optional)
 

@@ -1,15 +1,12 @@
 //! `GET /v1/join-requests` + `GET /v1/join-requests/{id}` — admin
 //! read endpoints (M1.9.1).
 
-use axum::Json;
-use axum::extract::{Query, State};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, MAX_LIMIT, Paginated};
 
-use crate::auth::AdminAuth;
 use crate::error::TaskError;
 use crate::join::{JoinRequest, JoinStatus, get_join_request, list_join_requests_paginated};
 use crate::server::AppState;
@@ -29,10 +26,8 @@ pub struct ListJoinRequestsQuery {
     pub limit: Option<usize>,
 }
 
-/// GET /join-requests — list join requests (admin work queue). Auth: Admin.
-/// `vtc/join-requests/list/0.1`, on either door: the signed document the
-/// spine serves (`trust_tasks::community_tasks`), and the bearer route below,
-/// which stays while `vtc-client`'s `list_join_requests` calls it.
+/// The admin work queue of join requests, `vtc/join-requests/list/0.1`: the
+/// signed document the spine serves (`trust_tasks::community_tasks`).
 pub(crate) async fn list_join_requests_inner(
     state: &AppState,
     query: ListJoinRequestsQuery,
@@ -62,24 +57,6 @@ pub(crate) async fn list_join_requests_inner(
     page.items.retain(|r| r.status == filter_status);
 
     Ok(page)
-}
-
-#[utoipa::path(
-    get, path = "/join-requests", tag = "join-requests",
-    security(("bearer_jwt" = [])),
-    params(ListJoinRequestsQuery),
-    responses(
-        (status = 200, description = "Paginated join requests", body = Paginated<JoinRequest>),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_join_requests(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<ListJoinRequestsQuery>,
-) -> Result<Json<Paginated<JoinRequest>>, AppError> {
-    list_join_requests_inner(&state, query).await.map(Json)
 }
 
 /// GET /join-requests/{id} — show a single join request. Auth: Admin.
