@@ -609,6 +609,7 @@ fn accepts_criterion() -> Value {
         query: dcql_query(),
         description: Some("A membership credential".into()),
         vetting: None,
+        hidden_vetting: None,
         created_at: TS.parse().expect("fixture timestamp"),
         created_by_did: OTHER_DID.into(),
     })
