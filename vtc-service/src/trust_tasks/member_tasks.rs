@@ -15,9 +15,15 @@
 //!
 //! Until these were bound here every one of them was HTTPS REST only, so a
 //! member on TSP or DIDComm could join a community and then do nothing with
-//! their membership. Each arm calls the same operation its REST route calls
-//! (`renew_inner`, `rotate_inner`, `revoke_inner`, …); the doors differ only in
-//! how they learn who is asking.
+//! their membership. Each arm calls the same operation its (former, in most
+//! cases) REST route called (`renew_inner`, `rotate_inner`, `revoke_inner`,
+//! …). Once this spine covered a verb, its bearer-session REST route had no
+//! remaining reason to exist and was removed for renew, rotate-challenge,
+//! rotate, personhood/revoke, relationships/list and endorsements/issue; a
+//! few keep theirs regardless — endorsements/{list,show,revoke} because a
+//! bearer console still calls them directly, relationships/revoke because
+//! its REST door authorizes a pairwise-relationship-DID capacity this one
+//! cannot (see `handle_relationships_revoke`).
 //!
 //! # Where the authority comes from
 //!
@@ -323,9 +329,9 @@ async fn handle_renew(
 
 /// `vtc/members/rotate-challenge/0.1` — open a rotation of the signer's DID.
 ///
-/// `reason` is bound to the challenge row here, exactly as on the bearer
-/// route: the rotation signatures do not cover it, so it is taken from the
-/// party that opened the ceremony and never from the finish.
+/// `reason` is bound to the challenge row here: the rotation signatures do
+/// not cover it, so it is taken from the party that opened the ceremony and
+/// never from the finish.
 async fn handle_rotate_challenge(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -353,9 +359,9 @@ async fn handle_rotate_challenge(
 
 /// `vtc/members/rotate/0.1` — complete the rotation.
 ///
-/// The signer must be `oldDid`, as the bearer route requires the session DID
-/// to be. That is attribution; the swap itself is authorized by the two
-/// in-payload signatures, which the operation verifies whoever relayed them.
+/// The signer must be `oldDid`. That is attribution; the swap itself is
+/// authorized by the two in-payload signatures, which the operation verifies
+/// whoever relayed them.
 async fn handle_rotate(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -373,7 +379,7 @@ async fn handle_rotate(
         Err(reject) => return reject,
     };
     match crate::routes::members::rotate::rotate_inner(state, &caller, body).await {
-        // The bearer route answers `vmc: null` when the swap succeeded and
+        // `rotate_inner` answers `vmc: null` when the swap succeeded and
         // re-issuing the credentials did not; the published response requires
         // both, so `respond_as` refuses that reply rather than send it. The
         // rotation has still happened — `renew` under the new DID recovers.
@@ -384,8 +390,8 @@ async fn handle_rotate(
 
 /// `vtc/members/personhood/revoke/0.1` — clear a member's personhood flag.
 ///
-/// The bearer route admits the subject or an administrator; so does this. A
-/// signer revoking their own personhood acts as the subject, and needs a
+/// Admits the subject or an administrator. A signer revoking their own
+/// personhood acts as the subject, and needs a
 /// current ACL row of their own — a console key is not anyone's self.
 async fn handle_personhood_revoke(
     state: &AppState,

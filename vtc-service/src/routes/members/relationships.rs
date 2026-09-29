@@ -1,5 +1,8 @@
-//! `GET /v1/members/{did}/relationships` — paginated VRC
-//! list per member. Phase 4 M4.6.2. Spec §6.1 + §12.3.
+//! `vtc/relationships/list/0.2` — paginated VRC list per member. Phase 4
+//! M4.6.2. Spec §6.1 + §12.3. Signed document only
+//! (`trust_tasks::member_tasks`); the bearer REST route it once also served
+//! (`GET /v1/members/{did}/relationships`) had no caller once the admin
+//! console moved onto the signed door, and was removed.
 //!
 //! ## §12.3 departure-handling strip
 //!
@@ -15,10 +18,6 @@
 //! `removed_at` — operator-uploaded directory policies can
 //! layer that if they want.
 
-use axum::Json;
-use axum::extract::{Path, Query, State};
-use serde::Deserialize;
-use vti_common::auth::extractor::AuthClaims;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated};
 
@@ -30,46 +29,13 @@ use crate::server::AppState;
 
 const MAX_LIMIT: usize = 200;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema, utoipa::IntoParams)]
-#[schema(as = MemberRelationshipListQuery)]
-pub struct ListQuery {
-    pub cursor: Option<String>,
-    pub limit: Option<usize>,
-}
-
 /// `vtc/relationships/list:notFound` — no member with the supplied DID.
 pub const LIST_ERR_NOT_FOUND: &str =
     trust_tasks_rs::specs::vtc::relationships::list::v0_2::error_codes::NOT_FOUND.code;
 
-/// GET /members/{did}/relationships — paginated VRC list for a member.
-/// Auth: any authenticated session.
-#[utoipa::path(
-    get, path = "/members/{did}/relationships",
-    operation_id = "memberRelationshipList", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(("did" = String, Path, description = "Member DID"), ListQuery),
-    responses(
-        (status = 200, description = "Paginated relationship list", body = Paginated<Relationship>),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not authorised"),
-    ),
-)]
-pub async fn list(
-    _auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(did): Path<String>,
-    Query(query): Query<ListQuery>,
-) -> Result<Json<Paginated<Relationship>>, TaskError> {
-    Ok(Json(
-        list_inner(&state, &did, query.cursor.as_deref(), query.limit).await?,
-    ))
-}
-
-/// One page of `did`'s relationships — the operation behind the bearer route
-/// above and the `vtc/relationships/list/0.2` Trust Task. Who may read is the
-/// door's decision; this validates the subject, resolves it (`notFound`) and
+/// One page of `did`'s relationships — the operation behind the
+/// `vtc/relationships/list/0.2` Trust Task. Who may read is the door's
+/// decision; this validates the subject, resolves it (`notFound`) and
 /// applies the §12.3 strip.
 pub(crate) async fn list_inner(
     state: &AppState,

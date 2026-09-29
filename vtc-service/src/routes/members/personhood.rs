@@ -1,16 +1,18 @@
-//! `/v1/members/{did}/personhood/{challenge,assert}` + revoke
-//! — personhood lifecycle endpoints (Phase 4 M4.3 + M4.4).
-//! Spec §6.3 + planning-review D2 (VP-only assert).
+//! `vtc/members/personhood/{challenge,assert,revoke}` — personhood
+//! lifecycle (Phase 4 M4.3 + M4.4). Spec §6.3 + planning-review D2 (VP-only
+//! assert). All three are signed documents only
+//! (`trust_tasks::member_tasks`); revoke's bearer REST route had no caller
+//! once the spine dispatched it (#1809) and was removed.
 //!
-//! ## Three endpoints, three Trust Tasks
+//! ## Three verbs, three Trust Tasks
 //!
-//! 1. `POST .../personhood/challenge` — mints a single-use
+//! 1. `vtc/members/personhood/challenge/0.1` — mints a single-use
 //!    nonce + 10-min TTL. The assert body's `presentation.proof.
 //!    challenge` field must match. Single-use → consumed on
 //!    successful assert. Reuses the rotation-challenge storage
 //!    pattern: `passkey_ks` keyspace, `personhood_chal:` prefix.
 //!
-//! 2. `POST .../personhood/assert` — accepts a VP signed by the
+//! 2. `vtc/members/personhood/assert/0.1` — accepts a VP signed by the
 //!    member's `#key-0`. Flow:
 //!    - Consume the challenge (single-use; refuses on missing /
 //!      expired / wrong-DID). The challenge must appear **both** at
@@ -35,40 +37,36 @@
 //!      slot, mirror M2.13 renewal's pattern).
 //!    - Emit `PersonhoodAsserted { vmc_id, asserted_at }`.
 //!
-//! 3. `DELETE .../personhood` — admin or self revoke. Idempotent
-//!    no-op if already `false`. Flips flag + clears
+//! 3. `vtc/members/personhood/revoke/0.1` — admin or self revoke.
+//!    Idempotent no-op if already `false`. Flips flag + clears
 //!    asserted_at + re-mints VMC with `personhood: false` +
 //!    emits `PersonhoodRevoked { vmc_id, reason: "admin"|"self" }`.
 //!
 //! ## Auth model
 //!
-//! - **Challenge**: any authenticated session. The challenge is
-//!   bound to the path-DID; downstream assert checks the bind.
-//! - **Assert**: any authenticated session. Both admin and the
+//! - **Challenge**: any current member — the proof signer's ACL row. The
+//!   challenge is bound to the path-DID; downstream assert checks the bind.
+//! - **Assert**: any current member. Both admin and the
 //!   subject member can mint a challenge + send the assert
 //!   (operators who want stricter "only admin can assert"
 //!   semantics layer this in `personhood.rego`).
-//! - **Revoke**: Admin OR caller's session DID matches path DID.
+//! - **Revoke**: Admin OR the signer's own DID matches the subject.
 //!   Self-revoke is canonical (RTBF-style "I no longer want this
 //!   claim asserted").
 //!
-//! ## Not only REST
+//! ## Signed documents, every transport
 //!
-//! `challenge` and `assert` are also routed by the messaging Trust
-//! Task dispatcher (`crate::trust_tasks`), so a member client that
-//! speaks DIDComm or TSP and holds no bearer token — `openvtc` — can
-//! run the ceremony. Both transports call the same
-//! [`challenge_inner`] / [`assert_inner`]; only the caller-identity
-//! gate differs, because a session and a proven sender are different
-//! things. See the handlers there for what each one checks.
+//! All three verbs are routed by the Trust Task dispatcher
+//! (`trust_tasks::member_tasks`), so a member client that speaks DIDComm,
+//! TSP or HTTPS `/trust-tasks` can run the ceremony — none has a bearer REST
+//! route of its own. [`challenge_inner`], [`assert_inner`] and
+//! [`revoke_inner`] are the shared operations every transport calls; the
+//! caller-identity gate is the document's proof signer throughout.
 
 use std::sync::Arc;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_vc::VerifiableCredential;
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
@@ -78,7 +76,6 @@ use vti_common::audit::{AuditEvent, PersonhoodAssertedData, PersonhoodRevokedDat
 use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;
-use crate::auth::AuthClaims;
 use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
@@ -538,48 +535,9 @@ pub struct RevokeResponse {
     pub role_vec: Option<JsonValue>,
 }
 
-/// DELETE /members/{did}/personhood — revoke personhood. Auth: Admin or self.
-#[utoipa::path(
-    delete, path = "/members/{did}/personhood",
-    operation_id = "personhoodRevoke", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(("did" = String, Path, description = "Member DID")),
-    responses(
-        (status = 200, description = "Personhood revoked", body = RevokeResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is neither admin nor the subject member"),
-        (status = 404, description = "Member not found"),
-    ),
-)]
-pub async fn revoke(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(member_did): Path<String>,
-) -> Result<(StatusCode, Json<RevokeResponse>), TaskError> {
-    vti_common::identifier::validate_did("did", &member_did)?;
-    // Auth: AdminAuth-equivalent (role == admin) OR self.
-    let is_self = auth.did == member_did;
-    let is_admin = auth.role == vti_common::acl::Role::Admin;
-    if !is_self && !is_admin {
-        return Err(AppError::Forbidden(
-            "only an admin or the subject member can revoke personhood".into(),
-        )
-        .into());
-    }
-    let capacity = if is_self {
-        RevokeCapacity::Subject
-    } else {
-        RevokeCapacity::Admin
-    };
-    Ok((
-        StatusCode::OK,
-        Json(revoke_inner(&state, &auth.did, &member_did, capacity).await?),
-    ))
-}
-
 /// Which of the two parties `personhood/revoke` admits is acting. Decided by
-/// each door from what it authenticated — the bearer session's role, or the
-/// proof signer's ACL row — and recorded on the audit envelope.
+/// the door from what it authenticated — the proof signer's ACL row — and
+/// recorded on the audit envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RevokeCapacity {
     /// The subject revoking their own personhood.
@@ -588,9 +546,11 @@ pub(crate) enum RevokeCapacity {
     Admin,
 }
 
-/// Revoke `member_did`'s personhood — the operation behind the bearer route
-/// above and the `vtc/members/personhood/revoke/0.1` Trust Task. The door has
-/// already established that `actor_did` acts in `capacity`.
+/// Revoke `member_did`'s personhood — the operation behind the
+/// `vtc/members/personhood/revoke/0.1` Trust Task. Revoking has no bearer
+/// REST route: it is a signed document only, reached over TSP, DIDComm or
+/// HTTPS `/trust-tasks`. The door has already established that `actor_did`
+/// acts in `capacity`.
 pub(crate) async fn revoke_inner(
     state: &AppState,
     actor_did: &str,

@@ -455,7 +455,7 @@ export interface paths {
         };
         get: operations["endorsementList"];
         put?: never;
-        post: operations["endorsementIssue"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -512,97 +512,6 @@ export interface paths {
          *     ceremony for the first admin. Unauthenticated.
          */
         post: operations["claim_start"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/me/renew": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /members/me/renew — renew VMC + role VEC. Auth: any authenticated member. */
-        post: operations["renew"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/me/rotate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /members/me/rotate — complete a DID rotation. Auth: old DID's session. */
-        post: operations["rotate"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/me/rotate/challenge": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * POST /members/me/rotate/challenge — mint a DID-rotation challenge.
-         *     Auth: any authenticated member.
-         */
-        post: operations["memberRotateChallenge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/{did}/personhood": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** DELETE /members/{did}/personhood — revoke personhood. Auth: Admin or self. */
-        delete: operations["personhoodRevoke"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/{did}/relationships": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * GET /members/{did}/relationships — paginated VRC list for a member.
-         *     Auth: any authenticated session.
-         */
-        get: operations["memberRelationshipList"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1223,16 +1132,6 @@ export interface components {
             wired: string;
         };
         /**
-         * @description Optional body for the challenge request.
-         *
-         *     Absent body, absent field, and `unspecified` all mean the same
-         *     thing — the member declined to say. The endpoint predates this
-         *     field, so clients that send no body at all stay valid.
-         */
-        ChallengeBody: {
-            reason?: null | components["schemas"]["DidRotationReason"];
-        };
-        /**
          * @description Client sends to `POST /auth/challenge`.
          *
          *     Wire shape conforms to `spec/auth/challenge/0.1`: the `did` field
@@ -1675,17 +1574,6 @@ export interface components {
              */
             vtaDid?: string | null;
         };
-        /**
-         * @description Why a member rotated their DID, as declared at challenge time.
-         *
-         *     Separate from [`crate::audit::RotationReason`], which describes
-         *     *audit-HMAC-key* rotation: that enum serializes PascalCase, is
-         *     already persisted in `audit_key:` rows (so it cannot be re-cased),
-         *     and its variants (`Initial`, `Routine` meaning "the background task
-         *     fired") carry no sensible reading in this domain.
-         * @enum {string}
-         */
-        DidRotationReason: "routine" | "compromise" | "deviceLoss" | "migration" | "unspecified";
         /** @description The projected subject record. */
         DirectoryResponse: {
             fields: {
@@ -1943,22 +1831,6 @@ export interface components {
          * @enum {string}
          */
         FindingCode: "advertisedNotServable" | "noMessagingAdvertised" | "noDidcommFallback" | "servedNotAdvertised";
-        FinishBody: {
-            newDid: string;
-            /** @description Hex-encoded Ed25519 signature by the new DID's key. */
-            newSignature: string;
-            oldDid: string;
-            /** @description Hex-encoded Ed25519 signature by the old DID's key. */
-            oldSignature: string;
-            /** Format: uuid */
-            rotationId: string;
-        };
-        FinishResponse: {
-            method: string;
-            newDid: string;
-            roleVec: components["schemas"]["Value"];
-            vmc: components["schemas"]["Value"];
-        };
         GitNsAccountList: {
             accounts: components["schemas"]["GitNsAccountRow"][];
             nextCursor?: string | null;
@@ -2571,21 +2443,6 @@ export interface components {
              */
             targetDid?: string | null;
         };
-        IssueBody: {
-            claim: components["schemas"]["Value"];
-            subjectDid: string;
-            /**
-             * @description `typeUri`, the name the payload schema gives it. This carried an
-             *     explicit `#[serde(rename = "type")]` until #1096 — a deliberate
-             *     rename that simply disagreed with the spec.
-             */
-            typeUri: string;
-            /**
-             * Format: int64
-             * @description Optional override; defaults to 30d.
-             */
-            validitySeconds?: number | null;
-        };
         IssueInvitationBody: {
             /**
              * @description Optional role to grant the invitee on join (e.g. `member`, `moderator`,
@@ -2613,15 +2470,6 @@ export interface components {
              *     (copy / QR). The invitee presents it back in a join request.
              */
             vic: components["schemas"]["Value"];
-        };
-        IssueResponse: {
-            /**
-             * @description The signed credential just minted, which only this call can hand
-             *     back. A read carries `endorsement.issued` — the reference — instead,
-             *     so a page of fifty endorsements does not embed fifty credentials.
-             */
-            credential: components["schemas"]["Value"];
-            endorsement: components["schemas"]["EndorsementRow"];
         };
         /**
          * @description The refusal, in the form the applicant is owed it.
@@ -2793,54 +2641,6 @@ export interface components {
          * @enum {string}
          */
         JoinStatus: "pending" | "approved" | "rejected" | "withdrawn" | "deferred";
-        /**
-         * @description One entry in an artifact's lifecycle log: what happened, and when this
-         *     service recorded it.
-         */
-        LifecycleEvent: components["schemas"]["LifecycleEventKind"] & {
-            /**
-             * Format: date-time
-             * @description Transaction time: when this service recorded the event, **not** when
-             *     the underlying decision was taken. [`resolve`] ignores events recorded
-             *     after the instant being asked about, which is what makes "was this in
-             *     force at T" answerable at all.
-             */
-            recordedAt: string;
-        };
-        /**
-         * @description A lifecycle event recorded against an artifact after it was issued.
-         *
-         *     The variants are the vocabulary #1079 says is missing. They are separate
-         *     variants rather than a `status: String` because the transition rules in
-         *     [`LifecycleLog::record`] have to distinguish them, and a stringly-typed
-         *     state machine is one typo away from accepting a transition it rejects.
-         */
-        LifecycleEventKind: {
-            /** @enum {string} */
-            event: "suspended";
-            reason?: string | null;
-        } | {
-            /** @enum {string} */
-            event: "restored";
-            reason?: string | null;
-        } | {
-            by: string;
-            /** @enum {string} */
-            event: "superseded";
-        } | {
-            /** @enum {string} */
-            event: "withdrawn";
-            reason?: string | null;
-        };
-        /**
-         * @description The append-only lifecycle log of one artifact, oldest first.
-         *
-         *     Append-only and monotonic in `recorded_at`, both enforced by
-         *     [`Self::record`]. Order in the vector *is* the precedence order, so an
-         *     out-of-order insert would silently change the answer for every instant
-         *     after it.
-         */
-        LifecycleLog: components["schemas"]["LifecycleEvent"][];
         ListInvitesResponse: {
             invites: components["schemas"]["InviteSummary"][];
         };
@@ -3164,97 +2964,6 @@ export interface components {
             /** Format: int64 */
             totalEstimate?: number | null;
         };
-        /**
-         * @description Standard response wrapper for list endpoints. Carries the
-         *     requested page of items, the opaque cursor for the next page
-         *     (`None` when the caller has reached the end), and an optional
-         *     total-count estimate.
-         */
-        Paginated_Relationship: {
-            items: {
-                /** Format: date-time */
-                createdAt: string;
-                /**
-                 * Format: uuid
-                 * @description Server-allocated UUID. Surfaced as `urn:uuid:<id>` on
-                 *     the VRC's top-level `id` field at publish time when
-                 *     the caller didn't supply one.
-                 */
-                id: string;
-                /**
-                 * @description The asserting member. By the publish-time auth check,
-                 *     this equals the caller's session DID.
-                 */
-                issuerDid: string;
-                /**
-                 * @description Everything recorded against this edge since it was published:
-                 *     suspension, restoration, supersession, withdrawal.
-                 *
-                 *     Empty on every edge published before #1079 and on every edge that has
-                 *     had no lifecycle event, which is why it is `#[serde(default)]` and
-                 *     skipped when empty — existing rows decode unchanged and re-serialise
-                 *     byte-identically, the same treatment [`Relationship::persona`] got when
-                 *     it was added to an already-shipped row.
-                 *
-                 *     This is the *only* lifecycle handle a VRC has. Per planning-review D7 a
-                 *     VRC carries no `credentialStatus`, deliberately — a status-list host
-                 *     learns which verifier checked which credential and when, which is the
-                 *     correlation the pairwise work exists to remove. Without a status list
-                 *     the community's alternatives were a permanent edge or `DELETE
-                 *     /v1/relationships/{id}`, and a deletion cannot answer "was this edge in
-                 *     force last Tuesday" because it can only be observed as an absence.
-                 *
-                 *     Never resolved by hand. [`Relationship::in_force_at`] is the entry
-                 *     point, and the precedence rule lives in
-                 *     [`crate::credentials::lifecycle`].
-                 *
-                 *     **Known spec lag.** `Relationship` is both the stored row and the item
-                 *     shape of `spec/vtc/relationships/list/0.2`, whose response schema is
-                 *     `additionalProperties: false` and predates this member — as it predates
-                 *     [`Relationship::persona`], added the same way in #1067. A listed edge
-                 *     that has had a lifecycle event therefore carries a member the published
-                 *     task does not describe. The registry is upstream and the spec moves
-                 *     first, so this is recorded here rather than papered over by dropping
-                 *     the field on the way out: hiding the log from the one surface a member
-                 *     can read would leave them able to be suspended and unable to see it.
-                 */
-                lifecycle?: components["schemas"]["LifecycleLog"];
-                persona?: null | components["schemas"]["PersonaAnnotation"];
-                /**
-                 * @description The other party the VRC names. Need not be a current
-                 *     community member at *list* time (the list path strips
-                 *     Purge-removed rows per §12.3) but must be a current
-                 *     member at *publish* time (default `relationships.rego`).
-                 */
-                subjectDid: string;
-                /**
-                 * @description SHA-256 of `canonical_json(vrc_jsonld)`, hex-encoded.
-                 *     Used for idempotency: a second publish of an
-                 *     already-stored VRC returns the existing id (200)
-                 *     rather than creating a duplicate row.
-                 *     Digest over the RFC 8785 canonicalization of `vrc_jsonld`, as a
-                 *     base58btc multibase multihash — the form DTG Credentials and
-                 *     `relationships/publish/0.2` both specify.
-                 *
-                 *     Was a bare lowercase-hex SHA-256 over a recursive key sort. That form
-                 *     hard-coded one algorithm into the stored shape, named no base encoding,
-                 *     and — worse — named no canonicalization a second implementation could
-                 *     reproduce, so two conforming services could digest the same credential
-                 *     differently and neither be wrong.
-                 */
-                vrcDigestMultibase: string;
-                /**
-                 * @description The VRC body verbatim — JSON-LD, including the
-                 *     data-integrity proof. Stored as `JsonValue` rather
-                 *     than a typed `VerifiableCredential` so future VRC
-                 *     shape extensions don't require a storage migration.
-                 */
-                vrcJsonld: components["schemas"]["Value"];
-            }[];
-            nextCursor?: string | null;
-            /** Format: int64 */
-            totalEstimate?: number | null;
-        };
         PasskeyListResponse: {
             /**
              * @description `credentials`, the name `auth/passkey/list/0.1` publishes. It was
@@ -3271,36 +2980,6 @@ export interface components {
             applied: string[];
             pendingRestart: string[];
             rejected: components["schemas"]["ConfigRejectedKey"][];
-        };
-        /**
-         * @description A Verifiable Persona Credential (VPC) attached to one edge.
-         *
-         *     The VPC is issued by the *edge issuer* under a persona DID
-         *     (P-DID) and names the edge's counterparty as its subject. It
-         *     is the sanctioned mechanism for deliberate correlation: a
-         *     member who wants several of their pairwise edges to be
-         *     recognisable as one party asserts the same P-DID on each,
-         *     without ever putting their membership DID in a credential.
-         *
-         *     See `docs/05-design-notes/vpc-persona-annotation.md` for how
-         *     the annotation is bound to the edge, and for what upstream
-         *     (trustoverip/dtgwg-cred-spec#9) has not yet settled.
-         */
-        PersonaAnnotation: {
-            /** Format: date-time */
-            attachedAt: string;
-            /**
-             * @description The VPC's `issuer` — the P-DID. Denormalised out of
-             *     `vpc_jsonld` so the graph view can group edges by persona
-             *     without re-parsing every credential.
-             */
-            personaDid: string;
-            /**
-             * @description The VPC body verbatim, including its data-integrity
-             *     proof, so a consumer of the row can re-verify the
-             *     assertion rather than taking the VTC's word for it.
-             */
-            vpcJsonld: components["schemas"]["Value"];
         };
         PersonaResponse: {
             /** Format: uuid */
@@ -3384,12 +3063,6 @@ export interface components {
              *     two DIDs from two people. See `docs/03-vtc/personhood-and-graph.md`.
              */
             singleMembership?: boolean;
-        };
-        PersonhoodRevokeResponse: {
-            did: string;
-            personhood: boolean;
-            roleVec?: null | components["schemas"]["Value"];
-            vmc?: null | components["schemas"]["Value"];
         };
         /** @description Canonical `policy/list` response. */
         PolicyListResponse: {
@@ -3785,90 +3458,6 @@ export interface components {
             /** @description The registry's REST base URL, when one is configured. */
             url?: string | null;
         };
-        /**
-         * @description A stored, verified VRC. Field order matches the spec §5.4
-         *     surface (issuer/subject DIDs + the credential body).
-         */
-        Relationship: {
-            /** Format: date-time */
-            createdAt: string;
-            /**
-             * Format: uuid
-             * @description Server-allocated UUID. Surfaced as `urn:uuid:<id>` on
-             *     the VRC's top-level `id` field at publish time when
-             *     the caller didn't supply one.
-             */
-            id: string;
-            /**
-             * @description The asserting member. By the publish-time auth check,
-             *     this equals the caller's session DID.
-             */
-            issuerDid: string;
-            /**
-             * @description Everything recorded against this edge since it was published:
-             *     suspension, restoration, supersession, withdrawal.
-             *
-             *     Empty on every edge published before #1079 and on every edge that has
-             *     had no lifecycle event, which is why it is `#[serde(default)]` and
-             *     skipped when empty — existing rows decode unchanged and re-serialise
-             *     byte-identically, the same treatment [`Relationship::persona`] got when
-             *     it was added to an already-shipped row.
-             *
-             *     This is the *only* lifecycle handle a VRC has. Per planning-review D7 a
-             *     VRC carries no `credentialStatus`, deliberately — a status-list host
-             *     learns which verifier checked which credential and when, which is the
-             *     correlation the pairwise work exists to remove. Without a status list
-             *     the community's alternatives were a permanent edge or `DELETE
-             *     /v1/relationships/{id}`, and a deletion cannot answer "was this edge in
-             *     force last Tuesday" because it can only be observed as an absence.
-             *
-             *     Never resolved by hand. [`Relationship::in_force_at`] is the entry
-             *     point, and the precedence rule lives in
-             *     [`crate::credentials::lifecycle`].
-             *
-             *     **Known spec lag.** `Relationship` is both the stored row and the item
-             *     shape of `spec/vtc/relationships/list/0.2`, whose response schema is
-             *     `additionalProperties: false` and predates this member — as it predates
-             *     [`Relationship::persona`], added the same way in #1067. A listed edge
-             *     that has had a lifecycle event therefore carries a member the published
-             *     task does not describe. The registry is upstream and the spec moves
-             *     first, so this is recorded here rather than papered over by dropping
-             *     the field on the way out: hiding the log from the one surface a member
-             *     can read would leave them able to be suspended and unable to see it.
-             */
-            lifecycle?: components["schemas"]["LifecycleLog"];
-            persona?: null | components["schemas"]["PersonaAnnotation"];
-            /**
-             * @description The other party the VRC names. Need not be a current
-             *     community member at *list* time (the list path strips
-             *     Purge-removed rows per §12.3) but must be a current
-             *     member at *publish* time (default `relationships.rego`).
-             */
-            subjectDid: string;
-            /**
-             * @description SHA-256 of `canonical_json(vrc_jsonld)`, hex-encoded.
-             *     Used for idempotency: a second publish of an
-             *     already-stored VRC returns the existing id (200)
-             *     rather than creating a duplicate row.
-             *     Digest over the RFC 8785 canonicalization of `vrc_jsonld`, as a
-             *     base58btc multibase multihash — the form DTG Credentials and
-             *     `relationships/publish/0.2` both specify.
-             *
-             *     Was a bare lowercase-hex SHA-256 over a recursive key sort. That form
-             *     hard-coded one algorithm into the stored shape, named no base encoding,
-             *     and — worse — named no canonicalization a second implementation could
-             *     reproduce, so two conforming services could digest the same credential
-             *     differently and neither be wrong.
-             */
-            vrcDigestMultibase: string;
-            /**
-             * @description The VRC body verbatim — JSON-LD, including the
-             *     data-integrity proof. Stored as `JsonValue` rather
-             *     than a typed `VerifiableCredential` so future VRC
-             *     shape extensions don't require a storage migration.
-             */
-            vrcJsonld: components["schemas"]["Value"];
-        };
         RelationshipRevokeResponse: {
             id: string;
         };
@@ -3913,25 +3502,6 @@ export interface components {
          */
         RemovedMembersResponse: {
             removed: components["schemas"]["RemovedMember"][];
-        };
-        RenewResponse: {
-            did: string;
-            /**
-             * @description `personhood.rego` re-eval outcome for the new VMC.
-             *     Phase 2's deny-all default keeps this `false`; the
-             *     field exists from day one so Phase 4's
-             *     assert/revoke endpoints don't break the wire shape.
-             */
-            personhood: boolean;
-            /**
-             * @description `true` when the personhood flag flipped from the prior
-             *     VMC. Surfaced separately from `personhood` itself so
-             *     callers can light up a "your personhood status
-             *     changed" notification.
-             */
-            personhoodChanged: boolean;
-            roleVec: components["schemas"]["Value"];
-            vmc: components["schemas"]["Value"];
         };
         RequestVmcBody: {
             /** @description Optional operator note ("renewal", "audit", …) relayed to the member. */
@@ -4017,27 +3587,6 @@ export interface components {
              *     `navigator.credentials.get({ publicKey: … })`.
              */
             uvOptions: Record<string, never>;
-        };
-        RotationChallengeResponse: {
-            /**
-             * @description New-DID placeholder — the canonical payload includes
-             *     `newDid`, so the client computes the final payload by
-             *     substituting its chosen `new_did` into the JSON and
-             *     hashing the result. Callers that prefer to assemble
-             *     the payload themselves can ignore this field.
-             */
-            canonicalTemplate: components["schemas"]["Value"];
-            /** Format: date-time */
-            expiresAt: string;
-            /** Format: uuid */
-            rotationId: string;
-            /**
-             * @description Canonical payload bytes the signers must hash over,
-             *     hex-encoded. Server-supplied so the caller can't omit
-             *     the domain tag or get the canonical JSON encoding
-             *     wrong.
-             */
-            signingPayloadHex: string;
         };
         /**
          * @description Canonical `Session` from `spec/auth/_shared/0.1/session.schema.json`.
@@ -5788,44 +5337,6 @@ export interface operations {
             };
         };
     };
-    endorsementIssue: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["IssueBody"];
-            };
-        };
-        responses: {
-            /** @description Endorsement issued */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IssueResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin or issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     endorsementShow: {
         parameters: {
             query?: never;
@@ -5976,207 +5487,6 @@ export interface operations {
             };
             /** @description Invalid install token or claim secret */
             401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    renew: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Membership renewed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RenewResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a member */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    rotate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["FinishBody"];
-            };
-        };
-        responses: {
-            /** @description DID rotated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FinishResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Session DID does not match oldDid */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a member */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    memberRotateChallenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": null | components["schemas"]["ChallengeBody"];
-            };
-        };
-        responses: {
-            /** @description Rotation challenge issued */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RotationChallengeResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a member */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    personhoodRevoke: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Member DID */
-                did: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Personhood revoked */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PersonhoodRevokeResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is neither admin nor the subject member */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Member not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    memberRelationshipList: {
-        parameters: {
-            query?: {
-                cursor?: string | null;
-                limit?: number | null;
-            };
-            header?: never;
-            path: {
-                /** @description Member DID */
-                did: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated relationship list */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Paginated_Relationship"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not authorised */
-            403: {
                 headers: {
                     [name: string]: unknown;
                 };

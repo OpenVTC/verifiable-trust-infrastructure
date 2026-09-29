@@ -1,5 +1,7 @@
-//! `POST /v1/members/me/renew` — VMC + role VEC renewal
-//! (M2.13). Spec §6.3.
+//! `vtc/members/renew/0.1` — VMC + role VEC renewal (M2.13). Spec §6.3.
+//! Signed document only (`trust_tasks::member_tasks`); the bearer REST route
+//! it once also served (`POST /v1/members/me/renew`) had no caller once the
+//! spine dispatched it (#1809) and was removed.
 //!
 //! The renewal flow is **unconditional on ACL membership**: no
 //! expiry check, no grace window. Spec §3-F + §6.3 — the VMC
@@ -26,9 +28,6 @@
 //! 6. Emit `MembershipRenewed` audit.
 
 use affinidi_status_list::StatusPurpose;
-use axum::Json;
-use axum::extract::State;
-use axum::http::StatusCode;
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 use tracing::info;
@@ -38,7 +37,6 @@ use vti_common::audit::{AuditEvent, MembershipRenewedData};
 use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;
-use crate::auth::AuthClaims;
 use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
@@ -74,28 +72,11 @@ pub struct RenewResponse {
     pub personhood_changed: bool,
 }
 
-/// POST /members/me/renew — renew VMC + role VEC. Auth: any authenticated member.
-#[utoipa::path(
-    post, path = "/members/me/renew", tag = "members",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Membership renewed", body = RenewResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 404, description = "Caller is not a member"),
-    ),
-)]
-pub async fn renew(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-) -> Result<(StatusCode, Json<RenewResponse>), TaskError> {
-    Ok((StatusCode::OK, Json(renew_inner(&state, &auth.did).await?)))
-}
-
-/// Renew `caller_did`'s VMC + role VEC — the operation behind both doors: the
-/// bearer route above and the `vtc/members/renew/0.1` Trust Task
-/// (`trust_tasks::member_tasks`), which authorizes from the document's proof
-/// signer. The member check is here, not in either door, so a DID with no ACL
-/// or member row gets `renew:notMember` whichever way it asked.
+/// Renew `caller_did`'s VMC + role VEC — the operation behind the
+/// `vtc/members/renew/0.1` Trust Task (`trust_tasks::member_tasks`), which
+/// authorizes from the document's proof signer. Renewal has no bearer REST
+/// route: it is a signed document only, reached over TSP, DIDComm or HTTPS
+/// `/trust-tasks`.
 pub(crate) async fn renew_inner(
     state: &AppState,
     caller_did: &str,

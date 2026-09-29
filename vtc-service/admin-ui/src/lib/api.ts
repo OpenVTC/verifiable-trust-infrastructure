@@ -914,13 +914,18 @@ export interface MemberRelationship {
 /** Every relationship credential naming this member, either direction.
  *  Paginated server-side; the console reads the first page, which is the
  *  operator-relevant case — a member with more than 50 published edges is a
- *  graph question, not a credential-inspection one. */
+ *  graph question, not a credential-inspection one.
+ *
+ *  Signed door, not the bearer REST route the same task used to answer this
+ *  through: the task is dispatched on the spine for every transport
+ *  (`trust_tasks::member_tasks`, #1809), and the bearer-only route has no
+ *  remaining caller. */
 export const fetchMemberRelationships = (
   did: string,
 ): Promise<{ items: MemberRelationship[]; nextCursor?: string | null }> =>
-  getJson<{ items: MemberRelationship[]; nextCursor?: string | null }>(
-    `/v1/members/${encodeURIComponent(did)}/relationships`,
-    { trustTask: MEMBER_RELATIONSHIPS_TASK },
+  postSignedRead<{ items: MemberRelationship[]; nextCursor?: string | null }>(
+    MEMBER_RELATIONSHIPS_TASK,
+    { did },
   );
 
 const RECOGNITION_CHECK_TASK =
