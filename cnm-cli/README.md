@@ -310,15 +310,15 @@ has unrestricted access across all contexts.
 
 ### Vetting
 
-Peer identity vetting on the community (VTC admin REST; needs a community-admin
-session). Guide: [Peer identity vetting](../docs/03-vtc/vetting.md) §7–8.
+Peer identity vetting on the community (needs a community-admin identity).
+`grant` and `revoke` are signed Trust Tasks over TSP, DIDComm or HTTPS; the
+rest are admin REST until their Trust Tasks are served. Guide: [Peer identity vetting](../docs/03-vtc/vetting.md) §7–8.
 
 | Command | Description |
 | ------- | ----------- |
 | `vetting vetters list` | Every vetter grant: status, origin, validity, endorsement id, profile |
 | `vetting vetters grant <memberDid> [--validity 180d]` | Name a current member a vetter |
 | `vetting vetters revoke <endorsementId>` | Withdraw a vetter grant |
-| `vetting vetters resend <memberDid>` | Deliver a live grant credential again |
 | `vetting auto-grant show` | Automatic-grant configuration and last sweep |
 | `vetting auto-grant set [--enabled BOOL] [--sweep-minutes N] [--validity D]` | Change it (unset flags keep their value) |
 | `vetting branding show` / `set [--display-name] [--accent-color] [--logo-url] [--clear FIELD]` | Community branding on the join manifest |

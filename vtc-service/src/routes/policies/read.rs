@@ -22,15 +22,12 @@
 
 use std::collections::HashSet;
 
-use axum::Json;
-use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, MAX_LIMIT};
 
-use crate::auth::AdminAuth;
 use crate::policy::{
     Policy, PolicyPurpose, get_active_policy_id, get_policy, list_policies_paginated,
 };
@@ -197,24 +194,6 @@ pub enum PolicyStatusFilter {
     Archived,
 }
 
-#[utoipa::path(
-    get, path = "/policies", tag = "policies",
-    security(("bearer_jwt" = [])),
-    params(ListPoliciesQuery),
-    responses(
-        (status = 200, description = "Paginated list of policies", body = PolicyListResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_policies(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<ListPoliciesQuery>,
-) -> Result<Json<PolicyListResponse>, AppError> {
-    list_policies_inner(&state, query).await.map(Json)
-}
-
 /// The listing `policy/list/0.2` answers, on the route and the spine alike.
 pub(crate) async fn list_policies_inner(
     state: &AppState,
@@ -325,25 +304,6 @@ pub(crate) async fn list_policies_inner(
 // ---------------------------------------------------------------------------
 // GET /v1/policies/{id}
 // ---------------------------------------------------------------------------
-
-#[utoipa::path(
-    get, path = "/policies/{id}", tag = "policies",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Policy id")),
-    responses(
-        (status = 200, description = "Policy", body = PolicyGetResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Policy not found"),
-    ),
-)]
-pub async fn show_policy(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<PolicyGetResponse>, AppError> {
-    show_policy_inner(&state, id).await.map(Json)
-}
 
 /// One revision, as `policy/get/0.1` answers it.
 pub(crate) async fn show_policy_inner(

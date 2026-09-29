@@ -28,15 +28,13 @@
 //! Non-admin role changes are still made here, and still run the role-change
 //! ceremony.
 
-use axum::Json;
-use axum::extract::{Path, State};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use vti_common::audit::{AuditEvent, FieldChange, MemberUpdatedData, RoleChangedData};
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry};
-use crate::auth::{AdminAuth, session::now_epoch};
+use crate::auth::session::now_epoch;
 use crate::error::{AppError, TaskError};
 
 /// `vtc/members/update:notFound` — no member with that DID.
@@ -68,42 +66,11 @@ pub struct UpdateMemberRequest {
     pub extensions: Option<JsonValue>,
 }
 
-/// PATCH /members/{did} — update member role + profile fields. Auth: Admin.
-///
-/// **Transitional bearer-token path (#1641).** `vtc/members/update/0.1`
-/// declares `proof` REQUIRED, and the authoritative binding is the signed
-/// Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
-/// the administrator and their authority is read from their ACL entry. This
-/// route authenticates by bearer JWT and verifies no document proof; it is kept
-/// only until the admin console can sign a Trust Task document, and is removed
-/// in the same change that gives it that.
-#[utoipa::path(
-    patch, path = "/members/{did}", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(("did" = String, Path, description = "Member DID")),
-    request_body = UpdateMemberRequest,
-    responses(
-        (status = 200, description = "Updated member record", body = MemberEnvelope),
-        (status = 400, description = "role was `admin` (adminRoleForbidden) — use acl/change-role"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin / role change denied by policy"),
-        (status = 404, description = "Member not found"),
-    ),
-)]
-pub async fn update_member(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Path(did): Path<String>,
-    Json(req): Json<UpdateMemberRequest>,
-) -> Result<Json<MemberEnvelope>, TaskError> {
-    Ok(Json(update_member_inner(&state, &auth.0, &did, req).await?))
-}
-
 /// Apply one `vtc/members/update/0.1` on behalf of `auth` — the whole of the
 /// operation, with no transport in it.
 ///
-/// Both doors call this: the bearer REST route above, and the signed-document
-/// arm in [`crate::trust_tasks`] (#1641 phase 2). The signed path synthesises
+/// The signed-document arm in [`crate::trust_tasks`] (#1641 phase 2) calls
+/// this, on every transport. The signed path synthesises
 /// `auth` from the verified signer's **ACL entry**, which is why nothing here
 /// may read the caller's session: there is none. The one thing that would —
 /// the promotion step-up in [`crate::ceremony::role_change_via_pipeline`] — is

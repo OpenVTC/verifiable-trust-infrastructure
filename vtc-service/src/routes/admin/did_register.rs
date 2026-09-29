@@ -12,18 +12,14 @@
 //! What is verified, and why an administrator cannot use this to publish a
 //! document the key holder did not sign, is in [`crate::did_log_install`].
 
-use axum::Json;
-use axum::extract::State;
 use chrono::{DateTime, Utc};
 use tracing::info;
 use trust_tasks_rs::specs::did_management::did::register::v0_1::{
     DidRecord, PayloadDidData, Response,
 };
-use vta_sdk::openapi::{DidRegister01Payload, DidRegister01Response};
 use vti_common::audit::{AuditEvent, CommunityDidLogInstalledData};
 use vti_common::error::AppError;
 
-use crate::auth::SuperAdminAuth;
 use crate::did_log_install::{self, InstallError, InstallRefusal};
 use crate::routes::did_log::did_log_label;
 use crate::server::AppState;
@@ -64,34 +60,6 @@ fn refused(r: InstallRefusal) -> AppError {
             AppError::NotFound(format!("org.openvtc.vtc:didLogNotSelfHosted: {r}"))
         }
     }
-}
-
-/// Install a delivered log for this community's own self-hosted DID.
-///
-/// `utoipa::ToSchema` cannot be derived on a foreign type, so the body and the
-/// response are the `vta_sdk::openapi` wrappers around the generated types.
-#[utoipa::path(
-    post, path = "/admin/did/register",
-    operation_id = "didRegister", tag = "admin",
-    security(("bearer_jwt" = [])),
-    request_body = DidRegister01Payload,
-    responses(
-        (status = 200, description = "Log verified and now served", body = DidRegister01Response),
-        (status = 400, description = "Log does not verify, is for another DID, or targets another slot"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a super-admin"),
-        (status = 404, description = "This community does not self-host its DID"),
-        (status = 409, description = "Log does not keep every served entry unchanged"),
-    ),
-)]
-pub async fn register(
-    auth: SuperAdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<DidRegister01Payload>,
-) -> Result<Json<DidRegister01Response>, AppError> {
-    register_inner(&state, &auth.0.did, body.into_inner())
-        .await
-        .map(|r| Json(r.into()))
 }
 
 /// Install the delivered log as `actor` — `did-management/did/register/0.1`,
