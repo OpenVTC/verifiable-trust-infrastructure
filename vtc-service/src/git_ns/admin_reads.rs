@@ -8,49 +8,94 @@
 //!   counts, bootstrap, sync and the bridge's report ([`repo_list`]);
 //! - `git-ns/view/0.5` — `git-ns/view` with `scope: administrator` (every
 //!   record and reason in the administered namespaces) and `breakGlass: true`
-//!   (only break-glass records) ([`view_v5`]).
+//!   (only break-glass records) ([`view_v5`]);
+//! - `git-ns/right/list/0.1` — every right the VTC knows of, recorded and
+//!   role-derived, across every namespace ([`right_list`]);
+//! - `git-ns/right/issued-by-departed/0.1` — recorded rights whose granter has
+//!   since left, grouped by granter ([`right_issued_by_departed`]);
+//! - `git-ns/bridge/job/list/0.1` — bridge jobs in the namespaces the caller
+//!   administers, with kind, queue state and last error
+//!   ([`bridge_job_list`]);
+//! - `git-ns/projection/show/0.1` — what is published to the Trust Registry,
+//!   and how many records the next reconciliation pass will change
+//!   ([`projection_show`]);
+//! - `git-ns/account/list/0.1` — every member's linked forge account,
+//!   community-wide ([`account_list`]);
+//! - `git-ns/activity/list/0.1` — rights changes, drift and bridge jobs in the
+//!   namespaces the caller administers, newest first ([`activity_list`]).
 //!
 //! They replace the bearer-authenticated `GET /v1/git-ns/{namespaces,repos,
-//! view,break-glass}` console views, which answered any admin session — a
-//! context-scoped administrator included — with every namespace, and carried
-//! no proof of who asked. Each is served on the document dispatcher the same
-//! way over TSP, DIDComm and HTTPS (`super::tasks`).
+//! view,break-glass,rights,rights/issued-by-departed,jobs,projection,
+//! accounts,activity}` console views, which answered any admin session — a
+//! context-scoped administrator included — with every namespace (or, for the
+//! four community-administrator-only reads, an admin session scoped to any
+//! context at all), and carried no proof of who asked. Each is served on the
+//! document dispatcher the same way over TSP, DIDComm and HTTPS
+//! (`super::tasks`).
 //!
 //! # Who is answered
 //!
-//! A namespace's administrators: the community-administrator capability
-//! (every namespace) or a live, explicitly recorded `git.ns.admin` on it, held
-//! by a current member. Nothing else — not `git.repo.own`, not an admin role
-//! scoped to some contexts. A caller who administers no namespace, or who
-//! names one they do not administer or one that does not exist, is refused
-//! with the task's `notAdministrator`, the same way in all three cases.
+//! `right/list`, `right/issued-by-departed`, `projection/show` and
+//! `account/list` answer the community-administrator capability alone: each
+//! spans every namespace and, for the rights reads, every granter's reason, so
+//! holding `git.ns.admin` on some namespace is not enough (their own
+//! specifications say so explicitly). A caller who lacks the capability is
+//! refused with the task's `notCommunityAdministrator`.
+//!
+//! `bridge/job/list` and `activity/list`, like `namespace/list` and
+//! `repo/list`, answer a namespace's administrators: the community-
+//! administrator capability (every namespace) or a live, explicitly recorded
+//! `git.ns.admin` on it, held by a current member. A caller who administers
+//! no namespace, or who names one they do not administer or one that does not
+//! exist, is refused with the task's `notAdministrator`, the same way in all
+//! three cases.
+//!
+//! # Paging
+//!
+//! Every one of these six listings clamps `limit` to 1..=500 (default 100)
+//! and pages by an opaque `cursor` — the offset of the next item, bound to a
+//! short digest of the request's own filters ([`filter_tag`]) so that a
+//! request which changes a filter mid-page is refused with `malformedRequest`
+//! rather than silently reinterpreted, as each specification's *Request*
+//! section requires.
 //!
 //! # Generated types
 //!
-//! `view_v0_5`, `namespace_list_v0_1` and `repo_list_v0_1` are the generated
-//! `trust_tasks_rs::specs::git_ns::{view::v0_5, namespace::list::v0_1,
-//! repo::list::v0_1}` modules (trust-tasks-rs 0.23.4, trustoverip/dtgwg-trust-tasks-tf#659):
-//! their `Payload`s already declare the proof REQUIRED, so the dispatch spine
-//! refuses an unsigned document before a handler runs — no handler-level
-//! refusal is needed here. `namespace_list` and `repo_list` still build the
-//! console's own `GitNsNamespaceRow`/`GitNsRepoRow` rows (registered as
-//! OpenAPI components below, for the admin-ui's generated wire types) and
-//! convert them into the generated `Response` through [`wire::into`], the same
-//! way `view_v5` already did for 0.4.
+//! `view_v0_5`, `namespace_list_v0_1`, `repo_list_v0_1`, `right_list_v0_1`,
+//! `right_issued_by_departed_v0_1`, `bridge_job_list_v0_1`,
+//! `projection_show_v0_1`, `account_list_v0_1` and `activity_list_v0_1` are
+//! the generated `trust_tasks_rs::specs::git_ns::*` modules (trust-tasks-rs
+//! 0.23.4 for the first three, trustoverip/dtgwg-trust-tasks-tf#659; 0.24.7
+//! for the other six, trustoverip/dtgwg-trust-tasks-tf#686): their `Payload`s
+//! already declare the proof REQUIRED, so the dispatch spine refuses an
+//! unsigned document before a handler runs — no handler-level refusal is
+//! needed here. Each op still builds the console's own row types (registered
+//! as OpenAPI components below, for the admin-ui's generated wire types) and
+//! converts them into the generated `Response` through [`wire::into`], the
+//! same way `view_v5` already did for 0.4.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
+pub(crate) use trust_tasks_rs::specs::git_ns::account::list::v0_1 as account_list_v0_1;
+pub(crate) use trust_tasks_rs::specs::git_ns::activity::list::v0_1 as activity_list_v0_1;
+pub(crate) use trust_tasks_rs::specs::git_ns::bridge::job::list::v0_1 as bridge_job_list_v0_1;
 pub(crate) use trust_tasks_rs::specs::git_ns::namespace::list::v0_1 as namespace_list_v0_1;
+pub(crate) use trust_tasks_rs::specs::git_ns::projection::show::v0_1 as projection_show_v0_1;
 pub(crate) use trust_tasks_rs::specs::git_ns::repo::list::v0_1 as repo_list_v0_1;
+pub(crate) use trust_tasks_rs::specs::git_ns::right::issued_by_departed::v0_1 as right_issued_by_departed_v0_1;
+pub(crate) use trust_tasks_rs::specs::git_ns::right::list::v0_1 as right_list_v0_1;
 use trust_tasks_rs::specs::git_ns::view::v0_4 as view4;
 pub(crate) use trust_tasks_rs::specs::git_ns::view::v0_5 as view_v0_5;
 
-use super::model::{RepoState, Resource, Right, Scope};
-use super::ops::{self, OpError, OpResult, declared, now};
+use super::bridge::{self, BridgeJob};
+use super::model::{RepoState, Resource, Right, RightRow, Scope};
+use super::ops::{self, OpError, OpResult, declared, now, standing};
 use super::store::Snapshot;
-use super::{lifecycle, role_map, rules, view, wire};
+use super::{lifecycle, projection, role_map, rules, view, wire};
 use crate::server::AppState;
 
 // ── response bodies ─────────────────────────────────────────────────────────
@@ -337,6 +382,76 @@ fn covered(
     }
 }
 
+// ── paging ───────────────────────────────────────────────────────────────
+
+/// Every filter a request to one of the six community-administrator and
+/// administrator listings carries besides `cursor`, `limit` and `ext` —
+/// serialized to whatever shape the caller chooses (usually `json!({...})`
+/// naming each filter member) and reduced to a short digest by
+/// [`filter_tag`]. A cursor is bound to that digest, so a request that
+/// changes a filter mid-page fails [`page_of`] rather than silently paging
+/// through a different answer.
+const CURSOR_PREFIX: &str = "offset:";
+
+/// A short digest of `filters`, stable across calls with the same JSON.
+fn filter_tag(filters: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(filters).unwrap_or_default();
+    hex::encode(&Sha256::digest(&bytes)[..8])
+}
+
+fn encode_cursor(offset: usize, tag: &str) -> String {
+    URL_SAFE_NO_PAD.encode(format!("{CURSOR_PREFIX}{offset}:{tag}"))
+}
+
+fn cursor_refused() -> OpError {
+    OpError::Malformed("cursor is not one this listing issued for these filters".into())
+}
+
+fn decode_cursor(cursor: &str, tag: &str) -> Result<usize, OpError> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| cursor_refused())?;
+    let text = String::from_utf8(bytes).map_err(|_| cursor_refused())?;
+    let rest = text
+        .strip_prefix(CURSOR_PREFIX)
+        .ok_or_else(cursor_refused)?;
+    let (digits, bound) = rest.split_once(':').ok_or_else(cursor_refused)?;
+    if bound != tag
+        || digits.is_empty()
+        || digits.len() > 9
+        || !digits.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(cursor_refused());
+    }
+    digits.parse().map_err(|_| cursor_refused())
+}
+
+/// One page of `items`, already in the order the specification wants, bound
+/// to `filters` by [`filter_tag`]. Every task in this family clamps `limit`
+/// to 1..=500 (default 100).
+fn page_of<T>(
+    mut items: Vec<T>,
+    filters: &Value,
+    cursor: Option<&str>,
+    limit: Option<std::num::NonZeroU64>,
+) -> Result<(Vec<T>, Option<String>), OpError> {
+    let tag = filter_tag(filters);
+    let start = match cursor {
+        Some(c) => decode_cursor(c, &tag)?,
+        None => 0,
+    };
+    let total = items.len();
+    if start > total {
+        return Err(cursor_refused());
+    }
+    let limit = limit.map_or(100, |n| n.get().min(500)) as usize;
+    let end = start.saturating_add(limit).min(total);
+    let next = (end < total).then(|| encode_cursor(end, &tag));
+    let page = items.drain(start..end).collect();
+    Ok((page, next))
+}
+
 /// `s`, cut to at most `max` characters: the specification bounds every
 /// free-text member, and the bridge's report is stored as it was sent.
 fn bounded(s: &str, max: usize) -> String {
@@ -605,4 +720,660 @@ pub(crate) async fn view_v5(
         view::narrow_to_break_glass(&mut v);
     }
     Ok(wire::into(v)?)
+}
+
+// ── git-ns/right/list/0.1 and git-ns/right/issued-by-departed/0.1 ──────────
+
+/// One git right, recorded or role-derived — `AdminRightRow` of the shared
+/// schema. Both tasks below produce it; only `git-ns/right/list` fills
+/// `resource` outside a `DepartedGranter` grouping (the response schemas are
+/// otherwise identical row for row).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsRightRow {
+    pub subject: String,
+    pub right: String,
+    pub resource: String,
+    /// `recorded` — a `git-ns/*` record, governed by the rights model;
+    /// `roleDerived` — a v0.1 `[hooks.git-trust] grant_on_role` grant,
+    /// published by the hook relay and managed only through configuration.
+    pub origin: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granted_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granted_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Whether the subject is a current member (an external signer is not).
+    pub subject_member: bool,
+    /// Whether the granter has since left the community.
+    pub granter_departed: bool,
+    /// Present exactly when the subject gave themselves this right through
+    /// `git-ns/right/break-glass/0.1`. Unratified while `ratifiedBy` is absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub break_glass: Option<GitNsBreakGlassMark>,
+}
+
+/// A record's `breakGlass` (`git-ns/_shared/0.5` `BreakGlass`).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsBreakGlassMark {
+    pub by: String,
+    pub at: String,
+    pub justification: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ratified_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ratified_at: Option<String>,
+}
+
+impl From<&crate::git_ns::model::BreakGlassMark> for GitNsBreakGlassMark {
+    fn from(b: &crate::git_ns::model::BreakGlassMark) -> Self {
+        Self {
+            by: b.by.clone(),
+            at: wire::timestamp(b.at),
+            justification: b.justification.clone(),
+            effective_at: b.effective_at.map(wire::timestamp),
+            ratified_by: b.ratified_by.clone(),
+            ratified_at: b.ratified_at.map(wire::timestamp),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsRightList {
+    pub rights: Vec<GitNsRightRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// The grants one departed member issued.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsDepartedGranter {
+    pub granter: String,
+    pub rights: Vec<GitNsRightRow>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsDepartedGrants {
+    /// Whether the active policy revokes these instead
+    /// (`cascade_on_departure`). While it is off they stay, for review.
+    pub cascade_on_departure: bool,
+    pub granters: Vec<GitNsDepartedGranter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// A per-request cache of [`ops::standing`]'s `member` flag: `right/list` and
+/// `right/issued-by-departed` each look up the same handful of DIDs (a row's
+/// subject and its granter) over and over across every resource.
+async fn member_cached(
+    state: &AppState,
+    cache: &mut BTreeMap<String, bool>,
+    did: &str,
+) -> Result<bool, OpError> {
+    if let Some(m) = cache.get(did) {
+        return Ok(*m);
+    }
+    let m = standing(state, did).await?.member;
+    cache.insert(did.to_string(), m);
+    Ok(m)
+}
+
+/// Render one recorded right, with the membership facts an administrator's
+/// console shows.
+async fn right_row(
+    state: &AppState,
+    cache: &mut BTreeMap<String, bool>,
+    row: &RightRow,
+    resource: &Resource,
+) -> Result<GitNsRightRow, OpError> {
+    let subject_member = member_cached(state, cache, &row.subject).await?;
+    let granter_member = member_cached(state, cache, &row.granted_by).await?;
+    Ok(GitNsRightRow {
+        subject: row.subject.clone(),
+        right: row.right.as_str().to_string(),
+        resource: resource.to_string(),
+        origin: "recorded".into(),
+        granted_by: Some(row.granted_by.clone()),
+        granted_at: Some(wire::timestamp(row.granted_at)),
+        expires_at: row.expires_at.map(wire::timestamp),
+        reason: row.reason.clone(),
+        subject_member,
+        granter_departed: row.granter_was_member && !granter_member,
+        break_glass: row.break_glass.as_ref().map(Into::into),
+    })
+}
+
+/// `git-ns/right/list/0.1`.
+pub(crate) async fn right_list(
+    state: &AppState,
+    actor: &str,
+    p: right_list_v0_1::Payload,
+) -> OpResult<right_list_v0_1::Response> {
+    let caller = ops::standing(state, actor).await?;
+    if !caller.community_admin {
+        return Err(declared(
+            right_list_v0_1::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
+            "this lists every right the VTC knows of, across every namespace: it needs the \
+             community-administrator capability, not git.ns.admin on a namespace",
+        ));
+    }
+    let filter = match &p.resource {
+        Some(r) => Some(Resource::parse(&r.to_string()).map_err(OpError::Malformed)?),
+        None => None,
+    };
+    let subject = p.subject.as_ref().map(|s| s.to_string());
+    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let t = now();
+    let mut cache = BTreeMap::new();
+    let mut rights = Vec::new();
+    for (scope, set) in &snap.rights {
+        let Some(res) = snap.scope_resource(scope) else {
+            continue;
+        };
+        if filter.as_ref().is_some_and(|f| !f.contains(&res)) {
+            continue;
+        }
+        // A break-glass record waiting out a policy delay is listed too: it
+        // is exactly the one other administrators have a window to revoke.
+        for row in set
+            .rows
+            .iter()
+            .filter(|r| r.is_live(t) || (r.is_recorded(t) && r.break_glass.is_some()))
+        {
+            if subject.as_deref().is_some_and(|s| s != row.subject) {
+                continue;
+            }
+            rights.push(right_row(state, &mut cache, row, &res).await?);
+        }
+    }
+    // The v0.1 hook grants: shown so the console tells the whole story of who
+    // may sign, marked as what they are — role-derived, and managed only
+    // through `[hooks.git-trust] grant_on_role`, never through `git-ns/*`.
+    let hooks = state.config.read().await.hooks.git_trust.clone();
+    if let Some(cfg) = hooks {
+        for entry in crate::acl::list_acl_entries(&state.acl_ks).await? {
+            let Some(resource) = cfg.grant_on_role.get(&entry.role.to_string()) else {
+                continue;
+            };
+            if subject.as_deref().is_some_and(|s| s != entry.did) {
+                continue;
+            }
+            if let Some(f) = &filter
+                && Resource::parse(resource).map(|r| f.contains(&r)) != Ok(true)
+            {
+                continue;
+            }
+            rights.push(GitNsRightRow {
+                subject: entry.did.clone(),
+                right: Right::CommitSign.as_str().to_string(),
+                resource: resource.clone(),
+                origin: "roleDerived".into(),
+                granted_by: None,
+                granted_at: None,
+                expires_at: None,
+                reason: None,
+                subject_member: ops::standing(state, &entry.did).await?.member,
+                granter_departed: false,
+                break_glass: None,
+            });
+        }
+    }
+    rights.sort_by(|a, b| (&a.resource, &a.subject).cmp(&(&b.resource, &b.subject)));
+    let filters =
+        json!({ "resource": p.resource.as_ref().map(|r| r.to_string()), "subject": subject });
+    let (page, next_cursor) = page_of(rights, &filters, p.cursor.as_deref(), p.limit)?;
+    let list = GitNsRightList {
+        rights: page,
+        next_cursor,
+    };
+    Ok(wire::into(
+        serde_json::to_value(&list).map_err(vti_common::error::AppError::from)?,
+    )?)
+}
+
+/// `git-ns/right/issued-by-departed/0.1`.
+pub(crate) async fn right_issued_by_departed(
+    state: &AppState,
+    actor: &str,
+    p: right_issued_by_departed_v0_1::Payload,
+) -> OpResult<right_issued_by_departed_v0_1::Response> {
+    let caller = ops::standing(state, actor).await?;
+    if !caller.community_admin {
+        return Err(declared(
+            right_issued_by_departed_v0_1::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
+            "a departed granter's surviving rights are not scoped to any namespace a caller \
+             might administer: this needs the community-administrator capability",
+        ));
+    }
+    let settings = crate::git_ns::policy::active_settings(state).await;
+    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let mut cache = BTreeMap::new();
+    let mut granters = Vec::new();
+    for (granter, rows) in lifecycle::issued_by_departed(state).await? {
+        let mut out = Vec::new();
+        for (scope, row) in rows {
+            if let Some(res) = snap.scope_resource(&scope) {
+                out.push(right_row(state, &mut cache, &row, &res).await?);
+            }
+        }
+        granters.push(GitNsDepartedGranter {
+            granter,
+            rights: out,
+        });
+    }
+    let (page, next_cursor) = page_of(granters, &json!({}), p.cursor.as_deref(), p.limit)?;
+    let grants = GitNsDepartedGrants {
+        cascade_on_departure: settings.cascade_on_departure,
+        granters: page,
+        next_cursor,
+    };
+    Ok(wire::into(
+        serde_json::to_value(&grants).map_err(vti_common::error::AppError::from)?,
+    )?)
+}
+
+// ── git-ns/bridge/job/list/0.1 ──────────────────────────────────────────────
+
+/// One bridge job, as the administrator's console shows it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsJobRow {
+    pub job_id: String,
+    pub namespace: String,
+    pub bridge_did: String,
+    /// `projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |
+    /// `beginBind` | `beginAccountLink`.
+    pub kind: String,
+    /// `pending` | `accepted` | `succeeded` | `partial` | `failed` |
+    /// `cancelled`.
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    pub attempts: u32,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsJobList {
+    pub jobs: Vec<GitNsJobRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+fn job_state_str(j: &BridgeJob) -> String {
+    serde_json::to_value(j.state)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+fn job_row(j: &BridgeJob) -> GitNsJobRow {
+    GitNsJobRow {
+        job_id: j.job_id.clone(),
+        namespace: j.namespace_id.clone(),
+        bridge_did: j.bridge_did.clone(),
+        kind: j.kind.as_str().to_string(),
+        state: job_state_str(j),
+        repo: j
+            .payload
+            .get("repo")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        attempts: j.attempts,
+        created_at: wire::timestamp(j.created_at),
+        accepted_at: j.accepted_at.map(wire::timestamp),
+        last_error: j.last_error.clone(),
+    }
+}
+
+/// `git-ns/bridge/job/list/0.1`.
+pub(crate) async fn bridge_job_list(
+    state: &AppState,
+    actor: &str,
+    p: bridge_job_list_v0_1::Payload,
+) -> OpResult<bridge_job_list_v0_1::Response> {
+    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let admin = administered(state, &snap, actor).await?;
+    let named = p.namespace.as_ref().map(|n| n.to_string());
+    let covered = covered(
+        &admin,
+        named.as_deref(),
+        bridge_job_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
+    )?;
+    let state_filter = p.state.as_ref().map(|s| s.to_string());
+    let mut jobs: Vec<BridgeJob> = bridge::list_jobs(&state.git_ns.jobs_ks)
+        .await?
+        .into_iter()
+        .filter(|j| covered.contains(&j.namespace_id))
+        .filter(|j| {
+            state_filter
+                .as_deref()
+                .is_none_or(|s| s == job_state_str(j))
+        })
+        .collect();
+    jobs.sort_by_key(|j| std::cmp::Reverse(j.created_at));
+    let rows: Vec<GitNsJobRow> = jobs.iter().map(job_row).collect();
+    let filters = json!({ "namespace": named, "state": state_filter });
+    let (page, next_cursor) = page_of(rows, &filters, p.cursor.as_deref(), p.limit)?;
+    let list = GitNsJobList {
+        jobs: page,
+        next_cursor,
+    };
+    Ok(wire::into(
+        serde_json::to_value(&list).map_err(vti_common::error::AppError::from)?,
+    )?)
+}
+
+// ── git-ns/projection/show/0.1 ──────────────────────────────────────────────
+
+/// One record published to the Trust Registry.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsPublishedRow {
+    pub entity: String,
+    pub action: String,
+    pub resource: String,
+    /// The record's `context` as published (framework, origin,
+    /// activeFrom, activeTo, impliedBy).
+    #[schema(value_type = Object)]
+    pub context: Value,
+    pub published_at: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsProjection {
+    /// Whether this VTC can publish at all (a registry and its DID are
+    /// configured). With none, the list is what was last published.
+    pub registry_configured: bool,
+    pub published: Vec<GitNsPublishedRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    /// Records that should be published and are not yet, or that are
+    /// published and should not be — what the next pass will change. Counted
+    /// across the whole VTC, regardless of `resource` or paging.
+    pub pending_changes: usize,
+}
+
+/// `git-ns/projection/show/0.1`.
+pub(crate) async fn projection_show(
+    state: &AppState,
+    actor: &str,
+    p: projection_show_v0_1::Payload,
+) -> OpResult<projection_show_v0_1::Response> {
+    let caller = ops::standing(state, actor).await?;
+    if !caller.community_admin {
+        return Err(declared(
+            projection_show_v0_1::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
+            "publishing configuration and the projection mirror are community-wide facts: this \
+             needs the community-administrator capability",
+        ));
+    }
+    let filter = match &p.resource {
+        Some(r) => Some(Resource::parse(&r.to_string()).map_err(OpError::Malformed)?),
+        None => None,
+    };
+    let registry_configured =
+        state.registry_client.is_some() && state.config.read().await.vtc_did.is_some();
+    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let want = projection::desired_all(state, &snap, now()).await?;
+    let have = projection::published(state).await?;
+    let pending_changes = want
+        .iter()
+        .filter(|(k, t)| have.get(*k).map(|p| &p.tuple) != Some(*t))
+        .count()
+        + have.keys().filter(|k| !want.contains_key(*k)).count();
+    let mut published: Vec<GitNsPublishedRow> = have
+        .into_values()
+        .filter(|p| {
+            filter
+                .as_ref()
+                .is_none_or(|f| Resource::parse(&p.tuple.resource).is_ok_and(|r| f.contains(&r)))
+        })
+        .map(|p| GitNsPublishedRow {
+            entity: p.tuple.entity,
+            action: p.tuple.action,
+            resource: p.tuple.resource,
+            context: p.tuple.context,
+            published_at: wire::timestamp(p.published_at),
+        })
+        .collect();
+    published.sort_by(|a, b| {
+        (&a.resource, &a.action, &a.entity).cmp(&(&b.resource, &b.action, &b.entity))
+    });
+    let filters = json!({ "resource": p.resource.as_ref().map(|r| r.to_string()) });
+    let (page, next_cursor) = page_of(published, &filters, p.cursor.as_deref(), p.limit)?;
+    let projection = GitNsProjection {
+        registry_configured,
+        published: page,
+        next_cursor,
+        pending_changes,
+    };
+    Ok(wire::into(
+        serde_json::to_value(&projection).map_err(vti_common::error::AppError::from)?,
+    )?)
+}
+
+// ── git-ns/account/list/0.1 ──────────────────────────────────────────────────
+
+/// One member's account on one forge, as linked through `git-ns/account/link`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsAccountRow {
+    pub member: String,
+    pub forge: String,
+    /// The forge's id for the account — authoritative.
+    pub id: String,
+    /// The login — display only: logins are renamed and re-registered.
+    pub login: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_at: Option<String>,
+    /// Whether the member is still a current member. One whose access lapsed
+    /// keeps the link — no one else may link the account — but it projects
+    /// no forge role, and a forge role it holds cannot be adopted as a right.
+    pub member_current: bool,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsAccountList {
+    pub accounts: Vec<GitNsAccountRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// `git-ns/account/list/0.1`.
+pub(crate) async fn account_list(
+    state: &AppState,
+    actor: &str,
+    p: account_list_v0_1::Payload,
+) -> OpResult<account_list_v0_1::Response> {
+    let caller = ops::standing(state, actor).await?;
+    if !caller.community_admin {
+        return Err(declared(
+            account_list_v0_1::error_codes::NOT_COMMUNITY_ADMINISTRATOR.code,
+            "a linked account is not scoped to any namespace: this community-wide roster needs \
+             the community-administrator capability",
+        ));
+    }
+    let member_filter = p.member.as_ref().map(|m| m.to_string());
+    let forge_filter = p.forge.as_ref().map(|f| f.to_string());
+    let mut accounts = Vec::new();
+    for m in crate::members::list_members(&state.members_ks).await? {
+        if m.removed_at.is_some() {
+            continue;
+        }
+        if member_filter.as_deref().is_some_and(|f| f != m.did) {
+            continue;
+        }
+        let Some(forges) = m.extensions.get("forges").and_then(Value::as_object) else {
+            continue;
+        };
+        let member_current = ops::standing(state, &m.did).await?.member;
+        for (forge, a) in forges {
+            if forge_filter.as_deref().is_some_and(|f| f != forge) {
+                continue;
+            }
+            let (Some(id), Some(login)) = (
+                a.get("id").and_then(Value::as_str),
+                a.get("login").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            accounts.push(GitNsAccountRow {
+                member: m.did.clone(),
+                forge: forge.clone(),
+                id: id.to_string(),
+                login: login.to_string(),
+                linked_at: a
+                    .get("linkedAt")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                member_current,
+            });
+        }
+    }
+    accounts.sort_by(|a, b| (&a.member, &a.forge).cmp(&(&b.member, &b.forge)));
+    let filters = json!({ "member": member_filter, "forge": forge_filter });
+    let (page, next_cursor) = page_of(accounts, &filters, p.cursor.as_deref(), p.limit)?;
+    let list = GitNsAccountList {
+        accounts: page,
+        next_cursor,
+    };
+    Ok(wire::into(
+        serde_json::to_value(&list).map_err(vti_common::error::AppError::from)?,
+    )?)
+}
+
+// ── git-ns/activity/list/0.1 ────────────────────────────────────────────────
+
+/// One thing that happened in a namespace.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsActivityItem {
+    pub at: String,
+    /// `gitNs.right.granted`, `gitNs.repo.renamed`, `gitNs.drift.reported`,
+    /// `gitNs.job.createRepo`, …
+    pub action: String,
+    /// `audit` or `job`.
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right: Option<String>,
+    /// Who acted. Absent when an erasure has removed it from the audit row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// Whose right it was. Absent likewise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// A machine-readable qualifier (`departed`, the old name of a rename, a
+    /// job's state, a drift count).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsActivity {
+    pub items: Vec<GitNsActivityItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// `git-ns/activity/list/0.1`.
+pub(crate) async fn activity_list(
+    state: &AppState,
+    actor: &str,
+    p: activity_list_v0_1::Payload,
+) -> OpResult<activity_list_v0_1::Response> {
+    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let admin = administered(state, &snap, actor).await?;
+    let named = p.namespace.as_ref().map(|n| n.to_string());
+    let covered = covered(
+        &admin,
+        named.as_deref(),
+        activity_list_v0_1::error_codes::NOT_ADMINISTRATOR.code,
+    )?;
+    let mut items: Vec<(chrono::DateTime<chrono::Utc>, GitNsActivityItem)> = Vec::new();
+    for (_, v) in state.audit_ks.prefix_iter_raw(Vec::new()).await? {
+        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v) else {
+            continue;
+        };
+        let vti_common::audit::AuditEvent::GitNsOperation(d) = env.event else {
+            continue;
+        };
+        // A row for a namespace since unbound is still the history of a
+        // namespace the caller no longer administers, so only a community
+        // administrator sees rows outside the covered set.
+        let visible = match &d.namespace {
+            Some(n) => covered.contains(n),
+            None => admin.community_admin && named.is_none(),
+        };
+        if !visible {
+            continue;
+        }
+        items.push((
+            env.timestamp,
+            GitNsActivityItem {
+                at: wire::timestamp(env.timestamp),
+                action: d.action,
+                source: "audit".into(),
+                namespace: d.namespace,
+                resource: d.resource,
+                right: d.right,
+                actor: env.actor_did_plain,
+                subject: env.target_did_plain,
+                detail: d.detail,
+            },
+        ));
+    }
+    for job in bridge::list_jobs(&state.git_ns.jobs_ks).await? {
+        if !covered.contains(&job.namespace_id) {
+            continue;
+        }
+        let row = job_row(&job);
+        let at = job.accepted_at.unwrap_or(job.created_at);
+        items.push((
+            at,
+            GitNsActivityItem {
+                at: wire::timestamp(at),
+                action: format!("gitNs.job.{}", job.kind.as_str()),
+                source: "job".into(),
+                namespace: Some(job.namespace_id.clone()),
+                resource: row.repo,
+                right: None,
+                actor: None,
+                subject: None,
+                detail: Some(row.state),
+            },
+        ));
+    }
+    items.sort_by(|(a, _), (b, _)| b.cmp(a));
+    let rows: Vec<GitNsActivityItem> = items.into_iter().map(|(_, i)| i).collect();
+    let filters = json!({ "namespace": named });
+    let (page, next_cursor) = page_of(rows, &filters, p.cursor.as_deref(), p.limit)?;
+    let activity = GitNsActivity {
+        items: page,
+        next_cursor,
+    };
+    Ok(wire::into(
+        serde_json::to_value(&activity).map_err(vti_common::error::AppError::from)?,
+    )?)
 }

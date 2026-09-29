@@ -1,29 +1,32 @@
 // Repos admin API — the reads the Repos plugin renders.
 //
-// Two kinds of read, and the difference is who may make them.
+// Every read here is a signed Trust Task: the namespaces, the repositories,
+// the break-glass records, the rights lists, the bridge job queue, the Trust
+// Registry projection, the linked-account roster and the activity feed are
+// `git-ns/namespace/list/0.1`, `git-ns/repo/list/0.1`, `git-ns/view/0.5`
+// (`scope: administrator`, `breakGlass: true`), `git-ns/right/list/0.1`,
+// `git-ns/right/issued-by-departed/0.1`, `git-ns/bridge/job/list/0.1`,
+// `git-ns/projection/show/0.1`, `git-ns/account/list/0.1` and
+// `git-ns/activity/list/0.1` — signed with this browser's console key and
+// posted to `/v1/trust-tasks`, the same documents `cnm git` sends over TSP or
+// DIDComm. The daemon answers each to the entitlement its own specification
+// names (the community-administrator capability for the four
+// community-wide reads; either that or `git.ns.admin` on the namespace for
+// the rest), never on the strength of a session, so there is no bearer
+// fallback: a browser that cannot sign gets `SigningUnavailableError`, which
+// the screens turn into "enable console signing".
 //
-// **The administrator's reads are signed Trust Tasks.** The namespaces, the
-// repositories and the break-glass records are `git-ns/namespace/list/0.1`,
-// `git-ns/repo/list/0.1` and `git-ns/view/0.5` (`scope: administrator`,
-// `breakGlass: true`), signed with this browser's console key and posted to
-// `/v1/trust-tasks` — the same documents `cnm git` sends over TSP or
-// DIDComm. The daemon answers them to a namespace's administrators only (the
-// community-administrator capability, or `git.ns.admin` on the namespace),
-// never on the strength of a session, so there is no bearer fallback: a
-// browser that cannot sign gets `SigningUnavailableError`, which the screens
-// turn into "enable console signing".
-//
-// **The rest are console projections** no specification defines — rights,
-// drift, jobs, the registry mirror, linked accounts, activity — which the
-// daemon mounts behind the admin session with **no** Trust-Task binding
-// (`routes/mod.rs`). They go through `getJsonExempt` for that reason, which is
-// the smell the helper is meant to be: each one is named here.
+// Each of the six added in trustoverip/dtgwg-trust-tasks-tf#686 pages: at
+// most 500 rows a call (default 100), with a `nextCursor` to continue. The
+// console reads one page — its screens are single-community operator
+// consoles, not audit exports — the same posture `namespace/list` and
+// `repo/list` already have with no paging at all.
 //
 // Writes are not in this file. Every change is a signed `git-ns/*` Trust Task;
 // `actions.ts` builds them and sends them from this browser's console key
 // where one is enrolled.
 
-import { getJsonExempt, postSignedRead } from "@/lib/api";
+import { postSignedRead } from "@/lib/api";
 import type {
   GitNsAccountList,
   GitNsActivity,
@@ -43,13 +46,21 @@ import { breakGlassState } from "./model";
 
 const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
 
-// trust-tasks-rs 0.23.4 generates the Rust side of these
-// (`git_ns::admin_reads`, trustoverip/dtgwg-trust-tasks-tf#659). No
-// TypeScript binding is published, so the URIs and the view response shape
-// below stay hand-written here, matching the spec.
+// trust-tasks-rs 0.23.4 generates the Rust side of the first three
+// (`git_ns::admin_reads`, trustoverip/dtgwg-trust-tasks-tf#659), and 0.24.7
+// the other six (trustoverip/dtgwg-trust-tasks-tf#686). No TypeScript binding
+// is published for either, so the URIs and the view response shape below stay
+// hand-written here, matching the spec.
 export const TASK_NAMESPACE_LIST = "https://trusttasks.org/spec/git-ns/namespace/list/0.1";
 export const TASK_REPO_LIST = "https://trusttasks.org/spec/git-ns/repo/list/0.1";
 export const TASK_VIEW = "https://trusttasks.org/spec/git-ns/view/0.5";
+export const TASK_RIGHT_LIST = "https://trusttasks.org/spec/git-ns/right/list/0.1";
+export const TASK_RIGHT_ISSUED_BY_DEPARTED =
+  "https://trusttasks.org/spec/git-ns/right/issued-by-departed/0.1";
+export const TASK_BRIDGE_JOB_LIST = "https://trusttasks.org/spec/git-ns/bridge/job/list/0.1";
+export const TASK_PROJECTION_SHOW = "https://trusttasks.org/spec/git-ns/projection/show/0.1";
+export const TASK_ACCOUNT_LIST = "https://trusttasks.org/spec/git-ns/account/list/0.1";
+export const TASK_ACTIVITY_LIST = "https://trusttasks.org/spec/git-ns/activity/list/0.1";
 
 /** The parts of a `git-ns/view/0.5#response` the break-glass list and the drift read. */
 interface GitNsViewAnswer {
@@ -107,12 +118,16 @@ export const fetchNamespaces = (): Promise<GitNsNamespaceList> =>
 export const fetchRepos = (): Promise<GitNsRepoList> =>
   postSignedRead<GitNsRepoList>(TASK_REPO_LIST, {});
 
-/** Live rights, recorded and role-derived, across every namespace. */
+/** Live rights, recorded and role-derived, across every namespace
+ *  (`git-ns/right/list/0.1`; the community-administrator capability). */
 export const fetchRights = (): Promise<GitNsRightList> =>
-  getJsonExempt<GitNsRightList>("/v1/git-ns/rights");
+  postSignedRead<GitNsRightList>(TASK_RIGHT_LIST, {});
 
+/** Recorded rights whose granter has since left, grouped by granter
+ *  (`git-ns/right/issued-by-departed/0.1`; the community-administrator
+ *  capability). */
 export const fetchIssuedByDeparted = (): Promise<GitNsDepartedGrants> =>
-  getJsonExempt<GitNsDepartedGrants>("/v1/git-ns/rights/issued-by-departed");
+  postSignedRead<GitNsDepartedGrants>(TASK_RIGHT_ISSUED_BY_DEPARTED, {});
 
 /**
  * Every repository whose forge differs from the projection, in the namespaces
@@ -136,30 +151,35 @@ export function driftRows(view: GitNsViewAnswer): GitNsDriftRow[] {
     }));
 }
 
+/** Bridge jobs in the namespaces the caller administers
+ *  (`git-ns/bridge/job/list/0.1`). */
 export const fetchJobs = (): Promise<GitNsJobList> =>
-  getJsonExempt<GitNsJobList>("/v1/git-ns/jobs");
+  postSignedRead<GitNsJobList>(TASK_BRIDGE_JOB_LIST, {});
 
+/** What is published to the Trust Registry, and how far it is from what the
+ *  VTC's records currently call for (`git-ns/projection/show/0.1`; the
+ *  community-administrator capability). */
 export const fetchProjection = (): Promise<GitNsProjection> =>
-  getJsonExempt<GitNsProjection>("/v1/git-ns/projection");
+  postSignedRead<GitNsProjection>(TASK_PROJECTION_SHOW, {});
 
-/** Members' linked forge accounts (`git-ns/account/link`). `id` is
- *  authoritative; `login` is display only — logins are renamed and
- *  re-registered. */
+/** Members' linked forge accounts (`git-ns/account/list/0.1`; the
+ *  community-administrator capability). `id` is authoritative; `login` is
+ *  display only — logins are renamed and re-registered. */
 export const fetchAccounts = (): Promise<GitNsAccountList> =>
-  getJsonExempt<GitNsAccountList>("/v1/git-ns/accounts");
+  postSignedRead<GitNsAccountList>(TASK_ACCOUNT_LIST, {});
 
 /**
  * What happened in one namespace, newest first: rights changes, drift and
- * bridge jobs, read from the git-ns audit rows and the job queue.
+ * bridge jobs, read from the git-ns audit rows and the job queue
+ * (`git-ns/activity/list/0.1`).
  *
  * Narrowed server-side to namespaces the *caller* administers, so a community
- * administrator who holds no `git.ns.admin` there is answered 403 — which the
- * screens render as that, not as an empty history.
+ * administrator who holds no `git.ns.admin` there is refused
+ * `git-ns/activity/list:notAdministrator` — which the screens render as that,
+ * not as an empty history.
  */
 export const fetchActivity = (namespace: string, limit = 100): Promise<GitNsActivity> =>
-  getJsonExempt<GitNsActivity>(
-    `/v1/git-ns/activity?namespace=${encodeURIComponent(namespace)}&limit=${limit}`,
-  );
+  postSignedRead<GitNsActivity>(TASK_ACTIVITY_LIST, { namespace, limit });
 
 /**
  * Break-glass records — self-granted elevated rights (`git-ns/right/break-glass`)

@@ -139,6 +139,9 @@ export function errorMessage(err: unknown): string {
   if (errorCode(err)?.endsWith(":notAdministrator")) {
     return "shown to a namespace's administrators — a community administrator, or git.ns.admin on the namespace — and this session's DID is neither";
   }
+  if (errorCode(err)?.endsWith(":notCommunityAdministrator")) {
+    return "only a community administrator (an admin not limited to some contexts) can read this";
+  }
   if (err && typeof err === "object" && "message" in err) {
     const message = (err as { message: unknown }).message;
     if (typeof message === "string" && message) return message;
@@ -157,10 +160,14 @@ export function errorStatus(err: unknown): number | undefined {
 /**
  * Why a read failed, for the reads a scoped administrator cannot make.
  *
- * Rights, drift, the registry mirror, linked accounts and the departed-grants
- * review need a *community* administrator — an admin session whose access is
- * not limited to some contexts — because they span every namespace. A 403
- * there is that, and saying so is more use than the daemon's bare refusal.
+ * `git-ns/right/list`, `git-ns/right/issued-by-departed`,
+ * `git-ns/projection/show` and `git-ns/account/list` need the
+ * community-administrator capability — an admin whose access is not limited
+ * to some contexts — because they span every namespace; each is refused with
+ * its own `:notCommunityAdministrator`, which [`errorMessage`] already turns
+ * into this same copy. The `errorStatus(err) === 403` branch is dead against
+ * this daemon and stays only for a bearer 403 during a rolling upgrade past
+ * an older one that answered these as REST.
  */
 export function readErrorMessage(err: unknown): string {
   if (errorStatus(err) === 403) {

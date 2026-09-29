@@ -2,11 +2,11 @@
 // (design §7.1: "Member detail gains a *Git rights* section and the linked
 // GitHub account").
 //
-// Read from the same two console projections the Repos plugin renders —
-// `GET /v1/git-ns/rights` and `GET /v1/git-ns/accounts` — under the same query
-// keys, so the two pages share one cache and one refresh. Both span every
-// namespace, so they need a community administrator; a scoped administrator
-// is told that rather than shown an empty column.
+// Read from the same two signed Trust Tasks the Repos plugin renders —
+// `git-ns/right/list/0.1` and `git-ns/account/list/0.1` — under the same
+// query keys, so the two pages share one cache and one refresh. Both span
+// every namespace and answer the community-administrator capability alone; a
+// scoped administrator is told that rather than shown an empty column.
 //
 // Only *recorded* rights (and role-derived v0.1 grants, marked as such) are
 // listed. Implied rights — an owner's commit right, a namespace admin's

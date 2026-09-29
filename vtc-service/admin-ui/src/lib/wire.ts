@@ -536,102 +536,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/git-ns/accounts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsAccountsList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/activity": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsActivity"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/jobs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsJobsList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/projection": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsProjection"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/rights": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsRightsList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/rights/issued-by-departed": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsRightsIssuedByDeparted"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/install/claim/finish": {
         parameters: {
             query?: never;
@@ -2423,6 +2327,7 @@ export interface components {
         };
         GitNsAccountList: {
             accounts: components["schemas"]["GitNsAccountRow"][];
+            nextCursor?: string | null;
         };
         /** @description One member's account on one forge, as linked through `git-ns/account/link`. */
         GitNsAccountRow: {
@@ -2442,6 +2347,7 @@ export interface components {
         };
         GitNsActivity: {
             items: components["schemas"]["GitNsActivityItem"][];
+            nextCursor?: string | null;
         };
         /** @description One thing that happened in a namespace. */
         GitNsActivityItem: {
@@ -2473,7 +2379,7 @@ export interface components {
             variables: boolean;
             workflow: boolean;
         };
-        /** @description A record's `breakGlass` (`git-ns/_shared/0.4` `BreakGlass`). */
+        /** @description A record's `breakGlass` (`git-ns/_shared/0.5` `BreakGlass`). */
         GitNsBreakGlassMark: {
             at: string;
             by: string;
@@ -2494,6 +2400,7 @@ export interface components {
              */
             cascadeOnDeparture: boolean;
             granters: components["schemas"]["GitNsDepartedGranter"][];
+            nextCursor?: string | null;
         };
         /**
          * @description The bridge's report of its standing on a namespace's forge owner, carried
@@ -2520,8 +2427,9 @@ export interface components {
         };
         GitNsJobList: {
             jobs: components["schemas"]["GitNsJobRow"][];
+            nextCursor?: string | null;
         };
-        /** @description One bridge job. */
+        /** @description One bridge job, as the administrator's console shows it. */
         GitNsJobRow: {
             acceptedAt?: string | null;
             /** Format: int32 */
@@ -2607,9 +2515,11 @@ export interface components {
             state: string;
         };
         GitNsProjection: {
+            nextCursor?: string | null;
             /**
              * @description Records that should be published and are not yet, or that are
-             *     published and should not be — what the next pass will change.
+             *     published and should not be — what the next pass will change. Counted
+             *     across the whole VTC, regardless of `resource` or paging.
              */
             pendingChanges: number;
             published: components["schemas"]["GitNsPublishedRow"][];
@@ -2677,9 +2587,15 @@ export interface components {
             visibility: string;
         };
         GitNsRightList: {
+            nextCursor?: string | null;
             rights: components["schemas"]["GitNsRightRow"][];
         };
-        /** @description One git right, recorded or role-derived. */
+        /**
+         * @description One git right, recorded or role-derived — `AdminRightRow` of the shared
+         *     schema. Both tasks below produce it; only `git-ns/right/list` fills
+         *     `resource` outside a `DepartedGranter` grouping (the response schemas are
+         *     otherwise identical row for row).
+         */
         GitNsRightRow: {
             breakGlass?: null | components["schemas"]["GitNsBreakGlassMark"];
             expiresAt?: string | null;
@@ -6608,227 +6524,6 @@ export interface operations {
             };
             /** @description Endorsement already revoked */
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsAccountsList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Members' linked forge accounts */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsAccountList"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsActivity: {
-        parameters: {
-            query?: {
-                /** @description Only this namespace (its identifier). */
-                namespace?: string;
-                /** @description At most this many items, newest first. Default 100, at most 500. */
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Recent activity in the namespaces the caller administers */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsActivity"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The caller administers no namespace (or not the one named) */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsJobsList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bridge jobs, oldest first */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsJobList"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsProjection: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description What is published to the Trust Registry */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsProjection"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsRightsList: {
-        parameters: {
-            query?: {
-                /** @description Only rights on this resource or inside it. */
-                resource?: string;
-                /** @description Only rights held by this DID. */
-                subject?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Recorded and role-derived git rights */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsRightList"];
-                };
-            };
-            /** @description The resource is not a forge-qualified resource */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsRightsIssuedByDeparted: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Grants whose granter has left the community */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsDepartedGrants"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community administrator */
-            403: {
                 headers: {
                     [name: string]: unknown;
                 };
