@@ -246,6 +246,7 @@ pub async fn rollback_didcomm(
                 auth,
                 EnableDidcommParams {
                     mediator_did: mediator_did.clone(),
+                    setup_acl: false,
                     force: false,
                     handshake_timeout: DEFAULT_ROLLBACK_HANDSHAKE_TIMEOUT,
                 },
@@ -279,6 +280,7 @@ pub async fn rollback_didcomm(
                 UpdateDidcommParams {
                     new_mediator_did: mediator_did.clone(),
                     drain_ttl: params.drain_ttl,
+                    setup_acl: false,
                     force: false,
                     handshake_timeout: DEFAULT_ROLLBACK_HANDSHAKE_TIMEOUT,
                     audit_kind: MigrateAuditKind::Rollback,

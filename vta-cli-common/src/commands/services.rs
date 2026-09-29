@@ -243,10 +243,12 @@ pub async fn cmd_services_webauthn_rollback(
 pub async fn cmd_services_didcomm_enable(
     client: &VtaClient,
     mediator_did: String,
+    setup_acl: bool,
     force: bool,
     handshake_timeout_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut req = EnableDidcommRequest::new(&mediator_did);
+    req.setup_acl = setup_acl;
     req.force = force;
     req.handshake_timeout_secs = handshake_timeout_secs;
     let resp = match client.enable_didcomm(req).await {
@@ -279,10 +281,12 @@ pub async fn cmd_services_didcomm_update(
     client: &VtaClient,
     new_mediator_did: String,
     drain_ttl_secs: u64,
+    setup_acl: bool,
     force: bool,
     handshake_timeout_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut req = UpdateDidcommRequest::new(&new_mediator_did, drain_ttl_secs);
+    req.setup_acl = setup_acl;
     req.force = force;
     req.handshake_timeout_secs = handshake_timeout_secs;
     let resp = client.update_didcomm(req).await?;

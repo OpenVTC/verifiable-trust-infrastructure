@@ -100,6 +100,17 @@ The `/services/*` and `/mediators/*` REST routes, and the
 `services-management/1.0` / `mediator-management/1.0` DIDComm messages, are
 removed: every client, the `pnm` CLI included, dispatches the tasks.
 
+### Mediators with restrictive ACL defaults
+
+Pass `--setup-acl` to `pnm services didcomm enable` or `update` when the target
+mediator's default ACL refuses forwarded delivery. The VTA provisions its own
+account over the candidate connection before the trust-ping. The option is
+carried in `ext["org.openvtc"].setupAcl` on the service Trust Task and cannot be
+combined with `--force`, which skips the connection needed to update the ACL.
+After first enable succeeds, the VTA sends the Trust Task response and performs
+a delayed soft restart to replace the transient handshake socket with the
+persistent messaging runtime.
+
 ## Recovery: the mediator is unreachable
 
 DIDComm is the preferred transport, so `pnm` picks it whenever the
