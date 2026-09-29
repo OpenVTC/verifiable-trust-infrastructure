@@ -116,6 +116,9 @@ pub enum RelationshipCommands {
 
     /// Revoke a relationship credential you issued (or, as an administrator,
     /// any). Any other caller gets the same "not found" a missing id would.
+    /// Does not cover an edge published under a pairwise relationship DID
+    /// (not your own membership DID) — that still needs the VTC's bearer
+    /// route with a proof of possession, which this command does not send.
     Revoke {
         /// The relationship (VRC) id.
         id: String,

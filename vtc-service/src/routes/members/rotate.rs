@@ -1,23 +1,26 @@
-//! `POST /v1/members/me/rotate/{challenge,…}` — DID rotation
-//! (M2.15.1 + M2.15.2). Spec §10.5.
+//! `vtc/members/rotate-challenge/0.1` + `vtc/members/rotate/0.1` — DID
+//! rotation (M2.15.1 + M2.15.2). Spec §10.5. Signed documents only
+//! (`trust_tasks::member_tasks`); the bearer REST routes they once also
+//! served (`POST /v1/members/me/rotate/{challenge,…}`) had no caller once the
+//! spine dispatched them (#1809) and were removed.
 //!
 //! Two-step ceremony that swaps a member's DID with both keys
 //! co-signing. M2.15.1 shipped the `did:key` path; M2.15.2
 //! extends the new-DID branch to `did:webvh` via the workspace
 //! `DIDCacheClient` resolver walk.
 //!
-//! ## Step 1 — `POST /v1/members/me/rotate/challenge`
+//! ## Step 1 — `vtc/members/rotate-challenge/0.1`
 //!
-//! Authenticated by the member's existing session. Mints a
+//! Authenticated by the document's proof signer. Mints a
 //! single-use `rotation_id` + `expires_at` (10-minute TTL) and
 //! returns them. The challenge row is persisted to the
 //! `passkey_ks` keyspace under a `rotation_chal:` prefix so we
 //! don't need a separate keyspace handle for a short-lived
 //! state row.
 //!
-//! ## Step 2 — `POST /v1/members/me/rotate`
+//! ## Step 2 — `vtc/members/rotate/0.1`
 //!
-//! Authenticated by the old DID's session. The body carries:
+//! Authenticated by the old DID's proof. The body carries:
 //!
 //! - `rotationId` (from step 1)
 //! - `oldDid` (must match the caller's session)
@@ -78,9 +81,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use affinidi_status_list::StatusPurpose;
-use axum::Json;
-use axum::extract::State;
-use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -93,7 +93,6 @@ use vti_common::auth::session::{delete_session, list_sessions};
 use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;
-use crate::auth::AuthClaims;
 use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
@@ -212,34 +211,11 @@ pub struct ChallengeBody {
     pub reason: Option<DidRotationReason>,
 }
 
-/// POST /members/me/rotate/challenge — mint a DID-rotation challenge.
-/// Auth: any authenticated member.
-#[utoipa::path(
-    post, path = "/members/me/rotate/challenge",
-    operation_id = "memberRotateChallenge", tag = "members",
-    security(("bearer_jwt" = [])),
-    request_body = Option<ChallengeBody>,
-    responses(
-        (status = 200, description = "Rotation challenge issued", body = ChallengeResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 404, description = "Caller is not a member"),
-    ),
-)]
-pub async fn challenge(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    body: Option<Json<ChallengeBody>>,
-) -> Result<(StatusCode, Json<ChallengeResponse>), TaskError> {
-    let reason = body.and_then(|Json(b)| b.reason);
-    Ok((
-        StatusCode::OK,
-        Json(challenge_inner(&state, &auth.did, reason).await?),
-    ))
-}
-
 /// Mint a rotation challenge for `caller_did` — the operation behind the
-/// bearer route above and the `vtc/members/rotate-challenge/0.1` Trust Task,
-/// which authorizes from the document's proof signer.
+/// `vtc/members/rotate-challenge/0.1` Trust Task, which authorizes from the
+/// document's proof signer. Opening a ceremony has no bearer REST route: it
+/// is a signed document only, reached over TSP, DIDComm or HTTPS
+/// `/trust-tasks`.
 pub(crate) async fn challenge_inner(
     state: &AppState,
     caller_did: &str,
@@ -317,34 +293,12 @@ pub struct FinishResponse {
     pub role_vec: JsonValue,
 }
 
-/// POST /members/me/rotate — complete a DID rotation. Auth: old DID's session.
-#[utoipa::path(
-    post, path = "/members/me/rotate", tag = "members",
-    security(("bearer_jwt" = [])),
-    request_body = FinishBody,
-    responses(
-        (status = 200, description = "DID rotated", body = FinishResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Session DID does not match oldDid"),
-        (status = 404, description = "Caller is not a member"),
-    ),
-)]
-pub async fn rotate(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Json(body): Json<FinishBody>,
-) -> Result<(StatusCode, Json<FinishResponse>), TaskError> {
-    Ok((
-        StatusCode::OK,
-        Json(rotate_inner(&state, &auth.did, body).await?),
-    ))
-}
-
-/// Complete a rotation `caller_did` opened — the operation behind the bearer
-/// route above and the `vtc/members/rotate/0.1` Trust Task. `caller_did` is
-/// whoever the door authenticated (the session DID, or the document's proof
-/// signer) and must equal `oldDid`; the two in-payload signatures are what
-/// authorize the swap itself.
+/// Complete a rotation `caller_did` opened — the operation behind the
+/// `vtc/members/rotate/0.1` Trust Task. Completing a rotation has no bearer
+/// REST route: it is a signed document only, reached over TSP, DIDComm or
+/// HTTPS `/trust-tasks`. `caller_did` is whoever the door authenticated (the
+/// document's proof signer) and must equal `oldDid`; the two in-payload
+/// signatures are what authorize the swap itself.
 pub(crate) async fn rotate_inner(
     state: &AppState,
     caller_did: &str,

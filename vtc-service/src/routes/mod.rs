@@ -617,47 +617,39 @@ fn build_api_chain(
         // "removed" as a DID. The purge (`vtc/members/purge/0.1`) and a
         // member's own departure (`vtc/members/self-remove/0.1`) have no
         // route: both are signed documents only.
-        // Renewal (M2.13). POST on its own mount so the
-        // Trust Task header check + per-method selectors are
-        // unambiguous.
-        .routes(tt(
-            routes!(members::renew::renew),
-            "https://trusttasks.org/spec/vtc/members/renew/0.1",
-        ))
-        // DID rotation (M2.15.1). Two-step ceremony — challenge
-        // mints a single-use rotation_id, the finish endpoint
-        // applies the co-signed swap atomically.
-        .routes(tt(
-            routes!(members::rotate::challenge),
-            "https://trusttasks.org/spec/vtc/members/rotate-challenge/0.1",
-        ))
-        .routes(tt(
-            routes!(members::rotate::rotate),
-            "https://trusttasks.org/spec/vtc/members/rotate/0.1",
-        ))
+        // Renewal (M2.13) is a signed document only
+        // (`vtc/members/renew/0.1`, `trust_tasks::member_tasks`); the bearer
+        // REST route it once also served had no caller once the spine
+        // dispatched it (#1809) and was removed.
+        //
+        // DID rotation (M2.15.1) is likewise a signed document only —
+        // `vtc/members/rotate-challenge/0.1` opens the two-step ceremony,
+        // `vtc/members/rotate/0.1` applies the co-signed swap atomically —
+        // for the same reason.
         // Reciprocal-VMC request — ask an active member to issue + send the
         // member → community half of the membership pair. The member replies
         // asynchronously over the `members/vmc/1.0` DIDComm surface.
-        // Phase 4 M4.3 + M4.4 — personhood lifecycle. The challenge and the
-        // assertion are signed documents only (`vtc/members/personhood/
-        // {challenge,assert}/0.1`); the revoke keeps its route, declared
-        // BEFORE `/v1/members/{did}` so axum's path-trie matches the literal
-        // segment first.
-        .routes(tt(
-            routes!(members::personhood::revoke),
-            "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1",
-        ))
-        // Phase 4 M4.6 — VRC trust-graph endpoints. The
-        // per-member list mounts under /v1/members/{did}/
-        // and must precede the catchall `/v1/members/{did}`
-        // (same path-trie precedence as personhood).
-        .routes(tt(
-            routes!(members::relationships::list),
-            "https://trusttasks.org/spec/vtc/relationships/list/0.2",
-        ))
+        // Phase 4 M4.3 + M4.4 — personhood lifecycle. The challenge, the
+        // assertion and the revoke are all signed documents only
+        // (`vtc/members/personhood/{challenge,assert,revoke}/0.1`); the
+        // revoke's bearer REST route had no caller once the spine dispatched
+        // it (#1809) and was removed.
+        // Phase 4 M4.6 — the VRC trust-graph member list
+        // (`vtc/relationships/list/0.2`) is a signed document only; its
+        // bearer REST route lost its last caller (the admin console) when
+        // that console moved onto the signed door and was removed.
         // #1215 — the membership pair's bodies for one member
         // (`vtc/members/credentials/0.1`) is a signed document only.
         // Admin connections-graph view — the member-relationship (VRC) graph.
+        //
+        // Relationship revoke (`vtc/relationships/revoke/0.1`) keeps its
+        // bearer REST route: unlike the other verbs retired here, its REST
+        // door authorizes a **third** capacity the signed document cannot —
+        // a `VrcRevokeAuthorization` proving control of a pairwise
+        // relationship DID, bound to the REST session — so removing it would
+        // strand a member's edge published under a relationship DID with no
+        // way to revoke it themselves (see `trust_tasks::member_tasks`'s
+        // `handle_relationships_revoke`).
         .routes(tt(
             routes!(relationships::revoke),
             "https://trusttasks.org/spec/vtc/relationships/revoke/0.1",
@@ -676,12 +668,11 @@ fn build_api_chain(
         // listing is REST; `register` and `delete` are signed documents only.
         // The community schema store (Issues + Accepts registry) is
         // `vtc/schemas/*` on the spine, and has no route.
-        // Phase 4 M4.8.2-4 — custom endorsement issuance +
-        // retrieval + revocation. Admin OR Issuer-role member.
-        .routes(tt(
-            routes!(endorsements::issue),
-            "https://trusttasks.org/spec/vtc/endorsements/issue/0.1",
-        ))
+        // Phase 4 M4.8.2-4 — custom endorsement issuance, retrieval and
+        // revocation. Issuance (`vtc/endorsements/issue/0.1`) is a signed
+        // document only; its bearer REST route had no caller once the spine
+        // dispatched it (#1809) and was removed. Retrieval and revocation
+        // keep their REST routes.
         .routes(tt(
             routes!(endorsements::list),
             "https://trusttasks.org/spec/vtc/endorsements/list/0.1",
@@ -1262,7 +1253,6 @@ mod openapi_tests {
         for p in [
             "/v1/auth/challenge",
             "/v1/admin/passkeys",
-            "/v1/members/{did}/relationships",
             "/v1/vetting/vetters",
             "/v1/credentials/endorsements",
             "/v1/relationships",
@@ -1271,8 +1261,12 @@ mod openapi_tests {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
         }
         assert!(
-            paths.len() >= 45,
-            "expected the documented surface to be >= 45 paths, got {}",
+            // Was 45; five REST-only paths (renew, rotate, rotate-challenge,
+            // personhood/revoke, members/{did}/relationships) were retired
+            // once the signed-document spine covered them and their bearer
+            // callers moved onto it (#1809 + this PR).
+            paths.len() >= 40,
+            "expected the documented surface to be >= 40 paths, got {}",
             paths.len()
         );
     }
@@ -1290,6 +1284,11 @@ mod openapi_tests {
             "/v1/members/me",
             "/v1/members/{did}/purge",
             "/v1/members/{did}/personhood/challenge",
+            "/v1/members/{did}/personhood",
+            "/v1/members/{did}/relationships",
+            "/v1/members/me/renew",
+            "/v1/members/me/rotate",
+            "/v1/members/me/rotate/challenge",
             "/v1/endorsement-types/{type_uri}",
             "/v1/vetting/vetters/list",
             "/v1/join-requests/manifest",
@@ -1345,8 +1344,10 @@ mod openapi_tests {
             assert!(!paths.contains_key(p), "{p} is a signed document only");
         }
         let item = |p: &str| paths.get(p).unwrap_or_else(|| panic!("{p} is documented"));
-        assert!(item("/v1/members/{did}/personhood").post.is_none());
         assert!(item("/v1/vetting/vetters").post.is_none());
+        // `issue` is a signed document only; `list` keeps its REST route on
+        // the same path.
+        assert!(item("/v1/credentials/endorsements").post.is_none());
     }
 
     // ── Route-posture backstop (P2.6) ──────────────────────────────────────

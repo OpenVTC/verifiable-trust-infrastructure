@@ -736,6 +736,10 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/members/admin-remove/0.1",
     "https://trusttasks.org/spec/vtc/members/credentials/0.1",
     "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1",
+    // The member relationships list (a member's detail view): its bearer REST
+    // route had no other caller and was retired once the console moved onto
+    // the signed door.
+    "https://trusttasks.org/spec/vtc/relationships/list/0.2",
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
     "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2",
     "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1",

@@ -1657,6 +1657,12 @@ impl VtcClient {
     /// (`vtc/relationships/revoke/0.1`). The edge's own issuer, or an
     /// administrator; any other caller gets the same `notFound` a missing id
     /// would (anti-probing).
+    ///
+    /// An edge published under a pairwise relationship DID (its `issuer` not
+    /// the caller's own membership DID) cannot be revoked through this
+    /// verb — the task's payload is `{id}` alone and carries no proof of
+    /// control over that DID. That capacity still needs the VTC's bearer
+    /// `DELETE /relationships/{id}` route, with a `pop`.
     pub async fn revoke_relationship(&self, id: &str) -> Result<RelationshipRevoked, VtcError> {
         let reply = self
             .document(

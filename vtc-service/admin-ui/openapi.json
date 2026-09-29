@@ -977,45 +977,6 @@
             "bearer_jwt": []
           }
         ]
-      },
-      "post": {
-        "tags": [
-          "endorsements"
-        ],
-        "operationId": "endorsementIssue",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/IssueBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Endorsement issued",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IssueResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin or issuer"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
       }
     },
     "/v1/credentials/endorsements/{id}": {
@@ -1405,243 +1366,6 @@
             "description": "Invalid install token or claim secret"
           }
         }
-      }
-    },
-    "/v1/members/me/renew": {
-      "post": {
-        "tags": [
-          "members"
-        ],
-        "summary": "POST /members/me/renew — renew VMC + role VEC. Auth: any authenticated member.",
-        "operationId": "renew",
-        "responses": {
-          "200": {
-            "description": "Membership renewed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RenewResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "404": {
-            "description": "Caller is not a member"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/members/me/rotate": {
-      "post": {
-        "tags": [
-          "members"
-        ],
-        "summary": "POST /members/me/rotate — complete a DID rotation. Auth: old DID's session.",
-        "operationId": "rotate",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/FinishBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "DID rotated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FinishResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Session DID does not match oldDid"
-          },
-          "404": {
-            "description": "Caller is not a member"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/members/me/rotate/challenge": {
-      "post": {
-        "tags": [
-          "members"
-        ],
-        "summary": "POST /members/me/rotate/challenge — mint a DID-rotation challenge.\nAuth: any authenticated member.",
-        "operationId": "memberRotateChallenge",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "oneOf": [
-                  {
-                    "type": "null"
-                  },
-                  {
-                    "$ref": "#/components/schemas/ChallengeBody"
-                  }
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Rotation challenge issued",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RotationChallengeResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "404": {
-            "description": "Caller is not a member"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/members/{did}/personhood": {
-      "delete": {
-        "tags": [
-          "members"
-        ],
-        "summary": "DELETE /members/{did}/personhood — revoke personhood. Auth: Admin or self.",
-        "operationId": "personhoodRevoke",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Member DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Personhood revoked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PersonhoodRevokeResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is neither admin nor the subject member"
-          },
-          "404": {
-            "description": "Member not found"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/members/{did}/relationships": {
-      "get": {
-        "tags": [
-          "members"
-        ],
-        "summary": "GET /members/{did}/relationships — paginated VRC list for a member.\nAuth: any authenticated session.",
-        "operationId": "memberRelationshipList",
-        "parameters": [
-          {
-            "name": "did",
-            "in": "path",
-            "description": "Member DID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
-              "minimum": 0
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Paginated relationship list",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Paginated_Relationship"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not authorised"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
       }
     },
     "/v1/relationships": {
@@ -2671,23 +2395,6 @@
           }
         }
       },
-      "ChallengeBody": {
-        "type": "object",
-        "description": "Optional body for the challenge request.\n\nAbsent body, absent field, and `unspecified` all mean the same\nthing — the member declined to say. The endpoint predates this\nfield, so clients that send no body at all stay valid.",
-        "properties": {
-          "reason": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/DidRotationReason",
-                "description": "Why the member is rotating. Self-asserted — see\n[`DidRotatedData::rotation_reason`] for what this is and is not\nevidence of."
-              }
-            ]
-          }
-        }
-      },
       "ChallengeRequest": {
         "type": "object",
         "description": "Client sends to `POST /auth/challenge`.\n\nWire shape conforms to `spec/auth/challenge/0.1`: the `did` field\nserialises as `subject` per the canonical payload schema. The Rust\nidentifier stays `did` for consistency with `AuthClaims.did` and\nthe rest of the codebase. `alias = \"did\"` keeps clients that still\nsend the legacy name working through one upgrade cycle.",
@@ -3297,17 +3004,6 @@
           }
         }
       },
-      "DidRotationReason": {
-        "type": "string",
-        "description": "Why a member rotated their DID, as declared at challenge time.\n\nSeparate from [`crate::audit::RotationReason`], which describes\n*audit-HMAC-key* rotation: that enum serializes PascalCase, is\nalready persisted in `audit_key:` rows (so it cannot be re-cased),\nand its variants (`Initial`, `Routine` meaning \"the background task\nfired\") carry no sensible reading in this domain.",
-        "enum": [
-          "routine",
-          "compromise",
-          "deviceLoss",
-          "migration",
-          "unspecified"
-        ]
-      },
       "DirectoryResponse": {
         "type": "object",
         "description": "The projected subject record.",
@@ -3779,59 +3475,6 @@
           "noDidcommFallback",
           "servedNotAdvertised"
         ]
-      },
-      "FinishBody": {
-        "type": "object",
-        "required": [
-          "rotationId",
-          "oldDid",
-          "newDid",
-          "oldSignature",
-          "newSignature"
-        ],
-        "properties": {
-          "newDid": {
-            "type": "string"
-          },
-          "newSignature": {
-            "type": "string",
-            "description": "Hex-encoded Ed25519 signature by the new DID's key."
-          },
-          "oldDid": {
-            "type": "string"
-          },
-          "oldSignature": {
-            "type": "string",
-            "description": "Hex-encoded Ed25519 signature by the old DID's key."
-          },
-          "rotationId": {
-            "type": "string",
-            "format": "uuid"
-          }
-        }
-      },
-      "FinishResponse": {
-        "type": "object",
-        "required": [
-          "newDid",
-          "method",
-          "vmc",
-          "roleVec"
-        ],
-        "properties": {
-          "method": {
-            "type": "string"
-          },
-          "newDid": {
-            "type": "string"
-          },
-          "roleVec": {
-            "$ref": "#/components/schemas/Value"
-          },
-          "vmc": {
-            "$ref": "#/components/schemas/Value"
-          }
-        }
       },
       "GitNsAccountList": {
         "type": "object",
@@ -5361,35 +5004,6 @@
           }
         }
       },
-      "IssueBody": {
-        "type": "object",
-        "required": [
-          "subjectDid",
-          "typeUri",
-          "claim"
-        ],
-        "properties": {
-          "claim": {
-            "$ref": "#/components/schemas/Value"
-          },
-          "subjectDid": {
-            "type": "string"
-          },
-          "typeUri": {
-            "type": "string",
-            "description": "`typeUri`, the name the payload schema gives it. This carried an\nexplicit `#[serde(rename = \"type\")]` until #1096 — a deliberate\nrename that simply disagreed with the spec."
-          },
-          "validitySeconds": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Optional override; defaults to 30d.",
-            "minimum": 0
-          }
-        }
-      },
       "IssueInvitationBody": {
         "type": "object",
         "required": [
@@ -5439,22 +5053,6 @@
           "vic": {
             "$ref": "#/components/schemas/Value",
             "description": "The signed Invitation Credential — handed to the invitee out-of-band\n(copy / QR). The invitee presents it back in a join request."
-          }
-        }
-      },
-      "IssueResponse": {
-        "type": "object",
-        "required": [
-          "endorsement",
-          "credential"
-        ],
-        "properties": {
-          "credential": {
-            "$ref": "#/components/schemas/Value",
-            "description": "The signed credential just minted, which only this call can hand\nback. A read carries `endorsement.issued` — the reference — instead,\nso a page of fifty endorsements does not embed fifty credentials."
-          },
-          "endorsement": {
-            "$ref": "#/components/schemas/EndorsementRow"
           }
         }
       },
@@ -5757,121 +5355,6 @@
           "withdrawn",
           "deferred"
         ]
-      },
-      "LifecycleEvent": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/LifecycleEventKind"
-          },
-          {
-            "type": "object",
-            "required": [
-              "recordedAt"
-            ],
-            "properties": {
-              "recordedAt": {
-                "type": "string",
-                "format": "date-time",
-                "description": "Transaction time: when this service recorded the event, **not** when\nthe underlying decision was taken. [`resolve`] ignores events recorded\nafter the instant being asked about, which is what makes \"was this in\nforce at T\" answerable at all."
-              }
-            }
-          }
-        ],
-        "description": "One entry in an artifact's lifecycle log: what happened, and when this\nservice recorded it."
-      },
-      "LifecycleEventKind": {
-        "oneOf": [
-          {
-            "type": "object",
-            "description": "Temporarily ineffective, not withdrawn. The distinction matters to the\nparty being suspended as much as to a verifier: a suspension says the\nrelying party should stop relying *for now*, and leaves a supported\nroute back.",
-            "required": [
-              "event"
-            ],
-            "properties": {
-              "event": {
-                "type": "string",
-                "enum": [
-                  "suspended"
-                ]
-              },
-              "reason": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "description": "Reverses a suspension, returning the artifact to the governance of its\nown window. Never valid against any other standing state — see the\nmodule doc on restoration versus replacement.",
-            "required": [
-              "event"
-            ],
-            "properties": {
-              "event": {
-                "type": "string",
-                "enum": [
-                  "restored"
-                ]
-              },
-              "reason": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "description": "A later artifact has displaced this one. Terminal.\n\n`by` names the displacing artifact by digest rather than by row id, so\nthe record stays meaningful to a reader who holds the credential but\nnot this service's storage — the same reason `vrcDigestMultibase` is\nthe identifier the publish response returns.",
-            "required": [
-              "by",
-              "event"
-            ],
-            "properties": {
-              "by": {
-                "type": "string"
-              },
-              "event": {
-                "type": "string",
-                "enum": [
-                  "superseded"
-                ]
-              }
-            }
-          },
-          {
-            "type": "object",
-            "description": "Withdrawn by the party who controls it, or by the community. Terminal.\n\nDistinct from deleting the row: a withdrawal that is *recorded* can be\nresolved against a past instant, where a deletion can only be observed\nas an absence.",
-            "required": [
-              "event"
-            ],
-            "properties": {
-              "event": {
-                "type": "string",
-                "enum": [
-                  "withdrawn"
-                ]
-              },
-              "reason": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            }
-          }
-        ],
-        "description": "A lifecycle event recorded against an artifact after it was issued.\n\nThe variants are the vocabulary #1079 says is missing. They are separate\nvariants rather than a `status: String` because the transition rules in\n[`LifecycleLog::record`] have to distinguish them, and a stringly-typed\nstate machine is one typo away from accepting a transition it rejects."
-      },
-      "LifecycleLog": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/LifecycleEvent"
-        },
-        "description": "The append-only lifecycle log of one artifact, oldest first.\n\nAppend-only and monotonic in `recorded_at`, both enforced by\n[`Self::record`]. Order in the vector *is* the precedence order, so an\nout-of-order insert would silently change the answer for every instant\nafter it."
       },
       "ListInvitesResponse": {
         "type": "object",
@@ -6380,86 +5863,6 @@
           }
         }
       },
-      "Paginated_Relationship": {
-        "type": "object",
-        "description": "Standard response wrapper for list endpoints. Carries the\nrequested page of items, the opaque cursor for the next page\n(`None` when the caller has reached the end), and an optional\ntotal-count estimate.",
-        "required": [
-          "items"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "description": "A stored, verified VRC. Field order matches the spec §5.4\nsurface (issuer/subject DIDs + the credential body).",
-              "required": [
-                "id",
-                "issuerDid",
-                "subjectDid",
-                "vrcJsonld",
-                "vrcDigestMultibase",
-                "createdAt"
-              ],
-              "properties": {
-                "createdAt": {
-                  "type": "string",
-                  "format": "date-time"
-                },
-                "id": {
-                  "type": "string",
-                  "format": "uuid",
-                  "description": "Server-allocated UUID. Surfaced as `urn:uuid:<id>` on\nthe VRC's top-level `id` field at publish time when\nthe caller didn't supply one."
-                },
-                "issuerDid": {
-                  "type": "string",
-                  "description": "The asserting member. By the publish-time auth check,\nthis equals the caller's session DID."
-                },
-                "lifecycle": {
-                  "$ref": "#/components/schemas/LifecycleLog",
-                  "description": "Everything recorded against this edge since it was published:\nsuspension, restoration, supersession, withdrawal.\n\nEmpty on every edge published before #1079 and on every edge that has\nhad no lifecycle event, which is why it is `#[serde(default)]` and\nskipped when empty — existing rows decode unchanged and re-serialise\nbyte-identically, the same treatment [`Relationship::persona`] got when\nit was added to an already-shipped row.\n\nThis is the *only* lifecycle handle a VRC has. Per planning-review D7 a\nVRC carries no `credentialStatus`, deliberately — a status-list host\nlearns which verifier checked which credential and when, which is the\ncorrelation the pairwise work exists to remove. Without a status list\nthe community's alternatives were a permanent edge or `DELETE\n/v1/relationships/{id}`, and a deletion cannot answer \"was this edge in\nforce last Tuesday\" because it can only be observed as an absence.\n\nNever resolved by hand. [`Relationship::in_force_at`] is the entry\npoint, and the precedence rule lives in\n[`crate::credentials::lifecycle`].\n\n**Known spec lag.** `Relationship` is both the stored row and the item\nshape of `spec/vtc/relationships/list/0.2`, whose response schema is\n`additionalProperties: false` and predates this member — as it predates\n[`Relationship::persona`], added the same way in #1067. A listed edge\nthat has had a lifecycle event therefore carries a member the published\ntask does not describe. The registry is upstream and the spec moves\nfirst, so this is recorded here rather than papered over by dropping\nthe field on the way out: hiding the log from the one surface a member\ncan read would leave them able to be suspended and unable to see it."
-                },
-                "persona": {
-                  "oneOf": [
-                    {
-                      "type": "null"
-                    },
-                    {
-                      "$ref": "#/components/schemas/PersonaAnnotation",
-                      "description": "The persona (VPC) this edge's issuer has asserted on it,\nif any. Absent on every edge published before #1067 and\non every edge whose issuer has not asserted a persona —\nwhich is why it is `#[serde(default)]`: existing rows\ndecode unchanged.\n\nA VPC is an *annotation* credential (DTG Credentials\n§Annotation Credentials): it creates no graph structure,\nit attaches to structure that already exists. Storing it\non the edge row rather than in a keyspace of its own is\nthe direct expression of that — there is no persona\nrecord without an edge to hang it on, and deleting the\nedge deletes the annotation with it."
-                    }
-                  ]
-                },
-                "subjectDid": {
-                  "type": "string",
-                  "description": "The other party the VRC names. Need not be a current\ncommunity member at *list* time (the list path strips\nPurge-removed rows per §12.3) but must be a current\nmember at *publish* time (default `relationships.rego`)."
-                },
-                "vrcDigestMultibase": {
-                  "type": "string",
-                  "description": "SHA-256 of `canonical_json(vrc_jsonld)`, hex-encoded.\nUsed for idempotency: a second publish of an\nalready-stored VRC returns the existing id (200)\nrather than creating a duplicate row.\nDigest over the RFC 8785 canonicalization of `vrc_jsonld`, as a\nbase58btc multibase multihash — the form DTG Credentials and\n`relationships/publish/0.2` both specify.\n\nWas a bare lowercase-hex SHA-256 over a recursive key sort. That form\nhard-coded one algorithm into the stored shape, named no base encoding,\nand — worse — named no canonicalization a second implementation could\nreproduce, so two conforming services could digest the same credential\ndifferently and neither be wrong."
-                },
-                "vrcJsonld": {
-                  "$ref": "#/components/schemas/Value",
-                  "description": "The VRC body verbatim — JSON-LD, including the\ndata-integrity proof. Stored as `JsonValue` rather\nthan a typed `VerifiableCredential` so future VRC\nshape extensions don't require a storage migration."
-                }
-              }
-            }
-          },
-          "nextCursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "totalEstimate": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "minimum": 0
-          }
-        }
-      },
       "PasskeyListResponse": {
         "type": "object",
         "required": [
@@ -6501,29 +5904,6 @@
             "items": {
               "$ref": "#/components/schemas/ConfigRejectedKey"
             }
-          }
-        }
-      },
-      "PersonaAnnotation": {
-        "type": "object",
-        "description": "A Verifiable Persona Credential (VPC) attached to one edge.\n\nThe VPC is issued by the *edge issuer* under a persona DID\n(P-DID) and names the edge's counterparty as its subject. It\nis the sanctioned mechanism for deliberate correlation: a\nmember who wants several of their pairwise edges to be\nrecognisable as one party asserts the same P-DID on each,\nwithout ever putting their membership DID in a credential.\n\nSee `docs/05-design-notes/vpc-persona-annotation.md` for how\nthe annotation is bound to the edge, and for what upstream\n(trustoverip/dtgwg-cred-spec#9) has not yet settled.",
-        "required": [
-          "personaDid",
-          "vpcJsonld",
-          "attachedAt"
-        ],
-        "properties": {
-          "attachedAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "personaDid": {
-            "type": "string",
-            "description": "The VPC's `issuer` — the P-DID. Denormalised out of\n`vpc_jsonld` so the graph view can group edges by persona\nwithout re-parsing every credential."
-          },
-          "vpcJsonld": {
-            "$ref": "#/components/schemas/Value",
-            "description": "The VPC body verbatim, including its data-integrity\nproof, so a consumer of the row can re-verify the\nassertion rather than taking the VTC's word for it."
           }
         }
       },
@@ -6571,41 +5951,6 @@
           "singleMembership": {
             "type": "boolean",
             "description": "Governance requires that each person holds at most one membership in\n**this** community.\n\nPer-community by definition — the spec's glossary says \"exactly one\nmembership in that VTC\" — so a single community can satisfy this\nwithout any network above it.\n\nThis is the half that needs an anchor the community cannot supply\nitself: nothing in the credential graph distinguishes one person with\ntwo DIDs from two people. See `docs/03-vtc/personhood-and-graph.md`."
-          }
-        }
-      },
-      "PersonhoodRevokeResponse": {
-        "type": "object",
-        "required": [
-          "did",
-          "personhood"
-        ],
-        "properties": {
-          "did": {
-            "type": "string"
-          },
-          "personhood": {
-            "type": "boolean"
-          },
-          "roleVec": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Value"
-              }
-            ]
-          },
-          "vmc": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Value"
-              }
-            ]
           }
         }
       },
@@ -7201,60 +6546,6 @@
           }
         }
       },
-      "Relationship": {
-        "type": "object",
-        "description": "A stored, verified VRC. Field order matches the spec §5.4\nsurface (issuer/subject DIDs + the credential body).",
-        "required": [
-          "id",
-          "issuerDid",
-          "subjectDid",
-          "vrcJsonld",
-          "vrcDigestMultibase",
-          "createdAt"
-        ],
-        "properties": {
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid",
-            "description": "Server-allocated UUID. Surfaced as `urn:uuid:<id>` on\nthe VRC's top-level `id` field at publish time when\nthe caller didn't supply one."
-          },
-          "issuerDid": {
-            "type": "string",
-            "description": "The asserting member. By the publish-time auth check,\nthis equals the caller's session DID."
-          },
-          "lifecycle": {
-            "$ref": "#/components/schemas/LifecycleLog",
-            "description": "Everything recorded against this edge since it was published:\nsuspension, restoration, supersession, withdrawal.\n\nEmpty on every edge published before #1079 and on every edge that has\nhad no lifecycle event, which is why it is `#[serde(default)]` and\nskipped when empty — existing rows decode unchanged and re-serialise\nbyte-identically, the same treatment [`Relationship::persona`] got when\nit was added to an already-shipped row.\n\nThis is the *only* lifecycle handle a VRC has. Per planning-review D7 a\nVRC carries no `credentialStatus`, deliberately — a status-list host\nlearns which verifier checked which credential and when, which is the\ncorrelation the pairwise work exists to remove. Without a status list\nthe community's alternatives were a permanent edge or `DELETE\n/v1/relationships/{id}`, and a deletion cannot answer \"was this edge in\nforce last Tuesday\" because it can only be observed as an absence.\n\nNever resolved by hand. [`Relationship::in_force_at`] is the entry\npoint, and the precedence rule lives in\n[`crate::credentials::lifecycle`].\n\n**Known spec lag.** `Relationship` is both the stored row and the item\nshape of `spec/vtc/relationships/list/0.2`, whose response schema is\n`additionalProperties: false` and predates this member — as it predates\n[`Relationship::persona`], added the same way in #1067. A listed edge\nthat has had a lifecycle event therefore carries a member the published\ntask does not describe. The registry is upstream and the spec moves\nfirst, so this is recorded here rather than papered over by dropping\nthe field on the way out: hiding the log from the one surface a member\ncan read would leave them able to be suspended and unable to see it."
-          },
-          "persona": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/PersonaAnnotation",
-                "description": "The persona (VPC) this edge's issuer has asserted on it,\nif any. Absent on every edge published before #1067 and\non every edge whose issuer has not asserted a persona —\nwhich is why it is `#[serde(default)]`: existing rows\ndecode unchanged.\n\nA VPC is an *annotation* credential (DTG Credentials\n§Annotation Credentials): it creates no graph structure,\nit attaches to structure that already exists. Storing it\non the edge row rather than in a keyspace of its own is\nthe direct expression of that — there is no persona\nrecord without an edge to hang it on, and deleting the\nedge deletes the annotation with it."
-              }
-            ]
-          },
-          "subjectDid": {
-            "type": "string",
-            "description": "The other party the VRC names. Need not be a current\ncommunity member at *list* time (the list path strips\nPurge-removed rows per §12.3) but must be a current\nmember at *publish* time (default `relationships.rego`)."
-          },
-          "vrcDigestMultibase": {
-            "type": "string",
-            "description": "SHA-256 of `canonical_json(vrc_jsonld)`, hex-encoded.\nUsed for idempotency: a second publish of an\nalready-stored VRC returns the existing id (200)\nrather than creating a duplicate row.\nDigest over the RFC 8785 canonicalization of `vrc_jsonld`, as a\nbase58btc multibase multihash — the form DTG Credentials and\n`relationships/publish/0.2` both specify.\n\nWas a bare lowercase-hex SHA-256 over a recursive key sort. That form\nhard-coded one algorithm into the stored shape, named no base encoding,\nand — worse — named no canonicalization a second implementation could\nreproduce, so two conforming services could digest the same credential\ndifferently and neither be wrong."
-          },
-          "vrcJsonld": {
-            "$ref": "#/components/schemas/Value",
-            "description": "The VRC body verbatim — JSON-LD, including the\ndata-integrity proof. Stored as `JsonValue` rather\nthan a typed `VerifiableCredential` so future VRC\nshape extensions don't require a storage migration."
-          }
-        }
-      },
       "RelationshipRevokeResponse": {
         "type": "object",
         "required": [
@@ -7346,35 +6637,6 @@
             "items": {
               "$ref": "#/components/schemas/RemovedMember"
             }
-          }
-        }
-      },
-      "RenewResponse": {
-        "type": "object",
-        "required": [
-          "did",
-          "vmc",
-          "roleVec",
-          "personhood",
-          "personhoodChanged"
-        ],
-        "properties": {
-          "did": {
-            "type": "string"
-          },
-          "personhood": {
-            "type": "boolean",
-            "description": "`personhood.rego` re-eval outcome for the new VMC.\nPhase 2's deny-all default keeps this `false`; the\nfield exists from day one so Phase 4's\nassert/revoke endpoints don't break the wire shape."
-          },
-          "personhoodChanged": {
-            "type": "boolean",
-            "description": "`true` when the personhood flag flipped from the prior\nVMC. Surfaced separately from `personhood` itself so\ncallers can light up a \"your personhood status\nchanged\" notification."
-          },
-          "roleVec": {
-            "$ref": "#/components/schemas/Value"
-          },
-          "vmc": {
-            "$ref": "#/components/schemas/Value"
           }
         }
       },
@@ -7558,33 +6820,6 @@
           "uvOptions": {
             "type": "object",
             "description": "Unwrapped, as everywhere else in this family — the value for\n`navigator.credentials.get({ publicKey: … })`."
-          }
-        }
-      },
-      "RotationChallengeResponse": {
-        "type": "object",
-        "required": [
-          "rotationId",
-          "expiresAt",
-          "signingPayloadHex",
-          "canonicalTemplate"
-        ],
-        "properties": {
-          "canonicalTemplate": {
-            "$ref": "#/components/schemas/Value",
-            "description": "New-DID placeholder — the canonical payload includes\n`newDid`, so the client computes the final payload by\nsubstituting its chosen `new_did` into the JSON and\nhashing the result. Callers that prefer to assemble\nthe payload themselves can ignore this field."
-          },
-          "expiresAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "rotationId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "signingPayloadHex": {
-            "type": "string",
-            "description": "Canonical payload bytes the signers must hash over,\nhex-encoded. Server-supplied so the caller can't omit\nthe domain tag or get the canonical JSON encoding\nwrong."
           }
         }
       },

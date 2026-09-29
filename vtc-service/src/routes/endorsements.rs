@@ -1,14 +1,14 @@
 //! `/v1/credentials/endorsements/*` — custom endorsement
 //! issuance + retrieval + revocation (Phase 4 M4.8.2-4).
 //!
-//! ## Four endpoints
+//! ## Four verbs, three REST endpoints
 //!
-//! - `POST /v1/credentials/endorsements` — issue. Auth:
-//!   Admin OR Issuer role. Consults the type registry
-//!   (M4.8.1). Allocates a slot on the shared `Revocation`
-//!   status list (D8 review), builds + signs the VEC,
-//!   persists the row, emits `CustomEndorsementIssued` +
-//!   `VecIssued`.
+//! - `vtc/endorsements/issue/0.1` — issue. Auth: Admin OR Issuer role.
+//!   Consults the type registry (M4.8.1). Allocates a slot on the shared
+//!   `Revocation` status list (D8 review), builds + signs the VEC, persists
+//!   the row, emits `CustomEndorsementIssued` + `VecIssued`. Signed document
+//!   only (`trust_tasks::member_tasks`); its bearer REST route had no caller
+//!   once the spine dispatched it (#1809) and was removed.
 //! - `GET /v1/credentials/endorsements` — paginated list.
 //!   Auth: Admin OR Issuer.
 //! - `GET /v1/credentials/endorsements/{id}` — show.
@@ -174,32 +174,6 @@ pub struct IssueResponse {
     pub credential: JsonValue,
 }
 
-#[utoipa::path(
-    post, path = "/credentials/endorsements",
-    operation_id = "endorsementIssue", tag = "endorsements",
-    security(("bearer_jwt" = [])),
-    request_body = IssueBody,
-    responses(
-        (status = 201, description = "Endorsement issued", body = IssueResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin or issuer"),
-    ),
-)]
-pub async fn issue(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Json(body): Json<IssueBody>,
-) -> Result<(StatusCode, Json<IssueResponse>), TaskError> {
-    // 1. Auth: Admin OR Issuer (read the VTC ACL row — JWT
-    //    role degrades non-Admin VTC roles to Reader, so the
-    //    JWT alone can't distinguish Issuer from Member).
-    require_admin_or_issuer(&state, &auth.did, "mint custom endorsements").await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(issue_inner(&state, &auth.did, body).await?),
-    ))
-}
-
 /// Refuse `did` unless its ACL row holds `Admin` or `Issuer` — the capability
 /// every endorsement verb rests on (`vtc/endorsements/*`, Conformance 1). The
 /// bearer routes' gate; the Trust Task arms apply the same rule to the proof
@@ -217,8 +191,10 @@ async fn require_admin_or_issuer(state: &AppState, did: &str, verb: &str) -> Res
 }
 
 /// Issue a custom endorsement on behalf of `actor_did` — the operation behind
-/// the bearer route above and the `vtc/endorsements/issue/0.1` Trust Task.
-/// The door has already established that `actor_did` is an admin or issuer.
+/// the `vtc/endorsements/issue/0.1` Trust Task. Issuance has no bearer REST
+/// route: it is a signed document only, reached over TSP, DIDComm or HTTPS
+/// `/trust-tasks`. The door has already established that `actor_did` is an
+/// admin or issuer.
 pub(crate) async fn issue_inner(
     state: &AppState,
     actor_did: &str,
