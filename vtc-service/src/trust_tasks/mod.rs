@@ -60,7 +60,11 @@ pub(crate) mod helpers;
 pub(crate) mod accepted_ids;
 // The per-type document size limit, checked before the parse.
 mod credential_exchange;
-pub(crate) mod size;
+// `pub` (not `pub(crate)`) only so `AppState::large_document_budget`'s type
+// is nameable from the integration-test crates that build an `AppState`
+// literal directly (`tests/emergency_bootstrap.rs`, `tests/passkey_state.rs`)
+// — every other item the module exports stays `pub(crate)`.
+pub mod size;
 // `trust-task-discovery/0.3`: what this VTC serves and the acceptance window it
 // applies (VTI-TRN-047).
 mod discovery;
@@ -271,8 +275,26 @@ pub(crate) async fn dispatch_trust_task_core(
     // Every answer is signed, refusals included — the early returns below as
     // well as the dispatched result (which `dispatch_trust_task_validated`
     // signs before recording it for redelivery).
-    let outcome = dispatch_trust_task_validated(state, ctx, body, None).await;
+    let address = large_document_budget_address(ctx);
+    let outcome = dispatch_trust_task_validated(state, ctx, body, None, &address).await;
     sign_response(state, outcome).await
+}
+
+/// The address [`size::check_for_known_issuer`] charges a raised-limit
+/// document's budget to, for a caller that has no address of its own to pass
+/// (every non-HTTPS transport, and any direct test call). DIDComm and TSP
+/// already authenticate `ctx.sender_did` at the transport layer, before the
+/// document's own proof is read — the same "claim, not yet a verified issuer"
+/// standing [`size`]'s module docs describe — so that VID is this budget's
+/// address. A caller with no transport-authenticated sender (REST reached
+/// other than through [`dispatch_trust_task_core_admitted`], which passes the
+/// client IP explicitly) shares one placeholder address rather than being
+/// charged against nothing.
+fn large_document_budget_address(ctx: &JoinAuthCtx) -> String {
+    ctx.sender_did
+        .as_deref()
+        .map(|vid| format!("vid:{vid}"))
+        .unwrap_or_else(|| "ip:unknown".to_string())
 }
 
 /// A transport's say in whether a document whose proof has verified may go on
@@ -290,14 +312,20 @@ pub(crate) trait VerifiedAdmission: Sync {
 }
 
 /// [`dispatch_trust_task_core`], with `admit` consulted once the proof has
-/// verified (see [`VerifiedAdmission`]).
+/// verified (see [`VerifiedAdmission`]), and the raised-limit budget charged
+/// against `client_ip` rather than the sender-VID fallback
+/// [`large_document_budget_address`] uses — the real address a stranger
+/// cannot choose over HTTPS, resolved by the caller from the connection peer
+/// (or `X-Forwarded-For`, behind a configured trusted proxy).
 pub(crate) async fn dispatch_trust_task_core_admitted(
     state: &AppState,
     ctx: &JoinAuthCtx,
     body: &[u8],
     admit: &dyn VerifiedAdmission,
+    client_ip: std::net::IpAddr,
 ) -> TrustTaskOutcome {
-    let outcome = dispatch_trust_task_validated(state, ctx, body, Some(admit)).await;
+    let address = format!("ip:{client_ip}");
+    let outcome = dispatch_trust_task_validated(state, ctx, body, Some(admit), &address).await;
     sign_response(state, outcome).await
 }
 
@@ -306,12 +334,27 @@ async fn dispatch_trust_task_validated(
     ctx: &JoinAuthCtx,
     body: &[u8],
     admit: Option<&dyn VerifiedAdmission>,
+    budget_address: &str,
 ) -> TrustTaskOutcome {
     // 0. The size the document's type accepts — decided before anything in it
-    //    is parsed, on every transport (`size`).
-    if let Err(refused) = size::check(state, body).await {
-        return refused;
-    }
+    //    is parsed, on every transport (`size`). A document large enough to
+    //    need its claimed (not yet verified) issuer's ACL entry for the
+    //    raised limit is charged against `budget_address`'s large-document
+    //    budget first — see `size`'s module docs for why an unverified claim
+    //    alone would otherwise be a DoS amplifier. Settled below, once this
+    //    document's own proof verification concludes (or does not run at
+    //    all).
+    let large_doc_charge = match size::check_for_known_issuer(
+        state,
+        body,
+        budget_address,
+        crate::auth::session::now_epoch(),
+    )
+    .await
+    {
+        Ok(charge) => charge,
+        Err(refused) => return refused,
+    };
 
     // 1. Parse the envelope.
     let doc: TrustTask<Value> = match serde_json::from_slice(body) {
@@ -446,6 +489,17 @@ async fn dispatch_trust_task_validated(
                         %signer,
                         "proof verifies under a key the document's issuer does not control"
                     );
+                    // Settle before returning: a proof that verifies under a
+                    // different DID than the one this document claimed as
+                    // `issuer` is exactly the "verified issuer turns out to be
+                    // someone else" case `size`'s module docs describe, and
+                    // penalises the budget address the same as an outright
+                    // verification failure would.
+                    size::settle_large_document_charge(
+                        &state.large_document_budget,
+                        large_doc_charge.as_ref(),
+                        Some(signer.as_str()),
+                    );
                     return reject_with(
                         &doc,
                         RejectReason::ProofInvalid {
@@ -455,13 +509,34 @@ async fn dispatch_trust_task_validated(
                         },
                     );
                 }
+                size::settle_large_document_charge(
+                    &state.large_document_budget,
+                    large_doc_charge.as_ref(),
+                    Some(signer.as_str()),
+                );
                 &ctx.with_verified_signer(Some(signer))
             }
             // A proof that is present and does not verify is always fatal,
-            // whatever the transport proved separately.
-            Err(e) => return app_error_to_reject(&doc, &e),
+            // whatever the transport proved separately. Settled as an
+            // unverified claim (`None`) before returning.
+            Err(e) => {
+                size::settle_large_document_charge(
+                    &state.large_document_budget,
+                    large_doc_charge.as_ref(),
+                    None,
+                );
+                return app_error_to_reject(&doc, &e);
+            }
         }
     } else {
+        // No proof at all: whatever this document claimed as `issuer` was
+        // never checked, so the charge settles exactly as an outright
+        // verification failure would.
+        size::settle_large_document_charge(
+            &state.large_document_budget,
+            large_doc_charge.as_ref(),
+            None,
+        );
         ctx
     };
 

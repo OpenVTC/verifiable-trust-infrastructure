@@ -491,6 +491,7 @@ impl TestVtcBuilder {
             supervisor: self.supervisor,
             didcomm: didcomm_cell,
             git_ns,
+            large_document_budget: Arc::new(crate::trust_tasks::size::LargeDocumentBudget::new()),
         };
 
         // Every response a test provokes is validated against its Trust

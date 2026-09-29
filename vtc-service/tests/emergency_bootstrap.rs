@@ -370,6 +370,9 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         supervisor: None,
         didcomm: std::sync::Arc::new(tokio::sync::OnceCell::new()),
         git_ns: vtc_service::git_ns::GitNsHandles::open_unconnected(&store).unwrap(),
+        large_document_budget: std::sync::Arc::new(
+            vtc_service::trust_tasks::size::LargeDocumentBudget::new(),
+        ),
     };
 
     let router = routes::router().with_state(state);
