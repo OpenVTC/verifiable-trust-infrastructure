@@ -4654,28 +4654,18 @@
         "description": "One member's account on one forge, as linked through `git-ns/account/link`.",
         "required": [
           "member",
-          "forge",
-          "id",
-          "login",
+          "account",
           "memberCurrent"
         ],
         "properties": {
-          "forge": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string",
-            "description": "The forge's id for the account — authoritative."
+          "account": {
+            "$ref": "#/components/schemas/GitNsForgeAccount"
           },
           "linkedAt": {
             "type": [
               "string",
               "null"
             ]
-          },
-          "login": {
-            "type": "string",
-            "description": "The login — display only: logins are renamed and re-registered."
           },
           "member": {
             "type": "string"
@@ -4870,6 +4860,28 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "GitNsForgeAccount": {
+        "type": "object",
+        "description": "A member's account on one forge (the shared `ForgeAccount` shape).",
+        "required": [
+          "forge",
+          "id",
+          "login"
+        ],
+        "properties": {
+          "forge": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "The forge's id for the account — authoritative."
+          },
+          "login": {
+            "type": "string",
+            "description": "The login — display only: logins are renamed and re-registered."
           }
         }
       },

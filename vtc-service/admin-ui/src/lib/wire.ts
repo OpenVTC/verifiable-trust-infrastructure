@@ -2331,12 +2331,8 @@ export interface components {
         };
         /** @description One member's account on one forge, as linked through `git-ns/account/link`. */
         GitNsAccountRow: {
-            forge: string;
-            /** @description The forge's id for the account — authoritative. */
-            id: string;
+            account: components["schemas"]["GitNsForgeAccount"];
             linkedAt?: string | null;
-            /** @description The login — display only: logins are renamed and re-registered. */
-            login: string;
             member: string;
             /**
              * @description Whether the member is still a current member. One whose access lapsed
@@ -2401,6 +2397,14 @@ export interface components {
             cascadeOnDeparture: boolean;
             granters: components["schemas"]["GitNsDepartedGranter"][];
             nextCursor?: string | null;
+        };
+        /** @description A member's account on one forge (the shared `ForgeAccount` shape). */
+        GitNsForgeAccount: {
+            forge: string;
+            /** @description The forge's id for the account — authoritative. */
+            id: string;
+            /** @description The login — display only: logins are renamed and re-registered. */
+            login: string;
         };
         /**
          * @description The bridge's report of its standing on a namespace's forge owner, carried

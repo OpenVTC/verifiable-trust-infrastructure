@@ -199,9 +199,9 @@ export const MEMBERS = [
 ];
 
 export const ACCOUNTS: GitNsAccountRow[] = [
-  { member: ALICE, forge: "github.com", id: "1001", login: "alicew", memberCurrent: true },
-  { member: BOB, forge: "github.com", id: "1002", login: "bobm", memberCurrent: true },
-  { member: HANA, forge: "github.com", id: "1003", login: "hsato", memberCurrent: true },
+  { member: ALICE, account: { forge: "github.com", id: "1001", login: "alicew" }, memberCurrent: true },
+  { member: BOB, account: { forge: "github.com", id: "1002", login: "bobm" }, memberCurrent: true },
+  { member: HANA, account: { forge: "github.com", id: "1003", login: "hsato" }, memberCurrent: true },
 ];
 
 export const ACTIVITY: GitNsActivityItem[] = [

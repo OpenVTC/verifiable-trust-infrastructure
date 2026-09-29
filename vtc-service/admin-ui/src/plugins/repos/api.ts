@@ -258,7 +258,7 @@ export function indexAccounts(list: GitNsAccountList | undefined): ForgeAccounts
   for (const a of list?.accounts ?? []) {
     if (!a.memberCurrent) continue;
     const byHost = out.get(a.member) ?? new Map<string, { id: string; login: string }>();
-    byHost.set(a.forge, { id: a.id, login: a.login });
+    byHost.set(a.account.forge, { id: a.account.id, login: a.account.login });
     out.set(a.member, byHost);
   }
   return out;

@@ -1175,17 +1175,24 @@ pub(crate) async fn projection_show(
 #[serde(rename_all = "camelCase")]
 pub struct GitNsAccountRow {
     pub member: String,
-    pub forge: String,
-    /// The forge's id for the account — authoritative.
-    pub id: String,
-    /// The login — display only: logins are renamed and re-registered.
-    pub login: String,
+    pub account: GitNsForgeAccount,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked_at: Option<String>,
     /// Whether the member is still a current member. One whose access lapsed
     /// keeps the link — no one else may link the account — but it projects
     /// no forge role, and a forge role it holds cannot be adopted as a right.
     pub member_current: bool,
+}
+
+/// A member's account on one forge (the shared `ForgeAccount` shape).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsForgeAccount {
+    pub forge: String,
+    /// The forge's id for the account — authoritative.
+    pub id: String,
+    /// The login — display only: logins are renamed and re-registered.
+    pub login: String,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -1236,9 +1243,11 @@ pub(crate) async fn account_list(
             };
             accounts.push(GitNsAccountRow {
                 member: m.did.clone(),
-                forge: forge.clone(),
-                id: id.to_string(),
-                login: login.to_string(),
+                account: GitNsForgeAccount {
+                    forge: forge.clone(),
+                    id: id.to_string(),
+                    login: login.to_string(),
+                },
                 linked_at: a
                     .get("linkedAt")
                     .and_then(Value::as_str)
@@ -1247,7 +1256,7 @@ pub(crate) async fn account_list(
             });
         }
     }
-    accounts.sort_by(|a, b| (&a.member, &a.forge).cmp(&(&b.member, &b.forge)));
+    accounts.sort_by(|a, b| (&a.member, &a.account.forge).cmp(&(&b.member, &b.account.forge)));
     let filters = json!({ "member": member_filter, "forge": forge_filter });
     let (page, next_cursor) = page_of(accounts, &filters, p.cursor.as_deref(), p.limit)?;
     let list = GitNsAccountList {
