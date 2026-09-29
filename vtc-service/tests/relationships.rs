@@ -383,23 +383,34 @@ async fn revoke_404_on_unknown() {
 
 // ─── Suspend / restore (#1079) ───────────────────────────
 //
-// The states the graph had no vocabulary for. These exercise the routes end to
-// end rather than the resolver in isolation — the unit tests in
-// `credentials::lifecycle` pin the precedence rule, and what has to be checked
-// here is that the HTTP surface is gated the way revocation is, that the log is
-// actually persisted, and that the graph read changes as a result.
+// The states the graph had no vocabulary for, as signed Trust Tasks
+// (`vtc/relationships/{suspend,restore}/0.1`). The unit tests in
+// `credentials::lifecycle` pin the precedence rule; what is checked here is
+// that the verbs are gated the way revocation is — the edge's issuer, or an
+// administrator — that the log is persisted, and that the graph read changes.
 
-/// Post a lifecycle verb with no body. Deliberately body-less: an edge issued
-/// under a membership DID needs no authorization object, and a route that only
-/// worked with one would be unusable by the attributed form.
-async fn lifecycle_verb(fix: &Fixture, id: Uuid, verb: &str, token: &str) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri(format!("/v1/relationships/{id}/{verb}"))
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+const SUSPEND_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/suspend/0.1";
+const RESTORE_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/restore/0.1";
+
+/// Send a lifecycle verb signed by `by`, with no reason: an edge needs no
+/// authorization object, because its issuer's own proof is the authorization.
+async fn lifecycle_verb(
+    fix: &Fixture,
+    id: Uuid,
+    verb: &str,
+    by: &vti_rooms_dtg::test_support::Party,
+) -> (StatusCode, Value) {
+    let task = if verb == "suspend" {
+        SUSPEND_TASK
+    } else {
+        RESTORE_TASK
+    };
+    common::signed::call(&fix._vtc, by, task, json!({ "id": id.to_string() })).await
+}
+
+/// A member of the fixture's community, holding its own key.
+async fn member_party(fix: &Fixture) -> vti_rooms_dtg::test_support::Party {
+    common::signed::party_with_role(&fix._vtc, VtcRole::Member, &[]).await
 }
 
 /// `vtc/relationships/graph/0.2`, signed by a fresh unrestricted administrator:
@@ -428,13 +439,14 @@ async fn pair_is_complete(fix: &Fixture) -> bool {
 #[tokio::test]
 async fn suspending_a_half_breaks_the_edge_and_restoring_it_returns() {
     let fix = build_fixture().await;
-    let a_to_b = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
-    seed_relationship(&fix, SUBJECT_DID, ISSUER_DID).await;
+    let issuer = member_party(&fix).await;
+    let a_to_b = seed_relationship(&fix, &issuer.did, SUBJECT_DID).await;
+    seed_relationship(&fix, SUBJECT_DID, &issuer.did).await;
     assert!(pair_is_complete(&fix).await, "precondition: reciprocated");
 
-    let (status, v) = lifecycle_verb(&fix, a_to_b, "suspend", &fix.issuer_token).await;
+    let (status, v) = lifecycle_verb(&fix, a_to_b, "suspend", &issuer).await;
     assert_eq!(status, StatusCode::OK, "{v}");
-    assert_eq!(v["state"]["state"], "suspended", "{v}");
+    assert_eq!(v["payload"]["state"]["state"], "suspended", "{v}");
     assert!(
         !pair_is_complete(&fix).await,
         "a suspended half is not consent"
@@ -446,23 +458,29 @@ async fn suspending_a_half_breaks_the_edge_and_restoring_it_returns() {
         .await
         .unwrap()
         .expect("the row survives a suspension");
-    assert_eq!(row.vrc_jsonld, fake_vrc(ISSUER_DID, SUBJECT_DID));
+    assert_eq!(row.vrc_jsonld, fake_vrc(&issuer.did, SUBJECT_DID));
 
-    let (status, v) = lifecycle_verb(&fix, a_to_b, "restore", &fix.issuer_token).await;
+    let (status, v) = lifecycle_verb(&fix, a_to_b, "restore", &issuer).await;
     assert_eq!(status, StatusCode::OK, "{v}");
-    assert_eq!(v["state"]["state"], "yes", "{v}");
+    assert_eq!(v["payload"]["state"]["state"], "yes", "{v}");
     assert!(pair_is_complete(&fix).await, "restoration puts it back");
 }
 
 /// Gated exactly as revocation is. A member who is merely *named* by an edge
 /// does not control it — otherwise a counterparty could mute another party's
-/// assertion about them.
+/// assertion about them — and is told the edge does not exist.
 #[tokio::test]
-async fn suspend_is_forbidden_for_the_subject() {
+async fn suspend_is_not_found_for_the_subject() {
     let fix = build_fixture().await;
-    let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
-    let (status, _) = lifecycle_verb(&fix, id, "suspend", &fix.subject_token).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    let issuer = member_party(&fix).await;
+    let subject = member_party(&fix).await;
+    let id = seed_relationship(&fix, &issuer.did, &subject.did).await;
+    let (_, v) = lifecycle_verb(&fix, id, "suspend", &subject).await;
+    assert_eq!(
+        common::signed::error_code(&v),
+        Some("vtc/relationships/suspend:notFound"),
+        "{v}"
+    );
 
     let row = vtc_service::relationships::get_relationship(&fix.relationships_ks, id)
         .await
@@ -474,13 +492,13 @@ async fn suspend_is_forbidden_for_the_subject() {
     );
 }
 
-/// Moderation. Same route admins already have for revocation, and the trail
-/// distinguishes the two capacities.
+/// Moderation, and the trail distinguishes the two capacities.
 #[tokio::test]
 async fn an_admin_can_suspend_and_the_trail_says_so() {
     let fix = build_fixture().await;
     let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
-    let (status, v) = lifecycle_verb(&fix, id, "suspend", &fix.admin_token).await;
+    let admin = common::signed::admin(&fix._vtc).await;
+    let (status, v) = lifecycle_verb(&fix, id, "suspend", &admin).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 
     let mut saw = false;
@@ -495,29 +513,35 @@ async fn an_admin_can_suspend_and_the_trail_says_so() {
     assert!(saw, "a suspension must leave an audit entry");
 }
 
-/// Restoration reverses a suspension and nothing else — 409, not 400: the
-/// request is well formed and the caller is entitled to make it; it is the
-/// edge's state that refuses.
+/// Restoration reverses a suspension and nothing else.
 #[tokio::test]
-async fn restoring_an_edge_that_is_not_suspended_is_a_conflict() {
+async fn restoring_an_edge_that_is_not_suspended_is_refused() {
     let fix = build_fixture().await;
-    let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
-    let (status, v) = lifecycle_verb(&fix, id, "restore", &fix.issuer_token).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    let issuer = member_party(&fix).await;
+    let id = seed_relationship(&fix, &issuer.did, SUBJECT_DID).await;
+    let (_, v) = lifecycle_verb(&fix, id, "restore", &issuer).await;
+    assert_eq!(
+        common::signed::error_code(&v),
+        Some("vtc/relationships/restore:notSuspended"),
+        "{v}"
+    );
 }
 
 #[tokio::test]
-async fn suspending_an_already_suspended_edge_is_a_conflict() {
+async fn suspending_an_already_suspended_edge_is_refused() {
     let fix = build_fixture().await;
-    let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
+    let issuer = member_party(&fix).await;
+    let id = seed_relationship(&fix, &issuer.did, SUBJECT_DID).await;
     assert_eq!(
-        lifecycle_verb(&fix, id, "suspend", &fix.issuer_token)
-            .await
-            .0,
+        lifecycle_verb(&fix, id, "suspend", &issuer).await.0,
         StatusCode::OK
     );
-    let (status, _) = lifecycle_verb(&fix, id, "suspend", &fix.issuer_token).await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    let (_, v) = lifecycle_verb(&fix, id, "suspend", &issuer).await;
+    assert_eq!(
+        common::signed::error_code(&v),
+        Some("vtc/relationships/suspend:alreadySuspended"),
+        "{v}"
+    );
 
     let row = vtc_service::relationships::get_relationship(&fix.relationships_ks, id)
         .await
@@ -531,11 +555,33 @@ async fn suspending_an_already_suspended_edge_is_a_conflict() {
 }
 
 #[tokio::test]
-async fn lifecycle_verbs_404_on_an_unknown_edge() {
+async fn lifecycle_verbs_are_not_found_on_an_unknown_edge() {
     let fix = build_fixture().await;
+    let admin = common::signed::admin(&fix._vtc).await;
+    for (verb, code) in [
+        ("suspend", "vtc/relationships/suspend:notFound"),
+        ("restore", "vtc/relationships/restore:notFound"),
+    ] {
+        let (_, v) = lifecycle_verb(&fix, Uuid::new_v4(), verb, &admin).await;
+        assert_eq!(common::signed::error_code(&v), Some(code), "{verb}: {v}");
+    }
+}
+
+/// The bearer routes are gone.
+#[tokio::test]
+async fn the_lifecycle_bearer_routes_are_gone() {
+    let fix = build_fixture().await;
+    let id = Uuid::new_v4();
     for verb in ["suspend", "restore"] {
-        let (status, _) = lifecycle_verb(&fix, Uuid::new_v4(), verb, &fix.admin_token).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{verb}");
+        assert!(
+            !common::signed::bearer_route_served(
+                &fix._vtc,
+                "POST",
+                &format!("/v1/relationships/{id}/{verb}")
+            )
+            .await,
+            "{verb}"
+        );
     }
 }
 

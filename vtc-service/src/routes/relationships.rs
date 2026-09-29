@@ -834,30 +834,18 @@ async fn authorize_edge_control(
 // That separation is what lets suspension exist at all for a credential type
 // that deliberately carries no `credentialStatus` (planning-review D7).
 
-/// The two verbs [`record_edge_lifecycle`] serves.
+/// The two verbs [`record_lifecycle_as`] serves.
 ///
-/// An enum rather than a bundle of `&str` parameters because the three things
-/// that vary — the authorization `type` accepted, the event appended, and the
-/// audit variant emitted — must vary *together*. Passing them separately is
-/// how a handler ends up accepting a restore authorization and recording a
-/// suspension, and nothing about the types would object.
+/// An enum rather than a bundle of `&str` parameters because the things that
+/// vary — the event appended and the audit variant emitted — must vary
+/// *together*.
 #[derive(Debug, Clone, Copy)]
-enum EdgeLifecycleVerb {
+pub(crate) enum EdgeLifecycleVerb {
     Suspend,
     Restore,
 }
 
 impl EdgeLifecycleVerb {
-    /// `type` of the authorization object this verb will accept. Distinct per
-    /// verb — and distinct from revocation's — so a signature made to suspend
-    /// an edge cannot be replayed to restore or delete it.
-    fn authorization_type(self) -> &'static str {
-        match self {
-            Self::Suspend => "VrcSuspendAuthorization",
-            Self::Restore => "VrcRestoreAuthorization",
-        }
-    }
-
     /// The verb as it appears in a rejection message.
     fn as_str(self) -> &'static str {
         match self {
@@ -881,26 +869,6 @@ impl EdgeLifecycleVerb {
     }
 }
 
-#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
-pub struct LifecycleBody {
-    /// Proof that the caller controls the key behind the row's `issuerDid`,
-    /// when that is not the caller's session DID — i.e. for every edge
-    /// published under a pairwise relationship DID. Verified by the same
-    /// `authorize_edge_control` gate revocation uses, with a `type` distinct
-    /// to this verb.
-    #[serde(default)]
-    pub pop: Option<JsonValue>,
-    /// Optional operator- or member-supplied note, stored verbatim on the
-    /// event.
-    ///
-    /// Recorded because a suspension a reader cannot interpret is close to
-    /// useless: "temporarily ineffective, cause unstated" gives the
-    /// counterparty nothing to act on. It is deliberately free text and
-    /// deliberately optional — the state machine never reads it.
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
@@ -916,140 +884,54 @@ pub struct LifecycleResponse {
     pub state: crate::relationships::InForce,
 }
 
-/// `POST /v1/relationships/{id}/suspend` — make an edge temporarily
-/// ineffective without withdrawing it.
+/// Append `verb`'s event to `rel` as `actor`, who acts as the edge's
+/// `capacity` (`"issuer"` or `"admin"`) — `vtc/relationships/{suspend,restore}/0.1`.
 ///
-/// Authorized exactly as revocation is (issuer session DID, admin, or a
-/// `VrcSuspendAuthorization` proving control of a pairwise issuer), because it
-/// is the same question about the same edge. It is not, however, the same
-/// *act*: revocation deletes the row and is unrecoverable, while this appends
-/// an event and leaves a supported way back.
-///
-/// Refused with a 409 if the edge is already suspended, or if it has been
-/// superseded or withdrawn. Those are conflicts rather than validation errors
-/// — the request is well-formed and the caller is entitled to make it; it is
-/// the edge's state that refuses, and for a suspension a retry after a
-/// restoration would succeed.
-#[utoipa::path(
-    post, path = "/relationships/{id}/suspend", tag = "relationships",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Relationship (VRC) id")),
-    request_body(content = LifecycleBody, description = "Optional. `pop` is \
-        required only for an edge issued under a pairwise relationship DID."),
-    responses(
-        (status = 200, description = "Relationship suspended", body = LifecycleResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not the issuer or an admin"),
-        (status = 404, description = "Relationship not found"),
-        (status = 409, description = "Edge is already suspended, superseded or withdrawn"),
-    ),
-)]
-pub async fn suspend(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    body: Option<Json<LifecycleBody>>,
-) -> Result<(StatusCode, Json<LifecycleResponse>), AppError> {
-    let body = body.map(|Json(b)| b).unwrap_or_default();
-    record_edge_lifecycle(auth, state, id, body, EdgeLifecycleVerb::Suspend).await
-}
-
-/// `POST /v1/relationships/{id}/restore` — reverse a suspension.
-///
-/// Reverses a suspension and nothing else. An edge that has expired, been
-/// superseded or been withdrawn is refused with a 409, and the boundary is
-/// deliberate — see the module doc of [`crate::credentials::lifecycle`] on
-/// restoration versus replacement. Restoring an edge whose `validUntil` passed
-/// while it was suspended *succeeds* (the suspension is genuinely reversed)
-/// and the response reports `expired`, because a recorded event cannot extend
-/// a window the issuer signed.
-#[utoipa::path(
-    post, path = "/relationships/{id}/restore", tag = "relationships",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Relationship (VRC) id")),
-    request_body(content = LifecycleBody, description = "Optional. `pop` is \
-        required only for an edge issued under a pairwise relationship DID."),
-    responses(
-        (status = 200, description = "Suspension reversed", body = LifecycleResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not the issuer or an admin"),
-        (status = 404, description = "Relationship not found"),
-        (status = 409, description = "Edge is not suspended"),
-    ),
-)]
-pub async fn restore(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    body: Option<Json<LifecycleBody>>,
-) -> Result<(StatusCode, Json<LifecycleResponse>), AppError> {
-    let body = body.map(|Json(b)| b).unwrap_or_default();
-    record_edge_lifecycle(auth, state, id, body, EdgeLifecycleVerb::Restore).await
-}
-
-/// The shared spine of [`suspend`] and [`restore`]: load, authorize, append,
-/// audit, report the resolved state.
-///
-/// One function rather than two near-identical handlers because everything
-/// except the verb is common, and the ordering *is* the security property —
-/// authorize before touching the log, and read `now` once so the appended
-/// event and the state reported back cannot straddle two instants.
-async fn record_edge_lifecycle(
-    auth: AuthClaims,
-    state: AppState,
-    id: Uuid,
-    body: LifecycleBody,
+/// The caller has already decided the capacity: the edge's issuer is the
+/// document's signer itself, and a moderating administrator is resolved from
+/// the signer's ACL row. Refused with a conflict if the edge is already
+/// suspended (for a suspension), is not suspended (for a restoration), or has
+/// been superseded or withdrawn.
+pub(crate) async fn record_lifecycle_as(
+    state: &AppState,
+    actor: &str,
+    capacity: &'static str,
+    rel: &Relationship,
     verb: EdgeLifecycleVerb,
-) -> Result<(StatusCode, Json<LifecycleResponse>), AppError> {
+    reason: Option<String>,
+) -> Result<LifecycleResponse, AppError> {
     let now = Utc::now();
-    let rel = get_relationship(&state.relationships_ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("VRC {id} not found")))?;
-
-    let actor = authorize_edge_control(
-        &state,
-        &auth,
-        &rel,
-        id,
-        body.pop.as_ref(),
-        verb.authorization_type(),
-        verb.as_str(),
-    )
-    .await?;
-
+    let id = rel.id;
     let updated = crate::relationships::record_lifecycle_event(
         &state.relationships_ks,
         &state.relationships_by_did_ks,
         id,
-        verb.event(body.reason.clone()),
+        verb.event(reason.clone()),
         now,
     )
     .await?;
 
-    // The actor is the authenticated member, not the edge's issuer, for the
+    // The actor is the authenticated signer, not the edge's issuer, for the
     // reason the publish and persona trails record it that way: under a
     // pairwise identifier the issuer names nobody, so a trail keyed on it
     // could never answer who changed this edge's state.
     if let Some(writer) = state.audit_writer.as_ref() {
         let event = verb.audit(VrcLifecycleData {
             vrc_id: id.to_string(),
-            recorded_by: actor.into(),
-            reason: body.reason,
+            recorded_by: capacity.into(),
+            reason,
         });
         writer
-            .write(&auth.did, Some(&updated.subject_did), event)
+            .write(actor, Some(&updated.subject_did), event)
             .await?;
     }
 
-    info!(vrc_id = %id, actor, verb = verb.as_str(), "VRC lifecycle event recorded");
+    info!(vrc_id = %id, capacity, verb = verb.as_str(), "VRC lifecycle event recorded");
 
-    Ok((
-        StatusCode::OK,
-        Json(LifecycleResponse {
-            id,
-            state: updated.in_force_at(now),
-        }),
-    ))
+    Ok(LifecycleResponse {
+        id,
+        state: updated.in_force_at(now),
+    })
 }
 
 // ─── Persona annotation (VPC) ────────────────────────────

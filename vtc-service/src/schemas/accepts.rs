@@ -71,7 +71,7 @@ pub struct AcceptsCriterion {
 
 /// The credential type URIs a DCQL query references via each credential query's
 /// `meta.vct_values` (the SD-JWT-VC type selector).
-fn referenced_types(query: &DcqlQuery) -> Vec<String> {
+pub(crate) fn referenced_types(query: &DcqlQuery) -> Vec<String> {
     let mut out = Vec::new();
     for cq in &query.credentials {
         if let Some(meta) = &cq.meta

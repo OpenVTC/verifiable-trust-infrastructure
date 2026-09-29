@@ -65,6 +65,19 @@ pub async fn put_requested_attributes(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Result<Json<Vec<JoinManifest02RequestedAttribute>>, AppError> {
+    update_requested_attributes(&state, &admin.0.did, body)
+        .await
+        .map(|r| Json(r.into_iter().map(Into::into).collect()))
+}
+
+/// Replace the requested attributes as `actor` —
+/// `vtc/community/requested-attributes/update/0.1`, on the route and the spine
+/// alike. The caller has established that `actor` is an administrator.
+pub(crate) async fn update_requested_attributes(
+    state: &AppState,
+    actor: &str,
+    body: Value,
+) -> Result<Vec<RequestedAttribute>, AppError> {
     // Parsed through the manifest's own generated item, which checks the type
     // token's grammar and the purpose's length: what is stored is what the
     // manifest can publish.
@@ -85,7 +98,7 @@ pub async fn put_requested_attributes(
     if !added.is_empty() || !removed.is_empty() {
         writer
             .write(
-                &admin.0.did,
+                actor,
                 None,
                 AuditEvent::CommunityRequestedAttributesUpdated(
                     CommunityRequestedAttributesUpdatedData {
@@ -97,5 +110,5 @@ pub async fn put_requested_attributes(
             .await?;
         info!(?added, ?removed, "community requested attributes updated");
     }
-    Ok(Json(requested.into_iter().map(Into::into).collect()))
+    Ok(requested)
 }

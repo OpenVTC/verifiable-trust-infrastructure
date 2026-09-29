@@ -1,10 +1,17 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_ACCEPTS_QUERY } from "@/lib/vetting";
 import type { AcceptsCriterion, EndorsementType } from "@/lib/wire-types";
 import { CriterionEditor } from "@/plugins/vetting/CriterionEditor";
-import { mockFetch, renderWithProviders } from "@/test/render";
+import { mockFetch, renderWithProviders, taskRoute } from "@/test/render";
+
+// Signed documents reach the fetch table unsigned; there is no console key here.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+  postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+}));
 
 const STATEMENT_TYPE =
   "https://firstperson.network/endorsements/identity-vetting/0.1";
@@ -27,12 +34,10 @@ const stored = (vetting: unknown): AcceptsCriterion =>
     createdByDid: "did:key:zAdmin",
   }) as unknown as AcceptsCriterion;
 
-const saveRoute = {
-  method: "POST",
-  path: "/v1/schemas/accepts",
-  status: 201,
-  body: (req: { body: unknown }) => req.body,
-};
+const saveRoute = taskRoute(
+  "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1",
+  (payload) => ({ criterion: payload }),
+);
 
 describe("CriterionEditor", () => {
   it("writes a criterion that admits on one vetter", async () => {
@@ -65,7 +70,7 @@ describe("CriterionEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add criterion" }));
 
     await waitFor(() => expect(requests.length).toBe(1));
-    expect(requests[0]!.body).toEqual({
+    expect((requests[0]!.body as { payload: unknown }).payload).toEqual({
       id: "vetted-member",
       description: "One vetter must confirm who you are",
       query: DEFAULT_ACCEPTS_QUERY,
@@ -81,7 +86,6 @@ describe("CriterionEditor", () => {
       },
     });
     // The schema store is one of the daemon's Trust-Task-exempt routes.
-    expect(requests[0]!.headers.get("Trust-Task")).toBeNull();
   });
 
   it("refuses to send requirements the community would reject, and says why", async () => {
@@ -171,7 +175,9 @@ describe("CriterionEditor", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Save criterion" }));
     await waitFor(() => expect(requests.length).toBe(1));
-    const body = requests[0]!.body as { vetting: { acceptedDocumentClasses: string[] } };
+    const body = (requests[0]!.body as { payload: unknown }).payload as {
+      vetting: { acceptedDocumentClasses: string[] };
+    };
     expect(body.vetting.acceptedDocumentClasses).toEqual([]);
   });
 
