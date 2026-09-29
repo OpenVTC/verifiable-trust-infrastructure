@@ -44,6 +44,7 @@ async fn load_vta_key_as_secret(
     let resp = crate::operations::keys::get_key_secret_internal(
         &state.keys_ks,
         &state.imported_ks,
+        &state.contexts_ks,
         &*state.seed_store,
         &state.audit,
         authority,
@@ -65,7 +66,11 @@ pub(super) async fn load_vta_vc_issuance_secret(
     state: &ProvisionIntegrationDeps,
     vta_did: &str,
 ) -> Result<Secret, AppError> {
-    load_vta_key_as_secret(state, format!("{vta_did}#key-0")).await
+    // Stored as `#key-0` whatever the method; the proof names the method the
+    // VTA's DID document lists (`did:key:<id>#<id>` for a did:key VTA).
+    let mut secret = load_vta_key_as_secret(state, format!("{vta_did}#key-0")).await?;
+    secret.id = crate::operations::credentials::vta_signing_vm(vta_did);
+    Ok(secret)
 }
 
 /// Load `{vta_did}#sealed-transfer-0` for signing the sealed-transfer

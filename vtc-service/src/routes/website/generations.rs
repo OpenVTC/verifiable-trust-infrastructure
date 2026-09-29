@@ -159,6 +159,7 @@ pub async fn rollback(
 /// `{ generation, current, noop }` — the shape `vtc/website/rollback/0.1`
 /// publishes. The handler returned 200 with zero bytes until #1059.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = WebsiteRollbackResponse)]
 pub struct RollbackResponse {
     /// A string, as the spec types it — the same way the path segment is
     /// typed there, while this handler takes it as a `u32`. Rendering it back

@@ -1,9 +1,16 @@
 import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { VettingRevocationRow } from "@/lib/wire-types";
 import { WithdrawalsPanel } from "@/plugins/vetting/WithdrawalsPanel";
-import { mockFetch, NAME_BOOK_ROUTES, renderWithProviders } from "@/test/render";
+import { mockFetch, NAME_BOOK_ROUTES, renderWithProviders, taskRoute } from "@/test/render";
+
+// Signed documents reach the fetch table unsigned; there is no console key here.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+  postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+}));
 
 const REQUEST_ID = "5f0c2a1e-8d4b-4a51-9d7e-2b7f4c3e9a10";
 const ERIN = "did:key:z6MkErinErinErinErinErinErinErinErin";
@@ -33,7 +40,7 @@ const ROWS: VettingRevocationRow[] = [
 describe("WithdrawalsPanel", () => {
   it("links a withdrawal that needs review to the admission it touches", async () => {
     mockFetch([
-      { path: "/v1/vetting/revocations", body: { revocations: ROWS } },
+      taskRoute("https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1", { items: ROWS }),
       ...NAME_BOOK_ROUTES,
     ]);
     renderWithProviders(<WithdrawalsPanel />);
@@ -58,7 +65,7 @@ describe("WithdrawalsPanel", () => {
 
   it("says when no vetter has withdrawn anything", async () => {
     mockFetch([
-      { path: "/v1/vetting/revocations", body: { revocations: [] } },
+      taskRoute("https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1", { items: [] }),
       ...NAME_BOOK_ROUTES,
     ]);
     renderWithProviders(<WithdrawalsPanel />);

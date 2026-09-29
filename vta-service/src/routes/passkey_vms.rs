@@ -9,14 +9,25 @@
 //!
 //! All gated by [`AdminAuth`]. Per-DID context membership is asserted
 //! inside the operations layer.
+//!
+//! **REST by design — the WebAuthn exception.** Every other remote operation
+//! is a Trust Task over TSP, DIDComm or HTTPS; the only transport restriction
+//! permitted is a foreign-protocol interface. Passkey enrolment is a WebAuthn
+//! ceremony driven from a browser (the VTA auth portal,
+//! `examples/vta-auth-demo`) that holds only the bearer passkey-login issued
+//! and no DID key with which to sign a Trust Task, so these routes stay. A
+//! DID-holding client uses the `vta/passkey-vms/*` Trust Tasks, which share
+//! the operations below. The exception is declared in
+//! [`crate::deprecation::rest_exceptions_table`] and pinned to these routes by
+//! a test; these routes are not superseded and carry no `Deprecation` header.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use vta_sdk::protocols::did_management::passkey_vms::{
-    EnrollPasskeyChallengeResponse, EnrollPasskeySubmitBody, EnrollPasskeySubmitResponse,
-    ListPasskeyVmsResponse,
+    EnrollPasskeyChallengeBody, EnrollPasskeyChallengeResponse, EnrollPasskeySubmitBody,
+    EnrollPasskeySubmitResponse, ListPasskeyVmsResponse,
 };
 
 use crate::auth::AdminAuth;
@@ -46,13 +57,6 @@ async fn ensure_webauthn_enabled(state: &AppState) -> Result<(), AppError> {
 #[into_params(parameter_in = Query)]
 pub struct PasskeyVmDidQuery {
     pub did: String,
-}
-
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct EnrollPasskeyChallengeBody {
-    pub did: String,
-    #[serde(default)]
-    pub label: Option<String>,
 }
 
 /// POST /did/verification-methods/passkey/challenge — begin passkey-VM enrolment. Auth: admin.

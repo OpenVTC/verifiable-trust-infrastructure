@@ -43,12 +43,27 @@ use reqwest::Client;
 const TRUST_TASK_HEADER: &str = "Trust-Task";
 
 /// Result of a successful authentication.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AuthResult {
     pub access_token: String,
     pub access_expires_at: u64,
     pub refresh_token: Option<String>,
     pub refresh_expires_at: Option<u64>,
+}
+
+/// Written by hand so the access and refresh tokens never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for AuthResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthResult")
+            .field("access_token", &"<redacted>")
+            .field("access_expires_at", &self.access_expires_at)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("refresh_expires_at", &self.refresh_expires_at)
+            .finish()
+    }
 }
 
 /// Perform challenge-response authentication without ATM/TDK runtime.

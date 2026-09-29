@@ -469,16 +469,29 @@ pub(super) async fn handle_update(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    let req: spec::update::v1_0::Payload = match parse_payload(&doc) {
+    // 1.1 is 1.0 plus an optional `drainTtlSecs`, so one parse serves both:
+    // a 1.0 document (validated against 1.0's schema on the spine) reads as a
+    // 1.1 payload with no drain requested.
+    let req: spec::update::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    use spec::update::v1_1::ServiceKind as K;
+    // The drain belongs to the mediated transports; a member that does not
+    // apply to the named service makes the request malformed, not ignored.
+    if req.drain_ttl_secs.is_some() && matches!(req.service, K::Rest | K::Webauthn) {
+        return app_error_to_reject(
+            &doc,
+            AppError::Validation(
+                "drainTtlSecs applies only to a mediated transport (didcomm, tsp)".into(),
+            ),
+        );
+    }
     let resolver = match resolver(state_) {
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, e),
     };
     let deps = ServiceOpDeps::from_app_state(state_, &resolver);
-    use spec::update::v1_0::ServiceKind as K;
 
     let result = match req.service {
         K::Rest => {
@@ -543,15 +556,33 @@ pub(super) async fn handle_update(
                     Err(e) => return app_error_to_reject(&doc, e),
                 };
             let prover = crate::messaging::handshake::AlwaysOkProver;
+            // `update/1.1`'s window when one is asked for, else the floor. Over
+            // a request that arrived through the mediator being replaced, a
+            // value below the floor is raised to it rather than refused — the
+            // spec's MUST — since cutting that mediator discards the reply.
+            let floor = crate::operations::protocol::disable_didcomm::MIN_DRAIN_TTL_OVER_DIDCOMM;
+            let transport = arrival_transport();
+            let drain_ttl = match req.drain_ttl_secs {
+                None => floor,
+                Some(secs) => {
+                    let asked = std::time::Duration::from_secs(secs);
+                    match transport {
+                        crate::operations::protocol::disable_didcomm::DisableTransport::Didcomm => {
+                            asked.max(floor)
+                        }
+                        _ => asked,
+                    }
+                }
+            };
             let params = crate::operations::protocol::update_didcomm::UpdateDidcommParams {
                 new_mediator_did: mediator_did,
-                drain_ttl: crate::operations::protocol::disable_didcomm::MIN_DRAIN_TTL_OVER_DIDCOMM,
+                drain_ttl,
                 force: req.config.force.unwrap_or(false),
                 handshake_timeout: std::time::Duration::from_secs(
                     req.config.handshake_timeout_secs.map_or(10, u64::from),
                 ),
                 audit_kind: crate::operations::protocol::update_didcomm::MigrateAuditKind::Forward,
-                transport: arrival_transport(),
+                transport,
             };
             let r = op!(
                 &doc,
@@ -771,16 +802,29 @@ pub(super) async fn handle_rollback(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    let req: spec::rollback::v1_0::Payload = match parse_payload(&doc) {
+    // 1.1 is 1.0 plus an optional `drainTtlSecs`, so one parse serves both: a
+    // 1.0 document (validated against 1.0's schema on the spine) reads as a 1.1
+    // payload with no drain requested.
+    let req: spec::rollback::v1_1::Payload = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
+    use spec::rollback::v1_1::ServiceKind as K;
+    // As `update/1.1`: the drain belongs to the mediated transports, and a
+    // member that cannot apply to the named service is malformed, not ignored.
+    if req.drain_ttl_secs.is_some() && matches!(req.service, K::Rest | K::Webauthn) {
+        return app_error_to_reject(
+            &doc,
+            AppError::Validation(
+                "drainTtlSecs applies only to a mediated transport (didcomm, tsp)".into(),
+            ),
+        );
+    }
     let resolver = match resolver(state_) {
         Ok(r) => r,
         Err(e) => return app_error_to_reject(&doc, e),
     };
     let deps = ServiceOpDeps::from_app_state(state_, &resolver);
-    use spec::rollback::v1_0::ServiceKind as K;
 
     let result = match req.service {
         K::Rest => {
@@ -824,10 +868,29 @@ pub(super) async fn handle_rollback(
         }
         K::Didcomm => {
             // Rolling DIDComm back can leave the superseded mediator draining,
-            // so it takes the same arrival guard as disable.
+            // so it takes the same arrival guard as disable. `rollback/1.1`'s
+            // window when one is asked for, else the floor; over a request that
+            // arrived through the mediator being replaced, a shorter window is
+            // raised to the floor (the spec's MUST), since cutting that mediator
+            // discards the reply. A window on a rollback that leaves nothing
+            // draining is accepted and does nothing.
+            let floor = crate::operations::protocol::disable_didcomm::MIN_DRAIN_TTL_OVER_DIDCOMM;
+            let transport = arrival_transport();
+            let drain_ttl = match req.drain_ttl_secs {
+                None => floor,
+                Some(secs) => {
+                    let asked = std::time::Duration::from_secs(secs);
+                    match transport {
+                        crate::operations::protocol::disable_didcomm::DisableTransport::Didcomm => {
+                            asked.max(floor)
+                        }
+                        _ => asked,
+                    }
+                }
+            };
             let params = crate::operations::protocol::rollback_didcomm::RollbackDidcommParams {
-                drain_ttl: crate::operations::protocol::disable_didcomm::MIN_DRAIN_TTL_OVER_DIDCOMM,
-                transport: arrival_transport(),
+                drain_ttl,
+                transport,
             };
             // Rolling back re-runs the forward op, so it needs a prover for
             // the same reason enable does — and `AlwaysOkProver` for the same
@@ -975,5 +1038,76 @@ pub(super) async fn handle_drain_cancel(
             Err(e) => app_error_to_reject(&doc, e),
         },
         Err(e) => app_error_to_reject(&doc, AppError::Conflict(e.to_string())),
+    }
+}
+
+/// `vta/services/report/0.1` — per-mediator inbound counts and each sender's
+/// last-seen mediator over a window, from the telemetry sink. Super-admin: it
+/// is a contact log of other parties' DIDs. The sink attributes inbound by
+/// mediator, whichever mediated transport carried it, and does not record the
+/// transport, so `lastSeenTransport` is left absent rather than guessed.
+pub(super) async fn handle_report(
+    state_: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(e) = auth.require_super_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: spec::report::v0_1::Payload = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    if let (Some(since), Some(until)) = (req.since, req.until)
+        && since > until
+    {
+        return super::helpers::reject_declared(
+            &doc,
+            spec::report::v0_1::error_codes::INVALID_WINDOW,
+            "`since` is after `until`",
+        );
+    }
+    let report = match crate::operations::protocol::report::mediator_report(
+        &state_.telemetry,
+        auth,
+        crate::operations::protocol::report::ReportParams {
+            since: req.since,
+            until: req.until,
+        },
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, AppError::Internal(e.to_string())),
+    };
+    let ts =
+        |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let body = serde_json::json!({
+        "since": report.since.map(ts),
+        "until": ts(report.until),
+        "mediators": report.mediators.iter().map(|m| serde_json::json!({
+            "mediatorDid": m.mediator_did,
+            "inboundCount": m.inbound_count,
+            "firstSeen": ts(m.first_seen),
+            "lastSeen": ts(m.last_seen),
+        })).collect::<Vec<_>>(),
+        "senders": report.senders.iter().map(|s| serde_json::json!({
+            "senderDid": s.sender_did,
+            "lastSeenMediator": s.last_seen_mediator,
+            "lastSeenAt": ts(s.last_seen_at),
+        })).collect::<Vec<_>>(),
+    });
+    let mut body = body;
+    if report.since.is_none()
+        && let Some(obj) = body.as_object_mut()
+    {
+        obj.remove("since");
+    }
+    match serde_json::from_value::<spec::report::v0_1::Response>(body) {
+        Ok(r) => success_response(&doc, r),
+        Err(e) => app_error_to_reject(
+            &doc,
+            AppError::Internal(format!("report does not match its schema: {e}")),
+        ),
     }
 }

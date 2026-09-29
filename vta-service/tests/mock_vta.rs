@@ -183,10 +183,12 @@ async fn url_direct_admin_rotation_round_trips_against_rest_only_mock() {
 }
 
 /// Full server-managed `create_did_webvh` round-trip against a REST-only mock
-/// with an in-process stub hosting backend (#431): the VTA resolves the seeded
-/// `did:webvh` server DID to the loopback stub, reserves a path, mints the
-/// persona `did:webvh` via `didwebvh-rs`, and publishes the signed log to the
-/// stub. Mirrors `url_direct_admin_rotation_round_trips_against_rest_only_mock`
+/// with an in-process stub hosting service (#431): the VTA resolves the seeded
+/// `did:webvh` server DID, reaches the stub's Trust-Task HTTPS binding through
+/// its `WebVHHosting` origin, reserves a path (`did/check-name`), mints the
+/// persona `did:webvh` via `didwebvh-rs`, and publishes the signed log
+/// (`did/register`). The stub refuses unsigned requests and signs its answers,
+/// so this also proves both halves of the proof exchange. Mirrors `url_direct_admin_rotation_round_trips_against_rest_only_mock`
 /// for the persona-mint layer.
 #[tokio::test]
 async fn create_did_webvh_round_trips_against_stub_host() {
@@ -245,6 +247,64 @@ async fn create_did_webvh_round_trips_against_stub_host() {
     mock.shutdown().await;
 }
 
+/// The host's answers must carry its own proof. The stub signs with a key that
+/// is not the one its DID document lists, while naming that document's method:
+/// a forged answer over HTTPS, where TLS alone would not have caught it. The
+/// reservation is refused before anything is minted or stored.
+#[tokio::test]
+async fn create_did_webvh_refuses_a_host_answer_not_signed_by_the_host() {
+    use vta_sdk::client::CreateDidWebvhRequest;
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    mock.forge_webvh_host_replies();
+    let client = signing_client(&mock, 0x12, "admin", vec![]).await;
+
+    let err = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id: Some(MockVta::WEBVH_SERVER_ID.into()),
+            url: None,
+            path: None,
+            path_mode: Some(WebvhPathMode::AutoAssign),
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            add_tsp_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect_err("a forged host answer must not reserve a slot");
+    // A proof that fails against a cached key is checked again against a
+    // fresh resolve, since the signer may have rotated (VTI-KEY-134). The
+    // harness preseeds the stub host's document into the resolver chain, not
+    // only its cache (`test_support::PreseededDidResolver`), so that fresh
+    // resolve of `webvh-host.test` still finds the real document instead of
+    // failing to fetch it — and this refusal is the forged proof's, not a
+    // key-retrieval failure standing in for it.
+    let msg = err.to_string();
+    assert!(
+        msg.contains("proof does not verify"),
+        "refused for the forged proof: {err}"
+    );
+    let stored = vta_service::webvh_store::list_dids(&mock.ctx.webvh_ks)
+        .await
+        .unwrap();
+    assert!(stored.is_empty(), "nothing is stored: {stored:?}");
+
+    mock.shutdown().await;
+}
+
 /// Self-recovery from a failed publish (the DTTE / update path).
 ///
 /// A webvh update commits local state before it can confirm the host received
@@ -255,7 +315,6 @@ async fn create_did_webvh_round_trips_against_stub_host() {
 /// advanced the key counter and the DID looped forever.
 #[cfg(feature = "webvh")]
 #[tokio::test]
-#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
@@ -290,7 +349,6 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
         .await
         .expect("create server-managed DID against the stub host");
     let did = create.did;
-    let scid = create.scid;
 
     let confirmed = |did: &str| {
         let did = did.to_string();
@@ -304,7 +362,6 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
     // Drive *document* updates (the "Edit DID" case), which rotate the update
     // key — the exact path that burned a key index on every failed publish.
     let update = |label: &str| {
-        let scid = scid.clone();
         let did = did.clone();
         let client = &client;
         let body = UpdateDidWebvhBody {
@@ -321,7 +378,7 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
             label: Some(label.into()),
             ..Default::default()
         };
-        async move { client.update_did_webvh("ctx1", &scid, body).await }
+        async move { client.update_did_webvh_by_did(&did, body).await }
     };
 
     // A first update lands normally and confirms a published version.
@@ -378,7 +435,6 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
 /// pins the other side.
 #[cfg(feature = "webvh")]
 #[tokio::test]
-#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
@@ -413,7 +469,6 @@ async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
         .await
         .expect("create server-managed DID against the stub host");
     let did = create.did;
-    let scid = create.scid;
 
     let confirmed = |did: &str| {
         let did = did.to_string();
@@ -425,7 +480,6 @@ async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
         }
     };
     let update = |label: &str, expected: Option<String>| {
-        let scid = scid.clone();
         let did = did.clone();
         let client = &client;
         let body = UpdateDidWebvhBody {
@@ -443,7 +497,7 @@ async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
             expected_version_id: expected,
             ..Default::default()
         };
-        async move { client.update_did_webvh("ctx1", &scid, body).await }
+        async move { client.update_did_webvh_by_did(&did, body).await }
     };
 
     update("u1", None).await.expect("first update succeeds");
@@ -487,7 +541,6 @@ async fn a_caller_pinned_to_the_host_version_recovers_a_failed_publish() {
 /// would have quietly deleted the optimistic-concurrency guarantee.
 #[cfg(feature = "webvh")]
 #[tokio::test]
-#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_stale_caller_still_conflicts() {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
@@ -522,7 +575,6 @@ async fn a_stale_caller_still_conflicts() {
         .await
         .expect("create server-managed DID against the stub host");
     let did = create.did;
-    let scid = create.scid;
 
     let confirmed = |did: &str| {
         let did = did.to_string();
@@ -534,7 +586,6 @@ async fn a_stale_caller_still_conflicts() {
         }
     };
     let update = |label: &str, expected: Option<String>| {
-        let scid = scid.clone();
         let did = did.clone();
         let client = &client;
         let body = UpdateDidWebvhBody {
@@ -552,7 +603,7 @@ async fn a_stale_caller_still_conflicts() {
             expected_version_id: expected,
             ..Default::default()
         };
-        async move { client.update_did_webvh("ctx1", &scid, body).await }
+        async move { client.update_did_webvh_by_did(&did, body).await }
     };
 
     update("u1", None).await.expect("first update succeeds");
@@ -590,7 +641,6 @@ async fn a_stale_caller_still_conflicts() {
 /// update fails at signing and loops.
 #[cfg(feature = "webvh")]
 #[tokio::test]
-#[allow(deprecated)] // pins the legacy (context_id, scid) route until it is removed
 async fn a_superseded_signing_key_is_recovered_from_the_seed() {
     use vta_sdk::client::CreateDidWebvhRequest;
     use vta_sdk::protocols::did_management::create::WebvhPathMode;
@@ -628,7 +678,6 @@ async fn a_superseded_signing_key_is_recovered_from_the_seed() {
     let scid = create.scid.clone();
 
     let doc_update = |label: &str| {
-        let scid = scid.clone();
         let did = did.clone();
         let client = &client;
         let body = UpdateDidWebvhBody {
@@ -645,7 +694,7 @@ async fn a_superseded_signing_key_is_recovered_from_the_seed() {
             label: Some(label.into()),
             ..Default::default()
         };
-        async move { client.update_did_webvh("ctx1", &scid, body).await }
+        async move { client.update_did_webvh_by_did(&did, body).await }
     };
 
     // v2: a document update rotates the update key; v2's handle is now active.
@@ -733,14 +782,37 @@ async fn webvh_family_response_shapes_inner() {
 
     // ── server surface ────────────────────────────────────────────────────
     client.list_webvh_servers().await.expect("servers/list");
-    client
+    // Both used to be REST-only; they now read the host's `me/domains` and
+    // paged `did/list` Trust Tasks, so the answers are the host's, not blanks.
+    let domains = client
         .list_webvh_server_domains(MockVta::WEBVH_SERVER_ID)
         .await
         .expect("servers/domains");
-    client
+    assert_eq!(domains.default.as_deref(), Some("webvh-host.test"));
+    assert_eq!(domains.domains.len(), 1);
+    assert!(domains.domains[0].default_domain);
+    assert_eq!(domains.domains[0].status, "active");
+    assert_eq!(
+        domains.domains[0].created_at.as_deref(),
+        Some("2026-01-01T00:00:00Z")
+    );
+    let report = client
         .reconcile_webvh_server_dids(MockVta::WEBVH_SERVER_ID)
         .await
         .expect("servers/reconcile");
+    assert_eq!(
+        report
+            .host_only
+            .iter()
+            .map(|d| d.slot_id.as_str())
+            .collect::<Vec<_>>(),
+        ["cov-orphan-slot"],
+        "the host's slot with no local record is host-only"
+    );
+    assert!(
+        report.agent_only.iter().any(|d| d.did == did),
+        "the minted DID, absent from the host's listing, is agent-only"
+    );
 
     // ── agent names ───────────────────────────────────────────────────────
     // Ordered as an operator would: claim, read back, disable, re-enable, drop.
@@ -752,10 +824,17 @@ async fn webvh_family_response_shapes_inner() {
         .check_agent_name(&did, "coverage-agent")
         .await
         .expect("agent-name/check");
-    client
+    let names = client
         .list_agent_names(&did)
         .await
         .expect("agent-name/list");
+    assert!(
+        names
+            .names
+            .iter()
+            .any(|n| n.name == "coverage-agent" && n.enabled && n.created_at == 1_767_225_600),
+        "the host's RFC 3339 createdAt is relayed as Unix seconds: {names:?}"
+    );
     client
         .disable_agent_name(&did, "coverage-agent")
         .await
@@ -1138,21 +1217,12 @@ async fn post_trust_task(
     serde_json::from_str(&text).map_err(|e| format!("{type_uri} reply is not JSON: {e} ({text})"))
 }
 
-/// A heavy Trust Task through the full inbound dispatch spine on the default
-/// libtest stack (~2 MiB), current-thread runtime — the in-process axum server
-/// runs on this same thread, so the dispatch future is polled here.
-///
-/// `initiate-export/1.1` with `algorithm: chunkedTrustTask` runs
-/// `handle_initiate_export_1_1`, which awaits a full state export inline — one
-/// of the largest handler futures the VTA has, and the one #1522 hand-boxed.
-/// That box moved to the dispatch seam (`dispatch_typed` `Box::pin`s every arm),
-/// so this handler's whole future is heap-allocated there and the match frame
-/// stays pointer-sized. This is the regression guard for that: unbox the seam
-/// and this overflows the stack — which aborts the process, not merely fails the
-/// assert. A well-formed reply of any kind proves the poll completed without
-/// overflow; the assert also pins the happy path.
+/// A backup export requested over HTTPS is refused through the full inbound
+/// spine: the sealing password would exist in plaintext wherever TLS
+/// terminates. The end-to-end path, which runs the export, is covered by
+/// `trust_tasks::backup::tests`.
 #[tokio::test]
-async fn heavy_trust_task_dispatches_on_default_stack() {
+async fn backup_export_over_https_is_refused() {
     let mock = MockVta::start().await;
     // Empty contexts == super-admin, which backup export requires.
     let (identity, token) = mock
@@ -1172,15 +1242,18 @@ async fn heavy_trust_task_dispatches_on_default_stack() {
             "password": "dispatch-seam-guard-pw",
         }),
     )
-    .await
-    .expect("chunked initiate-export dispatched without a stack overflow");
-
-    // The chunked path answers with a descriptor; its presence confirms the
-    // heavy handler ran to completion rather than merely not overflowing.
+    .await;
+    let text = match &reply {
+        Ok(v) => v.to_string(),
+        Err(e) => e.to_string(),
+    };
     assert!(
-        reply["payload"]["descriptor"].is_object(),
-        "expected a chunked bundle descriptor, got: {reply}"
+        reply
+            .as_ref()
+            .map_or(true, |v| v["payload"]["descriptor"].is_null()),
+        "no bundle over HTTPS: {text}"
     );
+    assert!(text.contains("hop-by-hop"), "{text}");
 }
 
 /// The `services/*` write paths, against a VTA whose own DID is hosted.
@@ -1247,10 +1320,7 @@ async fn services_write_paths_against_a_hosted_vta_did_inner() {
 
     // Point the VTA at it. `services/*` mutate *this* DID's document, so the
     // one under test has to be the one the VTA calls its own.
-    {
-        let mut cfg = mock.ctx.config.write().await;
-        cfg.vta_did = Some(did.clone());
-    }
+    mock.ctx.adopt_vta_did(&did).await;
 
     // And re-address the caller. The VTA's identity just changed, and a
     // document's `recipient` has to name the consumer it is sent to — SPEC §7.2

@@ -599,6 +599,90 @@ async fn rest_refresh_rotates_and_the_old_token_is_dead() {
 }
 
 #[tokio::test]
+async fn a_second_login_retires_the_first_logins_refresh_token() {
+    // The residual gap found in review of the reuse-detection work, driven
+    // end to end against the real login and refresh routes.
+    //
+    // Rotation alone could not close it. Reuse detection fires when a token
+    // is presented *twice*, and logging in again used to mint a second token
+    // without retiring the first — two live chains on one account that never
+    // shared a token, so no replay ever occurred and nothing ever fired. A
+    // token stolen before a re-login kept working indefinitely, silently,
+    // alongside its owner's. It also broke the one recovery step a user can
+    // take unaided: logging in again did nothing to the thief's token.
+    let (sk, holder, kid) = holder_identity(23);
+    let fix = build_fixture(&holder).await;
+
+    // First login. Treat this token as the one that gets stolen.
+    let first_login = wallet_login_tokens(&fix, &sk, &holder, &kid).await;
+    let stolen = first_login["tokens"]["refreshToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The owner logs in again — the recovery action.
+    let second_login = wallet_login_tokens(&fix, &sk, &holder, &kid).await;
+    let current = second_login["tokens"]["refreshToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(current, stolen, "a second login must mint its own token");
+
+    // The pre-login token must be dead, not the head of a parallel chain.
+    let (status, body) =
+        post_json(&fix.router, "/v1/wallet/auth/refresh", refresh_doc(&stolen)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a token from before the re-login must not still work: {body}"
+    );
+
+    // And because presenting it is a signal worth reporting but not a
+    // reason to punish the live client, the session that replaced it
+    // keeps working. The retired token is already dead; revoking on top
+    // would sign out the device that is demonstrably current in order to
+    // answer one whose token has already stopped working.
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/wallet/auth/refresh",
+        refresh_doc(&current),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the newest login's token must survive a replay of the one it retired: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_second_login_leaves_the_account_usable() {
+    // The other half of the fix: retiring the previous token must not break
+    // the ordinary case of simply logging in again and carrying on.
+    let (sk, holder, kid) = holder_identity(24);
+    let fix = build_fixture(&holder).await;
+
+    wallet_login_tokens(&fix, &sk, &holder, &kid).await;
+    let second_login = wallet_login_tokens(&fix, &sk, &holder, &kid).await;
+    let current = second_login["tokens"]["refreshToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/wallet/auth/refresh",
+        refresh_doc(&current),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the newest login's token must still refresh normally: {body}"
+    );
+}
+
+#[tokio::test]
 async fn rest_refresh_also_works_on_the_header_gated_route() {
     // The CLI/SDK surface. Same handler, same document — it just arrives on
     // `/v1/auth/refresh` behind the `Trust-Task` gate instead of the

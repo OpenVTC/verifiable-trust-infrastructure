@@ -11,11 +11,11 @@
 //!   then both write — the second clobbers the first, the local view
 //!   ends up pointing at one of two different upstream hosts that
 //!   each think they own the DID.
-//! - `rotate_did_webvh_keys` reads `record.next_fragment_id`, derives
-//!   N keys from `[next_fragment_id, next_fragment_id + N)`, then
-//!   bumps the counter. Two concurrent rotates derive overlapping
-//!   fragment ids; only one record-write survives, so the loser has
-//!   minted keys whose `#key-N` references collide with the winner's.
+//! - `rotate_did_webvh_keys` used to read `record.next_fragment_id`,
+//!   derive N keys from `[next_fragment_id, next_fragment_id + N)` and
+//!   bump the counter, so two concurrent rotates derived overlapping
+//!   fragment ids. It now keeps method ids and pins the version it read
+//!   (`expected_version_id`), so the loser is refused before it writes.
 //!
 //! `update_did_webvh` already had its own ad-hoc within-operation
 //! check on `log_entry_count`. The helpers in this module factor that
@@ -105,8 +105,8 @@ pub static DID_UPDATE_LOCKS: std::sync::LazyLock<DidUpdateLocks> =
 ///   appended log entry; the strongest signal that someone else has
 ///   mutated the DID.
 /// - `updated_at` — touched by every record mutation, including the
-///   ones that *don't* append a log entry (`register_did_with_server`,
-///   `rotate_did_webvh_keys`'s `next_fragment_id` bump). Catches
+///   ones that *don't* append a log entry (`register_did_with_server`).
+///   Catches
 ///   concurrent ops that don't grow the log.
 /// - `server_id` — the serverless→server-managed transition is a
 ///   one-way state change that affects which transport future ops

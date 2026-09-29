@@ -549,6 +549,85 @@ fn uuid() -> uuid::Uuid {
     uuid::Uuid::parse_str(REQUEST_ID).expect("fixture uuid parses")
 }
 
+// ─── b2 admin surface fixtures ───────────────────────────────────────────
+
+const SCHEMA_TYPE: &str = "https://schemas.example.com/membership/v1";
+
+/// The branding the store holds, round-tripped through the stored type.
+fn branding() -> Value {
+    let b: vta_sdk::protocols::join_requests::manifest::v0_2::CommunityBranding =
+        serde_json::from_value(json!({
+            "displayName": "Example Community",
+            "accentColor": "#1a2b3c",
+            "logoUrl": "https://community.example/logo.png",
+        }))
+        .expect("branding fixture parses");
+    to_v(b)
+}
+
+/// The requested attributes the store holds, round-tripped through the type.
+fn requested_attributes() -> Value {
+    let r: Vec<vta_sdk::protocols::join_requests::manifest::v0_2::ResponseRequestedAttributesItem> =
+        serde_json::from_value(json!([
+            { "type": "name.display", "required": true, "purpose": "To greet you" },
+            { "type": "address.country", "required": false },
+        ]))
+        .expect("requested attributes fixture parses");
+    to_v(r)
+}
+
+fn join_discovery() -> Value {
+    to_v(crate::community::join_discovery::JoinDiscovery { public: false })
+}
+
+fn schema_entry() -> Value {
+    to_v(crate::schemas::SchemaEntry {
+        type_uri: SCHEMA_TYPE.into(),
+        dtg_type: Some("MembershipCredential".into()),
+        credential_schema: Some(json!({ "type": "object" })),
+        kind: crate::schemas::SchemaKind::Accepts,
+        description: Some("Membership evidence".into()),
+        created_at: TS.parse().expect("fixture timestamp"),
+        created_by_did: OTHER_DID.into(),
+    })
+}
+
+fn dcql_query() -> Value {
+    json!({
+        "credentials": [{
+            "id": "membership",
+            "format": "dc+sd-jwt",
+            "meta": { "vct_values": [SCHEMA_TYPE] },
+            "claims": [{ "path": ["givenName"] }]
+        }]
+    })
+}
+
+fn accepts_criterion() -> Value {
+    to_v(crate::schemas::accepts::AcceptsCriterion {
+        id: "membership".into(),
+        query: dcql_query(),
+        description: Some("A membership credential".into()),
+        vetting: None,
+        created_at: TS.parse().expect("fixture timestamp"),
+        created_by_did: OTHER_DID.into(),
+    })
+}
+
+fn auto_grant_status() -> Value {
+    to_v(vta_sdk::protocols::vetting::AutoGrantStatus {
+        enabled: true,
+        sweep_minutes: 60,
+        validity_seconds: 31_536_000,
+        last_sweep: Some(vta_sdk::protocols::vetting::AutoGrantSweep {
+            ran_at: TS.parse().expect("fixture timestamp"),
+            granted: 2,
+            revoked: 0,
+            errors: 0,
+        }),
+    })
+}
+
 // ─── The witness table ───────────────────────────────────────────────────
 
 /// The number of annotated divergences. Asserted, so the debt can shrink but
@@ -727,24 +806,11 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::backup::export::v0_1::Payload,
             s::backup::export::v0_1::Response,
-            // `ExportRequest` — routes/backup.rs.
+            // What `handle_backup_export` (trust_tasks/mod.rs) parses.
             json!({ "password": "correct-horse-battery-staple", "includeAudit": true }),
-            // `ExportResponse` — the envelope was returned bare until #1059.
+            // `ExportResponse` (routes/backup.rs), what `export_inner` answers
+            // with — the envelope was returned bare until #1059.
             json!({ "envelope": backup_envelope() })
-        ),
-        checked!(
-            s::backup::import::v0_1::Payload,
-            s::backup::import::v0_1::Response,
-            // `ImportRequest` — routes/backup.rs:36.
-            json!({ "backup": backup_envelope(), "password": "correct-horse-battery-staple",
-                    "confirm": true }),
-            // `ImportResult` — backup.rs:136.
-            json!({
-                "status": "imported",
-                "sourceDid": COMMUNITY_DID,
-                "counts": { "acl": 3, "members": 12 },
-                "message": "Import complete. Restart the daemon to serve the restored identity.",
-            })
         ),
         // ─── ceremonies ──────────────────────────────────────────────
         checked!(
@@ -1279,7 +1345,7 @@ fn table() -> Vec<Conformance> {
         checked!(
             s::members::personhood::assert::v0_1::Payload,
             s::members::personhood::assert::v0_1::Response,
-            // `AssertBody` — routes/members/personhood.rs:196.
+            // The payload the spine's assert handler reads.
             json!({ "did": DID, "presentation": { "type": ["VerifiablePresentation"] } }),
             // `AssertResponse` — routes/members/personhood.rs:206.
             //
@@ -1738,6 +1804,264 @@ fn table() -> Vec<Conformance> {
                 )
                 .expect("resend response")
             )
+        ),
+        // ─── b2 admin surfaces (trust_tasks::surface_tasks) ──────────
+        //
+        // Each response is the envelope `surface_tasks` builds around the
+        // value its handler reads or writes, and that value is built from its
+        // real type (or round-tripped through it) rather than typed out.
+        checked!(
+            s::community::branding::show::v0_1::Payload,
+            s::community::branding::show::v0_1::Response,
+            json!({}),
+            json!({ "branding": branding() })
+        ),
+        checked!(
+            s::community::branding::update::v0_1::Payload,
+            s::community::branding::update::v0_1::Response,
+            json!({ "branding": branding() }),
+            json!({ "branding": branding() })
+        ),
+        checked!(
+            s::community::requested_attributes::show::v0_1::Payload,
+            s::community::requested_attributes::show::v0_1::Response,
+            json!({}),
+            json!({ "requestedAttributes": requested_attributes() })
+        ),
+        checked!(
+            s::community::requested_attributes::update::v0_1::Payload,
+            s::community::requested_attributes::update::v0_1::Response,
+            json!({ "requestedAttributes": requested_attributes() }),
+            json!({ "requestedAttributes": requested_attributes() })
+        ),
+        checked!(
+            s::community::join_discovery::show::v0_1::Payload,
+            s::community::join_discovery::show::v0_1::Response,
+            json!({}),
+            json!({ "joinDiscovery": join_discovery() })
+        ),
+        checked!(
+            s::community::join_discovery::update::v0_1::Payload,
+            s::community::join_discovery::update::v0_1::Response,
+            json!({ "joinDiscovery": join_discovery() }),
+            json!({ "joinDiscovery": join_discovery() })
+        ),
+        checked!(
+            s::schemas::register::v0_1::Payload,
+            s::schemas::register::v0_1::Response,
+            json!({
+                "typeUri": SCHEMA_TYPE,
+                "dtgType": "MembershipCredential",
+                "credentialSchema": { "type": "object" },
+                "kind": "accepts",
+                "description": "Membership evidence",
+            }),
+            json!({ "schema": schema_entry() })
+        ),
+        checked!(
+            s::schemas::list::v0_1::Payload,
+            s::schemas::list::v0_1::Response,
+            json!({ "kind": "accepts", "cursor": "o0", "limit": 50 }),
+            json!({
+                "items": [to_v(crate::trust_tasks::surface_tasks::SchemaSummary {
+                    type_uri: SCHEMA_TYPE.into(),
+                    dtg_type: Some("MembershipCredential".into()),
+                    kind: crate::schemas::SchemaKind::Accepts,
+                    description: Some("Membership evidence".into()),
+                    has_credential_schema: true,
+                    created_at: TS.parse().expect("fixture timestamp"),
+                    created_by_did: OTHER_DID.into(),
+                })],
+                "nextCursor": "o1",
+            })
+        ),
+        checked!(
+            s::schemas::show::v0_1::Payload,
+            s::schemas::show::v0_1::Response,
+            json!({ "typeUri": SCHEMA_TYPE }),
+            json!({ "schema": schema_entry() })
+        ),
+        checked!(
+            s::schemas::delete::v0_1::Payload,
+            s::schemas::delete::v0_1::Response,
+            json!({ "typeUri": SCHEMA_TYPE }),
+            json!({ "typeUri": SCHEMA_TYPE })
+        ),
+        checked!(
+            s::schemas::accepts::register::v0_1::Payload,
+            s::schemas::accepts::register::v0_1::Response,
+            json!({
+                "id": "membership",
+                "query": dcql_query(),
+                "description": "A membership credential",
+            }),
+            json!({ "criterion": accepts_criterion() })
+        ),
+        checked!(
+            s::schemas::accepts::list::v0_1::Payload,
+            s::schemas::accepts::list::v0_1::Response,
+            json!({ "cursor": "o0", "limit": 50 }),
+            json!({ "items": [accepts_criterion()] })
+        ),
+        checked!(
+            s::schemas::accepts::show::v0_1::Payload,
+            s::schemas::accepts::show::v0_1::Response,
+            json!({ "id": "membership" }),
+            json!({ "criterion": accepts_criterion() })
+        ),
+        checked!(
+            s::schemas::accepts::delete::v0_1::Payload,
+            s::schemas::accepts::delete::v0_1::Response,
+            json!({ "id": "membership" }),
+            json!({ "id": "membership" })
+        ),
+        checked!(
+            s::vetting::vetters::grants::list::v0_1::Payload,
+            s::vetting::vetters::grants::list::v0_1::Response,
+            json!({ "cursor": "o0", "limit": 50 }),
+            json!({
+                "items": [to_v(vta_sdk::protocols::vetting::VetterGrantRow {
+                    endorsement_id: "11111111-1111-4111-8111-111111111111".into(),
+                    member_did: DID.into(),
+                    credential_id: VEC_ID.into(),
+                    valid_from: TS.parse().expect("fixture timestamp"),
+                    valid_until: Some(TS.parse().expect("fixture timestamp")),
+                    revoked: false,
+                    revoked_at: None,
+                    live: true,
+                    origin: vta_sdk::protocols::vetting::GrantOrigin::Manual,
+                    profile: None,
+                })],
+            })
+        ),
+        checked!(
+            s::vetting::auto_grant::show::v0_1::Payload,
+            s::vetting::auto_grant::show::v0_1::Response,
+            json!({}),
+            json!({ "autoGrant": auto_grant_status() })
+        ),
+        checked!(
+            s::vetting::auto_grant::update::v0_1::Payload,
+            s::vetting::auto_grant::update::v0_1::Response,
+            to_v(vta_sdk::protocols::vetting::AutoGrantConfig {
+                enabled: true,
+                sweep_minutes: Some(60),
+                validity_seconds: Some(31_536_000),
+            }),
+            json!({ "autoGrant": auto_grant_status() })
+        ),
+        checked!(
+            s::vetting::revocations::list::v0_1::Payload,
+            s::vetting::revocations::list::v0_1::Response,
+            json!({ "reviewState": "needsReview", "cursor": "o0", "limit": 50 }),
+            json!({
+                "items": [to_v(crate::routes::vetting::VettingRevocationRow {
+                    issuer: OTHER_DID.into(),
+                    statement_id: VEC_ID.into(),
+                    statement_digest_multibase: "zQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG".into(),
+                    reason: Some("mistake".into()),
+                    recorded_at: TS.parse().expect("fixture timestamp"),
+                    review_state: crate::routes::vetting::RevocationReviewState::NeedsReview,
+                    affected_join_requests: vec![uuid()],
+                    affected_members: vec![DID.into()],
+                })],
+            })
+        ),
+        checked!(
+            s::relationships::suspend::v0_1::Payload,
+            s::relationships::suspend::v0_1::Response,
+            json!({ "id": REQUEST_ID, "reason": "under review" }),
+            to_v(crate::routes::relationships::LifecycleResponse {
+                id: uuid(),
+                state: crate::relationships::InForce::Suspended {
+                    since: TS.parse().expect("fixture timestamp"),
+                },
+            })
+        ),
+        checked!(
+            s::relationships::restore::v0_1::Payload,
+            s::relationships::restore::v0_1::Response,
+            json!({ "id": REQUEST_ID }),
+            to_v(crate::routes::relationships::LifecycleResponse {
+                id: uuid(),
+                state: crate::relationships::InForce::Yes,
+            })
+        ),
+        checked!(
+            s::join_requests::vetting::show::v0_1::Payload,
+            s::join_requests::vetting::show::v0_1::Response,
+            json!({ "id": REQUEST_ID }),
+            {
+                use crate::routes::join_requests::read as r;
+                to_v(r::JoinRequestVettingResponse {
+                    request_id: uuid(),
+                    vetting: Some(r::JoinRequestVetting {
+                        criterion_id: "membership".into(),
+                        requirements_digest: "zQmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+                            .into(),
+                        applicant_digest_matches: true,
+                        statements: vec![r::JoinRequestVettingStatement {
+                            id: Some(VEC_ID.into()),
+                            issuer: Some(OTHER_DID.into()),
+                            verified: true,
+                            eligible: true,
+                            revoked: false,
+                            withdrawn_now: false,
+                            method: Some("inPerson".into()),
+                            declared_relationship: Some("communityColleague".into()),
+                            counted: true,
+                            failures: vec![],
+                        }],
+                        distinct_counted_vetters: 1,
+                        by_method: [("inPerson".to_string(), 1)].into_iter().collect(),
+                        commitments_consistent: true,
+                        independence_ok: true,
+                        invitation_required: false,
+                        satisfied: true,
+                        needs: vec![],
+                        recorded_at: TS.parse().expect("fixture timestamp"),
+                    }),
+                })
+            }
+        ),
+        checked!(
+            s::join_requests::query::v0_1::Payload,
+            s::join_requests::query::v0_1::Response,
+            // `SendQueryRequest` (routes/join_requests/present.rs) is read, never
+            // written, so it has no `Serialize` to build this from.
+            json!({ "holderDid": DID, "criterionId": "membership" }),
+            to_v(crate::routes::join_requests::present::SendQueryResponse {
+                thread_id: REQUEST_ID.into(),
+                holder_did: DID.into(),
+                query: vta_sdk::protocols::credential_exchange::QueryBody {
+                    dcql_query: affinidi_openid4vp::DcqlQuery::from_json(&dcql_query())
+                        .expect("fixture DCQL parses"),
+                    nonce: "b7c1e0a94f2d4e8ab5c36f01d9e27a3c".into(),
+                    purpose: "Show that you are a member of Example Community".into(),
+                    oid4vp_session: None,
+                },
+                delivered: true,
+            })
+        ),
+        checked!(
+            s::rooms::list::v0_1::Payload,
+            s::rooms::list::v0_1::Response,
+            json!({ "lifecycle": "live", "cursor": "o0", "limit": 50 }),
+            json!({
+                "items": [to_v(crate::routes::rooms::HostedRoom {
+                    room_id: "room-1".into(),
+                    owner_did: DID.into(),
+                    visibility: "attributed".into(),
+                    retention_policy: "chained".into(),
+                    epoch: 3,
+                    lifecycle: "live".into(),
+                    epoch_expires_at: Some(1_787_654_400),
+                    retention_days: 30,
+                    mirror_of: None,
+                    created_at: 1_787_000_000,
+                    updated_at: 1_787_500_000,
+                })],
+            })
         ),
     ];
     #[cfg(feature = "vetting-pcs")]

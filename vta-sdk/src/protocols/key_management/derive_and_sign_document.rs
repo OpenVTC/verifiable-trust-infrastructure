@@ -13,7 +13,9 @@ use crate::keys::KeyType;
 /// a properly DI-signed document (e.g. an `auth/authenticate/0.1` Trust Task)
 /// signed by a per-VTA super-admin at `m/26'/9'/<idx>'`, so the seed never
 /// leaves the VTA. The proof is produced with the same crate a verifier uses,
-/// so it's correct by construction. Admin-gated.
+/// so it's correct by construction.
+///
+/// **Super-admin only, inside `m/26'/9'`**, as for `derive-and-sign`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]

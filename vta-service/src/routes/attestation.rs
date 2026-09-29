@@ -4,112 +4,15 @@ use axum::response::Response;
 
 use crate::auth::SuperAdminAuth;
 use crate::error::{AppError, tee_attestation_error};
-use crate::operations;
 use crate::server::AppState;
-use crate::tee::mnemonic_guard::{MnemonicExportResponse, MnemonicExportStatus};
-use crate::tee::types::{AttestationReport, AttestationRequest, TeeStatus};
-use vta_sdk::attestation_report::ConfigAttestationReport;
+use crate::tee::mnemonic_guard::MnemonicExportStatus;
 
-/// GET /attestation/status — TEE detection status (unauthenticated).
-#[utoipa::path(
-    get, path = "/attestation/status", tag = "attestation",
-    responses(
-        (status = 200, description = "TEE detection status", body = TeeStatus),
-        (status = 503, description = "TEE attestation not enabled"),
-    ),
-)]
-pub async fn status(State(state): State<AppState>) -> Result<Json<TeeStatus>, AppError> {
-    let tee_state = state
-        .tee
-        .as_ref()
-        .map(|tc| &tc.state)
-        .ok_or_else(|| tee_attestation_error("TEE attestation is not enabled on this VTA"))?;
-
-    Ok(Json(operations::attestation::get_tee_status(tee_state)))
-}
-
-/// POST /attestation/report — Generate a fresh attestation report with a client nonce (unauthenticated).
-#[utoipa::path(
-    post, path = "/attestation/report", tag = "attestation",
-    request_body = AttestationRequest,
-    responses(
-        (status = 200, description = "Fresh attestation report", body = AttestationReport),
-        (status = 503, description = "TEE attestation not enabled"),
-    ),
-)]
-pub async fn generate_report(
-    State(state): State<AppState>,
-    Json(body): Json<AttestationRequest>,
-) -> Result<Json<AttestationReport>, AppError> {
-    let tee_state = state
-        .tee
-        .as_ref()
-        .map(|tc| &tc.state)
-        .ok_or_else(|| tee_attestation_error("TEE attestation is not enabled on this VTA"))?;
-
-    let response =
-        operations::attestation::generate_attestation_report(tee_state, &state.config, &body.nonce)
-            .await?;
-
-    Ok(Json(response))
-}
-
-/// POST /attestation/config-report — Fresh, nonce-bound attestation committing a
-/// digest of the config this enclave booted (unauthenticated).
-///
-/// The verifiable pull path for the un-baked tenant config: the parent supplies
-/// `tee.kms.key_arn` and the rest, so a tenant/verifier calls this with a fresh
-/// nonce and verifies the returned `ConfigAttestationReport` — signature chains
-/// to the AWS Nitro root, `PCR0` matches the approved image, `nonce` is bound,
-/// and `user_data == SHA-384(configView)` authenticates the returned canonical
-/// view. The verifier then enforces its policy on that authenticated view (the
-/// tenant's expected `tee.kms.key_arn`) before onboarding. It does NOT re-derive
-/// an expected config from base+overlay.
-#[utoipa::path(
-    post, path = "/attestation/config-report", tag = "attestation",
-    request_body = AttestationRequest,
-    responses(
-        (status = 200, description = "Fresh config attestation report", body = ConfigAttestationReport),
-        (status = 503, description = "TEE attestation not enabled, or this build captured no effective-config snapshot at boot (only the enclave front-end does)"),
-    ),
-)]
-pub async fn config_report(
-    State(state): State<AppState>,
-    Json(body): Json<AttestationRequest>,
-) -> Result<Json<ConfigAttestationReport>, AppError> {
-    let tee_state = state
-        .tee
-        .as_ref()
-        .map(|tc| &tc.state)
-        .ok_or_else(|| tee_attestation_error("TEE attestation is not enabled on this VTA"))?;
-
-    let response =
-        operations::attestation::generate_config_attestation(tee_state, &state.config, &body.nonce)
-            .await?;
-
-    Ok(Json(response))
-}
-/// GET /attestation/report — Return a cached attestation report (unauthenticated).
-#[utoipa::path(
-    get, path = "/attestation/report", tag = "attestation",
-    responses(
-        (status = 200, description = "Cached attestation report", body = AttestationReport),
-        (status = 503, description = "TEE attestation not enabled"),
-    ),
-)]
-pub async fn cached_report(
-    State(state): State<AppState>,
-) -> Result<Json<AttestationReport>, AppError> {
-    let tee_state = state
-        .tee
-        .as_ref()
-        .map(|tc| &tc.state)
-        .ok_or_else(|| tee_attestation_error("TEE attestation is not enabled on this VTA"))?;
-
-    let response = operations::attestation::get_cached_report(tee_state, &state.config).await?;
-
-    Ok(Json(response))
-}
+// The public attestation reads (`status`, a fresh or cached `report`,
+// `config-report`) were REST routes here. They are the
+// `vta/attestation/{status,report,config-report}/0.1` Trust Tasks now, served
+// on `/trust-tasks` to anonymous callers over every transport
+// (`crate::trust_tasks::attestation`). The cached, nonce-less report is not
+// carried over: evidence nobody asked for is evidence anybody can replay.
 
 /// GET /attestation/did-log — Return the auto-generated did.jsonl (unauthenticated).
 ///
@@ -178,37 +81,78 @@ pub async fn mnemonic_status(
     Ok(Json(guard.status()))
 }
 
-/// POST /attestation/mnemonic — Export the BIP-39 mnemonic (super admin only, time-limited).
+/// POST /attestation/mnemonic — **refused**: the mnemonic export is served only
+/// as the Trust Task, over an end-to-end channel or signed by the caller.
 ///
-/// Requirements:
-/// - VTA must have been started with `VTA_MNEMONIC_EXPORT_WINDOW=<seconds>`
-/// - Must be within the export window since boot
-/// - Caller must be a super admin (JWT-authenticated)
-/// - One-time operation: after successful export, the entropy is zeroed
+/// Use `spec/vta/attestation/mnemonic-export/1.0` over DIDComm or TSP, or at
+/// first boot over Trust Tasks on HTTPS, signed by the caller with `clientDid`
+/// set to the caller's own DID. A bearer token alone never releases it. The
+/// mnemonic is the VTA's root derivation material (VTI-VTA-001, VTI-KEY-033);
+/// even sealed to the requester, a REST exchange carries the request and its
+/// answer in the clear wherever TLS terminates — for a TEE deployment, outside
+/// the enclave by definition. Checked after entitlement, like the backup export
+/// (`vta/backup/*` channel requirement), so a caller without the authority
+/// learns nothing about the channel rule.
 #[utoipa::path(
     post, path = "/attestation/mnemonic", tag = "attestation",
     security(("bearer_jwt" = [])),
     responses(
-        (status = 200, description = "Exported BIP-39 mnemonic (one-time)", body = MnemonicExportResponse),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a super-admin"),
-        (status = 503, description = "Mnemonic export not available or window closed"),
+        (status = 403, description = "Always: the caller is not a super admin with key-export, or \
+            the export was asked for over REST, which is hop-by-hop. Send \
+            spec/vta/attestation/mnemonic-export/1.0 over DIDComm or TSP, or \
+            at first boot as a Trust Task signed by the caller with clientDid \
+            set to the caller's own DID"),
     ),
 )]
 pub async fn mnemonic_export(
-    _auth: SuperAdminAuth,
+    SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
-) -> Result<Json<MnemonicExportResponse>, AppError> {
-    let guard = state
-        .tee
-        .as_ref()
-        .and_then(|tc| tc.mnemonic_guard.as_ref())
-        .ok_or_else(|| {
-            tee_attestation_error(
-                "mnemonic export not available (TEE mode not active or no KMS bootstrap)",
-            )
-        })?;
+) -> Result<Json<()>, AppError> {
+    crate::operations::keys::ensure_may_export(&state.acl_ks, &auth, "attestation/mnemonic")
+        .await?;
+    Err(AppError::Forbidden(
+        "the mnemonic export is refused over REST: a bearer token alone never releases it. \
+         Send spec/vta/attestation/mnemonic-export/1.0 over DIDComm or TSP, or at first boot \
+         as a Trust Task signed by the caller with clientDid set to the caller's own DID"
+            .into(),
+    ))
+}
 
-    let response = guard.export()?;
-    Ok(Json(response))
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    /// REST is hop-by-hop, so the mnemonic export is refused there even for a
+    /// super admin holding `key-export`, and the guard is left untouched.
+    #[tokio::test]
+    async fn the_rest_mnemonic_export_is_refused() {
+        let (mut state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let guard = Arc::new(crate::tee::mnemonic_guard::MnemonicExportGuard::new(
+            [0x42; 32], 60,
+        ));
+        let tee = crate::tee::init_tee(&crate::config::TeeConfig {
+            mode: crate::config::TeeMode::Simulated,
+            ..Default::default()
+        })
+        .unwrap()
+        .unwrap();
+        state.tee = Some(crate::server::TeeContext {
+            state: tee,
+            mnemonic_guard: Some(guard.clone()),
+        });
+        let err = mnemonic_export(
+            SuperAdminAuth(crate::test_support::super_admin_claims()),
+            State(state),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("DIDComm or TSP")),
+            "{err:?}"
+        );
+        assert!(!guard.status().already_exported);
+    }
 }

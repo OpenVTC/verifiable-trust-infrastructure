@@ -168,7 +168,7 @@ impl OperatorMessages for VtcRecoveryMessages {
     fn pnm_admin_command_hint(&self, context_id: &str, setup_did: &str) -> String {
         format!(
             "pnm acl create --did {setup_did} --role admin --contexts {context_id} \\\n  \
-             --expires 1h"
+             --expires 1h --handoff"
         )
     }
 }

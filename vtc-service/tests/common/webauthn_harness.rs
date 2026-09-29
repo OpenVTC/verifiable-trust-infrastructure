@@ -183,6 +183,27 @@ impl SoftEd25519Authenticator {
         rcr: &RequestChallengeResponse,
         origin: &str,
     ) -> PublicKeyCredential {
+        self.assert_with_flags(rcr, origin, FLAG_UP | FLAG_UV)
+    }
+
+    /// As [`Self::authenticate`], but the authenticator reports the user
+    /// **present and not verified** — a touch with no PIN or biometric. For
+    /// tests that a relying party demanding a human gesture refuses it.
+    #[allow(dead_code)]
+    pub fn authenticate_without_uv(
+        &mut self,
+        rcr: &RequestChallengeResponse,
+        origin: &str,
+    ) -> PublicKeyCredential {
+        self.assert_with_flags(rcr, origin, FLAG_UP)
+    }
+
+    fn assert_with_flags(
+        &mut self,
+        rcr: &RequestChallengeResponse,
+        origin: &str,
+        flags: u8,
+    ) -> PublicKeyCredential {
         let cred_id = rcr
             .public_key
             .allow_credentials
@@ -208,8 +229,7 @@ impl SoftEd25519Authenticator {
             client_data_json("webauthn.get", rcr.public_key.challenge.as_ref(), origin);
         let client_data_hash = Sha256::digest(&client_data_json);
 
-        let auth_data =
-            authenticator_data(&rcr.public_key.rp_id, FLAG_UP | FLAG_UV, sign_count, None);
+        let auth_data = authenticator_data(&rcr.public_key.rp_id, flags, sign_count, None);
 
         // EdDSA signature is over `authenticatorData || clientDataHash`.
         let mut signed = Vec::with_capacity(auth_data.len() + client_data_hash.len());

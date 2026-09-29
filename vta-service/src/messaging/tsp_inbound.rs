@@ -70,7 +70,12 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
             // parse as a Trust Task document". Here the document may be
             // perfectly good and merely unwrapped, so that message would send
             // the sender to inspect the wrong thing.
-            return wrap_envelope(&crate::trust_tasks::malformed_request_response(reason).body);
+            let refusal = crate::trust_tasks::sign_response(
+                app_state,
+                crate::trust_tasks::malformed_request_response(reason),
+            )
+            .await;
+            return wrap_envelope(&refusal.body);
         }
     };
     let payload = document.as_slice();
@@ -81,11 +86,14 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     // `accept_from_proven_sender` explains why that is not the transport's call
     // to make, and what it cost when it was. TSP seals to the recipient VID,
     // same guarantee as authcrypt.
-    let outcome = crate::trust_tasks::accept_from_proven_sender(
-        app_state,
-        sender_vid,
-        payload,
-        crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+    let outcome = crate::trust_tasks::transport::with_binding(
+        "tsp",
+        crate::trust_tasks::accept_from_proven_sender(
+            app_state,
+            sender_vid,
+            payload,
+            crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+        ),
     )
     .await;
     info!(
@@ -130,6 +138,13 @@ pub enum ControlDecision {
     /// **answering** a peer's cancellation of a mutual relationship (§7.3)
     /// rather than refusing anything. Calling it `Refuse` would make a courtesy
     /// read as hostility.
+    ///
+    /// Since affinidi-messaging-sdk 0.27.1 the transport sends that answer
+    /// itself, while recording the peer's cancellation, so this fires only
+    /// when *its* send failed and the answer is still owed. The relationship
+    /// is already forgotten by then, so it is sent with
+    /// `TspOps::answer_cancellation` — `cancel_relationship` would run the
+    /// state machine and refuse `SendCancel` out of `None` (Keyring VTI-38).
     Cancel(&'static str),
     /// Send nothing. The message needed recording and nothing else.
     Nothing,
@@ -175,9 +190,13 @@ pub fn decide_control(request: RelationshipRequest, reply_expected: bool) -> Con
         // state change; answering an accept would start a loop.
         RelationshipRequest::Accept => ControlDecision::Nothing,
         // §7.3: a cancellation for a relationship held in both directions is
-        // answered with one of our own before forgetting it. `reply_expected`
-        // is the transport's reading of that condition, deliberately not
-        // re-derived here.
+        // answered with one of our own before forgetting it. The transport
+        // (affinidi-messaging-sdk 0.27.1+) sends that answer itself, and
+        // `reply_expected` means "the answer is still owed": false once it
+        // went out, or when none was due; true only when the transport's own
+        // send failed. So this retries a failed answer and never sends a
+        // second one. The condition is the transport's reading, deliberately
+        // not re-derived here.
         RelationshipRequest::Cancel => {
             if reply_expected {
                 ControlDecision::Cancel("the peer cancelled a mutual relationship (§7.3)")
@@ -233,9 +252,12 @@ mod tests {
     }
 
     /// §7.3 — and `reply_expected` is the transport's reading of the condition,
-    /// deliberately not re-derived here.
+    /// deliberately not re-derived here. Since affinidi-messaging-sdk 0.27.1 it
+    /// means "the answer is still owed": the transport answers a mutual
+    /// cancellation itself, so `false` also covers "already answered", and
+    /// answering then would send the peer a second cancellation.
     #[test]
-    fn a_cancellation_is_answered_only_when_the_relationship_was_mutual() {
+    fn a_cancellation_is_answered_only_when_the_answer_is_still_owed() {
         assert_eq!(
             decide_control(RelationshipRequest::Cancel, false),
             ControlDecision::Nothing
@@ -307,25 +329,44 @@ mod tests {
     /// so the answer must reach it and nothing may go back.
     #[tokio::test]
     async fn a_reply_reaches_its_waiter_without_the_sender_needing_acl_standing() {
+        use affinidi_tdk::secrets_resolver::secrets::Secret;
         let (app_state, _dir) = build_signing_test_app_state().await;
 
-        const THREAD: &str = "urn:uuid:11111111-1111-1111-1111-111111111111";
-        let mut waiting = app_state.pending_replies.register(THREAD);
+        // The hosting server: a real key, so its reply can carry the proof a
+        // waiter requires. No ACL entry.
+        let mut secret = Secret::generate_ed25519(None, Some(&[0x33; 32]));
+        let mb = secret.get_public_keymultibase().unwrap();
+        let host = format!("did:key:{mb}");
+        secret.id = format!("{host}#{mb}");
 
-        let response = serde_json::json!({
+        const THREAD: &str = "urn:uuid:11111111-1111-1111-1111-111111111111";
+        let mut waiting = app_state.pending_replies.register(THREAD, &host);
+
+        let mut response = serde_json::json!({
             "id": "urn:uuid:22222222-2222-2222-2222-222222222222",
             "threadId": THREAD,
             "type": "https://trusttasks.org/spec/did-management/did/problem-report/0.1",
+            "issuer": host,
             "payload": {},
-        })
-        .to_string();
+        });
 
-        let body = dispatch_one(
-            &app_state,
-            &framed(&response),
-            "did:webvh:zHostingServerWithNoAclEntry",
+        // Unsigned: it does not release the waiter.
+        let body = dispatch_one(&app_state, &framed(&response.to_string()), &host).await;
+        let _ = body;
+        assert!(
+            waiting.try_recv().is_err(),
+            "an unsigned document on the thread must not release the waiter"
+        );
+
+        let proof = affinidi_data_integrity::DataIntegrityProof::sign(
+            &response,
+            &secret,
+            affinidi_data_integrity::SignOptions::new(),
         )
-        .await;
+        .await
+        .unwrap();
+        response["proof"] = serde_json::to_value(proof).unwrap();
+        let body = dispatch_one(&app_state, &framed(&response.to_string()), &host).await;
 
         assert!(
             body.is_empty(),
@@ -334,7 +375,7 @@ mod tests {
         );
         assert!(
             waiting.try_recv().is_ok(),
-            "the waiting request must receive the answer it asked for"
+            "the waiting request must receive the answer its peer signed"
         );
     }
 
@@ -500,5 +541,127 @@ mod tests {
             message.contains("binding/didcomm"),
             "the refusal must name what arrived, so a misconfigured peer can see it: {message}"
         );
+    }
+}
+
+/// Keyring VTI-09 and VTI-27, over the TSP binding — the same answers the
+/// DIDComm binding gives (`router::keyring_vti_09_27`), because both hand the
+/// document to one spine.
+#[cfg(test)]
+mod keyring_vti_09_27 {
+    use super::*;
+    use crate::acl::{AclEntry, Role, store_acl_entry};
+    use crate::auth::session::now_epoch;
+    use crate::test_support::{build_signing_test_app_state, did_for_seed, sign_as};
+    use serde_json::{Value, json};
+
+    const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+
+    /// Send `document` wrapped in the TSP binding envelope from `sender` and
+    /// return the document inside the reply's envelope.
+    async fn send(app_state: &AppState, sender: &str, document: &Value) -> Value {
+        let reply = dispatch_one(
+            app_state,
+            &wrap_envelope(document.to_string().as_bytes()),
+            sender,
+        )
+        .await;
+        let envelope: Value = serde_json::from_slice(&reply).expect("reply is JSON");
+        assert_eq!(
+            envelope["type"].as_str(),
+            Some(trust_tasks_tsp::ENVELOPE_TYPE),
+            "a refusal rides the binding envelope: {envelope}"
+        );
+        envelope["document"].clone()
+    }
+
+    fn signed_request(seed: u8, type_uri: &str) -> Value {
+        let (did, _) = did_for_seed(seed);
+        // The SDK's own builder, as a producer builds one; the recipient is
+        // never reached, because the ACL refuses first.
+        let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+            type_uri,
+            json!({}),
+            &did,
+            "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        )
+        .expect("a well-formed document");
+        sign_as(seed, &mut doc);
+        serde_json::to_value(doc).expect("serialise")
+    }
+
+    /// The document is this service's `trust-task-error`, signed; returns its
+    /// code and message.
+    fn a_signed_trust_task_error(doc: &Value) -> (String, String) {
+        assert_eq!(
+            doc["type"].as_str(),
+            Some(
+                crate::trust_tasks::framework_error_type_uri()
+                    .to_string()
+                    .as_str()
+            ),
+            "{doc}"
+        );
+        assert!(doc.get("proof").is_some(), "the refusal is signed: {doc}");
+        (
+            doc["payload"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            doc["payload"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    }
+
+    /// VTI-09: a bare payload inside the envelope is refused as malformed,
+    /// naming the missing `id`, for an ACL'd sender and a stranger alike.
+    #[tokio::test]
+    async fn vti_09_a_bare_payload_over_tsp_is_refused_as_malformed() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        let (admin, _) = did_for_seed(0x71);
+        store_acl_entry(
+            &app_state.acl_ks,
+            &AclEntry::new(&admin, Role::Admin, "test"),
+        )
+        .await
+        .unwrap();
+        let (stranger, _) = did_for_seed(0x72);
+
+        for sender in [&admin, &stranger] {
+            let doc = send(&app_state, sender, &json!({ "contextId": "ctx1" })).await;
+            let (code, message) = a_signed_trust_task_error(&doc);
+            assert_eq!(code, "malformedRequest", "{sender}: {message}");
+            assert!(
+                message.contains("missing field `id`"),
+                "{sender}: {message}"
+            );
+        }
+    }
+
+    /// VTI-27: no ACL entry, or a lapsed one, is `permissionDenied` in a signed
+    /// `trust-task-error` threaded to the request.
+    #[tokio::test]
+    async fn vti_27_an_acl_refusal_over_tsp_is_a_signed_trust_task_error() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        let (lapsed, _) = did_for_seed(0x74);
+        store_acl_entry(
+            &app_state.acl_ks,
+            &AclEntry::new(&lapsed, Role::Admin, "test")
+                .with_created_at(now_epoch().saturating_sub(7200))
+                .with_expires_at(Some(now_epoch().saturating_sub(60))),
+        )
+        .await
+        .unwrap();
+
+        for seed in [0x73u8, 0x74] {
+            let (sender, _) = did_for_seed(seed);
+            let request = signed_request(seed, KEYS_LIST);
+            let doc = send(&app_state, &sender, &request).await;
+            let (code, message) = a_signed_trust_task_error(&doc);
+            assert_eq!(code, "permissionDenied", "{sender}: {message}");
+            assert_eq!(doc["threadId"], request["id"], "{sender}");
+        }
     }
 }

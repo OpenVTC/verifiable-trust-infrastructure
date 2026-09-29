@@ -2,6 +2,148 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.5.1...vta-tee-v0.6.0) — 2026-09-27
+
+
+### Added
+
+- **attestation**: The TEE attestation reads are public Trust Tasks, over any transport ([#1776](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1776))
+
+* feat(attestation)!: the TEE attestation reads are public Trust Tasks, over any transport
+
+  A TEE VTA answered three attestation reads only as unauthenticated REST routes
+  (`GET /attestation/status`, `GET`/`POST /attestation/report`,
+  `POST /attestation/config-report`), plus a bare DIDComm protocol arm that
+  nothing sent to. Under the rule that every remote API is a spec-first,
+  spine-dispatched Trust Task reachable over TSP, DIDComm and HTTPS, they are now
+  `vta/attestation/{status,report,config-report}/0.1` (trustoverip/
+  dtgwg-trust-tasks-tf#654, trust-tasks-rs 0.23.2), dispatched on the spine.
+
+  Public tasks
+  - `vta_sdk::trust_tasks::PUBLIC_URIS` names the tasks a caller may send with no
+    identity: no session, no ACL entry, no request proof. A verifier asks before
+    it trusts the VTA; the nonce bound into the evidence is what makes a report
+    its own, and every response is the VTA's signed operational document.
+  - HTTPS: `/trust-tasks` takes an optional credential. An anonymous caller may
+    send only a public task (anything else is 401), capped at 64 KB, and those
+    requests are charged to the unauthenticated limiter — which charges only
+    requests presenting no credential, decided by the extractor's own rule
+    (`vti_common::auth::extractor::presents_credential`), so a junk header cannot
+    move a request between the two classes.
+  - DIDComm/TSP: a sender the ACL does not know gets a zero-authority claim for a
+    public task, and `bind_document_to_sender` accepts it unsigned — the spec
+    makes the request proof OPTIONAL and HTTPS accepts it unsigned, so refusing it
+    here would make the requirement depend on the transport (VTI-OPS-021). An
+    attached proof is still verified and bound.
+  - A census (`every_public_task_is_proof_optional_and_read_only`) fails if a task
+    whose spec requires a proof, or whose dispatch class changes state, discloses
+    a secret or acts as its subject, is ever added to `PUBLIC_URIS`.
+
+  Behaviour
+  - `report` and `config-report` require a 32-byte verifier nonce; the cached,
+    nonce-less report is not carried over — evidence nobody asked for is evidence
+    anybody can replay.
+  - Failures carry the specs' declared codes: `notAttested` (no provider),
+    `noConfigSnapshot` (only the enclave front-end captures one),
+    `evidenceUnavailable` (the platform refused a quote).
+  - The VTA still requires `issuedAt` on every document (bounding its replay
+    record), stricter than the spec; the deploy README examples send it.
+
+  Removed (breaking)
+  - The REST routes above and the DIDComm `firstperson.network/vta/1.0/
+    attestation/*` arms, with their SDK constants; `TASK_ATTESTATION_{STATUS,
+    REPORT}_1_0` become `TASK_ATTESTATION_{STATUS,REPORT,CONFIG_REPORT}_0_1` and
+    leave `REST_ROUTED_URIS`.
+  - The `TeeAttestation` DID-document service, which pointed at the REST route
+    (user decision: removed, not re-pointed). `tee.embed_in_did` and
+    `VTA_TEE_EMBED_IN_DID` are **refused** at config load as retired, naming the
+    replacement, rather than silently ignored. The shipped Nitro configs drop the
+    key; the deploy scripts' health hints point at `/health`.
+
+
+
+## [0.5.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.5.0...vta-tee-v0.5.1) — 2026-09-26
+
+
+## [0.5.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.4.2...vta-tee-v0.5.0) — 2026-09-26
+
+
+### Fixed
+
+- **vta-service**: Close the key-material follow-ups from the export audit ([#1743](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1743))
+
+* fix(vta-service): apply the key-export and sign capability checks on every transport
+
+  The KeyExport capability was checked only by the keys/export-secret
+  Trust-Task handler, so GET /keys/{id}/secret and DIDComm get-key-secret
+  released private keys to an admin whose entry was narrowed without
+  key-export. Capability::Sign was checked nowhere.
+
+  Both checks now live in the operation layer (VTI-VTA-003, VTI-VTA-007):
+
+  - get_key_secret requires key-export before any lookup, refuses a
+    hop-by-hop channel (keys/export-secret/0.1 requires a channel
+    confidential to the two parties), keeps the internal-key and
+    non-exportable refusals, and writes the key.secret_export audit row
+    durably before releasing the material, refusing if it cannot.
+  - The Trust-Task binding (https, didcomm, tsp) is recorded at the three
+    entry points and named in the export's audit channel.
+  - vta/contexts/secrets and provision-integration use the same gate.
+  - sign_payload requires sign for opaque caller bytes; derive-and-sign
+    and derive-and-sign-document require sign.
+  - The legacy REST and DIDComm key routes now consult the policy gate
+    with the matching Trust-Task URI.
+  - The TEE mnemonic export writes a durable audit row before release.
+
+
+
+### Security
+
+- **workspace**: No type derives Debug over secret material ([#1711](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1711))
+
+A derived `Debug` prints every field, so on a type holding a private key, a
+  seed or mnemonic, a bearer or refresh token or a password it puts the secret
+  into anything that formats the value — a `tracing` field, an `unwrap` or
+  `expect` on an enclosing type, a test failure, a panic message. About 55 types
+  across twelve crates did exactly that. It surfaced when `vtc-client` began
+  holding an operator's key in a `HolderKey`, whose derived `Debug` printed it.
+
+  Each now has a hand-written `Debug` that reports the secret as `<redacted>` —
+  presence kept visible for an `Option` — and prints every other field as
+  before, the idiom the workspace already used where someone had thought of it.
+  Among them: `HolderKey`, `Session`, `ClientIdentity`, `CredentialBundle`,
+  `SecretEntry`, `AgentConfig`, `AgentConnect`, `AuthResult`, the key-import and
+  seed-rotation requests (mnemonic), `SeedRecord`, `MnemonicExportResponse`,
+  `SecretsConfig` (seed, Vault token, AppRole secret id), `VaultSecret`, its
+  `CustomField` values and secure notes, `TotpSeed`, the VTC install flow's
+  ephemeral signing keys, setup tokens and install JWT, the VTC backup's signing
+  bundle and password, mobile-core's X25519 and Ed25519 private keys, auth tokens
+  and push tokens (including the Web Push auth secret), and vta-mcp's
+  `--agent-key`/`--holder-key`/`--agent-secrets`.
+
+  `Zeroizing<T>` is not a redaction — its `Debug` prints the inner value — so the
+  fields wrapped in it were redacted too.
+
+  `vta-sdk/tests/secret_debug_census.rs` keeps the class closed. It parses every
+  workspace crate with `syn` and fails on a `#[derive(Debug)]` struct or enum
+  whose field has a secret-sounding name (`*_key`, `*token*`, `*secret*`,
+  `seed*`, `password`, `mnemonic`, `jwt`, and `secret_id` despite its `_id`)
+  and a raw type (`String`, bytes, `Zeroizing<_>`, optionally in an `Option` or
+  behind a reference). A field whose type is another workspace type inherits that
+  type's `Debug`, which is checked where it is defined. What the name rule
+  catches and is not a secret — a claim-type vocabulary token, a webvh path
+  called `mnemonic`, the name of an entry in a secret store — is on a
+  shrink-only list with what the field holds, and the census also refuses a
+  stale entry and a walk that has stopped finding types.
+
+  Not an API change: every type still implements `Debug`; only what it prints
+  differs, and no test asserted on the old output.
+
+
+
+## [0.4.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.4.1...vta-tee-v0.4.2) — 2026-09-24
+
+
 ## [0.4.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.4.0...vta-tee-v0.4.1) — 2026-09-23
 
 

@@ -53,9 +53,10 @@ specific to the HTTP/JWT authentication flow:
 - `POST /auth/challenge` — JWT challenge request
 - `POST /auth/` — JWT token issuance
 - `POST /auth/refresh` — JWT token refresh
-- `GET /auth/sessions` — JWT session listing
-- `DELETE /auth/sessions/{id}` — JWT session revocation
-- `DELETE /auth/sessions?did=X` — JWT session bulk revocation
+
+Session listing and revocation are not REST routes: they are the
+`auth/sessions/list/0.1` and `auth/revoke-session/0.2` Trust Tasks, reachable
+over DIDComm, TSP and HTTPS alike.
 
 ## Message Format
 
@@ -101,7 +102,6 @@ All protocol URIs are under `https://firstperson.network/protocols/`.
 | `.../get-key-secret` | `.../get-key-secret-result` | Admin | Export secret key material |
 | `.../sign-request` | `.../sign-result` | Auth + context | Sign payload (signing oracle) |
 | `.../import-key` | `.../import-key-result` | Admin | Import an external private key |
-| `.../get-wrapping-key` | `.../get-wrapping-key-result` | Admin | Get ephemeral wrapping key (REST only) |
 
 #### create-key
 
@@ -256,8 +256,8 @@ Response body:
 
 | Request Type | Response Type | Auth | Description |
 |---|---|---|---|
-| `.../list-seeds` | `.../list-seeds-result` | Admin | List seed generations |
-| `.../rotate-seed` | `.../rotate-seed-result` | Admin | Rotate to a new seed |
+| `.../list-seeds` | `.../list-seeds-result` | Super-admin | List seed generations (instance-wide; a context-scoped admin is refused, FTL-29904) |
+| `.../rotate-seed` | `.../rotate-seed-result` | Super-admin | Rotate to a new seed (instance-wide; see [key custody](../05-design-notes/key-custody.md)) |
 
 #### list-seeds
 
@@ -689,7 +689,7 @@ the same error messages returned by the REST API (e.g. "admin role required",
 |---|---|---|
 | **Auth** | Any role | DID must be in the ACL |
 | **Manage** | Admin or Initiator | Can manage ACL entries and credentials |
-| **Admin** | Admin | Can create/modify keys and seeds |
+| **Admin** | Admin | Can create/modify keys in its contexts; seed operations and caller-chosen derivation paths need a super-admin (unrestricted scope) |
 | **Super Admin** | Admin with empty `allowed_contexts` | Can manage contexts and global config |
 
 ## Protocol Type URIs
@@ -714,8 +714,6 @@ https://firstperson.network/protocols/key-management/1.0/sign-request
 https://firstperson.network/protocols/key-management/1.0/sign-result
 https://firstperson.network/protocols/key-management/1.0/import-key
 https://firstperson.network/protocols/key-management/1.0/import-key-result
-https://firstperson.network/protocols/key-management/1.0/get-wrapping-key
-https://firstperson.network/protocols/key-management/1.0/get-wrapping-key-result
 
 # Seed Management
 https://firstperson.network/protocols/seed-management/1.0/list-seeds

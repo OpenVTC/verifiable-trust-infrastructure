@@ -1,9 +1,26 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { StatementTypesCard } from "@/plugins/vetting/StatementTypesCard";
 import type { AcceptsCriterion } from "@/lib/wire-types";
-import { type MockRoute, mockFetch, renderWithProviders } from "@/test/render";
+import {
+  type MockRoute,
+  mockFetch,
+  renderWithProviders,
+  sentPayloads,
+  taskRoute,
+} from "@/test/render";
+
+// The endorsement-type writes are signed documents; the test browser holds no
+// key, so they go through the unsigned stand-in to the `mockFetch` table.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+  postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+}));
+
+const REGISTER_TASK = "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
+const DELETE_TASK = "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 
 const STATEMENT_TYPE =
   "https://firstperson.network/endorsements/identity-vetting/0.1";
@@ -15,10 +32,7 @@ const REGISTERED = {
   createdByDid: "did:key:zAdmin",
 };
 
-const listRoute: MockRoute = {
-  path: "/v1/endorsement-types",
-  body: { items: [REGISTERED] },
-};
+const listRoute: MockRoute = taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", { items: [REGISTERED] });
 
 /** A criterion counting statements of `statementType`. */
 const criterion = (id: string, statementType: string): AcceptsCriterion =>
@@ -30,23 +44,18 @@ const criterion = (id: string, statementType: string): AcceptsCriterion =>
     createdByDid: "did:key:zAdmin",
   }) as unknown as AcceptsCriterion;
 
-const registerRoute: MockRoute = {
-  method: "POST",
-  path: "/v1/endorsement-types",
-  status: 201,
-  body: (req) => ({
-    endorsementType: {
-      ...(req.body as object),
-      createdAt: "2026-09-01T00:00:00Z",
-      createdByDid: "did:key:zAdmin",
-    },
-  }),
-};
+const registerRoute: MockRoute = taskRoute(REGISTER_TASK, (payload) => ({
+  endorsementType: {
+    ...(payload as object),
+    createdAt: "2026-09-01T00:00:00Z",
+    createdByDid: "did:key:zAdmin",
+  },
+}));
 
 describe("StatementTypesCard", () => {
   it("registers the identity-vetting type when the community has none", async () => {
     const requests = mockFetch([
-      { path: "/v1/endorsement-types", body: { items: [] } },
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", { items: [] }),
       registerRoute,
     ]);
     renderWithProviders(<StatementTypesCard criteria={[]} />);
@@ -56,24 +65,16 @@ describe("StatementTypesCard", () => {
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Register it" }));
 
-    await waitFor(() =>
-      expect(requests.some((r) => r.method === "POST")).toBe(true),
-    );
-    const post = requests.find((r) => r.method === "POST")!;
-    expect(post.body).toEqual({
+    await waitFor(() => expect(sentPayloads(requests, REGISTER_TASK)).toHaveLength(1));
+    expect(sentPayloads(requests, REGISTER_TASK)[0]).toEqual({
       typeUri: STATEMENT_TYPE,
       description: "A member verified this person's identity",
     });
-    expect(post.headers.get("Trust-Task")).toBe(
-      "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1",
-    );
   });
 
   it("lists what is registered and does not offer to register it again", async () => {
     mockFetch([
-      {
-        path: "/v1/endorsement-types",
-        body: {
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", {
           items: [
             {
               typeUri: STATEMENT_TYPE,
@@ -82,8 +83,7 @@ describe("StatementTypesCard", () => {
               createdByDid: "did:key:zAdmin",
             },
           ],
-        },
-      },
+        }),
     ]);
     renderWithProviders(<StatementTypesCard criteria={[]} />);
 
@@ -93,9 +93,7 @@ describe("StatementTypesCard", () => {
 
   it("registers a type an admin types in", async () => {
     const requests = mockFetch([
-      {
-        path: "/v1/endorsement-types",
-        body: {
+      taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", {
           items: [
             {
               typeUri: STATEMENT_TYPE,
@@ -103,8 +101,7 @@ describe("StatementTypesCard", () => {
               createdByDid: "did:key:zAdmin",
             },
           ],
-        },
-      },
+        }),
       registerRoute,
     ]);
     renderWithProviders(<StatementTypesCard criteria={[]} />);
@@ -115,8 +112,8 @@ describe("StatementTypesCard", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Register type" }));
 
-    await waitFor(() => expect(requests.some((r) => r.method === "POST")).toBe(true));
-    expect(requests.find((r) => r.method === "POST")!.body).toEqual({
+    await waitFor(() => expect(sentPayloads(requests, REGISTER_TASK)).toHaveLength(1));
+    expect(sentPayloads(requests, REGISTER_TASK)[0]).toEqual({
       typeUri: "https://example.org/endorsements/affiliation/0.1",
     });
   });
@@ -124,11 +121,7 @@ describe("StatementTypesCard", () => {
   it("offers to remove a type no criterion requires", async () => {
     const requests = mockFetch([
       listRoute,
-      {
-        method: "DELETE",
-        path: `/v1/endorsement-types/${encodeURIComponent(STATEMENT_TYPE)}`,
-        body: { typeUri: STATEMENT_TYPE },
-      },
+      taskRoute(DELETE_TASK, { typeUri: STATEMENT_TYPE }),
     ]);
     renderWithProviders(<StatementTypesCard criteria={[]} />);
 
@@ -139,14 +132,8 @@ describe("StatementTypesCard", () => {
     fireEvent.click(remove);
     fireEvent.click(await screen.findByRole("button", { name: "Remove type" }));
 
-    await waitFor(() =>
-      expect(requests.some((r) => r.method === "DELETE")).toBe(true),
-    );
-    const del = requests.find((r) => r.method === "DELETE")!;
-    expect(del.url).toContain(encodeURIComponent(STATEMENT_TYPE));
-    expect(del.headers.get("Trust-Task")).toBe(
-      "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1",
-    );
+    await waitFor(() => expect(sentPayloads(requests, DELETE_TASK)).toHaveLength(1));
+    expect(sentPayloads(requests, DELETE_TASK)[0]).toEqual({ typeUri: STATEMENT_TYPE });
   });
 
   it("names the criteria that require a type, and refuses to remove it", async () => {
@@ -167,7 +154,7 @@ describe("StatementTypesCard", () => {
     expect(
       screen.getByRole("button", { name: "Remove" }).hasAttribute("disabled"),
     ).toBe(true);
-    expect(requests.some((r) => r.method === "DELETE")).toBe(false);
+    expect(sentPayloads(requests, DELETE_TASK)).toHaveLength(0);
   });
 
   it("does not offer removal while the criteria are unknown", async () => {
@@ -186,16 +173,19 @@ describe("StatementTypesCard", () => {
     mockFetch([
       listRoute,
       {
-        method: "DELETE",
-        path: `/v1/endorsement-types/${encodeURIComponent(STATEMENT_TYPE)}`,
-        status: 409,
-        // `AppError::Conflict` serialises as `{ error: "conflict: <display>" }`
-        // — not `{ message }`, which only the Trust-Task variants carry.
+        method: "POST",
+        path: "/v1/trust-tasks",
+        task: DELETE_TASK,
+        status: 422,
+        // The task's declared refusal, as a `trust-task-error` payload.
         body: {
-          error:
-            "conflict: endorsement-type-in-use: '" +
-            STATEMENT_TYPE +
-            "' is still referenced — 2 live endorsement(s) of it exist. Revoke the endorsements before deleting the type.",
+          payload: {
+            code: "vtc/endorsement-types/delete:inUse",
+            message:
+              "'" +
+              STATEMENT_TYPE +
+              "' is still referenced — 2 live endorsement(s) of it exist. Revoke the endorsements before deleting the type.",
+          },
         },
       },
     ]);

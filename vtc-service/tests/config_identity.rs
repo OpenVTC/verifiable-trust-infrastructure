@@ -8,7 +8,7 @@
 //! surfaces that replaced it — where it holds *structurally* rather than by a
 //! runtime branch:
 //!
-//! - `PATCH /v1/admin/config` (`spec/config/patch/0.1`) can only write keys in
+//! - the signed `spec/config/patch/0.1` document can only write keys in
 //!   the config-store `REGISTRY`, which has four entries — `server.host`,
 //!   `server.port`, `log.level`, `public_url`. Neither identity key is one, so
 //!   both come back under `rejected`.
@@ -22,6 +22,8 @@
 //! the pending-restart path with `server.port`; this suite does it with the
 //! key the legacy PATCH actually wrote, so the migration of that field is
 //! covered end to end.
+
+mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -64,40 +66,12 @@ async fn admin_token(fix: &Fixture) -> String {
     fix.vtc.token("did:key:z6MkAdmin", "admin", vec![]).await
 }
 
-async fn send(
-    fix: &Fixture,
-    method: &str,
-    uri: &str,
-    task: Option<&str>,
-    token: &str,
-    body: Option<Value>,
-) -> (StatusCode, Value) {
-    let mut req = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json")
-        .header("Authorization", format!("Bearer {token}"));
-    if let Some(task) = task {
-        req = req.header("Trust-Task", task);
-    }
-    let body = match body {
-        Some(v) => Body::from(v.to_string()),
-        None => Body::empty(),
-    };
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(req.body(body).unwrap())
-        .await
-        .unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let v: Value = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-    };
-    (status, v)
+/// `task` with `payload`, signed by an unrestricted administrator: the reply's
+/// status and `payload`.
+async fn signed(fix: &Fixture, task: &str, payload: Value) -> (StatusCode, Value) {
+    let admin = common::signed::admin(&fix.vtc).await;
+    let (status, doc) = common::signed::call(&fix.vtc, &admin, task, payload).await;
+    (status, doc["payload"].clone())
 }
 
 /// The retired route is gone from the router, not merely un-gated.
@@ -141,19 +115,15 @@ async fn legacy_config_surface_is_no_longer_routed() {
 #[tokio::test]
 async fn canonical_patch_cannot_rewrite_community_identity() {
     let fix = build().await;
-    let token = admin_token(&fix).await;
     let before = fix.state.config.read().await.vtc_did.clone();
 
-    let (status, body) = send(
+    let (status, body) = signed(
         &fix,
-        "PATCH",
-        "/v1/admin/config",
-        Some(PATCH_TASK),
-        &token,
-        Some(json!({ "overrides": {
+        PATCH_TASK,
+        json!({ "overrides": {
             "vtc_did": "did:key:zEvilNewIdentity",
             "vta_did": "did:key:zNewRecoveryAuthority",
-        }})),
+        }}),
     )
     .await;
 
@@ -186,16 +156,12 @@ async fn canonical_patch_cannot_rewrite_community_identity() {
 #[tokio::test]
 async fn canonical_patch_owns_public_url_and_defers_it_to_restart() {
     let fix = build_with_audit(true).await;
-    let token = admin_token(&fix).await;
     let before = fix.state.config.read().await.public_url.clone();
 
-    let (status, body) = send(
+    let (status, body) = signed(
         &fix,
-        "PATCH",
-        "/v1/admin/config",
-        Some(PATCH_TASK),
-        &token,
-        Some(json!({ "overrides": { "public_url": "https://vtc.example.com" }})),
+        PATCH_TASK,
+        json!({ "overrides": { "public_url": "https://vtc.example.com" }}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "got {body}");
@@ -215,15 +181,7 @@ async fn canonical_patch_owns_public_url_and_defers_it_to_restart() {
     assert_eq!(fix.state.config.read().await.public_url, before);
 
     // …and the canonical read surface reflects the pending value.
-    let (status, body) = send(
-        &fix,
-        "GET",
-        "/v1/admin/config",
-        Some(SHOW_TASK),
-        &token,
-        None,
-    )
-    .await;
+    let (status, body) = signed(&fix, SHOW_TASK, json!({})).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
     let shown = body
         .as_object()

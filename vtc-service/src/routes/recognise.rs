@@ -61,7 +61,7 @@ use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
     get_policy,
 };
-use affinidi_data_integrity::VerificationMethodResolver;
+use vti_common::auth::PurposeVmResolver;
 
 use crate::credentials::vm_resolver::DidVmResolver;
 use crate::recognition::{
@@ -104,7 +104,7 @@ pub struct RecogniseResponse {
     pub data: RecogniseData,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct RecogniseData {
@@ -118,6 +118,18 @@ pub struct RecogniseData {
     pub foreign_issuer_did: String,
     /// Local role the foreign role mapped to.
     pub mapped_role: String,
+}
+
+/// Written by hand so the access token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for RecogniseData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecogniseData")
+            .field("access_token", &"<redacted>")
+            .field("access_expires_at", &self.access_expires_at)
+            .field("foreign_issuer_did", &self.foreign_issuer_did)
+            .field("mapped_role", &self.mapped_role)
+            .finish()
+    }
 }
 
 /// `POST /v1/auth/recognise/challenge` — issue a single-use, TTL'd nonce the
@@ -255,8 +267,7 @@ pub async fn recognise(
     let registry = state.registry_client.as_ref().cloned().ok_or_else(|| {
         AppError::Validation("trust-registry client not configured on this VTC".into())
     })?;
-    let key_resolver: Arc<dyn VerificationMethodResolver> =
-        Arc::new(DidVmResolver::new(Some(resolver)));
+    let key_resolver: Arc<dyn PurposeVmResolver> = Arc::new(DidVmResolver::new(Some(resolver)));
     // Verify the foreign status list's own issuer signature (bound to the
     // VEC/VMC issuer) before trusting it — the same key resolver the proof check
     // uses.

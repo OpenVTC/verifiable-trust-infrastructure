@@ -69,10 +69,28 @@ impl RetentionSweeper {
     ///   absent by `crate::trust_tasks::accepted_ids::AcceptedIds::claim`. The
     ///   in-memory guard it replaced was bounded by capacity eviction; a
     ///   keyspace is not.
+    /// - backup bundles past their TTL (bytes deleted, record marked
+    ///   `Expired`) or past retention once terminal
+    ///   ([`vti_common::backup_transfer::sweeper`]);
+    /// - operation-bound step-up marks past their five-minute life
+    ///   (`step_up_marks_ks`). Also a storage bound: `crate::acl::bound_step_up`
+    ///   treats an expired mark as absent on both reads.
+    /// - unrestricted-admin consent requests and grants past their life
+    ///   (`task_consent_ks`), the same storage bound for
+    ///   `crate::acl::admin_consent`.
+    /// - step-up passkey invites and redemption/revocation ceremonies past
+    ///   their life (`step_up_passkeys_ks`), the same storage bound for
+    ///   `crate::step_up_passkey`. The credentials themselves are kept.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         join_requests_ks: KeyspaceHandle,
         sync_queue_ks: KeyspaceHandle,
         accepted_ids_ks: KeyspaceHandle,
+        step_up_marks_ks: KeyspaceHandle,
+        task_consent_ks: KeyspaceHandle,
+        step_up_passkeys_ks: KeyspaceHandle,
+        backup_bundles_ks: KeyspaceHandle,
+        backup_blob_dir: std::path::PathBuf,
         config: JoinRequestsConfig,
         mut shutdown_rx: watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<()> {
@@ -89,6 +107,7 @@ impl RetentionSweeper {
                 &join_requests_ks,
                 &sync_queue_ks,
                 &accepted_ids_ks,
+                &step_up_marks_ks,
                 config.retention_days,
                 Utc::now(),
             )
@@ -96,6 +115,9 @@ impl RetentionSweeper {
             {
                 warn!(error = %e, "initial retention sweep failed");
             }
+            sweep_backup_bundles(&backup_bundles_ks, &backup_blob_dir).await;
+            sweep_task_consent(&task_consent_ks).await;
+            sweep_step_up_passkeys(&step_up_passkeys_ks).await;
             loop {
                 tokio::select! {
                     _ = shutdown_rx.changed() => {
@@ -107,6 +129,7 @@ impl RetentionSweeper {
                             &join_requests_ks,
                             &sync_queue_ks,
                             &accepted_ids_ks,
+                            &step_up_marks_ks,
                             config.retention_days,
                             Utc::now(),
                         )
@@ -114,10 +137,48 @@ impl RetentionSweeper {
                         {
                             warn!(error = %e, "retention sweep failed");
                         }
+                        sweep_backup_bundles(&backup_bundles_ks, &backup_blob_dir).await;
+                        sweep_task_consent(&task_consent_ks).await;
+                        sweep_step_up_passkeys(&step_up_passkeys_ks).await;
                     }
                 }
             }
         })
+    }
+}
+
+/// Expire backup bundles past their TTL and drop terminal ones past retention.
+/// Separate from [`sweep_all`] because its failures are its own: a bundle whose
+/// bytes could not be deleted is retried next pass without holding up the rest.
+async fn sweep_backup_bundles(ks: &KeyspaceHandle, blob_dir: &std::path::Path) {
+    if let Err(e) = vti_common::backup_transfer::sweeper::sweep_bundles(ks, blob_dir).await {
+        warn!(error = %e, "backup-bundle sweep failed");
+    }
+}
+
+/// Drop lapsed consent requests and grants. Its own pass for the same reason as
+/// [`sweep_backup_bundles`]: a failure here must not hold up the rest.
+async fn sweep_task_consent(ks: &KeyspaceHandle) {
+    match crate::acl::admin_consent::sweep_expired(ks, Utc::now()).await {
+        Ok(0) => {}
+        Ok(n) => info!(
+            expired = n,
+            "retention sweep purged lapsed consent requests and grants"
+        ),
+        Err(e) => warn!(error = %e, "consent sweep failed"),
+    }
+}
+
+/// Drop lapsed step-up passkey invites and ceremonies. Its own pass for the
+/// same reason as [`sweep_backup_bundles`].
+async fn sweep_step_up_passkeys(ks: &KeyspaceHandle) {
+    match crate::step_up_passkey::sweep_expired(ks, Utc::now()).await {
+        Ok(0) => {}
+        Ok(n) => info!(
+            expired = n,
+            "retention sweep purged lapsed step-up passkey invites and ceremonies"
+        ),
+        Err(e) => warn!(error = %e, "step-up passkey sweep failed"),
     }
 }
 
@@ -129,6 +190,7 @@ async fn sweep_all(
     join_requests_ks: &KeyspaceHandle,
     sync_queue_ks: &KeyspaceHandle,
     accepted_ids_ks: &KeyspaceHandle,
+    step_up_marks_ks: &KeyspaceHandle,
     retention_days: u32,
     now: DateTime<Utc>,
 ) -> Result<(), AppError> {
@@ -150,12 +212,14 @@ async fn sweep_all(
     // costs only storage — `claim` already treats an expired record as absent.
     let accepted_ids =
         crate::trust_tasks::accepted_ids::sweep_expired(accepted_ids_ks, now).await?;
-    if challenges + offers + failed_jobs + accepted_ids > 0 {
+    let step_up_marks = crate::acl::bound_step_up::sweep_expired(step_up_marks_ks, now).await?;
+    if challenges + offers + failed_jobs + accepted_ids + step_up_marks > 0 {
         info!(
             expired_challenges = challenges,
             expired_offers = offers,
             failed_sync_jobs = failed_jobs,
             expired_accepted_ids = accepted_ids,
+            expired_step_up_marks = step_up_marks,
             "retention sweep purged auxiliary stale rows"
         );
     }
@@ -288,6 +352,9 @@ mod tests {
         let accepted_ids_ks = store
             .keyspace(crate::store::keyspaces::ACCEPTED_IDS)
             .unwrap();
+        let step_up_marks_ks = store
+            .keyspace(crate::store::keyspaces::STEP_UP_MARKS)
+            .unwrap();
         let now = Utc::now();
 
         // --- stale rows (all must be purged) ---
@@ -335,9 +402,16 @@ mod tests {
         .await
         .unwrap();
 
-        sweep_all(&join_ks, &sync_ks, &accepted_ids_ks, 30, now)
-            .await
-            .unwrap();
+        sweep_all(
+            &join_ks,
+            &sync_ks,
+            &accepted_ids_ks,
+            &step_up_marks_ks,
+            30,
+            now,
+        )
+        .await
+        .unwrap();
 
         // Stale join purged, fresh join survives.
         let join_ids: Vec<_> = list_join_requests(&join_ks)

@@ -213,6 +213,16 @@ chosen  = first protocol in [Tsp, Didcomm, Rest] present in BOTH ours and theirs
 
 ### 3.3a TSP is selected **per surface**, and rides one socket per DID (#803)
 
+> **Update — the protocol-message surface is gone.** Constraint (a) below is
+> historical. The SDK now sends no bare DIDComm protocol messages (every
+> `VtaClient` method is a Trust Task; `VtaClient::rpc` went in #1783), and the
+> VTA's DIDComm router serves only the Trust-Task binding envelope plus plumbing
+> (trust-ping, pickup status, problem-report). There is therefore one surface,
+> and `VtaClient::protocol_message_transport` has been removed;
+> `VtaClient::trust_task_transport` is the client's transport. Constraint (b) —
+> one socket per DID — stands unchanged: a dual-transport client keeps its
+> `DIDCommSession` purely as the carrier on which TSP receive arrives.
+
 Two constraints, discovered in implementation, that §3.2's "pick the highest
 protocol both parties advertise" does not by itself capture. Both are load-bearing
 for any consumer adopting TSP.
@@ -489,7 +499,8 @@ Consequences for the send-seam work:
 
 ### 8.2 Health checks
 
-- `vta-service/src/routes/health.rs::health_details` and
+- `vta-service/src/trust_tasks/health.rs::handle_health_details` (the
+  `vta/health/details/0.1` Trust Task, formerly `GET /health/details`) and
   `vtc-service/src/routes/health.rs::diagnostics`: surface TSP listener status +
   endpoint alongside mediator URL/DID.
 - `pnm-cli/src/commands/health.rs`: add a **TSP connectivity probe** parallel to the
@@ -658,6 +669,31 @@ messaging service to a VTC post-mint should add both.
 4. ~~VTC member messaging default~~ **Resolved (round 3):** VTC→member **stays DIDComm
    until the Phase B flip** (§12). TSP is advertised/accepted before then, but VTC's
    outbound default does not switch to TSP until Phase B.
+   **Done for Trust Task pushes (2026-09-25):** a VTC-originated Trust Task push —
+   removal notice, task-consent request, granted notice — goes through
+   `vtc-service::member_push` and follows the preference order, TSP > DIDComm > REST,
+   matched on the recipient's advertised service `type` (REST only by
+   `TrustTaskHTTPS`). Each attempt is durable on the delivery outbox, and one that
+   produces no delivery evidence in its window escalates to the next transport the
+   recipient offers (VTI-TRN-042). A recipient that advertises nothing still goes over
+   DIDComm through the shared mediator. **The credential-exchange steps followed
+   (2026-09-26):** `offer`, `issue`, `query`, `vtc/members/request-vmc` and
+   `join-requests/submit-receipt` are signed Trust Tasks pushed through the same
+   engine, `request` and `present` are served on the dispatcher at both nodes,
+   and `AppState::send_to_member` is gone. They were never missing a TSP
+   binding — they were bare DIDComm messages typed as their task URI, which no
+   binding allows.
+   The engine moved to `vti_common::trust_task_push` so the VTA can adopt it; the VTC
+   lends it its keyspace, outbox, resolver and messaging through a `PushContext`
+   (`vtc-service::member_push` is now that adapter). The VTA's device pushes — the
+   task-consent request, the granted notice, the step-up approve-request and the
+   conversation-consent approve-request — go through it too
+   (`vta-service::messaging::push`, via `trust_tasks::step_up::push_to_device`):
+   the VTA's route decision is kept (a routable DID is never sent through a mediator
+   it is not registered with), a device recently seen on TSP (`tsp_reach`, now
+   `vti_common::tsp_reach`) is tried over TSP first, and the push-gateway doorbell
+   rings once when the first attempt is queued. The gateway request/reply exchanges
+   (`push/wake`, `push/provision`) are not pushes and stay on the DIDComm bridge.
 5. ~~Endpoint-shape vs reference impl~~ **Resolved (round 4, verified against the
    mediator + SDK source):** the consumer-doc convention (`#tsp` = mediator DID) is
    sound — see §7.1 for the verified mechanics. The mediator **never URL-parses a

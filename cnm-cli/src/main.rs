@@ -1,8 +1,11 @@
+mod access;
 mod audit;
 mod auth;
 mod backup;
 mod config;
+mod consent;
 mod did_log;
+mod git;
 mod setup;
 mod vetting;
 mod vtc;
@@ -82,7 +85,8 @@ struct Cli {
     /// Force a transport instead of auto-selecting. Auto prefers TSP, then
     /// DIDComm, then REST. `tsp` / `didcomm` pin a mediator transport and fail
     /// rather than fall back; `rest` skips both — the recovery path when a
-    /// mediator is unreachable.
+    /// mediator is unreachable. Applies to the VTA and to the Trust Tasks
+    /// `cnm git` sends the VTC.
     #[arg(long, value_enum, default_value_t = TransportOpt::Auto, global = true)]
     transport: TransportOpt,
 
@@ -200,6 +204,27 @@ enum Commands {
     Vetting {
         #[command(subcommand)]
         command: vetting::VettingCommands,
+    },
+
+    /// The community's own access-control list, on its VTC: list, show,
+    /// grant, update, change-role, revoke. (`acl` is the community VTA's.)
+    Access {
+        #[command(subcommand)]
+        command: access::AccessCommands,
+    },
+
+    /// Answer the community's consent requests: making or widening an
+    /// unrestricted administrator needs another one's approval.
+    Consent {
+        #[command(subcommand)]
+        command: consent::ConsentCommands,
+    },
+
+    /// Git namespaces: bind a forge owner, grant and revoke git rights,
+    /// adopt repositories, list what the community governs.
+    Git {
+        #[command(subcommand)]
+        command: git::GitCommands,
     },
 
     /// The community's own DID log, when the community self-hosts it: install a
@@ -546,6 +571,15 @@ enum ContextCommands {
         /// Requires `--admin-did`.
         #[arg(long, requires = "admin_did")]
         admin_expires: Option<String>,
+        /// Mark the admin entry as a **one-time hand-off** (VTI-ACL-054): the
+        /// admin DID may roll over once, while the entry is live, to a long-term
+        /// admin DID the VTA mints for it (provision-integration with an admin
+        /// template). The long-term admin is bounded by your own authority, and
+        /// takes your expiry rather than this entry's. Without it, the rollover
+        /// is refused because the long-term admin would outlive this entry.
+        /// Requires `--admin-expires`.
+        #[arg(long, requires = "admin_expires")]
+        admin_handoff: bool,
     },
     /// Update an existing context
     Update {
@@ -555,8 +589,13 @@ enum ContextCommands {
         #[arg(long)]
         name: Option<String>,
         /// Set the DID for this context
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_did")]
         did: Option<String>,
+        /// Clear this context's DID, leaving it with no identity of its own.
+        /// The DID is not deleted. Sent as `vta/contexts/update-did/1.1`, so
+        /// it needs only admin over the context.
+        #[arg(long)]
+        clear_did: bool,
         /// New description
         #[arg(long)]
         description: Option<String>,
@@ -566,7 +605,12 @@ enum ContextCommands {
         /// Context ID
         id: String,
         /// The new DID to assign
-        did: String,
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        did: Option<String>,
+        /// Clear the context's DID instead, leaving it with no identity of its
+        /// own. The DID is not deleted.
+        #[arg(long)]
+        clear: bool,
     },
     /// Delete an application context and all associated resources
     Delete {
@@ -891,6 +935,9 @@ fn requires_auth(cmd: &Commands) -> bool {
             // nor want a VTA connection first. See `vtc.rs`.
             | Commands::DidLog { .. }
             | Commands::Vetting { .. }
+            | Commands::Git { .. }
+            | Commands::Consent { .. }
+            | Commands::Access { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
     )
@@ -1252,6 +1299,7 @@ async fn main() {
                 admin_did,
                 admin_label,
                 admin_expires,
+                admin_handoff,
             } => {
                 let expires_at = match admin_expires.as_deref() {
                     Some(s) => match vta_cli_common::duration::duration_to_expires_at(s) {
@@ -1272,6 +1320,7 @@ async fn main() {
                     // identity; `pnm contexts create --admin-holder` is where
                     // that grant is made, deliberately.
                     holder: false,
+                    handoff: admin_handoff,
                 };
                 contexts::cmd_context_create(&client, &id, &name, description, parent, admin).await
             }
@@ -1279,11 +1328,29 @@ async fn main() {
                 id,
                 name,
                 did,
+                clear_did,
                 description,
-            } => contexts::cmd_context_update(&client, &id, name, did, description).await,
-            ContextCommands::UpdateDid { id, did } => {
-                contexts::cmd_context_update_did(&client, &id, &did).await
+            } => {
+                // The identity change goes through update-did, never
+                // `contexts/update` — which cannot clear and needs super-admin.
+                if clear_did {
+                    let renamed = if name.is_some() || description.is_some() {
+                        contexts::cmd_context_update(&client, &id, name, None, description).await
+                    } else {
+                        Ok(())
+                    };
+                    match renamed {
+                        Ok(()) => contexts::cmd_context_clear_did(&client, &id).await,
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    contexts::cmd_context_update(&client, &id, name, did, description).await
+                }
             }
+            ContextCommands::UpdateDid { id, did, clear } => match did {
+                Some(did) if !clear => contexts::cmd_context_update_did(&client, &id, &did).await,
+                _ => contexts::cmd_context_clear_did(&client, &id).await,
+            },
             ContextCommands::Delete { id, yes } => {
                 contexts::cmd_context_delete(&client, &id, yes).await
             }
@@ -1348,6 +1415,7 @@ async fn main() {
                         // cnm exposes no capability flags; `None` leaves the
                         // entry holding everything its role implies.
                         None,
+                        false,
                     )
                     .await
                 }
@@ -1431,6 +1499,26 @@ async fn main() {
         Commands::Vetting { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => vetting::run(command, &key, &target).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Git { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => git::run(command, &key, &target, cli.transport.into()).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Consent { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => consent::run(command, &key, &target).await,
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Access { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    access::run(command, &key, &target, cli.transport.into()).await
+                }
                 Err(e) => Err(e),
             }
         }
@@ -2233,6 +2321,75 @@ mod tests {
         }));
     }
 
+    /// `cnm access` administers the VTC, so it authenticates to the VTC and
+    /// never to the VTA first; every verb's documented shape parses.
+    #[test]
+    fn access_commands_parse_and_need_no_vta_session() {
+        for argv in [
+            vec!["cnm", "access", "list"],
+            vec![
+                "cnm",
+                "access",
+                "list",
+                "--scope",
+                "ctx-a",
+                "--direction",
+                "subtree",
+            ],
+            vec!["cnm", "access", "show", "did:key:z6Mk"],
+            vec![
+                "cnm",
+                "access",
+                "grant",
+                "did:key:z6Mk",
+                "--role",
+                "member",
+                "--scopes",
+                "a,b",
+                "--expires",
+                "7d",
+            ],
+            vec![
+                "cnm",
+                "access",
+                "update",
+                "did:key:z6Mk",
+                "--scopes",
+                "a,b,c",
+            ],
+            vec!["cnm", "access", "update", "did:key:z6Mk", "--permanent"],
+            vec![
+                "cnm",
+                "access",
+                "change-role",
+                "did:key:z6Mk",
+                "--from",
+                "member",
+                "--to",
+                "moderator",
+            ],
+            vec!["cnm", "access", "revoke", "did:key:z6Mk", "--scopes", "a"],
+        ] {
+            let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            assert!(!requires_auth(&cli.command), "{argv:?}");
+        }
+        // `--direction` means nothing without a scope to read it against.
+        assert!(Cli::try_parse_from(["cnm", "access", "list", "--direction", "any"]).is_err());
+        // An expiry and a permanent entry cannot both be asked for.
+        assert!(
+            Cli::try_parse_from([
+                "cnm",
+                "access",
+                "update",
+                "did:key:z6Mk",
+                "--expires",
+                "1d",
+                "--permanent"
+            ])
+            .is_err()
+        );
+    }
+
     /// The contract's command shapes parse (CONTRACT-vetter-registry §9).
     #[test]
     fn vetting_commands_parse_as_documented() {
@@ -2298,6 +2455,72 @@ mod tests {
                 panic!("{argv:?} should parse: {e}");
             }
         }
+    }
+
+    /// `git link` starts a link (`--forge`), follows one (`--status`) or lists
+    /// what is linked (`--list`), and those three do not mix.
+    #[test]
+    fn git_link_takes_exactly_one_of_forge_status_or_list() {
+        for ok in [
+            vec!["cnm", "git", "link", "--forge", "github.com"],
+            vec!["cnm", "git", "link", "--forge", "codeberg.org", "--no-wait"],
+            vec!["cnm", "git", "link", "--status", "lnk_4Tq9Xw2P"],
+            vec![
+                "cnm",
+                "git",
+                "link",
+                "--status",
+                "lnk_4Tq9Xw2P",
+                "--no-wait",
+            ],
+            vec!["cnm", "--json", "git", "link", "--list"],
+        ] {
+            if let Err(e) = Cli::try_parse_from(&ok) {
+                panic!("{ok:?} should parse: {e}");
+            }
+        }
+        for bad in [
+            vec!["cnm", "git", "link"],
+            vec!["cnm", "git", "link", "--no-wait"],
+            vec!["cnm", "git", "link", "--list", "--forge", "github.com"],
+            vec!["cnm", "git", "link", "--list", "--status", "lnk_1"],
+            vec!["cnm", "git", "link", "--list", "--no-wait"],
+            vec![
+                "cnm",
+                "git",
+                "link",
+                "--forge",
+                "github.com",
+                "--status",
+                "lnk_1",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(&bad).is_err(),
+                "{bad:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn git_unlink_takes_a_forge_and_an_optional_account_id() {
+        for ok in [
+            vec!["cnm", "git", "unlink", "--forge", "github.com"],
+            vec![
+                "cnm",
+                "git",
+                "unlink",
+                "--forge",
+                "github.com",
+                "--account-id",
+                "9120045",
+            ],
+        ] {
+            if let Err(e) = Cli::try_parse_from(&ok) {
+                panic!("{ok:?} should parse: {e}");
+            }
+        }
+        assert!(Cli::try_parse_from(["cnm", "git", "unlink"]).is_err());
     }
 
     #[test]

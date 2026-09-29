@@ -454,7 +454,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
         "approve-request must carry the VTA's proof: {v}"
     );
     assert_eq!(
-        details["approveRequest"]["proof"]["proofPurpose"], "assertionMethod",
+        details["approveRequest"]["proof"]["proofPurpose"], "authentication",
         "{v}"
     );
 }

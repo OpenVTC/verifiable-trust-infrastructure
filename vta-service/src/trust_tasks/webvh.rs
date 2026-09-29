@@ -21,7 +21,7 @@
 //! | `webvh/servers/update/1.0`          | super-admin |
 //! | `webvh/servers/remove/1.0`          | super-admin |
 //! | `webvh/dids/list/1.0`               | any authed  |
-//! | `webvh/dids/create/1.0`             | admin       |
+//! | `webvh/dids/create/1.0`             | `key-mint`  |
 //! | `webvh/dids/get/1.0`                | any authed  |
 //! | `webvh/dids/get-log/1.0`            | any authed  |
 //! | `webvh/dids/delete/1.0`             | admin       |
@@ -200,7 +200,8 @@ pub(super) async fn handle_dids_list(
     }
 }
 
-/// `webvh/dids/create/1.0` — mint a new DID. Admin role on target context.
+/// `webvh/dids/create/1.0` — mint a new DID. The `key-mint` capability, in the
+/// target context (Keyring VTI-23; gated in `create_did_webvh`).
 pub(super) async fn handle_dids_create(
     state: &AppState,
     auth: &AuthClaims,
@@ -407,7 +408,9 @@ pub(super) async fn handle_agent_name_list(
                     .map(|e| AgentNameEntry {
                         name: e.name,
                         enabled: e.enabled,
-                        created_at: e.created_at,
+                        // The host speaks RFC 3339; the canonical entry the
+                        // VTA relays speaks Unix seconds.
+                        created_at: e.created_at.timestamp().max(0) as u64,
                     })
                     .collect(),
             },
@@ -593,6 +596,7 @@ pub(super) async fn handle_dids_rotate_keys(
         &req.did,
         options,
         vta_did.as_deref(),
+        state.secrets_resolver.as_deref(),
         TRANSPORT_TRUST_TASK,
     )
     .await

@@ -72,8 +72,6 @@ pub const IMPORTED_SECRETS: &str = "imported_secrets";
 /// In [`EXCLUDED_FROM_BACKUP`] by design, not by omission. A backup containing
 /// this keyspace would be an export of keys the VTA promises never to export.
 pub const INTERNAL_KEYS: &str = "internal_keys";
-/// Ephemeral cache (resolver/auth caches).
-pub const CACHE: &str = "cache";
 /// Holder credential vault (third-party secrets stored on this VTA).
 pub const VAULT: &str = "vault";
 /// Persistent runtime service-enable state (`operations::protocol::runtime_state`).
@@ -225,8 +223,8 @@ pub const POLICY: &str = "policy";
 /// Task-execution consent for the PDP's `requireConsent` disposition: pending
 /// approvals keyed by payload digest, and granted consents a re-submitted task
 /// consumes. Distinct from [`CONSENT`] (messaging-bridge conversation consent).
-/// One `policy::consent::PendingTaskConsent` per `pending:<digest>` and
-/// `policy::consent::TaskConsentGrant` per `grant:<digest>:<requester>`.
+/// One `vti_common::task_consent::PendingTaskConsent` per `pending:<digest>` and
+/// `vti_common::task_consent::TaskConsentGrant` per `grant:<digest>:<requester>`.
 /// Durable operator-facing security state → [`BACKED_UP`].
 pub const TASK_CONSENT: &str = "task_consent";
 
@@ -237,6 +235,12 @@ pub const TASK_CONSENT: &str = "task_consent";
 /// persist across restarts once P2b adds guaranteed VTA pushes. Runtime state,
 /// not backed up.
 pub const OUTBOX: &str = "outbox";
+
+/// Trust Task pushes in flight or recently finished — one record per push,
+/// holding the signed document, the transport plan and the outcome
+/// (`vti_common::trust_task_push`). Encrypted at rest; runtime delivery state
+/// like [`OUTBOX`], not backed up.
+pub const TRUST_TASK_PUSHES: &str = "trust_task_pushes";
 
 /// Idempotency records for keyed Trust Tasks — one row per
 /// `(actor, idempotency-key)`, holding the request digest and, for tasks whose
@@ -279,7 +283,6 @@ pub const ALL: &[&str] = &[
     AUDIT,
     AUDIT_KEY,
     IMPORTED_SECRETS,
-    CACHE,
     VAULT,
     SERVICE_STATE,
     SEALED_NONCES,
@@ -300,6 +303,7 @@ pub const ALL: &[&str] = &[
     POLICY,
     TASK_CONSENT,
     OUTBOX,
+    TRUST_TASK_PUSHES,
     IDEMPOTENCY,
     RELATIONSHIPS,
 ];
@@ -379,8 +383,6 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     INTERNAL_KEYS,
     // Live sessions are bound to the JWT key and the node that issued them.
     SESSIONS,
-    // Re-derivable resolution and auth caches.
-    CACHE,
     // The control plane of the transfer carrying this very backup.
     BACKUP_BUNDLES,
     // TTL'd, in-flight passkey enrolment ceremonies.
@@ -391,6 +393,9 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // Reliable-messaging outbox: runtime delivery state, re-driven from live
     // sends, not part of a state backup.
     OUTBOX,
+    // Trust Task push records: the same runtime delivery state as the outbox
+    // they drive, bounded by their retention sweep.
+    TRUST_TASK_PUSHES,
     // Trust-Task idempotency records. Short-lived by construction (a retry
     // window, not durable state) and scoped to the VTA that served the original
     // request — restoring one elsewhere would claim to have already performed
@@ -426,9 +431,6 @@ pub const ENVIRONMENT_BOUND_ROWS: &[(&str, &str)] = &[
     (PERSONA, "pxi:"),
     (PERSONA, "pxf:"),
     (PERSONA, "pxfv"),
-    // Cached bearer tokens for DID-hosting daemons. Service-local secrets; a
-    // restored VTA re-authenticates on first use.
-    (WEBVH, "server-auth:"),
 ];
 
 /// Whether `key` in `keyspace` is an [`ENVIRONMENT_BOUND_ROWS`] row.
@@ -489,7 +491,6 @@ mod tests {
         assert!(is_environment_bound(KEYS, b"tee:vta_did"));
         assert!(is_environment_bound(KEYS, b"hardened:jwt_key"));
         assert!(is_environment_bound(PERSONA, b"pxi:abcd"));
-        assert!(is_environment_bound(WEBVH, b"server-auth:srv1"));
         // Same prefix, different keyspace: carried.
         assert!(!is_environment_bound(ACL, b"tee:mode-b"));
         // The agent's own rows are carried.
@@ -557,7 +558,7 @@ pub const fn did_delete_effect(keyspace: &str) -> Option<DidDeleteEffect> {
         // Key material derived under it, its own log, its advertised name.
         b"keys" | b"internal_keys" | b"imported_secrets" | b"webvh" => Cascade,
         // Resolution + protocol caches keyed by DID: stale the moment it goes.
-        b"cache" | b"outbox" => Cascade,
+        b"outbox" | b"trust_task_pushes" => Cascade,
         // TSP relationships name this VTA's DID as one half of each `(our_vid,
         // their_vid)` pair; with that VID gone the relationship can neither send
         // nor be sent to, so its rows go with it — the same reasoning as the

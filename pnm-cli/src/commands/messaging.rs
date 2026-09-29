@@ -125,6 +125,7 @@ pub(crate) async fn run(
             );
             let result = App::new(console)
                 .with_address_book(book, book_path)
+                .with_logs(crate::LOGS.clone())
                 .run(&mut terminal)
                 .await;
             let _ = ratatui::crossterm::execute!(

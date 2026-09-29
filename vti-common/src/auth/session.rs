@@ -192,6 +192,23 @@ fn refresh_key(token: &str) -> String {
     format!("refresh:{}", refresh_token_hash(token))
 }
 
+/// Key for the hash of the refresh token a session currently issues.
+///
+/// The authority on which token is live, and deliberately **not** a field
+/// of the session row. Several writers read-modify-write that row without
+/// atomicity (`resolve_did_session` on every DIDComm/TSP message,
+/// `touch_last_seen`, step-up's `update_session`), and each writes back
+/// whatever `refresh_token` it read — so a rotation that lands between
+/// their read and their write is silently reverted in the row. Only
+/// [`store_refresh_index`] writes this key, and only login and rotation
+/// call that, so nothing can put an older token back.
+///
+/// The prefix must not start with `refresh:` or `session:`, which are
+/// swept as index entries and session rows respectively.
+fn current_refresh_key(session_id: &str) -> String {
+    format!("refresh-current:{session_id}")
+}
+
 /// SHA-256 (lowercase hex) of a refresh token.
 ///
 /// The one-way handle used wherever a refresh token has to be
@@ -353,15 +370,51 @@ pub async fn resolve_did_session(
     }
 }
 
-/// Store a reverse index from refresh token to session_id.
+/// Store a reverse index from refresh token to session_id, and make
+/// `token` the one refresh token `session_id` currently issues.
+///
+/// Issuing a token *is* making it current — login and rotation are the
+/// only callers — so the two writes live together here rather than
+/// relying on every caller to remember the second. The current-token
+/// record is written first: while the index entry does not yet exist
+/// the token cannot be presented, so no reader can observe an index
+/// entry whose token is not yet current.
+///
+/// A token whose index entry outlives its currency — the previous login's,
+/// or a parallel chain's — is refused by `/auth/refresh`
+/// ([`current_refresh_hash`]), so a second live chain on one session is
+/// impossible by construction rather than by cleanup.
 pub async fn store_refresh_index(
     sessions: &KeyspaceHandle,
     token: &str,
     session_id: &str,
 ) -> Result<(), AppError> {
     sessions
+        .insert_raw(
+            current_refresh_key(session_id),
+            refresh_token_hash(token).into_bytes(),
+        )
+        .await?;
+    sessions
         .insert_raw(refresh_key(token), session_id.as_bytes().to_vec())
         .await
+}
+
+/// Hash of the refresh token `session_id` currently issues, if recorded.
+///
+/// `Ok(None)` for a session whose token was issued before this record
+/// existed; callers fall back to `Session::refresh_token` for those. See
+/// [`current_refresh_key`] for why the row is not the authority.
+pub async fn current_refresh_hash(
+    sessions: &KeyspaceHandle,
+    session_id: &str,
+) -> Result<Option<String>, AppError> {
+    match sessions.get_raw(current_refresh_key(session_id)).await? {
+        Some(bytes) => String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|e| AppError::Internal(format!("invalid refresh hash bytes: {e}"))),
+        None => Ok(None),
+    }
 }
 
 /// Look up a session_id by refresh token.
@@ -411,26 +464,56 @@ pub async fn take_session_id_by_refresh(
     }
 }
 
-/// Record that a given refresh token *was* valid here and has since
-/// been rotated out.
+/// Why a refresh token was retired.
 ///
-/// Rotation deletes the live `refresh:` index, which leaves a replayed
-/// token indistinguishable from one this node never issued — both are
-/// simply absent. That is safe (neither is honoured) but silent: the
-/// single strongest signal of token theft, a token being presented
-/// after it was spent, produces the same 401 as a typo. The tombstone
-/// is what makes the difference legible.
+/// Decides whether the innocent-retry concession in `/auth/refresh`
+/// may apply to a replay of it. That concession exists for exactly one
+/// fault — a rotation response lost in flight — and must not leak to a
+/// token retired for any other reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TombstoneCause {
+    /// Spent on `/auth/refresh` and replaced by its successor. A
+    /// replay may be a client retrying a response it never received,
+    /// so the grace window applies.
+    #[default]
+    Rotated,
+    /// Retired by a fresh login on the same DID, not by being spent.
+    ///
+    /// The grace window must NOT apply. It exists for a client that
+    /// never received its replacement; a client that has just logged
+    /// in holds the replacement and has no reason to present the old
+    /// token. Were the concession allowed here, someone replaying a
+    /// token stolen *before* the re-login would be handed the new one.
+    Superseded,
+}
+
+/// Record that a given refresh token *was* valid here and has since
+/// been retired.
+///
+/// Retirement deletes the live `refresh:` index, which leaves a
+/// replayed token indistinguishable from one this node never issued —
+/// both are simply absent. That is safe (neither is honoured) but
+/// silent: the single strongest signal of token theft, a token being
+/// presented after it was retired, produces the same 401 as a typo.
+/// The tombstone is what makes the difference legible.
 ///
 /// Holds no bearer secret. The token it describes is the *key* (hashed
 /// via [`rotated_key`]), and the token that replaced it is recorded as
 /// a hash, so a storage dump yields nothing usable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RefreshTombstone {
-    /// Session the rotated token belonged to. The revocation target
+    /// Session the retired token belonged to. The revocation target
     /// when a replay turns out to be genuine reuse.
     pub session_id: String,
-    /// When the rotation happened. The innocent-retry grace window is
-    /// measured from here.
+    /// Subject the retired token authenticated.
+    ///
+    /// Carried so the reuse alert can always name the account, even
+    /// when the session row is already gone and cannot be consulted.
+    #[serde(default)]
+    pub did: String,
+    /// When the retirement happened. The innocent-retry grace window
+    /// is measured from here.
     pub rotated_at: u64,
     /// When this tombstone may be reaped — `rotated_at +
     /// refresh_token_ttl`. Carried on the record rather than derived
@@ -448,29 +531,30 @@ pub struct RefreshTombstone {
     /// reason to ever present the old token again, so a replay once
     /// the chain has advanced is not a retry.
     pub successor_hash: String,
+    /// Why the token was retired. See [`TombstoneCause`].
+    #[serde(default)]
+    pub cause: TombstoneCause,
 }
 
-/// Tombstone a rotated refresh token.
+/// Tombstone a retired refresh token.
+///
+/// Takes the whole record rather than its parts: the fields are two
+/// adjacent `String`s and two adjacent `u64`s, so a positional
+/// signature let a caller transpose `rotated_at` and `ttl` — or
+/// `session_id` and `did` — and still compile, silently corrupting the
+/// reaping deadline or the alert's subject. Named-field construction
+/// at the call site makes that unrepresentable.
 ///
 /// Called *after* the replacement token's index is durable, so a crash
-/// mid-rotation costs at most the ability to detect a later replay —
+/// mid-retirement costs at most the ability to detect a later replay —
 /// never the session itself.
 pub async fn store_refresh_tombstone(
     sessions: &KeyspaceHandle,
     rotated_token: &str,
-    session_id: &str,
-    successor_token: &str,
-    rotated_at: u64,
-    ttl: u64,
+    tombstone: &RefreshTombstone,
 ) -> Result<(), AppError> {
-    let tombstone = RefreshTombstone {
-        session_id: session_id.to_string(),
-        rotated_at,
-        expires_at: rotated_at.saturating_add(ttl),
-        successor_hash: refresh_token_hash(successor_token),
-    };
     let key = rotated_key(rotated_token);
-    sessions.insert(key, &tombstone).await
+    sessions.insert(key, tombstone).await
 }
 
 /// Look up the tombstone for a refresh token, if this node rotated it
@@ -526,6 +610,7 @@ pub async fn delete_session(sessions: &KeyspaceHandle, session_id: &str) -> Resu
         if let Some(ref token) = session.refresh_token {
             sessions.remove(refresh_key(token)).await?;
         }
+        sessions.remove(current_refresh_key(session_id)).await?;
         sessions.remove(session_key(session_id)).await?;
         debug!(session_id, "session deleted");
     }
@@ -604,9 +689,82 @@ pub async fn cleanup_expired_sessions(
             if let Some(ref token) = session.refresh_token {
                 sessions.remove(refresh_key(token)).await?;
             }
+            sessions
+                .remove(current_refresh_key(&session.session_id))
+                .await?;
             removed += 1;
         } else {
             live_sessions.insert(session.session_id);
+        }
+    }
+
+    // GC orphan `refresh:{hash}` reverse-index entries — entries whose
+    // token is no longer the one its session currently issues.
+    //
+    // Hygiene, not the security boundary. `/auth/refresh` already refuses
+    // a claimed token that is not current (`current_refresh_hash`), so an
+    // orphan cannot mint anything. But `store_refresh_index` writes with no
+    // TTL and nothing else removes a superseded entry, so without this pass
+    // they accumulate for the life of the store.
+    //
+    // Currency is read from the `refresh-current:` record, never from the
+    // session row's `refresh_token`: read-modify-write writers of the row
+    // (`resolve_did_session`, `touch_last_seen`, step-up) can put an older
+    // token back into it, and deciding from the row would then delete the
+    // index of the token the client actually holds and sign it out. The
+    // record is safe to race: `store_refresh_index` writes it *before* the
+    // index entry, so any entry that exists was current when it was
+    // written, and only a newer issuance can move the record off it.
+    //
+    // Sessions issued before the record existed have none; for those the
+    // row is the only evidence, as it is on the refresh path.
+    let refresh_entries = sessions.prefix_iter_raw("refresh:").await?;
+    let mut orphan_refresh_removed = 0u64;
+    for (key, value) in refresh_entries {
+        let session_id = match std::str::from_utf8(&value) {
+            Ok(s) => s.to_string(),
+            // Malformed; it can never authorise anything. Drop it.
+            Err(_) => {
+                sessions.remove(key).await?;
+                orphan_refresh_removed += 1;
+                continue;
+            }
+        };
+        // No row, nothing to refresh into — `/auth/refresh` answers
+        // `SessionNotFound` — whatever the current-token record says.
+        let Some(row) = sessions.get::<Session>(session_key(&session_id)).await? else {
+            sessions.remove(key).await?;
+            orphan_refresh_removed += 1;
+            continue;
+        };
+        let still_current = match current_refresh_hash(sessions, &session_id).await? {
+            Some(hash) => format!("refresh:{hash}").as_bytes() == key.as_slice(),
+            None => row
+                .refresh_token
+                .is_some_and(|live| refresh_key(&live).as_bytes() == key.as_slice()),
+        };
+        if !still_current {
+            sessions.remove(key).await?;
+            orphan_refresh_removed += 1;
+        }
+    }
+
+    // GC `refresh-current:` records whose session row is gone. Every
+    // writer stores the row before the record, so a record without a row
+    // belongs to a session that was deleted or expired. Removing one that a
+    // concurrent login is about to pair with a fresh row costs nothing: the
+    // refresh path then falls back to the row, which names the same token.
+    let current_entries = sessions.prefix_iter_raw("refresh-current:").await?;
+    for (key, _) in current_entries {
+        let Some(session_id) = key
+            .strip_prefix(b"refresh-current:".as_slice())
+            .and_then(|id| std::str::from_utf8(id).ok())
+        else {
+            sessions.remove(key).await?;
+            continue;
+        };
+        if sessions.get_raw(session_key(session_id)).await?.is_none() {
+            sessions.remove(key).await?;
         }
     }
 
@@ -662,6 +820,7 @@ pub async fn cleanup_expired_sessions(
     debug!(
         removed,
         nonces_removed = nonce_removed,
+        orphan_refresh_removed,
         tombstones_removed,
         "session cleanup complete"
     );
@@ -1245,24 +1404,140 @@ mod tests {
         assert!(get_session(&ks, "uuid-dead").await.unwrap().is_none());
     }
 
-    // ── Rotated-token tombstones ────────────────────────────────────
+    // ── Orphan refresh-index entries ────────────────────────────────
+
+    /// The gap a code fix alone cannot reach: entries written by logins
+    /// that predate the retirement in `handle_authenticate`.
+    ///
+    /// They are not inert. `/auth/refresh` authorises from this index
+    /// alone, so an orphan pointing at a DID works again as soon as that
+    /// DID has a session row — it outlives a revocation and returns at
+    /// the next login. Only the sweep removes them.
+    #[tokio::test]
+    async fn cleanup_removes_a_refresh_index_its_session_no_longer_names() {
+        let (ks, _dir) = temp_sessions_ks();
+        let now = now_epoch();
+        let mut session = sample_session("did:key:zA", "did:key:zA", SessionState::Authenticated);
+        session.refresh_token = Some("current-token".into());
+        session.refresh_expires_at = Some(now + 86_400);
+        store_session(&ks, &session).await.unwrap();
+        // Written as a login before this change did: index entries only, no
+        // current-token record, so the row is the only evidence of currency.
+        for token in ["current-token", "token-from-an-earlier-login"] {
+            ks.insert_raw(refresh_key(token), b"did:key:zA".to_vec())
+                .await
+                .unwrap();
+        }
+
+        cleanup_expired_sessions(&ks, 60).await.unwrap();
+
+        assert_eq!(
+            get_session_by_refresh(&ks, "current-token").await.unwrap(),
+            Some("did:key:zA".to_string()),
+            "the token the session names must survive",
+        );
+        assert!(
+            get_session_by_refresh(&ks, "token-from-an-earlier-login")
+                .await
+                .unwrap()
+                .is_none(),
+            "the superseded entry must not resolve after the sweep",
+        );
+    }
+
+    /// The sweep decides currency from the current-token record, not from
+    /// the session row. Read-modify-write writers of the row (an activity
+    /// touch, `resolve_did_session`, step-up) can put an older
+    /// `refresh_token` back into it after a rotation; a sweep that trusted
+    /// the row would then delete the index of the token the client holds and
+    /// sign it out.
+    #[tokio::test]
+    async fn cleanup_keeps_the_current_token_when_the_row_names_an_older_one() {
+        let (ks, _dir) = temp_sessions_ks();
+        let now = now_epoch();
+        let mut session = sample_session("did:key:zA", "did:key:zA", SessionState::Authenticated);
+        session.refresh_token = Some("rotated".into());
+        session.refresh_expires_at = Some(now + 86_400);
+        store_session(&ks, &session).await.unwrap();
+        store_refresh_index(&ks, "rotated", "did:key:zA")
+            .await
+            .unwrap();
+        // The rotation: new token current, its predecessor's entry claimed.
+        let mut after = session.clone();
+        after.refresh_token = Some("successor".into());
+        store_session(&ks, &after).await.unwrap();
+        store_refresh_index(&ks, "successor", "did:key:zA")
+            .await
+            .unwrap();
+        take_session_id_by_refresh(&ks, "rotated").await.unwrap();
+        // The lost update: a writer that read the row before the rotation
+        // saves it back.
+        update_session(&ks, &session).await.unwrap();
+
+        cleanup_expired_sessions(&ks, 60).await.unwrap();
+
+        assert_eq!(
+            get_session_by_refresh(&ks, "successor").await.unwrap(),
+            Some("did:key:zA".to_string()),
+        );
+    }
+
+    /// An entry whose session row is gone entirely — left by a
+    /// revocation that removed only the token the row named.
+    #[tokio::test]
+    async fn cleanup_removes_a_refresh_index_whose_session_is_gone() {
+        let (ks, _dir) = temp_sessions_ks();
+        store_refresh_index(&ks, "stranded", "did:key:zVanished")
+            .await
+            .unwrap();
+
+        cleanup_expired_sessions(&ks, 60).await.unwrap();
+
+        assert!(
+            get_session_by_refresh(&ks, "stranded")
+                .await
+                .unwrap()
+                .is_none(),
+        );
+    }
+
+    // ── Retired-token tombstones ────────────────────────────────────
+
+    /// A `Rotated` tombstone for `successor`, retired `rotated_at` with
+    /// `ttl` seconds of usefulness left.
+    fn tombstone(session_id: &str, successor: &str, rotated_at: u64, ttl: u64) -> RefreshTombstone {
+        RefreshTombstone {
+            session_id: session_id.to_string(),
+            did: session_id.to_string(),
+            rotated_at,
+            expires_at: rotated_at + ttl,
+            successor_hash: refresh_token_hash(successor),
+            cause: TombstoneCause::Rotated,
+        }
+    }
 
     #[tokio::test]
     async fn a_tombstone_round_trips_and_is_keyed_by_the_token_it_describes() {
         let (ks, _dir) = temp_sessions_ks();
         let now = now_epoch();
-        store_refresh_tombstone(&ks, "spent", "did:key:zA", "successor", now, 86_400)
-            .await
-            .unwrap();
+        store_refresh_tombstone(
+            &ks,
+            "spent",
+            &tombstone("did:key:zA", "successor", now, 86_400),
+        )
+        .await
+        .unwrap();
 
         let t = get_refresh_tombstone(&ks, "spent")
             .await
             .unwrap()
             .expect("tombstone");
         assert_eq!(t.session_id, "did:key:zA");
+        assert_eq!(t.did, "did:key:zA");
         assert_eq!(t.rotated_at, now);
         assert_eq!(t.expires_at, now + 86_400);
         assert_eq!(t.successor_hash, refresh_token_hash("successor"));
+        assert_eq!(t.cause, TombstoneCause::Rotated);
 
         assert!(
             get_refresh_tombstone(&ks, "some-other-token")
@@ -1271,6 +1546,30 @@ mod tests {
                 .is_none(),
             "tombstones must not leak across tokens",
         );
+    }
+
+    /// A record written before `cause` and `did` existed must still
+    /// decode, and must default to the conservative reading: `Rotated`,
+    /// the only cause the grace window was ever applied to.
+    #[tokio::test]
+    async fn a_tombstone_without_the_newer_fields_still_decodes() {
+        let (ks, _dir) = temp_sessions_ks();
+        let legacy = serde_json::json!({
+            "session_id": "did:key:zA",
+            "rotated_at": 1_000_u64,
+            "expires_at": 2_000_u64,
+            "successor_hash": refresh_token_hash("next"),
+        });
+        ks.insert(format!("rotated:{}", refresh_token_hash("old")), &legacy)
+            .await
+            .unwrap();
+
+        let t = get_refresh_tombstone(&ks, "old")
+            .await
+            .unwrap()
+            .expect("a legacy tombstone must still decode");
+        assert_eq!(t.cause, TombstoneCause::Rotated);
+        assert_eq!(t.did, "");
     }
 
     /// Neither the tombstoned token nor its successor may be recoverable
@@ -1282,10 +1581,7 @@ mod tests {
         store_refresh_tombstone(
             &ks,
             "spent-secret-uuid",
-            "did:key:zA",
-            "successor-secret-uuid",
-            now_epoch(),
-            86_400,
+            &tombstone("did:key:zA", "successor-secret-uuid", now_epoch(), 86_400),
         )
         .await
         .unwrap();
@@ -1305,15 +1601,23 @@ mod tests {
     async fn cleanup_reaps_only_tombstones_past_their_own_deadline() {
         let (ks, _dir) = temp_sessions_ks();
         let now = now_epoch();
-        // Rotated 10s ago with a 1h TTL — still useful for detection.
-        store_refresh_tombstone(&ks, "fresh", "did:key:zA", "next", now - 10, 3600)
-            .await
-            .unwrap();
-        // Rotated two days ago with a 1-day TTL — the token it describes
+        // Retired 10s ago with a 1h TTL — still useful for detection.
+        store_refresh_tombstone(
+            &ks,
+            "fresh",
+            &tombstone("did:key:zA", "next", now - 10, 3600),
+        )
+        .await
+        .unwrap();
+        // Retired two days ago with a 1-day TTL — the token it describes
         // would be refused on expiry anyway.
-        store_refresh_tombstone(&ks, "stale", "did:key:zA", "next", now - 172_800, 86_400)
-            .await
-            .unwrap();
+        store_refresh_tombstone(
+            &ks,
+            "stale",
+            &tombstone("did:key:zA", "next", now - 172_800, 86_400),
+        )
+        .await
+        .unwrap();
 
         cleanup_expired_sessions(&ks, 60).await.unwrap();
 
@@ -1328,9 +1632,13 @@ mod tests {
     async fn cleanup_keeps_a_tombstone_whose_session_is_already_gone() {
         let (ks, _dir) = temp_sessions_ks();
         let now = now_epoch();
-        store_refresh_tombstone(&ks, "spent", "did:key:zGone", "next", now, 86_400)
-            .await
-            .unwrap();
+        store_refresh_tombstone(
+            &ks,
+            "spent",
+            &tombstone("did:key:zGone", "next", now, 86_400),
+        )
+        .await
+        .unwrap();
         // No `session:did:key:zGone` row exists at all.
 
         cleanup_expired_sessions(&ks, 60).await.unwrap();

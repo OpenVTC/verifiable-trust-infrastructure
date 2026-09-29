@@ -7,21 +7,14 @@
 //! and response decoding work end-to-end through the routing/2.0
 //! forward envelope path enforced by the test mediator.
 //!
-//! # Two request shapes
+//! # One request shape
 //!
-//! There are now two wire shapes to mock, because #861 (#829) routed every
-//! client method with a Trust Task twin through `rpc_tt`:
-//!
-//! - **Trust Task** (the majority): the DIDComm message type is the binding
-//!   envelope [`TT_ENVELOPE`] and the body is a trust-task document
-//!   `{ id, type, payload }`, so the responder must dispatch on the *inner*
-//!   `type` URI (a `vta_sdk::trust_tasks::TASK_*` constant) — see [`is_tt`]
-//!   / [`tt_ok`].
-//! - **Legacy protocol message**: what remains on `rpc` — the deprecated
-//!   `backup_export`/`backup_import` and webvh server/DID updates — dispatch
-//!   on the `*_management` message-type constant. The ACL reads and updates
-//!   left behind by #861 moved to Trust Tasks in #884 — they were the ones
-//!   where the maintainer had already folded and the client had not.
+//! Every client method is a Trust Task: the DIDComm message type is the
+//! binding envelope [`TT_ENVELOPE`] and the body is a trust-task document
+//! `{ id, type, payload }`, so the responder dispatches on the *inner* `type`
+//! URI (a `vta_sdk::trust_tasks::TASK_*` constant) — see [`is_tt`] /
+//! [`tt_ok`]. The legacy protocol messages (#861, #884, and the inline backup
+//! and `(context, scid)` webvh methods last) are gone.
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
@@ -29,7 +22,6 @@ use vta_sdk::client::*;
 use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::error::VtaError;
 use vta_sdk::keys::{KeyOrigin, KeyStatus, KeyType};
-use vta_sdk::protocols::backup_management;
 use vta_sdk::protocols::key_management::sign::SignAlgorithm;
 use vta_sdk::trust_tasks;
 
@@ -1135,45 +1127,6 @@ async fn delete_did_webvh_via_didcomm() {
     shutdown_all(client, responder, mediator).await;
 }
 
-// ── Backup ──────────────────────────────────────────────────────────
-
-/// The `backup/*` pair is twinless, so it stays on the legacy message (#861).
-//
-// `backup_export` is `#[deprecated]` in favour of the descriptor flow, and this
-// test calls it on purpose: the legacy inline path is exactly what it covers,
-// and it needs to keep working for as long as it ships. Allowing the lint here
-// — rather than silencing it globally or dropping the test — keeps the warning
-// live for every *other* caller, which is who it is aimed at.
-#[allow(deprecated)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn backup_export_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == backup_management::EXPORT_BACKUP {
-            ResponderReply::ok(
-                backup_management::EXPORT_BACKUP_RESULT,
-                json!({
-                    "version": 1,
-                    "format": "vtabak/v1",
-                    "created_at": "2026-05-05T12:00:00Z",
-                    "source_version": "0.5.0",
-                    "kdf": {"algorithm": "argon2id", "salt": "AAAA", "m_cost": 65536, "t_cost": 3, "p_cost": 4},
-                    "encryption": {"algorithm": "AES-256-GCM", "nonce": "AAAA"},
-                    "includes_audit": false,
-                    "ciphertext": "AAAA"
-                }),
-            )
-        } else {
-            no_handler()
-        }
-    })
-    .await;
-
-    let env = client.backup_export("hunter2hunter2", false).await.unwrap();
-    assert_eq!(env.version, 1);
-
-    shutdown_all(client, responder, mediator).await;
-}
-
 // ── Error mapping through the rpc layer ─────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1207,15 +1160,34 @@ async fn list_keys_unknown_problem_code_via_didcomm() {
 
 // ── Unsupported-transport branches ──────────────────────────────────
 
+/// The wrapping key is `keys/import-wrapping-key/0.1`, a Trust Task reachable
+/// over DIDComm too — it used to be REST-only and refused here as an
+/// unsupported transport.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn get_wrapping_key_returns_unsupported_transport_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|_, _| ResponderReply::Drop).await;
+async fn get_wrapping_key_dispatches_the_trust_task_via_didcomm() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(
+            msg_type,
+            body,
+            trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+        ) {
+            tt_ok(
+                trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+                json!({
+                    "wrappingKey": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+                    "keyId": "k1",
+                    "expiresAt": "2026-09-27T09:11:00Z",
+                }),
+            )
+        } else {
+            no_handler()
+        }
+    })
+    .await;
 
-    let err = client.get_wrapping_key().await.unwrap_err();
-    assert!(
-        matches!(err, VtaError::UnsupportedTransport(_)),
-        "got {err:?}"
-    );
+    let key = client.get_wrapping_key().await.expect("a wrapping key");
+    assert_eq!(key.key_id.as_str(), "k1");
+    assert!(key.wrapping_key.starts_with("did:key:z6Mk"));
 
     shutdown_all(client, responder, mediator).await;
 }

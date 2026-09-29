@@ -34,8 +34,9 @@
 //! [`verify_trust_task_proof`], whose `did:key`-only behaviour is unchanged for
 //! callers that want it.
 
-use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
+use affinidi_data_integrity::{DataIntegrityError, DataIntegrityProof, VerifyOptions};
 
+use super::purpose::{ProofPurpose, PurposeBound};
 use super::vm_resolver::TrustTaskVmResolver;
 use serde::Serialize;
 use serde_json::Value;
@@ -51,8 +52,23 @@ pub enum DiProofError {
     NotDataIntegrity,
     /// The proof's `verificationMethod` carries no DID.
     NoDid,
+    /// The signer's key could not be retrieved — no resolver is configured
+    /// for its DID method, or the DID did not resolve (network, rate limit,
+    /// lookup failure) — so the proof was never checked. Distinct from the
+    /// proof being wrong, which includes a key the signer's DID document does
+    /// not authorise for the proof's purpose: that stays [`Self::VerifyFailed`].
+    /// Either way the document is refused. Renders identically to [`Self::VerifyFailed`] on
+    /// the wire (see that variant's `Display` arm for why); a caller that
+    /// verifies its own outbound reply may branch on this variant directly to
+    /// tell "could not retrieve the key" apart from "proof is invalid".
+    ResolverFailed(String),
     /// The signature failed to verify (carries the underlying reason).
     VerifyFailed(String),
+    /// The proof declares a purpose other than the one this document needs.
+    WrongPurpose {
+        /// The purpose the document needs.
+        expected: &'static str,
+    },
 }
 
 impl DiProofError {
@@ -64,7 +80,7 @@ impl DiProofError {
     #[must_use]
     pub fn cause(&self) -> Option<&str> {
         match self {
-            Self::VerifyFailed(e) => Some(e),
+            Self::ResolverFailed(e) | Self::VerifyFailed(e) => Some(e),
             _ => None,
         }
     }
@@ -89,9 +105,38 @@ impl std::fmt::Display for DiProofError {
             // retrying unchanged will not help. It does not need to know why,
             // and every additional word is an oracle. The cause is available
             // to the operator through [`Self::cause`].
-            Self::VerifyFailed(_) => write!(f, "proof verification failed"),
+            //
+            // `ResolverFailed` renders identically and deliberately: it is
+            // the same `DataIntegrityError::Resolver` distinction one layer
+            // down, exposed to callers who branch on the variant itself
+            // rather than on this text — this text still must not tell an
+            // unauthenticated caller whether the difference was "could not
+            // reach the resolver" versus "the signature was wrong".
+            Self::ResolverFailed(_) | Self::VerifyFailed(_) => {
+                write!(f, "proof verification failed")
+            }
+            Self::WrongPurpose { expected } => {
+                write!(f, "proof must be made for `{expected}`")
+            }
         }
     }
+}
+
+/// Classify a verification failure as a retrieval problem or an actual bad
+/// proof — the one place `DataIntegrityError` becomes a `DiProofError`, so
+/// every caller of [`verify_trust_task_proof_with`] gets the same answer.
+///
+/// Only a failure to *retrieve* the key is a resolver failure. The resolver
+/// also refuses keys the DID document does not authorise for the proof's
+/// purpose, controller mismatches and malformed methods through the same
+/// upstream `Resolver` variant; those are verdicts on the proof, and reporting
+/// one as "could not retrieve" would tell a caller a forged reply "may be
+/// genuine".
+fn classify(e: DataIntegrityError) -> DiProofError {
+    if super::vm_resolver::is_unretrievable(&e) {
+        return DiProofError::ResolverFailed(e.to_string());
+    }
+    DiProofError::VerifyFailed(e.to_string())
 }
 
 /// Verify the proof on `doc` **against `did:key` only**, with no network I/O.
@@ -158,9 +203,318 @@ pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
 
     let mut unsigned = doc.clone();
     unsigned.proof = None;
-    di.verify(&unsigned, resolver, VerifyOptions::new())
-        .await
-        .map_err(|e| DiProofError::VerifyFailed(e.to_string()))?;
+    // VTI-KEY-022: the key must be one the signer authorised for the purpose
+    // the proof declares, not merely a key its DID document lists.
+    let bound = PurposeBound::for_proof(resolver, &di).map_err(classify)?;
+    if let Err(first) = di.verify(&unsigned, &bound, VerifyOptions::new()).await {
+        // Checked against a cached document, a failure may only mean the
+        // signer rotated since it was cached — the key id kept, its material
+        // replaced. Re-resolve once, fresh, and verify again; fail closed on
+        // whatever that says (VTI-KEY-134). A document fetched for this call is
+        // not fetched again, and the refresh is rate-limited per DID
+        // (`FRESH_RESOLVE_MIN_INTERVAL`), so a stream of bad proofs cannot turn
+        // this verifier into a fetch amplifier. The retry stays bound to the
+        // proof's purpose.
+        if !resolver.refresh_if_cached(&signer_did).await {
+            return Err(classify(first));
+        }
+        di.verify(&unsigned, &bound, VerifyOptions::new())
+            .await
+            .map_err(classify)?;
+    }
 
     Ok(signer_did)
+}
+
+/// The `proofPurpose` of a human approver's own decision: a
+/// `task-consent/decision` or a step-up `approve-response`.
+pub const APPROVAL_PROOF_PURPOSE: &str = "assertionMethod";
+
+/// Verify a human approver's decision (`task-consent/decision`, step-up
+/// `approve-response`) and return the proven signer DID.
+///
+/// Everything [`verify_trust_task_proof_with`] checks, plus: the proof is made
+/// for [`APPROVAL_PROOF_PURPOSE`]. A decision is the approver's attestation,
+/// not an operational message, and a proof made for `authentication` is
+/// refused. This matches the did-hosting RP's `verify_approval`
+/// (affinidi-webvh-service #213), which is where a wallet's decisions are also
+/// sent.
+///
+/// That the key is listed under the signer's `assertionMethod` relationship is
+/// not a second check here: it is VTI-KEY-022's purpose binding, which every
+/// proof gets — the verification runs through a [`PurposeBound`] resolver
+/// fixed to `assertionMethod`, including the retry after a DID-cache refresh.
+///
+/// Binding the signer to the approver the caller expects remains the caller's
+/// job, as with [`verify_trust_task_proof_with`].
+pub async fn verify_approval_proof_with<P: Serialize + Clone + Sync>(
+    doc: &TrustTask<P>,
+    resolver: &TrustTaskVmResolver,
+) -> Result<String, DiProofError> {
+    let proof = doc.proof.as_ref().ok_or(DiProofError::NoProof)?;
+    let di: DataIntegrityProof = serde_json::to_value(proof)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .ok_or(DiProofError::NotDataIntegrity)?;
+    if ProofPurpose::parse(&di.proof_purpose).ok() != Some(ProofPurpose::AssertionMethod) {
+        return Err(DiProofError::WrongPurpose {
+            expected: APPROVAL_PROOF_PURPOSE,
+        });
+    }
+    // The declared purpose is now `assertionMethod`, so the general verifier
+    // binds the resolver to exactly that relationship.
+    verify_trust_task_proof_with(doc, resolver).await
+}
+
+/// [`verify_approval_proof_with`] against `did:key` only, with no network I/O.
+pub async fn verify_approval_proof(doc: &TrustTask<Value>) -> Result<String, DiProofError> {
+    verify_approval_proof_with(doc, &TrustTaskVmResolver::did_key_only()).await
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+    use affinidi_data_integrity::SignOptions;
+    use affinidi_secrets_resolver::secrets::Secret;
+    use serde_json::json;
+
+    /// A `did:peer:2` whose one Ed25519 key is published under `purpose_code`
+    /// (`A` = assertionMethod only, `D` = capabilityDelegation only; `V` would
+    /// be both authentication and assertionMethod), and its signing secret.
+    fn peer(purpose_code: char, seed: u8) -> (String, Secret) {
+        let probe = Secret::generate_ed25519(None, Some(&[seed; 32]));
+        let mb = probe.get_public_keymultibase().expect("public key");
+        let did = format!("did:peer:2.{purpose_code}{mb}");
+        let secret = Secret::generate_ed25519(Some(&format!("{did}#key-1")), Some(&[seed; 32]));
+        (did, secret)
+    }
+
+    async fn decision(issuer: &str, secret: &Secret, purpose: &str) -> TrustTask<Value> {
+        let mut doc = json!({
+            "id": "urn:uuid:decision-1",
+            "type": "https://trusttasks.org/spec/task-consent/decision/0.1",
+            "issuer": issuer,
+            "recipient": "did:web:vta.example",
+            "issuedAt": "2026-09-25T10:00:00Z",
+            "payload": { "decision": "approve" },
+        });
+        let proof =
+            DataIntegrityProof::sign(&doc, secret, SignOptions::new().with_proof_purpose(purpose))
+                .await
+                .expect("sign");
+        doc["proof"] = serde_json::to_value(proof).unwrap();
+        serde_json::from_value(doc).unwrap()
+    }
+
+    /// An approver's decision verifies only as an `assertionMethod` proof by a
+    /// key the approver lists under `assertionMethod`.
+    #[tokio::test]
+    async fn an_approval_is_an_assertion_by_an_assertion_key() {
+        let (asserting, secret) = peer('A', 3);
+        let ok = decision(&asserting, &secret, "assertionMethod").await;
+        assert_eq!(verify_approval_proof(&ok).await.unwrap(), asserting);
+
+        // The right key, made for `authentication`.
+        let operational = decision(&asserting, &secret, "authentication").await;
+        assert!(matches!(
+            verify_approval_proof(&operational).await,
+            Err(DiProofError::WrongPurpose {
+                expected: "assertionMethod"
+            })
+        ));
+
+        // Declared `assertionMethod`, by a key the DID does not list under
+        // `assertionMethod`: refused by the approval verifier and, since
+        // VTI-KEY-022 binds every proof to its purpose, by the general one too.
+        let (delegating, secret) = peer('D', 4);
+        let misfiled = decision(&delegating, &secret, "assertionMethod").await;
+        for err in [
+            verify_trust_task_proof(&misfiled).await.unwrap_err(),
+            verify_approval_proof(&misfiled).await.unwrap_err(),
+        ] {
+            assert!(
+                err.cause().is_some_and(|c| c.contains("assertionMethod")),
+                "{err:?}"
+            );
+        }
+
+        // And the relationship is the one the proof declares: an
+        // assertion-only key does not make an `authentication` proof.
+        let err = verify_trust_task_proof(&operational).await.unwrap_err();
+        assert!(
+            err.cause().is_some_and(|c| c.contains("authentication")),
+            "{err:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The chokepoint this whole split exists to protect: every inbound call
+    /// site that stringifies a `DiProofError` (the ~12 unauthenticated routes
+    /// this variant must stay invisible to) does so through `Display`/`.to_string()`
+    /// alone. If this ever diverges, every one of those routes starts leaking
+    /// which failure mode occurred, one call site at a time — this is the one
+    /// place that regression is caught for all of them at once.
+    #[test]
+    fn resolver_failed_and_verify_failed_render_identically() {
+        let resolver_failed = DiProofError::ResolverFailed("some resolver detail".to_string());
+        let verify_failed = DiProofError::VerifyFailed("some other detail".to_string());
+        assert_eq!(resolver_failed.to_string(), verify_failed.to_string());
+        assert_eq!(resolver_failed.to_string(), "proof verification failed");
+    }
+
+    /// The operator-facing detail must still be recoverable for both variants
+    /// — opacity is a wire-facing property, not an operator one.
+    #[test]
+    fn cause_surfaces_the_detail_for_both_variants() {
+        assert_eq!(
+            DiProofError::ResolverFailed("did not resolve".to_string()).cause(),
+            Some("did not resolve")
+        );
+        assert_eq!(
+            DiProofError::VerifyFailed("bad signature".to_string()).cause(),
+            Some("bad signature")
+        );
+        assert_eq!(DiProofError::NoProof.cause(), None);
+    }
+
+    /// A `did:webvh` verification method against a resolver configured for
+    /// `did:key` only fails at resolution — no network, no signature check
+    /// ever runs — and that failure must classify as `ResolverFailed`, not
+    /// `VerifyFailed`. Mirrors the "no resolver configured" case that a
+    /// `did:webvh`-only TEE VTA's own reply hits in production (FTL-29595).
+    #[tokio::test]
+    async fn a_resolver_failure_classifies_as_resolver_failed() {
+        let doc: TrustTask<Value> = serde_json::from_value(serde_json::json!({
+            "id": "urn:uuid:11111111-1111-4111-8111-111111111111",
+            "type": "https://trusttasks.org/spec/vta/contexts/create/1.0",
+            "issuer": "did:webvh:QmScid:example.com:glenn",
+            "recipient": "did:key:z6MkVta",
+            "payload": {},
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": "did:webvh:QmScid:example.com:glenn#key-0",
+                "created": "2026-08-29T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        }))
+        .expect("a well-formed Trust Task");
+
+        let err = verify_trust_task_proof_with(&doc, &TrustTaskVmResolver::did_key_only())
+            .await
+            .expect_err("did:key-only cannot resolve a did:webvh key");
+        assert!(
+            matches!(err, DiProofError::ResolverFailed(_)),
+            "expected ResolverFailed, got {err:?}"
+        );
+    }
+
+    /// The resolver refuses keys the signer's DID document does not authorise
+    /// for the proof's purpose through the same upstream `Resolver` variant
+    /// it uses for a failed lookup. That refusal is a verdict on the proof:
+    /// classifying it as a retrieval failure would tell the caller a forged
+    /// reply "may be genuine".
+    #[test]
+    fn an_authorisation_refusal_is_an_invalid_proof_not_a_retrieval_failure() {
+        for refusal in [
+            "verificationMethod is not listed under assertionMethod in its DID document",
+            "verificationMethod's controller is not the DID that names it",
+            "a did:key X25519 key is authorised for keyAgreement only",
+        ] {
+            let err = classify(DataIntegrityError::Resolver(refusal.to_string()));
+            assert!(
+                matches!(err, DiProofError::VerifyFailed(_)),
+                "`{refusal}` must stay an invalid proof, got {err:?}"
+            );
+        }
+    }
+
+    /// End to end: a `did:key` proof whose method is not the key's own
+    /// (the fragment does not repeat the key id) is refused by the resolver,
+    /// and that refusal is an invalid proof.
+    #[tokio::test]
+    async fn a_did_key_method_mismatch_classifies_as_verify_failed() {
+        let doc: TrustTask<Value> = serde_json::from_value(serde_json::json!({
+            "id": "urn:uuid:22222222-2222-4222-8222-222222222222",
+            "type": "https://trusttasks.org/spec/vta/contexts/create/1.0",
+            "issuer": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "recipient": "did:key:z6MkVta",
+            "payload": {},
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod":
+                    "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK#not-the-key",
+                "created": "2026-08-29T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        }))
+        .expect("a well-formed Trust Task");
+
+        let err = verify_trust_task_proof_with(&doc, &TrustTaskVmResolver::did_key_only())
+            .await
+            .expect_err("the method is not the did:key's own key");
+        assert!(
+            matches!(err, DiProofError::VerifyFailed(_)),
+            "expected VerifyFailed, got {err:?}"
+        );
+    }
+
+    /// The same resolver failure, reached through the identical production
+    /// path as the case above, but this time the proof carries a real
+    /// `did:key` signature that simply does not verify — classified as
+    /// `VerifyFailed`, and — the actual regression this pair guards — renders
+    /// the same wire text as the resolver failure above.
+    #[tokio::test]
+    async fn an_actual_bad_signature_classifies_as_verify_failed_with_identical_wire_text() {
+        use ed25519_dalek::SigningKey;
+
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let did = format!(
+            "did:key:{}",
+            crate::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+        );
+        let mut seed_secret = vec![0x80, 0x26];
+        seed_secret.extend_from_slice(&[7u8; 32]);
+        let secret_mb = multibase::encode(multibase::Base::Base58Btc, &seed_secret);
+
+        let signed = crate::trust_task_sign::build_signed(
+            "https://trusttasks.org/spec/vta/contexts/create/1.0",
+            serde_json::json!({}),
+            &did,
+            &secret_mb,
+            "did:key:z6MkVta",
+        )
+        .await
+        .expect("build a validly-signed document");
+        let mut doc: TrustTask<Value> = serde_json::from_str(&signed).expect("signed doc parses");
+
+        // Corrupt the signature so it no longer verifies. A single-character
+        // flip keeps the multibase string decodable (same length, same
+        // alphabet), so this exercises "signature does not verify" rather
+        // than "proof is malformed" — the failure this split must not
+        // reclassify as a resolver problem.
+        let proof = doc.proof.as_mut().expect("document is signed");
+        let last = proof.proof_value.pop().expect("non-empty proofValue");
+        proof.proof_value.push(if last == '1' { '2' } else { '1' });
+
+        let err = verify_trust_task_proof_with(&doc, &TrustTaskVmResolver::did_key_only())
+            .await
+            .expect_err("a corrupted signature must not verify");
+        assert!(
+            matches!(err, DiProofError::VerifyFailed(_)),
+            "expected VerifyFailed, got {err:?}"
+        );
+
+        // The invariant that matters: whichever of the two failed, the wire
+        // text is the same one an unauthenticated caller would have seen for
+        // the resolver failure above.
+        assert_eq!(err.to_string(), "proof verification failed");
+    }
 }

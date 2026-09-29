@@ -1,9 +1,19 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AcceptsCriterion } from "@/lib/wire-types";
 import { RequirementsPanel } from "@/plugins/vetting/RequirementsPanel";
-import { type MockRoute, mockFetch, renderWithProviders } from "@/test/render";
+import { type MockRoute, mockFetch, renderWithProviders, sentPayloads, taskRoute } from "@/test/render";
+
+// Signed reads go through the unsigned stand-in to the `mockFetch` table: the
+// test browser holds no console key.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+  postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+}));
+
+const MANIFEST_TASK = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2";
 
 const STATEMENT_TYPE =
   "https://firstperson.network/endorsements/identity-vetting/0.1";
@@ -43,30 +53,27 @@ const criterion = (
     createdByDid: "did:key:zAdmin",
   }) as unknown as AcceptsCriterion;
 
+const ACCEPTS_LIST_TASK = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.1";
+const ACCEPTS_DELETE_TASK = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
+
 function routes(extra: MockRoute[] = []): MockRoute[] {
   return [
-    {
-      path: "/v1/schemas/accepts",
-      body: [
+    taskRoute(ACCEPTS_LIST_TASK, {
+      items: [
         criterion("kernel-developer", REQUIREMENTS, "Two vetters, at least one in person"),
         criterion("legacy", { ...REQUIREMENTS, minStatements: 0 }),
         criterion("open-door", undefined),
       ],
-    },
-    {
-      path: "/v1/join-requests/manifest",
-      body: {
-        communityDid: "did:web:vtc.example.org",
-        criteria: [
-          { id: "kernel-developer", presentationDefinition: {}, vetting: REQUIREMENTS, requirementsDigest: "zQmKernelDigest" },
-          { id: "legacy", presentationDefinition: {}, requirementsDigest: "zQmLegacyDigest" },
-          { id: "open-door", presentationDefinition: {} },
-        ],
-      },
-    },
-    {
-      path: "/v1/endorsement-types",
-      body: {
+    }),
+    taskRoute(MANIFEST_TASK, {
+      communityDid: "did:web:vtc.example.org",
+      criteria: [
+        { id: "kernel-developer", presentationDefinition: {}, vetting: REQUIREMENTS, requirementsDigest: "zQmKernelDigest" },
+        { id: "legacy", presentationDefinition: {}, requirementsDigest: "zQmLegacyDigest" },
+        { id: "open-door", presentationDefinition: {} },
+      ],
+    }),
+    taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", {
         items: [
           {
             typeUri: STATEMENT_TYPE,
@@ -75,8 +82,7 @@ function routes(extra: MockRoute[] = []): MockRoute[] {
             createdByDid: "did:key:zAdmin",
           },
         ],
-      },
-    },
+      }),
     ...extra,
   ];
 }
@@ -96,18 +102,13 @@ describe("RequirementsPanel", () => {
 
     // The criteria are read from the schema store, and the digests from the
     // manifest the applicant receives.
-    await waitFor(() =>
-      expect(requests.some((r) => r.url === "/v1/schemas/accepts")).toBe(true),
-    );
-    const manifest = requests.find((r) => r.url === "/v1/join-requests/manifest")!;
-    expect(manifest.headers.get("Trust-Task")).toBe(
-      "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2",
-    );
+    await waitFor(() => expect(sentPayloads(requests, ACCEPTS_LIST_TASK).length).toBe(1));
+    expect(sentPayloads(requests, MANIFEST_TASK)).toContainEqual({});
   });
 
   it("removes a criterion once the admin confirms what it costs", async () => {
     const requests = mockFetch(
-      routes([{ method: "DELETE", path: "/v1/schemas/accepts/legacy", body: { id: "legacy" } }]),
+      routes([taskRoute(ACCEPTS_DELETE_TASK, { id: "legacy" })]),
     );
     renderWithProviders(<RequirementsPanel />);
 
@@ -123,11 +124,7 @@ describe("RequirementsPanel", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove criterion" }));
 
     await waitFor(() =>
-      expect(
-        requests.some(
-          (r) => r.method === "DELETE" && r.url === "/v1/schemas/accepts/legacy",
-        ),
-      ).toBe(true),
+      expect(sentPayloads(requests, ACCEPTS_DELETE_TASK)).toContainEqual({ id: "legacy" }),
     );
   });
 

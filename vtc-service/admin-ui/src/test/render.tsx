@@ -13,15 +13,51 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { vi } from "vitest";
 
 import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
+import type { WhoamiResponse } from "@/lib/api";
 import { ToastProvider } from "@/lib/toast";
 
 export interface MockRoute {
   method?: string;
   /** Exact path (a query string is ignored), or a pattern over path + query. */
   path: string | RegExp;
-  status?: number;
+  /** The status, or a function of the request that returns it. */
+  status?: number | ((request: { url: string; body: unknown }) => number);
   /** The JSON answer, or a function of the request that returns it. */
   body?: object | ((request: { url: string; body: unknown }) => unknown);
+  /** Match only a document of this `type` (for `POST /v1/trust-tasks`). */
+  task?: string;
+}
+
+/**
+ * `POST /v1/trust-tasks` answering documents of `task`: `answer` is the
+ * `#response` payload, or a function of the request's payload returning it.
+ * Pair with `vi.mock("@/lib/api", …)` installing `@/test/signed-read`, so the
+ * console's signed calls reach this table without a key in the test browser.
+ */
+export function taskRoute(
+  task: string,
+  answer: object | ((payload: unknown) => unknown),
+  status?: number,
+): MockRoute {
+  return {
+    method: "POST",
+    path: "/v1/trust-tasks",
+    task,
+    status,
+    body: ({ body }) => ({
+      payload:
+        typeof answer === "function"
+          ? answer((body as { payload?: unknown } | undefined)?.payload)
+          : answer,
+    }),
+  };
+}
+
+/** The `payloads` of every document of `task` a test sent. */
+export function sentPayloads(requests: RecordedRequest[], task: string): unknown[] {
+  return requests
+    .filter((r) => r.url === "/v1/trust-tasks" && (r.body as { type?: string })?.type === task)
+    .map((r) => (r.body as { payload?: unknown }).payload);
 }
 
 export interface RecordedRequest {
@@ -52,7 +88,8 @@ export function mockFetch(routes: MockRoute[]): RecordedRequest[] {
           (r.method ?? "GET") === method &&
           (typeof r.path === "string"
             ? url.split("?")[0] === r.path
-            : r.path.test(url)),
+            : r.path.test(url)) &&
+          (r.task === undefined || (body as { type?: string } | undefined)?.type === r.task),
       );
       if (!route) {
         return json({ error: `no mock for ${method} ${url}` }, 404);
@@ -64,7 +101,9 @@ export function mockFetch(routes: MockRoute[]): RecordedRequest[] {
               body,
             })
           : route.body;
-      return json(payload ?? {}, route.status ?? 200);
+      const status =
+        typeof route.status === "function" ? route.status({ url, body }) : route.status;
+      return json(payload ?? {}, status ?? 200);
     }),
   );
   return requests;
@@ -77,20 +116,28 @@ function json(body: unknown, status: number): Response {
   });
 }
 
+/** `vtc/members/list/0.1`, which the name book and the member pickers read. */
+export const MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/members/list/0.1";
+
 /** Members and ACL answers for `useNameBook`, which most panels call. */
 export const NAME_BOOK_ROUTES: MockRoute[] = [
-  { path: "/v1/members", body: { items: [] } },
-  { path: "/v1/acl", body: { entries: [], truncated: false } },
+  taskRoute(MEMBERS_LIST_TASK, { items: [] }),
+  taskRoute("https://trusttasks.org/spec/acl/list/0.1", { entries: [], truncated: false }),
 ];
 
 /**
  * `path` is the route the component is mounted on, as the shell mounts a
  * plugin on `/<plugin>/*`; a component with descendant `<Routes>` needs it to
- * match its sections.
+ * match its sections. `whoami` seeds the shell's session probe, as `App`
+ * leaves it in the cache for the views it hosts.
  */
 export function renderWithProviders(
   ui: ReactElement,
-  { route = "/", path = "*" }: { route?: string; path?: string } = {},
+  {
+    route = "/",
+    path = "*",
+    whoami,
+  }: { route?: string; path?: string; whoami?: WhoamiResponse } = {},
 ) {
   const client = new QueryClient({
     defaultOptions: {
@@ -98,6 +145,7 @@ export function renderWithProviders(
       mutations: { retry: false },
     },
   });
+  if (whoami) client.setQueryData(["whoami"], whoami);
   return render(
     <QueryClientProvider client={client}>
       <ToastProvider>

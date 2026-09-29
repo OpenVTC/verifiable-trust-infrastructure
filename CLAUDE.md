@@ -88,7 +88,7 @@ Layer 4 (the spine + consumers):
 | `vta-webvh` | WebVH hosting infrastructure for the `did:webvh` lifecycle and its other consumers |
 | `vta-policy` | Policy subsystem: the regorus (Rego) engine + default bundle, the DTTE consent model, decision evaluators, policy storage |
 | `vta-tee` | TEE bootstrap: attestation providers (Nitro / SEV-SNP / simulated), KMS attest/decrypt, storage-key derivation, CMS unwrap, the DynamoDB anti-rollback anchor MAC, Mode-B admin bootstrap + carve-out, the mnemonic-export guard. Behind the `tee` feature — keeps the AWS SDK stack out of the default build graph |
-| `vta-backup` | Encrypted full-state export (every `BACKED_UP` keyspace) and staged, boot-applied restore portable between plain / hardened / TEE VTAs (Argon2id + AES-256-GCM), the `vta_did` compatibility check, the two-phase descriptor flow, the sealed bundle store + its TTL sweeper. How a deployment adopts a restored seed is injected via the `RestoreCommitter` trait |
+| `vta-backup` | Encrypted full-state export (every `BACKED_UP` keyspace) and staged, boot-applied restore portable between plain / hardened / TEE VTAs (Argon2id + AES-256-GCM), the `vta_did` compatibility check, the two-phase descriptor flow. The bundle store, its TTL sweeper and the chunked transfer are node-neutral and live in `vti_common::backup_transfer` (re-exported here under their old paths), shared with the VTC. How a deployment adopts a restored seed is injected via the `RestoreCommitter` trait |
 | `vta-sweepers` | Background TTL sweepers for the core keyspaces (acl / consent / vault) |
 | `vta-service` | The VTA **spine** (library) + local/dev binary — what remains after the subsystem extractions: `routes/` (HTTP surface), `trust_tasks/` (dispatch spine), `messaging/*` (DIDComm + TSP bridge: registry, drain store/sweeper, handshake, live prover, transient handshake), `operations/` (orchestration: provision-integration, did-webvh, contexts, protocol management), `setup/` (wizards, interactive + `--from <toml>`), and the offline CLI surfaces. Re-exports every subsystem crate above |
 | `vta-enclave` | Nitro Enclave front-end. Depends on `vta-service` as a library, adds TEE bootstrap (KMS, vsock-store, attestation). `publish = false` |
@@ -165,18 +165,19 @@ When designing any new inter-component flow *or its authentication*, reach for
 TSP first, then DIDComm. Do **not** default to "a REST endpoint plus a bespoke
 signature/DID-resolution scheme" — that is a recurring mistake.
 
-**TSP is selected per *surface*, not per client, and rides one socket per DID.**
+**There is one client surface — Trust Tasks — and TSP rides one socket per DID.**
 Two rules that bite anything adopting TSP (see
 `docs/05-design-notes/tsp-enablement.md` §3.3a):
 
-- TSP carries the **Trust-Task** surface. The older DIDComm protocol-message
-  surface (`key-management/1.0/*`, `create_did_webvh`, `list_contexts`) has no
-  TSP dispatcher behind it, so a client on a dual-transport VTA is on TSP for
-  trust tasks *and* DIDComm for protocol messages, simultaneously. Choosing one
-  transport client-wide breaks the other surface — that is how
-  `TransportChoice::Auto` silently broke every `rpc` call the moment a VTA
-  advertised `#tsp` (#803). Read `VtaClient::{trust_task_transport,
-  protocol_message_transport}`; never render a single "transport" for a client.
+- Every `VtaClient` operation is a Trust Task, and TSP, DIDComm and HTTPS all
+  carry the same Trust-Task spine. The older bare-DIDComm protocol-message
+  surface (`key-management/1.0/*`, `create_did_webvh`, `list_contexts`) is gone
+  from both ends — the SDK sends none, and the VTA's DIDComm router serves only
+  the binding envelope plus plumbing (trust-ping, pickup status,
+  problem-report). A client's transport is `VtaClient::trust_task_transport`.
+  On a dual-transport VTA it reports TSP while the client still holds a
+  `DIDCommSession`: that session stays **only** as the mediator's one socket per
+  DID, on which TSP receive arrives — not as a second surface.
 - **The mediator permits one websocket per DID.** A node speaking both protocols
   multiplexes them on that socket; a second is evicted as `duplicate-channel`
   and the two reconnect loops duel. TSP send is an HTTP post and TSP receive
@@ -204,6 +205,16 @@ DIDComm, and treat its (e.g. did-signed) auth as the last-resort path. Concrete
 example — the push gateway: a `WakeHandle.gateway` carries an explicit protocol
 tag (a bare DID-vs-URL shape no longer disambiguates, since TSP VIDs are DIDs
 too).
+
+**Exceptions to "every remote operation is a Trust Task"** are foreign-protocol
+interfaces only — OAuth / WebAuthn ceremonies and DID resolution files — and a
+REST route kept for one is declared, not assumed. The passkey-VM enrolment
+routes (`/did/verification-methods/passkey{,/challenge,/{fragment}}`) are the
+WebAuthn exception: the browser driving the ceremony (the VTA auth portal,
+`examples/vta-auth-demo`) holds only the bearer passkey-login issued and no DID
+key to sign a Trust Task. DID-holding clients use the `vta/passkey-vms/*` twins.
+The declaration is a row in `vta_service::deprecation::REST_EXCEPTIONS`, pinned
+to a live route by `every_rest_exception_names_a_live_route`.
 
 ## Use DID templates, don't hand-roll DID shapes
 
@@ -547,15 +558,50 @@ new flow, update both this section and the relevant `docs/*.md`.
     token works exactly once. Each rotation leaves a hashed tombstone
     (`rotated:{sha256}`), so a *replayed* token is distinguishable from one
     this node never issued. A replay is forgiven only as a lost-response retry
-    (session alive, inside `refresh_reuse_grace()` — default 30s — **and** the
-    tombstoned successor still unspent), in which case the same pair is
-    re-served without rotating. Otherwise it is reuse: the session is revoked
-    (killing every descendant token) and `AuthAuditEvent::RefreshReuseDetected`
-    fires at `error!` with `security_alert = true`. The caller sees the same
-    401 either way, so detection isn't an oracle. Tombstones are reaped on time
-    only (`rotated_at + refresh_token_ttl`), never alongside their session —
-    post-revocation replay is the case most worth catching. Implements
-    RFC 9700 §4.14.2.
+    (cause `Rotated`, session alive, inside `refresh_reuse_grace()` — default
+    30s; raise to 60s if real clients retry later than their HTTP timeout
+    allows — **and** the tombstoned
+    successor still unspent), in which case the same pair is re-served without
+    rotating. Otherwise it is reuse: the session is revoked (killing every
+    descendant token) and `AuthAuditEvent::RefreshReuseDetected` fires at
+    `error!` with `security_alert = true`. The caller sees the same 401 either
+    way, so detection isn't an oracle. Tombstones are reaped on time only
+    (`rotated_at + refresh_token_ttl`), never alongside their session —
+    post-revocation replay is the case most worth catching.
+  - **A fresh login retires the previous refresh token**: `/auth/refresh`
+    authorises from the `refresh:{hash}` index alone and never consults
+    `session.refresh_token`, so overwriting `session:{did}` on login did *not*
+    retire the old token — it left a second live chain that, sharing no token
+    with the first, never replayed and so was never detected. `handle_authenticate`
+    now claim-and-deletes the prior token's index entry and leaves a
+    `Superseded` tombstone. That cause is excluded from the grace window on
+    purpose: a client that just logged in holds its new token, so honouring a
+    replay there would hand the new token to a pre-login theft. Replaying a
+    superseded token is **refused and audited
+    (`AuthAuditEvent::RefreshSuperseded`, `warn!` +`security_alert`) but does
+    *not* revoke** — unlike reuse, the retired token is already dead, and the
+    usual cause is a second device still holding what it was issued before the
+    user signed in elsewhere; revoking would sign out the client that is
+    demonstrably current and the forced re-login would set the same trap again.
+    Implements RFC 9700 §4.14.2.
+  - **One live chain per session, by construction**: retiring at login is
+    best-effort (a racing refresh can slip past it), so `/auth/refresh` also
+    refuses any claimed token that is not the one its session *currently*
+    issues — answered as `RefreshSuperseded`, same as above. Currency comes
+    from a `refresh-current:{session_id}` record written only by
+    `store_refresh_index` (i.e. login and rotation), **never** from
+    `session.refresh_token`: the row is read-modify-written without atomicity
+    (`resolve_did_session` on every DIDComm/TSP message, `touch_last_seen`,
+    step-up's `update_session`), which can write an older token back into it.
+    Don't gate anything on the row's `refresh_token`. The row is only a
+    fallback for sessions issued before the record existed. Login writes its
+    `Superseded` tombstone only when its claim wins, so it never relabels a
+    `Rotated` tombstone a racing refresh just wrote (that would downgrade
+    genuine reuse to a non-revoking alert).
+  - **Orphan `refresh:` entries are swept**: the index has no TTL, so
+    `cleanup_expired_sessions` drops entries whose session row is gone or
+    whose token is not current (same record, same fallback) — hygiene, since
+    refresh already refuses them.
   - **Trust-Task-wrapped responses (engine interop):** `/auth/challenge`,
     `/auth/`, and `/auth/refresh` all content-negotiate on *both* ends — when
     the request body is a Trust Task document, the response is a TT `#response`
@@ -593,23 +639,21 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Producer returns**: HPKE-sealed `TemplateBootstrapPayload` (integration
   DID, private keys, `did.jsonl`, VC-issued admin authorization, VTA trust
   bundle) in armor with SHA-256 digest communicated out-of-band.
-- **Transports** (REST and DIDComm both support relayer ≠ holder):
+- **Transports** (every transport supports relayer ≠ holder):
   - **Offline file**: `vta bootstrap provision-request` / `provision-integration` / `open`.
-  - **PNM REST bridge**: `pnm bootstrap provision-request` →
-    `pnm bootstrap provision-integration` (authenticated, hits
-    `POST /bootstrap/provision-integration`). Supports
+  - **Online**: `pnm bootstrap provision-request` →
+    `pnm bootstrap provision-integration`, which sends the signed
+    `provision/integration/0.3` Trust Task over TSP, DIDComm or HTTPS
+    (`/trust-tasks`) — `VtaClient::provision_integration` is one
+    `dispatch_trust_task`. There is no REST route. Supports
     `--create-context` to create the target context inline when
     missing — same flag the offline `vta` CLI exposes. Wire
-    field `create_context: bool` on the request body, paired
-    with `context_created: bool` on the response so operators
+    field `createContext` on the request payload, paired
+    with `contextCreated` on the response so operators
     see whether the flag actually did something. Super-admin
     only (`operations::contexts::create_context`'s auth gate).
-  - **DIDComm**: same `pnm bootstrap provision-integration`
-    command when the client is on DIDComm transport. The
-    `provision-integration/1.0` message carries the VP and
-    receives the same sealed bundle. `VtaClient::
-    provision_integration` dispatches based on the
-    `Transport::Rest`/`Transport::DIDComm` variant.
+    A caller without the Admin role is refused before the target
+    context is looked up.
 - **Auth model** (both transports — onion layers):
   - **Outer**: bearer token (REST) / authcrypt sender (DIDComm)
     authenticates the *relayer*. ACL-gated.
@@ -683,19 +727,18 @@ new flow, update both this section and the relevant `docs/*.md`.
   Forward operations carry an `OpContext::{Direct,Rollback}`
   parameter — rollback-dispatched ops emit
   `triggered_by: "rollback"` on their telemetry event.
-- **Transport**: all operations except `services didcomm enable`
-  are reachable over both REST and DIDComm. `enable_didcomm` is
-  REST-only by nature (DIDComm isn't running yet). Wire types
-  live in `vta_sdk::protocol::services`; DIDComm message types
-  in `vta_sdk::protocols::protocol_management` under
-  `services-management/1.0/`.
+- **Transport**: every operation is a `vta/services/*` Trust Task,
+  over TSP, DIDComm or HTTPS (`/trust-tasks`) — `enable_didcomm`
+  included, which a REST-only VTA receives over HTTPS. The SDK's
+  typed methods (`vta_sdk::protocol`) map to them.
 - **Code**: `vta-service/src/operations/protocol/{enable_rest,
   update_rest,disable_rest,rollback_rest,enable_didcomm,
   update_didcomm,disable_didcomm,rollback_didcomm,list,
   list_drain,snapshot,invariant,document}.rs`,
   `vta-service/src/messaging/{registry,drain_store,drain_sweeper,
   handshake,live_prover,transient_handshake}.rs`,
-  `vta-service/src/routes/protocol.rs`,
+  `vta-service/src/trust_tasks/services.rs` (the `vta/services/*`
+  Trust Tasks — the only surface; the REST routes are gone),
   `vta_sdk::protocol::{mod,services}`,
   `vta_cli_common::commands::services` (the `mediator`
   submodule was deleted in P5),
@@ -724,7 +767,12 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **What**: Remote signing without key export.
 - **Endpoint**: `POST /keys/{key_id}/sign` — payload + algorithm
   (EdDSA or ES256). Key derived BIP-32 → signature → memory zeroized.
+  Derivation goes through `key_custody::derive_record_key`, which refuses a
+  record whose path is outside its context's base.
 - **DIDComm**: `key-management/1.0/sign-request`.
+- **Delegated identities**: `keys/derive-and-sign*` signs as a path without a
+  key record. Super-admin only, confined to `m/26'/9'`, audited with a digest
+  of what was signed.
 
 ### Approvals + task consent (DTTE)
 - **What**: The single answer to "does this operation need an additional
@@ -760,7 +808,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   (#907). Ceremony tasks are exempt from PDP re-gating
   (`trust_tasks/ceremony.rs`). Two digests: internal `payload_digest` keys
   storage, challenge-salted `wire_digest` is all the approver ever sees.
-- **Code**: `vta-policy/src/{consent,approvals,defaults,effects,types}.rs`,
+- **Code**: `vta-policy/src/{approvals,defaults,types}.rs`, `vti-common/src/task_consent/` (the node-neutral pending/grant store + digest, re-exported as `vta_policy::{consent,effects}`),
   `vta-service/src/trust_tasks/{policy_gate,task_consent,consent_request,
   ceremony,planner}.rs`, `vta-service/src/approvals_cli.rs`,
   `vta-sdk/src/approvals/`, `vta-cli-common/src/{commands/approvals,
@@ -812,8 +860,8 @@ new flow, update both this section and the relevant `docs/*.md`.
 ### Backup / restore
 - **What**: Encrypted full-state dump + restore, portable between plain,
   hardened and TEE VTAs in any direction.
-- **Endpoints**: `POST /backup/export`, `POST /backup/import`
-  (super-admin), and the descriptor Trust Tasks (`vta/backup/*`).
+- **Surface**: the descriptor Trust Tasks (`vta/backup/*`), super-admin,
+  over an end-to-end transport only. There is no inline REST route.
 - **Export** walks `vta_keyspaces::BACKED_UP` and dumps every row (format
   `vta-backup-v2`) — no per-keyspace collector, so listing a keyspace *is*
   backing it up. Rows in `ENVIRONMENT_BOUND_ROWS` (`keys ▸ tee:*`,
@@ -842,7 +890,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   `ext["org.openvtc"].replaceIdentity`) — disaster recovery onto a fresh VTA,
   which always has a DID of its own. VTI-VTA-051: provenance in
   `keys ▸ restore:provenance`, a `backup.restore.applied` audit row, and
-  `restored` on `GET /health/details`.
+  the `vta/restore/status/0.1` Trust Task (administrators only; `pnm health`
+  shows it). The public `vta/health/details/0.1` never carries it.
 - **Code**: `vta-backup/src/{ops/mod.rs,restore.rs}`,
   `vta-support/src/restore_stage.rs`, `vta-service/src/restore.rs`,
   `vta-tee/src/kms_bootstrap.rs` (`seal_restored_secrets`,
@@ -899,13 +948,12 @@ new flow, update both this section and the relevant `docs/*.md`.
   invocations targeting a multi-domain server *without*
   `--domain` get prompted to pick.
 - **Discovery**: `pnm did-mgmt dids list-domains --server <id>`
-  walks the server's `/api/me/domains` (proxied through the VTA
-  with VTA credentials) and prints the caller-scoped subset.
+  asks the server for `did-management/me/domains/0.1` (a Trust Task
+  the VTA signs and sends) and prints the caller-scoped subset.
   Use this to find legitimate `--domain` values for the same
   server before the first create / register.
-- **Code**: `vta-service/src/webvh_didcomm.rs`,
-  `vta-webvh/src/webvh_client.rs`,
-  `vta-service/src/operations/did_webvh/{mod,servers,auth_cache,register_server}.rs`,
+- **Code**: `vta-service/src/webvh_host.rs`,
+  `vta-service/src/operations/did_webvh/{mod,servers,host,register_server}.rs`,
   `vta-service/src/routes/did_webvh.rs::list_server_domains_handler`,
   `vta_sdk::client::VtaClient::list_webvh_server_domains`,
   `pnm-cli/src/commands/webvh.rs` (interactive prompt +
@@ -935,6 +983,56 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vta-service/src/routes/did_templates.rs`, `vta-service/src/operations/did_templates.rs`.
 - **Docs**: `docs/02-vta/did-templates.md`.
 
+### VTC git namespaces (`git-ns/*`)
+- **What**: A VTC governs repositories on the forges it has bound — who may
+  create them, who owns each, whose commits its CI check accepts — and
+  publishes those rights to its Trust Registry. The VTC is the source of
+  truth; the registry and the forge (through a per-community bridge) are
+  projections of it.
+- **Wire**: the `git-ns/*` Trust Tasks, generated types under
+  `trust_tasks_rs::specs::git_ns`, served on the document dispatcher. Authority
+  is the proof signer's **git rights**, read from the VTC's records at
+  execution time — never a bearer token, and never the community-admin role
+  (which only binds). The admin REST routes (`/v1/git-ns/*`) are read-only
+  console projections; the administrator's view, namespace and repository
+  listings and break-glass list are signed reads (`git-ns/view/0.5`,
+  `git-ns/namespace/list`, `git-ns/repo/list` in `git_ns::admin_reads`),
+  answered to a namespace's administrators only, never to a bearer session.
+- **Invariants to preserve**: the fixed rules of `git-ns/right/grant` live in
+  `git_ns::rules` and run before the `gitNamespace` policy, which can only
+  refuse; rights are keyed by repository id, not name (a rename moves them, a
+  new repository at the old name inherits nothing); the projection withdraws
+  before it publishes, and publishes the implied `git.commit.sign` of every
+  `own`, `maintain` and `ns.admin`; a grant's `reason` is never published or
+  audited. Grant and revoke are served at 0.3 only (no 0.1/0.2), repo/create
+  at 0.3: an implied `repo.create` (from `ns.admin`) carries no creator
+  ownership. Elevated rights go only to, and only from, ACL-backed members.
+  **Separation of duties** (grant 0.3 rule 7): no elevated self-grant
+  through any task; the only way is `git-ns/right/break-glass` (`git_ns::break_glass`),
+  which always takes an operation-bound passkey step-up, is audited at
+  `AuditSeverity::Critical`, and is announced to every other administrator —
+  policy may disable, delay or tighten it, never quieten it. An unratified
+  break-glass record never counts toward the last-owner/last-admin invariants.
+  A member who is no console user answers that step-up with a **step-up
+  passkey** (`step_up_passkey`, `auth/passkey/enroll/invite/0.2` `purpose:
+  stepUp`), served only as Trust Tasks on the spine
+  (`trust_tasks::step_up_passkey_tasks`). It is enrolled only through a
+  community admin's single-use invite (signed, with a bound gesture) plus its
+  claim code, redeemed by a `redeem/start` **signed by the invited member**
+  (`cnm git enrol-step-up-passkey`); kept in its own keyspace login never
+  reads; accepted only by `acl::bound_step_up` for its own current member; and
+  never instead of a proof — every approve-response is signed by its subject
+  (the console hands a no-key member an answer code for `cnm` to sign).
+  A namespace admin gets no forge role: role projection (`bridge::highest_repo_rights`) counts only rights held in the person's own
+  name, sends an admin with none as `git.ns.admin` (no role), one entry per
+  account, and never a namespace-level `projectRoles` job. Jobs are
+  `git-ns/bridge/job` 0.4 only, sent only to a bridge that lists 0.4 in
+  `trust-task-discovery` (`bridge::send_v0_4`); never downgrade.
+- **Code**: `vtc-service/src/git_ns/` (`rules`, `ops`, `tasks`, `projection`,
+  `bridge`, `lifecycle`), `vtc-service/src/routes/git_ns.rs`,
+  `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.
+- **Docs**: `docs/03-vtc/git-namespaces.md`.
+
 ## Runtime guards to preserve
 
 These are load-bearing — know they exist before adjusting nearby code.
@@ -951,6 +1049,22 @@ These are load-bearing — know they exist before adjusting nearby code.
   built on them — and match on the `ActScope`. Same shape as the
   `ApproveScope` axis beside it in `vta-sdk/src/acl.rs`: act vs confer.
   See `docs/05-design-notes/acl-scope-semantics.md`.
+- **Key custody: choosing a derivation path is holding a key.** Every key is
+  a pure function of the seed and a path, so a gate that checks the caller's
+  context but lets the caller name the path (or the key id) gates nothing.
+  FTL-29904 found four holes of this kind: role-only seed rotation,
+  caller-chosen paths in `keys/create`, `derive-and-sign` at any path, and
+  vault signing with a caller-named key. Network-reachable code reaches key
+  material **only** through `vta_service::operations::key_custody`
+  (`derive_record_key`, `authorize_explicit_key_path`,
+  `derive_delegated_identity`, `require_referenced_key_in_scope`,
+  `require_instance_authority`). Seed operations are super-admin only, gated
+  in the *operation* (not the transport) so REST, Trust Task and DIDComm share
+  one audited refusal. `derive-and-sign*` is confined to `m/26'/9'`. Every
+  refusal is audited and logged with `security_alert = true`.
+  `tests/key_custody_census.rs` pins every raw `load_seed_bytes` /
+  `from_seed` / `seed_store.get()` call site. Rules: `vta_keys::custody`
+  module docs; rationale: `docs/05-design-notes/key-custody.md`.
 - **Rate limit** on all unauth routes, per source IP
   (`vta-service/src/routes/rate_limit.rs`), in separate buckets: `auth`
   (auth/bootstrap/attestation, `[server] rate_limit_interval_secs` /
@@ -987,7 +1101,8 @@ the Release PR that release-plz maintains; merging that PR is what publishes.
 Merging a feature PR publishes nothing. See [`RELEASING.md`](RELEASING.md).
 
 That includes when the `semver report (informational — never blocks)` check
-goes **red on your PR**. It is doing its job: it compares the crate's public
+goes **red on your PR** (it runs only on a PR labelled `semver-report`; the
+Release PR's `release bump is large enough` job enforces the same check). It is doing its job: it compares the crate's public
 API against the version on crates.io, so a PR that adds a struct member or
 renames a `pub const` *should* turn it red. The red is the report, not a
 defect, and the fix is not a version bump in your branch — release-plz reads
@@ -1189,8 +1304,7 @@ Rules that bite hardest in this workspace, with their known hotspots:
   vtc-service `send_to_member`); delivery-critical messages need an ack or an
   outbox record.
 - **R1.2 / R1.3 — no `reqwest::Client::new()`, no lock across an await.**
-  Known offenders being remediated: vta-sdk REST transports, `webvh_client`
-  (+ the auth-cache mutex held across its calls), the vault status-list fetch
+  Known offenders being remediated: vta-sdk REST transports, the vault status-list fetch
   (which must use the foreign-fetch profile — copy
   `vtc-service/src/recognition/verify.rs`).
 - **Retry has exactly one owner per failure domain.** The messaging delivery

@@ -7,7 +7,7 @@
 //!   1. Maybe-translate retired `pnm mediator …` invocations into a
 //!      `pnm services …` cue and exit.
 //!   2. Parse the CLI, install the force-exit watchdog + tracing
-//!      subscriber, print the banner.
+//!      subscriber, print the banner when a human is watching.
 //!   3. Run the offline pre-auth dispatch (Setup, offline Bootstrap,
 //!      offline DidTemplates, most VtaCommands). If any of these
 //!      handle the command, return.
@@ -19,7 +19,10 @@ mod bootstrap;
 mod cli;
 mod commands;
 mod config;
+mod exit;
 mod setup;
+
+use std::io::IsTerminal;
 
 use vta_sdk::client::VtaClient;
 
@@ -30,6 +33,30 @@ use crate::cli::{
     is_online_template_cmd, print_banner, requires_auth, retired_mediator_redirect,
 };
 use clap::Parser;
+
+/// Exit code for a command that returned an error.
+///
+/// Every dispatch arm funnels here, so this is the single place that
+/// decides. The SDK's error is already typed, so the variant picks the
+/// code — a call site does not have to know one.
+///
+/// `Forbidden` stays `FAILURE` on purpose: the caller is who they say
+/// they are and the operation ran, it was refused. That is not the same
+/// signal as "your credential is no good", and a script retrying on
+/// `AUTH` must not retry on it.
+fn exit_code_for(err: &(dyn std::error::Error + 'static)) -> i32 {
+    use vta_sdk::error::VtaError;
+    match err.downcast_ref::<VtaError>() {
+        Some(VtaError::NotFound(_)) => exit::NOT_FOUND,
+        Some(VtaError::Validation(_)) => exit::CONFIG,
+        Some(VtaError::Auth(_)) => exit::AUTH,
+        _ => exit::FAILURE,
+    }
+}
+
+/// This process's log output; see the `tracing_subscriber` setup in `main`.
+pub(crate) static LOGS: std::sync::LazyLock<affinidi_messaging_mediator_tui::LogCapture> =
+    std::sync::LazyLock::new(affinidi_messaging_mediator_tui::LogCapture::new);
 
 #[tokio::main]
 async fn main() {
@@ -52,7 +79,19 @@ async fn main() {
         eprintln!();
         eprintln!("See `pnm services --help` for the full surface, or");
         eprintln!("docs/02-vta/runtime-service-management.md.");
-        std::process::exit(2);
+        std::process::exit(exit::USAGE);
+    }
+
+    // PNM_HOME isolates a whole profile: config, sessions, pending setups and
+    // bootstrap secrets are rooted in it (`config::config_dir`) and the
+    // keyring service carries a digest of it (`auth::store`). Resolved here
+    // only to fail early and clearly on an unusable path, rather than on the
+    // first store that touches it.
+    if vta_sdk::agent_connect::pnm_home().is_some()
+        && let Err(e) = config::config_dir()
+    {
+        eprintln!("Error: PNM_HOME is not usable as a profile directory: {e}");
+        std::process::exit(exit::CONFIG);
     }
 
     let cli = Cli::parse();
@@ -66,10 +105,29 @@ async fn main() {
     // every signature.
     vta_cli_common::render::set_full_display(cli.full_display);
     vta_cli_common::display::set_resolve_agent_names(cli.resolve_agent_names);
-    if cli.json {
+
+    // Format follows the destination. A terminal gets the table; anything
+    // else — a pipe, a file, a CI log — gets JSON, because the only reason
+    // to redirect this output is to have something read it. `--json`
+    // forces JSON even on a terminal.
+    let stdout_is_tty = std::io::stdout().is_terminal();
+    if cli.json || !stdout_is_tty {
         vta_cli_common::render::set_output_format(vta_cli_common::render::OutputFormat::Json);
     }
+
+    // Colour is for a terminal only, and NO_COLOR (<https://no-color.org>)
+    // turns it off even on one. Gated on stdout because that is where the
+    // rendered tables go.
+    vta_cli_common::render::set_color(stdout_is_tty && std::env::var_os("NO_COLOR").is_none());
+
     vta_cli_common::render::set_bin_name("pnm");
+
+    // The banner is for a person at a terminal. It goes to stderr, so it
+    // is gated on stderr — redirecting stdout alone (`pnm … > out.json`)
+    // still shows it, which is what an operator running that expects.
+    if std::io::stderr().is_terminal() {
+        print_banner();
+    }
 
     // Initialize tracing: --verbose sets pnm_cli=debug, or respect RUST_LOG
     let filter = if cli.verbose {
@@ -77,11 +135,14 @@ async fn main() {
     } else {
         tracing_subscriber::EnvFilter::from_default_env()
     };
+    // Through the console's capture: stderr as before, except while
+    // `pnm messaging console` has the terminal, when log lines would draw
+    // over its screen and are kept for its log view instead.
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
         .without_time()
-        .with_writer(std::io::stderr)
+        .with_writer(LOGS.make_writer())
         .init();
 
     // PNM's session — the admin DID and its private key — lives in the OS
@@ -90,8 +151,6 @@ async fn main() {
     // tool does not fall back, it forgets. Stop and say so instead.
     #[cfg(feature = "keyring")]
     vta_sdk::keyring_init::install_default_store_or_exit("pnm");
-
-    print_banner();
 
     // Load PNM config
     let mut pnm_config = match config::load_config() {
@@ -148,7 +207,7 @@ async fn main() {
             let result = commands::setup::run(&mut pnm_config, setup_cmd, name, overwrite).await;
             if let Err(e) = result {
                 vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(1);
+                std::process::exit(exit_code_for(e.as_ref()));
             }
             return;
         }
@@ -160,7 +219,7 @@ async fn main() {
                 Some(Ok(())) => return,
                 Some(Err(e)) => {
                     vta_cli_common::render::print_cli_error(e.as_ref());
-                    std::process::exit(1);
+                    std::process::exit(exit_code_for(e.as_ref()));
                 }
                 None => {
                     command = Commands::Bootstrap { command: bs_cmd };
@@ -173,7 +232,7 @@ async fn main() {
             } else {
                 if let Err(e) = commands::did_templates::run_offline(&dt_cmd) {
                     vta_cli_common::render::print_cli_error(e.as_ref());
-                    std::process::exit(1);
+                    std::process::exit(exit_code_for(e.as_ref()));
                 }
                 return;
             }
@@ -195,7 +254,7 @@ async fn main() {
             // `~/.config/pnm/config.toml`. No VTA round-trip.
             if let Err(e) = commands::config::run_resolver_url(&mut pnm_config, url, unset).await {
                 vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(1);
+                std::process::exit(exit_code_for(e.as_ref()));
             }
             return;
         }
@@ -209,9 +268,11 @@ async fn main() {
     // into it.
     let (slug, vta_config) = match config::resolve_vta(vta_override.as_deref(), &pnm_config) {
         Ok((slug, cfg)) => (slug, cfg.clone()),
+        // No VTA configured, or the one named is not in this profile: the
+        // profile cannot serve the command, which is a configuration fault.
         Err(e) => {
             eprintln!("Error: {e}");
-            std::process::exit(1);
+            std::process::exit(exit::CONFIG);
         }
     };
     let keyring_key = config::vta_keyring_key(&slug);
@@ -244,7 +305,7 @@ async fn main() {
             Ok(c) => c,
             Err(e) => {
                 vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(1);
+                std::process::exit(exit_code_for(e.as_ref()));
             }
         }
     } else {
@@ -287,6 +348,15 @@ async fn main() {
         Commands::Contexts { command } => commands::contexts::run(&client, command).await,
         Commands::Acl { command } => commands::acl::run(&client, command).await,
         Commands::Approvals { command } => commands::approvals::run(&client, command).await,
+        Commands::Consent { command } => {
+            commands::consent::run(
+                &client,
+                &keyring_key,
+                vta_config.vta_did.as_deref(),
+                command,
+            )
+            .await
+        }
         Commands::Policy { command } => commands::policy::run(&client, command).await,
         Commands::Device { command } => commands::device::run(&client, command).await,
         Commands::Vault { command } => commands::vault::run(&client, command).await,
@@ -322,7 +392,7 @@ async fn main() {
 
     if let Err(e) = result {
         vta_cli_common::render::print_cli_error(e.as_ref());
-        std::process::exit(1);
+        std::process::exit(exit_code_for(e.as_ref()));
     }
 }
 
@@ -664,5 +734,36 @@ mod tests {
             command: VtaCommands::List,
         };
         assert!(!requires_auth(&cmd));
+    }
+
+    #[test]
+    fn test_exit_code_for_maps_the_typed_variants() {
+        use vta_sdk::error::VtaError;
+        assert_eq!(
+            exit_code_for(&VtaError::NotFound("acl".into())),
+            exit::NOT_FOUND
+        );
+        assert_eq!(
+            exit_code_for(&VtaError::Validation("bad did".into())),
+            exit::CONFIG
+        );
+        assert_eq!(exit_code_for(&VtaError::Auth("expired".into())), exit::AUTH);
+    }
+
+    #[test]
+    fn test_exit_code_for_refused_is_not_an_auth_failure() {
+        // A refused permission is a finished operation that failed. A
+        // script retrying on AUTH must not retry on this.
+        use vta_sdk::error::VtaError;
+        assert_eq!(
+            exit_code_for(&VtaError::Forbidden("not admin".into())),
+            exit::FAILURE
+        );
+    }
+
+    #[test]
+    fn test_exit_code_for_unknown_error_is_generic_failure() {
+        let err = std::io::Error::other("disk gone");
+        assert_eq!(exit_code_for(&err), exit::FAILURE);
     }
 }

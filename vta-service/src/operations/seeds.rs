@@ -9,17 +9,29 @@ use vta_sdk::protocols::seed_management::{
     rotate::RotateSeedResultBody,
 };
 
+use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::keys::KeyRecord;
 use crate::keys::imported;
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{self as seeds, get_active_seed_id, load_seed_bytes};
+use crate::operations::key_custody::require_instance_authority;
 use crate::store::KeyspaceHandle;
 
+/// List the seed generations (metadata only: never seed bytes).
+///
+/// **Instance-wide: super-admin only**, enforced here so every transport
+/// shares one audited gate (FTL-29904). Seed state belongs to no context, so no
+/// context-scoped authority covers it (VTI-ACL-022, VTI-ACL-092). The generation
+/// history is itself sensitive: it discloses the operator's rotation cadence.
 pub async fn list_seeds(
     keys_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    audit: &vta_audit::SharedAuditSink,
     channel: &str,
 ) -> Result<ListSeedsResultBody, AppError> {
+    require_instance_authority(auth, "seed.list", audit, channel).await?;
+
     let active_id = get_active_seed_id(keys_ks)
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
@@ -42,6 +54,16 @@ pub async fn list_seeds(
         .collect();
 
     info!(channel, count = seeds_info.len(), active_id, "seeds listed");
+    audit::record_best_effort(
+        audit,
+        "seed.list",
+        &auth.did,
+        Some("seed"),
+        "success",
+        Some(channel),
+        None,
+    )
+    .await;
 
     Ok(ListSeedsResultBody {
         seeds: seeds_info,
@@ -56,15 +78,25 @@ pub async fn list_seeds(
 static ROTATE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+/// Rotate the instance-wide BIP-32 master seed.
+///
+/// **Instance-wide: super-admin only**, enforced here, before the rotation
+/// lock and before any storage check, so a context-scoped caller is refused
+/// by authorization on every deployment. It is not left to the TEE store's
+/// `Conflict` (FTL-29904). Rotation re-encrypts every retired generation and
+/// every imported key in the store, with no context filtering at any step.
 pub async fn rotate_seed(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     audit: &vta_audit::SharedAuditSink,
-    actor: &str,
+    auth: &AuthClaims,
     mnemonic: Option<&str>,
     channel: &str,
 ) -> Result<RotateSeedResultBody, AppError> {
+    require_instance_authority(auth, "seed.rotate", audit, channel).await?;
+    let actor = auth.did.as_str();
+
     // Held across read-generation → archive → write-new → re-encrypt.
     let _rotation_guard = ROTATE_LOCK.lock().await;
 
@@ -192,6 +224,7 @@ mod tests {
         keys_ks: KeyspaceHandle,
         imported_ks: KeyspaceHandle,
         audit: vta_audit::SharedAuditSink,
+        audit_ks: KeyspaceHandle,
         seed_store: Arc<dyn SeedStore>,
         _dir: tempfile::TempDir,
     }
@@ -206,8 +239,9 @@ mod tests {
 
             let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
             let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+            let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
             let audit: vta_audit::SharedAuditSink =
-                vta_audit::shared_keyspace_sink(store.keyspace(crate::keyspaces::AUDIT).unwrap());
+                vta_audit::shared_keyspace_sink(audit_ks.clone());
 
             let initial_seed = vec![0xABu8; 32];
             let seed_store: Arc<dyn SeedStore> =
@@ -232,10 +266,120 @@ mod tests {
                 keys_ks,
                 imported_ks,
                 audit,
+                audit_ks,
                 seed_store,
                 _dir: dir,
             }
         }
+    }
+
+    fn claims(did: &str, contexts: &[&str]) -> AuthClaims {
+        AuthClaims {
+            did: did.to_string(),
+            role: vti_common::acl::Role::Admin,
+            allowed_contexts: contexts.iter().map(|c| c.to_string()).collect(),
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        }
+    }
+
+    fn super_admin() -> AuthClaims {
+        claims("did:key:z6MkTestAdmin", &[])
+    }
+
+    /// FTL-29904: `role: admin` scoped to one context.
+    fn tenant_admin() -> AuthClaims {
+        claims("did:key:z6MkTenantA", &["tenant-a"])
+    }
+
+    async fn audit_rows(
+        audit_ks: &KeyspaceHandle,
+    ) -> Vec<vta_sdk::protocols::audit_management::list::AuditLogEntry> {
+        audit_ks
+            .prefix_iter_raw("log:")
+            .await
+            .expect("scan audit")
+            .iter()
+            .filter_map(|(_, v)| serde_json::from_slice(v).ok())
+            .collect()
+    }
+
+    /// FTL-29904 / VTI-ACL-022: seed state is instance-wide, so a
+    /// context-scoped admin is refused both seed operations by authorization.
+    /// The refusal is audited (VTI-AUD-003), and rotation changes nothing.
+    #[tokio::test]
+    async fn ftl_29904_context_scoped_admin_cannot_list_or_rotate_the_seed() {
+        let h = TestHarness::new().await;
+        let tenant = tenant_admin();
+
+        let list = list_seeds(&h.keys_ks, &tenant, &h.audit, "test").await;
+        assert!(
+            matches!(list, Err(AppError::Forbidden(_))),
+            "list must be Forbidden, got {list:?}"
+        );
+
+        let before = seeds::get_active_seed_id(&h.keys_ks).await.unwrap();
+        let rotate = rotate_seed(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &h.audit,
+            &tenant,
+            None,
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(rotate, Err(AppError::Forbidden(_))),
+            "rotate must be Forbidden (not Conflict, not Ok), got {rotate:?}"
+        );
+        assert_eq!(
+            seeds::get_active_seed_id(&h.keys_ks).await.unwrap(),
+            before,
+            "a refused rotation must not advance the generation"
+        );
+
+        let refusals: Vec<_> = audit_rows(&h.audit_ks)
+            .await
+            .into_iter()
+            .filter(|r| {
+                r.action == crate::operations::key_custody::INSTANCE_AUTHORITY_ACTION
+                    && r.actor == tenant.did
+                    && r.outcome == "denied"
+            })
+            .collect();
+        assert_eq!(refusals.len(), 2, "both refusals are audited: {refusals:?}");
+    }
+
+    /// The super-admin keeps both, and a successful list is audited too.
+    #[tokio::test]
+    async fn super_admin_lists_and_rotates_the_seed() {
+        let h = TestHarness::new().await;
+        let admin = super_admin();
+        list_seeds(&h.keys_ks, &admin, &h.audit, "test")
+            .await
+            .expect("super-admin lists");
+        rotate_seed(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &h.audit,
+            &admin,
+            None,
+            "test",
+        )
+        .await
+        .expect("super-admin rotates");
+        let actions: Vec<String> = audit_rows(&h.audit_ks)
+            .await
+            .into_iter()
+            .map(|r| r.action)
+            .collect();
+        assert!(actions.contains(&"seed.list".to_string()), "{actions:?}");
+        assert!(actions.contains(&"seed.rotate".to_string()), "{actions:?}");
     }
 
     /// P0.6: rotation must refuse on a seed store whose `set` does not
@@ -282,7 +426,7 @@ mod tests {
             &imported_ks,
             &seed_store,
             &audit,
-            "did:key:z6MkTestAdmin",
+            &super_admin(),
             None,
             "test",
         )
@@ -320,7 +464,7 @@ mod tests {
                     &imported_ks,
                     &seed_store,
                     &audit,
-                    "did:key:z6MkTestAdmin",
+                    &super_admin(),
                     None,
                     "test",
                 )
@@ -367,7 +511,7 @@ mod tests {
             &h.imported_ks,
             &h.seed_store,
             &h.audit,
-            "did:key:z6MkTestAdmin",
+            &super_admin(),
             None,
             "test",
         )

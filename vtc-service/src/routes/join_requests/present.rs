@@ -34,8 +34,6 @@
 use std::sync::Arc;
 
 use affinidi_openid4vp::DcqlQuery;
-use axum::Json;
-use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
@@ -43,7 +41,6 @@ use tracing::{info, warn};
 use uuid::Uuid;
 use vta_sdk::protocols::credential_exchange::{QUERY as CREDENTIAL_QUERY_TYPE, QueryBody};
 
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use crate::ceremony::{Credential, CredentialStatus, Presentation};
@@ -51,7 +48,7 @@ use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
 use crate::credentials::task_context::{self, TaskContextBinding};
 use crate::credentials::witness::{self, WitnessBinding};
 use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
-use affinidi_data_integrity::VerificationMethodResolver;
+use vti_common::auth::PurposeVmResolver;
 
 use crate::credentials::vm_resolver::DidVmResolver;
 use crate::join::JoinTransport;
@@ -238,29 +235,16 @@ pub struct SendQueryResponse {
 /// consumes the challenge.
 /// POST /join-requests/query — prepare + push a credential-exchange query to
 /// a holder for a registered Accepts criterion. Auth: Admin.
-#[utoipa::path(
-    post, path = "/join-requests/query", tag = "join-requests",
-    security(("bearer_jwt" = [])),
-    request_body = SendQueryRequest,
-    responses(
-        (status = 200, description = "Prepared query + thread to present on", body = SendQueryResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "No such Accepts criterion registered"),
-    ),
-)]
-pub async fn send_query(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<SendQueryRequest>,
-) -> Result<Json<SendQueryResponse>, AppError> {
+pub(crate) async fn send_query_inner(
+    state: &AppState,
+    body: SendQueryRequest,
+) -> Result<SendQueryResponse, AppError> {
     let thread_id = Uuid::new_v4().to_string();
-    let query = prepare_join_query(&state, &thread_id, &body.criterion_id, Utc::now()).await?;
+    let query = prepare_join_query(state, &thread_id, &body.criterion_id, Utc::now()).await?;
 
     // Best-effort DIDComm push. A failure (no mediator, unreachable holder) is not
     // fatal — the query is still returned for relay delivery.
-    let delivered = match push_credential_query(&state, &body.holder_did, &thread_id, &query).await
-    {
+    let delivered = match push_credential_query(state, &body.holder_did, &thread_id, &query).await {
         Ok(()) => {
             info!(holder = %body.holder_did, thread = %thread_id, "queued credential query for guaranteed delivery");
             true
@@ -271,25 +255,19 @@ pub async fn send_query(
         }
     };
 
-    Ok(Json(SendQueryResponse {
+    Ok(SendQueryResponse {
         thread_id,
         holder_did: body.holder_did,
         query,
         delivered,
-    }))
+    })
 }
 
-/// Push a `credential-exchange/query` to `holder_did` over DIDComm: pack it
-/// authcrypt to the holder, wrap it in a mediator forward, and send. The query
-/// message id **is** `thread_id` (the thread root), so the holder's `present`
-/// reply threads back to the single-use challenge the VTC just issued.
-///
-/// The forward is addressed to the **holder's own mediator** (resolved from the
-/// holder's DID document) and sent through the **VTC's own mediator** — the
-/// mediator the VTC has a connection to. The VTC's mediator routes the forward
-/// onward to the holder's mediator, which delivers it. When the holder
-/// advertises no mediator, the VTC's own mediator is used as the forward target
-/// (the shared-mediator deployment).
+/// Push a signed `credential-exchange/query` to `holder_did`, over whichever
+/// transport it speaks ([`crate::credentials::delivery::push_document`]). The
+/// query document's `id` **is** `thread_id` (the thread root), so the holder's
+/// `present` carries it as `threadId` and threads back to the single-use
+/// challenge the VTC just issued.
 async fn push_credential_query(
     state: &AppState,
     holder_did: &str,
@@ -298,15 +276,15 @@ async fn push_credential_query(
 ) -> Result<(), AppError> {
     let body = serde_json::to_value(query)
         .map_err(|e| AppError::Internal(format!("query serialise: {e}")))?;
-    // The message id is the thread root; the holder replies with `thid = thread_id`.
-    crate::credentials::delivery::push_to_holder(
+    crate::credentials::delivery::push_document(
         state,
         holder_did,
-        thread_id,
         CREDENTIAL_QUERY_TYPE,
         body,
+        crate::credentials::delivery::Thread::Root(thread_id),
     )
     .await
+    .map(|_| ())
 }
 
 /// Project a [`VerifiedPresentationSet`] into the verified ceremony
@@ -341,7 +319,7 @@ async fn presentation_from_verified_set(
     // hide a revocation. Built once for the whole set.
     let status_fetcher = match state.did_resolver.clone() {
         Some(resolver) => {
-            let key_resolver: Arc<dyn VerificationMethodResolver> =
+            let key_resolver: Arc<dyn PurposeVmResolver> =
                 Arc::new(DidVmResolver::new(Some(resolver)));
             HttpStatusListFetcher::with_issuer_verification(key_resolver)
         }

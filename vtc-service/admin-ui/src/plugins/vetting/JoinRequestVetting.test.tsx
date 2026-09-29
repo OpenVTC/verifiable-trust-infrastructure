@@ -1,9 +1,18 @@
 import { screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { JoinRequestVetting } from "@/lib/wire-types";
 import { JoinRequestVettingCard } from "@/plugins/vetting/JoinRequestVetting";
-import { mockFetch, NAME_BOOK_ROUTES, renderWithProviders } from "@/test/render";
+import { mockFetch, NAME_BOOK_ROUTES, renderWithProviders, taskRoute } from "@/test/render";
+
+// Signed documents reach the fetch table unsigned; there is no console key here.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+  postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+}));
+
+const VETTING_SHOW = "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1";
 
 const ID = "5f0c2a1e-8d4b-4a51-9d7e-2b7f4c3e9a10";
 
@@ -50,7 +59,7 @@ const FACTS: JoinRequestVetting = {
 describe("JoinRequestVettingCard", () => {
   it("says what counted, what did not and why, and keeps the codes", async () => {
     mockFetch([
-      { path: `/v1/join-requests/${ID}/vetting`, body: { requestId: ID, vetting: FACTS } },
+      taskRoute(VETTING_SHOW, { requestId: ID, vetting: FACTS }),
       ...NAME_BOOK_ROUTES,
     ]);
     renderWithProviders(<JoinRequestVettingCard id={ID} />);
@@ -72,7 +81,7 @@ describe("JoinRequestVettingCard", () => {
 
   it("says so when no vetting criterion applied", async () => {
     mockFetch([
-      { path: `/v1/join-requests/${ID}/vetting`, body: { requestId: ID } },
+      taskRoute(VETTING_SHOW, { requestId: ID }),
       ...NAME_BOOK_ROUTES,
     ]);
     renderWithProviders(<JoinRequestVettingCard id={ID} />);
@@ -82,9 +91,16 @@ describe("JoinRequestVettingCard", () => {
   it("names a failed read and what to do", async () => {
     mockFetch([
       {
-        path: `/v1/join-requests/${ID}/vetting`,
-        status: 404,
-        body: { error: "join request not found" },
+        method: "POST",
+        path: "/v1/trust-tasks",
+        task: VETTING_SHOW,
+        status: 422,
+        body: {
+          payload: {
+            code: "vtc/join-requests/vetting/show:notFound",
+            message: "join request not found",
+          },
+        },
       },
       ...NAME_BOOK_ROUTES,
     ]);

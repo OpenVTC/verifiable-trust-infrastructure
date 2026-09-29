@@ -2,6 +2,153 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.8.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.8.1...vta-config-v0.8.2) — 2026-09-28
+
+
+### Added
+
+- **storage**: Optional Fjall memory settings for the VTA and VTC ([#1803](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1803))
+
+Add STORAGE_FJALL_BLOCK_CACHE, STORAGE_FJALL_WRITE_BUFFER and
+  STORAGE_FJALL_MAX_JOURNAL, plus a matching [fjall] config-file table, so
+  an operator can keep fjall's block cache, buffered writes and startup
+  journal replay inside a pod's Kubernetes memory limit.
+
+  All three are optional and shared, unprefixed names for every consumer
+  (vti_common::config::FjallTuning, apply_fjall_env_overrides). Unset
+  leaves fjall's own defaults byte for byte; an env var overrides the
+  config file; an invalid, zero, or absurdly small value is refused at
+  startup naming the setting. Values accept a plain byte count or a
+  suffixed size ("64MiB", "512MB", "1GiB").
+
+
+
+## [0.8.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.8.0...vta-config-v0.8.1) — 2026-09-27
+
+
+## [0.8.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.7.1...vta-config-v0.8.0) — 2026-09-27
+
+
+### Added
+
+- **attestation**: The TEE attestation reads are public Trust Tasks, over any transport ([#1776](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1776))
+
+* feat(attestation)!: the TEE attestation reads are public Trust Tasks, over any transport
+
+  A TEE VTA answered three attestation reads only as unauthenticated REST routes
+  (`GET /attestation/status`, `GET`/`POST /attestation/report`,
+  `POST /attestation/config-report`), plus a bare DIDComm protocol arm that
+  nothing sent to. Under the rule that every remote API is a spec-first,
+  spine-dispatched Trust Task reachable over TSP, DIDComm and HTTPS, they are now
+  `vta/attestation/{status,report,config-report}/0.1` (trustoverip/
+  dtgwg-trust-tasks-tf#654, trust-tasks-rs 0.23.2), dispatched on the spine.
+
+  Public tasks
+  - `vta_sdk::trust_tasks::PUBLIC_URIS` names the tasks a caller may send with no
+    identity: no session, no ACL entry, no request proof. A verifier asks before
+    it trusts the VTA; the nonce bound into the evidence is what makes a report
+    its own, and every response is the VTA's signed operational document.
+  - HTTPS: `/trust-tasks` takes an optional credential. An anonymous caller may
+    send only a public task (anything else is 401), capped at 64 KB, and those
+    requests are charged to the unauthenticated limiter — which charges only
+    requests presenting no credential, decided by the extractor's own rule
+    (`vti_common::auth::extractor::presents_credential`), so a junk header cannot
+    move a request between the two classes.
+  - DIDComm/TSP: a sender the ACL does not know gets a zero-authority claim for a
+    public task, and `bind_document_to_sender` accepts it unsigned — the spec
+    makes the request proof OPTIONAL and HTTPS accepts it unsigned, so refusing it
+    here would make the requirement depend on the transport (VTI-OPS-021). An
+    attached proof is still verified and bound.
+  - A census (`every_public_task_is_proof_optional_and_read_only`) fails if a task
+    whose spec requires a proof, or whose dispatch class changes state, discloses
+    a secret or acts as its subject, is ever added to `PUBLIC_URIS`.
+
+  Behaviour
+  - `report` and `config-report` require a 32-byte verifier nonce; the cached,
+    nonce-less report is not carried over — evidence nobody asked for is evidence
+    anybody can replay.
+  - Failures carry the specs' declared codes: `notAttested` (no provider),
+    `noConfigSnapshot` (only the enclave front-end captures one),
+    `evidenceUnavailable` (the platform refused a quote).
+  - The VTA still requires `issuedAt` on every document (bounding its replay
+    record), stricter than the spec; the deploy README examples send it.
+
+  Removed (breaking)
+  - The REST routes above and the DIDComm `firstperson.network/vta/1.0/
+    attestation/*` arms, with their SDK constants; `TASK_ATTESTATION_{STATUS,
+    REPORT}_1_0` become `TASK_ATTESTATION_{STATUS,REPORT,CONFIG_REPORT}_0_1` and
+    leave `REST_ROUTED_URIS`.
+  - The `TeeAttestation` DID-document service, which pointed at the REST route
+    (user decision: removed, not re-pointed). `tee.embed_in_did` and
+    `VTA_TEE_EMBED_IN_DID` are **refused** at config load as retired, naming the
+    replacement, rather than silently ignored. The shipped Nitro configs drop the
+    key; the deploy scripts' health hints point at `/health`.
+
+
+
+## [0.7.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.7.0...vta-config-v0.7.1) — 2026-09-26
+
+
+## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.6.8...vta-config-v0.7.0) — 2026-09-26
+
+
+### Security
+
+- **resolver**: One bounded DID-document cache per node, re-resolved once before a verification fails (VTI-KEY-134) ([#1737](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1737))
+
+* security(resolver)!: one bounded DID-document cache per node, re-resolved once before a verification fails (VTI-KEY-134)
+
+  The VTC ran two DID-document caches: the app resolver built in
+  `init_auth`, and a second one the messaging TDK built for itself
+  because it was given none. Both used the SDK defaults of a 300 s TTL and
+  100 entries. Every DIDComm and TSP message on the mediator socket was
+  checked against a cache the REST and Trust Task paths could not see or
+  evict. Neither cache was ever refreshed when a verification failed, so
+  a peer that rotated was refused as a forger until its entry aged out.
+
+  Bounded TTL (key-roles, dtgwg-vti-spec #42: VTI-KEY-060/062/122/123/134):
+
+  - A new `[did_cache]` section (`vti_common::config::DidCacheConfig`)
+    holds `ttl_secs` (default 60, refused outside 1..=300) and `capacity`
+    (default 1000). The VTA and the VTC read the same type.
+  - The TTL is what bounds how long a key revoked for compromise keeps
+    verifying: VTI-KEY-123 allows no overlap, and nothing else notices a
+    removal. A new key does not wait on the TTL, because of the refresh
+    below. 60 s caps the revocation window at a minute, for one resolution
+    per active DID per minute. 300 s, the SDK default and the old
+    behaviour, is the ceiling.
+  - `vta_sdk::resolver::build_verifier_did_cache_config` builds it, with
+    the webvh host policy the VTA already used. The VTC now uses that
+    policy too, so the private-host opt-in reaches it as well.
+
+  One cache:
+
+  - The VTC messaging TDK is handed the app resolver.
+  - The VTA already shared its resolver. Its fallback when there is no
+    app resolver now gets the same bounds, not the SDK defaults.
+
+  Re-resolve once, then fail closed (`vta_sdk::did_refresh`):
+
+  - `resolve_for_vm`: when a cached document does not list the method a
+    proof names, re-resolve it fresh once. This covers every Trust Task
+    proof on both nodes (`TrustTaskVmResolver`) and the VTC credential/VP
+    resolver (`DidVmResolver`).
+  - `verify_trust_task_proof_with`: when verification fails and the
+    signer's document came from the cache, evict it and verify once more.
+    This covers a key id kept with its material replaced.
+  - `unpack_refreshing_sender`: when an authcrypt unpack fails, evict the
+    sender named in the protected header (`skid`) and retry once. It is
+    used on the REST DIDComm auth and refresh paths of both nodes.
+  - Each forced refresh is rate-limited per DID (5 s, with at most 4096
+    DIDs tracked). A failing proof is something anyone can send, and
+    without the limit each one would make this node fetch a third party's
+    document.
+
+
+
+## [0.6.8](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.6.7...vta-config-v0.6.8) — 2026-09-24
+
+
 ## [0.6.7](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-config-v0.6.6...vta-config-v0.6.7) — 2026-09-23
 
 

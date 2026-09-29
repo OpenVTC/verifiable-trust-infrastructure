@@ -198,6 +198,45 @@ pub enum AuditEvent {
     /// credential, the operation's row names the session.
     AuthSteppedUp(AuthSteppedUpData),
 
+    /// A passkey gesture was recorded against **one operation** rather than a
+    /// session: the operation-bound step-up a signed Trust Task document needs,
+    /// since a document has no session to elevate (VTI-APV-003, VTI-APV-015).
+    ///
+    /// Nothing is elevated. The gesture authorizes exactly the operation whose
+    /// digest `bound_to` names, once, before `expires_at`; the operation's own
+    /// row follows under the same actor when the document is re-sent.
+    OperationStepUpRecorded(OperationStepUpData),
+
+    /// A step in the life of a member's **step-up passkey**
+    /// (`auth/passkey/enroll/invite/0.2`, `purpose: stepUp`): an administrator
+    /// invited the member to enrol one, the member redeemed the invite, an
+    /// invite was invalidated after too many wrong claim codes, or the
+    /// credential was revoked. A step-up passkey never opens a session; it
+    /// only answers operation-bound step-ups of its own subject.
+    ///
+    /// The actor is the administrator for `invited` and `revoked`, the member
+    /// for `registered`, and the member the invite named for
+    /// `inviteInvalidated`. The invite token and claim code are never recorded.
+    StepUpPasskeyChanged(StepUpPasskeyData),
+
+    /// A step of the second-party consent that unrestricted admin authority
+    /// needs (VTI-APV-014): asked for, approved or declined by another admin,
+    /// granted once enough have approved, or spent by the operation it names.
+    ///
+    /// The actor is whoever took the step — the requester for `requested` and
+    /// `consumed`, the approver for `approved` and `declined`. `payload_digest`
+    /// is the salted digest the approvers were shown, never the unsalted one.
+    TaskConsentRecorded(TaskConsentData),
+
+    /// An ACL row was written or removed by an **offline** command, with the
+    /// daemon stopped — the break-glass. It did not pass the checks the daemon
+    /// makes on the same change: the step-up, another admin's consent to an
+    /// unrestricted grant (VTI-APV-014), the attrition rules (VTI-APV-009).
+    /// That is what it is for, and this row says it happened. Written by the
+    /// daemon on its next boot, from what the command left behind; the actor
+    /// is `did:key:vtc-break-glass`.
+    AclBreakGlassWritten(BreakGlassAclData),
+
     /// `POST /v1/join-requests` (REST or DIDComm) accepted a
     /// well-formed submission and persisted it as `Pending`. The
     /// actor on this event is the applicant DID — they're the
@@ -565,11 +604,18 @@ pub enum AuditEvent {
     /// pushed to the invited DID, or returned to the inviter for a QR code.
     InvitationDelivered(InvitationDeliveredData),
 
-    /// One or more authenticated sessions were revoked by an admin
-    /// (`DELETE /v1/auth/sessions/{id}` or `?did=`). Cutting off access
-    /// is security-relevant and must be attributable. Envelope
-    /// `target_did` is the session owner (when revoking by DID).
+    /// One or more authenticated sessions were revoked
+    /// (`auth/revoke-session`). Cutting off access is security-relevant and
+    /// must be attributable. Envelope `target_did` is the session owner.
     SessionRevoked(SessionRevokedData),
+
+    /// A revocation of another subject's sessions (`auth/revoke-session`'s
+    /// `subject` form) was **refused**: the producer could not withdraw that
+    /// subject's access. `auth/revoke-session/0.2` consumer item 7 requires
+    /// every such refusal in the audit trail, with the producer and the
+    /// subject, so an investigation can see who reached for whose sessions.
+    /// Envelope `actor` is the producer; `target_did` the named subject.
+    SessionRevocationRefused(SessionRevocationRefusedData),
 
     /// A principal ended their **own** session (`POST
     /// /v1/auth/sign-out`).
@@ -611,6 +657,46 @@ pub enum AuditEvent {
     /// A credential schema or accepts-criterion was deleted
     /// (`DELETE /v1/schemas/{type_uri}` or `/v1/schemas/accepts/{id}`).
     SchemaDeleted(SchemaChangeData),
+
+    /// A change to a community's governance of forge repositories — the
+    /// `git-ns/*` Trust Task family: a namespace bound or unbound, a
+    /// repository created, adopted, archived, renamed or detached, a git right
+    /// granted, revoked or lapsed, a forge account linked.
+    ///
+    /// One variant for the family, with the action as a dotted string, for the
+    /// reason [`Self::VtaOperation`] gives: the vocabulary grows with the task
+    /// family, and a variant per action would make the enum change whenever a
+    /// task does. The subject of a right travels in the envelope's hashed
+    /// `target_did_*` members, where an erasure reaches it; a grant's free-text
+    /// `reason` is never recorded here, because the audit log outlives the
+    /// right and the reason is the granter's, not the community's.
+    GitNsOperation(GitNsOperationData),
+
+    /// A **break-glass** on a git right (`git-ns/right/break-glass/0.1`): a
+    /// member recorded an elevated right for themselves, bypassing separation
+    /// of duties — or another administrator ratified or revoked such a record.
+    ///
+    /// [`AuditSeverity::Critical`], the highest severity this log has: it is
+    /// the one way a single person widens their own authority. Unlike
+    /// [`Self::GitNsOperation`] it carries the actor's free-text justification
+    /// and the step-up evidence, because the specification requires both in
+    /// the record (step 9). Written alongside the ordinary `GitNsOperation`
+    /// row, which is what wakes the projector and feeds the activity view.
+    GitNsBreakGlass(GitNsBreakGlassData),
+}
+
+/// How much an audit event matters to someone reviewing the log. Ordered:
+/// a consumer filtering for "at least `Notice`" compares with `>=`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AuditSeverity {
+    /// The ordinary record of an operation.
+    Info,
+    /// The highest severity: an act that bypasses a control another person
+    /// would ordinarily have to take part in — the emergency bootstrap, a git
+    /// break-glass. Surfaces that show the log SHOULD make these impossible
+    /// to miss.
+    Critical,
 }
 
 impl AuditEvent {
@@ -641,6 +727,10 @@ impl AuditEvent {
             Self::RoleChanged(..) => "RoleChanged",
             Self::AdminPromoted(..) => "AdminPromoted",
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
+            Self::OperationStepUpRecorded(..) => "OperationStepUpRecorded",
+            Self::StepUpPasskeyChanged(..) => "StepUpPasskeyChanged",
+            Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
+            Self::AclBreakGlassWritten(..) => "AclBreakGlassWritten",
             Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
             Self::JoinRequestApproved(..) => "JoinRequestApproved",
             Self::JoinRequestRejected(..) => "JoinRequestRejected",
@@ -699,6 +789,7 @@ impl AuditEvent {
             Self::InvitationRevoked(..) => "InvitationRevoked",
             Self::InvitationDelivered(..) => "InvitationDelivered",
             Self::SessionRevoked(..) => "SessionRevoked",
+            Self::SessionRevocationRefused(..) => "SessionRevocationRefused",
             Self::SignedOut(..) => "SignedOut",
             Self::BackupExported(..) => "BackupExported",
             Self::BackupImported(..) => "BackupImported",
@@ -707,12 +798,28 @@ impl AuditEvent {
             Self::CommunityDidLogInstalled(..) => "CommunityDidLogInstalled",
             Self::SchemaRegistered(..) => "SchemaRegistered",
             Self::SchemaDeleted(..) => "SchemaDeleted",
+            // As for `VtaOperation`: one kind for the family, `data.action`
+            // says which operation.
+            Self::GitNsOperation(..) => "GitNsOperation",
             // The variant name, not the action inside it. A consumer
             // discriminating on `type` sees one kind for every VTA
             // operation and reads `data.action` for which one — the same
             // shape a SIEM already has to handle for any event carrying a
             // subtype.
             Self::VtaOperation(..) => "VtaOperation",
+            Self::GitNsBreakGlass(..) => "GitNsBreakGlass",
+        }
+    }
+
+    /// The event's severity. Everything is [`AuditSeverity::Info`] except the
+    /// acts that bypass a second person: the emergency bootstrap, and a git
+    /// break-glass with its ratification or revocation.
+    pub fn severity(&self) -> AuditSeverity {
+        match self {
+            Self::EmergencyBootstrapInvoked(..) | Self::GitNsBreakGlass(..) => {
+                AuditSeverity::Critical
+            }
+            _ => AuditSeverity::Info,
         }
     }
 }
@@ -798,6 +905,18 @@ pub struct SessionRevokedData {
     pub session_id: Option<String>,
     /// Number of sessions revoked (1 for a single id, N for revoke-by-DID).
     pub revoked_count: u32,
+    /// The producer's stated rationale (`reason`), when it gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Payload for [`AuditEvent::SessionRevocationRefused`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRevocationRefusedData {
+    /// The producer's stated rationale (`reason`), when it gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Payload for [`AuditEvent::SignedOut`].
@@ -847,6 +966,92 @@ pub struct CommunityDidLogInstalledData {
     pub previous_version_id: String,
     /// How many entries the install added.
     pub entries_added: u64,
+}
+
+/// Payload for [`AuditEvent::GitNsOperation`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsOperationData {
+    /// Dotted action name — `gitNs.right.granted`, `gitNs.namespace.bound`,
+    /// `gitNs.repo.renamed`, … Part of the wire contract for consumers that
+    /// filter on it.
+    pub action: String,
+    /// The namespace the operation acted in, by the VTC's identifier for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    /// The forge-qualified resource acted on (`github.com/acme/widgets`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    /// The right, where the operation concerns one (`git.repo.own`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right: Option<String>,
+    /// The version of the git-namespace policy that governed the decision,
+    /// where one was consulted (VTI-VTC-031: a past decision must be
+    /// explicable by the policy that made it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u32>,
+    /// A short machine-readable qualifier — `departed`, `lapsed`,
+    /// `unbound`, the previous resource of a rename. Never free text a
+    /// member wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Payload for [`AuditEvent::GitNsBreakGlass`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitNsBreakGlassData {
+    /// `breakGlass`, `ratified` or `revoked` — the
+    /// `git-ns/right/break-glass-notice` event names.
+    pub event: String,
+    /// The namespace, by the VTC's identifier for it.
+    pub namespace: String,
+    /// The forge-qualified resource (`github.com/acme/widgets`).
+    pub resource: String,
+    /// The elevated right (`git.repo.own`).
+    pub right: String,
+    /// The record's `breakGlass.at` — which break-glass this row is about.
+    pub break_glass_at: DateTime<Utc>,
+    /// The subject's justification, verbatim. Required by
+    /// `git-ns/right/break-glass/0.1` step 9 to be in the audit record.
+    pub justification: String,
+    /// The ratifier's statement or the revoker's reason, where given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement: Option<String>,
+    /// When the right takes effect, where policy deferred it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_at: Option<DateTime<Utc>>,
+    /// Which entitlement the break-glass relied on: `grantAuthority` or
+    /// `communityAdministratorHeadless`. Absent on ratify and revoke.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entitlement: Option<String>,
+    /// The authentication step the VTC required for this request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up: Option<StepUpEvidence>,
+    /// The git-namespace policy version that governed the decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<u32>,
+    /// How many administrators a notice was queued for.
+    #[serde(default)]
+    pub notified: u32,
+    /// The administrators whose notice could not be queued
+    /// (`git-ns/right/break-glass-notice/0.1`, producer requirement 5). A
+    /// break-glass nobody could be told about has `notified == 0`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undeliverable: Vec<String>,
+}
+
+/// The evidence of an operation-bound step-up, as recorded against the act it
+/// authorized.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StepUpEvidence {
+    /// `webauthn` — a user-verified passkey assertion.
+    pub kind: String,
+    /// Credential id (hex) of the passkey that answered.
+    pub credential_id: String,
+    /// The salted operation digest the approver was shown.
+    pub bound_to: String,
 }
 
 /// Payload for [`AuditEvent::SchemaRegistered`] / [`AuditEvent::SchemaDeleted`].
@@ -1148,6 +1353,82 @@ pub struct AuthSteppedUpData {
     /// When the elevation lapses. After this, the same session must re-run the
     /// ceremony before it can authorise anything else.
     pub expires_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::OperationStepUpRecorded`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationStepUpData {
+    /// Type URI of the operation the gesture authorizes.
+    pub task: String,
+    /// The operation's digest salted with the step-up challenge — the value
+    /// the approver was shown. Never the unsalted digest, which over a short
+    /// payload is a confirmation oracle for what was authorized.
+    pub bound_to: String,
+    /// Credential id (hex) of the passkey that asserted user verification.
+    pub credential_id: String,
+    /// When the unspent authorization lapses.
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::AclBreakGlassWritten`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BreakGlassAclData {
+    /// The command that made the change, e.g. `vtc acl add`.
+    pub command: String,
+    /// `grant` or `remove`.
+    pub action: String,
+    pub did: String,
+    /// The role written; empty for a removal.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contexts: Vec<String>,
+    /// The host the command ran on, and when.
+    pub operator_hostname: String,
+    pub invoked_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::StepUpPasskeyChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StepUpPasskeyData {
+    /// `invited`, `registered`, `inviteInvalidated` or `revoked`.
+    pub stage: String,
+    /// The member whose step-up passkey it is.
+    pub subject: String,
+    /// The administrator who issued the invite the credential came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invited_by: Option<String>,
+    /// Credential id (hex), once there is a credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+    /// When an issued invite lapses unredeemed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Payload for [`AuditEvent::TaskConsentRecorded`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskConsentData {
+    /// `requested`, `approved`, `declined`, `granted` or `consumed`.
+    pub stage: String,
+    /// Type URI of the operation consented to.
+    pub task: String,
+    /// The DID that asked for the operation.
+    pub requester: String,
+    /// The DID the operation acts on.
+    pub subject: String,
+    /// The digest salted with the ceremony's challenge — what the approvers
+    /// were shown.
+    pub payload_digest: String,
+    /// Approvals needed, and those recorded so far (on `granted` and
+    /// `consumed`, the approvers whose consent the grant carries).
+    pub min_approvals: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1970,6 +2251,34 @@ mod tests {
         assert_eq!(v["type"], "EmergencyBootstrapInvoked");
         assert_eq!(v["data"]["operatorHostname"], "ops-01.example.com");
         round_trip(&e);
+    }
+
+    #[test]
+    fn git_ns_break_glass_is_critical_and_round_trips() {
+        let e = AuditEvent::GitNsBreakGlass(GitNsBreakGlassData {
+            event: "breakGlass".into(),
+            namespace: "ns_1".into(),
+            resource: "github.com/acme/widgets".into(),
+            right: "git.repo.own".into(),
+            break_glass_at: chrono::Utc::now(),
+            justification: "owners unreachable".into(),
+            statement: None,
+            effective_at: None,
+            entitlement: Some("grantAuthority".into()),
+            step_up: Some(StepUpEvidence {
+                kind: "webauthn".into(),
+                credential_id: "c0ffee".into(),
+                bound_to: "zBound".into(),
+            }),
+            policy_version: Some(1),
+            notified: 2,
+            undeliverable: vec![],
+        });
+        round_trip(&e);
+        assert_eq!(e.variant_name(), "GitNsBreakGlass");
+        assert_eq!(wire_value(&e)["type"], "GitNsBreakGlass");
+        assert_eq!(e.severity(), AuditSeverity::Critical);
+        assert!(AuditSeverity::Critical > AuditSeverity::Info);
     }
 
     #[test]

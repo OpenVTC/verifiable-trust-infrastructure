@@ -14,6 +14,7 @@ import {
 import { KeyRound, Plus, X } from "lucide-react";
 
 import { getJson, postJson } from "@/lib/api";
+import type { PasskeyListResponse } from "@/lib/wire-types";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate } from "@/lib/format";
 import {
@@ -37,22 +38,13 @@ const TRUST_TASK_REVOKE_FINISH =
   "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1";
 
 
-// The shared `RegisteredCredential` component of `auth/passkey/list/0.1`.
-// `deviceLabel` and `lastUsedAt` are both genuinely optional: the schema is
-// explicit that a consumer must not invent a label, "because an invented one is
+// The list and its rows are the generated wire types, not local interfaces: a
+// local copy is what let `GET /v1/admin/passkeys` be documented with another
+// endpoint's shape (#1697) without anything here noticing. `deviceLabel` and
+// `lastUsedAt` are both genuinely optional: the schema is explicit that a
+// consumer must not invent a label, "because an invented one is
 // indistinguishable from a chosen one to somebody deciding which credential to
 // revoke", so an unlabelled credential renders as unlabelled.
-interface RegisteredCredential {
-  credentialId: string;
-  deviceLabel?: string;
-  transports: string[];
-  registeredAt: string;
-  lastUsedAt?: string;
-}
-
-interface ListResponse {
-  credentials: RegisteredCredential[];
-}
 
 // `enroll/start/0.2` sends the *inner* WebAuthn options — the value that goes
 // in `navigator.credentials.create({ publicKey: … })` — not the wrapper. The
@@ -69,8 +61,8 @@ interface RevokeStartResponse {
   uvOptions: JsonPublicKeyOptions;
 }
 
-async function fetchPasskeys(): Promise<ListResponse> {
-  return getJson<ListResponse>("/v1/admin/passkeys", {
+async function fetchPasskeys(): Promise<PasskeyListResponse> {
+  return getJson<PasskeyListResponse>("/v1/admin/passkeys", {
     trustTask: TRUST_TASK_LIST,
   });
 }

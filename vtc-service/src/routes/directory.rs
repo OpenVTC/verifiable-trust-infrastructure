@@ -29,9 +29,7 @@
 //! [`AuthClaims`] extractor carries — the directory policy branches on
 //! community standing (`admin` vs `member`), which lives in the ACL.
 
-use axum::Json;
-use axum::extract::{Path, Query, State};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value as JsonValue, json};
 
 use vti_common::error::AppError;
@@ -58,17 +56,6 @@ use crate::server::AppState;
 /// safe default ceiling.
 pub const DIRECTORY_FIELD_WHITELIST: [&str; 4] = ["did", "role", "joined_at", "status"];
 
-/// Optional `?fields=a,b,c` hint — the fields the caller is interested
-/// in. Advisory: the policy decides what it returns, and the PII
-/// boundary caps it. Recorded into the facts so a policy *may* honour
-/// it, but the default directory policy projects by viewer role.
-#[derive(Debug, Default, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub struct DirectoryQuery {
-    #[serde(default)]
-    pub fields: Option<String>,
-}
-
 /// The projected subject record.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,28 +81,16 @@ fn not_visible() -> TaskError {
     )
 }
 
-/// `GET /v1/directory/{did}`.
-#[utoipa::path(
-    get, path = "/directory/{did}", tag = "directory",
-    security(("bearer_jwt" = [])),
-    params(
-        ("did" = String, Path, description = "Subject DID"),
-        DirectoryQuery,
-    ),
-    responses(
-        (status = 200, description = "Projected subject record", body = DirectoryResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 404, description = "No member with that DID, or nothing about them visible to this caller"),
-    ),
-)]
-pub async fn query(
-    viewer: AuthClaims,
-    State(state): State<AppState>,
-    Path(subject_did): Path<String>,
-    Query(q): Query<DirectoryQuery>,
-) -> Result<Json<DirectoryResponse>, TaskError> {
+/// `vtc/directory/query/0.1` as `viewer` sees it. A signed document served by
+/// the spine (`trust_tasks::community_tasks`).
+pub(crate) async fn query(
+    state: &AppState,
+    viewer: &AuthClaims,
+    subject_did: String,
+    fields_hint: Option<String>,
+) -> Result<DirectoryResponse, TaskError> {
     vti_common::identifier::validate_did("did", &subject_did)?;
-    let facts = assemble_directory_facts(&state, &viewer, &subject_did, q.fields).await?;
+    let facts = assemble_directory_facts(state, viewer, &subject_did, fields_hint).await?;
     // Read before the policy runs, answered after it: the policy's verdict
     // decides for a missing subject exactly as for a present one, so the order
     // of the checks cannot tell the two apart either.
@@ -142,10 +117,10 @@ pub async fn query(
                 // answer this task gives.
                 EffectPlan::Project { .. } if !subject_is_member => Err(not_visible()),
                 EffectPlan::Project { fields } if fields.is_empty() => Err(not_visible()),
-                EffectPlan::Project { fields } => Ok(Json(DirectoryResponse {
+                EffectPlan::Project { fields } => Ok(DirectoryResponse {
                     subject: subject_did,
                     fields,
-                })),
+                }),
                 // Allow on a directory must plan a projection; any other
                 // plan means the active policy isn't a directory policy.
                 other => Err(AppError::Internal(format!(

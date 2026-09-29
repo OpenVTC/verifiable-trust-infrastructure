@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// the canonical serialization points when a plaintext on-disk form is
 /// genuinely needed (e.g. at-rest keyring storage, where the OS already
 /// provides confidentiality).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CredentialBundle {
     pub did: String,
@@ -18,6 +18,18 @@ pub struct CredentialBundle {
     pub vta_did: String,
     #[serde(rename = "vtaUrl", default, skip_serializing_if = "Option::is_none")]
     pub vta_url: Option<String>,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for CredentialBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialBundle")
+            .field("did", &self.did)
+            .field("private_key_multibase", &"<redacted>")
+            .field("vta_did", &self.vta_did)
+            .field("vta_url", &self.vta_url)
+            .finish()
+    }
 }
 
 impl CredentialBundle {

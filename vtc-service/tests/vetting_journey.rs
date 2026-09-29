@@ -66,6 +66,9 @@ use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::{MockVtcDidcomm, TestJoinClient, TestVtc};
 use vti_common::auth::session::{Session, SessionState, store_session};
 
+const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
+const JOIN_VETTING_SHOW_TASK: &str =
+    "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1";
 const RP_ORIGIN: &str = "https://kernel-vtc.example";
 const ADMIN_DID: &str = "did:key:zKernelAdmin";
 
@@ -75,6 +78,8 @@ const DAVE_SEED: [u8; 32] = [0x22; 32];
 const ERIN_SEED: [u8; 32] = [0x33; 32];
 const ALICE_SEED: [u8; 32] = [0xA1; 32];
 const BOB_SEED: [u8; 32] = [0xB0; 32];
+/// The administrator's key, for the admin verbs that are signed documents.
+const ADMIN_SEED: [u8; 32] = [0xAD; 32];
 
 const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.2";
 const GRANT_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
@@ -113,14 +118,12 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
 
     // Statements are endorsements of a registered type…
     let (status, body) = c
-        .admin(
-            "POST",
-            "/v1/endorsement-types",
-            Some(ENDORSEMENT_TYPE_REGISTER_TASK),
-            Some(json!({
+        .admin_document(
+            ENDORSEMENT_TYPE_REGISTER_TASK,
+            json!({
                 "typeUri": IDENTITY_VETTING_ENDORSEMENT_TYPE,
                 "description": "A member verified this person's identity",
-            })),
+            }),
         )
         .await;
     assert!(status.is_success(), "register statement type: {body}");
@@ -128,11 +131,9 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     // …and the criterion says how many a join needs. Every number is the
     // community's policy.
     let (status, body) = c
-        .admin(
-            "POST",
-            "/v1/schemas/accepts",
-            None,
-            Some(json!({
+        .admin_document(
+            ACCEPTS_REGISTER_TASK,
+            json!({
                 "id": "kernel-developer",
                 "description": "Two vetters, at least one in person",
                 "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
@@ -148,10 +149,10 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
                     "eligibleVetters": { "role": "vetter" },
                     "independence": { "requireConsistentIdentityCommitment": true }
                 }
-            })),
+            }),
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "vetting criterion: {body}");
+    assert_eq!(status, StatusCode::OK, "vetting criterion: {body}");
 
     // -----------------------------------------------------------------------
     // 2. The community names its vetters.
@@ -364,12 +365,7 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
 
     // The admin reads the facts the decision rested on.
     let (status, facts) = c
-        .admin(
-            "GET",
-            &format!("/v1/join-requests/{alice_request}/vetting"),
-            None,
-            None,
-        )
+        .admin_document(JOIN_VETTING_SHOW_TASK, json!({ "id": alice_request }))
         .await;
     assert_eq!(status, StatusCode::OK, "{facts}");
     let vetting = &facts["vetting"];
@@ -420,12 +416,7 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     assert_eq!(notice["affectedMembers"], json!([alice.did]));
     assert_eq!(notice["affectedJoinRequests"], json!([alice_request]));
     let (_, facts) = c
-        .admin(
-            "GET",
-            &format!("/v1/join-requests/{alice_request}/vetting"),
-            None,
-            None,
-        )
+        .admin_document(JOIN_VETTING_SHOW_TASK, json!({ "id": alice_request }))
         .await;
     let withdrawn: Vec<&str> = facts["vetting"]["statements"]
         .as_array()
@@ -495,12 +486,7 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     );
     let bob_request = verdict["payload"]["requestId"].as_str().unwrap();
     let (_, facts) = c
-        .admin(
-            "GET",
-            &format!("/v1/join-requests/{bob_request}/vetting"),
-            None,
-            None,
-        )
+        .admin_document(JOIN_VETTING_SHOW_TASK, json!({ "id": bob_request }))
         .await;
     let daves = facts["vetting"]["statements"]
         .as_array()
@@ -666,6 +652,23 @@ async fn kernel_community() -> Community {
         .expect("status list");
     }
     let admin_token = admin_token(&vtc).await;
+    let now = vtc_service::auth::session::now_epoch();
+    store_acl_entry(
+        &vtc.state.acl_ks,
+        &VtcAclEntry {
+            did: did_key(ADMIN_SEED).0,
+            role: VtcRole::Admin,
+            label: Some("kernel community admin's key".into()),
+            allowed_contexts: vec![],
+            created_at: now,
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
     Community {
         router: vtc.router.clone(),
         state: vtc.state.clone(),
@@ -686,6 +689,13 @@ impl Community {
         body: Option<Value>,
     ) -> (StatusCode, Value) {
         rest(&self.router, &self.admin_token, method, uri, task, body).await
+    }
+
+    /// An admin verb that is a signed document only: signed by the admin's
+    /// key; the reply's status and payload.
+    async fn admin_document(&self, typ: &str, payload: Value) -> (StatusCode, Value) {
+        let (status, doc) = self.post_document(ADMIN_SEED, typ, payload).await;
+        (status, doc["payload"].clone())
     }
 
     /// A Trust Task document from the holder of `seed`, addressed to this
@@ -1179,11 +1189,9 @@ async fn a_by_did_lookup_tells_revoked_from_unlisted_from_never_a_vetter() {
     // And the listing agrees she is gone from it, which is exactly the
     // ambiguity this task resolves: absent there, `revoked` here.
     let (status, listing) = c
-        .admin(
-            "POST",
-            "/v1/vetting/vetters/list",
-            Some("https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1"),
-            Some(json!({})),
+        .admin_document(
+            "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1",
+            json!({}),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "listing: {listing}");

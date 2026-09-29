@@ -8,10 +8,12 @@
 //! [`crate::operations::credentials`]).
 //!
 //! Both handlers are:
-//! - **Capability-gated** — Admin role required ([`AuthClaims::require_admin`]),
-//!   mirroring the role check the sibling ACL/keys handlers run before their
-//!   step-up gate. Issuing or revoking a credential is a higher-trust action
-//!   than ACL management, so it's Admin-only (not Admin-or-Initiator).
+//! - **Super-admin only**, through
+//!   `operations::key_custody::require_instance_authority`, which audits a
+//!   refusal. The credential is signed with the VTA's own `#key-0` over
+//!   caller-chosen claims, so issuing or revoking one is the VTA speaking as
+//!   itself. No context's authority covers that, and a role-only check let a
+//!   context-scoped admin do it (see `docs/05-design-notes/key-custody.md`).
 //! - **Step-up-gated** — operator AAL2 via [`super::step_up::require_step_up`]
 //!   with the `credentials/issue` / `credentials/revoke` op-classes, the exact
 //!   pattern `acl::handle_create` (`op::ACL_GRANT`) uses.
@@ -39,10 +41,21 @@ pub(super) async fn handle_issue(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> super::helpers::TrustTaskOutcome {
-    // 1. Capability gate (before the step-up gate, so a caller lacking the role
-    //    gets a permission error rather than a step-up prompt — same ordering as
-    //    `acl::handle_create`).
-    if let Err(e) = auth.require_admin() {
+    // 1. Authority gate (before the step-up gate, so a caller lacking it gets a
+    //    permission error rather than a step-up prompt, the same ordering as
+    //    `acl::handle_create`). Super-admin, not admin: the credential is signed
+    //    with the VTA's own `#key-0` over caller-chosen claims for any holder, so
+    //    it is the VTA vouching as itself, which no context's authority covers.
+    //    A role-only check let a context-scoped admin mint VTA-signed VCs (key
+    //    custody sweep after FTL-29904). The refusal is audited.
+    if let Err(e) = crate::operations::key_custody::require_instance_authority(
+        auth,
+        "credentials.issue",
+        &state.audit_sink,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
         return app_error_to_reject(&doc, e);
     }
     // 2. Operator step-up (credentials/issue floor) — enforced centrally by the PDP gate.
@@ -102,7 +115,16 @@ pub(super) async fn handle_revoke(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> super::helpers::TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
+    // Super-admin: revocation takes a VTA-issued credential out of force for
+    // every relying party, whichever context asked for it to be issued.
+    if let Err(e) = crate::operations::key_custody::require_instance_authority(
+        auth,
+        "credentials.revoke",
+        &state.audit_sink,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
         return app_error_to_reject(&doc, e);
     }
     // Step-up (credentials/revoke floor) is enforced centrally by the PDP gate.
@@ -150,7 +172,7 @@ pub(super) async fn handle_revoke(
 ///
 /// ## Why this is gated differently from its siblings
 ///
-/// `issue` and `revoke` are `require_admin` plus a step-up floor, because each
+/// `issue` and `revoke` are super-admin plus a step-up floor, because each
 /// changes what a holder can prove. This is a read, and it is gated on
 /// `require_manage` — the same gate `acl::handle_list` uses for the equivalent
 /// question about authority.

@@ -12,10 +12,6 @@
 //! lives in [`crate::credentials::invitation`]; this is the thin authenticated
 //! REST surface over it.
 
-use axum::Json;
-use axum::extract::Path;
-use axum::extract::State;
-use axum::http::StatusCode;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -24,7 +20,6 @@ use tracing::info;
 use vti_common::audit::{
     AuditEvent, InvitationDeliveredData, InvitationIssuedData, InvitationRevokedData,
 };
-use vti_common::auth::AuthClaims;
 use vti_common::error::AppError;
 
 use crate::acl::{VtcRole, get_acl_entry};
@@ -68,23 +63,13 @@ pub struct IssueInvitationResponse {
     pub vic: JsonValue,
 }
 
-#[utoipa::path(
-    post, path = "/invitations",
-    operation_id = "invitationIssue", tag = "invitations",
-    security(("bearer_jwt" = [])),
-    request_body = IssueInvitationBody,
-    responses(
-        (status = 201, description = "Invitation issued", body = IssueInvitationResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not Admin / Moderator / Issuer"),
-        (status = 409, description = "Subject is already a member"),
-    ),
-)]
-pub async fn issue(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Json(body): Json<IssueInvitationBody>,
-) -> Result<(StatusCode, Json<IssueInvitationResponse>), AppError> {
+/// `vtc/invitations/issue/0.1`, by `actor`. A signed document served by the
+/// spine (`trust_tasks::community_tasks`).
+pub(crate) async fn issue(
+    state: &AppState,
+    actor: &str,
+    body: IssueInvitationBody,
+) -> Result<IssueInvitationResponse, AppError> {
     let signer = state
         .credential_signer
         .as_ref()
@@ -92,7 +77,7 @@ pub async fn issue(
 
     // Auth: Admin / Moderator / Issuer can invite (read the ACL row — the JWT
     // degrades non-Admin VTC roles to Reader, so it can't distinguish them).
-    let acl = get_acl_entry(&state.acl_ks, &auth.did)
+    let acl = get_acl_entry(&state.acl_ks, actor)
         .await?
         .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
     if !matches!(
@@ -144,6 +129,14 @@ pub async fn issue(
                 "an invitation may not grant `admin` (no admin via join)".into(),
             ));
         }
+        // Conferring a role is an administrator's authority. A `Moderator` or
+        // `Issuer` invites members; it cannot mint an invitation that seats
+        // someone as a moderator or issuer, or as any custom role.
+        if !matches!(parsed, VtcRole::Member) && !matches!(acl.role, VtcRole::Admin) {
+            return Err(AppError::Forbidden(format!(
+                "only an administrator can invite with the role `{role}`"
+            )));
+        }
     }
 
     let vic = issue_invitation(
@@ -179,7 +172,7 @@ pub async fn issue(
             subject_did: body.subject_did.clone(),
             slot,
             role: body.role.clone(),
-            issued_by: auth.did.clone(),
+            issued_by: actor.to_string(),
             issued_at: Utc::now(),
             valid_until: valid_until.clone(),
             revoked_at: None,
@@ -193,7 +186,7 @@ pub async fn issue(
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
-                &auth.did,
+                actor,
                 Some(&body.subject_did),
                 AuditEvent::InvitationIssued(InvitationIssuedData {
                     invitation_id: id.clone(),
@@ -207,20 +200,17 @@ pub async fn issue(
     }
 
     info!(
-        actor = %auth.did,
+        actor = %actor,
         subject = %body.subject_did,
         vic_id = %id,
         "issued an invitation credential (VIC)"
     );
 
-    Ok((
-        StatusCode::CREATED,
-        Json(IssueInvitationResponse {
-            subject_did: body.subject_did,
-            valid_until,
-            vic,
-        }),
-    ))
+    Ok(IssueInvitationResponse {
+        subject_did: body.subject_did,
+        valid_until,
+        vic,
+    })
 }
 
 // ── List + revoke ─────────────────────────────────────────────────────────
@@ -261,45 +251,57 @@ pub struct InvitationListResponse {
     pub invitations: Vec<InvitationListItem>,
 }
 
-/// Auth gate shared by the invitation ops: Admin / Moderator / Issuer.
-async fn require_inviter(state: &AppState, did: &str) -> Result<(), AppError> {
+/// What an inviter may manage: every invitation (an `Admin`), or only the
+/// ones it issued itself (a `Moderator` or `Issuer`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InviterScope {
+    All,
+    OwnOnly,
+}
+
+impl InviterScope {
+    fn covers(self, record: &InvitationRecord, actor: &str) -> bool {
+        self == Self::All || record.issued_by == actor
+    }
+}
+
+/// Auth gate shared by the invitation ops: Admin / Moderator / Issuer, and
+/// how far the caller's authority over issued invitations reaches.
+///
+/// A `Moderator` or `Issuer` grows the community by inviting; it does not
+/// manage the invitations other inviters (an administrator included) issued.
+/// Their invitees, revocations and offers are not its to see or act on, so
+/// an invitation outside its scope answers exactly as one that does not
+/// exist.
+async fn require_inviter(state: &AppState, did: &str) -> Result<InviterScope, AppError> {
     let acl = get_acl_entry(&state.acl_ks, did)
         .await?
         .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
-    if !matches!(
-        acl.role,
-        VtcRole::Admin | VtcRole::Moderator | VtcRole::Issuer
-    ) {
-        return Err(AppError::Forbidden(
+    match acl.role {
+        VtcRole::Admin => Ok(InviterScope::All),
+        VtcRole::Moderator | VtcRole::Issuer => Ok(InviterScope::OwnOnly),
+        _ => Err(AppError::Forbidden(
             "only Admin, Moderator, or Issuer members can manage invitations".into(),
-        ));
+        )),
     }
-    Ok(())
 }
 
-#[utoipa::path(
-    get, path = "/invitations",
-    operation_id = "invitationList", tag = "invitations",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Issued invitations", body = InvitationListResponse),
-        (status = 403, description = "Caller is not Admin / Moderator / Issuer"),
-    ),
-)]
-pub async fn list(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-) -> Result<Json<InvitationListResponse>, AppError> {
-    require_inviter(&state, &auth.did).await?;
+pub(crate) async fn list(
+    state: &AppState,
+    actor: &str,
+) -> Result<InvitationListResponse, AppError> {
+    let scope = require_inviter(state, actor).await?;
     let invitations = list_invitations(&state.invitations_ks)
         .await?
         .into_iter()
+        .filter(|r| scope.covers(r, actor))
         .map(InvitationListItem::from)
         .collect();
-    Ok(Json(InvitationListResponse { invitations }))
+    Ok(InvitationListResponse { invitations })
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = InvitationRevokeResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct RevokeResponse {
     pub id: String,
@@ -309,35 +311,25 @@ pub struct RevokeResponse {
     pub newly_revoked: bool,
 }
 
-#[utoipa::path(
-    delete, path = "/invitations/{id}",
-    operation_id = "invitationRevoke", tag = "invitations",
-    params(("id" = String, Path, description = "VIC id (urn:uuid)")),
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Invitation revoked", body = RevokeResponse),
-        (status = 403, description = "Caller is not Admin / Moderator / Issuer"),
-        (status = 404, description = "No such invitation"),
-    ),
-)]
-pub async fn revoke(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<RevokeResponse>, AppError> {
-    require_inviter(&state, &auth.did).await?;
+pub(crate) async fn revoke(
+    state: &AppState,
+    actor: &str,
+    id: String,
+) -> Result<RevokeResponse, AppError> {
+    let scope = require_inviter(state, actor).await?;
 
     let mut record = get_invitation(&state.invitations_ks, &id)
         .await?
+        .filter(|r| scope.covers(r, actor))
         .ok_or_else(|| AppError::NotFound(format!("no invitation with id {id}")))?;
 
     // Idempotent: an already-revoked invite reports its prior revocation.
     if let Some(revoked_at) = record.revoked_at {
-        return Ok(Json(RevokeResponse {
+        return Ok(RevokeResponse {
             id,
             revoked_at: revoked_at.to_rfc3339(),
             newly_revoked: false,
-        }));
+        });
     }
 
     // Flip the revocation status-list bit at the VIC's slot — locked RMW so a
@@ -360,7 +352,7 @@ pub async fn revoke(
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
-                &auth.did,
+                actor,
                 Some(&record.subject_did),
                 AuditEvent::InvitationRevoked(InvitationRevokedData {
                     invitation_id: id.clone(),
@@ -371,13 +363,13 @@ pub async fn revoke(
             .await?;
     }
 
-    info!(actor = %auth.did, vic_id = %id, slot, "revoked an invitation credential (VIC)");
+    info!(actor = %actor, vic_id = %id, slot, "revoked an invitation credential (VIC)");
 
-    Ok(Json(RevokeResponse {
+    Ok(RevokeResponse {
         id,
         revoked_at: now.to_rfc3339(),
         newly_revoked: true,
-    }))
+    })
 }
 
 use trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes as deliver_codes;
@@ -405,31 +397,25 @@ impl From<AppError> for DeliverError {
     }
 }
 
-impl axum::response::IntoResponse for DeliverError {
-    fn into_response(self) -> axum::response::Response {
-        let (status, code, message) = match self {
-            Self::NotFound(m) => (
-                StatusCode::NOT_FOUND,
-                INVITATION_DELIVER_ERR_NOT_FOUND,
-                format!("not found: {m}"),
-            ),
-            Self::Revoked(m) => (
-                StatusCode::CONFLICT,
-                INVITATION_DELIVER_ERR_REVOKED,
-                format!("conflict: {m}"),
-            ),
-            Self::NoRoute(m) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                INVITATION_DELIVER_ERR_NO_ROUTE,
-                m,
-            ),
-            Self::Other(e) => return e.into_response(),
-        };
-        (
-            status,
-            Json(serde_json::json!({ "error": message, "code": code })),
-        )
-            .into_response()
+impl From<DeliverError> for crate::error::TaskError {
+    fn from(e: DeliverError) -> Self {
+        use crate::error::TaskError;
+        match e {
+            DeliverError::NotFound(m) => {
+                TaskError::declared(INVITATION_DELIVER_ERR_NOT_FOUND, AppError::NotFound(m))
+            }
+            DeliverError::Revoked(m) => {
+                TaskError::declared(INVITATION_DELIVER_ERR_REVOKED, AppError::Conflict(m))
+            }
+            DeliverError::NoRoute(m) => {
+                TaskError::declared(INVITATION_DELIVER_ERR_NO_ROUTE, AppError::Validation(m))
+            }
+            // A lapsed invitation is the framework's standard `expired`.
+            DeliverError::Other(AppError::Gone(m)) => {
+                TaskError::declared("expired", AppError::Gone(m))
+            }
+            DeliverError::Other(e) => TaskError::App(e),
+        }
     }
 }
 
@@ -458,29 +444,15 @@ const VIC_CONFIGURATION: &str = "VIC";
 /// `credential-exchange/request` with a key-binding proof by the invited
 /// DID's key, so the offer itself admits no one else; it is never in this
 /// response.
-#[utoipa::path(
-    post, path = "/invitations/deliver",
-    operation_id = "invitationDeliver", tag = "invitations",
-    security(("bearer_jwt" = [])),
-    request_body = vta_sdk::openapi::InvitationDeliver01Payload,
-    responses(
-        (status = 200, description = "Offer recorded, and sent or returned", body = vta_sdk::openapi::InvitationDeliver01Response),
-        (status = 403, description = "Caller is not Admin / Moderator / Issuer"),
-        (status = 404, description = "No such invitation"),
-        (status = 409, description = "Revoked, or issued before delivery existed"),
-        (status = 410, description = "The invitation has lapsed"),
-        (status = 422, description = "The invited DID advertises no transport this community can send over"),
-    ),
-)]
-pub async fn deliver(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Json(body): Json<vta_sdk::openapi::InvitationDeliver01Payload>,
-) -> Result<Json<vta_sdk::openapi::InvitationDeliver01Response>, DeliverError> {
+pub(crate) async fn deliver(
+    state: &AppState,
+    actor: &str,
+    body: trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::Payload,
+) -> Result<trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::Response, DeliverError> {
     use trust_tasks_rs::specs::vtc::invitations::deliver::v0_1 as spec;
 
-    require_inviter(&state, &auth.did).await?;
-    let payload = body.into_inner();
+    let scope = require_inviter(state, actor).await?;
+    let payload = body;
     let id = payload.id.to_string();
     // The generated channel is `#[non_exhaustive]`: a channel a later
     // specification adds is refused here, not guessed at.
@@ -497,6 +469,7 @@ pub async fn deliver(
 
     let mut record = get_invitation(&state.invitations_ks, &id)
         .await?
+        .filter(|r| scope.covers(r, actor))
         .ok_or_else(|| DeliverError::NotFound(format!("no invitation with id {id}")))?;
     if record.is_revoked() {
         return Err(DeliverError::Revoked(format!(
@@ -565,15 +538,17 @@ pub async fn deliver(
         .map_err(|e| AppError::Internal(format!("serialise offer: {e}")))?;
     let returned_offer = match channel {
         Channel::Message => {
-            let message = affinidi_messaging_didcomm::Message::build(
-                uuid::Uuid::new_v4().to_string(),
-                vta_sdk::protocols::credential_exchange::OFFER.to_string(),
+            // A signed `credential-exchange/offer`, over whichever transport
+            // the invitee speaks. Its `request` answer threads on this id.
+            if let Err(e) = crate::credentials::delivery::push_document(
+                state,
+                &record.subject_did,
+                vta_sdk::protocols::credential_exchange::OFFER,
                 serde_json::json!({ "credential_offer": offer_json }),
+                crate::credentials::delivery::Thread::New,
             )
-            .from(vtc_did.clone())
-            .to(record.subject_did.clone())
-            .finalize();
-            if let Err(e) = state.send_to_member(&record.subject_did, message).await {
+            .await
+            {
                 // Nothing went out, so no offer should be live for it.
                 if let Some(code) = record.offer_code.take() {
                     crate::credentials::exchange::withdraw_offer(&state.join_requests_ks, &code)
@@ -601,7 +576,7 @@ pub async fn deliver(
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
-                &auth.did,
+                actor,
                 Some(&record.subject_did),
                 AuditEvent::InvitationDelivered(InvitationDeliveredData {
                     invitation_id: id.clone(),
@@ -612,7 +587,7 @@ pub async fn deliver(
             )
             .await?;
     }
-    info!(actor = %auth.did, vic_id = %id, channel = channel_name, "delivered an invitation");
+    info!(actor = %actor, vic_id = %id, channel = channel_name, "delivered an invitation");
 
     let response: spec::Response = spec::Response::builder()
         .id(id)
@@ -625,7 +600,7 @@ pub async fn deliver(
         .expires_at(expires_at)
         .try_into()
         .map_err(|e| AppError::Internal(format!("build deliver response: {e}")))?;
-    Ok(Json(response.into()))
+    Ok(response)
 }
 
 /// Whether an offer can be sent to `did` over DIDComm: it resolves, and names

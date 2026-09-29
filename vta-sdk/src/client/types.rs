@@ -96,7 +96,7 @@ pub struct UpdateConfigRequest {
     pub patch: crate::protocols::vta_management::update_config::UpdateConfigBody,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[must_use]
 pub struct CreateKeyRequest {
     pub key_type: KeyType,
@@ -115,6 +115,21 @@ pub struct CreateKeyRequest {
     /// from backup, and **cannot be recovered from the mnemonic or otherwise**.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub internal: Option<bool>,
+}
+
+/// Written by hand so the mnemonic never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for CreateKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateKeyRequest")
+            .field("key_type", &self.key_type)
+            .field("derivation_path", &self.derivation_path)
+            .field("key_id", &self.key_id)
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
+            .field("label", &self.label)
+            .field("context_id", &self.context_id)
+            .field("internal", &self.internal)
+            .finish()
+    }
 }
 
 impl CreateKeyRequest {
@@ -153,7 +168,7 @@ impl CreateKeyRequest {
 
 // ── Import key types ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct ImportKeyRequest {
     pub key_type: KeyType,
     /// Sealed-transfer armored bundle carrying a
@@ -179,6 +194,29 @@ pub struct ImportKeyRequest {
     pub context_id: Option<String>,
 }
 
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ImportKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportKeyRequest")
+            .field("key_type", &self.key_type)
+            .field(
+                "private_key_sealed",
+                &self.private_key_sealed.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "private_key_jwe",
+                &self.private_key_jwe.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "private_key_multibase",
+                &self.private_key_multibase.as_ref().map(|_| "<redacted>"),
+            )
+            .field("label", &self.label)
+            .field("context_id", &self.context_id)
+            .finish()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ImportKeyResponse {
     pub key_id: String,
@@ -190,12 +228,23 @@ pub struct ImportKeyResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct WrappingKeyResponse {
-    pub kid: String,
-    pub kty: String,
-    pub crv: String,
-    pub x: String,
+/// What [`super::VtaClient::get_wrapping_key`] returns: the generated
+/// `keys/import-wrapping-key/0.1` response — `wrappingKey` (an Ed25519
+/// `did:key`; seal to its X25519 counterpart), `keyId` and `expiresAt`.
+pub type WrappingKeyResponse = trust_tasks_rs::specs::keys::import_wrapping_key::v0_1::Response;
+
+/// Which sessions [`super::VtaClient::revoke_sessions`] ends — the three forms
+/// of `auth/revoke-session/0.2`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeSessions<'a> {
+    /// One named session.
+    Session(&'a str),
+    /// Every session of the caller itself — sign out everywhere, this client's
+    /// own session included.
+    AllMine,
+    /// Every session of this subject. The caller's own DID, or a subject whose
+    /// access it could withdraw.
+    Subject(&'a str),
 }
 
 // ── Context types ───────────────────────────────────────────────────
@@ -351,10 +400,19 @@ pub use crate::protocols::seed_management::list::SeedInfo as SeedInfoResponse;
 /// Decode target for `seeds/list` — the agent's own body type.
 pub use crate::protocols::seed_management::list::ListSeedsResultBody as ListSeedsResponse;
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct RotateSeedRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
+}
+
+/// Written by hand so the mnemonic never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for RotateSeedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RotateSeedRequest")
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Decode target for `seeds/rotate` — the agent's own body type.
@@ -428,6 +486,12 @@ impl AclEntryResponse {
             .ok()
             .flatten()
             .unwrap_or_default()
+    }
+    /// Whether the entry carries an unexercised one-time hand-off marker
+    /// (VTI-ACL-054).
+    pub fn handoff(&self) -> bool {
+        crate::protocols::acl_management::entry::handoff_from_ext(self.ext.as_ref())
+            .unwrap_or(false)
     }
 }
 
@@ -561,6 +625,11 @@ pub struct CreateAclRequest {
     /// wider than intended — a window during which the subject may already be
     /// authenticating.
     pub capabilities: Vec<String>,
+    /// Mark the entry as a one-time hand-off (VTI-ACL-054): its subject may
+    /// roll over once, while the entry is live, to a successor bounded by the
+    /// granter's own authority rather than by this entry's expiry. Requires an
+    /// expiry. The provision-integration admin rollover needs it.
+    pub handoff: bool,
 }
 
 impl serde::Serialize for CreateAclRequest {
@@ -600,9 +669,12 @@ impl serde::Serialize for CreateAclRequest {
                 // The narrowing is ecosystem-local, so it rides the entry's
                 // `ext` slot — the same member the update path and the
                 // response use, so one spelling serves all three.
-                ext: crate::protocols::acl_management::entry::capabilities_into_ext(
-                    None,
-                    &self.capabilities,
+                ext: crate::protocols::acl_management::entry::handoff_into_ext(
+                    crate::protocols::acl_management::entry::capabilities_into_ext(
+                        None,
+                        &self.capabilities,
+                    ),
+                    self.handoff,
                 ),
             },
             reason: None,
@@ -626,7 +698,13 @@ impl CreateAclRequest {
             approve_contexts: Vec::new(),
             allowed_keys: None,
             capabilities: Vec::new(),
+            handoff: false,
         }
+    }
+    /// Mark the entry as a one-time hand-off. See [`CreateAclRequest::handoff`].
+    pub fn handoff(mut self) -> Self {
+        self.handoff = true;
+        self
     }
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());

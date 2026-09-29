@@ -7,16 +7,12 @@
 //! [`crate::members::inbound_vmc`]). This endpoint only dispatches the request —
 //! it does not block on the member's reply.
 
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use vta_sdk::protocols::members::{MEMBER_REQUEST_VMC_TYPE, RequestMemberVmcBody};
 use vti_common::error::AppError;
 
-use crate::auth::AdminAuth;
 use crate::error::TaskError;
 use crate::members::get_member;
 use crate::server::AppState;
@@ -47,23 +43,13 @@ pub const SOLICIT_VMC_ERR_NOT_FOUND: &str =
     trust_tasks_rs::specs::vtc::members::solicit_vmc::v0_1::error_codes::NOT_FOUND.code;
 
 /// POST /members/{did}/request-vmc — dispatch a reciprocal-VMC request.
-#[utoipa::path(
-    post, path = "/members/{did}/request-vmc", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(("did" = String, Path, description = "Member DID")),
-    request_body = RequestVmcBody,
-    responses(
-        (status = 202, description = "Request dispatched to the member", body = RequestVmcResponse),
-        (status = 404, description = "No active member with that DID"),
-        (status = 502, description = "Could not deliver the request to the member"),
-    ),
-)]
-pub async fn request_vmc(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Path(member_did): Path<String>,
-    Json(body): Json<RequestVmcBody>,
-) -> Result<(StatusCode, Json<RequestVmcResponse>), TaskError> {
+/// `vtc/members/solicit-vmc/0.1`. A signed document served by the spine
+/// (`trust_tasks::community_tasks`).
+pub(crate) async fn request_vmc(
+    state: &AppState,
+    member_did: String,
+    body: RequestVmcBody,
+) -> Result<RequestVmcResponse, TaskError> {
     vti_common::identifier::validate_did("did", &member_did)?;
 
     // Only an active member has a membership edge to reciprocate.
@@ -96,21 +82,18 @@ pub async fn request_vmc(
     let request_body = serde_json::to_value(&request)
         .map_err(|e| AppError::Internal(format!("serialise request-vmc body: {e}")))?;
 
-    crate::credentials::delivery::push_to_holder(
-        &state,
+    crate::credentials::delivery::push_document(
+        state,
         &member_did,
-        &thread_id,
         MEMBER_REQUEST_VMC_TYPE,
         request_body,
+        crate::credentials::delivery::Thread::Root(&thread_id),
     )
     .await?;
 
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(RequestVmcResponse {
-            member_did,
-            requested: true,
-            thread_id,
-        }),
-    ))
+    Ok(RequestVmcResponse {
+        member_did,
+        requested: true,
+        thread_id,
+    })
 }

@@ -18,7 +18,7 @@
 //                                          select whose options are all truthy
 //   a branch that names nothing          → the key is dropped, not set to null
 
-import { getJson } from "@/lib/api";
+import { postSignedRead } from "@/lib/api";
 
 export type Nature = "read-only" | "constructive" | "destructive" | "mutating";
 export type Wired = "live" | "legacy" | "unwired";
@@ -69,9 +69,9 @@ const TRUST_TASK_CEREMONIES =
 export async function fetchCeremonies(): Promise<CeremonyManifest[]> {
   // `vtc/ceremonies/list/0.1` wraps the array as `{ceremonies: […]}`; the
   // daemon sent a bare array until #1094.
-  const body = await getJson<{ ceremonies: CeremonyManifest[] }>(
-    "/v1/ceremonies",
-    { trustTask: TRUST_TASK_CEREMONIES },
+  const body = await postSignedRead<{ ceremonies: CeremonyManifest[] }>(
+    TRUST_TASK_CEREMONIES,
+    {},
   );
   return body.ceremonies;
 }

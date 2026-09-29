@@ -1,10 +1,8 @@
 // ACL plugin — list + create + revoke.
 //
-// Wraps the `/v1/acl` endpoint family. List supports an optional
-// context filter (server-side). Create form takes DID, role,
-// optional label + allowed contexts + expires_at. Revoke is a
-// DELETE on the entry's DID. Edit (PATCH) lands in a follow-up if
-// needed — operators can also revoke + recreate today.
+// The canonical `acl/*` family, each verb a signed document. List supports an
+// optional context filter (server-side). Create form takes DID, role,
+// optional label + allowed contexts + expires_at. Revoke removes the entry.
 
 import { useEffect, useState } from "react";
 import {
@@ -14,19 +12,28 @@ import {
 } from "@tanstack/react-query";
 import { Copy, Mail, Pencil, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
 
-import { deleteJson, getJson, postJson } from "@/lib/api";
+import { postSignedRead, postSignedTrustTask } from "@/lib/api";
+import {
+  fetchAclPage,
+  grantAcl,
+  revokeAcl,
+  type AclEntry,
+  type AclGrantRequest,
+  type AclListResponse,
+} from "@/lib/acl";
+import {
+  explainConsent,
+  gestureFromConfirm,
+  postSignedWithStepUp,
+  type ConfirmGesture,
+} from "@/lib/signed-act";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Field } from "@/components/Field";
 import { formatIso, shorten, shortenDid } from "@/lib/format";
-import { stepUpSession } from "@/lib/step-up";
 import { useToast } from "@/lib/toast";
 import { SessionTimeoutCard } from "@/plugins/SessionTimeoutCard";
 
-// One canonical task per verb (the two combined `acl/legacy/*` tasks
-// were retired in phase 2d).
-const TRUST_TASK_LIST = "https://trusttasks.org/spec/acl/list/0.1";
-const TRUST_TASK_GRANT = "https://trusttasks.org/spec/acl/grant/0.1";
-const TRUST_TASK_REVOKE = "https://trusttasks.org/spec/acl/revoke/0.1";
+// The ACL verbs are signed documents (`lib/acl.ts`); the invites are REST.
 const TRUST_TASK_INVITES_LIST =
   "https://trusttasks.org/spec/vtc/admin/invites/list/0.1";
 const TRUST_TASK_INVITES_CREATE =
@@ -34,55 +41,24 @@ const TRUST_TASK_INVITES_CREATE =
 const TRUST_TASK_INVITES_REVOKE =
   "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1";
 
-// `acl/grant` wraps the entry; server-owned provenance is not settable.
-interface CreateAclRequest {
-  entry: {
-    subject: string;
-    role: string;
-    label?: string | null;
-    scopes: string[];
-    expiresAt?: string | null;
-  };
-  reason?: string;
-}
-
 import type {
-  AclEntry,
-  AclEntryEnvelope,
-  AclListResponse,
   CreateInviteResponse,
   InviteSummary,
   InvitesListResponse,
 } from "@/lib/wire-types";
-async function fetchAcl(scope: string | null): Promise<AclListResponse> {
-  const q = new URLSearchParams();
-  if (scope) q.set("scope", scope);
-  const suffix = q.toString();
-  return getJson<AclListResponse>(`/v1/acl${suffix ? `?${suffix}` : ""}`, {
-    trustTask: TRUST_TASK_LIST,
-  });
-}
 
-async function createAcl(req: CreateAclRequest): Promise<AclEntry> {
-  // Granting `admin` needs a live step-up (#1645) — the same gate the
-  // promotion path carries, because this is the same authority by another
-  // route. The daemon only demands it where the write actually widens what the
-  // subject holds, so a label edit (`patchAclLabel`, which re-grants at the
-  // existing role and the existing scopes) is deliberately not routed here.
-  if (req.entry.role.trim() === "admin") {
-    await stepUpSession();
-  }
-  const body = await postJson<AclEntryEnvelope>("/v1/acl", req, {
-    trustTask: TRUST_TASK_GRANT,
-  });
-  return body.entry;
-}
+const fetchAcl = (scope: string | null): Promise<AclListResponse> =>
+  fetchAclPage(scope ? { scope } : {});
 
-async function deleteAcl(subject: string): Promise<void> {
-  await deleteJson<unknown>(`/v1/acl/${encodeURIComponent(subject)}`, {
-    trustTask: TRUST_TASK_REVOKE,
-  });
-}
+// Granting `admin` may need a passkey gesture bound to this one grant (#1645):
+// the same gate the promotion path carries, because it is the same authority
+// by another route. The daemon asks for it only where the write actually
+// widens what the subject holds, so a label edit (`patchAclLabel`, which
+// re-grants at the existing role and scopes) does not.
+const createAcl = (req: AclGrantRequest, confirmGesture: ConfirmGesture): Promise<AclEntry> =>
+  explainConsent(grantAcl(req, confirmGesture));
+
+const deleteAcl = (subject: string): Promise<void> => revokeAcl(subject);
 
 // A label edit is not a role change, so it goes through `acl/grant`
 // re-stating the entry with its existing role — `acl/change-role` is
@@ -90,9 +66,9 @@ async function deleteAcl(subject: string): Promise<void> {
 async function patchAclLabel(args: {
   entry: AclEntry;
   label: string;
+  confirmGesture: ConfirmGesture;
 }): Promise<AclEntry> {
-  const body = await postJson<AclEntryEnvelope>(
-    "/v1/acl",
+  return grantAcl(
     {
       entry: {
         subject: args.entry.subject,
@@ -103,9 +79,8 @@ async function patchAclLabel(args: {
       },
       reason: "label updated from the admin UI",
     },
-    { trustTask: TRUST_TASK_GRANT },
+    args.confirmGesture,
   );
-  return body.entry;
 }
 
 // ── Admin invites ────────────────────────────────────────────
@@ -117,23 +92,27 @@ interface CreateInviteRequest {
 }
 
 async function fetchInvites(): Promise<InvitesListResponse> {
-  return getJson<InvitesListResponse>("/v1/admin/invites", {
-    trustTask: TRUST_TASK_INVITES_LIST,
-  });
+  return postSignedRead<InvitesListResponse>(TRUST_TASK_INVITES_LIST, {});
 }
 
+/**
+ * Mint an admin invite, a signed document. Inviting someone who is not an
+ * admin yet writes an unrestricted admin entry, so it costs what `acl/grant`
+ * of one costs: a passkey gesture bound to this invite — asked for with
+ * `confirmGesture` when the VTC refuses for want of one — and another admin's
+ * consent (VTI-APV-014).
+ */
 async function createInvite(
   req: CreateInviteRequest,
+  confirmGesture: ConfirmGesture,
 ): Promise<CreateInviteResponse> {
-  return postJson<CreateInviteResponse>("/v1/admin/invites", req, {
-    trustTask: TRUST_TASK_INVITES_CREATE,
-  });
+  return explainConsent(
+    postSignedWithStepUp<CreateInviteResponse>(TRUST_TASK_INVITES_CREATE, req, confirmGesture),
+  );
 }
 
 async function revokeInvite(jti: string): Promise<void> {
-  await deleteJson<unknown>(`/v1/admin/invites/${encodeURIComponent(jti)}`, {
-    trustTask: TRUST_TASK_INVITES_REVOKE,
-  });
+  await postSignedTrustTask<unknown>(TRUST_TASK_INVITES_REVOKE, { jti });
 }
 
 export function Acl() {
@@ -312,6 +291,7 @@ function InvitesPanel() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
+  const confirmGesture = gestureFromConfirm(confirm);
   const [showCreate, setShowCreate] = useState(false);
   const [regenerated, setRegenerated] = useState<CreateInviteResponse | null>(
     null,
@@ -337,7 +317,7 @@ function InvitesPanel() {
       // existing invite intact — the operator can retry without
       // losing access to a working URL. Only after the new invite
       // is in hand do we revoke the old one.
-      const fresh = await createInvite({ did: args.targetDid });
+      const fresh = await createInvite({ did: args.targetDid }, confirmGesture);
       try {
         await revokeInvite(args.oldJti);
       } catch (err) {
@@ -545,9 +525,10 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
   const [issued, setIssued] = useState<CreateInviteResponse | null>(null);
   const toast = useToast();
   const queryClient = useQueryClient();
+  const confirmGesture = gestureFromConfirm(useConfirm());
 
   const mutation = useMutation({
-    mutationFn: createInvite,
+    mutationFn: (req: CreateInviteRequest) => createInvite(req, confirmGesture),
     onSuccess: (resp) => {
       // Refresh the list + ACL tables in the background so the new
       // row shows up after the operator dismisses the success card.
@@ -759,9 +740,10 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
   const [contexts, setContexts] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const toast = useToast();
+  const confirmGesture = gestureFromConfirm(useConfirm());
 
   const mutation = useMutation({
-    mutationFn: createAcl,
+    mutationFn: (req: AclGrantRequest) => createAcl(req, confirmGesture),
     onSuccess: (entry) => {
       toast.push("success", `Created ACL entry for ${entry.subject}`);
       onSuccess();
@@ -866,9 +848,11 @@ function EditableLabelCell({
   const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(label ?? "");
+  const confirmGesture = gestureFromConfirm(useConfirm());
 
   const mutation = useMutation({
-    mutationFn: patchAclLabel,
+    mutationFn: (args: { entry: AclEntry; label: string }) =>
+      patchAclLabel({ ...args, confirmGesture }),
     onSuccess: () => {
       toast.push("success", "Label updated");
       void queryClient.invalidateQueries({ queryKey: ["acl"] });

@@ -1,26 +1,26 @@
 //! Internal layout:
-//! - `mod.rs` — `create_did_webvh`, `delete_did_webvh`, `WebvhTransport`,
+//! - `mod.rs` — `create_did_webvh`, `delete_did_webvh`,
 //!   `CreateDidWebvhParams`, helpers still used only by the main flow
 //! - `document` — pure DID-document construction (shared with the TEE
 //!   enclave bootstrap path)
 //! - `lifecycle` — read ops on stored DID records (`get`, `list`, log)
 //! - `servers` — webvh hosting-server CRUD + DID validation
 
-pub(crate) mod auth_cache;
 mod concurrency;
 mod document;
+pub(crate) mod host;
 mod lifecycle;
 mod realign;
 mod register_server;
 mod servers;
-mod transport;
+pub(crate) mod transport;
 mod update;
 pub(crate) mod webvh_keys;
 
-pub use auth_cache::WebvhAuthLocks;
-pub(crate) use auth_cache::{
+pub(crate) use host::{
     agent_name_op_on_server, check_agent_name_on_server, delete_log_on_server,
-    list_agent_names_on_server, publish_log_to_server, register_did_atomic_on_server,
+    list_agent_names_on_server, list_dids_on_server, my_domains_on_server, publish_log_to_server,
+    register_did_atomic_on_server,
 };
 
 pub(crate) use concurrency::{RaceDetected, RecordSnapshot};
@@ -38,10 +38,10 @@ pub use servers::{
     register_webvh_server, remove_webvh_server, retire_orphan_slot,
 };
 pub use update::{
-    AgentNameVerb, RotateDidWebvhKeysOptions, UpdateDidWebvhError, UpdateDidWebvhOptions,
-    UpdateDidWebvhResult, UpdatePlan, agent_name_op, check_agent_name, list_agent_names,
-    plan_did_webvh_update, resolve_webvh_did, rotate_did_webvh_keys, state_from_jsonl_pub,
-    update_did_webvh,
+    AgentNameVerb, RotateDidWebvhKeysOptions, StagedRotationRecovery, UpdateDidWebvhError,
+    UpdateDidWebvhOptions, UpdateDidWebvhResult, UpdatePlan, agent_name_op, check_agent_name,
+    list_agent_names, plan_did_webvh_update, recover_staged_rotations, resolve_webvh_did,
+    rotate_did_webvh_keys, state_from_jsonl_pub, update_did_webvh,
 };
 
 use std::sync::Arc;
@@ -73,13 +73,10 @@ use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
 use crate::keys::{self, KeyType as SdkKeyType, encode_private_multibase};
 use crate::store::KeyspaceHandle;
-use crate::webvh_client::{RequestUriResponse, WebvhClient};
 use crate::webvh_store;
 use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use vta_support::version_time::next_version_time;
 use zeroize::Zeroize;
-
-use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 
 /// Shared dependency bundle for the WebVH DID-management operations
 /// (`delete_did_webvh`, `rotate_did_webvh_keys`, `register_did_with_server`,
@@ -87,8 +84,7 @@ use vti_common::slip10::{DerivationPath, ExtendedSigningKey};
 ///
 /// These ops each took the same 11–14 positional arguments: the five keyspaces
 /// the WebVH publish path touches (keys / imported / contexts / webvh / audit)
-/// plus `seed_store`, `did_resolver`, `didcomm_bridge`, and the per-server
-/// `auth_locks`. Bundling them into one borrowed struct — built once at the
+/// plus `seed_store`, `did_resolver` and `didcomm_bridge`. Bundling them into one borrowed struct — built once at the
 /// transport boundary via [`WebvhDeps::from_app_state`] /
 /// [`WebvhDeps::from_vta_state`] (or directly by the offline CLI / tests) and
 /// threaded through unchanged — drops every op to ≤6 args.
@@ -133,7 +129,6 @@ pub struct WebvhDeps<'a> {
     pub seed_store: &'a dyn SeedStore,
     pub did_resolver: &'a DIDCacheClient,
     pub didcomm_bridge: &'a Arc<DIDCommBridge>,
-    pub auth_locks: &'a WebvhAuthLocks,
     /// What lets the outbound seam choose TSP when talking to a webvh host.
     ///
     /// `None` is a real answer, not a gap: a CLI, a setup wizard or a DIDComm
@@ -177,7 +172,6 @@ impl<'a> WebvhDeps<'a> {
             didcomm_bridge: &s.didcomm_bridge,
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
-            auth_locks: &s.webvh_auth_locks,
             #[cfg(feature = "tsp")]
             tsp: crate::operations::outbound::TspSender::from_app_state(s),
         }
@@ -207,7 +201,6 @@ impl<'a> WebvhDeps<'a> {
             didcomm_bridge: &s.didcomm_bridge,
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
-            auth_locks: &s.webvh_auth_locks,
             // `VtaState` is the DIDComm handler's state and holds no TSP
             // socket, profile or reply registry. Reaching a webvh host over TSP
             // from inside a DIDComm handler would need those threaded onto
@@ -222,7 +215,7 @@ impl<'a> WebvhDeps<'a> {
 /// Dependency bundle for [`create_did_webvh`] — P2.5.
 ///
 /// Create has a *different* shape from [`WebvhDeps`]: it mints + stores a new
-/// DID locally (no remote publish at create time, so no `auth_locks` / `audit`
+/// DID locally (no remote publish at create time, so no `audit`
 /// / `vta_did`), but it renders a DID template (`did_templates_ks`) and reads
 /// operator config (`config`). Distinct struct rather than a strained reuse.
 ///
@@ -243,10 +236,6 @@ pub struct CreateDidWebvhDeps<'a> {
     pub config: &'a AppConfig,
     pub did_resolver: &'a DIDCacheClient,
     pub didcomm_bridge: &'a Arc<DIDCommBridge>,
-    /// Per-server auth-cache mutex registry — serialises token
-    /// refresh/reauth against a hosting daemon. Only used when
-    /// publishing to a registered server (not serverless / did:key).
-    pub auth_locks: &'a WebvhAuthLocks,
     /// The ACL keyspace, so the `KeyMint` gate can read the caller's **entry**
     /// and honour a narrowing on the very next call — the rule every other
     /// capability gate follows since #1279.
@@ -292,7 +281,6 @@ impl<'a> CreateDidWebvhDeps<'a> {
             didcomm_bridge: &s.didcomm_bridge,
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
-            auth_locks: &s.webvh_auth_locks,
             acl_ks: Some(&s.acl_ks),
             #[cfg(feature = "tsp")]
             tsp: crate::operations::outbound::TspSender::from_app_state(s),
@@ -321,7 +309,6 @@ impl<'a> CreateDidWebvhDeps<'a> {
             didcomm_bridge: &s.didcomm_bridge,
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: crate::didcomm_bridge::DIDCommBridge::placeholder_ref(),
-            auth_locks: &s.webvh_auth_locks,
             acl_ks: Some(&s.acl_ks),
             // See the same field on `WebvhDeps::from_vta_state`: a DIDComm
             // handler's state holds no TSP socket to lend.
@@ -694,7 +681,9 @@ impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
 async fn load_key_as_secret(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
+    audit: &vta_audit::SharedAuditSink,
     key_id: &str,
     expected_type: KeyType,
     auth: &AuthClaims,
@@ -769,21 +758,22 @@ async fn load_key_as_secret(
             secret_bytes.zeroize();
             priv_mb
         }
+        // Through key custody: `key_id` is caller-supplied, so a record whose
+        // path lies outside its context's base must not authorise a DID
+        // (`vta_keys::custody` rule 6).
         KeyOrigin::Derived => {
-            let seed = load_seed_bytes(keys_ks, seed_store, record.seed_id)
-                .await
-                .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = ExtendedSigningKey::from_seed(&seed).map_err(|e| {
-                AppError::Internal(format!("failed to create BIP-32 root key: {e}"))
-            })?;
-            let derivation_path: DerivationPath = record
-                .derivation_path
-                .parse()
-                .map_err(|e| AppError::Internal(format!("invalid derivation path: {e}")))?;
-            let derived_key = bip32
-                .derive(&derivation_path)
-                .map_err(|e| AppError::Internal(format!("key derivation failed: {e}")))?;
-            encode_private_multibase(&KeyType::Ed25519, derived_key.signing_key.as_bytes())
+            let key = crate::operations::key_custody::derive_record_key(
+                contexts_ks,
+                keys_ks,
+                seed_store,
+                audit,
+                &auth.did,
+                &record,
+                "did-webvh",
+            )
+            .await?;
+            let bytes = key.ed25519_signing_key_bytes()?;
+            encode_private_multibase(&KeyType::Ed25519, bytes.as_slice())
         }
     };
 
@@ -815,64 +805,28 @@ fn document_has_didcomm_service(doc: &serde_json::Value) -> bool {
         })
 }
 
-/// Build an *authenticated* hosting-server transport for a create-DID
-/// publish/request-uri call.
+/// The hosting-server client for a create-DID reserve or publish.
 ///
-/// This is the create-path analogue of the `auth_cache::*_on_server`
-/// helpers (which take a [`WebvhDeps`], not a [`CreateDidWebvhDeps`]).
-/// It loads the VTA's own signing identity via `config.vta_did`,
-/// constructs an [`auth_cache::AuthContext`], and hands it to
-/// [`WebvhTransport::from_server_authenticated`], which applies a fresh
-/// Bearer token for REST transports and no-ops for DIDComm (authcrypt
-/// authenticates at the envelope layer).
-///
-/// The returned transport does not borrow the (locally-owned) signing
-/// identity — `from_server_authenticated` consumes the `AuthContext`
-/// synchronously while minting/refreshing the token, so the identity can
-/// be dropped as soon as this helper returns.
-///
-/// Returns a clear [`AppError`] when `config.vta_did` is `None`: a server
-/// publish requires the VTA to authenticate to the hosting daemon with
-/// its own DID, and there is no identity to sign the auth challenge with.
-#[allow(clippy::too_many_arguments)]
-async fn authenticated_server_transport<'a>(
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    audit: &vta_audit::SharedAuditSink,
-    webvh_ks: &KeyspaceHandle,
+/// Refuses when `config.vta_did` is `None`: every document to the host is
+/// issued and signed by this VTA's own DID, and there is none to issue as.
+async fn create_path_host_client<'a>(
     did_resolver: &'a DIDCacheClient,
     didcomm_bridge: &'a Arc<DIDCommBridge>,
-    auth_locks: &WebvhAuthLocks,
     vta_did: Option<&str>,
     server: &WebvhServerRecord,
     #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender>,
-) -> Result<WebvhTransport<'a>, AppError> {
+) -> Result<crate::webvh_host::WebvhHostClient<'a>, AppError> {
     let vta_did = vta_did.ok_or_else(|| {
         AppError::Validation(
-            "vta_did is not configured; the VTA needs its own DID to authenticate to a webvh \
-             hosting server (set `vta_did` in config / VTA_DID)"
+            "vta_did is not configured; the VTA needs its own DID to sign what it sends a webvh              hosting server (set `vta_did` in config / VTA_DID)"
                 .into(),
         )
     })?;
-    let identity = auth_cache::load_vta_webvh_signing_identity(
-        keys_ks,
-        imported_ks,
-        seed_store,
-        audit,
+    crate::webvh_host::WebvhHostClient::for_server(
+        &server.did,
         vta_did,
-    )
-    .await?;
-    let auth_ctx = auth_cache::AuthContext {
-        webvh_ks,
-        identity: &identity,
-        locks: auth_locks,
-    };
-    WebvhTransport::from_server_authenticated(
-        server,
         did_resolver,
         didcomm_bridge,
-        &auth_ctx,
         #[cfg(feature = "tsp")]
         tsp,
     )
@@ -940,7 +894,6 @@ pub async fn create_did_webvh(
         config,
         did_resolver,
         didcomm_bridge,
-        auth_locks,
         acl_ks,
         // `tsp` is deliberately not destructured here: every other field is a
         // shared reference and so `Copy`, while a `TspSender` is not. Cloning
@@ -1183,7 +1136,9 @@ pub async fn create_did_webvh(
         let (mut signing_secret, signing_pub, signing_record) = load_key_as_secret(
             keys_ks,
             imported_ks,
+            contexts_ks,
             seed_store,
+            audit,
             signing_key_id,
             KeyType::Ed25519,
             auth,
@@ -1201,7 +1156,9 @@ pub async fn create_did_webvh(
                 let (ka_secret, ka_pub, ka_record) = load_key_as_secret(
                     keys_ks,
                     imported_ks,
+                    contexts_ks,
                     seed_store,
+                    audit,
                     ka_key_id,
                     KeyType::X25519,
                     auth,
@@ -1354,15 +1311,9 @@ pub async fn create_did_webvh(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
-        let transport = authenticated_server_transport(
-            keys_ks,
-            imported_ks,
-            seed_store,
-            audit,
-            webvh_ks,
+        let transport = create_path_host_client(
             did_resolver,
             didcomm_bridge,
-            auth_locks,
             config.vta_did.as_deref(),
             &server,
             #[cfg(feature = "tsp")]
@@ -1811,15 +1762,9 @@ pub async fn create_did_webvh(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
-        let transport = authenticated_server_transport(
-            keys_ks,
-            imported_ks,
-            seed_store,
-            audit,
-            webvh_ks,
+        let transport = create_path_host_client(
             did_resolver,
             didcomm_bridge,
-            auth_locks,
             config.vta_did.as_deref(),
             &server,
             #[cfg(feature = "tsp")]
@@ -2287,7 +2232,9 @@ async fn delete_blockers(
         if ctx.did.as_deref() == Some(did) && !options.contexts_being_deleted.contains(&ctx.id) {
             let id = &ctx.id;
             blockers.push(format!(
-                "context `{id}` acts as this DID — reassign it first:                  `pnm contexts update {id} --did <new-did>`"
+                "context `{id}` acts as this DID — reassign it first: \
+                 `pnm contexts update-did {id} <new-did>`, or leave the context with \
+                 no DID: `pnm contexts update-did {id} --clear`"
             ));
         }
     }
@@ -2409,362 +2356,6 @@ async fn revoke_sessions_for_did(
         delete_session(sessions_ks, session_id).await?;
     }
     Ok(ids.len())
-}
-
-// ---------------------------------------------------------------------------
-// WebVH transport abstraction
-// ---------------------------------------------------------------------------
-
-/// How this VTA reaches a WebVH hosting server: through the outbound
-/// Trust-Task seam, or over the legacy WebVH REST API.
-///
-/// Owns all necessary state so callers don't need to branch on transport type.
-/// Note the two arms are no longer peers: `Rest` names one concrete protocol,
-/// while `TrustTask` names *the seam*, which picks among TSP, DIDComm and the
-/// Trust-Task HTTPS binding for itself.
-pub(super) enum WebvhTransport<'a> {
-    Rest(WebvhClient),
-    /// Reachable through `operations::outbound`, which reads the peer's
-    /// advertisement and picks TSP > DIDComm > REST.
-    ///
-    /// This arm was called `DIDComm` and named the wrong thing: the leg has
-    /// gone through the seam since the outbound refactor, and the seam chooses.
-    /// The old name is why a did-host advertising TSP was answered over
-    /// DIDComm — not because anything decided to, but because the name said
-    /// so and nobody re-read it.
-    TrustTask(crate::webvh_didcomm::WebvhDIDCommClient<'a>),
-}
-
-impl<'a> WebvhTransport<'a> {
-    /// Resolve the server DID and construct the appropriate transport.
-    ///
-    /// Transport selection is delegated to the pure
-    /// [`transport::resolve_server_transport`] helper, which answers only
-    /// whether the outbound seam can reach this server at all — the seam then
-    /// picks TSP > DIDComm > REST from the peer's advertisement. Both
-    /// `WebVHHosting` (current) and `WebVHHostingService` (legacy alias) are
-    /// accepted on read as the legacy-REST fallback. See [`transport`] for the
-    /// canonical set of types we emit vs. accept.
-    ///
-    /// `tsp` is what lets the seam choose TSP; see [`WebvhDeps::tsp`] for why
-    /// `None` is a real answer rather than a gap.
-    pub(super) async fn from_server(
-        server: &WebvhServerRecord,
-        did_resolver: &'a DIDCacheClient,
-        didcomm_bridge: &'a Arc<DIDCommBridge>,
-        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender>,
-    ) -> Result<Self, AppError> {
-        let resolved = did_resolver.resolve(&server.did).await.map_err(|e| {
-            AppError::Internal(format!("failed to resolve server DID {}: {e}", server.did))
-        })?;
-
-        match transport::resolve_server_transport(&resolved.doc.service) {
-            Some(transport::ResolvedTransport::TrustTask) => {
-                info!(server_did = %server.did, transport = "trust-task", "resolved webvh server endpoint");
-                Ok(Self::TrustTask(
-                    crate::webvh_didcomm::WebvhDIDCommClient::new(
-                        didcomm_bridge,
-                        did_resolver,
-                        server.did.clone(),
-                        #[cfg(feature = "tsp")]
-                        tsp,
-                    ),
-                ))
-            }
-            Some(transport::ResolvedTransport::Rest { url }) => {
-                info!(server_did = %server.did, transport = "rest", %url, "resolved webvh server endpoint");
-                // The access token (if any) is now loaded from
-                // `server-auth:{id}` by the auth-cache layer rather
-                // than embedded on the public `WebvhServerRecord`.
-                // Construction here is unauthenticated; callers that
-                // need an authenticated request set the token via
-                // `set_access_token` after consulting the auth cache.
-                let client = WebvhClient::new(&url, &server.did)?;
-                Ok(Self::Rest(client))
-            }
-            None => Err(AppError::Validation(format!(
-                "server DID {} has no supported webvh endpoint (expected: {})",
-                server.did,
-                transport::SUPPORTED_TYPES_HUMAN,
-            ))),
-        }
-    }
-
-    async fn request_uri(
-        &self,
-        path: Option<&str>,
-        domain: Option<&str>,
-    ) -> Result<RequestUriResponse, AppError> {
-        match self {
-            Self::Rest(c) => c.request_uri(path, domain).await,
-            Self::TrustTask(c) => c.request_uri(path, domain).await,
-        }
-    }
-
-    pub(super) async fn publish_did(
-        &self,
-        mnemonic: &str,
-        log_content: &str,
-        domain: Option<&str>,
-    ) -> Result<(), AppError> {
-        match self {
-            Self::Rest(c) => c.publish_did(mnemonic, log_content, domain).await,
-            Self::TrustTask(c) => c.publish_did(mnemonic, log_content, domain).await,
-        }
-    }
-
-    // The unauthenticated `register_did_atomic` and `delete_did`
-    // methods that used to live here have been removed — every call
-    // site now goes through the auth-cache helpers
-    // (`auth_cache::publish_log_to_server`, `delete_log_on_server`,
-    // `register_did_atomic_on_server`) which use the
-    // `_authenticated` variants below.
-
-    // ── Authenticated transport + 401-retry wrappers ──────────────
-    //
-    // The methods above keep the original "dumb transport" API for
-    // call sites that don't authenticate (e.g. read-only resolution
-    // tests). Mutating operations against an ACL-protected daemon
-    // go through the wrappers below, which:
-    //
-    // 1. Ensure the REST client carries a fresh bearer token (loaded
-    //    via `auth_cache::ensure_fresh_access_token` under the
-    //    per-server async mutex), and
-    // 2. On `Unauthorized` from the daemon mid-window — meaning the
-    //    daemon revoked the token between the cache check and the
-    //    call — invalidate the cache, re-authenticate, retry once.
-    //
-    // DIDComm transports are pass-through: there's no auth-cache
-    // state, and authcrypt handles the equivalent at the envelope
-    // layer.
-
-    /// Build a transport with a freshly-validated access token
-    /// already applied (REST only). For DIDComm transports this
-    /// behaves identically to [`Self::from_server`] since DIDComm
-    /// authentication lives at the envelope layer.
-    pub(super) async fn from_server_authenticated(
-        server: &WebvhServerRecord,
-        did_resolver: &'a DIDCacheClient,
-        didcomm_bridge: &'a Arc<DIDCommBridge>,
-        auth_ctx: &auth_cache::AuthContext<'_>,
-        #[cfg(feature = "tsp")] tsp: Option<crate::operations::outbound::TspSender>,
-    ) -> Result<Self, AppError> {
-        let mut transport = Self::from_server(
-            server,
-            did_resolver,
-            didcomm_bridge,
-            #[cfg(feature = "tsp")]
-            tsp,
-        )
-        .await?;
-        if let Self::Rest(ref mut client) = transport {
-            auth_cache::ensure_fresh_access_token(auth_ctx, server, client).await?;
-        }
-        Ok(transport)
-    }
-
-    /// `publish_did` with one-shot 401 retry. If the daemon returns
-    /// 401 mid-window (token revoked), invalidate the cache,
-    /// re-authenticate, and retry exactly once.
-    pub(super) async fn publish_did_authenticated(
-        &mut self,
-        mnemonic: &str,
-        log_content: &str,
-        domain: Option<&str>,
-        auth_ctx: &auth_cache::AuthContext<'_>,
-        server: &WebvhServerRecord,
-    ) -> Result<(), AppError> {
-        match self {
-            Self::Rest(c) => match c.publish_did(mnemonic, log_content, domain).await {
-                Ok(()) => Ok(()),
-                Err(AppError::Unauthorized(_)) => {
-                    info!(
-                        server_id = %server.id,
-                        "webvh publish_did got 401; invalidating cache and retrying"
-                    );
-                    auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
-                    auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                    c.publish_did(mnemonic, log_content, domain).await
-                }
-                Err(e) => Err(e),
-            },
-            Self::TrustTask(c) => c.publish_did(mnemonic, log_content, domain).await,
-        }
-    }
-
-    /// `delete_did` with one-shot 401 retry.
-    pub(super) async fn delete_did_authenticated(
-        &mut self,
-        mnemonic: &str,
-        domain: Option<&str>,
-        auth_ctx: &auth_cache::AuthContext<'_>,
-        server: &WebvhServerRecord,
-    ) -> Result<(), AppError> {
-        match self {
-            Self::Rest(c) => match c.delete_did(mnemonic, domain).await {
-                Ok(()) => Ok(()),
-                Err(AppError::Unauthorized(_)) => {
-                    info!(
-                        server_id = %server.id,
-                        "webvh delete_did got 401; invalidating cache and retrying"
-                    );
-                    auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
-                    auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                    c.delete_did(mnemonic, domain).await
-                }
-                Err(e) => Err(e),
-            },
-            Self::TrustTask(c) => c.delete_did(mnemonic, domain).await,
-        }
-    }
-
-    /// `register_did_atomic` with one-shot 401 retry.
-    pub(super) async fn register_did_atomic_authenticated(
-        &mut self,
-        path: &str,
-        did_log: &str,
-        force: bool,
-        domain: Option<&str>,
-        auth_ctx: &auth_cache::AuthContext<'_>,
-        server: &WebvhServerRecord,
-    ) -> Result<RequestUriResponse, AppError> {
-        match self {
-            Self::Rest(c) => match c.register_did_atomic(path, did_log, force, domain).await {
-                Ok(r) => Ok(r),
-                Err(AppError::Unauthorized(_)) => {
-                    info!(
-                        server_id = %server.id,
-                        "webvh register_did_atomic got 401; invalidating cache and retrying"
-                    );
-                    auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
-                    auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                    c.register_did_atomic(path, did_log, force, domain).await
-                }
-                Err(e) => Err(e),
-            },
-            Self::TrustTask(c) => c.register_did_atomic(path, did_log, force, domain).await,
-        }
-    }
-
-    /// Park (`enable == false`) or resume (`enable == true`) an agent name,
-    /// with one-shot 401 retry. REST-only: the hosting server exposes the
-    /// agent-name endpoints over REST only, so a DIDComm-transport server is
-    /// refused rather than silently no-op'd.
-    /// Read the DID's agent-name registry from the host, retrying once on a
-    /// stale token exactly as the mutating path does.
-    pub(super) async fn list_agent_names_authenticated(
-        &mut self,
-        mnemonic: &str,
-        domain: Option<&str>,
-        auth_ctx: &auth_cache::AuthContext<'_>,
-        server: &WebvhServerRecord,
-    ) -> Result<Vec<crate::webvh_client::AgentNameEntryWire>, AppError> {
-        // DIDComm is a first-class path now, not a fallback: the hosting
-        // server dispatches the agent-name verbs itself, so there is nothing
-        // to reach sideways to REST for. Auth is the transport's own — no
-        // bearer token, hence no 401 retry on this arm.
-        let c = match self {
-            Self::TrustTask(c) => {
-                return c.list_agent_names(mnemonic, domain).await;
-            }
-            Self::Rest(c) => c,
-        };
-        match c.list_agent_names(mnemonic, domain).await {
-            Ok(v) => Ok(v),
-            Err(AppError::Unauthorized(_)) => {
-                info!(
-                    server_id = %server.id,
-                    "webvh list_agent_names got 401; invalidating cache and retrying"
-                );
-                auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
-                auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                c.list_agent_names(mnemonic, domain).await
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Probe name availability on the host, with the same 401 retry.
-    pub(super) async fn check_agent_name_authenticated(
-        &mut self,
-        name: &str,
-        domain: Option<&str>,
-        auth_ctx: &auth_cache::AuthContext<'_>,
-        server: &WebvhServerRecord,
-    ) -> Result<crate::webvh_client::AgentNameAvailabilityWire, AppError> {
-        let c = match self {
-            Self::TrustTask(c) => {
-                return c.check_agent_name(name, domain).await;
-            }
-            Self::Rest(c) => c,
-        };
-        match c.check_agent_name(name, domain).await {
-            Ok(v) => Ok(v),
-            Err(AppError::Unauthorized(_)) => {
-                info!(
-                    server_id = %server.id,
-                    "webvh check_agent_name got 401; invalidating cache and retrying"
-                );
-                auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
-                auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                c.check_agent_name(name, domain).await
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    pub(super) async fn agent_name_authenticated(
-        &mut self,
-        verb: update::AgentNameVerb,
-        mnemonic: &str,
-        name: &str,
-        did_log: &str,
-        domain: Option<&str>,
-        auth_ctx: &auth_cache::AuthContext<'_>,
-        server: &WebvhServerRecord,
-    ) -> Result<(), AppError> {
-        let c = match self {
-            Self::TrustTask(client) => {
-                // `host_state()` is `Some` for exactly the three verbs the
-                // host serves via `update` and `None` for `remove`, so this
-                // match is the verb→task mapping — no second place for the
-                // two transports to disagree about which task a verb is.
-                return match verb.host_state() {
-                    Some(state) => {
-                        client
-                            .update_agent_name(mnemonic, name, state, did_log, domain)
-                            .await
-                    }
-                    None => {
-                        client
-                            .remove_agent_name(mnemonic, name, did_log, domain)
-                            .await
-                    }
-                };
-            }
-            Self::Rest(c) => c,
-        };
-        let op = verb.host_endpoint();
-        let state = verb.host_state();
-        match c
-            .agent_name_op(op, mnemonic, name, state, did_log, domain)
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(AppError::Unauthorized(_)) => {
-                info!(
-                    server_id = %server.id,
-                    %op,
-                    "webvh agent_name got 401; invalidating cache and retrying"
-                );
-                auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
-                auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                c.agent_name_op(op, mnemonic, name, state, did_log, domain)
-                    .await
-            }
-            Err(e) => Err(e),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

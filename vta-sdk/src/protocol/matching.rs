@@ -20,6 +20,57 @@ use serde_json::Value;
 
 use crate::error::VtaError;
 
+/// The loopback hosts that may be dialled over plain `http://`: exactly
+/// `localhost`, any address in `127.0.0.0/8`, and `::1`.
+///
+/// Matches `is_loopback_host` in `vta-webvh`'s webvh client and
+/// [`crate::http::guard_vta_endpoint`]'s own copy — this is the one
+/// definition; `http`'s reuses it. IPv4-mapped forms such as
+/// `::ffff:127.0.0.1` are deliberately not included.
+#[must_use]
+pub fn is_loopback_host(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Domain(d) => d.trim_end_matches('.').eq_ignore_ascii_case("localhost"),
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    }
+}
+
+/// Whether `url` may carry a peer's Trust-Task or VTA REST traffic in the
+/// clear: `https://` always passes; `http://` passes only to an exact
+/// loopback host ([`is_loopback_host`]) — never a lookalike DNS name such as
+/// `127.0.0.1.evil.com` or `localhost.evil`, which [`url::Host::Domain`]
+/// parses as an ordinary name, not the loopback address or name it merely
+/// contains. Any other scheme, or a URL that fails to parse, is refused.
+///
+/// The one check every seam that matches a transport candidate against a
+/// peer's advertised DID-document services shares —
+/// [`ServiceCapabilities::from_did_document`], the Trust-Task push engine's
+/// own `TrustTaskHTTPS` extraction (`vti_common::trust_task_push`), and
+/// [`crate::http::guard_vta_endpoint`] (which additionally gates
+/// private-network hosts behind an operator opt-in; this function does not).
+/// Every peer's endpoint is vetted here before it is ever offered as a
+/// transport, not only the caller's own configured VTA — a Trust Task carries
+/// a signature, never encryption of its own, so the transport must supply the
+/// confidentiality, or a peer advertising `http://` receives a signed request
+/// in the clear.
+///
+/// Deliberately unconditional (this module carries no feature gate) so a
+/// server-only consumer — `vti-common`'s push engine, built with
+/// `vta-sdk`'s `client` feature off — gets the same check without pulling in
+/// the client transports.
+#[must_use]
+pub fn is_https_or_loopback(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => parsed.host().is_some_and(|h| is_loopback_host(&h)),
+        _ => false,
+    }
+}
+
 /// DID-document service `type` for a TSP transport endpoint. `TSPTransport`
 /// is the OpenWallet-Foundation-Labs reference-implementation convention
 /// (`affinidi_tsp`'s DID-backed VID resolver matches on it); the ToIP TSP
@@ -143,6 +194,19 @@ impl ServiceCapabilities {
     /// (DID-Core permits both). The first non-empty endpoint of each type
     /// wins; later duplicates are ignored. A document with no `service`
     /// array yields an all-`None` capability set.
+    ///
+    /// Deliberately does **not** scheme-check the REST endpoint here: this is
+    /// a lossless read of what the document says, and more than one caller
+    /// depends on seeing an advertised-but-unusable entry as *present* rather
+    /// than folding it into "advertises nothing" (`vta_sdk::session`'s VTA
+    /// discovery falls back to guessing a URL from the DID string only when
+    /// nothing was advertised at all — an explicit bad entry must hard-refuse
+    /// there, never be silently worked around). Enforcing `https://` (or
+    /// loopback `http://` — [`is_https_or_loopback`]) is each dispatching
+    /// caller's job at the point it actually picks an endpoint to send to:
+    /// `vta_sdk::session::guard_vta_endpoint` for this node's own configured
+    /// VTA, and `vta_service::operations::outbound::pick_transport` /
+    /// `vti_common::trust_task_push` for an arbitrary peer's.
     #[must_use]
     pub fn from_did_document(doc: &Value) -> Self {
         let mut caps = ServiceCapabilities::default();
@@ -272,6 +336,37 @@ mod tests {
 
     fn doc(services: Value) -> Value {
         json!({ "id": "did:webvh:peer", "service": services })
+    }
+
+    // ── is_https_or_loopback: the canonical definition, tested directly ────
+    // (also exercised indirectly through `from_did_document` below, and
+    // re-exported at `vta_sdk::http::is_https_or_loopback` for `client`-
+    // feature consumers, tested again there).
+
+    #[test]
+    fn is_https_or_loopback_accepts_https_and_loopback_http() {
+        for u in [
+            "https://peer.example",
+            "https://10.0.0.5",
+            "http://localhost:8080",
+            "http://127.0.0.1:9099",
+            "http://[::1]:7037",
+        ] {
+            assert!(is_https_or_loopback(u), "{u} must be accepted");
+        }
+    }
+
+    #[test]
+    fn is_https_or_loopback_refuses_plaintext_non_loopback_and_lookalikes() {
+        for u in [
+            "http://peer.example",
+            "http://127.0.0.1.evil.com",
+            "http://localhost.evil",
+            "ftp://localhost/",
+            "not a url",
+        ] {
+            assert!(!is_https_or_loopback(u), "{u} must be refused");
+        }
     }
 
     /// A VTA advertises `VTARest`; a Trust Registry advertises `TRQPRest`.
@@ -470,5 +565,20 @@ mod tests {
         ]});
         let caps = ServiceCapabilities::from_did_document(&doc);
         assert_eq!(caps.endpoint(Protocol::Rest), Some("https://vta.example"));
+    }
+
+    /// `from_did_document` is a lossless read: it reports a plaintext `http://`
+    /// REST entry as advertised rather than filtering it out. Enforcing
+    /// `https://`-or-loopback is each dispatching caller's job
+    /// ([`is_https_or_loopback`], used by `pick_transport` and the Trust-Task
+    /// push engine) — see the doc comment on why this parser must not do it
+    /// itself.
+    #[test]
+    fn a_plaintext_http_rest_endpoint_is_still_reported_as_advertised() {
+        let doc = serde_json::json!({ "service": [
+            { "id": "#tt", "type": "TrustTaskHTTPS", "serviceEndpoint": "http://peer.example" },
+        ]});
+        let caps = ServiceCapabilities::from_did_document(&doc);
+        assert_eq!(caps.rest.as_deref(), Some("http://peer.example"));
     }
 }

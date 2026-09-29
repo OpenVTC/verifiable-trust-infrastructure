@@ -1,22 +1,17 @@
 // Vetting admin API — what the vetting panels, the join-request detail and the
 // dashboard read and write.
 //
-// Three of these routes carry a Trust Task binding and are called with it:
-// grant, resend, and the vetter listing. The rest are admin REST the daemon
-// mounts with no binding, because no published task describes them — the grant
-// listing, automatic grants, withdrawal notices, a join request's vetting facts
-// and community branding — so they go through the `*Exempt` helpers instead of
-// borrowing a task URI that names something else.
+// Naming a vetter, the vetter listing, the join manifest and the
+// endorsement-type writes are signed documents, sent from this browser's
+// console key. Resending a member's grant is admin REST under its task: the
+// signed `resend` is the vetter's own request for their credential, and names
+// no one else. The rest are admin REST the daemon mounts with no binding,
+// because no published task describes them — the grant listing, automatic
+// grants, withdrawal notices, a join request's vetting facts and community
+// branding — so they go through the `*Exempt` helpers instead of borrowing a
+// task URI that names something else.
 
-import {
-  deleteJson,
-  deleteJsonExempt,
-  getJson,
-  getJsonExempt,
-  postJson,
-  postJsonExempt,
-  putJsonExempt,
-} from "@/lib/api";
+import { deleteJson, postJson, postSignedRead, postSignedTrustTask } from "@/lib/api";
 import type {
   AcceptsCriterion,
   AutoGrantConfig,
@@ -34,13 +29,11 @@ import type {
   MembersPage,
   RegisterAcceptsBody,
   RegisterEndorsementTypeBody,
-  VetterGrantList,
   VetterGrantResponse,
   VetterGrantRow,
   VetterListBody,
   VetterListResponse,
   VetterResendResponse,
-  VettingRevocationList,
   VettingRevocationRow,
 } from "@/lib/wire-types";
 
@@ -61,6 +54,35 @@ const TASK_ENDORSEMENT_TYPE_DELETE =
   "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 const TASK_JOIN_REQUESTS_LIST =
   "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+const TASK_GRANTS_LIST = "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1";
+const TASK_AUTO_GRANT_SHOW = "https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1";
+const TASK_AUTO_GRANT_UPDATE = "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1";
+const TASK_REVOCATIONS_LIST = "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1";
+const TASK_JOIN_VETTING_SHOW = "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1";
+const TASK_BRANDING_SHOW = "https://trusttasks.org/spec/vtc/community/branding/show/0.1";
+const TASK_BRANDING_UPDATE = "https://trusttasks.org/spec/vtc/community/branding/update/0.1";
+const TASK_ACCEPTS_LIST = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.1";
+const TASK_ACCEPTS_REGISTER = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
+const TASK_ACCEPTS_DELETE = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
+
+/** How many pages of a signed listing the console reads before it stops. */
+const MAX_LIST_PAGES = 20;
+
+/** Every item of a paged signed listing (`{ items, nextCursor? }`). */
+async function allItems<T>(task: string): Promise<T[]> {
+  const out: T[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < MAX_LIST_PAGES; page++) {
+    const body: { items: T[]; nextCursor?: string | null } = await postSignedRead(task, {
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+    });
+    out.push(...body.items);
+    cursor = body.nextCursor ?? null;
+    if (!cursor) break;
+  }
+  return out;
+}
 export const TASK_MANIFEST_V0_2 =
   "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2";
 
@@ -82,18 +104,14 @@ export const vettingKeys = {
 
 // ── Grants ──────────────────────────────────────────────────────────────
 
-export async function fetchGrants(): Promise<VetterGrantRow[]> {
-  const body = await getJsonExempt<VetterGrantList>("/v1/vetting/vetters");
-  return body.vetters;
-}
+export const fetchGrants = (): Promise<VetterGrantRow[]> =>
+  allItems<VetterGrantRow>(TASK_GRANTS_LIST);
 
 export const grantVetter = (args: {
   memberDid: string;
   validitySeconds: number;
 }): Promise<VetterGrantResponse> =>
-  postJson<VetterGrantResponse>("/v1/vetting/vetters", args, {
-    trustTask: TASK_VETTER_GRANT,
-  });
+  postSignedTrustTask<VetterGrantResponse>(TASK_VETTER_GRANT, args);
 
 /** A grant is withdrawn like any endorsement. */
 export const revokeGrant = (endorsementId: string): Promise<unknown> =>
@@ -116,12 +134,10 @@ export async function fetchActiveMembers(): Promise<MemberRow[]> {
   const members: MemberRow[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_MEMBER_PAGES; page++) {
-    const q = new URLSearchParams({ limit: "200" });
-    if (cursor) q.set("cursor", cursor);
-    const body: MembersPage = await getJson<MembersPage>(
-      `/v1/members?${q.toString()}`,
-      { trustTask: TASK_MEMBERS_LIST },
-    );
+    const body: MembersPage = await postSignedRead<MembersPage>(TASK_MEMBERS_LIST, {
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    });
     members.push(...body.items);
     cursor = body.nextCursor ?? null;
     if (!cursor) break;
@@ -131,39 +147,31 @@ export async function fetchActiveMembers(): Promise<MemberRow[]> {
 
 // ── The public listing ──────────────────────────────────────────────────
 
+/** The listing an applicant sees: the same signed document they send. */
 export const fetchListing = (body: VetterListBody): Promise<VetterListResponse> =>
-  postJson<VetterListResponse>("/v1/vetting/vetters/list", body, {
-    trustTask: TASK_VETTER_LIST,
-    requires: ["vetters"],
-  });
+  postSignedRead<VetterListResponse>(TASK_VETTER_LIST, body);
 
 // ── Automatic grants, withdrawals, join-request facts, branding ─────────
 
-export const fetchAutoGrant = (): Promise<AutoGrantStatus> =>
-  getJsonExempt<AutoGrantStatus>("/v1/vetting/auto-grant");
+export const fetchAutoGrant = async (): Promise<AutoGrantStatus> =>
+  (await postSignedRead<{ autoGrant: AutoGrantStatus }>(TASK_AUTO_GRANT_SHOW, {})).autoGrant;
 
-export const saveAutoGrant = (config: AutoGrantConfig): Promise<AutoGrantStatus> =>
-  putJsonExempt<AutoGrantStatus>("/v1/vetting/auto-grant", config);
+export const saveAutoGrant = async (config: AutoGrantConfig): Promise<AutoGrantStatus> =>
+  (await postSignedTrustTask<{ autoGrant: AutoGrantStatus }>(TASK_AUTO_GRANT_UPDATE, config))
+    .autoGrant;
 
-export async function fetchRevocations(): Promise<VettingRevocationRow[]> {
-  const body = await getJsonExempt<VettingRevocationList>(
-    "/v1/vetting/revocations",
-  );
-  return body.revocations;
-}
+export const fetchRevocations = (): Promise<VettingRevocationRow[]> =>
+  allItems<VettingRevocationRow>(TASK_REVOCATIONS_LIST);
 
-export const fetchJoinRequestVetting = (
-  id: string,
-): Promise<JoinRequestVettingResponse> =>
-  getJsonExempt<JoinRequestVettingResponse>(
-    `/v1/join-requests/${encodeURIComponent(id)}/vetting`,
-  );
+export const fetchJoinRequestVetting = (id: string): Promise<JoinRequestVettingResponse> =>
+  postSignedRead<JoinRequestVettingResponse>(TASK_JOIN_VETTING_SHOW, { id });
 
-export const fetchBranding = (): Promise<CommunityBranding> =>
-  getJsonExempt<CommunityBranding>("/v1/community/branding");
+export const fetchBranding = async (): Promise<CommunityBranding> =>
+  (await postSignedRead<{ branding: CommunityBranding }>(TASK_BRANDING_SHOW, {})).branding;
 
-export const saveBranding = (branding: CommunityBranding): Promise<CommunityBranding> =>
-  putJsonExempt<CommunityBranding>("/v1/community/branding", branding);
+export const saveBranding = async (branding: CommunityBranding): Promise<CommunityBranding> =>
+  (await postSignedTrustTask<{ branding: CommunityBranding }>(TASK_BRANDING_UPDATE, { branding }))
+    .branding;
 
 export interface PendingWithVetting {
   /** Pending join requests on the first page that carry vetting facts. */
@@ -178,10 +186,10 @@ export interface PendingWithVetting {
  * of pending requests is checked one by one — bounded at 50 reads.
  */
 export async function fetchPendingWithVetting(): Promise<PendingWithVetting> {
-  const page = await getJson<JoinRequestsPage>(
-    "/v1/join-requests?status=pending&limit=50",
-    { trustTask: TASK_JOIN_REQUESTS_LIST },
-  );
+  const page = await postSignedRead<JoinRequestsPage>(TASK_JOIN_REQUESTS_LIST, {
+    status: "pending",
+    limit: 50,
+  });
   const withFacts = await Promise.all(
     page.items.map((r) =>
       fetchJoinRequestVetting(r.id).then(
@@ -202,14 +210,11 @@ export type { JoinManifest, ManifestCriterion };
 
 /**
  * `join-requests/manifest/0.2` as applicants receive it — each criterion with
- * its vetting requirements and `requirementsDigest` — from the admin route that
- * answers under the same task. The shape is the manifest specification's own.
+ * its vetting requirements and `requirementsDigest` — read as the same signed
+ * document an applicant sends. The shape is the manifest specification's own.
  */
 export const fetchManifest = (): Promise<JoinManifest> =>
-  getJson<JoinManifest>("/v1/join-requests/manifest", {
-    trustTask: TASK_MANIFEST_V0_2,
-    requires: ["criteria"],
-  });
+  postSignedRead<JoinManifest>(TASK_MANIFEST_V0_2, {});
 
 // ── Admission criteria ──────────────────────────────────────────────────
 //
@@ -220,7 +225,7 @@ export const fetchManifest = (): Promise<JoinManifest> =>
 // here rather than a shortcut.
 
 export const fetchCriteria = (): Promise<AcceptsCriterion[]> =>
-  getJsonExempt<AcceptsCriterion[]>("/v1/schemas/accepts");
+  allItems<AcceptsCriterion>(TASK_ACCEPTS_LIST);
 
 /**
  * Store a criterion. The route registers **or replaces** by id, so this is both
@@ -228,11 +233,12 @@ export const fetchCriteria = (): Promise<AcceptsCriterion[]> =>
  * references, the vetting requirements against the manifest schema, and that
  * the `statementType` is registered.
  */
-export const saveCriterion = (body: RegisterAcceptsBody): Promise<AcceptsCriterion> =>
-  postJsonExempt<AcceptsCriterion>("/v1/schemas/accepts", body);
+export const saveCriterion = async (body: RegisterAcceptsBody): Promise<AcceptsCriterion> =>
+  (await postSignedTrustTask<{ criterion: AcceptsCriterion }>(TASK_ACCEPTS_REGISTER, body))
+    .criterion;
 
 export const deleteCriterion = (id: string): Promise<unknown> =>
-  deleteJsonExempt<unknown>(`/v1/schemas/accepts/${encodeURIComponent(id)}`);
+  postSignedTrustTask<unknown>(TASK_ACCEPTS_DELETE, { id });
 
 // ── Endorsement types ───────────────────────────────────────────────────
 
@@ -243,11 +249,9 @@ export async function fetchEndorsementTypes(): Promise<EndorsementType[]> {
   const types: EndorsementType[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_TYPE_PAGES; page++) {
-    const q = new URLSearchParams({ limit: "200" });
-    if (cursor) q.set("cursor", cursor);
-    const body: EndorsementTypesPage = await getJson<EndorsementTypesPage>(
-      `/v1/endorsement-types?${q.toString()}`,
-      { trustTask: TASK_ENDORSEMENT_TYPE_LIST, requires: ["items"] },
+    const body: EndorsementTypesPage = await postSignedRead<EndorsementTypesPage>(
+      TASK_ENDORSEMENT_TYPE_LIST,
+      { limit: 200, ...(cursor ? { cursor } : {}) },
     );
     types.push(...body.items);
     cursor = body.nextCursor ?? null;
@@ -259,20 +263,17 @@ export async function fetchEndorsementTypes(): Promise<EndorsementType[]> {
 /**
  * Remove a registered type. The daemon refuses while anything still references
  * it — a live endorsement of the type, or a criterion naming it as its
- * `statementType` — and names both in the 409, which is what the card renders.
+ * `statementType` — and names both in the refusal, which is what the card
+ * renders.
+ *
+ * Both endorsement-type writes are signed documents.
  */
 export const deleteEndorsementType = (
   typeUri: string,
 ): Promise<EndorsementTypeDeleted> =>
-  deleteJson<EndorsementTypeDeleted>(
-    `/v1/endorsement-types/${encodeURIComponent(typeUri)}`,
-    { trustTask: TASK_ENDORSEMENT_TYPE_DELETE, requires: ["typeUri"] },
-  );
+  postSignedTrustTask<EndorsementTypeDeleted>(TASK_ENDORSEMENT_TYPE_DELETE, { typeUri });
 
 export const registerEndorsementType = (
   body: RegisterEndorsementTypeBody,
 ): Promise<EndorsementTypeRegistered> =>
-  postJson<EndorsementTypeRegistered>("/v1/endorsement-types", body, {
-    trustTask: TASK_ENDORSEMENT_TYPE_REGISTER,
-    requires: ["endorsementType.typeUri"],
-  });
+  postSignedTrustTask<EndorsementTypeRegistered>(TASK_ENDORSEMENT_TYPE_REGISTER, body);

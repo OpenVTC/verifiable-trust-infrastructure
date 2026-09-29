@@ -14,7 +14,7 @@ import {
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ArrowRight, Inbox } from "lucide-react";
 
-import { getJson, postJson } from "@/lib/api";
+import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
@@ -25,7 +25,7 @@ import {
   useJoinRequestVetting,
 } from "@/plugins/vetting/JoinRequestVetting";
 
-const TRUST_TASK_SUBMIT =
+const TRUST_TASK_LIST =
   "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
 const TRUST_TASK_SHOW =
   "https://trusttasks.org/spec/vtc/join-requests/show/0.1";
@@ -45,45 +45,38 @@ async function fetchJoinRequests(params: {
   cursor: string | null;
   limit: number;
 }): Promise<JoinRequestsPage> {
-  const q = new URLSearchParams();
-  q.set("status", params.status);
-  if (params.cursor) q.set("cursor", params.cursor);
-  q.set("limit", String(params.limit));
-  // POST + GET share the same router mount; the registered task is
-  // `submit/1.0` (TrustTaskRouter per-method selectors land later).
-  // GET works against the same header.
-  return getJson<JoinRequestsPage>(`/v1/join-requests?${q.toString()}`, {
-    trustTask: TRUST_TASK_SUBMIT,
+  return postSignedRead<JoinRequestsPage>(TRUST_TASK_LIST, {
+    status: params.status,
+    limit: params.limit,
+    ...(params.cursor ? { cursor: params.cursor } : {}),
   });
 }
 
 async function fetchJoinRequest(id: string): Promise<JoinRequestRow> {
-  const body = await getJson<JoinRequestEnvelope>(
-    `/v1/join-requests/${id}`,
-    { trustTask: TRUST_TASK_SHOW },
-  );
+  const body = await postSignedRead<JoinRequestEnvelope>(TRUST_TASK_SHOW, { id });
   return body.request;
 }
 
-// One decision endpoint (`decide/0.1`) carries both outcomes as
-// `{ decision, reason? }` — the approve/reject task pair is retired.
+// One decision task (`decide/0.1`) carries both outcomes as
+// `{ id, decision, reason? }`, sent as a signed document.
 async function approve(id: string): Promise<DecideResponse> {
-  return postJson<DecideResponse>(
-    `/v1/join-requests/${id}/decide`,
-    { decision: "approved" },
-    { trustTask: TRUST_TASK_DECIDE },
-  );
+  return postSignedTrustTask<DecideResponse>(TRUST_TASK_DECIDE, {
+    id,
+    decision: "approved",
+  });
 }
 
 async function reject(args: {
   id: string;
   reason: string;
 }): Promise<DecideResponse> {
-  return postJson<DecideResponse>(
-    `/v1/join-requests/${args.id}/decide`,
-    { decision: "rejected", reason: args.reason || null },
-    { trustTask: TRUST_TASK_DECIDE },
-  );
+  // `reason` is omitted rather than sent as `null`: the schema types it as an
+  // optional string.
+  return postSignedTrustTask<DecideResponse>(TRUST_TASK_DECIDE, {
+    id: args.id,
+    decision: "rejected",
+    ...(args.reason ? { reason: args.reason } : {}),
+  });
 }
 
 

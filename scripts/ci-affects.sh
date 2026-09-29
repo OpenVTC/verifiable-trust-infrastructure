@@ -47,10 +47,37 @@ set -euo pipefail
 # `room-host` depends on `vtc-client`, so `vtc-client` is inside "everything
 # except vtc-service" despite being a VTC crate. Complementing by hand gets that
 # backwards; deriving it does not.
+#
+# `--own` asks a narrower one: the named packages' own directories only, not what
+# they depend on. Global files (lockfile, manifests, toolchain, workflows) still
+# run it. See `ci-closure.py` for the one job that wants this and why.
+#
+# ci-affects.sh --toolchain [base-ref]
+#
+# `--toolchain` takes no package. It asks whether the change touches what decides
+# which COMPILER the tree needs — a manifest, the lockfile, `rust-toolchain`,
+# `.cargo/` — or the CI workflow itself, and nothing else. That is the MSRV job's
+# gate: MSRV checks the whole workspace, so a crate-closure answer would be `true`
+# for almost every PR. Same base resolution and the same fail-safes as the
+# package modes (not a PR, no base, no diff -> run). The cost of this mode, a
+# source-level MSRV break that only the push to main reports, is recorded where
+# the gate is wired, in ci.yml's `affects` job.
 EXCEPT=""
-if [ "${1:-}" = "--except" ]; then EXCEPT="--except"; shift; fi
-PKG="${1:?usage: ci-affects.sh [--except] <package>[,<package>...] [base-ref]}"
-if [ -n "$EXCEPT" ]; then SCOPE="everything except $PKG"; else SCOPE="$PKG"; fi
+case "${1:-}" in
+  --except|--own|--toolchain) EXCEPT="$1"; shift ;;
+esac
+if [ "$EXCEPT" = "--toolchain" ]; then
+  PKG=""
+else
+  PKG="${1:?usage: ci-affects.sh [--except|--own] <package>[,<package>...] [base-ref] | --toolchain [base-ref]}"
+  shift
+fi
+case "$EXCEPT" in
+  --except) SCOPE="everything except $PKG" ;;
+  --own) SCOPE="$PKG (own sources)" ;;
+  --toolchain) SCOPE="compiler requirements (MSRV)" ;;
+  *) SCOPE="$PKG" ;;
+esac
 
 # Resolving the base is where a filter like this quietly stops working. On a
 # pull_request event Actions checks out the MERGE commit, and `origin/main` is
@@ -68,7 +95,8 @@ resolve_base() {
   if git rev-parse --verify -q origin/main >/dev/null; then echo "origin/main"; return; fi
   echo ""
 }
-BASE=$(resolve_base "${2:-}")
+# The package argument (if any) was shifted off above, so the base ref is $1.
+BASE=$(resolve_base "${1:-}")
 [ -z "$BASE" ] && BASE_NOTE="no base ref could be resolved"
 
 emit() {
@@ -100,6 +128,16 @@ if [ -z "$CHANGED" ]; then
   emit true "no files changed against $BASE — running rather than guessing"
 fi
 echo "base: $BASE" >&2
+
+if [ "$EXCEPT" = "--toolchain" ]; then
+  # Any Cargo.toml (a member's too: a new dependency or its own rust-version),
+  # the lockfile, the toolchain file, cargo config, and this workflow.
+  TOOLCHAIN='(^|/)Cargo\.toml$|^Cargo\.lock$|^rust-toolchain(\.toml)?$|^\.cargo/|^\.github/workflows/ci\.yml$'
+  if tc_hit=$(echo "$CHANGED" | grep -E "$TOOLCHAIN" | head -3) && [ -n "$tc_hit" ]; then
+    emit true "compiler-relevant file changed: $(echo "$tc_hit" | tr '\n' ' ')"
+  fi
+  emit false "no manifest, lockfile, toolchain, .cargo or ci.yml change"
+fi
 
 # Files that can change any build regardless of which crate they sit in.
 GLOBAL='^(Cargo\.lock|Cargo\.toml|rust-toolchain(\.toml)?|deny\.toml|\.cargo/|\.github/|scripts/)'

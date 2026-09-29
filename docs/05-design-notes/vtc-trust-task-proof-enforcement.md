@@ -113,9 +113,12 @@ Two of the 51 already verify a document proof on their REST route
 the migration follows. **That leaves 49 proof-REQUIRED tasks served on a bearer
 token** — divergence 1.
 
-Of those 49, six now also have a signed-document binding (§6b, batches 1 and
-2). Their bearer routes remain mounted, so the divergence is not yet 43: it
-closes per task when the bearer route goes, not when the signed door opens.
+Of those 49, eleven now have a signed-document binding (§6b, batches 1–5). The
+divergence closes per task when the bearer route goes, not when the signed door
+opens, and for two of the eleven it has: batch 3 removed the bearer routes of
+`vtc/config/{export,import}/0.1` in the same change, because nothing called
+them. **47 remain**, nine of them with a signed door beside a still-mounted
+bearer route.
 
 ### Drift against the recorded entry
 
@@ -156,8 +159,25 @@ itself before the spine took over verification. **The nine `vtc/*` rows above
 are the ones the spine was lenient about.**
 
 Since then the set has grown by the tasks §6b's batches move onto this binding
-— four in batch 1 and two in batch 2 (`vtc/join-requests/decide/0.1`,
-`vtc/community/profile/update/0.1`), making twenty-six proof-REQUIRED. The
+— four in batch 1, two in batch 2 (`vtc/join-requests/decide/0.1`,
+`vtc/community/profile/update/0.1`), two in batch 3
+(`vtc/config/{export,import}/0.1`), two in batch 4
+(`vtc/endorsement-types/{register,delete}/0.1`) and one in batch 5
+(`vtc/backup/export/0.1`), making thirty-one proof-REQUIRED. Later
+additions — `acl/{grant,change-role}`, the seven `backup/*` chunked-transfer
+tasks, `task-consent/decision/0.1`, the three trust-tasks 0.23 made
+proof-REQUIRED, and (2026-09-26) the two credential-exchange steps a holder
+sends, `credential-exchange/{request,present}/0.1`, which were bare DIDComm
+arms beside the envelope until then — bring it to forty-six, and `acl/update`
+and `acl/revoke` (2026-09-26, with `acl/{show,list}`, which declare no proof
+and are refused unsigned anyway because they authorize from the signer's ACL
+row) to forty-eight. The four step-up passkey tasks that declare a proof
+bring it to fifty-two, and the eight proof-REQUIRED member-facing verbs
+(2026-09-28, `trust_tasks::member_tasks`: `members/{renew,rotate-challenge,
+rotate}`, `members/personhood/revoke`, `relationships/{publish,revoke}`,
+`endorsements/{issue,revoke}`) to sixty; `relationships/list` and
+`endorsements/{list,show}`, served with them, declare no proof and are refused
+unsigned anyway. The
 count is asserted by
 `the_dispatched_set_declares_the_proofs_the_design_note_records`, so a batch
 that lands without updating this note fails a test.
@@ -470,14 +490,178 @@ unauthenticated public-profile endpoint, which is the same stored-payload
 argument the existing caps were added for, and capping them belongs in a change
 about that rather than in a transport migration.
 
+**Batch 3 — the portable-configuration pair, and the first bearer routes
+removed.** `vtc/config/export/0.1` and `vtc/config/import/0.1` are bound in
+`DISPATCHED_URIS` / `dispatch_typed` on batch 2's terms: authority from
+`admin_signer`, and the bearer routes applied exactly `AdminAuth`, so a
+context-scoped admin is admitted and a member refused. What differs:
+
+- **The bearer routes are gone, not transitional.** Batches 1 and 2 kept theirs
+  because the admin console reaches them. It does not reach this pair — there
+  is no screen for either (`vtc-console-signing.md` §7) — and neither
+  `vtc-client`, `cnm` nor openvtc calls them. A route with no client has no
+  removal point to wait for, so `POST /v1/admin/config/{export,import}` were
+  deleted in the same change and the divergence is closed for both tasks. The
+  REST integration suite (`tests/admin_config.rs`) was ported to signed
+  documents rather than dropped; the one test not ported held that a stale
+  `?confirm=true` query parameter does not apply, and a document has no query
+  string.
+- **`ext` was refused on both levels.** The route's hand-written
+  `ImportRequest` and `ConfigExportDocument` were `deny_unknown_fields`
+  without the `ext` members the published schema gives the payload and the
+  document, so a schema-valid import carrying either was refused as malformed.
+  Both now accept and ignore it. The bearer route also accepted documents the
+  schema refuses (`"communityProfile": null`, `"extensions": null`); the signed
+  door validates the payload against the schema first, so those are refused
+  now, as the specification says they should be.
+- **64 KiB is enough.** The payload is a community profile and at most five
+  small config overrides, and the profile is batch 2's, measured above at
+  about 44 KiB worst case. An import whose profile is over those caps would
+  have been refused by `CommunityProfileUpdate::apply` anyway — with one
+  exception, below.
+- **One pre-existing gap recorded here, fixed separately.** When no profile was
+  stored, `apply_profile_import` wrote the imported one verbatim instead of
+  through `CommunityProfileUpdate::apply`, so none of that function's caps
+  applied — including the `http(s)`-only `logoUrl`. Boot heals a missing
+  profile whenever `vtc_did` is configured (`server.rs`), so the path was
+  reachable only on a VTC with no identity yet. It was a validation gap in the
+  import rather than the transport, so it was fixed in its own change: every
+  import now applies the patch, to a default profile when none is stored
+  (`an_import_with_no_stored_profile_meets_the_edit_caps`).
+
+**Batch 4 — the endorsement-type writes, and the console's first signed
+calls.** `vtc/endorsement-types/register/0.1` and
+`vtc/endorsement-types/delete/0.1` are bound on the same terms; `list` declares
+no proof and stays on its bearer route. The console's statement-types card
+calls both, so here the bearer routes stay — but the card now sends each write
+through `signedOrBearer`, the first console call site to do so: a browser with
+a console key uses the signed door, and one without falls back. Findings:
+
+- **`claimSchema` had no bound at all**, in the task or the route, so a schema
+  between ~63 KiB and 1 MB registered over bearer and could not fit a signed
+  document — and `signedOrBearer` deliberately does not fall back on a
+  refusal. The operation now caps it at 32 KiB serialised on both doors
+  (`CLAIM_SCHEMA_MAX_BYTES`), refused as `malformedRequest`.
+- **`description`'s published `maxLength: 1024` was not enforced** on the
+  bearer route; the signed door's schema check already held it. Both enforce
+  it now.
+- **A declared framework code panicked the dispatcher.** `register` refuses a
+  `claimSchema` that is not a JSON Schema with `malformedRequest`, carried as a
+  `TaskError::declared` so the bearer route can put the code in its body. The
+  spine's `task_error_to_reject` read every declared code as `<slug>:<local>`
+  and panicked on it. It now parses the code as the framework does
+  (`declared_code`), so a standard code goes out as itself. Nothing had bound
+  such an operation on the signed door before, which is why it had not fired.
+- **An absent `claimSchema` stays absent.** The generated payload folds absent
+  into an empty map; the arm reads the raw payload as the route's
+  `RegisterBody` so the stored row records what was sent.
+
+**Batch 5 — the backup export, without its import.** `vtc/backup/export/0.1`
+is bound on the same terms, with the one gate batch 1 introduced for `purge`:
+the bearer route took `SuperAdminAuth`, so the signer's entry must be an
+unrestricted admin (`require_super_admin`) and a context-scoped admin is
+refused. Its bearer route stays, because `vtc-client` calls it; the console
+has no backup screen. Findings:
+
+- **The request fits; the reply is recorded.** The payload is a password and a
+  flag. The reply is the whole encrypted envelope, and the spine records a
+  successful reply against the document's `id` — so a redelivery is answered
+  with the same envelope rather than a second export under a fresh salt and
+  nonce (`vti_ops_025_a_redelivered_export_answers_with_the_same_envelope`), at
+  the cost of a second, password-encrypted copy of the backup in
+  `accepted_ids` for the acceptance window. That keyspace is excluded from
+  backup, so a copy cannot end up inside a later export.
+- **The password is in a signed, unencrypted document**, which is no worse
+  than the bearer route's body: REST is TLS, DIDComm and TSP encrypt end to
+  end, and the spine records a document's identifier and digest, never its
+  payload.
+
+**`vtc/backup/import/0.1` stays on bearer, and the fix is a chunked transfer.**
+Its request carries the whole envelope inline, which a 64 KiB document cannot
+hold for any real community, and raising the cap is not the answer: the signed
+door is the unauthenticated chain until the proof is checked, so a large cap
+there is a lever for anyone. The shape that fits the binding is a transfer of
+several documents, each small, each signed and replay-recorded.
+
+**That transfer already exists, for the agent.** `vta/backup/*` opens a slot
+with the bundle's digest, size and every chunk's digest pre-committed, carries
+the bundle as an HTTPS stream or chunk by chunk over Trust Task documents
+(`put-chunk` / `get-chunk`), and previews before it replaces
+(`finalize-import`), with an `abort`. A VTC-only begin/chunk/commit family was
+drafted and dropped in favour of generalising that one: nothing in the
+transfer is specific to an agent, and two chunked-restore protocols for one job
+would drift. Proposed upstream as the node-neutral `backup/*` family
+(trustoverip/dtgwg-trust-tasks-tf#633) — derived from `vta/backup/*`, with
+`finalize-import` answering a `counts` map keyed by each node's own record
+kinds, and the transfer shapes referenced from `vta/_shared` rather than
+copied, so no generated library renames a published type.
+
+It covers export as well, which has the mirror problem on the messaging
+transports: a reply the size of the backup may exceed what a mediator carries.
+
+**Done.** #633 merged and shipped in `trust-tasks-rs` 0.22.7; the transfer core
+moved into `vti_common::backup_transfer` (#1721) so both nodes run one
+implementation of the manifest and chunk checks; and the VTC dispatches all seven
+`backup/*` tasks on the signed door (`trust_tasks::backup_tasks`). Only
+`chunkedTrustTask` is served — this node publishes no blob endpoint, so
+`stream` is refused `transportUnavailable` — at chunks of at most 32 KiB, the
+largest whose `put-chunk` document fits the 64 KiB this door accepts before
+checking a proof. `vtc/backup/import/0.1` stays on its bearer route for a
+community small enough to fit one request.
+
+**Member-facing verbs** (2026-09-28). Renewal, DID rotation, personhood
+revocation, `relationships/{list,publish,revoke}` and `endorsements/{issue,
+list,show,revoke}` were bound to published specifications but served only on
+HTTPS REST, so a member on TSP or DIDComm could join and then do none of them.
+`trust_tasks::member_tasks` serves all eleven on the spine, each calling the
+operation its route calls. Authority is the verified signer's own current ACL
+row (an expired one refuses), or for the administrative capacities a
+console-key delegation through `admin_signer`: the self verbs take the signer
+as the member; personhood revoke admits the subject or an admin; relationship
+revoke the edge's issuer or an admin, anyone else being told `notFound` as the
+specification requires; the endorsement verbs an `Admin` or `Issuer` row. The
+bearer routes stay mounted. Because a VTC bearer session is minted only for an
+admin row, those routes were in practice admin-only; this door admits the
+member or issuer the specifications and the handlers name. Two limits: a
+pairwise edge is still retracted only on the bearer route (its
+`VrcRevokeAuthorization` binds to a REST session, and `revoke/0.1` carries no
+authorization member), and `endorsements/revoke`'s `reason` is accepted and not
+persisted (the audit event has no member for it).
+
 **Next batch.** `vtc/admin/invites/{create,revoke}` are the same admin-from-ACL
-shape and the same console dependency, and become available once the
-`vtc/invitations/*` work owned elsewhere lands. Failing that, the paired
-operator verbs `vtc/config/{export,import}` or the
-`vtc/endorsement-types` pair are the next clean ones;
-`vtc/backup/{export,import}` should wait,
-because its bodies are the one place where the 64 KiB document cap is plainly
-too small and moving it needs that decision taken first.
+shape, and become available once the `vtc/invitations/*` work owned elsewhere
+lands. Before keeping a batch's bearer routes, check who calls them — batch 3
+found nobody did — and where the console does, move its call sites to
+`signedOrBearer` in the same batch, as batch 4 did.
+
+**`vtc-client` signs.** The second blocker §6b named is closed for every verb
+the client reaches that has a signed binding: a join decision,
+`members/{update,admin-remove,credentials}` and `backup/export`. A client
+built with `VtcClient::connect` holds the operator's own `did:key`, and since
+`admin_signer` reads the signer's ACL entry directly, it signs as the operator
+— no console-style delegation is needed. It sends those verbs **only** as
+documents, with no fallback to the bearer route even against a VTC that
+predates their binding: a fallback would keep the bearer routes load-bearing
+for exactly the clients that could sign. Over a DIDComm or TSP session the same
+verbs ride the session, which lifts `NoRestTransport` for them. A client built
+from a token alone (`with_token`) holds no key and still uses the bearer
+routes; that is the one remaining in-repo caller of them, alongside the
+console's fallback for a browser with no enrolled key.
+`signed_admin_verbs_do_not_ride_the_bearer_session` holds it by ending the
+client's session and showing the signed verbs still work while a bearer-only
+verb does not.
+
+**The first blocker — step-up on a signed document — has a design.** The verbs
+gated on a live passkey gesture (`acl/grant` and `acl/change-role` to admin,
+console-key enrolment) take a step-up **bound to the one operation** by payload
+digest: the gate parks the document and answers with a challenge, the admin
+answers with a user-verified passkey assertion
+(`auth/step-up/approve-response`, `boundTo`), and the re-sent document redeems
+that single-use mark. Nothing is elevated. It needs upstream changes first —
+VTI-APV-003 to admit operation-bound re-authentication, and `approve-response`
+without a `sessionId` — and it also carries the second-party consent VTI-APV-014
+requires for unrestricted admin, which the VTC lacks on both doors. See
+[`vtc-operation-bound-step-up.md`](vtc-operation-bound-step-up.md).
 
 ---
 

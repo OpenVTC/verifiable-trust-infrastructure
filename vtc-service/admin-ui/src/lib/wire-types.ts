@@ -33,10 +33,18 @@ export type Schemas = components["schemas"];
 // ── Auth, session, passkeys ─────────────────────────────────────────────
 export type SessionView = Schemas["SessionView"];
 export type WhoamiResponse = Schemas["WhoamiResponse"];
-export type SessionSummary = Schemas["SessionSummary"];
-export type PasskeyLoginStartResponse = Schemas["PasskeyLoginStartResponse"];
+export type SessionListResponse = Schemas["SessionListResponse"];
+export type PasskeyLoginStartResponse =
+  Schemas["AdminPasskeyLoginStartResponse"];
 export type RegisteredCredential = Schemas["RegisteredCredential"];
-export type PasskeyListResponse = Schemas["ListResponse"];
+export type PasskeyListResponse = Schemas["PasskeyListResponse"];
+// Schema names are unique across the document — `openapi_schema_names.rs`
+// holds that (#1697). Before it, `PasskeyListResponse` and
+// `ConsoleKeyListResponse` were both published as `ListResponse` and the
+// passkey endpoint was documented with the console-key shape.
+export type ConsoleKey = Schemas["ConsoleKey"];
+export type ConsoleKeyListResponse = Schemas["ConsoleKeyListResponse"];
+export type ConsoleKeyRevokeResponse = Schemas["ConsoleKeyRevokeResponse"];
 export type PasskeyRegisterStartResponse = Schemas["RegisterStartResponse"];
 export type PasskeyRevokeStartResponse = Schemas["RevokeStartResponse"];
 
@@ -132,9 +140,14 @@ export type AuditListResponse = Schemas["AuditListResponse"];
 // ── Policies ────────────────────────────────────────────────────────────
 export type PolicyRow = Schemas["PolicyModuleResponse"];
 export type PoliciesPage = Schemas["PolicyListResponse"];
-export type ActiveBindingsResponse = Schemas["ActiveBindingsResponse"];
 export type PolicyUpsertResponse = Schemas["UploadResponse"];
-export type PolicyTestResponse = Schemas["TestResponse"];
+/** `vtc/policies/test/0.1`'s response, now served only as a signed document. */
+export interface PolicyTestResponse {
+  id: string;
+  purpose: string;
+  sha256: string;
+  result: { result?: { expressions?: { value?: unknown }[] }[] };
+}
 /**
  * What a policy decides.
  *
@@ -186,3 +199,32 @@ export type SyncJobsRetryResponse = Schemas["VtcRegistrySyncJobsRetryV0_1Respons
 export type SyncJobsDiscardResponse = Schemas["VtcRegistrySyncJobsDiscardV0_1Response"];
 export type RegistryRecordsResponse = Schemas["VtcRegistryRecordsListV0_1Response"];
 export type RegistryRecordRow = Schemas["VtcRegistryRecordsListV0_1Record"];
+
+// ── Git namespaces (the Repos plugin) ───────────────────────────────────
+//
+// The administrator's read surface over `git-ns/*`. Every write is a signed
+// Trust Task and has no REST shape here — see `plugins/repos/actions.ts`.
+export type GitNsNamespaceRow = Schemas["GitNsNamespaceRow"];
+export type GitNsRoleMap = Schemas["GitNsRoleMap"];
+export type GitNsNamespaceList = Schemas["GitNsNamespaceList"];
+export type GitNsRepoRow = Schemas["GitNsRepoRow"];
+export type GitNsRepoList = Schemas["GitNsRepoList"];
+export type GitNsBootstrapStatus = Schemas["GitNsBootstrapStatus"];
+export type GitNsRightRow = Schemas["GitNsRightRow"];
+export type GitNsRightList = Schemas["GitNsRightList"];
+export type GitNsDepartedGrants = Schemas["GitNsDepartedGrants"];
+export type GitNsDepartedGranter = Schemas["GitNsDepartedGranter"];
+export type GitNsDriftItem = Schemas["GitNsViewV0_1DriftItem"];
+export type GitNsJobList = Schemas["GitNsJobList"];
+export type GitNsJobRow = Schemas["GitNsJobRow"];
+export type GitNsProjection = Schemas["GitNsProjection"];
+export type GitNsPublishedRow = Schemas["GitNsPublishedRow"];
+export type GitNsRight = Schemas["GitNsViewV0_1Right"];
+export type GitNsForgeStatus = Schemas["GitNsForgeStatus"];
+export type GitNsStepOutcome = Schemas["GitNsStepOutcome"];
+export type GitNsLastCheck = Schemas["GitNsLastCheck"];
+export type GitNsAccountRow = Schemas["GitNsAccountRow"];
+export type GitNsAccountList = Schemas["GitNsAccountList"];
+export type GitNsActivity = Schemas["GitNsActivity"];
+export type GitNsActivityItem = Schemas["GitNsActivityItem"];
+export type GitNsBreakGlassMark = Schemas["GitNsBreakGlassMark"];

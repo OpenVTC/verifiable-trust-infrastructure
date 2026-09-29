@@ -68,18 +68,19 @@ Two paths:
   Choosing it here puts `#tsp` in the DID document from log v1, rather than
   adding it in a later log entry.
 
-`pnm services list` shows TSP on/off + its mediator; `GET /health/details`
-reports `tsp_enabled`.
+`pnm services list` shows TSP on/off + its mediator; the public
+`vta/health/details/0.1` Trust Task (and so `pnm health`) reports `tspEnabled`.
 
 ### What a TSP-only build does not have
 
 Building with `--features tsp` and no `didcomm` removes the DIDComm dispatcher
 outright, not just its advertisement. That means:
 
-- **No DIDComm protocol-message surface** (`key-management/1.0/*`,
-  `create_did_webvh`, `list_contexts`). Those never had a TSP dispatcher behind
-  them — TSP carries the *Trust-Task* surface — so on a TSP-only VTA they are
-  reachable over REST only.
+- **No DIDComm Trust-Task binding.** Every operation is a Trust Task, so a
+  TSP-only VTA serves all of them over TSP (and HTTPS); only DIDComm clients are
+  left out. (The older bare-DIDComm protocol-message surface —
+  `key-management/1.0/*`, `create_did_webvh`, `list_contexts` — is gone from
+  every build.)
 - **No drain machinery and no `services didcomm …` commands**, online or
   offline: drain is a DIDComm concept, and the ops behind those commands are
   compiled out. `services {rest,tsp,webauthn} …` are unaffected.
@@ -126,7 +127,7 @@ runtime state, and `pnm services tsp enable` adds TSP to it.
 | Inbound: `tsp-message` vault unseal | ✅ shipped (feature-gated; live unpack pending verification) |
 | Inbound: TSP listener (raw-TSP websocket → trust-task spine) | ✅ shipped (feature-gated; live loop pending verification) |
 | Auth over TSP | ✅ by construction (rides the inbound spine → `handle_authenticate`) |
-| **Outbound: TSP send from `send_to_member` / VTA** | ⏳ designed, not built — see `tsp-outbound-send.md` |
+| **Outbound: TSP send** (VTA + VTC Trust Task pushes, incl. credential exchange) | ✅ shipped — the durable push engine, `vti_common::trust_task_push` (TSP > DIDComm > REST) |
 | Live connectivity reporting / per-protocol counts | ⏳ pending the running loop |
 
 **Before enabling `tsp` in production:** run a live VTA↔mediator smoke test (one

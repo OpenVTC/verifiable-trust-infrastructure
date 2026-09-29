@@ -60,6 +60,8 @@ const ADMIN_DID: &str = "did:key:zAdmin1";
 struct Fixture {
     router: axum::Router,
     state: AppState,
+    /// The key `admin_token`'s administrator signs with on the signed door.
+    signer: vti_rooms_dtg::test_support::Party,
     admin_token: String,
     acl_ks: KeyspaceHandle,
     members_ks: KeyspaceHandle,
@@ -163,9 +165,11 @@ async fn build_fixture() -> Fixture {
     let join_requests_ks = vtc.state.join_requests_ks.clone();
     let router = vtc.router.clone();
 
+    let signer = common::signed::party_with_role(&vtc, VtcRole::Admin, &[]).await;
     Fixture {
         router,
         state,
+        signer,
         admin_token,
         acl_ks,
         members_ks,
@@ -284,6 +288,33 @@ fn applicant_pair() -> (SigningKey, String) {
     let pub_bytes = sk.verifying_key().to_bytes();
     let did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes);
     (sk, did)
+}
+
+/// A request to a route that is now a signed document only, sent as that
+/// document (`common::legacy`), signed by the administrator `admin_token`
+/// stands for.
+async fn send_as_admin(
+    fix: &Fixture,
+    method: &str,
+    uri: &str,
+    _trust_task: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {t}"));
+    }
+    let req = req
+        .body(
+            body.map(|v| Body::from(v.to_string()))
+                .unwrap_or(Body::empty()),
+        )
+        .unwrap();
+    common::legacy::send_json(&fix._vtc, &[(fix.admin_token.as_str(), &fix.signer)], req).await
 }
 
 async fn send(
@@ -504,8 +535,8 @@ async fn list_returns_pending_by_default() {
 async fn show_returns_full_request_including_vp() {
     let fix = build_fixture().await;
     let id = submit_pending(&fix).await;
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "GET",
         &format!("/v1/join-requests/{id}"),
         SHOW_TASK,
@@ -951,8 +982,8 @@ async fn rest_submit_under_default_join_policy_lands_pending_with_vp_claims() {
     let id = body["payload"]["requestId"].as_str().unwrap();
 
     // Fetch via admin show — `vpClaims` is on the persisted row.
-    let (status, row) = send(
-        &fix.router,
+    let (status, row) = send_as_admin(
+        &fix,
         "GET",
         &format!("/v1/join-requests/{id}"),
         SHOW_TASK,
@@ -997,8 +1028,8 @@ async fn rest_submit_under_deny_all_policy_persists_rejected_with_decision() {
     assert_eq!(verdict_effect(&body), "deny");
     let id = body["payload"]["requestId"].as_str().unwrap();
 
-    let (status, row) = send(
-        &fix.router,
+    let (status, row) = send_as_admin(
+        &fix,
         "GET",
         &format!("/v1/join-requests/{id}"),
         SHOW_TASK,
@@ -1119,7 +1150,10 @@ fn build_vp_token(
         affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
     let issuer_signer = SdSigner {
         key: SigningKey::from_bytes(&[9u8; 32]),
-        kid: format!("{issuer_did}#key-0"),
+        kid: format!(
+            "{issuer_did}#{}",
+            issuer_did.strip_prefix("did:key:").unwrap()
+        ),
     };
 
     let holder = SigningKey::from_bytes(&[holder_seed; 32]);
@@ -1563,8 +1597,8 @@ async fn admin_query_send_prepares_a_dcql_query_and_issues_a_challenge() {
         .await
         .expect("store accepts criterion");
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "POST",
         "/v1/join-requests/query",
         "x",
@@ -1600,8 +1634,8 @@ async fn admin_query_send_prepares_a_dcql_query_and_issues_a_challenge() {
 #[tokio::test]
 async fn admin_query_send_404s_an_unknown_criterion() {
     let fix = build_fixture().await;
-    let (status, _body) = send(
-        &fix.router,
+    let (status, _body) = send_as_admin(
+        &fix,
         "POST",
         "/v1/join-requests/query",
         "x",
@@ -1616,8 +1650,8 @@ async fn admin_query_send_404s_an_unknown_criterion() {
 #[tokio::test]
 async fn admin_query_send_requires_admin() {
     let fix = build_fixture().await;
-    let (status, _body) = send(
-        &fix.router,
+    let (status, _body) = send_as_admin(
+        &fix,
         "POST",
         "/v1/join-requests/query",
         "x",
@@ -2727,45 +2761,6 @@ async fn a_vetter_publishes_a_profile_that_applicants_find_by_filter() {
     assert_eq!(row["profile"]["eventCount"], 2);
 }
 
-const VETTER_LIST_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1";
-
-/// The listing through `POST /v1/vetting/vetters/list`, as the admin console
-/// reads it.
-async fn admin_listing(fix: &Fixture, filters: Value) -> (StatusCode, Value) {
-    send(
-        &fix.router,
-        "POST",
-        "/v1/vetting/vetters/list",
-        VETTER_LIST_TASK,
-        Some(&fix.admin_token),
-        Some(filters),
-    )
-    .await
-}
-
-#[tokio::test]
-async fn an_admin_session_previews_exactly_the_listing_applicants_see() {
-    let fix = build_fixture().await;
-    let (carol, _) = did_key_secret([0x12; 32]);
-    seed_vetter(&fix, &carol).await;
-    let (status, body) = publish_profile(&fix, [0x12; 32], carols_profile(true)).await;
-    assert_eq!(status, StatusCode::OK, "publish: {body}");
-
-    let filters = json!({ "language": "de", "method": "video" });
-    let (status, preview) = admin_listing(&fix, filters.clone()).await;
-    assert_eq!(status, StatusCode::OK, "{preview}");
-    assert_eq!(listed_dids(&preview), vec![carol]);
-    assert_eq!(
-        preview,
-        list_vetters(&fix, filters).await,
-        "the console must show what an applicant is sent"
-    );
-
-    // The listing's own bounds apply: a lower-case country is refused.
-    let (status, body) = admin_listing(&fix, json!({ "country": "at" })).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-}
-
 #[tokio::test]
 async fn listings_page_in_order_with_cursors_bound_to_their_filters() {
     let fix = build_fixture().await;
@@ -3042,20 +3037,6 @@ async fn branding_is_published_on_manifest_0_2_only() {
         json!({ "displayName": "Kernel", "accentColor": "#1a2b3c" })
     );
 
-    // The admin console reads the same manifest 0.2 over its own route, under
-    // the same task: what it shows is what an applicant is sent.
-    let (status, admin_view) = send(
-        &fix.router,
-        "GET",
-        "/v1/join-requests/manifest",
-        JOIN_REQUEST_MANIFEST_0_2_TYPE,
-        Some(&fix.admin_token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{admin_view}");
-    assert_eq!(admin_view, tt_payload(&body));
-
     let (_did, doc) = signed_trust_task(MANIFEST_TASK, json!({})).await;
     let (_status, body) = post_tt(&fix.router, doc).await;
     assert!(tt_payload(&body).get("branding").is_none(), "{body}");
@@ -3207,10 +3188,12 @@ async fn admins_see_the_vetting_facts_and_the_withdrawals_that_touch_a_membershi
     assert_eq!(verdict_effect(&body), "allow", "{body}");
     let request_id = body["payload"]["requestId"].as_str().unwrap().to_string();
 
-    let (status, facts) = admin_rest(
+    let (status, facts) = send_as_admin(
         &fix,
         "GET",
         &format!("/v1/join-requests/{request_id}/vetting"),
+        "x",
+        Some(&fix.admin_token),
         None,
     )
     .await;
@@ -3244,10 +3227,12 @@ async fn admins_see_the_vetting_facts_and_the_withdrawals_that_touch_a_membershi
     assert_eq!(notice["affectedMembers"], json!([applicant.clone()]));
     assert_eq!(notice["affectedJoinRequests"], json!([request_id.clone()]));
 
-    let (_, facts) = admin_rest(
+    let (_, facts) = send_as_admin(
         &fix,
         "GET",
         &format!("/v1/join-requests/{request_id}/vetting"),
+        "x",
+        Some(&fix.admin_token),
         None,
     )
     .await;
@@ -3265,10 +3250,12 @@ async fn admins_see_the_vetting_facts_and_the_withdrawals_that_touch_a_membershi
     );
     assert!(under_review.under_review);
 
-    let (status, _) = admin_rest(
+    let (status, _) = send_as_admin(
         &fix,
         "GET",
         &format!("/v1/join-requests/{}/vetting", Uuid::new_v4()),
+        "x",
+        Some(&fix.admin_token),
         None,
     )
     .await;
@@ -4300,8 +4287,8 @@ async fn requested_attributes_are_published_enforced_and_kept_with_the_request()
     assert_eq!(status, StatusCode::OK, "submit: {body}");
     let id = tt_payload(&body)["requestId"].as_str().unwrap().to_string();
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "GET",
         &format!("/v1/join-requests/{id}"),
         SHOW_TASK,
@@ -4399,8 +4386,8 @@ async fn the_decide_task_answers_with_the_codes_its_spec_declares() {
 #[tokio::test]
 async fn show_for_an_unknown_request_is_the_declared_not_found() {
     let fix = build_fixture().await;
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "GET",
         &format!("/v1/join-requests/{}", Uuid::new_v4()),
         SHOW_TASK,

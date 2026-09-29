@@ -1,0 +1,660 @@
+# Git namespaces
+
+A VTC can govern repositories on the forges its community uses — GitHub, a
+Forgejo instance such as Codeberg — and publish who may do what there to its
+Trust Registry, where CI checks such as `did-git-sign verify-trust` read it.
+
+- **Normative:** the `git-ns/*` Trust Tasks in dtgwg-trust-tasks-tf
+  (`specs/git-ns/**`). The rights model is in `git-ns/right/grant/0.3`.
+- **Design:** `design-docs/vtc-git-namespaces-design.md`.
+- **Code:** `vtc-service/src/git_ns/`.
+
+## The model in one screen
+
+A **namespace** binds the VTC to one owner on one forge: `github.com/acme`.
+Inside it, **rights** are held by DIDs on forge-qualified, lowercase resources:
+
+| Right | On | Holder may |
+|---|---|---|
+| `git.ns.admin` | `github.com/acme` | everything below, on every repository; adopt; unbind |
+| `git.repo.create` | `github.com/acme` | create a repository, becoming its owner |
+| `git.repo.own` | `github.com/acme/widgets` | grant/revoke `own`, `maintain`, `commit.sign` there; transfer; archive |
+| `git.repo.maintain` | `github.com/acme/widgets` | merge and triage on the forge |
+| `git.commit.sign` | a repository or a namespace | author commits the CI check accepts |
+
+`own` implies `maintain` implies `commit.sign`; `ns.admin` implies
+`repo.create` and `own` everywhere in its namespace. Implication is evaluated
+by the VTC and is never a record — except that, because verifiers ask only
+about `git.commit.sign`, the implied commit right of every `own`,
+`maintain` and `ns.admin` is published explicitly.
+
+A namespace admin gets **no role on the forge** — not organisation owner, no
+repository role. `ns.admin` is exercised through the VTC and the bridge (bind,
+adopt, reseat, grants); making someone an organisation owner is left to the
+community, outside the VTC. The bridge projects only rights held in a
+person's own name: each repository's `desiredRoles` carries, per linked
+account and once per account, the highest `own`, `maintain` or `commit.sign`
+recorded for them on that repository (or `commit.sign` on its namespace). An
+admin with none of those there is sent as `git.ns.admin`, which the bridge
+maps to no role — so it takes off a stale role it manages rather than leave
+it — and an admin who is also an explicit owner is sent as the owner. There
+is no namespace-level `projectRoles` job.
+
+The **fixed rules** are code, not policy: containment by whole segment (a
+right never crosses forges, and `acme` does not contain `acme-labs`), no
+escalation, `repo.create` not re-delegable, a repository keeps an owner, a
+namespace keeps an admin, and namespace rights go to current members only. The
+community's `gitNamespace` policy is evaluated after them and can only refuse.
+
+## Configuration
+
+```toml
+[git_ns]
+# Which bridge serves which forge. A bridge-mode bind on a forge with no entry
+# is refused with `git-ns/namespace/bind:noBridge`.
+bridges = { "github.com" = "did:webvh:…:bridge.acme-vtc.example" }
+
+# The consent-class fallback (below). Default true.
+elevated_requires_admin = true
+
+# Projector cadence in seconds. Default 5.
+tick_seconds = 5
+```
+
+With no `[git_ns]` section a VTC serves manual-mode namespaces only.
+
+### Consent classes, and why elevated actions need an administrator
+
+The design classes grants of `own` and `repo.create`, transfer, archive and
+adopt as **elevated** (step-up), and bind, unbind and grants of `ns.admin` as
+**destructive** (step-up and confirmation). This VTC has no step-up a member
+can perform on a signed Trust Task — its step-up is a passkey elevation on an
+administrator's session, and a signed document has no session. Until a member
+step-up exists, `elevated_requires_admin = true` accepts an elevated or
+destructive git-namespace action only from a community administrator, *in
+addition to* the rights model's own entitlement. It narrows; it never lets an
+administrator do something their git rights do not allow.
+
+What that means in practice, under the default: an owner **cannot** transfer
+ownership, give up their own ownership, archive, or name a co-owner without a
+community administrator doing it; nor can a namespace admin who is not one
+grant `repo.create`, `own` or `ns.admin`. Creating a repository, finishing
+one's own manual reservation with `adopt`, and granting or revoking
+`maintain` and `commit.sign` are normal-class and need no administrator.
+
+## Policy
+
+`PolicyPurpose::GitNamespace`, wire name `gitNamespace`, package
+`vtc.git_namespace`, managed with the usual policy upload / test / activate
+flow. The shipped default (`policies/default/git_ns.rego`) is members-only
+with no external signers.
+
+The policy's `input` carries the action, the actor and subject (DID, whether a
+member, community role, git rights on the resource), the right, the resource,
+the forge, the visibility and expiry where relevant, and what the namespace
+can do (`capabilities`). It answers `decision` (`allow`, or `deny` with a
+`code` and `reason`) and may answer `settings`:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `maintainer_grants_commit` | `false` | a maintainer may grant `git.commit.sign` on their repository |
+| `cascade_on_departure` | `false` | grants a departed member issued are revoked with them, instead of listed for review |
+| `role_drift` | `"report"` | `"enforce"` re-projects forge roles changed outside the VTC |
+
+## What is published
+
+For every live right in a bound namespace, on an active, orphaned or archived
+repository, one TRQP authorization record, written with
+`registry/record/put` under the VTC's own authority:
+
+```json
+{
+  "entity_id": "did:…:bob", "authority_id": "did:…:vtc",
+  "action": "git.commit.sign", "resource": "github.com/acme/widgets",
+  "record_type": "authorization", "authorized": true,
+  "context": {
+    "framework": "https://trusttasks.org/spec/git-ns/right/grant/0.1",
+    "activeFrom": "…", "activeTo": "…",
+    "impliedBy": "git.repo.own"
+  }
+}
+```
+
+Who granted a right and why stay inside the VTC: neither `grantedBy` nor a
+grant's `reason` is ever published. The projector deletes what should no
+longer be published before it publishes anything new, and after a rename it
+publishes nothing for the new name until the old name's records are gone; a
+repository cannot be created or adopted at a name whose previous records are
+still being withdrawn. The mirror of what is published is `git_ns_projection`
+(not backed up). At start and every 15 minutes the projector reads back what
+the registry holds under this authority for the five git actions, rebuilds
+the mirror from it for every resource inside a bound namespace, and
+reconciles — so a restore, a registry reset or a lost write converges.
+
+The v0.1 `[hooks.git-trust] grant_on_role` grants keep working through the
+hook relay, except where the configured resource lies inside a bound
+namespace: those are published by this projection as a second source (origin
+`roleDerived`), the relay leaves them alone, and the boot log warns of each
+such overlap. A key is withdrawn only when no source wants it. The admin
+surface lists them as `roleDerived`; they are managed only through
+configuration. When the namespace is unbound they go back to the relay at
+once: the unbind queues a relay grant for each, and the projector drops them
+from its mirror without withdrawing them, so no member loses a v0.1 right
+while waiting for their next membership event.
+
+## Membership
+
+A member who leaves loses every git right. A repository they owned alone
+becomes `orphaned` — governed by the namespace admins — until one of them
+names an owner. Grants they issued stay, listed under *issued by departed
+members* (`GET /v1/git-ns/rights/issued-by-departed`), unless the policy sets
+`cascade_on_departure`. Their linked forge accounts are removed.
+
+## The bridge
+
+In bridge mode the VTC never talks to the forge. It sends
+`git-ns/bridge/job` documents to the bridge over TSP or DIDComm (whichever
+both DID documents advertise), signed with the community's key, and accepts
+`git-ns/bridge/result` and `git-ns/bridge/event` only from the bridge the
+namespace records. When a bridge-mode namespace becomes bound, the community
+grants that bridge `git.commit.sign` on the namespace — a *service grant*,
+`grantedBy` the VTC's own DID — because the bridge re-signs Dependabot pull
+requests with its own DID. The shipped policy admits exactly this grant
+(`bridge.serviceGrant`) and nothing else for a non-member; unbinding revokes
+it with everything else.
+
+A bridge speaks only for the namespace it serves: every resource an event
+names must be a repository inside that namespace, and repositories are
+matched by forge id before name. A repository renamed within the namespace
+keeps its rights. A repository **transferred** out of it — to another owner,
+another forge, or even another namespace this VTC has bound — is detached and
+its rights withdrawn; rights never move with it, because the destination's
+admins granted none of them. A new repository reported at a name the VTC
+records under another forge id detaches the old one first. An event any of
+whose resources — its drift items' included — lies outside the namespace is
+refused whole, before anything is applied; a transfer's `to` alone is exempt,
+recorded as where the repository went. This is `git-ns/bridge/event/0.2`
+([trust-tasks #627](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/627)).
+The VTC serves 0.1, 0.2 and 0.3 — 0.3 only adds `roleMapReported` (below) —
+and applies 0.2's rules to all three.
+
+### The bridge's role map, and re-projecting roles
+
+Which forge role `own`, `maintain` and `commit.sign` get is the bridge's
+**role map**, configurable per bridge, forge, namespace and repository; a
+namespace admin gets no forge role under any map. The bridge reports the map
+it applies — as the forge applies it, rounded onto the forge's ladder — with
+`git-ns/bridge/event/0.3` `roleMapReported`, whenever it starts serving a
+namespace, whenever it (re)establishes its link to the VTC, and whenever the
+map changes: the namespace's map, each repository
+whose own map differs, and each repository whose roles it last projected
+under a different map (`stale`), with the forge's `ladder` for the namespace.
+The VTC refuses an unordered map (`own ≥ maintain ≥ commit`,
+`commit ≤ write`), a map with a role that is not on the ladder, a ladder
+that is not the one it knows for the namespace (a GitHub organisation, a
+GitHub personal account — `write` only — or Codeberg's Forgejo), and any
+resource outside the namespace. Reports are ordered by `issuedAt`: one issued
+before the report held from the same bridge is acknowledged and ignored. The
+VTC keeps the report on the namespace, only while the same bridge serves it,
+drops from `stale` any repository it does not record active or orphaned,
+and uses the map for the console's effective forge role of each right, for
+the right a drift adoption records, for the weight of a drift revert, and
+for whether a right is elevated (a right the map projects to `admin` is).
+
+**No map is assumed.** Until the bridge serving the namespace reports —
+after binding, after another bridge DID comes to serve it, or for good with a
+bridge older than event 0.3 — the map is *unknown*, shown as such on the
+namespace card (`roleMapSource: "unknown"`, no `roleMap`). Meanwhile drift
+adoption is refused with `git-ns:roleMapUnknown`, every role revert weighs as
+revoking `own`, and `git.repo.maintain` counts as elevated. The default map
+(`admin` / `maintain` / none; `write` / `write` / none on a personal account)
+holds only when the bridge reports it.
+
+A role map change reaches a repository only when its roles are next
+projected. The VTC therefore **re-projects every stale repository by itself**
+on receiving the report — it forgets the digest of what it last sent, so the
+projector sends the complete `desiredRoles` again — and a repository leaves
+`stale` when a `projectRoles` job queued after the report succeeds.
+Re-projecting changes no right: the bridge would apply the map at the next
+projection anyway. To re-project on demand — a bridge too old to report, a
+forge suspected of drifting — a community administrator or a namespace admin
+(by explicit record) sends `git-ns/roles/reproject/0.1` for a namespace or
+one repository, and a repository's owner (`git.repo.own`, explicit or
+implied) for that repository:
+
+```sh
+cnm git reproject github.com/acme --reason "maintainers now get admin"
+cnm git reproject github.com/acme/widgets
+```
+
+It is normal-class, audited as `gitNs.roles.reprojected`, and refused in
+manual mode (`manualMode`) and while the bridge has lost its access
+(`noForgeAccess`). The shipped policy evaluates it as `roles.reproject`.
+
+Every job goes out as `git-ns/bridge/job/0.4`
+([trust-tasks #635](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/635)),
+and only to a bridge that lists 0.4 when asked with `trust-task-discovery`
+(asked again hourly, so an upgrade is noticed). A bridge that does not is sent
+nothing: in-line jobs (binding, account links, a `roleAdded` revert) are
+refused with "upgrade the bridge", and queued jobs wait with that as their
+last error. A bridge before 0.4 would read a `git.ns.admin` entry as
+ownership, which is why there is no downgrade.
+
+Jobs are queued in `git_ns_jobs`; role projection retries
+forever, everything else within a budget. `GET /v1/git-ns/jobs` shows them.
+
+## Drift
+
+In bridge mode the bridge compares each repository with the projection and
+reports every difference as a drift item, which members see in `git-ns/view`
+and administrators in `GET /v1/git-ns/drift`. An owner of the repository (or
+a namespace admin over it) answers an item with `git-ns/drift/resolve`:
+
+- **adopt** records the forge-side role as a right — evaluated exactly as a
+  `git-ns/right/grant` from the resolver, so the same fixed rules, policy and
+  consent class apply. The policy sees it as `right.grant` with
+  `via: "drift.adopt"`, so a community can refuse every adoption and still
+  grant. The item must still be outstanding as it was selected when the right
+  is written; a forge that changed meanwhile adopts nothing. Only a role item (`roleAdded`, or a `roleChanged` that
+  raises the member above their *projected* right — the highest right in their
+  own name that reaches the repository; `git.ns.admin` projects to no forge
+  role, so a namespace admin holding `maintain` there can have a forge `admin`
+  adopted as `own`) held by a forge account linked to a current member, at a
+  role a right projects to, can be adopted. Nobody adopts an elevated right
+  (`git.repo.own`, or a right the bridge's role map projects to forge `admin`
+  there — and, while no map is reported, `git.repo.maintain`) for themselves — the member the item names is compared with
+  the resolver after console-key delegation, and a match is refused
+  `git-ns:selfGrantNotAllowed`: another owner adopts it, or the resolver uses
+  `git-ns/right/break-glass`. Adopting `commit.sign`, or `maintain` where it is
+  not elevated, for oneself is allowed. The right is the **lowest** whose role in the bridge's reported role map (the
+  repository's own entry where it has one) is the observed role — under the
+  default map `admin` is `git.repo.own`, `maintain` is `git.repo.maintain`,
+  and on a personal account collaborator `write` is `git.repo.maintain`.
+  With no report the right is unknown and adoption is refused
+  (`git-ns:roleMapUnknown`). So where maintainers get `admin`, a forge `admin` is
+  adopted as `git.repo.maintain`; where committers get `write`, `write` is
+  `git.commit.sign`; a role no right's is (`triage`, `read`, `none`) projects
+  nothing.
+- **revert** changes no right and has the bridge undo the change: a
+  `roleAdded` role is removed with `removeAccounts`, sent in-line so that a
+  bridge that refuses it is answered `notRevertible` instead of a revert that
+  does nothing (a namespace admin at no role may be named there too); a
+  `roleChanged` or `roleRemoved` role re-sends the complete `desiredRoles`;
+  protection items re-run the `requiredCheck` bootstrap step, and
+  `bootstrapMissing` the whole plan. Reverting a role at or above the one
+  `own` projects to (`admin` under the default map; `write` on a personal
+  account) has the impact of revoking `own`, and is elevated; with no map
+  reported, so does reverting any role.
+
+The item is selected by type, account (role items) and — required to adopt —
+the `observed` value the owner read, and a resolution is followed by an
+`inspect` job so it is confirmed rather than assumed.
+
+```sh
+cnm git drift resolve github.com/acme/widgets revert --type roleAdded \
+  --account-id 5550123 --account-login eve-dev --observed write
+```
+
+## Linking a forge account
+
+The bridge gives a member the forge role their rights call for only once it
+knows which forge account is theirs. A member links it with
+`git-ns/account/link` and follows it with `git-ns/account/link-status`;
+`cnm git link` does both, signed as the community profile's DID:
+
+```sh
+cnm git link --forge github.com      # prints the URL (and on GitHub a device code), then waits
+cnm git link --status lnk_4Tq9Xw2P   # follow a link begun earlier
+cnm git link --list                  # the accounts linked to this DID (git-ns/view/0.2)
+```
+
+It polls every five seconds until the link is `linked`, `expired` or
+`failed`; `--no-wait` prints where to authorise and returns. Anything but
+`linked` exits non-zero, with `--json` too (which prints the last answer on
+stdout either way). A link needs a bridge-mode namespace on the forge
+(`unsupportedForge` otherwise). `failed` means the forge refused it — the
+member declined the authorisation, or the bridge could not complete it — or
+the account is already linked to another member. The authorisation URL is
+printed only if it is an `https://` URL, in its parsed form, and nothing the
+VTC or bridge returns reaches the terminal with control or format (bidi,
+zero-width) characters in it. Linking again
+replaces the account linked on that forge.
+
+`cnm git unlink --forge <host>` removes it (`git-ns/account/unlink`). It reads
+the account linked there first and sends its id as the task's guard, so a
+re-link in between is never removed (`--account-id` names it instead). The
+VTC deletes the binding and queues the complete `desiredRoles` of every
+bridge-mode namespace on that forge at once; the account is in none of them,
+so the bridge withdraws the roles it gave it on its next dispatch. It never
+sends `removeAccounts` for this: a role the bridge did not give stays and is
+reported as drift, for the owners to revert. The member's rights are
+unchanged, and the audit record (`gitNs.account.unlinked`, one per affected
+namespace) names the member and the forge, not the account. A caller with
+nothing linked — a non-member included — is answered `notLinked`, so the
+answer says nothing about membership; a member whose access lapsed can still
+unlink (with `--account-id`, since `git view` answers current members only).
+
+One forge account links to one member. Link completion checks and records it
+in one step under the member-row lock, inside the git-ns store lock that
+serialises every link and unlink, so two members can never both hold it. A
+member whose access lapsed keeps the account — nobody else may link it — but
+it projects no role and cannot be adopted; `GET /v1/git-ns/accounts` says so
+with `memberCurrent`. A departed member's links are deleted by the departure
+sweep whether or not they held a right.
+
+Only the DID the account is linked to can unlink it: `git-ns/account/unlink`
+0.1 has no subject, so there is no path by which anyone unlinks, or frees for
+themselves, an account that is someone else's. A community administrator who
+needs a member's forge roles withdrawn revokes the rights or resolves the
+drift; one who needs a lapsed member's account freed removes the member, and
+the departure sweep deletes the binding. Unlinking gives no right and no role:
+the next projection is computed without the account.
+
+## Reseating a headless namespace
+
+A namespace whose every `git.ns.admin` has left the community or lapsed is
+*headless*. A community administrator restores one with
+`git-ns/namespace/reseat` 0.3 (the only version served; it queues no forge
+projection) — `cnm git reseat <namespace> --subject <did>
+--statement "…"` — which grants a current member a permanent `git.ns.admin`,
+with the statement as its reason. It is refused (`notHeadless`) while any
+live admin record of a current member remains, so it cannot be used to go
+around an admin; the audit record keeps the statement and how each earlier
+admin record ended. The subject is never the administrator reseating:
+reseating a namespace to yourself is a self-grant of `git.ns.admin`, refused
+with `git-ns:selfGrantNotAllowed` (separation of duties) — another community
+administrator reseats it to you, or (once this VTC serves it) you record it
+explicitly with `git-ns/right/break-glass`.
+
+## Separation of duties and break-glass
+
+Nobody grants themselves an **elevated** right — `git.ns.admin`,
+`git.repo.create` or `git.repo.own` — even when their own rights carry the
+authority to grant it to anyone else (`git-ns/right/grant/0.3`, fixed rule
+7). It is refused with `git-ns:selfGrantNotAllowed`, and the same rule binds
+every task that records a right on the actor's own authority: an adopted
+drift item whose linked member is the resolver, `repo/adopt` naming oneself
+an owner, and `namespace/reseat` to oneself. The bridge's role map can
+make `git.repo.maintain` elevated too: where it projects `maintain` to the
+forge's `admin` role on the repository (`Right::is_elevated_in`), a
+self-grant of it is refused the same way — and while a bridge-mode
+namespace's map is unknown, so is every self-grant of `maintain` (fail
+closed). Break-glass does not carry `maintain`; another owner or
+administrator grants it. A manual-mode namespace projects no forge role, so
+there the three rights above are the only elevated ones. Self-grants of
+`git.commit.sign`, and of `git.repo.maintain` where the map keeps it below
+`admin`, stay allowed. `namespace/bind`
+(the binder's first `git.ns.admin`) and `repo/create` (the creator's first
+`own`) are not self-grants — but `repo/create` (served at 0.3) makes its
+creator the owner only on an **explicit** `git.repo.create` record (granted by
+someone else, or a break-glass). A `git.repo.create` implied by `git.ns.admin`
+carries no creator ownership: a namespace admin names another member with
+`owners` (`cnm git create --owner <did>`), or is refused
+`git-ns:selfGrantNotAllowed`. A single-admin community breaks the glass once
+for `git.repo.create` on the namespace, not once per repository.
+
+Elevated rights (`own`, `repo.create`, `ns.admin`) go only to a current
+member with an ACL entry, and are granted only by one — on grant, adopt,
+create, transfer, drift adopt and reseat alike (fixed rule 5; policy cannot
+waive it). A throwaway `did:key` cannot stand in for a second person. Two
+member DIDs held by one person are out of scope for the DID comparison. This VTC serves grant and revoke at 0.3 only:
+0.1 and 0.2 are refused as unknown task types, so no client reaches a grant
+that skips the rule or a record without its `breakGlass` flag.
+
+When nobody else can grant it, the actor **breaks the glass**
+(`git-ns/right/break-glass/0.1`):
+
+```sh
+cnm git break-glass --right=git.repo.own --resource=github.com/acme/widgets \
+  --justification='Both owners unreachable; CVE fix must ship tonight'
+```
+
+- **Entitlement**: authority the actor already has — grant authority over the
+  right on the resource, or, for `git.ns.admin` on a *headless* namespace, the
+  community-administrator capability (`notHeadless` otherwise).
+- **Step-up, always**: an operation-bound passkey gesture (user-verified,
+  aal2) bound to this one document by digest (`acl::bound_step_up`). The first
+  send is refused `permissionDenied` with `details.stepUpRequest`; the
+  operator answers it in the admin console (`cnm` prints the
+  `<vtc>/admin/step-up#request=…` link) and the identical document is sent
+  again. Because a real step-up applies, `[git_ns] elevated_requires_admin`
+  does not gate it: a namespace admin who is not a community administrator
+  can break the glass, provided they have a passkey this community knows — a
+  console passkey, or a **step-up passkey** (below).
+- **Immediate, no expiry**: the right takes effect at once and lasts until
+  another administrator acts on it.
+- **Flagged**: the record carries `breakGlass {by, at, justification,
+  effectiveAt?, ratifiedBy?, ratifiedAt?}`. An *unratified* record is a real,
+  published right — the registry projection is unchanged — but it does not
+  count toward the last-owner or last-admin invariants.
+- **Visible**: an `AuditEvent::GitNsBreakGlass` row at
+  `AuditSeverity::Critical` with the justification, the entitlement, the
+  step-up evidence (credential id, bound digest), the policy version and who
+  could not be told; a `gitNs.right.breakGlass` activity item; a signed
+  `git-ns/right/break-glass-notice/0.1` to every community administrator and
+  every live namespace admin except the actor, over the VTC's mediator
+  connection; the flag in `git-ns/view/0.4` to every administrator it
+  concerns; and the console's banner and *Break-glass grants* list
+  (`git-ns/view/0.5` with `scope: administrator` and `breakGlass: true`). If
+  the audit row cannot be written, the
+  break-glass is undone.
+- **Ratify or revoke**: another administrator — a community administrator, or
+  someone whose *confirmed* rights carry grant authority over it — ratifies
+  it with `cnm git ratify --subject=<did> --right=<right> --resource=<res>
+  --break-glass-at=<rfc3339>` (`git-ns/right/ratify/0.1`; bound to the
+  `breakGlass.at` they read). Any community administrator may revoke an
+  unratified one with the ordinary `git-ns/right/revoke`, and no policy can
+  refuse that. Both are audited and announced like the break-glass.
+  `cnm git break-glass-list [--resource <res>]` shows them all.
+
+**Policy** (`git_ns.rego` `settings`) may disable or tighten it, never quieten
+it: `break_glass` (`"enabled"` by default, or `"disabled"`),
+`break_glass_delay_seconds` (the right takes effect later; at most a day;
+revocable meanwhile), `break_glass_min_justification_chars`, and any deny
+decision on `input.action == "right.breakGlass"` (or `"right.ratify"`).
+
+
+### Step-up passkeys for members
+
+A member who is no console user acts only through signed documents and has no
+passkey, so without one they could never answer a break-glass step-up. They
+enrol a **step-up passkey** (`auth/passkey/enroll/invite/0.2`, `purpose:
+stepUp`; `vtc-service/src/step_up_passkey.rs`). Every step is a Trust Task on
+the spine (`trust_tasks::step_up_passkey_tasks`), served the same way over TSP,
+DIDComm and HTTPS; no REST route issues, redeems or revokes one.
+
+1. A community administrator opens the member's page (Members → the member →
+   *Step-up passkeys*) and clicks *Invite…*. The console signs
+   `auth/passkey/enroll/invite/0.2` with its console key, and the VTC asks for
+   a passkey gesture bound to that one document before it issues anything. The
+   console then shows a link and, separately, a **claim code**. It shows the
+   code once, and the code is never part of the link.
+2. The administrator sends the link over one channel and the code over
+   another.
+3. The member opens `<vtc>/admin/enrol-step-up#token=…` (no sign-in). The page
+   shows the command that redeems it:
+
+   ```sh
+   cnm git enrol-step-up-passkey '<vtc>/admin/enrol-step-up#token=…'
+   ```
+
+   `cnm` asks for the claim code and signs
+   `auth/passkey/enroll/redeem/start/0.1` as the member: an invite redeems only
+   for the DID it names, so whoever else holds the two messages — another
+   member, or the administrator who wrote them — cannot bind a passkey to it.
+   `cnm` prints `<vtc>/admin/enrol-step-up#enrollment=…`.
+4. The member opens that link, checks the DID shown is theirs, and creates the
+   passkey. The browser sends `auth/passkey/enroll/redeem/finish/0.1`; its
+   authority is the ceremony the signed start opened.
+5. When `cnm` later prints a `<vtc>/admin/step-up#request=…` link, the member
+   answers it with that passkey. The page cannot sign for someone who is no
+   console user, so it shows an **answer code** (the passkey assertion); the
+   member pastes it into `cnm`, which signs the
+   `auth/step-up/approve-response` with the member's own `assertionMethod` key
+   and sends the original document again.
+
+The rules:
+
+- **Step-up only, by construction.** The credentials live in their own
+  keyspace (`step_up_passkeys`), which login and session step-up never read.
+  The only place they count is `acl::bound_step_up`, for a step-up issued to
+  their own member, while they are a current member. They confer no role and
+  no scope.
+- **Never instead of a proof.** Every approve-response carries the approver's
+  `assertionMethod` proof; the passkey assertion is a second gate beside it
+  (approve-response 0.5). An unsigned answer, or one signed by anyone but the
+  step-up's subject, is refused before the pending step-up is touched.
+- **Two factors, two parties.** A stolen signing key alone cannot enrol one
+  (that takes the administrator's invite and its claim code), and the invite
+  alone cannot either (that takes the member's signature on `redeem/start`).
+- **Single use and time-bounded.** An invite redeems once, for the DID it
+  names, and lasts one hour by default (at most 24 h). Its response is not
+  kept in the duplicate-delivery record, so the claim code exists only in the
+  one reply.
+- **Five wrong attempts and the invite is void.** A wrong code and a signer
+  the invite was not issued to both count, and get the same refusal as a
+  wrong token.
+- **A second one needs the first.** Once a member holds a step-up passkey, a
+  further one also needs a user-verified gesture from it.
+- **No self-invites.** An administrator does not invite themselves: they enrol
+  their own passkeys under Settings → Passkeys.
+- **Revocation.** A community administrator revokes one from the member's
+  page, verifying with their own passkey (`auth/passkey/revoke/{start,finish}/0.2`
+  with `subject`). A member may be left with none. A revoked passkey cannot
+  answer a step-up that was already pending.
+- **Audit.** Every step is an `AuditEvent::StepUpPasskeyChanged` row (`invited`,
+  `registered`, `inviteInvalidated`, `revoked`), and every use is the
+  `OperationStepUpRecorded` row of the step-up it answered. The token and code
+  are never recorded.
+- **Backup.** Like `passkey`, `step_up_passkeys` is excluded: after a restore,
+  members enrol again through a fresh invite.
+- **Listing.** An administrator lists a member's step-up passkeys with
+  `auth/passkey/admin-list/0.1` (`purpose: stepUp`), signed, over any
+  transport; the console sends it from the member's page. A community-wide
+  administrator may list any member's, a context-scoped one only those of a
+  member whose entry names one of their contexts. A non-administrator is
+  refused `notAdministrator`, a subject outside the administrator's authority
+  `subjectUnknown` (as one that does not exist), and a former member
+  `subjectNotMember`. The answer is metadata only — id, label, when enrolled,
+  when last used, signature counter — and reading it changes nothing.
+
+## Administrator surface
+
+### Signed reads
+
+The administrator's view, the namespace and repository listings and the
+break-glass list are signed Trust Tasks, served on the document dispatcher the
+same way over TSP, DIDComm and `POST /v1/trust-tasks`
+(`vtc-service/src/git_ns/admin_reads.rs`). They answer a namespace's
+administrators only — the community-administrator capability (every
+namespace) or a live, explicitly recorded `git.ns.admin` on it, held by a
+current member — and never a bearer session, so a context-scoped
+administrator who holds no `git.ns.admin` sees nothing through them. A caller
+who administers nothing, or who names a namespace they do not administer or
+one that does not exist, is refused with the task's `notAdministrator`, the
+same way in each case. An unsigned document is refused `proofRequired`.
+
+| Task | Answer | `cnm` |
+|---|---|---|
+| `git-ns/namespace/list/0.1` (`namespace?`) | administered namespaces with admins, bridge, headless flag, bridge-reported app/plan status, effective `role_drift` / `cascade_on_departure`, role map (`roleMap`, absent while unknown; `roleMapSource`: `reported` or `unknown`) | `cnm git namespace list` |
+| `git-ns/repo/list/0.1` (`namespace?`) | repositories in them with owners, right counts, bootstrap, sync, guard in force, step outcomes, last check, effective role map, `roleMapStale`; for a community administrator also those an unbound namespace left | `cnm git repos [--namespace <id>]` |
+| `git-ns/view/0.5` (`scope: administrator`) | every record and reason in the administered namespaces (0.4's response shape) | `cnm git view --admin` |
+| `git-ns/view/0.5` (`breakGlass: true`) | only break-glass records, ratified ones included, and the namespaces holding them | `cnm git break-glass-list` |
+
+These specifications (trustoverip/dtgwg-trust-tasks-tf#659) are the generated
+`trust_tasks_rs::specs::git_ns::{view::v0_5, namespace::list::v0_1,
+repo::list::v0_1}` (trust-tasks-rs 0.23.4), which declare the proof REQUIRED;
+the dispatch spine refuses an unsigned document before a handler runs.
+
+### Console projections
+
+Read-only, admin session. `rights`, `rights/issued-by-departed`,
+`projection`, `accounts` and `drift` show every member's rights, grant
+reasons and forge identities — and, in drift, the forge accounts of people
+outside the community — so they need a community-wide administrator (an admin
+session not narrowed to a context); `activity` is for any session and shows
+only the namespaces the caller administers. They are console projections no
+specification defines, and carry no Trust-Task URL.
+
+| Route | Body |
+|---|---|
+| `GET /v1/git-ns/rights?resource=&subject=` | recorded and role-derived rights |
+| `GET /v1/git-ns/rights/issued-by-departed` | grants whose granter left |
+| `GET /v1/git-ns/drift` | repositories with outstanding drift |
+| `GET /v1/git-ns/jobs` | bridge jobs |
+| `GET /v1/git-ns/projection` | what is published, and how many changes are pending |
+| `GET /v1/git-ns/accounts` | members' linked forge accounts, each with `memberCurrent` |
+| `GET /v1/git-ns/activity?namespace=&limit=` | rights changes, drift and jobs in the namespaces the caller administers (any session) |
+
+One forge account links to one member. Link completion checks and records it
+in one step under the member-row lock, inside the git-ns store lock that
+serialises every link, so two members can never both hold it. A member whose
+access lapsed but who has not left keeps the account — nobody else may link
+it — but it projects no forge role and a role it holds cannot be adopted;
+`accounts` says so with `memberCurrent`, and the console offers no adoption
+for it. A departed member's links are deleted by the departure sweep whether
+or not they held a right.
+
+The bridge reports what the specification's payloads do not carry — its app
+installation, missing permissions, the owner's plan, the guard in force on a
+repository, the last check — in the `ext` member of its results and events,
+under `org.openvtc.git-ns`: `{"namespace": {...}, "repo": {...}}`.
+
+Every DID a `git-ns/*` task names — a grant's or revoke's subject, a
+transfer's `to`, an adoption's owners, a reseat's subject, the member linking
+an account — must be a DID by DID-core's syntax (`did:<method>:<id>`, the id
+only letters, digits, `.`, `-`, `_`, `:` and percent-encoded octets), or the
+task is refused `malformedRequest`. That is stricter than the specification's
+`Did` pattern, which admits shell metacharacters (`did:web:x$(…|sh)`); a DID
+that reaches the console or a `cnm` hint can be pasted into a shell safely.
+`cnm` applies the same check before it signs, and quotes anything it prints
+in a command.
+
+A console signing key (a delegation enrolled under #1692) acts as the admin
+DID it stands for on every member-facing `git-ns/*` task.
+
+Every change is a signed `git-ns/*` Trust Task on `POST /v1/trust-tasks` (or
+DIDComm/TSP). `cnm git …` signs them with the community profile's key.
+`git-ns/view` is served as 0.1, 0.2, 0.4 and 0.5; 0.2 adds the caller's own
+linked forge accounts (`accounts`, narrowed to a `resource`'s forge), never
+another member's, and 0.5 the administrator's scope and the break-glass
+narrowing above. `cnm git view` asks for 0.5.
+
+The admin console's **Repos** plugin (`/admin/repos`) renders these reads —
+the signed ones sent with the browser's console key, so a browser with no
+console key enrolled is told to enable signing rather than shown an empty
+page:
+namespace cards (kind, mode, what the bridge reported of its App — missing
+permissions, a pending permission upgrade, org rulesets — admins, the
+bridge's service grant, the effective `role_drift` and
+`cascade_on_departure`), each namespace's repositories with their four-step
+bootstrap and sync state, a repository's people and rights, bootstrap
+checklist and step outcomes, the guard in force (or, unreported, the one
+design §9 expects, labelled so), the last check, the registry records it puts
+in public, its drift and activity, and the grants departed members issued.
+Each person's forge account shows the forge role their right projects to
+under the repository's role map ("no forge role" for a namespace admin); a
+namespace card shows the map and whether the bridge reported it; a stale
+repository says so. Each change it offers — bind, create, grant, revoke,
+adopt, transfer, archive, re-project roles — is signed with the browser's console key and sent where one is
+enrolled, and otherwise handed to the administrator as the `cnm git …`
+command that signs it, with the document itself.
+
+The **Members** page shows each member's git rights and linked forge accounts
+(from `rights` and `accounts`) in its list, and a member's page lists them in
+a *Git rights* card — recorded rights with their resource, granter and expiry,
+and role-derived ones marked as such. Both need a community administrator; a
+scoped administrator sees that said instead of the column.
+
+## Limits
+
+- **No member step-up** — see *Consent classes* above.
+- **A namespace with no admin.** The last-admin and last-owner invariants count
+  only records with no expiry (`git-ns/namespace/reseat/0.3`), so an expiring
+  `ns.admin` or `own` cannot be the one that keeps them. A departure can still
+  leave a namespace headless; it is recovered with a reseat (above).
+- **No binding credential.** `git-ns/account/link` says the VTC SHOULD issue a
+  credential attesting a member's forge account; this VTC records the link on
+  the member and issues none yet.
+- **Legacy resources.** Unqualified `owner/repo` tuples are not dual-written
+  during a migration window (the specification makes it optional).

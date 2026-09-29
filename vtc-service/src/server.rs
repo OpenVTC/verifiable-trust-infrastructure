@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::messaging::ATM;
@@ -130,6 +130,27 @@ pub struct AppState {
     /// when a signer holds no ACL row of its own; see
     /// [`crate::acl::console_key`].
     pub console_keys_ks: KeyspaceHandle,
+    /// Operation-bound step-up marks — the pending WebAuthn ceremony for a
+    /// refused signed document, and the one-shot authorization a verified
+    /// gesture leaves for its re-send. See [`crate::acl::bound_step_up`].
+    pub step_up_marks_ks: KeyspaceHandle,
+    /// Members' step-up passkeys — see `crate::step_up_passkey`. Never read
+    /// by login or session step-up.
+    pub step_up_passkeys_ks: KeyspaceHandle,
+    /// Unrestricted-admin consent requests and grants (VTI-APV-014). See
+    /// `crate::acl::admin_consent`.
+    pub task_consent_ks: KeyspaceHandle,
+    /// Member pushes in flight (`crate::member_push`). Encrypted at rest.
+    pub member_pushes_ks: KeyspaceHandle,
+    /// Which members were recently seen sending here over TSP, recorded from
+    /// the proven sender of each inbound TSP frame. A member whose DID
+    /// document advertises no transport (a `did:key` wallet) is pushed to over
+    /// TSP first while it is fresh (`crate::member_push`).
+    pub tsp_reach: Arc<vti_common::tsp_reach::TspReachability>,
+    /// In-flight backup bundles for the chunked `backup/*` transfer — records
+    /// and manifests; the bytes are staged under `<data_dir>/backups`. See
+    /// [`vti_common::backup_transfer`].
+    pub backup_bundles_ks: KeyspaceHandle,
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
     /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
@@ -233,20 +254,25 @@ pub struct AppState {
     pub supervisor: Option<SupervisorKind>,
     /// Shared handle to the running inbound DIDComm listener, published by
     /// [`crate::messaging::run_didcomm_service`] once it starts. Every outbound
-    /// message to a member goes through this (see [`Self::send_to_member`]) so
-    /// it reuses the listener's single mediator websocket — the mediator permits
+    /// push to a member goes through this (see [`crate::member_push`]) so it
+    /// reuses the listener's single mediator websocket — the mediator permits
     /// only one connection per DID, and opening a second made it terminate one
     /// as `w.websocket.duplicate-channel`. Unset until the listener boots (and
     /// when messaging is disabled), so sends are best-effort.
     pub didcomm: Arc<tokio::sync::OnceCell<Arc<crate::messaging::VtcMessaging>>>,
+    /// Git namespaces (`crate::git_ns`): the three keyspaces and the bridge
+    /// client that sends `git-ns/bridge/job` documents.
+    pub git_ns: crate::git_ns::GitNsHandles,
 }
 
-/// Delivery deadline for an ordinary proactive message to a member.
+/// Delivery deadline for a pushed credential-exchange step or other ordinary
+/// proactive task to a member ([`crate::credentials::delivery::push_document`]).
 ///
 /// A member who misses one of these can ask again — the credential push, the
 /// exchange query and the reciprocal-VMC request all have a member-initiated
 /// counterpart.
-const DEFAULT_DELIVER_BY: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+pub(crate) const EXCHANGE_DELIVER_BY: std::time::Duration =
+    std::time::Duration::from_secs(24 * 3600);
 
 /// Delivery deadline for a removal notice: **30 days**.
 ///
@@ -308,81 +334,6 @@ impl AppState {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 Some(n.saturating_sub(1))
             });
-    }
-
-    /// Send a proactive DIDComm message to a member/holder over the VTC's
-    /// **single inbound mediator connection** (the running listener). This is
-    /// the one channel any VTC component uses to initiate an interaction with a
-    /// member — credential delivery, the credential-exchange query, the
-    /// reciprocal-VMC request. It reuses the listener's websocket (the SDK packs
-    /// authcrypt and forwards through the VTC's mediator, exactly as the inbound
-    /// reply path does), so outbound never opens a competing socket.
-    ///
-    /// `Ok(())` once the message is **durably queued** for guaranteed delivery
-    /// (not yet sent) — the delivery-layer drain loop owns sending + retrying it
-    /// until it lands (up to `deliver_by`). `Err` only when the listener isn't
-    /// running yet **or** the enqueue itself fails — surfaced honestly (never
-    /// swallowed), so a caller that must know whether the frame was accepted for
-    /// delivery can act on it. Packs authcrypt with the VTC's keys and hands off
-    /// to the delivery-layer
-    /// [`MessagingService`](affinidi_messaging_delivery::MessagingService) over
-    /// the one shared mediator websocket.
-    pub async fn send_to_member(
-        &self,
-        recipient_did: &str,
-        message: affinidi_messaging_didcomm::Message,
-    ) -> Result<(), AppError> {
-        self.send_to_member_by(recipient_did, message, DEFAULT_DELIVER_BY)
-            .await
-    }
-
-    /// As [`send_to_member`](Self::send_to_member), but with an explicit
-    /// delivery deadline.
-    ///
-    /// The default window suits a message the member is expecting and will come
-    /// back for. It does not suit a **removal notice**, which is the one case
-    /// where the act being reported is the act that ends the member's ability
-    /// to ask about it: their ACL row is gone, so every authenticated route now
-    /// refuses them and there is no poll to fall back on. Undelivered inside
-    /// the window means never, with no way for them to find out otherwise —
-    /// hence [`REMOVAL_NOTICE_DELIVER_BY`].
-    pub async fn send_to_member_by(
-        &self,
-        recipient_did: &str,
-        message: affinidi_messaging_didcomm::Message,
-        deliver_by: std::time::Duration,
-    ) -> Result<(), AppError> {
-        let messaging = self.didcomm.get().ok_or_else(|| {
-            AppError::Internal("VTC messaging not running — cannot send to member".into())
-        })?;
-        // Capture the id before packing — `pack_encrypted` borrows `message`.
-        let idempotency_key = message.id.clone();
-        let (packed, _) = messaging
-            .atm
-            .pack_encrypted(
-                &message,
-                recipient_did,
-                Some(&messaging.vtc_did),
-                Some(&messaging.vtc_did),
-            )
-            .await
-            .map_err(|e| {
-                AppError::Internal(format!("DIDComm pack for {recipient_did} failed: {e}"))
-            })?;
-        messaging
-            .service
-            .send(
-                recipient_did,
-                packed.into_bytes(),
-                affinidi_messaging_delivery::Delivery::Guaranteed {
-                    idempotency_key: Some(idempotency_key),
-                    ordering_key: None,
-                    deliver_by,
-                },
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("DIDComm send to {recipient_did} failed: {e}")))
-            .map(|_| ())
     }
 }
 
@@ -454,8 +405,8 @@ pub async fn run(
     if crate::backup::import_in_progress(&config_ks).await? {
         return Err(AppError::Config(
             "a backup import was interrupted before it completed — the datastore is in a \
-             half-restored state. Re-run `POST /v1/backup/import` with the same backup to \
-             finish it; the daemon will not serve partial state."
+             half-restored state. Re-run the import (`cnm backup import`) with the same \
+             backup to finish it; the daemon will not serve partial state."
                 .into(),
         ));
     }
@@ -504,6 +455,11 @@ pub async fn run(
     let vetting_pcs_issue_ks = store.keyspace(keyspaces::VETTING_PCS_ISSUE)?;
     let accepted_ids_ks = store.keyspace(keyspaces::ACCEPTED_IDS)?;
     let console_keys_ks = store.keyspace(keyspaces::CONSOLE_KEYS)?;
+    let step_up_marks_ks = store.keyspace(keyspaces::STEP_UP_MARKS)?;
+    let step_up_passkeys_ks = store.keyspace(keyspaces::STEP_UP_PASSKEYS)?;
+    let task_consent_ks = store.keyspace(keyspaces::TASK_CONSENT)?;
+    let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
+    let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
     // never overwrites operator edits) so the registry reflects what the VTC
@@ -616,6 +572,13 @@ pub async fn run(
     // crash-safe; a failure aborts boot rather than serving a store with a
     // half-encrypted secret keyspace. `install_store` is (re)built on the
     // wrapped handle so issued tokens are encrypted on disk.
+    // A push record holds the signed Trust Task a TSP or REST outbox entry
+    // names, so it is encrypted like the other stores that hold content; it
+    // starts empty, so there is nothing to migrate.
+    let member_pushes_ks = match storage_key {
+        Some(key) => member_pushes_ks.with_encryption(key),
+        None => member_pushes_ks,
+    };
     let (install_ks, passkey_ks, audit_key_ks) = match storage_key {
         Some(key) => {
             let n_install = install_ks.migrate_to_encrypted(key).await?;
@@ -769,6 +732,21 @@ pub async fn run(
         crate::members::list_members(&members_ks).await?.len() as u64,
     ));
 
+    // Git namespaces: the records, the bridge jobs, the registry mirror, and
+    // the client that reaches bridges over the messaging socket the listener
+    // publishes into `didcomm_cell`.
+    let git_ns = crate::git_ns::GitNsHandles {
+        ks: store.keyspace(keyspaces::GIT_NS)?,
+        jobs_ks: store.keyspace(keyspaces::GIT_NS_JOBS)?,
+        projection_ks: store.keyspace(keyspaces::GIT_NS_PROJECTION)?,
+        bridge: Arc::new(crate::git_ns::bridge::MessagingBridgeClient::new(
+            didcomm_cell.clone(),
+            credential_signer.clone(),
+            pending_replies.clone(),
+            did_resolver.clone(),
+        )),
+    };
+
     // Build AppState for the REST thread
     let state = AppState {
         sessions_ks,
@@ -798,6 +776,12 @@ pub async fn run(
         vetting_pcs_issue_ks,
         accepted_ids_ks: accepted_ids_ks.clone(),
         console_keys_ks,
+        step_up_marks_ks,
+        step_up_passkeys_ks,
+        task_consent_ks,
+        member_pushes_ks,
+        tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
+        backup_bundles_ks,
         schemas_ks,
         endorsements_ks,
         rooms_ks,
@@ -837,6 +821,7 @@ pub async fn run(
         shutdown_tx: shutdown_tx.clone(),
         supervisor: detect_supervisor(),
         didcomm: didcomm_cell,
+        git_ns,
     };
 
     // Heal missing AdminEntries: any DID with an Admin ACL grant +
@@ -1170,6 +1155,20 @@ pub async fn run(
         let audit_ks = state.audit_ks.clone();
         let queue_ks = state.hooks_queue_ks.clone();
         let cursor_ks = state.hooks_cursor_ks.clone();
+        let git_ns_ks = state.git_ns.ks.clone();
+        // Say so at boot when a role-derived grant lands inside a bound git
+        // namespace: from now on the git-ns projection publishes it, not this
+        // relay, and an operator reading the config should know why.
+        if let Ok(snap) = crate::git_ns::store::Snapshot::load(&git_ns_ks).await {
+            for resource in crate::git_ns::projection::hook_overlaps(&snap, &git_trust_cfg) {
+                warn!(
+                    %resource,
+                    "[hooks.git-trust] grant_on_role names a resource inside a bound git \
+                     namespace; the git-ns projection publishes it as a role-derived right \
+                     and the hook relay leaves it alone"
+                );
+            }
+        }
         let mut supervisor_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             loop {
@@ -1182,13 +1181,54 @@ pub async fn run(
                     cursor_ks.clone(),
                     git_trust_cfg.clone(),
                     writer.clone(),
-                );
+                )
+                .with_git_ns(git_ns_ks.clone());
                 let run_shutdown = supervisor_shutdown.clone();
                 let child = tokio::spawn(async move { relay.run(run_shutdown).await });
                 match child.await {
                     Ok(()) => break,
                     Err(join_err) if join_err.is_panic() => {
                         error!(error = %join_err, "HookRelay task panicked — restarting after backoff");
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                            _ = supervisor_shutdown.changed() => break,
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    // Git namespaces: the projector — lifecycle sweeps, forge role projection
+    // and bridge job dispatch always; the registry projection when a registry
+    // and this community's DID are both configured. Supervised like the hook
+    // relay: a panic restarts the loop after a pause rather than silently
+    // ending the projection.
+    {
+        let registry = match (state.registry_client.clone(), boot_cfg.vtc_did.clone()) {
+            (Some(client), Some(did)) => Some((client, did)),
+            _ => None,
+        };
+        let tick = std::time::Duration::from_secs(boot_cfg.git_ns.tick_seconds.max(1));
+        let projector_state = state.clone();
+        let mut supervisor_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if *supervisor_shutdown.borrow() {
+                    break;
+                }
+                let projector = crate::git_ns::projection::Projector::new(
+                    projector_state.clone(),
+                    registry.clone(),
+                    tick,
+                );
+                let run_shutdown = supervisor_shutdown.clone();
+                let child = tokio::spawn(async move { projector.run(run_shutdown).await });
+                match child.await {
+                    Ok(()) => break,
+                    Err(join_err) if join_err.is_panic() => {
+                        error!(error = %join_err, "git-ns projector panicked — restarting after backoff");
                         tokio::select! {
                             _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
                             _ = supervisor_shutdown.changed() => break,
@@ -1209,6 +1249,11 @@ pub async fn run(
         state.join_requests_ks.clone(),
         state.sync_queue_ks.clone(),
         state.accepted_ids_ks.clone(),
+        state.step_up_marks_ks.clone(),
+        state.task_consent_ks.clone(),
+        state.step_up_passkeys_ks.clone(),
+        state.backup_bundles_ks.clone(),
+        crate::trust_tasks::backup_tasks::blob_dir(&boot_cfg.store.data_dir),
         boot_cfg.join_requests.clone(),
         shutdown_rx.clone(),
     );
@@ -1281,6 +1326,50 @@ pub async fn run(
             .await
         {
             error!(error = %e, "failed to emit EmergencyBootstrapInvoked envelope");
+        }
+    }
+
+    // VTI-APV-014: audit every ACL write an offline command made while the
+    // daemon was stopped. Each skipped the consent and attrition rules by
+    // design; this is the row that says so. Taken (and deleted) as it is read,
+    // so a restart loop audits each once.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        match state.install_store.take_break_glass().await {
+            Ok(writes) => {
+                for w in writes {
+                    warn!(
+                        command = %w.command,
+                        action = %w.action,
+                        did = %w.did,
+                        operator_hostname = %w.operator_hostname,
+                        invoked_at = %w.invoked_at,
+                        "an ACL change was made offline (break-glass) since the daemon last ran \
+                         — auditing now",
+                    );
+                    let subject = w.did.clone();
+                    if let Err(e) = writer
+                        .write(
+                            "did:key:vtc-break-glass",
+                            Some(&subject),
+                            vti_common::audit::AuditEvent::AclBreakGlassWritten(
+                                vti_common::audit::BreakGlassAclData {
+                                    command: w.command,
+                                    action: w.action,
+                                    did: w.did,
+                                    role: w.role,
+                                    contexts: w.contexts,
+                                    operator_hostname: w.operator_hostname,
+                                    invoked_at: w.invoked_at,
+                                },
+                            ),
+                        )
+                        .await
+                    {
+                        error!(error = %e, "failed to emit AclBreakGlassWritten envelope");
+                    }
+                }
+            }
+            Err(e) => error!(error = %e, "failed to read queued break-glass ACL writes"),
         }
     }
 
@@ -1945,23 +2034,40 @@ async fn init_auth(
         }
     };
 
-    // 1. DID resolver (local mode)
-    let did_resolver = match DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("failed to create DID resolver: {e} — auth endpoints will not work");
-            return Ok((
-                None,
-                None,
-                None,
-                None,
-                install_signer,
-                audit_writer,
-                credential_signer,
-                storage_key,
-            ));
-        }
-    };
+    // 1. DID resolver (local mode) — the node's one DID-document cache. The
+    // messaging listener shares it (`messaging::build_messaging`), so a
+    // refresh on any path is seen by all of them. Its TTL is explicit and
+    // bounded (`[did_cache]`, default 60 s, at most 300 s): it is how long a
+    // key revoked from a member's document keeps verifying here. The host
+    // policy is the one the VTA and the CLIs use.
+    info!(
+        ttl_secs = config.did_cache.ttl_secs,
+        capacity = config.did_cache.capacity,
+        "DID document cache bounds"
+    );
+    let did_resolver =
+        match DIDCacheClient::new(vta_sdk::resolver::build_verifier_did_cache_config(
+            None,
+            config.did_cache.ttl_secs,
+            config.did_cache.capacity,
+        ))
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("failed to create DID resolver: {e} — auth endpoints will not work");
+                return Ok((
+                    None,
+                    None,
+                    None,
+                    None,
+                    install_signer,
+                    audit_writer,
+                    credential_signer,
+                    storage_key,
+                ));
+            }
+        };
 
     // 2. Secrets resolver with VTC's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;

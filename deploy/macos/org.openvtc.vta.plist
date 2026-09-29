@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd LaunchAgent for a VTA on macOS.
+
+  Install into ~/Library/LaunchAgents (a per-user agent, NOT a system
+  LaunchDaemon): the default `keyring` secrets backend is the login
+  Keychain, which a daemon started before login cannot reach.
+
+  Replace every __HOME__ with your home directory — launchd expands
+  neither `~` nor `$HOME`. See docs/02-vta/macos-launchd.md.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.openvtc.vta</string>
+
+  <!-- AppConfig::load falls back to ./config.toml, and launchd starts
+       processes in `/`, so the config path must be absolute. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.cargo/bin/vta</string>
+    <string>--config</string>
+    <string>__HOME__/.config/vta/config.toml</string>
+  </array>
+
+  <!-- A relative `[store] data_dir` (the wizard's default is `data/vta`)
+       resolves against this directory. -->
+  <key>WorkingDirectory</key>
+  <string>__HOME__/.config/vta</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Overrides `[log] level`; takes an EnvFilter directive. -->
+    <key>RUST_LOG</key>
+    <string>info</string>
+    <key>VTA_LOG_FORMAT</key>
+    <string>text</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart on a non-zero exit only, so a clean SIGTERM stop (exit 0)
+       stays stopped. A startup refusal (no signing identity, unreadable
+       Keychain, bad config) also exits 1 and is retried too;
+       ThrottleInterval spaces those attempts out. -->
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <!-- The VTA logs to stderr. launchd does not rotate this file. -->
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/vta.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/vta.log</string>
+</dict>
+</plist>

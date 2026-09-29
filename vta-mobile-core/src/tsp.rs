@@ -10,9 +10,9 @@
 //!
 //! Bidirectional: [`TspMediatorSession::receive_next`] pulls VTA-pushed
 //! requests, and [`TspMediatorSession::send_trust_task`] submits the signed
-//! decision back the same way. Because TSP proves the sender, the VTA
-//! authorizes on the sealed `sender_vid` alone (intrinsic-sender auth) — so a
-//! device can run this loop with no VTA REST API and no bearer token.
+//! decision back the same way. The VTA authorizes on the document's own proof,
+//! bound to the sealed `sender_vid` — so a device can run this loop with no VTA
+//! REST API and no bearer token, and every document it sends is signed.
 //!
 //! The asymmetry worth knowing: sends are fire-and-forget. TSP has no `thid`
 //! demux, so the VTA's reply comes back as an ordinary inbound frame and the
@@ -28,6 +28,9 @@ use crate::error::FfiError;
 #[derive(uniffi::Object)]
 pub struct TspMediatorSession {
     inner: TspSession,
+    /// The holder this session sends as. Every document sent must name it as
+    /// `issuer` ([`crate::reply::require_signed_request`]).
+    holder_did: String,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -58,7 +61,7 @@ impl TspMediatorSession {
             .map_err(|e| FfiError::Transport {
                 reason: e.to_string(),
             })?;
-        Ok(Arc::new(Self { inner }))
+        Ok(Arc::new(Self { inner, holder_did }))
     }
 
     /// Wait up to `timeout_secs` for the next inbound TSP message from the
@@ -76,20 +79,10 @@ impl TspMediatorSession {
             })
     }
 
-    /// Announce this holder's TSP reachability to `vta_did` (routed through
-    /// `mediator_did`) so the VTA's device-push prefers TSP for this device
-    /// (learn-from-inbound). Sends a session-less ping frame; the VTA records
-    /// our proven DID and replies with a pong that `receive_next` harmlessly
-    /// ignores. Call right after connecting the inbox, and periodically, so the
-    /// VTA's reachability record for this device stays fresh.
-    pub async fn announce(&self, vta_did: String, mediator_did: String) -> Result<(), FfiError> {
-        self.inner
-            .announce(&vta_did, &mediator_did)
-            .await
-            .map_err(|e| FfiError::Transport {
-                reason: e.to_string(),
-            })
-    }
+    // There is no `announce`. It sent an unsigned `messaging/ping/0.1`, which
+    // the VTA now refuses (`proofRequired`) like any other unsigned document.
+    // Announce reachability by sending a signed ping instead:
+    // `send_trust_task(vta, mediator, build_messaging_ping(env, signer))`.
 
     /// Submit an already-signed Trust Task document to `vta_did`, routed through
     /// `mediator_did`. The SDK seals the document in the TSP binding envelope
@@ -98,8 +91,16 @@ impl TspMediatorSession {
     /// straight to the same `dispatch_trust_task_core` that backs
     /// `POST /api/trust-tasks`.
     ///
-    /// **No bearer token.** TSP proves the sender, and the VTA derives
-    /// authorization from that sealed `sender_vid` (intrinsic-sender auth).
+    /// **The document authenticates the request, not the transport.** The VTA
+    /// accepts it only when its Data Integrity proof verifies as its `issuer`
+    /// and that issuer is the sealed `sender_vid`. So the document must be
+    /// signed by this session's holder, name it as `issuer` and name `vta_did`
+    /// as `recipient`; anything else is refused before it is sent
+    /// ([`crate::reply::require_signed_request`]). There is no bearer token.
+    ///
+    /// **The reply must be verified by the caller** once it has correlated it,
+    /// with [`crate::reply::verify_trust_task_reply`] — it arrives on the inbox,
+    /// not here.
     ///
     /// **Fire-and-forget, unlike the DIDComm
     /// [`send_trust_task`](crate::mediator::MediatorSession::send_trust_task).**
@@ -118,6 +119,11 @@ impl TspMediatorSession {
         mediator_did: String,
         doc_json: String,
     ) -> Result<(), FfiError> {
+        let doc: serde_json::Value =
+            serde_json::from_str(&doc_json).map_err(|e| FfiError::Transport {
+                reason: format!("trust task document is not valid JSON: {e}"),
+            })?;
+        crate::reply::require_signed_request(&doc, &self.holder_did, &vta_did)?;
         self.inner
             .send_document(&vta_did, &mediator_did, doc_json.as_bytes())
             .await
@@ -202,9 +208,25 @@ mod tests {
 
         // Learn-from-inbound: makes the VTA record us as TSP-reachable. Also the
         // cheapest proof that outbound TSP works at all, before we send the real
-        // document.
+        // document. A signed ping, as the app sends it.
+        let ping = crate::session::build_messaging_ping(
+            crate::session::AuthEnvelope {
+                id: format!(
+                    "urn:uuid:test-tsp-ping-{seed_byte}-{}",
+                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                ),
+                holder_did: holder_did.clone(),
+                vta_did: vta_did.clone(),
+                issued_at: chrono::Utc::now().to_rfc3339(),
+            },
+            Box::new(Stub {
+                sk: sk.clone(),
+                did: holder_did.clone(),
+            }),
+        )
+        .expect("build a signed ping");
         session
-            .announce(vta_did.clone(), mediator.clone())
+            .send_trust_task(vta_did.clone(), mediator.clone(), ping)
             .await
             .expect("announce TSP reachability");
         eprintln!("✅ announced reachability");
@@ -245,7 +267,7 @@ mod tests {
             doc.len()
         );
         session
-            .send_trust_task(vta_did.clone(), mediator.clone(), doc)
+            .send_trust_task(vta_did.clone(), mediator.clone(), doc.clone())
             .await
             .expect("send the whoami over TSP");
         eprintln!("✅ sent (fire-and-forget); polling the inbox for the reply…\n");
@@ -279,6 +301,10 @@ mod tests {
         match correlated {
             Some(reply) => {
                 eprintln!("\n✅ correlated TSP reply by threadId, no REST:\n{reply}");
+                crate::reply::verify_trust_task_reply(doc.clone(), reply, vta_did.clone())
+                    .await
+                    .expect("the VTA's reply verifies as its word");
+                eprintln!("✅ reply verified: signed by the VTA under `authentication`");
             }
             None => panic!(
                 "no TSP frame carried threadId={request_id}. The Swift TspReplyRouter \

@@ -233,6 +233,10 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     let invitations_ks = store.keyspace("invitations").unwrap();
     let consumed_invitations_ks = store.keyspace("consumed_invitations").unwrap();
     let console_keys_ks = store.keyspace("console_keys").unwrap();
+    let step_up_marks_ks = store.keyspace("step_up_marks").unwrap();
+    let task_consent_ks = store.keyspace("task_consent").unwrap();
+    let member_pushes_ks = store.keyspace("member_pushes").unwrap();
+    let backup_bundles_ks = store.keyspace("backup_bundles").unwrap();
     let install_store = InstallTokenStore::new(install_ks.clone());
 
     let bundle = test_bundle();
@@ -338,6 +342,12 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         invitations_ks,
         consumed_invitations_ks,
         console_keys_ks,
+        step_up_marks_ks,
+        step_up_passkeys_ks: store.keyspace("step_up_passkeys").unwrap(),
+        task_consent_ks,
+        member_pushes_ks,
+        tsp_reach: std::sync::Arc::new(vti_common::tsp_reach::TspReachability::new()),
+        backup_bundles_ks,
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),
         registry_drift: vtc_service::registry::DriftState::new(),
@@ -361,6 +371,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         shutdown_tx: tokio::sync::watch::channel(false).0,
         supervisor: None,
         didcomm: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        git_ns: vtc_service::git_ns::GitNsHandles::open_unconnected(&store).unwrap(),
     };
 
     let router = routes::router().with_state(state);

@@ -38,6 +38,17 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
             expires_at: None,
         };
         store_acl_entry(&acl_ks, &entry).await?;
+        // An unrestricted admin made offline, without the consent the daemon
+        // requires — audited as the break-glass it is on the next boot.
+        crate::install::record_offline_acl_write(
+            &store,
+            "vtc create-did-key --admin",
+            "grant",
+            &entry.did,
+            Some(&entry.role),
+            &entry.allowed_contexts,
+        )
+        .await?;
         eprintln!("ACL entry created: {} (admin)", did);
         // The label was already being stored and never shown, so an operator
         // who named the key had no confirmation it took.

@@ -1,7 +1,7 @@
 //! BIP-32 derivation, hashing, install, and lookup helpers for webvh
 //! authorization keys.
 //!
-//! `derive_webvh_keys` is phase 1 (no persistence — the version-id is
+//! `derive_webvh_keys_block` is phase 1 (no persistence — the version-id is
 //! not yet known); `install_derived_webvh_keys` is phase 2 (called
 //! after `didwebvh_rs::update_did` returns). `load_active_update_key`
 //! and `load_pre_rotation_signing_key` resolve the secret that will
@@ -22,28 +22,11 @@ use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
 use crate::operations::did_webvh::webvh_keys::{self, WebvhKeyHandle, WebvhKeyRole};
 use crate::store::KeyspaceHandle;
 
-/// Derive `count` Ed25519 keys via BIP-32 under `base_path`. Pure —
-/// **allocates** `count` derivation paths, consuming them from the group's
-/// counter. Pair with [`install_derived_webvh_keys`] to persist once the
-/// consuming `update_did` call has produced the new log entry's `version_id`.
-///
-/// For a read-only prediction of what this *would* derive, use
-/// [`peek_webvh_keys`] — it shares the derivation below, so the two cannot
-/// disagree about the key at a given path.
-pub(in crate::operations::did_webvh) async fn derive_webvh_keys(
-    keys_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    base_path: &str,
-    count: u32,
-) -> Result<Vec<DerivedWebvhKey>, UpdateDidWebvhError> {
-    derive_webvh_keys_block(keys_ks, seed_store, base_path, count, None).await
-}
-
 /// Allocate and derive `count` keys as **one contiguous block**, optionally
 /// asserting the block starts at `expected_start`.
 ///
-/// This is the sound version of [`derive_webvh_keys`], and the two differences
-/// from a loop of single allocations are the two halves of the race this closes:
+/// Allocated as a block because the two differences from a loop of single
+/// allocations are the two halves of the race this closes:
 ///
 /// - **one block, not `count` allocations** — so a concurrent update cannot split
 ///   the auth key from the pre-rotation keys, which a plan peeked as adjacent;
@@ -70,11 +53,11 @@ pub(in crate::operations::did_webvh) async fn derive_webvh_keys_block(
     derive_webvh_keys_at(keys_ks, seed_store, &paths).await
 }
 
-/// Predict the keys [`derive_webvh_keys`] would produce, **without** allocating.
+/// Predict the keys [`derive_webvh_keys_block`] would produce, **without** allocating.
 /// Genuinely pure: no keyspace writes.
 ///
 /// This is what lets a caller show someone which key a rotation will install
-/// before committing to it. Deriving via [`derive_webvh_keys`] to do that would
+/// before committing to it. Deriving via [`derive_webvh_keys_block`] to do that would
 /// be self-defeating — it consumes the path, so the subsequent real run
 /// allocates the *next* one and installs a **different** key than the one that
 /// was shown, while every signature over it still verifies.

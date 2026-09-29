@@ -313,7 +313,12 @@ Backups are encrypted with Argon2id + AES-256-GCM using a user-provided password
 | `vta use`     | Set the default VTA                                   |
 | `vta delete`  | Delete a local VTA connection and its stored credential (the VTA's ACL entry stays — `acl delete` revokes it) |
 | `vta info`    | Show current VTA details                              |
+| `vta qr`      | Show the VTA's DID as a QR code for a phone (Keyring) to scan. Offline; `--did <DID>` draws another DID, `--out <file.svg>` also writes an SVG |
 | `vta restart` | Trigger a soft restart (reloads config, reconnects)   |
+
+The QR code holds the bare DID and nothing else, so it is safe to show on a
+shared screen. It is always drawn dark on white, whatever the terminal's
+theme, because many phone cameras refuse an inverted code.
 
 ### Messaging
 

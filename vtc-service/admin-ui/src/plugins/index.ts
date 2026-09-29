@@ -15,10 +15,12 @@ import {
   BadgeCheck,
   ClipboardList,
   DoorOpen,
+  FolderGit2,
   Inbox,
   KeyRound,
   LayoutDashboard,
   Network,
+  PenLine,
   Share2,
   ShieldCheck,
   Smartphone,
@@ -32,6 +34,7 @@ import { registerPlugin } from "@/plugin-api";
 import { Acl } from "@/plugins/acl";
 import { Audit } from "@/plugins/audit";
 import { Ceremonies } from "@/plugins/ceremonies";
+import { ConsoleKeys } from "@/plugins/consoleKeys";
 import { Dashboard } from "@/plugins/dashboard";
 import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
@@ -40,6 +43,7 @@ import { MyPasskeys } from "@/plugins/myPasskeys";
 import { Profile } from "@/plugins/profile";
 import { Recognition } from "@/plugins/recognition";
 import { Relationships } from "@/plugins/relationshipsGraph";
+import { Repos } from "@/plugins/repos";
 import { Rooms } from "@/plugins/rooms";
 import { Sessions } from "@/plugins/sessions";
 import { Vetting } from "@/plugins/vetting";
@@ -118,6 +122,14 @@ export function registerBuiltinPlugins(): void {
   });
 
   registerPlugin({
+    id: "repos",
+    label: "Repos",
+    path: "/repos",
+    iconComponent: FolderGit2,
+    reactComponent: Repos,
+  });
+
+  registerPlugin({
     id: "acl",
     label: "Access control",
     path: "/acl",
@@ -139,6 +151,14 @@ export function registerBuiltinPlugins(): void {
     path: "/my-passkeys",
     iconComponent: KeyRound,
     reactComponent: MyPasskeys,
+  });
+
+  registerPlugin({
+    id: "console-keys",
+    label: "Signing keys",
+    path: "/console-keys",
+    iconComponent: PenLine,
+    reactComponent: ConsoleKeys,
   });
 
   registerPlugin({

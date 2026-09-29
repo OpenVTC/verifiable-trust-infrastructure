@@ -24,6 +24,10 @@
 // `memberVmcBound`, and where it is false the Credentials card lays out the
 // evidence — which grant is on record, which digest the acknowledgement names —
 // so the operator can see why before reaching for "Request member VMC".
+//
+// The list and the detail view also show each member's git rights and linked
+// forge accounts (design §7.1, `members/MemberGit.tsx`), read from the Repos
+// plugin's console projections under its query keys.
 
 import { useState } from "react";
 import {
@@ -47,26 +51,21 @@ import {
   fetchMemberRelationships,
   fetchRelationshipsGraph,
   getJson,
-  patchJson,
-  postJson,
+  postSignedRead,
+  postSignedTrustTask,
   type MemberRelationship,
   type RelationshipsGraph,
 } from "@/lib/api";
 import { CopyButton } from "@/components/CopyButton";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
-import { stepUpSession } from "@/lib/step-up";
+import { changeAclRole } from "@/lib/acl";
+import { explainConsent, gestureFromConfirm, type ConfirmGesture } from "@/lib/signed-act";
 
 const TRUST_TASK_LIST =
   "https://trusttasks.org/spec/vtc/members/list/0.1";
-// `members/show/1.0` covers GET + PATCH + DELETE on `/members/{did}`
-// today (TrustTaskRouter limitation). Server-side resolves the
-// actual operation by method; the header just needs to match the
-// router's registered task.
 const TRUST_TASK_SHOW =
   "https://trusttasks.org/spec/vtc/members/show/0.1";
-// DELETE /members/{did} is its own canonical task now that each verb on
-// the shared mount carries its own descriptor.
 const TRUST_TASK_ADMIN_REMOVE =
   "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 // Promotion is a **role transition**, so it goes to the task defined for role
@@ -75,9 +74,7 @@ const TRUST_TASK_ADMIN_REMOVE =
 // used to carry bounded that one route while `acl/change-role` reached the
 // same ACL row with none. The gate now sits on the transition — a host
 // invariant in the role-change ceremony — and the passkey gesture below is
-// what satisfies it.
-const TRUST_TASK_CHANGE_ROLE =
-  "https://trusttasks.org/spec/acl/change-role/0.1";
+// what satisfies it. It is sent by `changeAclRole` (`lib/acl.ts`).
 const TRUST_TASK_REMOVED =
   "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const TRUST_TASK_PURGE =
@@ -99,6 +96,9 @@ const VETTER_ROLE = "vetter";
 // The endorsement list has no subject filter; walking it stops here.
 const MAX_ENDORSEMENT_PAGES = 50;
 
+import { MemberGitCard, MemberGitCell, useMemberGit } from "@/plugins/members/MemberGit";
+import { StepUpPasskeysCard } from "@/plugins/members/StepUpPasskeys";
+import { readErrorMessage } from "@/plugins/repos/ui";
 import {
   claimedDigest,
   credentialDocuments,
@@ -152,11 +152,9 @@ function isLiveGrant(grant: EndorsementRow): boolean {
 }
 
 async function grantVetterRole(did: string): Promise<VetterGrantResponse> {
-  return postJson<VetterGrantResponse>(
-    "/v1/vetting/vetters",
-    { memberDid: did },
-    { trustTask: TRUST_TASK_VETTER_GRANT },
-  );
+  return postSignedTrustTask<VetterGrantResponse>(TRUST_TASK_VETTER_GRANT, {
+    memberDid: did,
+  });
 }
 
 async function revokeVetterRole(endorsementId: string): Promise<void> {
@@ -170,58 +168,46 @@ async function fetchMembers(params: {
   role: string | null;
   limit: number;
 }): Promise<MembersPage> {
-  const q = new URLSearchParams();
-  if (params.cursor) q.set("cursor", params.cursor);
-  if (params.role) q.set("role", params.role);
-  q.set("limit", String(params.limit));
-  return getJson<MembersPage>(`/v1/members?${q.toString()}`, {
-    trustTask: TRUST_TASK_LIST,
+  return postSignedRead<MembersPage>(TRUST_TASK_LIST, {
+    limit: params.limit,
+    ...(params.cursor ? { cursor: params.cursor } : {}),
+    ...(params.role ? { role: params.role } : {}),
   });
 }
 
 async function fetchMember(did: string): Promise<MemberRow> {
-  const body = await getJson<MemberEnvelope>(
-    `/v1/members/${encodeURIComponent(did)}`,
-    { trustTask: TRUST_TASK_SHOW },
-  );
+  const body = await postSignedRead<MemberEnvelope>(TRUST_TASK_SHOW, { did });
   return body.member;
 }
 
 /** The membership pair's bodies for one member. Admin-only, and audited
- * server-side: every call records that an administrator read them. */
+ * server-side: every call records that an administrator read them. A signed
+ * read, from this browser's console key. */
 async function fetchMemberCredentials(did: string): Promise<MemberCredentials> {
-  return getJson<MemberCredentials>(
-    `/v1/members/${encodeURIComponent(did)}/credentials`,
-    { trustTask: TRUST_TASK_CREDENTIALS },
-  );
+  return postSignedRead<MemberCredentials>(TRUST_TASK_CREDENTIALS, { did });
 }
 
 /** Ask an active member to issue + send their reciprocal VMC (member →
  * community half of the pair). The member answers asynchronously over the
  * `members/vmc/1.0` DIDComm surface; this only dispatches the request. */
 async function requestMemberVmc(did: string): Promise<RequestVmcResponse> {
-  return postJson<RequestVmcResponse>(
-    `/v1/members/${encodeURIComponent(did)}/request-vmc`,
-    {},
-    { trustTask: TRUST_TASK_REQUEST_VMC },
-  );
+  return postSignedTrustTask<RequestVmcResponse>(TRUST_TASK_REQUEST_VMC, { memberDid: did });
 }
 
 async function promoteToAdmin(args: {
   did: string;
   fromRole: string;
+  confirmGesture: ConfirmGesture;
 }): Promise<void> {
-  // Step up first, then promote. Doing it unconditionally (rather than
-  // promoting, catching `step_up_required`, and retrying) keeps the operator's
-  // passkey gesture tied to the click that asked for it — which is the whole
-  // point of requiring a *recent* second factor.
-  await stepUpSession();
+  // A signed `acl/change-role`. The VTC asks for a passkey gesture bound to
+  // this one promotion, which the operator confirms as its own click.
   // `fromRole` is a compare-and-swap guard, not decoration: the role we render
   // is a read, and the daemon refuses the change if the row has moved since.
-  await patchJson<unknown>(
-    `/v1/acl/${encodeURIComponent(args.did)}`,
-    { fromRole: args.fromRole, toRole: "admin" },
-    { trustTask: TRUST_TASK_CHANGE_ROLE },
+  await explainConsent(
+    changeAclRole(
+      { subject: args.did, fromRole: args.fromRole, toRole: "admin" },
+      args.confirmGesture,
+    ),
   );
 }
 
@@ -229,31 +215,24 @@ async function adminRemove(args: {
   did: string;
   reason: string;
 }): Promise<void> {
-  // DELETE accepts an optional `{reason}` body on the server.
-  // `/members/{did}` collapses GET + PATCH + DELETE under the single
-  // `members/show/1.0` Trust Task at the router (per-method selectors are
-  // deferred infra), so the DELETE must send that task — sending
-  // `members/admin-remove/1.0` trips the exact-match soft-gate
-  // (`TrustTaskMismatch`, 415). The standalone admin-remove Trust Task still
-  // exists on disk for the soft-gate surface.
-  await deleteJson<unknown>(`/v1/members/${encodeURIComponent(args.did)}`, {
-    trustTask: TRUST_TASK_ADMIN_REMOVE,
-    body: { reason: args.reason || null },
-  });
+  // A signed document (the payload carries `did`). `reason` is omitted rather
+  // than sent as `null` — the payload is `deny_unknown_fields` with `reason`
+  // an optional string, so `null` is a parse failure rather than "no reason".
+  await postSignedTrustTask<unknown>(
+    TRUST_TASK_ADMIN_REMOVE,
+    args.reason ? { did: args.did, reason: args.reason } : { did: args.did },
+  );
 }
 
 async function fetchRemovedMembers(): Promise<RemovedMemberRow[]> {
-  const body = await getJson<RemovedMembersResponse>("/v1/members/removed", {
-    trustTask: TRUST_TASK_REMOVED,
-  });
+  const body = await postSignedRead<RemovedMembersResponse>(TRUST_TASK_REMOVED, {});
   return body.removed;
 }
 
 async function purgeMember(did: string): Promise<void> {
-  await deleteJson<unknown>(
-    `/v1/members/${encodeURIComponent(did)}/purge`,
-    { trustTask: TRUST_TASK_PURGE },
-  );
+  // Super-admin only, checked against the signer's ACL row resolved *now*
+  // — so an operator demoted since sign-in is refused.
+  await postSignedTrustTask<unknown>(TRUST_TASK_PURGE, { did });
 }
 
 /// Departed members whose Member row was kept as a tombstone (Tombstone /
@@ -363,6 +342,13 @@ function MembersList() {
     placeholderData: (prev) => prev,
   });
 
+  // Git rights and linked forge accounts (design §7.1). Read once for the
+  // whole community and indexed by DID, rather than once per row; a failure
+  // (a scoped administrator cannot read them) drops the column and says why.
+  const git = useMemberGit();
+  const showGit = !git.error;
+  const columns = showGit ? 6 : 5;
+
   return (
     <section className="page">
       <h2>Members</h2>
@@ -392,6 +378,11 @@ function MembersList() {
       )}
 
       <section className="card">
+        {git.error && (
+          <p className="muted">
+            Git rights are not shown: {readErrorMessage(git.error)}.
+          </p>
+        )}
         <table className="data-table">
           <thead>
             <tr>
@@ -404,17 +395,18 @@ function MembersList() {
               <th>Role</th>
               <th>Joined</th>
               <th>Personhood</th>
+              {showGit && <th>Git</th>}
             </tr>
           </thead>
           <tbody>
             {query.isPending && (
               <tr>
-                <td colSpan={5}>Loading…</td>
+                <td colSpan={columns}>Loading…</td>
               </tr>
             )}
             {query.data?.items.length === 0 && (
               <tr>
-                <td colSpan={5}>
+                <td colSpan={columns}>
                   <div className="empty-state">
                     <span className="empty-icon" aria-hidden="true">
                       <UsersIcon />
@@ -470,6 +462,15 @@ function MembersList() {
                     />
                   )}
                 </td>
+                {showGit && (
+                  <td>
+                    {git.isPending ? (
+                      <span className="muted">…</span>
+                    ) : (
+                      <MemberGitCell did={m.did} index={git.index} />
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -659,8 +660,10 @@ function MemberDetail() {
       e.halves.some((h) => h.issuerDid !== decoded && h.subjectDid === decoded),
   );
 
+  const confirmGesture = gestureFromConfirm(confirm);
   const promoteMutation = useMutation({
-    mutationFn: promoteToAdmin,
+    mutationFn: (args: { did: string; fromRole: string }) =>
+      promoteToAdmin({ ...args, confirmGesture }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["member", decoded] });
       void queryClient.invalidateQueries({ queryKey: ["members"] });
@@ -906,6 +909,10 @@ function MemberDetail() {
                 </ul>
               ))}
           </section>
+
+          <MemberGitCard did={decoded} />
+
+          <StepUpPasskeysCard did={decoded} />
 
           <section className="card">
             <h3>Disposition + consent</h3>

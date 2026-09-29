@@ -217,6 +217,20 @@ pnm bootstrap provision-request  --template push-gateway --var URL=https://push.
 pnm bootstrap provision-integration --request <request.json> --out push-bundle.armor
 ```
 
+The gateway also serves Trust Tasks over TSP and HTTPS (transport-agnostic), so
+a gateway sharing a mediator with its VTA can advertise TSP alongside DIDComm —
+pass the whole `TSPTransport` entry as `SERVICE_TSP` (the same null-pruning
+slot `vtc-host` uses for its messaging transports):
+
+```bash
+pnm bootstrap provision-request --template push-gateway \
+  --var URL=https://push.example.com \
+  --var SERVICE_TSP='{"id":"{DID}#tsp","type":"TSPTransport","serviceEndpoint":"did:webvh:QmMED:mediator.example.com:mediator"}'
+```
+
+Omit `SERVICE_TSP` and the gateway advertises DIDComm alone, unchanged from
+before.
+
 The agent runtime then calls `device/set-wake/0.2` with its opaque `WakeHandle`;
 the VTA provisions the wake allowlist to the gateway over DIDComm
 (`operations/device.rs::provision_gateway`).
@@ -235,6 +249,15 @@ pnm approvals require https://trusttasks.org/spec/acl/grant/0.1 --reauth
 
 When a gated op is initiated, the agent's request returns a step-up challenge;
 the operator approves with a passkey (`auth/passkey-login`), and the op proceeds.
+
+Enrolling that passkey as a verification method on a DID goes through
+`/did/verification-methods/passkey{,/challenge,/{fragment}}` — REST routes kept
+on purpose as the **WebAuthn exception** to "every remote operation is a Trust
+Task": the browser driving the ceremony (the VTA's auth portal, or
+`examples/vta-auth-demo`) holds only the bearer passkey-login issued, with no DID
+key to sign a Trust Task. A client that does hold a DID key uses the
+`vta/passkey-vms/{enroll-challenge,enroll-submit,list,revoke}/0.1` Trust Tasks
+instead, over any transport.
 
 ## Step 6 — Agent memory (optional, but the reason most agents want a VTA)
 

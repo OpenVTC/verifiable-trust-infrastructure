@@ -23,7 +23,7 @@ pub mod verify;
 pub use bundle::{
     ArmoredChunk, AssertionProof, AttestationQuoteAssertion, DidSignedAssertion,
     IssuedCredentialBundle, LabeledKey, MessagingBridgeCredentialsBundle, ProducerAssertion,
-    RawPrivateKey, SealedBundle, SealedPayloadV1,
+    RawPrivateKey, SealedBundle, SealedPayloadV1, SeedMnemonicBundle,
 };
 pub use chunk::{ChunkPlaintext, MAX_PAYLOAD_FRAGMENT, VERSION};
 pub use error::SealedTransferError;
@@ -484,6 +484,35 @@ mod tests {
                 assert_eq!(b.platform, "telegram");
                 assert_eq!(b.fields, fields);
             }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// The seed-mnemonic payload round-trips, and its `Debug` never prints
+    /// the words — the one property a root-seed type must not lose.
+    #[tokio::test]
+    async fn seed_mnemonic_roundtrips_and_redacts() {
+        let (recip_sk, recip_pk) = generate_keypair();
+        let (_prod_sk, prod_pk) = generate_ed25519_keypair();
+        let assertion =
+            sample_assertion(affinidi_crypto::did_key::ed25519_pub_to_did_key(&prod_pk));
+        let store = InMemoryNonceStore::new();
+        let words = "abandon ability able about above absent absorb abstract";
+        let payload = SealedPayloadV1::SeedMnemonic(Box::new(SeedMnemonicBundle {
+            mnemonic: words.to_string(),
+            vta_did: Some("did:webvh:scid:vta.example".into()),
+        }));
+        assert!(!format!("{payload:?}").contains("abandon"));
+
+        let bundle = seal_payload(&recip_pk, [13u8; 16], assertion, &payload, &store)
+            .await
+            .unwrap();
+        let digest = bundle_digest(&bundle);
+        match open_bundle(&recip_sk, &bundle, Some(&digest))
+            .unwrap()
+            .payload
+        {
+            SealedPayloadV1::SeedMnemonic(m) => assert_eq!(m.mnemonic, words),
             other => panic!("wrong variant: {other:?}"),
         }
     }

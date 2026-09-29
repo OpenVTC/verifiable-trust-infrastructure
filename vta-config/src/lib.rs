@@ -91,6 +91,24 @@ pub struct PolicyConfig {
     pub require_consent: (),
 }
 
+/// Reject `tee.embed_in_did` with what replaced it. Reaching this function is
+/// the error: `#[serde(default)]` covers the key's absence.
+#[cfg(feature = "tee")]
+fn refuse_retired_embed_in_did<'de, D>(_: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Err(serde::de::Error::custom(RETIRED_EMBED_IN_DID))
+}
+
+#[cfg(feature = "tee")]
+const RETIRED_EMBED_IN_DID: &str = "`tee.embed_in_did` has been retired. It added a `TeeAttestation` \
+     service to the VTA's DID document pointing at the REST route `/attestation/report`, which \
+     no longer exists: attestation is the `vta/attestation/{status,report,config-report}` Trust \
+     Tasks, reached over the transports the DID document already advertises, and a verifier \
+     learns a VTA is attested from `vta/attestation/status` or `trust-task-discovery`. Delete \
+     the key (or unset VTA_TEE_EMBED_IN_DID).";
+
 /// Reject `[[policy.require_consent]]` with the migration the operator needs.
 ///
 /// Only ever called when the key is present — `#[serde(default)]` covers its
@@ -124,12 +142,24 @@ pub struct AppConfig {
     /// sidecar on the parent, bridged via vsock.
     #[serde(default)]
     pub resolver_url: Option<String>,
+    /// The DID-document cache (`[did_cache]`): how long a mutable DID's
+    /// document is trusted before it is resolved again. Bounded — see
+    /// [`vti_common::config::DidCacheConfig`].
+    #[serde(default)]
+    pub did_cache: vti_common::config::DidCacheConfig,
     #[serde(default = "default_server_config")]
     pub server: ServerConfig,
     #[serde(default)]
     pub log: LogConfig,
     #[serde(default = "default_store_config")]
     pub store: StoreConfig,
+    /// Optional Fjall memory tuning (`[fjall]`) — the block cache, write
+    /// buffer and journal-size caps that keep the store's memory use
+    /// inside a pod's Kubernetes limit. Every field defaults to `None`
+    /// (fjall's own defaults, unchanged). See
+    /// [`vti_common::config::FjallTuning`].
+    #[serde(default)]
+    pub fjall: vti_common::config::FjallTuning,
     pub messaging: Option<MessagingConfig>,
     /// Startup readiness gate + reconnect policy for the mediator DIDComm
     /// connection: wait until the VTA's own DID resolves over the network before
@@ -531,9 +561,22 @@ pub struct TeeConfig {
     /// Enforcement mode: required, optional, disabled, simulated.
     #[serde(default)]
     pub mode: TeeMode,
-    /// Whether to embed attestation info as a DID document service.
-    #[serde(default)]
-    pub embed_in_did: bool,
+    /// Retired: `tee.embed_in_did`.
+    ///
+    /// Present only to **refuse** a config that still sets it. It added a
+    /// `TeeAttestation` service to the VTA's DID document pointing at the REST
+    /// route `/attestation/report`, which is gone: attestation is the
+    /// `vta/attestation/*` Trust Tasks, reached over the transports the
+    /// document already advertises. Ignoring the key would leave an operator
+    /// believing the document still says something it no longer does.
+    ///
+    /// Absent (the only accepted state) deserializes to `()` via `default`.
+    #[serde(
+        default,
+        deserialize_with = "refuse_retired_embed_in_did",
+        skip_serializing
+    )]
+    pub embed_in_did: (),
     /// Attestation report cache TTL in seconds (generation is expensive).
     #[serde(default = "default_attestation_cache_ttl")]
     pub attestation_cache_ttl: u64,
@@ -804,7 +847,7 @@ impl Default for TeeConfig {
     fn default() -> Self {
         Self {
             mode: TeeMode::default(),
-            embed_in_did: false,
+            embed_in_did: (),
             attestation_cache_ttl: default_attestation_cache_ttl(),
             kms: None,
             storage_key_salt: default_storage_key_salt(),
@@ -1012,6 +1055,9 @@ impl AppConfig {
                 "VTA_TEE_MODE",
                 "VTA_TEE_EMBED_IN_DID",
                 "VTA_TEE_ATTESTATION_CACHE_TTL",
+                "STORAGE_FJALL_BLOCK_CACHE",
+                "STORAGE_FJALL_WRITE_BUFFER",
+                "STORAGE_FJALL_MAX_JOURNAL",
             ];
             for var in &blocked_vars {
                 if std::env::var(var).is_ok() {
@@ -1064,6 +1110,11 @@ impl AppConfig {
         if let Ok(data_dir) = std::env::var("VTA_STORE_DATA_DIR") {
             config.store.data_dir = PathBuf::from(data_dir);
         }
+        // Fjall memory settings (STORAGE_FJALL_BLOCK_CACHE / _WRITE_BUFFER /
+        // _MAX_JOURNAL) — shared, unprefixed names; see
+        // `vti_common::config::apply_fjall_env_overrides`.
+        vti_common::config::apply_fjall_env_overrides(&mut config.fjall)
+            .map_err(AppError::Config)?;
 
         // Messaging
         match (
@@ -1249,10 +1300,8 @@ impl AppConfig {
                     }
                 };
             }
-            if let Ok(val) = std::env::var("VTA_TEE_EMBED_IN_DID") {
-                config.tee.embed_in_did = val
-                    .parse()
-                    .map_err(|e| AppError::Config(format!("invalid VTA_TEE_EMBED_IN_DID: {e}")))?;
+            if std::env::var_os("VTA_TEE_EMBED_IN_DID").is_some() {
+                return Err(AppError::Config(RETIRED_EMBED_IN_DID.into()));
             }
             if let Ok(val) = std::env::var("VTA_TEE_ATTESTATION_CACHE_TTL") {
                 config.tee.attestation_cache_ttl = val.parse().map_err(|e| {
@@ -1317,6 +1366,7 @@ impl AppConfig {
                     .into(),
             );
         }
+        errors.extend(self.did_cache.validation_errors());
         // retention_days = 0 would silently disable audit retention; the
         // sweeper assumes a positive window. (Mirrors the setup-time rule.)
         if self.audit.retention_days == 0 {
@@ -1378,6 +1428,19 @@ mod validate_tests {
         assert!(format!("{err}").contains("trust_xff_cidrs"), "{err}");
     }
 
+    /// `tee.embed_in_did` is refused, not ignored: the `TeeAttestation` service
+    /// it added pointed at a REST route that no longer exists, and an operator
+    /// who kept the key would believe the DID document still said something.
+    #[cfg(feature = "tee")]
+    #[test]
+    fn retired_embed_in_did_is_refused() {
+        let err = toml::from_str::<AppConfig>("[tee]\nembed_in_did = true\n")
+            .expect_err("retired embed_in_did key must be rejected");
+        assert!(format!("{err}").contains("vta/attestation"), "{err}");
+        // Absent is the one accepted state.
+        cfg("[tee]\nmode = \"simulated\"\n");
+    }
+
     #[test]
     fn trust_xff_cidrs_still_parses() {
         let config = cfg("[server]\ntrust_xff_cidrs = [\"127.0.0.1/32\"]\n");
@@ -1406,6 +1469,23 @@ mod validate_tests {
             .validate()
             .expect_err("whitespace-only resolver_url must be rejected");
         assert!(format!("{err:?}").contains("resolver_url"), "{err:?}");
+    }
+
+    /// The DID-document cache TTL bounds how long a revoked key keeps
+    /// verifying; a value past the bound is refused, not honoured.
+    #[test]
+    fn a_did_cache_ttl_past_the_bound_is_rejected() {
+        assert_eq!(
+            cfg("").did_cache.ttl_secs,
+            vti_common::config::DID_CACHE_TTL_DEFAULT_SECS
+        );
+        let err = cfg("[did_cache]\nttl_secs = 3600\n")
+            .validate()
+            .expect_err("a one-hour DID cache must be rejected");
+        assert!(format!("{err:?}").contains("did_cache.ttl_secs"), "{err:?}");
+        cfg("[did_cache]\nttl_secs = 30\n")
+            .validate()
+            .expect("a shorter TTL is fine");
     }
 
     #[test]

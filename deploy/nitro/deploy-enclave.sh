@@ -224,7 +224,7 @@ enable_websocket_endpoint = "\${ENABLE_WEBSOCKET_ENDPOINT:true}"
 
 [cache]
 capacity_count = "\${CACHE_CAPACITY_COUNT:1000}"
-expire = "\${EXPIRE:300}"
+expire = "\${EXPIRE:60}"
 TOML
     ok "Resolver config written (listen: $RESOLVER_LISTEN)"
 else
@@ -453,5 +453,4 @@ echo -e "  ${GREEN}Deployment complete.${NC}"
 echo ""
 echo "  Verify:"
 echo "    curl http://localhost:8443/health"
-echo "    curl http://localhost:8443/attestation/status"
 echo ""

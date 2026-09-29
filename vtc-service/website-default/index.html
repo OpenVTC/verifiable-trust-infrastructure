@@ -14,25 +14,102 @@
     <div class="bg-accent" aria-hidden="true"></div>
 
     <main>
-      <header class="hero">
-        <span class="eyebrow">
-          <span class="status-dot" id="status-dot" aria-hidden="true"></span>
-          <span id="status-label">Verifiable Trust Community</span>
-        </span>
-        <img
-          id="community-logo"
-          class="community-logo"
-          alt=""
-          hidden
-          decoding="async"
-        />
-        <h1 id="community-name">Verifiable Trust Community</h1>
-        <p class="lead" id="community-description">
-          A Verifiable Trust Community service is live at this endpoint.
-          Once the operator publishes a community profile, its name and
-          description will appear here.
-        </p>
-      </header>
+      <div class="hero-grid">
+        <header class="hero">
+          <span class="eyebrow">
+            <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+            <span id="status-label">Verifiable Trust Community</span>
+          </span>
+          <img
+            id="community-logo"
+            class="community-logo"
+            alt=""
+            hidden
+            decoding="async"
+          />
+          <h1 id="community-name">Verifiable Trust Community</h1>
+          <p class="lead" id="community-description">
+            A Verifiable Trust Community service is live at this endpoint.
+            Once the operator publishes a community profile, its name and
+            description will appear here.
+          </p>
+          <p class="hero-hint" id="pass-hint" hidden>
+            Have Keyring? Scan the code to add this community.
+          </p>
+        </header>
+
+        <!--
+          The community DID as a QR code, for a wallet to scan. The code
+          carries the bare DID and nothing else (exactly what Copy copies),
+          and nothing on this card is secret. The image is rendered by the
+          daemon at /v1/community/did-qr.svg; it stays hidden until it
+          loads, so a VTC with no profile yet shows only the text.
+        -->
+        <section class="pass" aria-labelledby="pass-heading">
+          <div class="pass-head">
+            <h2 id="pass-heading">Community DID</h2>
+            <span class="pass-public">Public, nothing secret</span>
+          </div>
+          <div class="pass-qr" id="pass-qr" hidden>
+            <img
+              id="pass-qr-img"
+              alt="QR code of the community DID"
+              width="264"
+              height="264"
+              decoding="async"
+            />
+          </div>
+          <p class="pass-caption" id="pass-caption" hidden>
+            <span class="pass-caption-scan">Scan with Keyring</span>
+            <span class="pass-caption-touch">
+              On this phone? Copy the DID into Keyring instead.
+            </span>
+          </p>
+          <div class="did-cell">
+            <code id="community-did" class="did-value">…</code>
+            <button
+              type="button"
+              class="copy-btn"
+              data-copy-target="community-did"
+              aria-label="Copy community DID"
+              title="Copy community DID"
+            >
+              <svg
+                class="icon-clipboard"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path
+                  d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                />
+              </svg>
+              <svg
+                class="icon-check"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+              <span class="copy-label">Copy</span>
+            </button>
+          </div>
+        </section>
+      </div>
 
       <section class="status-card" aria-labelledby="status-heading">
         <h2 id="status-heading">Daemon</h2>
@@ -40,52 +117,6 @@
           <div class="status-row">
             <dt>Health</dt>
             <dd><code id="health-status">…</code></dd>
-          </div>
-          <div class="status-row stacked">
-            <dt>Community DID</dt>
-            <dd class="did-cell">
-              <code id="community-did" class="did-value">…</code>
-              <button
-                type="button"
-                class="copy-btn"
-                data-copy-target="community-did"
-                aria-label="Copy community DID"
-                title="Copy community DID"
-              >
-                <svg
-                  class="icon-clipboard"
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.75"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                  <path
-                    d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
-                  />
-                </svg>
-                <svg
-                  class="icon-check"
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-                <span class="copy-label">Copy</span>
-              </button>
-            </dd>
           </div>
           <div class="status-row stacked" id="mediator-row" hidden>
             <dt>Mediator DID</dt>

@@ -11,15 +11,13 @@ use vta_sdk::protocols::did_management::{
         ListWebvhServersResultBody, RegisterDidWithServerBody, RegisterDidWithServerResultBody,
         RegisterWebvhServerResultBody,
     },
-    update::UpdateDidWebvhBody,
 };
 
 use crate::auth::{AdminAuth, AuthClaims, SuperAdminAuth};
 use crate::error::AppError;
 use crate::operations;
 use crate::operations::did_webvh::{
-    RealignDidKeysResultBody, RegisterDidWithServerError, RegisterDidWithServerParams,
-    RotateDidWebvhKeysOptions, UpdateDidWebvhResult, register_did_with_server,
+    RegisterDidWithServerError, RegisterDidWithServerParams, register_did_with_server,
 };
 use crate::server::AppState;
 
@@ -28,14 +26,6 @@ pub struct AddServerRequest {
     pub id: String,
     pub did: String,
     pub label: Option<String>,
-}
-
-/// `?dry_run=true` returns the plan without writing — what an operator should
-/// read before anything touches key records.
-#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub struct RealignQuery {
-    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
@@ -98,7 +88,7 @@ pub async fn list_servers_handler(
 }
 
 /// `GET /webvh/servers/:id/domains` — relay the registered hosting
-/// server's `/api/me/domains` view to the caller. Used by
+/// server's `did-management/me/domains` view to the caller. Used by
 /// `pnm did-mgmt list-domains` and by the interactive `--domain`
 /// prompt in `pnm did-mgmt dids create` / `register`. Authentication
 /// to the hosting server uses the VTA's own credentials.
@@ -417,165 +407,6 @@ pub async fn delete_did_handler(
     operations::did_webvh::delete_did_webvh(&deps, &auth.0, &did, vta_did.as_deref(), "rest")
         .await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-/// `POST /contexts/{ctx_id}/dids/{scid}/update` — apply a generic
-/// update to an existing webvh DID. The `ctx_id` path component is
-/// validated against the DID's context inside the operation; mismatches
-/// surface as 404 to avoid cross-context existence leaks.
-#[utoipa::path(
-    post, path = "/contexts/{ctx_id}/dids/{scid}/update", tag = "did-webvh",
-    security(("bearer_jwt" = [])),
-    params(
-        ("ctx_id" = String, Path, description = "Context identifier"),
-        ("scid" = String, Path, description = "DID SCID"),
-    ),
-    request_body = UpdateDidWebvhBody,
-    responses(
-        (status = 200, description = "DID updated", body = UpdateDidWebvhResult),
-        (status = 400, description = "Malformed request body"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "DID not found"),
-    ),
-)]
-/// Takes the **wire** body, not the op-layer options.
-///
-/// Deserialising straight into `UpdateDidWebvhOptions` silently dropped
-/// `expectedVersionId` — the wire body is camelCase, that struct is snake_case
-/// with no aliases — so the optimistic-concurrency precondition never applied
-/// to REST callers. A precondition that is accepted and ignored is worse than
-/// one that is absent: it reads in the caller's source as though the lost
-/// update were handled. Conversion goes through the same
-/// `update_body_to_options` the trust-task dispatcher uses.
-pub async fn update_did_handler(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Path((_ctx_id, scid)): Path<(String, String)>,
-    Json(body): Json<UpdateDidWebvhBody>,
-) -> Result<Json<UpdateDidWebvhResult>, AppError> {
-    // The PDP gate. A webvh update silently rotates the DID's update key, which
-    // is exactly the effect an operator writes a `requireConsent` rule for.
-    //
-    // Gated on `{did, …body}` — the shape the trust-task path sends and digests
-    // — which is why the SCID this route is addressed by is resolved to its DID
-    // first. Gating on the SCID would digest the same update differently
-    // depending on how it arrived, so an approval obtained over one transport
-    // could not be consumed over the other: a subtler failure than no gate.
-    let did = operations::did_webvh::resolve_webvh_did(&state.webvh_ks, &scid).await?;
-    let mut gated = serde_json::to_value(&body)?;
-    if let Some(map) = gated.as_object_mut() {
-        map.insert("did".to_string(), serde_json::json!(did));
-    }
-    crate::trust_tasks::rest_gate(
-        &state,
-        &auth.0,
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
-        &gated,
-    )
-    .await?;
-
-    let options = crate::trust_tasks::webvh::update_body_to_options(body)
-        .map_err(|e| AppError::Validation(format!("invalid update body: {e:?}")))?;
-    let did_resolver = state
-        .did_resolver
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("DID resolver not available".into()))?;
-    let vta_did = state.config.read().await.vta_did.clone();
-    let deps = operations::did_webvh::WebvhDeps::from_app_state(&state, did_resolver);
-    let result = operations::did_webvh::update_did_webvh(
-        &deps,
-        &auth.0,
-        &scid,
-        options,
-        vta_did.as_deref(),
-        "rest",
-    )
-    .await?;
-    Ok(Json(result))
-}
-
-/// `POST /contexts/{ctx_id}/dids/{scid}/rotate-keys` — rotate every
-/// verificationMethod's keys + drive an update. Mirrors
-/// [`update_did_handler`].
-#[utoipa::path(
-    post, path = "/contexts/{ctx_id}/dids/{scid}/rotate-keys", tag = "did-webvh",
-    security(("bearer_jwt" = [])),
-    params(
-        ("ctx_id" = String, Path, description = "Context identifier"),
-        ("scid" = String, Path, description = "DID SCID"),
-    ),
-    request_body = RotateDidWebvhKeysOptions,
-    responses(
-        (status = 200, description = "Keys rotated", body = UpdateDidWebvhResult),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "DID not found"),
-    ),
-)]
-pub async fn rotate_did_keys_handler(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Path((_ctx_id, scid)): Path<(String, String)>,
-    Json(body): Json<RotateDidWebvhKeysOptions>,
-) -> Result<Json<UpdateDidWebvhResult>, AppError> {
-    let did_resolver = state
-        .did_resolver
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("DID resolver not available".into()))?;
-    let vta_did = state.config.read().await.vta_did.clone();
-    let deps = operations::did_webvh::WebvhDeps::from_app_state(&state, did_resolver);
-    let result = operations::did_webvh::rotate_did_webvh_keys(
-        &deps,
-        &auth.0,
-        &scid,
-        body,
-        vta_did.as_deref(),
-        "rest",
-    )
-    .await?;
-    Ok(Json(result))
-}
-
-/// `POST /webvh/dids/{did}/realign-keys` — rewrite this DID's key records onto
-/// the verification-method ids its published document carries. Auth: admin,
-/// scoped to the DID's context.
-///
-/// The repair for DIDs minted before create read its own document: no name here
-/// is caller-supplied, which is what makes it safe where `keys/rename` is
-/// deliberately not (see `operations::did_webvh::realign`).
-#[utoipa::path(
-    post, path = "/webvh/dids/{did}/realign-keys", tag = "did-webvh",
-    security(("bearer_jwt" = [])),
-    params(
-        ("did" = String, Path, description = "DID identifier"),
-        ("dry_run" = Option<bool>, Query, description = "Return the plan without writing"),
-    ),
-    responses(
-        (status = 200, description = "Key records realigned", body = RealignDidKeysResultBody),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin of this DID's context"),
-        (status = 404, description = "DID, or its local log, not found"),
-        (status = 409, description = "A verification method is already held by a different key"),
-    ),
-)]
-pub async fn realign_did_keys_handler(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Path(did): Path<String>,
-    Query(query): Query<RealignQuery>,
-) -> Result<Json<RealignDidKeysResultBody>, AppError> {
-    let result = operations::did_webvh::realign_did_key_records(
-        &state.keys_ks,
-        &state.webvh_ks,
-        &state.audit_sink,
-        &auth.0,
-        &did,
-        query.dry_run.unwrap_or(false),
-        "rest",
-    )
-    .await?;
-    Ok(Json(result))
 }
 
 /// `POST /webvh/dids/{did}/register-server` — promote a serverless

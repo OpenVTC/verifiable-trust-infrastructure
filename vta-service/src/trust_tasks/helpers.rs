@@ -417,6 +417,25 @@ pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> Trust
 /// `details` passes through [`bound_details`] exactly as in [`reject_with`],
 /// so this cannot become the construction site that skips the framework's
 /// size bound.
+/// Reject with a code the task's own specification declares
+/// (`<slug>:<local>`, SPEC §8.5), from its generated `error_codes`.
+#[cfg_attr(not(any(feature = "webvh", feature = "tee")), allow(dead_code))]
+pub(super) fn reject_declared(
+    doc: &TrustTask<Value>,
+    code: trust_tasks_rs::DeclaredErrorCode,
+    message: impl Into<String>,
+) -> TrustTaskOutcome {
+    reject_with_code(
+        doc,
+        TrustTaskCode::Extended {
+            slug: code.namespace().to_string(),
+            local: code.local().to_string(),
+        },
+        message,
+        None,
+    )
+}
+
 pub(super) fn reject_with_code(
     doc: &TrustTask<Value>,
     code: TrustTaskCode,
@@ -453,6 +472,27 @@ pub(super) fn success_response<R: serde::Serialize>(
     TrustTaskOutcome {
         status: StatusCode::OK,
         body,
+    }
+}
+
+/// The courtesy acknowledgement of a fire-and-forget task (SPEC §4.4.2): the
+/// originating type with `#response` and a payload of exactly `{}`.
+///
+/// Only for a task whose specification defines **no** success response — §4.4.2
+/// item 4 forbids it beside one that does. It attests that the task was
+/// received and performed, nothing more; the producer must not rely on it.
+pub(super) fn acknowledge(doc: &TrustTask<Value>) -> TrustTaskOutcome {
+    success_response(doc, serde_json::Map::new())
+}
+
+/// No reply at all. Every transport reads an empty body as "nothing goes back"
+/// (`accept_from_proven_sender`). For a fire-and-forget task that was accepted
+/// but not yet performed, where an acknowledgement would claim too much — the
+/// absence of a reply carries no information (SPEC §4.4.2 item 3).
+pub(super) fn silence() -> TrustTaskOutcome {
+    TrustTaskOutcome {
+        status: StatusCode::NO_CONTENT,
+        body: Vec::new(),
     }
 }
 
@@ -608,7 +648,7 @@ pub(super) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
 /// below, which compares it against a real `reject_with`. When the framework
 /// bumps the version, that test fails rather than this service silently
 /// speaking two dialects again — which is exactly how this bump was caught.
-fn framework_error_type_uri() -> TypeUri {
+pub(crate) fn framework_error_type_uri() -> TypeUri {
     "https://trusttasks.org/spec/trust-task-error/0.5"
         .parse()
         .expect("framework error Type URI parses")

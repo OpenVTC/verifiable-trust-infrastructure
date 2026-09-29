@@ -1,10 +1,12 @@
-//! Integration coverage for `GET /v1/audit` — canonical
-//! `spec/audit/list/0.1` (phase 2b(ii)).
+//! Integration coverage for the signed `spec/audit/list/0.1` document
+//! (phase 2b(ii)).
 //!
 //! What matters here is not the URI swap but the three things the
 //! repoint introduced: the canonical response/envelope shape, filters
 //! that are actually applied (rather than accepted and ignored), and a
 //! cursor that refuses to be reused under a different filter set.
+
+mod common;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -33,8 +35,10 @@ async fn build() -> Fixture {
     }
 }
 
-async fn super_admin_token(fix: &Fixture) -> String {
-    fix.vtc.token("did:key:z6MkAdmin", "admin", vec![]).await
+/// Who a `list` call is signed by: `"admin"` for an unrestricted
+/// administrator, anything else for a member.
+async fn super_admin_token(_fix: &Fixture) -> String {
+    "admin".into()
 }
 
 async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
@@ -45,24 +49,34 @@ async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
     (status, v)
 }
 
-async fn list(fix: &Fixture, token: &str, query: &str) -> (StatusCode, Value) {
-    let uri = if query.is_empty() {
-        "/v1/audit".to_string()
+/// `audit/list/0.1` signed by the party `who` names, with the filters in
+/// `query` (`a=b&c=d`, as the bearer route read them) as the payload: the
+/// reply's status and payload.
+async fn list(fix: &Fixture, who: &str, query: &str) -> (StatusCode, Value) {
+    let mut payload = serde_json::Map::new();
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = pair.split_once('=').expect("key=value");
+        let v = match k {
+            "pageSize" => json!(v.parse::<u64>().unwrap()),
+            _ => json!(v),
+        };
+        payload.insert(k.to_string(), v);
+    }
+    let party = if who == "admin" {
+        common::signed::admin(&fix.vtc).await
     } else {
-        format!("/v1/audit?{query}")
+        common::signed::party_with_role(&fix.vtc, vtc_service::acl::VtcRole::Member, &[]).await
     };
-    let req = Request::builder()
-        .method("GET")
-        .uri(uri)
-        .header("Trust-Task", LIST_TASK)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+    let (status, doc) =
+        common::signed::call(&fix.vtc, &party, LIST_TASK, Value::Object(payload)).await;
+    (status, doc["payload"].clone())
 }
 
-/// Emit real `CommunityProfileUpdated` envelopes through a live route.
-async fn seed(fix: &Fixture, token: &str, count: usize) {
+/// Emit real `CommunityProfileUpdated` envelopes through the live document
+/// endpoint: signed `vtc/community/profile/update/0.1` documents from an
+/// administrator with a real key. Returns that administrator's DID — the
+/// envelopes' actor.
+async fn seed(fix: &Fixture, _token: &str, count: usize) -> String {
     let profile = vtc_service::community::CommunityProfile::new(
         "did:webvh:vtc.example.com:abc",
         "Example Community",
@@ -70,18 +84,47 @@ async fn seed(fix: &Fixture, token: &str, count: usize) {
     vtc_service::community::store_profile(&fix.state.community_ks, &profile)
         .await
         .unwrap();
+    let admin = vti_rooms_dtg::test_support::Party::new();
+    vtc_service::acl::store_acl_entry(
+        &fix.state.acl_ks,
+        &vtc_service::acl::VtcAclEntry {
+            did: admin.did.clone(),
+            role: vtc_service::acl::VtcRole::Admin,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: vti_common::auth::session::now_epoch(),
+            created_by: "test".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    let key =
+        vta_sdk::trust_task_sign::HolderKey::from_did_key(&admin.did, &admin.secret_multibase)
+            .unwrap();
     for i in 0..count {
+        let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+            PROFILE_TASK,
+            json!({ "name": format!("Rename {i}") }),
+            &admin.did,
+            vtc_service::test_support::TEST_VTC_DID,
+        )
+        .unwrap();
+        vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+            .await
+            .unwrap();
         let req = Request::builder()
-            .method("PUT")
-            .uri("/v1/community/profile")
-            .header("Trust-Task", PROFILE_TASK)
-            .header("Authorization", format!("Bearer {token}"))
+            .method("POST")
+            .uri("/v1/trust-tasks")
             .header("Content-Type", "application/json")
-            .body(Body::from(format!(r#"{{"name":"Rename {i}"}}"#)))
+            .body(Body::from(serde_json::to_vec(&doc).unwrap()))
             .unwrap();
         let resp = fix.router.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK, "seed write {i}");
     }
+    admin.did
 }
 
 #[tokio::test]
@@ -134,11 +177,12 @@ async fn entry_hash_and_audit_verify_head_agree() {
     let (_, list_body) = list(&fix, &token, "").await;
     let newest = list_body["entries"][0]["entryHash"].as_str().unwrap();
 
+    let bearer = fix.vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
     let req = Request::builder()
         .method("GET")
         .uri("/v1/audit/verify")
         .header("Trust-Task", "https://trusttasks.org/spec/audit/verify/0.1")
-        .header("Authorization", format!("Bearer {token}"))
+        .header("Authorization", format!("Bearer {bearer}"))
         .body(Body::empty())
         .unwrap();
     let (_, verify_body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
@@ -176,9 +220,9 @@ async fn action_filter_is_actually_applied() {
 async fn actor_filter_is_actually_applied() {
     let fix = build().await;
     let token = super_admin_token(&fix).await;
-    seed(&fix, &token, 2).await;
+    let actor = seed(&fix, &token, 2).await;
 
-    let (_, body) = list(&fix, &token, "actor=did:key:z6MkAdmin").await;
+    let (_, body) = list(&fix, &token, &format!("actor={actor}")).await;
     assert!(!body["entries"].as_array().unwrap().is_empty());
 
     let (_, body) = list(&fix, &token, "actor=did:key:z6MkSomeoneElse").await;
@@ -218,13 +262,12 @@ async fn unsupported_filters_are_refused_not_ignored() {
     for q in ["outcome=denied", "contextId=ctx-1"] {
         let (status, body) = list(&fix, &token, q).await;
         assert_eq!(
-            status,
-            StatusCode::BAD_REQUEST,
+            body["code"], "malformedRequest",
             "{q} must be refused, got {status}: {body}"
         );
         // The refusal has to name the offending filter, or an operator
         // cannot tell which of their filters this maintainer dropped.
-        let msg = body["error"].as_str().unwrap_or_default();
+        let msg = body["message"].as_str().unwrap_or_default();
         let named = q.split('=').next().unwrap();
         assert!(msg.contains(named), "error should name `{named}`: {body}");
     }
@@ -292,7 +335,6 @@ async fn truncated_reflects_matching_entries_not_raw_rows() {
 #[tokio::test]
 async fn non_super_admin_is_refused() {
     let fix = build().await;
-    let token = fix.vtc.token("did:key:z6MkReader", "reader", vec![]).await;
-    let (status, _) = list(&fix, &token, "").await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (_, body) = list(&fix, "member", "").await;
+    assert_eq!(body["code"], "permissionDenied", "{body}");
 }

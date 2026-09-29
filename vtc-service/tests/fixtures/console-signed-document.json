@@ -1,0 +1,18 @@
+{
+  "id": "urn:uuid:3c0c80e7-a128-441e-b1e9-5bac25a4f276",
+  "type": "https://trusttasks.org/spec/vtc/members/purge/0.1",
+  "issuer": "did:key:z6Mked52HzhTh2Y46FrcLQEHKmosTvH3cTRVBaTM8VqaCH1M",
+  "recipient": "did:webvh:QmFixtureScid:community.example:vtc",
+  "issuedAt": "2026-09-23T10:15:00Z",
+  "payload": {
+    "did": "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG"
+  },
+  "proof": {
+    "type": "DataIntegrityProof",
+    "cryptosuite": "eddsa-jcs-2022",
+    "verificationMethod": "did:key:z6Mked52HzhTh2Y46FrcLQEHKmosTvH3cTRVBaTM8VqaCH1M#z6Mked52HzhTh2Y46FrcLQEHKmosTvH3cTRVBaTM8VqaCH1M",
+    "created": "2026-09-23T10:14:00Z",
+    "proofPurpose": "assertionMethod",
+    "proofValue": "z5ZXbjex4upiDqY7k2fjNgf62mS7QPJzu21nMABTnPqb7hWQqqxGThkvn5aYU6PeFuxguXWZoL3umMytXkYhwmP2s"
+  }
+}

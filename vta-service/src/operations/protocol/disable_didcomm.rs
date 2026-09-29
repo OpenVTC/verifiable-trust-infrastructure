@@ -444,7 +444,6 @@ mod tests {
         sink: SharedTelemetrySink,
         registry: Arc<MediatorListenerRegistry>,
         sweeper: Arc<DrainSweeper>,
-        locks: crate::operations::did_webvh::WebvhAuthLocks,
     }
 
     impl TestEnv {
@@ -477,7 +476,6 @@ mod tests {
                 sink,
                 registry,
                 sweeper,
-                locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
             }
         }
 
@@ -496,7 +494,6 @@ mod tests {
                 did_resolver: &self.resolver,
                 didcomm_bridge: &self.bridge,
                 telemetry: &self.sink,
-                webvh_auth_locks: &self.locks,
                 registry: &self.registry,
                 sweeper: &self.sweeper,
             }

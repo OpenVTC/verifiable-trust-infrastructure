@@ -106,28 +106,28 @@ async fn cnm_audit_verify_authenticates_to_the_vtc() {
     mock.shutdown().await;
 }
 
-/// `cnm backup export` then `cnm backup import --preview`: the saved file is
-/// the envelope itself, and the VTC accepts it back.
+/// `cnm backup` over a REST connection is refused before anything leaves: a
+/// community backup moves only over an end-to-end transport (TSP or DIDComm),
+/// and the client says so rather than sending the password over hop-by-hop
+/// HTTPS. The export and import round trip itself is held in `tests/backup.rs`,
+/// over each end-to-end transport.
 #[tokio::test]
-async fn cnm_backup_export_and_import_preview_authenticate_to_the_vtc() {
+async fn cnm_backup_over_rest_is_refused_with_the_transport_named() {
     let (did, key) = did_key_from_seed(0xa2);
     let vtc = community().await;
     grant_super_admin(&vtc, &did).await;
     let mock = MockVtc::start_with(vtc).await;
 
     let client = connect_as_cnm(&mock, &did, &key).await.expect("connect");
-    let envelope = client.export_backup(PASSWORD, false).await.expect("export");
-    // What `cnm backup export` writes to disk and prints: the envelope, not
-    // the `{ envelope }` response around it.
-    assert_eq!(envelope["format"], "vtc-backup-v1", "{envelope}");
-    assert_eq!(envelope["sourceDid"], VTC_DID, "{envelope}");
-
-    let preview = client
-        .import_backup(&envelope, PASSWORD, false)
+    let err = client
+        .export_backup(PASSWORD, false)
         .await
-        .expect("import preview");
-    assert!(preview["counts"].is_object(), "{preview}");
-    assert_ne!(preview["status"], "imported", "a preview changes nothing");
+        .expect_err("a backup is refused over REST");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("TSP"),
+        "names the end-to-end transports: {msg}"
+    );
     mock.shutdown().await;
 }
 

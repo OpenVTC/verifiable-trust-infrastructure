@@ -32,7 +32,7 @@ const ARCHIVE_KEK_INFO: &[u8] = b"vta-retired-seed-archive";
 /// encryption is configured. `seed_hex` is the pre-P0.7b plaintext form: still
 /// read for backward compatibility and migrated to `seed_enc` by
 /// [`reconcile_archive`], but never written anew.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SeedRecord {
     pub id: u32,
     /// Legacy plaintext archive (`Some(hex)` on pre-P0.7b records). Read-only:
@@ -45,6 +45,19 @@ pub struct SeedRecord {
     pub seed_enc: Option<Vec<u8>>,
     pub created_at: DateTime<Utc>,
     pub retired_at: Option<DateTime<Utc>>,
+}
+
+/// Written by hand so the archived seed (plaintext or ciphertext) never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for SeedRecord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeedRecord")
+            .field("id", &self.id)
+            .field("seed_hex", &self.seed_hex.as_ref().map(|_| "<redacted>"))
+            .field("seed_enc", &self.seed_enc.as_ref().map(|_| "<redacted>"))
+            .field("created_at", &self.created_at)
+            .field("retired_at", &self.retired_at)
+            .finish()
+    }
 }
 
 fn store_seed_key(id: u32) -> String {

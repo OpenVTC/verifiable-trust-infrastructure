@@ -53,7 +53,7 @@ pub(super) struct RestAuth {
 /// what every integration this workspace provisions actually has — signs by
 /// naming its key in [`verification_method`](Self::verification_method);
 /// see [`HolderKey`](crate::trust_task_sign::HolderKey).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ClientIdentity {
     /// The producer's DID. Becomes the document's `issuer`, and must match the
     /// identity the transport authenticates as — item 6 rejects a document
@@ -72,6 +72,18 @@ pub struct ClientIdentity {
     /// decides what its keys are called and no amount of string manipulation
     /// can guess it.
     pub verification_method: Option<String>,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ClientIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientIdentity")
+            .field("client_did", &self.client_did)
+            .field("private_key_multibase", &"<redacted>")
+            .field("vta_did", &self.vta_did)
+            .field("verification_method", &self.verification_method)
+            .finish()
+    }
 }
 
 impl ClientIdentity {
@@ -122,15 +134,13 @@ pub(super) enum Transport {
         session: crate::didcomm_session::DIDCommSession,
         rest_client: Option<Client>,
         rest_url: Option<String>,
-        /// The **Trust-Task surface**'s transport, when it has been moved to
-        /// TSP by [`VtaClient::enable_tsp_trust_tasks`]. `None` means every
-        /// surface uses DIDComm.
+        /// The TSP leg Trust Tasks ride, when attached by
+        /// [`VtaClient::enable_tsp_trust_tasks`]. `None` means Trust Tasks go
+        /// over DIDComm.
         ///
-        /// TSP is selected *per surface*, not per client: it carries Trust
-        /// Tasks, and the older DIDComm protocol-message surface
-        /// ([`VtaClient::rpc`]) has no TSP dispatcher behind it. So a client
-        /// that wants both keeps its DIDComm leg and adds this one, rather than
-        /// choosing between them.
+        /// A client that holds both keeps its DIDComm session (the mediator's
+        /// one socket per DID, on which TSP receive arrives) and adds this leg,
+        /// rather than opening a second socket.
         #[cfg(feature = "tsp")]
         tsp: Option<TspLeg>,
     },
@@ -139,10 +149,9 @@ pub(super) enum Transport {
     /// Carries the **Trust-Task** surface only ([`VtaClient::rpc_tt`]). The
     /// VTA's TSP inbound dispatcher opens the binding envelope and hands the
     /// document to
-    /// `dispatch_trust_task_core`, so a trust task routes over TSP unchanged —
-    /// but the older DIDComm *protocol-message* surface ([`VtaClient::rpc`],
-    /// e.g. `key-management/1.0/sign-request`) has no TSP dispatcher behind it
-    /// and reports `UnsupportedTransport` naming DIDComm.
+    /// `dispatch_trust_task_core`, so a trust task routes over TSP unchanged.
+    /// Every client method is a Trust Task; the SDK sends no bare DIDComm
+    /// protocol messages any more.
     #[cfg(feature = "tsp")]
     Tsp {
         session: std::sync::Arc<crate::session::TspSession>,
@@ -202,14 +211,12 @@ pub(super) enum TspLegKind {
     Separate,
 }
 
-/// Which transport carries a given surface on this client.
+/// Which transport carries the Trust-Task surface on this client.
 ///
-/// A `VtaClient` no longer has *one* transport. TSP carries the Trust-Task
-/// surface only, so a client can legitimately be on DIDComm for protocol
-/// messages and TSP for trust tasks at the same time — an operator-facing
-/// display that renders a single value is therefore wrong by construction. Read
-/// both [`VtaClient::trust_task_transport`] and
-/// [`VtaClient::protocol_message_transport`].
+/// Every client operation is a Trust Task, so there is one surface and
+/// [`VtaClient::trust_task_transport`] reports it. A DIDComm client that has
+/// attached a TSP leg reports TSP: its DIDComm session stays open only as the
+/// mediator's one socket per DID, on which TSP receive arrives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceTransport {
     /// REST/HTTPS with a bearer token.
@@ -307,7 +314,6 @@ mod acl;
 mod agent_devices;
 #[cfg(feature = "session")]
 mod auto_connect;
-mod backup;
 mod backup_chunked;
 mod backup_descriptors;
 pub use backup_chunked::{ChunkedDownload, ChunkedUpload, TransferProgress};
@@ -346,33 +352,6 @@ mod audit;
 pub use crate::session::TokenResult;
 #[cfg(feature = "session")]
 pub use auto_connect::{AutoConnect, ConnectedVta};
-
-/// Percent-encode characters that are unsafe inside a URL path segment.
-///
-/// `%` must be escaped first — re-ordering would double-escape any
-/// already-percent-encoded character.
-pub(super) fn encode_path_segment(s: &str) -> String {
-    s.replace('%', "%25")
-        .replace('#', "%23")
-        .replace('?', "%3F")
-        .replace('/', "%2F")
-}
-
-/// The error for a legacy DIDComm *protocol message* attempted over TSP.
-///
-/// TSP carries Trust Tasks; the VTA's TSP inbound dispatcher feeds every
-/// unpacked payload to `dispatch_trust_task_core` and has no handler for the
-/// older `key-management/1.0/*`-style protocol messages. Refusing here — rather
-/// than sending a frame the VTA would answer with an error, or silently doing
-/// nothing — names the transport that does serve the operation.
-#[cfg(feature = "tsp")]
-fn unsupported_over_tsp(msg_type: &str) -> VtaError {
-    VtaError::UnsupportedTransport(format!(
-        "'{msg_type}' is a DIDComm protocol message, which TSP does not carry \
-         (TSP carries Trust Tasks). Reach this operation over DIDComm:\n  \
-         <cli> --transport didcomm <command>"
-    ))
-}
 
 // ── REST helpers ────────────────────────────────────────────────────
 
@@ -770,10 +749,8 @@ impl VtaClient {
     /// The **Trust-Task surface** — the VTA's TSP inbound dispatcher feeds each
     /// unpacked payload to the same `dispatch_trust_task_core` spine REST and
     /// DIDComm use, so those operations are byte-identical across transports.
-    /// The older DIDComm protocol-message surface (`key-management/1.0/*` and
-    /// friends) has no TSP dispatcher behind it and reports
-    /// [`VtaError::UnsupportedTransport`] naming DIDComm — deliberately, rather
-    /// than sending a frame the VTA would answer with an error.
+    /// Every client operation is a Trust Task, so everything routes over TSP;
+    /// the older bare-DIDComm protocol-message surface is gone from the SDK.
     ///
     /// # Authentication
     ///
@@ -938,11 +915,9 @@ impl VtaClient {
     /// - [`dispatch_trust_task`](Self::dispatch_trust_task) and everything built
     ///   on it (`rpc_tt`, the `device/*` and `vault/*` methods, the generic
     ///   trust-task escape hatch) routes over TSP.
-    /// - [`rpc`](Self::rpc) — the older DIDComm protocol-message surface
-    ///   (`import_key`, `update_webvh_server`, the legacy `backup/*` pair, …)
-    ///   — stays on DIDComm **unconditionally**. It has no TSP dispatcher behind
-    ///   it, so moving it would break it; that is why TSP is a per-surface
-    ///   choice and not a client-wide one.
+    /// - The DIDComm session itself stays: it holds the mediator's one socket
+    ///   per DID, and TSP receive arrives on it. The SDK sends no bare DIDComm
+    ///   protocol messages any more, so nothing else stays behind.
     ///
     /// # Cost
     ///
@@ -1178,9 +1153,10 @@ impl VtaClient {
     /// ([`dispatch_trust_task`](Self::dispatch_trust_task), `rpc_tt`, the
     /// `device/*` and `vault/*` methods).
     ///
-    /// Pairs with [`protocol_message_transport`](Self::protocol_message_transport):
-    /// a client can be on TSP for one and DIDComm for the other, so rendering a
-    /// single "transport" for a `VtaClient` is wrong.
+    /// Every client operation is a Trust Task, so this is the client's
+    /// transport. A DIDComm client with a TSP leg reports TSP: the DIDComm
+    /// session remains only as the mediator's one socket per DID, carrying TSP
+    /// receive.
     pub fn trust_task_transport(&self) -> SurfaceTransport {
         match &self.transport {
             Transport::Rest { .. } => SurfaceTransport::Rest,
@@ -1198,26 +1174,6 @@ impl VtaClient {
                 }
                 SurfaceTransport::Didcomm
             }
-        }
-    }
-
-    /// Which transport carries the older DIDComm **protocol-message** surface
-    /// ([`rpc`](Self::rpc) — `import_key`, `update_webvh_server`, the legacy
-    /// `backup/*` pair, …).
-    ///
-    /// Never TSP: the VTA has no TSP dispatcher for these, so they report
-    /// [`VtaError::UnsupportedTransport`] on a TSP-only client rather than being
-    /// silently routed somewhere that cannot serve them.
-    pub fn protocol_message_transport(&self) -> SurfaceTransport {
-        match &self.transport {
-            Transport::Rest { .. } => SurfaceTransport::Rest,
-            #[cfg(feature = "session")]
-            Transport::DIDComm { .. } => SurfaceTransport::Didcomm,
-            // A TSP-only client cannot serve this surface at all; naming DIDComm
-            // here would claim a leg it does not have, so report TSP and let the
-            // call itself fail with the message that names the fix.
-            #[cfg(feature = "tsp")]
-            Transport::Tsp { .. } => SurfaceTransport::Tsp,
         }
     }
 
@@ -1601,9 +1557,6 @@ impl VtaClient {
         Ok(resp)
     }
 
-    /// Dispatch an RPC call via REST (using `build_rest`) or DIDComm (using
-    /// `msg_type`/`body`/`result_type`), returning a deserialized response.
-    #[allow(unused_variables)]
     /// The DID this client sends as, when the transport has one.
     ///
     /// `None` over REST: a REST client authenticates with a bearer token, and
@@ -1619,36 +1572,7 @@ impl VtaClient {
         }
     }
 
-    pub(crate) async fn rpc<T: serde::de::DeserializeOwned>(
-        &self,
-        msg_type: &str,
-        body: serde_json::Value,
-        result_type: &str,
-        timeout: u64,
-        build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
-    ) -> Result<T, VtaError> {
-        match &self.transport {
-            Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                let req = build_rest(client, base_url);
-                let resp = Self::send_authed(client, base_url, auth, req).await?;
-                Self::handle_response(resp).await
-            }
-            #[cfg(feature = "session")]
-            Transport::DIDComm { session, .. } => {
-                session
-                    .send_and_wait(msg_type, body, result_type, timeout)
-                    .await
-            }
-            #[cfg(feature = "tsp")]
-            Transport::Tsp { .. } => Err(unsupported_over_tsp(msg_type)),
-        }
-    }
-
-    /// Like [`rpc`](Self::rpc), but the **DIDComm leg dispatches a Trust Task**
+    /// The **DIDComm leg dispatches a Trust Task**
     /// (binding envelope, `tt_uri`) instead of a raw protocol message, while the
     /// **REST leg keeps using the dedicated route** built by `build_rest`.
     ///
@@ -1886,6 +1810,62 @@ impl VtaClient {
     ) -> Result<serde_json::Value, VtaError> {
         Self::check_payload_conforms(type_uri, &payload)?;
 
+        // Ahead of the transport: a loopback client answers the Trust-Task
+        // surface in-process. See `client::loopback`.
+        #[cfg(feature = "test-loopback")]
+        if let Some(sink) = &self.loopback {
+            return sink.dispatch(type_uri, &payload);
+        }
+
+        let reply = self.exchange_trust_task(type_uri, payload, timeout).await?;
+        Self::extract_trust_task_payload(reply)
+    }
+
+    /// [`dispatch_trust_task`](Self::dispatch_trust_task), answering the
+    /// **whole reply document** rather than its payload — the `#response`
+    /// document, or the `trust-task-error` document when the peer refused.
+    ///
+    /// For a caller that must read a refusal as the peer wrote it: a
+    /// specification's extended `code`, or the `details` a refusal carries for
+    /// the caller to act on (an inline step-up request, say). The typed
+    /// [`VtaError`] that `dispatch_trust_task` makes of a refusal keeps the
+    /// code and message and drops the rest.
+    ///
+    /// The request is the same document on every transport, signed by this
+    /// client's identity. A `#response` document is verified exactly as
+    /// `dispatch_trust_task` verifies it; a `trust-task-error` document is
+    /// returned as received (as `dispatch_trust_task` reads one unverified).
+    /// Transport failures and a reply that is not a Trust Task document are
+    /// still errors.
+    pub async fn dispatch_trust_task_document(
+        &self,
+        type_uri: &str,
+        payload: serde_json::Value,
+        timeout: u64,
+    ) -> Result<serde_json::Value, VtaError> {
+        Self::check_payload_conforms(type_uri, &payload)?;
+
+        #[cfg(feature = "test-loopback")]
+        if let Some(sink) = &self.loopback {
+            let payload = sink.dispatch(type_uri, &payload)?;
+            return Ok(serde_json::json!({
+                "type": format!("{type_uri}#response"),
+                "payload": payload,
+            }));
+        }
+
+        self.exchange_trust_task(type_uri, payload, timeout).await
+    }
+
+    /// Sign `payload` as a `type_uri` document, send it on this client's
+    /// transport, and answer the reply document — verified when it is a
+    /// `#response`, as received when it is a `trust-task-error`.
+    async fn exchange_trust_task(
+        &self,
+        type_uri: &str,
+        payload: serde_json::Value,
+        timeout: u64,
+    ) -> Result<serde_json::Value, VtaError> {
         // Raise the budget to clear the VTA's own worst case when this is a
         // task it answers by calling a third party (`budget::RELAYS_ONWARD`).
         //
@@ -1902,13 +1882,6 @@ impl VtaClient {
         // saw a bare timeout and no diagnosis. Every other webvh verb carried
         // the same latent inversion at 30s or 60s.
         let timeout = crate::budget::client_budget_secs(type_uri, timeout);
-
-        // Ahead of the transport: a loopback client answers the Trust-Task
-        // surface in-process. See `client::loopback`.
-        #[cfg(feature = "test-loopback")]
-        if let Some(sink) = &self.loopback {
-            return sink.dispatch(type_uri, &payload);
-        }
 
         let doc = self.signed_task_document(type_uri, payload).await?;
         match &self.transport {
@@ -1957,11 +1930,14 @@ impl VtaClient {
                     {
                         return Err(err);
                     }
+                    // A refusal document is the reply: the caller reads it (the
+                    // payload extraction makes the same typed error of it that
+                    // was made here before).
                     if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text)
                         && let Some(payload) = doc.get("payload")
-                        && let Some(err) = Self::trust_task_error(payload)
+                        && Self::trust_task_error(payload).is_some()
                     {
-                        return Err(err);
+                        return Ok(doc);
                     }
                     if status == reqwest::StatusCode::CONFLICT {
                         return Err(VtaError::Conflict(text));
@@ -1972,7 +1948,7 @@ impl VtaClient {
                     ));
                 }
                 let response_doc: serde_json::Value = resp.json().await?;
-                self.finish_reply(response_doc).await
+                self.verified_reply(response_doc).await
             }
             // The whole typed VTA surface over TSP. The VTA's inbound
             // dispatcher opens the TSP binding envelope and hands the document
@@ -2010,7 +1986,7 @@ impl VtaClient {
                         .await
                         .map_err(|e| VtaError::TspTransport(e.to_string()));
                 }
-                self.finish_reply(Self::decode_trust_task_reply(&reply?)?)
+                self.verified_reply(Self::decode_trust_task_reply(&reply?)?)
                     .await
             }
             #[cfg(feature = "session")]
@@ -2020,9 +1996,8 @@ impl VtaClient {
                 tsp,
                 ..
             } => {
-                // Per-surface routing: with a TSP leg attached, trust tasks go
-                // over TSP while `rpc` keeps using this same session's DIDComm
-                // leg. The document is byte-identical either way — the VTA's TSP
+                // With a TSP leg attached, trust tasks go over TSP while this
+                // session's DIDComm leg keeps the socket. The document is byte-identical either way — the VTA's TSP
                 // inbound dispatcher and its DIDComm envelope handler both feed
                 // `dispatch_trust_task_core`.
                 #[cfg(feature = "tsp")]
@@ -2075,21 +2050,16 @@ impl VtaClient {
                         }
                     };
                     return self
-                        .finish_reply(Self::decode_trust_task_reply(&reply)?)
+                        .verified_reply(Self::decode_trust_task_reply(&reply)?)
                         .await;
                 }
 
                 const TRUST_TASK_ENVELOPE_TYPE: &str =
                     "https://trusttasks.org/binding/didcomm/0.1/envelope";
-                let response_doc: serde_json::Value = session
-                    .send_and_wait(
-                        TRUST_TASK_ENVELOPE_TYPE,
-                        doc,
-                        TRUST_TASK_ENVELOPE_TYPE,
-                        timeout,
-                    )
+                let response_doc = session
+                    .send_and_wait_trust_task(TRUST_TASK_ENVELOPE_TYPE, doc, timeout)
                     .await?;
-                self.finish_reply(response_doc).await
+                self.verified_reply(response_doc).await
             }
         }
     }
@@ -2165,7 +2135,7 @@ impl VtaClient {
         self
     }
 
-    /// Verify the reply, then read it.
+    /// Verify the reply and hand it back for the caller to read.
     ///
     /// # Why a client verifies at all
     ///
@@ -2199,9 +2169,9 @@ impl VtaClient {
     /// RECOMMENDED rather than REQUIRED (SPEC §8.1), so demanding one would make
     /// every conforming refusal unreadable. A refusal confers nothing, which is
     /// why the framework asks less of it.
-    async fn finish_reply(&self, doc: serde_json::Value) -> Result<serde_json::Value, VtaError> {
+    async fn verified_reply(&self, doc: serde_json::Value) -> Result<serde_json::Value, VtaError> {
         self.verify_reply(&doc).await?;
-        Self::extract_trust_task_payload(doc)
+        Ok(doc)
     }
 
     async fn verify_reply(&self, doc: &serde_json::Value) -> Result<(), VtaError> {
@@ -2221,7 +2191,10 @@ impl VtaClient {
                 VtaError::Protocol(format!("reply is not a Trust-Task document: {e}"))
             })?;
 
-        if parsed.proof.is_none() && !self.require_signed_replies {
+        if parsed.proof.is_none()
+            && !self.require_signed_replies
+            && !Self::reply_proof_is_load_bearing(doc_type)
+        {
             return Ok(());
         }
 
@@ -2242,13 +2215,22 @@ impl VtaClient {
             crate::trust_task_proof::TrustTaskVmResolver::from_optional(resolver.clone());
         let signer = crate::trust_task_proof::verify_trust_task_proof_with(&parsed, &vm_resolver)
             .await
-            .map_err(|e| {
-                VtaError::Protocol(format!(
-                    "the reply from `{}` is unsigned or its proof does not verify ({e}). An \
+            .map_err(|e| match e {
+                crate::trust_task_proof::DiProofError::ResolverFailed(_) => {
+                    VtaError::Protocol(format!(
+                        "could not retrieve `{}`'s verification key, so its reply was not \
+                         checked and is not believed ({e}). This is a key-retrieval failure, \
+                         not a bad proof: the request may have taken effect, so check its \
+                         state before sending it again",
+                        identity.vta_did
+                    ))
+                }
+                other => VtaError::Protocol(format!(
+                    "the reply from `{}` is unsigned or its proof does not verify ({other}). An \
                      unsigned answer is bytes, not evidence — every specification that requires \
                      a proof on its request requires one on its response too (SPEC §7.3 item 7)",
                     identity.vta_did
-                ))
+                )),
             })?;
 
         if signer != identity.vta_did {
@@ -2262,11 +2244,25 @@ impl VtaClient {
         Ok(())
     }
 
+    /// Replies whose proof is the whole point of the task, so an unsigned one
+    /// is refused even under [`trusting_unsigned_replies`](Self::trusting_unsigned_replies).
+    ///
+    /// `keys/import-wrapping-key`: a wrapping key an intermediary substituted
+    /// would read every private key sealed to it, and only the VTA's proof
+    /// detects the substitution (the task's own producer rule 2).
+    fn reply_proof_is_load_bearing(doc_type: &str) -> bool {
+        doc_type
+            .strip_suffix("#response")
+            .is_some_and(|uri| uri == crate::trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1)
+    }
+
     /// Pull `payload` out of a framework trust-task response document. A success
     /// document carries `payload`; a rejection does not — surface its
     /// `reason`/`comment` (or the whole document) as a protocol error so the
     /// DIDComm path (which drops the HTTP status) still fails loudly.
-    fn extract_trust_task_payload(doc: serde_json::Value) -> Result<serde_json::Value, VtaError> {
+    pub(crate) fn extract_trust_task_payload(
+        doc: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
         if let Some(payload) = doc.get("payload") {
             // A failed task still carries a `payload` — the error envelope goes
             // *inside* it (`{ code, message, retryable }`). Treating "a payload
@@ -2645,10 +2641,119 @@ impl VtaClient {
         }
     }
 
+    /// The VTA's public health flags — `vta/health/details/0.1`.
+    ///
+    /// Status, the mediator its messaging routes through, the TEE it detected,
+    /// whether it is sealed, whether its key store is encrypted at rest, and
+    /// whether it advertises TSP. A public task: the VTA answers it for any
+    /// caller, the same for everyone, over TSP, DIDComm or HTTPS — and never
+    /// with its software version or restore record, which are
+    /// [`restore_status`](Self::restore_status)'s.
+    ///
+    /// The answer is the VTA's signed claim about itself, verified against its
+    /// DID like every reply to a client with an identity. It is not
+    /// attestation: `teeStatus` is what the VTA says, and only an attestation
+    /// report verified against the vendor root says what code runs.
+    #[cfg(feature = "client")]
+    pub async fn health_details(
+        &self,
+    ) -> Result<trust_tasks_rs::specs::vta::health::details::v0_1::Response, VtaError> {
+        self.rpc_tt(
+            crate::trust_tasks::TASK_VTA_HEALTH_DETAILS_0_1,
+            serde_json::json!({}),
+            30,
+        )
+        .await
+    }
+
+    /// The VTA's software version and whether its state derives from a backup
+    /// restore — `vta/restore/status/0.1`, administrators of the VTA only.
+    ///
+    /// `restored` is always present; the VTI-VTA-051 `restore` record (when,
+    /// staged by whom, from which DID and kind of deployment, which internal
+    /// keys did not come back, which hosted DIDs need registering again) is
+    /// present exactly when it is `true`. A response in which the two disagree
+    /// is refused here as malformed, as the specification requires of a
+    /// producer.
+    #[cfg(feature = "client")]
+    pub async fn restore_status(
+        &self,
+    ) -> Result<trust_tasks_rs::specs::vta::restore::status::v0_1::Response, VtaError> {
+        let resp: trust_tasks_rs::specs::vta::restore::status::v0_1::Response = self
+            .rpc_tt(
+                crate::trust_tasks::TASK_VTA_RESTORE_STATUS_0_1,
+                serde_json::json!({}),
+                30,
+            )
+            .await?;
+        if resp.restored != resp.restore.is_some() {
+            return Err(VtaError::Protocol(format!(
+                "vta/restore/status: `restored` is {} but the `restore` record is {} — the \
+                 specification requires them to agree, so the answer is malformed",
+                resp.restored,
+                if resp.restore.is_some() {
+                    "present"
+                } else {
+                    "absent"
+                }
+            )));
+        }
+        Ok(resp)
+    }
+
+    // ── Sessions ───────────────────────────────────────────────────
+
+    /// Every active session the VTA holds for **this caller's own** subject —
+    /// `auth/sessions/list/0.1`.
+    #[cfg(feature = "client")]
+    pub async fn list_my_sessions(
+        &self,
+    ) -> Result<trust_tasks_rs::specs::auth::sessions::list::v0_1::Response, VtaError> {
+        self.rpc_tt(
+            crate::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1,
+            serde_json::json!({}),
+            30,
+        )
+        .await
+    }
+
+    /// End sessions — `auth/revoke-session/0.2`. Returns `revokedCount`, the
+    /// number of sessions this call invalidated; zero is a success (the
+    /// sessions were already gone, or a named session is not one this caller
+    /// may end — the VTA answers both the same way).
+    ///
+    /// Ending another subject's sessions needs the authority to withdraw that
+    /// subject's access (VTI-SES-043, VTI-ACL-050); a subject outside it is
+    /// refused with `permissionDenied`, the same whether or not the VTA knows
+    /// the subject. `reason` is recorded in the VTA's audit trail.
+    #[cfg(feature = "client")]
+    pub async fn revoke_sessions(
+        &self,
+        target: RevokeSessions<'_>,
+        reason: Option<&str>,
+    ) -> Result<u64, VtaError> {
+        let mut payload = match target {
+            RevokeSessions::Session(id) => serde_json::json!({ "sessionId": id }),
+            RevokeSessions::AllMine => serde_json::json!({ "all": true }),
+            RevokeSessions::Subject(did) => serde_json::json!({ "subject": did }),
+        };
+        if let Some(reason) = reason {
+            payload["reason"] = serde_json::Value::String(reason.to_string());
+        }
+        let resp: trust_tasks_rs::specs::auth::revoke_session::v0_2::Response = self
+            .rpc_tt(
+                crate::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2,
+                payload,
+                30,
+            )
+            .await?;
+        Ok(resp.revoked_count)
+    }
+
     // ── Discovery ──────────────────────────────────────────────────
 
     // `capabilities()` was removed in #1043 along with the task behind it. Its
-    // members each had a better home: `version` at `GET /health/details`,
+    // members each had a better home: `version` at `vta/restore/status/0.1`,
     // `webvhServers` at `list_webvh_servers()` (a strict superset, same auth),
     // and `features`/`services` at the DID document, which is authoritative for
     // what a party speaks. `didCreationModes` had no consumer at all.
@@ -2683,22 +2788,33 @@ impl VtaClient {
         .await
     }
 
-    /// Check whether the current auth token is valid by calling an authenticated endpoint.
+    /// Check whether the current auth token is valid.
     ///
-    /// Returns `true` if authenticated, `false` if the token is invalid/expired.
-    /// Returns an error only on network failures.
+    /// Asks `auth/whoami/0.1` — the task whose question this is — rather than
+    /// probing an endpoint and reading its status. (It used to probe
+    /// `GET /health/details`, which is gone: health details are now a public
+    /// task that answers any caller, so it could not tell a live token from
+    /// none.)
+    ///
+    /// Returns `true` if authenticated, `false` if the VTA refuses the caller
+    /// (token invalid or expired, or its authority withdrawn). Returns an error
+    /// only on other failures, such as the network.
     #[cfg(feature = "client")]
     pub async fn check_auth(&self) -> Result<bool, VtaError> {
         match &self.transport {
-            Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                let token = auth.lock().await.token.clone();
-                let req = client.get(format!("{base_url}/health/details"));
-                let resp = Self::with_auth_token(req, &token).send().await?;
-                Ok(resp.status().is_success())
+            Transport::Rest { .. } => {
+                match self
+                    .rpc_tt::<serde_json::Value>(
+                        crate::trust_tasks::TASK_AUTH_WHOAMI_0_1,
+                        serde_json::json!({}),
+                        30,
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(true),
+                    Err(e) if e.is_auth() => Ok(false),
+                    Err(e) => Err(e),
+                }
             }
             #[cfg(feature = "session")]
             Transport::DIDComm { .. } => {
@@ -3120,6 +3236,129 @@ mod tests {
         })
     }
 
+    /// As [`signed_reply_client`], but naming `vta_did` and with the reply
+    /// resolver forced to "no resolver configured" — deterministic and
+    /// offline, rather than depending on `PNM_RESOLVER_URL` or reaching the
+    /// network. This is exactly the state a `did:webvh`-only TEE VTA's peer
+    /// is in whenever no DID-cache is configured, which is the case FTL-29595
+    /// is about.
+    fn signed_reply_client_named(vta_did: &str) -> VtaClient {
+        let mut client = VtaClient::new("https://vta.example").with_identity(ClientIdentity {
+            client_did: "did:key:zClient".into(),
+            private_key_multibase: "z0".into(),
+            vta_did: vta_did.to_string(),
+            verification_method: None,
+        });
+        client.reply_resolver = std::sync::Arc::new(tokio::sync::OnceCell::new_with(Some(None)));
+        client
+    }
+
+    /// The `did:key` and private-key multibase for a one-byte test seed —
+    /// enough to sign a document `vta_sdk::trust_task_sign::build_signed`
+    /// accepts, with no network involved.
+    fn did_key_from_seed(seed_byte: u8) -> (String, String) {
+        use ed25519_dalek::SigningKey;
+        let seed = [seed_byte; 32];
+        let sk = SigningKey::from_bytes(&seed);
+        let did = format!(
+            "did:key:{}",
+            crate::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+        );
+        let mut buf = vec![0x80, 0x26];
+        buf.extend_from_slice(&seed);
+        (did, multibase::encode(multibase::Base::Base58Btc, &buf))
+    }
+
+    // ── reply verification: resolver failure vs. an actual bad proof ─
+
+    /// A reply signed by a `did:webvh` the client has no resolver for must be
+    /// reported as a retrieval failure, not folded into "does not verify" —
+    /// the mutation may well have succeeded server-side; only the client's
+    /// ability to *check* the proof failed. This is the fix-direction-3
+    /// behavior change: before it, this case and an actual bad signature were
+    /// indistinguishable to the caller.
+    #[tokio::test]
+    async fn a_resolver_failure_reports_retrieval_not_invalid_proof() {
+        let vta_did = "did:webvh:QmScid:example.com:glenn";
+        let client = signed_reply_client_named(vta_did);
+        let doc = serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000002",
+            "type": "https://trusttasks.org/spec/vta/contexts/list/1.0#response",
+            "issuer": vta_did,
+            "recipient": "did:key:zClient",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": {},
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": format!("{vta_did}#key-0"),
+                "created": "2026-01-01T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        });
+
+        let err = client
+            .verify_reply(&doc)
+            .await
+            .expect_err("no resolver is configured for did:webvh");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not retrieve"),
+            "expected a retrieval-failure message, got: {msg}"
+        );
+        assert!(msg.contains("before sending it again"), "got: {msg}");
+        assert!(
+            !msg.contains("does not verify"),
+            "a retrieval failure must not read as an invalid proof: {msg}"
+        );
+    }
+
+    /// The control: an actual bad signature — reached via the same
+    /// `did:key`-resolving path, so resolution itself succeeds — must still
+    /// say "does not verify". The fix must not blur that distinction the
+    /// other way.
+    #[tokio::test]
+    async fn an_actual_bad_signature_still_says_does_not_verify() {
+        let (vta_did, secret_mb) = did_key_from_seed(11);
+        let client = signed_reply_client_named(&vta_did);
+
+        let signed = crate::trust_task_sign::build_signed(
+            "https://trusttasks.org/spec/vta/contexts/list/1.0#response",
+            serde_json::json!({}),
+            &vta_did,
+            &secret_mb,
+            "did:key:zClient",
+        )
+        .await
+        .expect("build a validly-signed reply");
+        let mut doc: serde_json::Value = serde_json::from_str(&signed).expect("signed doc parses");
+
+        // Corrupt the signature — same technique as the DiProofError-level
+        // test in `trust_task_proof::verify`: flip the last character, which
+        // keeps the multibase string decodable so this exercises "does not
+        // verify" rather than "malformed proof".
+        let proof_value = doc["proof"]["proofValue"]
+            .as_str()
+            .expect("proofValue present")
+            .to_string();
+        let mut corrupted = proof_value.clone();
+        let last = corrupted.pop().expect("non-empty proofValue");
+        corrupted.push(if last == '1' { '2' } else { '1' });
+        doc["proof"]["proofValue"] = serde_json::Value::String(corrupted);
+
+        let err = client
+            .verify_reply(&doc)
+            .await
+            .expect_err("a corrupted signature must not verify");
+        let msg = err.to_string();
+        assert!(msg.contains("does not verify"), "got: {msg}");
+        assert!(
+            !msg.contains("could not retrieve"),
+            "a bad signature must not read as a retrieval failure: {msg}"
+        );
+    }
+
     // ── extract_trust_task_payload ──────────────────────────────────
 
     /// A successful task returns its payload untouched.
@@ -3177,49 +3416,6 @@ mod tests {
         let doc = serde_json::json!({ "id": "urn:uuid:1", "reason": "not authorized" });
         let err = VtaClient::extract_trust_task_payload(doc).expect_err("must be an error");
         assert!(err.to_string().contains("not authorized"), "{err}");
-    }
-
-    // ── encode_path_segment ─────────────────────────────────────────
-
-    #[test]
-    fn test_encode_hash_in_did_fragment() {
-        assert_eq!(
-            encode_path_segment("did:key:z6Mk123#z6Mk123"),
-            "did:key:z6Mk123%23z6Mk123"
-        );
-    }
-
-    #[test]
-    fn test_encode_question_mark() {
-        assert_eq!(encode_path_segment("foo?bar"), "foo%3Fbar");
-    }
-
-    #[test]
-    fn test_encode_percent_is_escaped_first() {
-        assert_eq!(encode_path_segment("100%#done"), "100%25%23done");
-    }
-
-    #[test]
-    fn test_encode_colon_preserved() {
-        assert_eq!(encode_path_segment("did:key:z6Mk"), "did:key:z6Mk");
-    }
-
-    #[test]
-    fn test_encode_plain_string_unchanged() {
-        assert_eq!(encode_path_segment("simple-id"), "simple-id");
-    }
-
-    #[test]
-    fn test_encode_multiple_hashes() {
-        assert_eq!(encode_path_segment("a#b#c"), "a%23b%23c");
-    }
-
-    #[test]
-    fn test_encode_slash_in_derivation_path() {
-        assert_eq!(
-            encode_path_segment("m/44'/0'/0'/0"),
-            "m%2F44'%2F0'%2F0'%2F0"
-        );
     }
 
     // ── VtaClient::new ──────────────────────────────────────────────
@@ -3330,6 +3526,7 @@ mod tests {
             approve_contexts: vec![],
             allowed_keys: None,
             capabilities: Vec::new(),
+            handoff: false,
         };
         let json = serde_json::to_value(&req).unwrap();
         // The builder API is unchanged; only what it serialises moved. The wire
@@ -3531,14 +3728,13 @@ mod tests {
         );
     }
 
-    // ── Per-surface transport reporting ─────────────────────────────
+    // ── Transport reporting ─────────────────────────────────────────
 
-    /// A REST client is on REST for everything — no per-surface split to make.
+    /// A REST client carries its Trust Tasks over REST.
     #[test]
-    fn a_rest_client_reports_rest_for_both_surfaces() {
+    fn a_rest_client_reports_rest_for_trust_tasks() {
         let client = VtaClient::new("https://vta.example.com");
         assert_eq!(client.trust_task_transport(), SurfaceTransport::Rest);
-        assert_eq!(client.protocol_message_transport(), SurfaceTransport::Rest);
     }
 
     #[test]

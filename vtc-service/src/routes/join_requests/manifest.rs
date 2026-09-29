@@ -25,51 +25,16 @@
 //! for decides the shape, and a 0.1 reader is not handed members its version
 //! does not define.
 
-use axum::Json;
-use axum::extract::State;
 use serde_json::{Map, Value};
 
-use vta_sdk::openapi::{JoinManifest01Response, JoinManifest02Response};
 use vta_sdk::protocols::join_requests::manifest::{v0_1, v0_2};
 use vta_sdk::protocols::vetting::{CheckShape, read_branding};
 use vta_sdk::vetting::requirements::{REQUIREMENTS_DIGEST_MEMBER, requirements_digest};
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use crate::community::branding;
 use crate::schemas::accepts::{AcceptsCriterion, list_accepts};
 use crate::server::AppState;
-
-/// GET /join-requests/manifest — the join manifest (0.2) as applicants receive
-/// it, for an admin session.
-///
-/// Applicants read the manifest as a Trust Task document over
-/// `POST /v1/trust-tasks`. The admin console reads the same answer here, under
-/// the same `vtc/join-requests/manifest/0.2` task, to show each criterion's
-/// vetting requirements and `requirementsDigest` — criteria are registered
-/// through `/v1/schemas/accepts`, which carries no digest.
-#[utoipa::path(
-    get, path = "/join-requests/manifest",
-    operation_id = "joinRequestManifestShow", tag = "join-requests",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "The join manifest (0.2): each criterion with its vetting requirements and requirementsDigest, and the branding", body = JoinManifest02Response),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-/// Served as raw JSON rather than as the generated type, for the reason
-/// [`ServedCriterion`] exists: a criterion's `vetting.ext` is part of what the
-/// community publishes and part of what its digest covers, and the generated
-/// type drops it. The OpenAPI body above names the generated shape because it
-/// is the shape minus that namespace — an operator reading this endpoint should
-/// see exactly what an applicant receives, extensions included.
-pub async fn admin_manifest(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
-    Ok(Json(manifest_v0_2(&state).await?))
-}
 
 /// Which manifest version a caller asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,20 +44,6 @@ pub enum ManifestVersion {
     /// `vtc/join-requests/manifest/0.2` — criteria with their vetting
     /// requirements and a `requirementsDigest`, and the branding.
     V0_2,
-}
-
-/// GET /join-requests/manifest — pre-submit discovery of the community's
-/// Accepts criteria. Public, stateless read.
-#[utoipa::path(
-    get, path = "/join-requests/manifest", tag = "join-requests",
-    responses(
-        (status = 200, description = "Community join evidence requirements", body = JoinManifest01Response),
-    ),
-)]
-pub async fn manifest(
-    State(state): State<AppState>,
-) -> Result<Json<JoinManifest01Response>, AppError> {
-    Ok(Json(manifest_v0_1(&state).await?.into()))
 }
 
 async fn community_did(state: &AppState) -> Result<String, AppError> {

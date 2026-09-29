@@ -39,7 +39,7 @@ pub enum SecretBackend {
 /// additive change rather than a breaking one — at the cost of forbidding
 /// struct-literal (and functional-update) construction outside this crate.
 /// Build one with [`SecretsConfig::default`] and assign the fields you need.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct SecretsConfig {
     /// Explicit backend selector. When set it wins outright:
@@ -157,6 +157,48 @@ pub struct SecretsConfig {
     /// long the master seed sits resident in process memory (P0.7).
     #[serde(default = "default_cache_ttl_secs")]
     pub cache_ttl_secs: u64,
+}
+
+/// Written by hand so the seed and Vault credentials never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for SecretsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretsConfig")
+            .field("backend", &self.backend)
+            .field("seed", &self.seed.as_ref().map(|_| "<redacted>"))
+            .field("aws_secret_name", &self.aws_secret_name)
+            .field("aws_region", &self.aws_region)
+            .field("gcp_project", &self.gcp_project)
+            .field("gcp_secret_name", &self.gcp_secret_name)
+            .field("azure_vault_url", &self.azure_vault_url)
+            .field("azure_secret_name", &self.azure_secret_name)
+            .field("keyring_service", &self.keyring_service)
+            .field("vault_addr", &self.vault_addr)
+            .field("vault_kv_mount", &self.vault_kv_mount)
+            .field("vault_secret_path", &self.vault_secret_path)
+            .field("vault_secret_key", &self.vault_secret_key)
+            .field("vault_namespace", &self.vault_namespace)
+            .field("vault_auth_method", &self.vault_auth_method)
+            .field("vault_k8s_role", &self.vault_k8s_role)
+            .field("vault_k8s_mount", &self.vault_k8s_mount)
+            .field("vault_k8s_jwt_path", &self.vault_k8s_jwt_path)
+            .field(
+                "vault_token",
+                &self.vault_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("vault_approle_role_id", &self.vault_approle_role_id)
+            .field(
+                "vault_approle_secret_id",
+                &self.vault_approle_secret_id.as_ref().map(|_| "<redacted>"),
+            )
+            .field("vault_approle_mount", &self.vault_approle_mount)
+            .field("vault_skip_verify", &self.vault_skip_verify)
+            .field("k8s_secret_name", &self.k8s_secret_name)
+            .field("k8s_namespace", &self.k8s_namespace)
+            .field("k8s_secret_key", &self.k8s_secret_key)
+            .field("allow_plaintext", &self.allow_plaintext)
+            .field("cache_ttl_secs", &self.cache_ttl_secs)
+            .finish()
+    }
 }
 
 /// Default seed cache TTL. Short enough that an out-of-band seed change is

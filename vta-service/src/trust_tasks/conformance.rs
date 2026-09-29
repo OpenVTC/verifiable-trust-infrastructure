@@ -124,7 +124,6 @@ use vta_sdk::protocols::audit_management::list::{
 use vta_sdk::protocols::audit_management::verify::{
     AuditChainBreak, AuditChainReport, VTA_EXT_KEY, VtaVerifyExt,
 };
-use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse};
 use vta_sdk::protocols::consent_management::{
     ConsentApproverListBody, ConsentApproverSetBody, ConsentDecisionBody, ConsentListBody,
     ConsentRequestBody, ConsentRevokeBody,
@@ -278,6 +277,14 @@ enum Conformance {
     )]
     KnownDrift(&'static str),
 }
+
+/// The response side of a fire-and-forget task's witness: the SPEC §4.4.2
+/// courtesy acknowledgement, whose payload **MUST** be exactly `{}`. The spec
+/// declares no response schema to parse against, so this accepts the empty
+/// object and nothing else.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Acknowledgement {}
 
 macro_rules! checked {
     ($p:ty, $r:ty, $req:expr, $resp:expr) => {
@@ -543,7 +550,7 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 specs::trust_task_discovery::v0_1::Response,
                 json!({ "patterns": ["acl/*"] }),
                 json!({
-                    "frameworkVersion": "0.2",
+                    "frameworkVersion": "0.6",
                     "supportedTypes": [
                         "https://trusttasks.org/spec/acl/grant/0.1",
                         "https://trusttasks.org/spec/acl/revoke/0.1"
@@ -551,17 +558,35 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
+        // 0.3: the response is the one the handler builds, not a literal, so
+        // the witness pins the advertised acceptance window (VTI-TRN-047) as
+        // it is actually written — whole seconds, at response level.
+        (
+            uris::TASK_TRUST_TASK_DISCOVERY_0_3,
+            checked!(
+                specs::trust_task_discovery::v0_3::Payload,
+                specs::trust_task_discovery::v0_3::Response,
+                json!({ "patterns": ["acl/*"] }),
+                to_v(vti_common::trust_task::discovery::respond_v0_3(
+                    [
+                        "https://trusttasks.org/spec/acl/grant/0.1",
+                        "https://trusttasks.org/spec/acl/revoke/0.1",
+                    ],
+                    &specs::trust_task_discovery::v0_3::Payload::default(),
+                ))
+            ),
+        ),
         // ─── auth ────────────────────────────────────────────────
         (
-            uris::TASK_AUTH_REVOKE_SESSION_0_1,
+            uris::TASK_AUTH_REVOKE_SESSION_0_2,
             checked!(
-                specs::auth::revoke_session::v0_1::Payload,
-                specs::auth::revoke_session::v0_1::Response,
-                to_v(RevokeSessionRequest {
-                    all: None,
-                    session_id: Some("sess-1".into()),
+                specs::auth::revoke_session::v0_2::Payload,
+                specs::auth::revoke_session::v0_2::Response,
+                json!({
+                    "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "reason": "access-withdrawn"
                 }),
-                to_v(RevokeSessionResponse { revoked_count: 1 })
+                json!({ "revokedCount": 3 })
             ),
         ),
         (
@@ -1018,6 +1043,58 @@ fn table() -> Vec<(&'static str, Conformance)> {
             ),
         ),
         (
+            uris::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+            checked!(
+                specs::keys::import_wrapping_key::v0_1::Payload,
+                specs::keys::import_wrapping_key::v0_1::Response,
+                json!({}),
+                json!({
+                    "wrappingKey": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+                    "keyId": "5f2c0a9e-1b7d-4c3e-8f6a-2d9b0e4c7a18",
+                    "expiresAt": "2026-09-27T09:11:00Z"
+                })
+            ),
+        ),
+        // ─── health + restore ────────────────────────────────────
+        (
+            uris::TASK_VTA_HEALTH_DETAILS_0_1,
+            checked!(
+                specs::vta::health::details::v0_1::Payload,
+                specs::vta::health::details::v0_1::Response,
+                json!({}),
+                json!({
+                    "status": "ok",
+                    "mediatorUrl": "https://mediator.example.com",
+                    "mediatorDid": "did:web:mediator.example.com",
+                    "teeStatus": { "teeType": "sev-snp", "detected": true },
+                    "sealed": true,
+                    "storageEncrypted": true,
+                    "tspEnabled": true
+                })
+            ),
+        ),
+        (
+            uris::TASK_VTA_RESTORE_STATUS_0_1,
+            checked!(
+                specs::vta::restore::status::v0_1::Payload,
+                specs::vta::restore::status::v0_1::Response,
+                json!({}),
+                json!({
+                    "version": "0.40.0",
+                    "restored": true,
+                    "restore": {
+                        "appliedAt": "2026-09-26T08:15:02Z",
+                        "stagedAt": "2026-09-26T08:14:40Z",
+                        "stagedBy": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                        "sourceDid": "did:webvh:QmOldScid:vta-old.example.com",
+                        "sourceEnvironment": "hardened",
+                        "targetEnvironment": "tee",
+                        "internalKeysLost": ["audit-checkpoint-signer"]
+                    }
+                })
+            ),
+        ),
+        (
             uris::TASK_KEYS_SHOW_0_1,
             checked!(
                 specs::keys::show::v0_1::Payload,
@@ -1328,6 +1405,68 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         }
                     })),
                 })
+            ),
+        ),
+        // ─── credential-exchange: the holder's steps ─────────────
+        //
+        // Fire-and-forget: none defines a response, and the handler answers
+        // with the empty acknowledgement (its real answer is the next step,
+        // pushed). Requests are what a VTC sends, parsed through the SDK's
+        // body types and re-serialised.
+        (
+            credx::OFFER,
+            checked!(
+                specs::credential_exchange::offer::v0_1::Payload,
+                Acknowledgement,
+                to_v(
+                    serde_json::from_value::<credx::OfferBody>(json!({
+                        "credential_offer": {
+                            "credential_issuer": "did:web:vtc.example",
+                            "credential_configuration_ids": ["VIC"],
+                            "grants": {
+                                "urn:ietf:params:oauth:grant-type:pre-authorized_code": {
+                                    "pre-authorized_code": "code-1"
+                                }
+                            }
+                        }
+                    }))
+                    .expect("an offer body")
+                ),
+                json!({})
+            ),
+        ),
+        (
+            credx::ISSUE,
+            checked!(
+                specs::credential_exchange::issue::v0_1::Payload,
+                Acknowledgement,
+                to_v(
+                    serde_json::from_value::<credx::IssueBody>(json!({
+                        "credential_response": { "credential": "eyJhbGciOiJFZERTQSJ9.e30.c2ln~" }
+                    }))
+                    .expect("an issue body")
+                ),
+                json!({})
+            ),
+        ),
+        (
+            credx::QUERY,
+            checked!(
+                specs::credential_exchange::query::v0_1::Payload,
+                Acknowledgement,
+                to_v(
+                    serde_json::from_value::<credx::QueryBody>(json!({
+                        "dcql_query": { "credentials": [{
+                            "id": "membership",
+                            "format": "dc+sd-jwt",
+                            "meta": { "vct_values": ["https://openvtc.org/credentials/MembershipCredential"] }
+                        }]},
+                        "nonce": "nonce-1",
+                        "purpose": "join: present a membership credential"
+                    }))
+                    .expect("a query body")
+                ),
+                json!({})
             ),
         ),
         // ─── credential-exchange: deferred presentations ─────────
@@ -2969,6 +3108,82 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ));
     }
 
+    // ─── vta/attestation/mnemonic-export (tee-gated like its dispatch arm) ─
+    #[cfg(feature = "tee")]
+    {
+        use vta_sdk::protocols::attestation_management::MnemonicExportResultBody;
+        // Serialised from the types the service reads and answers with. The
+        // response carries the root seed sealed to the caller, so what this
+        // pins is that the sealed shape matches the published schema exactly.
+        t.push((
+            uris::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+            checked!(
+                specs::vta::attestation::mnemonic_export::v1_0::Payload,
+                specs::vta::attestation::mnemonic_export::v1_0::Response,
+                json!({
+                    "clientDid": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                    "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+                    "label": "first boot",
+                }),
+                to_v(MnemonicExportResultBody {
+                    bundle: "-----BEGIN VTA SEALED BUNDLE-----".into(),
+                    digest: "0".repeat(64),
+                    window_remaining_secs: 42,
+                })
+            ),
+        ));
+    }
+
+    // ─── vta/attestation/{status,report,config-report} (public, tee-gated) ─
+    //
+    // The handlers build each response through the generated type; these pin
+    // that the shapes they emit — the registry's `sev-snp` spelling, RFC 3339
+    // `generatedAt`, the 64-hex nonce — are the published ones.
+    #[cfg(feature = "tee")]
+    {
+        let nonce = "8f14e45fceea167a5a36dedd4bea2543a1f0b1c2d3e4f5a6b7c8d9e0f1a2b3c4";
+        t.push((
+            uris::TASK_ATTESTATION_STATUS_0_1,
+            checked!(
+                specs::vta::attestation::status::v0_1::Payload,
+                specs::vta::attestation::status::v0_1::Response,
+                json!({}),
+                json!({ "teeType": "sev-snp", "detected": true, "platformVersion": "3" })
+            ),
+        ));
+        t.push((
+            uris::TASK_ATTESTATION_REPORT_0_1,
+            checked!(
+                specs::vta::attestation::report::v0_1::Payload,
+                specs::vta::attestation::report::v0_1::Response,
+                json!({ "nonce": nonce }),
+                json!({
+                    "teeType": "nitro",
+                    "evidence": "hEShATgioFkRXqlpbW9kdWxlX2lk",
+                    "nonce": nonce,
+                    "vtaDid": "did:webvh:QmExampleScid:vta.example.com",
+                    "generatedAt": "2026-09-26T12:00:00Z",
+                })
+            ),
+        ));
+        t.push((
+            uris::TASK_ATTESTATION_CONFIG_REPORT_0_1,
+            checked!(
+                specs::vta::attestation::config_report::v0_1::Payload,
+                specs::vta::attestation::config_report::v0_1::Response,
+                json!({ "nonce": nonce }),
+                json!({
+                    "configDigestSha384": "OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb",
+                    "configView": "eyJ0ZWUiOnt9fQ==",
+                    "nonce": nonce,
+                    "teeType": "nitro",
+                    "evidence": "hEShATgioFkRXqlpbW9kdWxlX2lk",
+                    "generatedAt": "2026-09-26T12:00:00Z",
+                })
+            ),
+        ));
+    }
+
     // ─── vta/webvh/dids/update (webvh-gated like its dispatch arm) ─
     #[cfg(feature = "webvh")]
     {
@@ -4177,6 +4392,16 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             (context_record(), parses::<ctx::update_did::v1_0::Response>),
         ),
         (
+            // 1.1: `did` may be `null`, which clears the context's DID.
+            uris::TASK_CONTEXTS_UPDATE_DID_1_1,
+            (
+                json!({ "id": "personal", "did": null }),
+                parses::<ctx::update_did::v1_1::Payload>,
+                validates::<ctx::update_did::v1_1::Payload>,
+            ),
+            (context_record(), parses::<ctx::update_did::v1_1::Response>),
+        ),
+        (
             uris::TASK_CONTEXTS_SECRETS_1_0,
             (
                 json!({ "id": "rooms/host-1" }),
@@ -4485,7 +4710,7 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
         // Typed explicitly: without it the array literal takes its element type
         // from the first entry, and each `parses::<T>` is a distinct fn item
         // rather than the `ParseFn` pointer the alias expects.
-        let services: [(&'static str, ReqParts, RespParts); 8] = [
+        let services: [(&'static str, ReqParts, RespParts); 11] = [
             (
                 uris::TASK_SERVICES_LIST_1_0,
                 (
@@ -4582,6 +4807,53 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
                 (
                     json!({ "mediatorDid": "did:web:old-mediator.example" }),
                     parses::<svc::drain::cancel::v1_0::Response>,
+                ),
+            ),
+            (
+                // 1.1 adds the drain window to rollback: a DIDComm rollback that
+                // leaves the superseded mediator draining for a day.
+                uris::TASK_SERVICES_ROLLBACK_1_1,
+                (
+                    json!({ "service": "didcomm", "drainTtlSecs": 86_400 }),
+                    parses::<svc::rollback::v1_1::Payload>,
+                    validates::<svc::rollback::v1_1::Payload>,
+                ),
+                (
+                    json!({ "result": { "kind": "updated", "serverless": false,
+                                        "drainingMediator": "did:web:old-mediator.example",
+                                        "drainUntil": "2026-08-20T21:00:00Z" } }),
+                    parses::<svc::rollback::v1_1::Response>,
+                ),
+            ),
+            (
+                // 1.1 adds the mediator drain window: a DIDComm replacement
+                // held open two days for correspondents on the old route.
+                uris::TASK_SERVICES_UPDATE_1_1,
+                (
+                    json!({ "service": "didcomm", "config": { "mediatorDid": "did:web:mediator.example" },
+                            "drainTtlSecs": 172_800 }),
+                    parses::<svc::update::v1_1::Payload>,
+                    validates::<svc::update::v1_1::Payload>,
+                ),
+                (
+                    json!({ "result": mutation_result() }),
+                    parses::<svc::update::v1_1::Response>,
+                ),
+            ),
+            (
+                uris::TASK_SERVICES_REPORT_0_1,
+                (
+                    json!({ "since": "2026-09-19T00:00:00Z" }),
+                    parses::<svc::report::v0_1::Payload>,
+                    validates::<svc::report::v0_1::Payload>,
+                ),
+                (
+                    json!({ "since": "2026-09-19T00:00:00Z", "until": "2026-09-26T12:00:00Z",
+                            "mediators": [{ "mediatorDid": "did:web:old-mediator.example", "inboundCount": 3,
+                                            "firstSeen": "2026-09-19T08:00:00Z", "lastSeen": "2026-09-24T17:40:00Z" }],
+                            "senders": [{ "senderDid": "did:key:z6MkLagging", "lastSeenMediator": "did:web:old-mediator.example",
+                                          "lastSeenAt": "2026-09-24T17:40:00Z" }] }),
+                    parses::<svc::report::v0_1::Response>,
                 ),
             ),
         ];

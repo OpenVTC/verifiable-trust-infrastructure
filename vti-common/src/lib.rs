@@ -1,6 +1,7 @@
 pub mod acl;
 pub mod audit;
 pub mod auth;
+pub mod backup_transfer;
 /// Client-side wire helpers for the capability Trust Task families —
 /// re-exported from the `trust-tasks-capability-client` crate so both this
 /// (the hook producer) and out-of-repo consumers (management UIs) share one
@@ -26,6 +27,13 @@ pub mod seed_store;
 pub mod setup;
 pub mod slip10;
 pub mod store;
+pub mod task_consent;
 pub mod telemetry;
 pub mod trust_task;
+/// Push a signed Trust Task over TSP > DIDComm > REST, durably, with
+/// escalation — shared by the VTA and the VTC.
+pub mod trust_task_push;
+/// Which peers were recently seen sending over TSP, learned from inbound —
+/// how a node reaches over TSP a peer whose DID document advertises nothing.
+pub mod tsp_reach;
 pub mod vault;

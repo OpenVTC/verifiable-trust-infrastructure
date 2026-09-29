@@ -1,8 +1,18 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AutoGrantPanel } from "@/plugins/vetting/AutoGrantPanel";
-import { type MockRoute, mockFetch, renderWithProviders } from "@/test/render";
+import { type MockRoute, mockFetch, renderWithProviders, sentPayloads, taskRoute } from "@/test/render";
+
+const SHOW = "https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1";
+const UPDATE = "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1";
+
+// Signed documents reach the fetch table unsigned; there is no console key here.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+  postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+}));
 
 const STATUS = {
   enabled: false,
@@ -17,13 +27,11 @@ const STATUS = {
 };
 
 const ROUTES: MockRoute[] = [
-  { path: "/v1/vetting/auto-grant", body: STATUS },
-  { path: "/v1/policies/active", body: { bindings: [] } },
-  {
-    method: "PUT",
-    path: "/v1/vetting/auto-grant",
-    body: ({ body }) => ({ ...(body as object), lastSweep: STATUS.lastSweep }),
-  },
+  taskRoute(SHOW, { autoGrant: STATUS }),
+  taskRoute("https://trusttasks.org/spec/policy/active/0.1", { bindings: [] }),
+  taskRoute(UPDATE, (payload) => ({
+    autoGrant: { ...(payload as object), lastSweep: STATUS.lastSweep },
+  })),
 ];
 
 describe("AutoGrantPanel", () => {
@@ -58,14 +66,12 @@ describe("AutoGrantPanel", () => {
     expect(save.disabled).toBe(false);
     fireEvent.click(save);
 
-    await waitFor(() => expect(requests.some((r) => r.method === "PUT")).toBe(true));
-    const put = requests.find((r) => r.method === "PUT")!;
-    expect(put.body).toEqual({
+    await waitFor(() => expect(sentPayloads(requests, UPDATE).length).toBe(1));
+    expect(sentPayloads(requests, UPDATE)[0]).toEqual({
       enabled: true,
       sweepMinutes: 30,
       validitySeconds: 31_536_000,
     });
-    expect(put.headers.get("Trust-Task")).toBeNull();
     expect(
       await screen.findByText(
         "Automatic grants are on. The sweep runs every 30 minutes.",

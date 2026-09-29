@@ -1,8 +1,7 @@
 // Registry preview — the vetter listing as an applicant receives it.
 //
-// `POST /v1/vetting/vetters/list` is the admin-session route onto the same
-// `vtc/vetting/vetters/list/0.1` listing an applicant sends to
-// `POST /v1/trust-tasks`; both run one function on the daemon. So an admin can
+// The console sends the same signed `vtc/vetting/vetters/list/0.1` document an
+// applicant sends to `POST /v1/trust-tasks`, and gets the same answer. So an admin can
 // check that a vetter is findable, with the filters an applicant would use,
 // before pointing applicants at them.
 

@@ -1,5 +1,7 @@
-//! Integration coverage for `/v1/members/{did}/personhood/*`
-//! (Phase 4 M4.3 + M4.4).
+//! Integration coverage for personhood (Phase 4 M4.3 + M4.4): the challenge
+//! and the assertion, which are signed documents at `POST /v1/trust-tasks`
+//! (`vtc/members/personhood/{challenge,assert}/0.1`), and the revoke at
+//! `DELETE /v1/members/{did}/personhood`.
 //!
 //! Covers:
 //! - challenge mint happy path + non-member 404
@@ -28,6 +30,8 @@ use tower::ServiceExt;
 use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 
+use vti_rooms_dtg::test_support::Party;
+
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::members::{Member, get_member, store_member};
 use vtc_service::status_list;
@@ -43,6 +47,8 @@ const ADMIN_DID: &str = "did:key:zPersonAdmin";
 
 struct Fixture {
     router: axum::Router,
+    /// A member with a real key, who signs the challenge and assert documents.
+    person: Party,
     member_token: String,
     other_member_token: String,
     admin_token: String,
@@ -204,12 +210,34 @@ async fn build_fixture() -> Fixture {
         vtc.jwt_keys.encode(&claims).unwrap()
     };
 
+    let person = Party::new();
+    store_acl_entry(
+        &vtc.state.acl_ks,
+        &VtcAclEntry {
+            did: person.did.clone(),
+            role: VtcRole::Member,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: now,
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    store_member(&vtc.state.members_ks, &Member::fresh(&person.did))
+        .await
+        .unwrap();
+
     let members_ks = vtc.state.members_ks.clone();
     let audit_ks = vtc.state.audit_ks.clone();
     let router = vtc.router.clone();
 
     Fixture {
         router,
+        person,
         member_token,
         other_member_token,
         admin_token,
@@ -227,131 +255,117 @@ async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
     (status, v)
 }
 
-// ─── Challenge endpoint ────────────────────────────────────
+/// `payload` as a document of `task`, signed by `from`; the reply's status and
+/// payload.
+async fn signed(fix: &Fixture, from: &Party, task: &str, payload: Value) -> (StatusCode, Value) {
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        task,
+        payload,
+        &from.did,
+        vtc_service::test_support::TEST_VTC_DID,
+    )
+    .unwrap();
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+        .unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .unwrap();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/trust-tasks")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+        .unwrap();
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    (status, body["payload"].clone())
+}
+
+/// Mint a challenge for the fixture's person.
+async fn challenge(fix: &Fixture) -> String {
+    let (status, v) = signed(
+        fix,
+        &fix.person,
+        CHALLENGE_TASK,
+        json!({ "did": fix.person.did }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    v["challengeId"].as_str().unwrap().to_string()
+}
+
+// ─── Challenge ─────────────────────────────────────────────
 
 #[tokio::test]
 async fn challenge_happy_path_returns_uuid_and_expiry() {
     let fix = build_fixture().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri(format!("/v1/members/{MEMBER_DID}/personhood/challenge"))
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", CHALLENGE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = signed(
+        &fix,
+        &fix.person,
+        CHALLENGE_TASK,
+        json!({ "did": fix.person.did }),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert!(v["challengeId"].is_string());
     assert!(v["expiresAt"].is_string());
 }
 
-#[tokio::test]
-async fn challenge_returns_404_for_non_member() {
-    let fix = build_fixture().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/did:key:zStranger/personhood/challenge")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", CHALLENGE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-}
-
-// ─── Assert endpoint (failure-mode coverage) ───────────────
+// ─── Assert (failure-mode coverage) ────────────────────────
 
 #[tokio::test]
-async fn assert_without_did_resolver_returns_500() {
+async fn assert_without_did_resolver_is_a_server_error() {
     let fix = build_fixture().await;
-    // First mint a challenge so the early-exit on missing
-    // challenge doesn't fire.
-    let req = Request::builder()
-        .method("POST")
-        .uri(format!("/v1/members/{MEMBER_DID}/personhood/challenge"))
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", CHALLENGE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (_, v) = body_value(resp).await;
-    let challenge_id = v["challengeId"].as_str().unwrap().to_string();
-
-    // Both copies of the challenge, so this reaches the resolver rather
+    // First mint a challenge so the early-exit on missing challenge doesn't
+    // fire. Both copies of the challenge, so this reaches the resolver rather
     // than stopping at the signed-nonce check.
-    let body = json!({
-        "presentation": {
-            "@context": ["https://www.w3.org/ns/credentials/v2"],
-            "type": ["VerifiablePresentation"],
-            "holder": MEMBER_DID,
-            "verifiableCredential": [],
-            "nonce": challenge_id,
-            "proof": {
-                "type": "DataIntegrityProof",
-                "cryptosuite": "eddsa-jcs-2022",
-                "verificationMethod": format!("{MEMBER_DID}#key-0"),
-                "challenge": challenge_id,
-                "proofValue": "z00".to_string(),
-            }
-        }
-    });
-
-    let req = Request::builder()
-        .method("POST")
-        .uri(format!("/v1/members/{MEMBER_DID}/personhood"))
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ASSERT_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    // Fixture has did_resolver: None → 500.
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let challenge_id = challenge(&fix).await;
+    let (status, body) = post_assert(
+        &fix,
+        presentation_with(&fix.person.did, &challenge_id, &challenge_id),
+    )
+    .await;
+    // Fixture has did_resolver: None.
+    assert!(status.is_server_error(), "{status}: {body}");
 }
 
-/// A presentation carrying the challenge in both required places. `nonce`
-/// is the signed copy, `proof.challenge` the one the published task names;
-/// see `assert_inner` step 1a for why both are demanded.
-fn presentation_with(challenge: &str, nonce: &str) -> serde_json::Value {
+/// A presentation by `holder` carrying the challenge in both required places.
+/// `nonce` is the signed copy, `proof.challenge` the one the published task
+/// names; see `assert_inner` step 1a for why both are demanded.
+fn presentation_with(holder: &str, challenge: &str, nonce: &str) -> serde_json::Value {
     json!({
         "@context": ["https://www.w3.org/ns/credentials/v2"],
         "type": ["VerifiablePresentation"],
-        "holder": MEMBER_DID,
+        "holder": holder,
+        "verifiableCredential": [],
         "nonce": nonce,
         "proof": {
             "type": "DataIntegrityProof",
             "cryptosuite": "eddsa-jcs-2022",
-            "verificationMethod": format!("{MEMBER_DID}#key-0"),
+            "verificationMethod": format!("{holder}#key-0"),
             "challenge": challenge,
             "proofValue": "z00",
         }
     })
 }
 
-async fn post_assert(fix: &Fixture, presentation: serde_json::Value) -> StatusCode {
-    let req = Request::builder()
-        .method("POST")
-        .uri(format!("/v1/members/{MEMBER_DID}/personhood"))
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ASSERT_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "presentation": presentation }).to_string(),
-        ))
-        .unwrap();
-    fix.router.clone().oneshot(req).await.unwrap().status()
+/// The fixture's person asserts `presentation` about themselves.
+async fn post_assert(fix: &Fixture, presentation: serde_json::Value) -> (StatusCode, Value) {
+    signed(
+        fix,
+        &fix.person,
+        ASSERT_TASK,
+        json!({ "did": fix.person.did, "presentation": presentation }),
+    )
+    .await
 }
 
 #[tokio::test]
-async fn assert_with_unknown_challenge_returns_400() {
+async fn assert_with_unknown_challenge_is_refused() {
     let fix = build_fixture().await;
     let unknown = uuid::Uuid::new_v4().to_string();
-    // AppError::Validation → 400 in this workspace.
-    assert_eq!(
-        post_assert(&fix, presentation_with(&unknown, &unknown)).await,
-        StatusCode::BAD_REQUEST
-    );
+    let (status, body) =
+        post_assert(&fix, presentation_with(&fix.person.did, &unknown, &unknown)).await;
+    assert!(status.is_client_error(), "{status}: {body}");
 }
 
 /// The replay defence. `proof.challenge` sits inside the proof block, which
@@ -364,19 +378,17 @@ async fn assert_with_unknown_challenge_returns_400() {
 #[tokio::test]
 async fn assert_without_a_signed_nonce_is_refused() {
     let fix = build_fixture().await;
-    let mut presentation = presentation_with(
-        &uuid::Uuid::new_v4().to_string(),
-        &uuid::Uuid::new_v4().to_string(),
-    );
+    let challenge_id = challenge(&fix).await;
+    let mut presentation = presentation_with(&fix.person.did, &challenge_id, &challenge_id);
     presentation
         .as_object_mut()
         .expect("presentation object")
         .remove("nonce");
 
-    assert_eq!(
-        post_assert(&fix, presentation).await,
-        StatusCode::BAD_REQUEST,
-        "a presentation whose challenge appears only in the unsigned proof block must be refused"
+    let (status, body) = post_assert(&fix, presentation).await;
+    assert!(
+        status.is_client_error(),
+        "a presentation whose challenge appears only in the unsigned proof block must be refused: {body}"
     );
 }
 
@@ -386,13 +398,17 @@ async fn assert_without_a_signed_nonce_is_refused() {
 #[tokio::test]
 async fn assert_with_mismatched_signed_and_unsigned_challenge_is_refused() {
     let fix = build_fixture().await;
+    let swapped_challenge = challenge(&fix).await;
     let captured_nonce = uuid::Uuid::new_v4().to_string();
-    let swapped_challenge = uuid::Uuid::new_v4().to_string();
 
-    assert_eq!(
-        post_assert(&fix, presentation_with(&swapped_challenge, &captured_nonce)).await,
-        StatusCode::BAD_REQUEST,
-        "swapping the unsigned challenge on a captured presentation must be refused"
+    let (status, body) = post_assert(
+        &fix,
+        presentation_with(&fix.person.did, &swapped_challenge, &captured_nonce),
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "swapping the unsigned challenge on a captured presentation must be refused: {body}"
     );
 }
 
@@ -612,16 +628,14 @@ async fn call(
 #[tokio::test]
 async fn personhood_challenge_and_revoke_for_a_non_member_are_the_declared_not_found() {
     let fix = build_fixture().await;
-    let (status, body) = call(
+    let (status, body) = signed(
         &fix,
-        "POST",
-        "/v1/members/did:key:zStranger/personhood/challenge",
+        &fix.person,
         CHALLENGE_TASK,
-        &fix.member_token,
-        None,
+        json!({ "did": "did:key:zStranger" }),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(status.is_client_error(), "{body}");
     assert_eq!(rest_error_code(&body), CHALLENGE_ERR_NOT_FOUND, "{body}");
 
     let (status, body) = call(
@@ -644,31 +658,26 @@ async fn personhood_challenge_and_revoke_for_a_non_member_are_the_declared_not_f
 async fn the_personhood_assert_task_answers_with_the_codes_its_spec_declares() {
     let fix = build_fixture().await;
 
-    // notFound: nobody by that DID.
+    // notFound: nobody by that DID — a stranger asserting about themselves.
+    let stranger = Party::new();
     let unknown = uuid::Uuid::new_v4().to_string();
-    let (status, body) = call(
+    let (status, body) = signed(
         &fix,
-        "POST",
-        "/v1/members/did:key:zStranger/personhood",
+        &stranger,
         ASSERT_TASK,
-        &fix.member_token,
-        Some(json!({ "presentation": presentation_with(&unknown, &unknown) })),
+        json!({
+            "did": stranger.did,
+            "presentation": presentation_with(&stranger.did, &unknown, &unknown),
+        }),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(status.is_client_error(), "{body}");
     assert_eq!(rest_error_code(&body), ASSERT_ERR_NOT_FOUND, "{body}");
 
     // challengeExpired: a challenge the community never minted.
-    let (status, body) = call(
-        &fix,
-        "POST",
-        &format!("/v1/members/{MEMBER_DID}/personhood"),
-        ASSERT_TASK,
-        &fix.member_token,
-        Some(json!({ "presentation": presentation_with(&unknown, &unknown) })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) =
+        post_assert(&fix, presentation_with(&fix.person.did, &unknown, &unknown)).await;
+    assert!(status.is_client_error(), "{body}");
     assert_eq!(
         rest_error_code(&body),
         ASSERT_ERR_CHALLENGE_EXPIRED,
@@ -677,29 +686,10 @@ async fn the_personhood_assert_task_answers_with_the_codes_its_spec_declares() {
 
     // presentationInvalid: a real challenge, answered by a presentation whose
     // holder is somebody else.
-    let (status, minted) = call(
-        &fix,
-        "POST",
-        &format!("/v1/members/{MEMBER_DID}/personhood/challenge"),
-        CHALLENGE_TASK,
-        &fix.member_token,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{minted}");
-    let challenge = minted["challengeId"].as_str().unwrap();
-    let mut presentation = presentation_with(challenge, challenge);
-    presentation["holder"] = json!(OTHER_MEMBER_DID);
-    let (status, body) = call(
-        &fix,
-        "POST",
-        &format!("/v1/members/{MEMBER_DID}/personhood"),
-        ASSERT_TASK,
-        &fix.member_token,
-        Some(json!({ "presentation": presentation })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let challenge_id = challenge(&fix).await;
+    let presentation = presentation_with(OTHER_MEMBER_DID, &challenge_id, &challenge_id);
+    let (status, body) = post_assert(&fix, presentation).await;
+    assert!(status.is_client_error(), "{body}");
     assert_eq!(
         rest_error_code(&body),
         ASSERT_ERR_PRESENTATION_INVALID,

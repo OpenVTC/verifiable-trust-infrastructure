@@ -53,7 +53,7 @@ pub enum ApnsEnvironment {
 /// push **gateway** (`push/register`). The gateway holds it in exchange for an
 /// opaque [`WakeHandle`]; the raw token never leaves the gateway. Mirrors the
 /// `PushRegistration` shape in the device-binding shared schema.
-#[derive(Debug, Clone, uniffi::Enum)]
+#[derive(Clone, uniffi::Enum)]
 pub enum PushRegistration {
     /// Apple Push Notification service.
     Apns {
@@ -70,6 +70,38 @@ pub enum PushRegistration {
         p256dh: String,
         auth: String,
     },
+}
+
+/// Written by hand so neither the device push token nor the Web Push auth secret
+/// reaches a log: a derived `Debug` would print them.
+impl std::fmt::Debug for PushRegistration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Apns {
+                token: _,
+                topic,
+                environment,
+            } => f
+                .debug_struct("Apns")
+                .field("token", &"<redacted>")
+                .field("topic", topic)
+                .field("environment", environment)
+                .finish(),
+            Self::Fcm { token: _ } => f.debug_struct("Fcm").field("token", &"<redacted>").finish(),
+            Self::WebPush {
+                endpoint,
+                p256dh,
+                auth: _,
+            } => f
+                .debug_struct("WebPush")
+                .field("endpoint", endpoint)
+                .field("p256dh", p256dh)
+                // The subscription's auth secret: with `p256dh` it is what a
+                // push is encrypted to, so it is key material, not a label.
+                .field("auth", &"<redacted>")
+                .finish(),
+        }
+    }
 }
 
 /// The platform discriminator, for the advisory `pushPlatform` hint on

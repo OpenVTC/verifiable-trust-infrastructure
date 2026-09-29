@@ -126,6 +126,20 @@ pub(crate) fn app_error_to_reject<P>(doc: &TrustTask<P>, err: &AppError) -> Trus
             task_failed_because(message, reasons::CONFLICT)
         }
         AppError::Gone(_) => task_failed_because(message, reasons::GONE),
+        // A decision the caller can still obtain — another party's consent. The
+        // VTA's gate sends this as `taskFailed` with the reason in `details`,
+        // which is what `VtaClient` reads back into `VtaError::ConsentRequired`,
+        // so this door says it the same way (VTI-APV-002).
+        AppError::ApprovalRequired { code, details } => {
+            let mut details = details.clone();
+            if let Some(map) = details.as_object_mut() {
+                map.insert("reason".into(), Value::String((*code).to_string()));
+            }
+            RejectReason::TaskFailed {
+                reason: (*code).to_string(),
+                details: Some(details),
+            }
+        }
         // Framework 0.5.0, *What a `message` May Not Say*: a `message` MUST
         // NOT reveal consumer-internal state. Passing `err.to_string()` out
         // sent the cause verbatim — "vtc_did not configured",
@@ -171,14 +185,27 @@ pub(crate) fn task_error_to_reject<P>(
                 AppError::Gone(_) => Some(reasons::GONE),
                 _ => None,
             };
+            let code = declared_code(code);
             match marker {
-                Some(reason) => {
-                    reject_with_code_because(doc, extended_code(code), message, None, reason)
-                }
-                None => reject_with_code(doc, extended_code(code), message, None),
+                Some(reason) => reject_with_code_because(doc, code, message, None, reason),
+                None => reject_with_code(doc, code, message, None),
             }
         }
     }
+}
+
+/// The wire code for a [`TaskError::Declared`](crate::error::TaskError).
+///
+/// Usually a task-extended `<slug>:<local>`, but not always: where a task
+/// declares no code for a refusal, an operation carries the framework's own —
+/// `vtc/endorsement-types/register`'s `malformedRequest` for a `claimSchema`
+/// that is not a schema — so its bearer route can put a code in the body.
+/// Reading that as an extended code panicked the dispatcher the first time
+/// such an operation was bound on the signed door (#1641 batch 4), so the code
+/// is parsed the way the framework parses any code.
+fn declared_code(code: &str) -> TrustTaskCode {
+    code.parse()
+        .unwrap_or_else(|e| panic!("declared code {code:?} is not a Trust Task code: {e}"))
 }
 
 /// A specification-extended error code, `<slug>:<local>`, as a framework code.
@@ -252,7 +279,7 @@ pub(crate) const OPAQUE_INTERNAL_ERROR: &str =
 
 /// Framework 0.5.0, *Bounding `details`*: where a specification declares no
 /// bound, 4096 bytes of JCS and 16 immediate members apply.
-const DETAILS_MAX_JCS_BYTES: usize = 4096;
+pub(crate) const DETAILS_MAX_JCS_BYTES: usize = 4096;
 /// Companion to [`DETAILS_MAX_JCS_BYTES`].
 const DETAILS_MAX_MEMBERS: usize = 16;
 
@@ -353,6 +380,16 @@ pub(crate) fn success_response<P, R: Serialize>(
     }
 }
 
+/// The courtesy acknowledgement of a fire-and-forget task (SPEC §4.4.2): the
+/// originating type with `#response` and a payload of exactly `{}`.
+///
+/// Only for a task whose specification defines **no** success response — §4.4.2
+/// item 4 forbids it beside one that does. It attests arrival and nothing more;
+/// the producer must not rely on it.
+pub(crate) fn acknowledge<P>(doc: &TrustTask<P>) -> TrustTaskOutcome {
+    success_response(doc, serde_json::Map::new())
+}
+
 /// Convenience wrapper over [`success_response`] for the `request`/`present`
 /// verbs, whose response payload is always a [`VerdictResponse`].
 pub(crate) fn verdict_response(
@@ -409,7 +446,14 @@ pub(crate) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
     let reject = RejectReason::MalformedRequest {
         reason: format!("body did not parse as a Trust Task document: {reason}"),
     };
-    let payload: ErrorPayload = reject.into();
+    unrouted_error_response(reject.into())
+}
+
+/// A refusal of a body that was never parsed into a document — so there is no
+/// request to reject *from*: no issuer to name, no thread and no ceremony to
+/// carry forward. [`body_parse_error_response`] and the per-type size gate
+/// ([`super::size`]) are the two callers.
+pub(crate) fn unrouted_error_response(payload: ErrorPayload) -> TrustTaskOutcome {
     let type_uri: TypeUri = framework_error_type_uri();
     let err = ErrorResponse {
         id: format!("urn:uuid:{}", Uuid::new_v4()),
@@ -457,6 +501,41 @@ pub(crate) async fn verify_trust_task_proof(
     vti_common::auth::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
         .await
         .map_err(|e| AppError::Unauthorized(format!("Trust Task {e}")))
+}
+
+/// Verify a human approver's own decision (a `task-consent/decision` or a
+/// step-up `approve-response`) and return the proven signer DID.
+///
+/// [`verify_trust_task_proof`], plus the rule every approval verifier in the
+/// mesh holds (the VTA, the did-hosting RP's `verify_approval`): the proof is
+/// made for `assertionMethod`, by a key the signer lists under
+/// `assertionMethod`. An approval is the approver's attestation, not an
+/// operational message, so a proof made for `authentication` is refused. A
+/// signer DID that does not resolve is refused, never passed through.
+pub(crate) async fn verify_approval_proof(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+) -> Result<String, AppError> {
+    vti_common::auth::verify_approval_proof_with(doc, &state.trust_task_vm_resolver())
+        .await
+        .map_err(|e| {
+            // The cause stays in the operator's log; the wire gets `Display`.
+            tracing::warn!(
+                type_uri = %doc.type_uri,
+                error = %e,
+                cause = e.cause().unwrap_or_default(),
+                "approval refused at its proof"
+            );
+            AppError::Unauthorized(format!("Trust Task {e}"))
+        })
+}
+
+/// Whether `type_uri` is a human approver's own decision, whose proof the
+/// spine holds to [`verify_approval_proof`] rather than
+/// [`verify_trust_task_proof`].
+pub(crate) fn is_approval_type(type_uri: &str) -> bool {
+    type_uri == super::STEP_UP_APPROVE_RESPONSE_TYPE
+        || type_uri == crate::acl::admin_consent::DECISION_TYPE
 }
 
 #[cfg(test)]
@@ -564,5 +643,80 @@ mod tests {
             doc["type"].as_str().expect("type present"),
             framework_error_type_uri().to_string()
         );
+    }
+
+    /// The `did:key` for a one-byte test seed, plus the private-key
+    /// multibase `vta_sdk::trust_task_sign::build_signed` accepts.
+    fn did_key_from_seed(seed_byte: u8) -> (String, String) {
+        use ed25519_dalek::SigningKey;
+        let seed = [seed_byte; 32];
+        let sk = SigningKey::from_bytes(&seed);
+        let did = format!(
+            "did:key:{}",
+            vta_sdk::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+        );
+        let mut buf = vec![0x80, 0x26];
+        buf.extend_from_slice(&seed);
+        (did, multibase::encode(multibase::Base::Base58Btc, &buf))
+    }
+
+    /// This is the join dispatcher's holder-binding check on an
+    /// unauthenticated request — one of the ~12 inbound routes FTL-29595 fix
+    /// direction 3 must leave byte-identical: a resolver failure and an
+    /// actual bad signature must render the same `AppError::Unauthorized`,
+    /// or an anonymous caller learns whether a DID resolves at all.
+    #[tokio::test]
+    async fn a_resolver_failure_and_a_bad_signature_render_identically() {
+        let tv = crate::test_support::build_test_vtc().await;
+
+        // Resolver failure: a `did:webvh` verification method against a
+        // did:key-only resolver (this test VTC has none configured) —
+        // refused before any signature check runs.
+        let resolver_fail_doc: TrustTask<Value> = serde_json::from_value(json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000020",
+            "type": "https://trusttasks.org/spec/acl/list/0.1",
+            "issuer": "did:webvh:QmScid:example.com:glenn",
+            "recipient": "did:webvh:vtc.example.com:abc",
+            "payload": {},
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": "did:webvh:QmScid:example.com:glenn#key-0",
+                "created": "2026-01-01T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        }))
+        .expect("well-formed document");
+
+        // Bad signature: a real did:key, signed, then corrupted.
+        let (signer_did, secret_mb) = did_key_from_seed(31);
+        let signed = vta_sdk::trust_task_sign::build_signed(
+            "https://trusttasks.org/spec/acl/list/0.1",
+            json!({}),
+            &signer_did,
+            &secret_mb,
+            "did:webvh:vtc.example.com:abc",
+        )
+        .await
+        .expect("build a validly-signed document");
+        let mut bad_sig_doc: TrustTask<Value> =
+            serde_json::from_str(&signed).expect("signed doc parses");
+        let proof = bad_sig_doc.proof.as_mut().expect("document is signed");
+        let last = proof.proof_value.pop().expect("non-empty proofValue");
+        proof.proof_value.push(if last == '1' { '2' } else { '1' });
+
+        let resolver_failure = verify_trust_task_proof(&tv.state, &resolver_fail_doc).await;
+        let bad_signature = verify_trust_task_proof(&tv.state, &bad_sig_doc).await;
+
+        match (resolver_failure, bad_signature) {
+            (Err(AppError::Unauthorized(a)), Err(AppError::Unauthorized(b))) => {
+                assert_eq!(
+                    a, b,
+                    "a resolver failure must render exactly as a bad signature does"
+                );
+            }
+            other => panic!("expected both to be Unauthorized errors, got {other:?}"),
+        }
     }
 }

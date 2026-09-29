@@ -177,6 +177,51 @@ pub trait TrustRegistryClient: Send + Sync {
     fn transport(&self) -> RegistryTransport {
         RegistryTransport::default()
     }
+
+    /// Write one TRQP authorization record under this community's authority
+    /// (`registry/record/put/0.1`) — the git-namespace projection's write.
+    ///
+    /// Distinct from [`Self::publish_member`], which writes the one
+    /// recognition record a member has, and from the `git-trust/grant`
+    /// capability, which hard-codes its action to `git.commit.sign`: a git
+    /// right is published under its own action string, and the projection
+    /// needs to write all five. `record` is the TRQP `TrustRecord`; its
+    /// `authority_id` is this community's DID.
+    ///
+    /// Defaults to a `Permanent` refusal so a transport that cannot write
+    /// records says so rather than pretending.
+    async fn put_trust_record(&self, _record: &serde_json::Value) -> Result<(), RegistryError> {
+        Err(RegistryError::Permanent(
+            "this registry transport cannot write authorization records".into(),
+        ))
+    }
+
+    /// Every record the registry holds under this community's authority for
+    /// one `action` (`registry/record/query/0.1`, paged to the end) — what the
+    /// git-namespace projection verifies itself against. Defaults to a
+    /// `Permanent` refusal: a transport that cannot enumerate says so.
+    async fn list_trust_records(
+        &self,
+        _action: &str,
+    ) -> Result<Vec<serde_json::Value>, RegistryError> {
+        Err(RegistryError::Permanent(
+            "this registry transport cannot enumerate authorization records".into(),
+        ))
+    }
+
+    /// Delete one record by its TRQP key (`registry/record/delete/0.1`),
+    /// under this community's authority. A record that is already absent is
+    /// success: the effect wanted is its absence.
+    async fn delete_trust_record(
+        &self,
+        _entity_id: &str,
+        _action: &str,
+        _resource: &str,
+    ) -> Result<(), RegistryError> {
+        Err(RegistryError::Permanent(
+            "this registry transport cannot delete authorization records".into(),
+        ))
+    }
 }
 
 /// How the VTC reaches its trust registry, as an operator sees it.
@@ -250,6 +295,11 @@ struct MockState {
     pub next_read_error: Option<RegistryError>,
     pub next_health_error: Option<RegistryError>,
     pub next_recognise_error: Option<RegistryError>,
+    /// Authorization records written through [`TrustRegistryClient::
+    /// put_trust_record`], keyed `entity|action|resource`.
+    pub trust_records: std::collections::BTreeMap<String, serde_json::Value>,
+    pub trust_record_deletes: usize,
+    pub next_trust_record_error: Option<RegistryError>,
 }
 
 impl MockRegistryClient {
@@ -310,6 +360,35 @@ impl MockRegistryClient {
     pub async fn snapshot(&self) -> std::collections::HashMap<String, RegistryRecord> {
         self.inner.lock().await.records.clone()
     }
+
+    /// The authorization records written by the git-namespace projection,
+    /// keyed `entity|action|resource`.
+    pub async fn trust_records(&self) -> std::collections::BTreeMap<String, serde_json::Value> {
+        self.inner.lock().await.trust_records.clone()
+    }
+
+    /// Change the registry behind the projection's back: remove a record, as
+    /// a registry reset or an operator would.
+    pub async fn forget_trust_record(&self, key: &str) {
+        self.inner.lock().await.trust_records.remove(key);
+    }
+
+    /// Plant a record the projection did not write.
+    pub async fn plant_trust_record(&self, record: serde_json::Value) {
+        let field = |k: &str| record.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+        let key = format!(
+            "{}|{}|{}",
+            field("entity_id"),
+            field("action"),
+            field("resource")
+        );
+        self.inner.lock().await.trust_records.insert(key, record);
+    }
+
+    /// Queue an error for the next authorization-record write or delete.
+    pub async fn fail_next_trust_record(&self, err: RegistryError) {
+        self.inner.lock().await.next_trust_record_error = Some(err);
+    }
 }
 
 /// Per-call counters surfaced by [`MockRegistryClient::call_counts`].
@@ -369,6 +448,50 @@ impl TrustRegistryClient for MockRegistryClient {
             return Err(err);
         }
         Ok(s.recognised_issuers.contains(foreign_issuer_did))
+    }
+
+    async fn put_trust_record(&self, record: &serde_json::Value) -> Result<(), RegistryError> {
+        let mut s = self.inner.lock().await;
+        if let Some(err) = s.next_trust_record_error.take() {
+            return Err(err);
+        }
+        let field = |k: &str| record.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+        let key = format!(
+            "{}|{}|{}",
+            field("entity_id"),
+            field("action"),
+            field("resource")
+        );
+        s.trust_records.insert(key, record.clone());
+        Ok(())
+    }
+
+    async fn list_trust_records(
+        &self,
+        action: &str,
+    ) -> Result<Vec<serde_json::Value>, RegistryError> {
+        let s = self.inner.lock().await;
+        Ok(s.trust_records
+            .values()
+            .filter(|r| r.get("action").and_then(|a| a.as_str()) == Some(action))
+            .cloned()
+            .collect())
+    }
+
+    async fn delete_trust_record(
+        &self,
+        entity_id: &str,
+        action: &str,
+        resource: &str,
+    ) -> Result<(), RegistryError> {
+        let mut s = self.inner.lock().await;
+        if let Some(err) = s.next_trust_record_error.take() {
+            return Err(err);
+        }
+        s.trust_record_deletes += 1;
+        s.trust_records
+            .remove(&format!("{entity_id}|{action}|{resource}"));
+        Ok(())
     }
 }
 

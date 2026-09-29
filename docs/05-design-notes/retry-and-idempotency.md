@@ -188,11 +188,79 @@ Two deliberate limits:
   The document is the transport-agnostic answer. Adding the header as well is a
   reasonable follow-up for HTTP intermediaries; it is not a correctness gap.
 - **No outbound client in this repo currently retries HTTP at all** —
-  `webvh_client` and the foreign-fetch path make a single attempt. So DRARM
+  the DID hosting client (`webvh_host`) and the foreign-fetch path make a single
+  attempt. So DRARM
   `RLA-029` (Retry-After non-compliance) has nothing to remediate here today. The
   rule below is what keeps it that way.
 
 ---
+
+## 5a. Pushes: the node is the producer
+
+The same contract holds when a node is the producer — a VTA or VTC pushing a
+Trust Task to a peer through `vti_common::trust_task_push`. The push engine is
+the retry owner there, and it has a problem the SDK's short-lived calls do not:
+a push's deadline runs to hours or days, while a VTI consumer accepts a document
+only for `vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW` (10
+minutes, plus 60 s skew) after its `issuedAt`. An escalation an hour in, a hop the mediator refused for
+twenty minutes, or a copy collected when the recipient reconnects would carry a
+document the recipient refuses as `expired`.
+
+Re-signing the document under its own `id` is not a retry (SPEC §8.4) and a
+consumer that accepted the original answers it `idConflict` (§7.2 item 11). So
+the engine issues a **new attempt** — `trust_task_push::new_attempt`: a fresh
+`id`, a fresh `issuedAt`, the node's proof again, the original's thread — and
+the key does the rest. A document carrying an `idempotencyKey` carries it
+through every attempt (VTI-OPS-064), so a keying consumer performs the task
+once however many attempts reach it.
+
+So the rule for a push site is the rule for any producer: **a pushed task whose
+repeat leaves a second artefact carries an `idempotencyKey`.** The
+credential-exchange steps do (`issue` deposits a vault row per execution), keyed
+by their first document's `id`. A notice or a consent request does not need
+one: its repeat converges.
+
+The consumer keys a task the catalogue does not classify (VTI-OPS-062), which
+is what makes that key count for the counterparty tasks — the credential-exchange
+steps — that are served here but are not in `retry_safety`.
+
+What no producer can reach is a copy already held by a mediator for a recipient
+that is offline past the window: it is sealed and out of the node's hands. The
+engine issues a new attempt when that copy is collected, so the recipient
+refuses one stale copy and then receives a fresh one.
+
+### Whose window (VTI-TRN-044–047)
+
+The window is the *recipient's*, and VTI-TRN-045 says where a sender learns it:
+the recipient's authenticated `trust-task-discovery/0.3` answer where it
+advertises one (a per-type entry over the response-level value), otherwise the
+task specification's window, otherwise a documented constant.
+
+Both VTI nodes now **advertise** theirs (VTI-TRN-047): each answers discovery
+0.3 with `VTI_ACCEPTANCE_WINDOW` at response level, built by
+`vti_common::trust_task::discovery::respond_v0_3` from the same value its
+spine's `freshness_policy()` applies — so the advertisement cannot be wider
+than the enforcement, and a test on each node reads the window back out of its
+own answer and checks it against the policy. The VTA also still answers 0.1.
+
+The push engine does **not yet read** an advertised window. It applies the
+constant — VTI-TRN-045's last tier — to every recipient, deliberately:
+
+- a lookup is a request/reply exchange, and the engine's pushes are one-way;
+  neither node lends it a correlated reply path;
+- its recipients (approvers' devices, members' wallets, requesters) serve no
+  `trust-task-discovery` today, so every lookup would time out into the
+  fallback;
+- the window only matters for a document the engine *holds* — a recipient
+  offline, a mediator refusing hops — which is exactly when a lookup cannot be
+  answered;
+- the engine never observes an `expired` refusal, so discovery 0.3's "ask again
+  after an unexpected refusal" would have no trigger.
+
+That gap is the specification's divergence F.3 against VTI-TRN-045, narrowed by
+this change to the producer side only. The seam for closing it is the engine's
+two predicates (`past_acceptance`, `refused_when_collected`), which take the
+window from `AcceptanceWindow` rather than from two constants.
 
 ## 6. Rules for new code
 
@@ -206,6 +274,9 @@ Two deliberate limits:
 4. **A new secret-bearing response must be `KeyedSecret`**, never `Keyed`. Ask
    what the dedup record would hold if the response were cached.
 5. **Do not cache a failure.** Release the claim; let the retry run.
+6. **A pushed task whose repeat leaves a second artefact carries an
+   `idempotencyKey`** (§5a): the push engine may deliver it as several new
+   attempts, and only the key makes them one operation.
 
 ---
 

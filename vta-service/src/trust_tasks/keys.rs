@@ -5,7 +5,7 @@
 //! (Application or higher) for sign.
 
 use super::helpers::TrustTaskOutcome;
-use crate::audit;
+
 use base64::Engine as _;
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
@@ -57,15 +57,13 @@ pub(super) async fn handle_list(
     }
 }
 
-/// Handler for `keys/create/0.1`. Admin only.
+/// Handler for `keys/create/0.1`. Gated on `KeyMint` in the operation
+/// (`operations::keys::ensure_may_mint_key`), not on a role (Keyring VTI-23).
 pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let req: CreateKeyBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -76,6 +74,7 @@ pub(super) async fn handle_create(
         &state.contexts_ks,
         &state.seed_store,
         &state.audit_sink,
+        &state.acl_ks,
         auth,
         operations::keys::CreateKeyParams {
             internal: req.internal.unwrap_or(false),
@@ -226,56 +225,67 @@ pub(super) async fn handle_set_exportability(
 
 /// Handler for `keys/export-secret/0.1`.
 ///
-/// `KeyExport` **in the key's own scope**: the capability is the gate and
-/// `get_key_secret`'s own `require_context` is the scope, so a holder in one
-/// context reaches no other context's keys. The URI this replaces
+/// `KeyExport` **in the key's own scope** — both checked, with the internal-key
+/// and non-exportable refusals and the durable audit row, inside
+/// `operations::keys::get_key_secret`. The URI this replaces
 /// (`vta/seeds/export-mnemonic/1.0`) demanded global Admin for the same act,
 /// which handed a caller wanting one key authority over everything else.
 ///
-/// The two refusals the spec makes consumer requirements — an internal key is
-/// never released, and a non-exportable key is refused about the key rather
-/// than the asker — are both enforced inside `get_key_secret`, which is the one
-/// place a private key leaves. Re-checking them here would be a second set of
-/// rules to keep in step.
+/// Nothing is checked here. `GET /keys/{id}/secret` and DIDComm
+/// `get-key-secret` reach the same operation, and the capability gate used to
+/// live in this handler alone — so the other two transports released keys to
+/// an admin narrowed without `key-export`. A check that lives in one handler is
+/// a check the next transport forgets.
 pub(super) async fn handle_export_secret(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    // `KeyExport`, not the admin role — VTI-VTA-003: an export "MUST be gated
-    // by a capability distinct from the capability to use the key". Only
-    // `admin` derives it, so no current admin loses anything; what changes is
-    // that an operator can now narrow it away from a particular admin, which a
-    // role floor could not express. Scope is still enforced inside
-    // `get_key_secret`, and the export is still audited there.
-    if let Err(reject) = super::helpers::require_capability(
-        state,
-        auth,
-        &doc,
-        vti_common::acl::Capability::KeyExport,
-        "keys/export-secret",
-    )
-    .await
-    {
-        return reject;
-    }
     let req: GetKeySecretBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match operations::keys::get_key_secret(
+    match operations::keys::export_key_secret(
         &state.keys_ks,
         &state.imported_ks,
+        &state.contexts_ks,
+        &state.acl_ks,
         &state.seed_store,
         &state.audit_sink,
         auth,
         &req.key_id,
-        TRANSPORT_TRUST_TASK,
+        export_channel(),
     )
     .await
     {
         Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
+        // The two refusals about the key carry the codes the task declares.
+        // Only reachable once key-export, the channel and scope have all
+        // passed, so they are said only to a caller entitled to the key.
+        Err(operations::keys::KeyExportError::Refused(refusal, message)) => {
+            match trust_tasks_rs::TrustTaskCode::new_extended("keys/export-secret", refusal.code())
+            {
+                Ok(code) => super::helpers::reject_with_code(&doc, code, message, None),
+                Err(_) => app_error_to_reject(&doc, crate::error::AppError::Forbidden(message)),
+            }
+        }
+        Err(operations::keys::KeyExportError::Other(e)) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// The [`operations::keys::ExportChannel`] for a key leaving over the Trust-Task
+/// spine: end-to-end over DIDComm and TSP, hop-by-hop (and so refused) over
+/// HTTPS. The channel names the binding, so each `key.secret_export` row says
+/// which transport the key left over.
+pub(super) fn export_channel() -> operations::keys::ExportChannel<'static> {
+    let channel = super::transport::audit_channel();
+    match super::transport::current() {
+        super::transport::TransportConfidentiality::EndToEnd => {
+            operations::keys::ExportChannel::EndToEnd(channel)
+        }
+        super::transport::TransportConfidentiality::HopByHop => {
+            operations::keys::ExportChannel::HopByHop(channel)
+        }
     }
 }
 
@@ -333,7 +343,8 @@ pub(super) async fn handle_sign(
     }
 }
 
-/// Handler for `keys/derive-and-sign/0.1`. Admin only.
+/// Handler for `keys/derive-and-sign/0.1`. Super-admin, path inside `m/26'/9'`: both
+/// enforced, and the signature audited, in the operation (`vta_keys::custody`).
 ///
 /// Ephemeral: derives at the requested BIP-32 path, signs, and returns the
 /// signature + derived public key without persisting a key record.
@@ -342,9 +353,6 @@ pub(super) async fn handle_derive_and_sign(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let req: DeriveAndSignBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -365,8 +373,10 @@ pub(super) async fn handle_derive_and_sign(
     };
     match operations::keys::derive_and_sign(
         &state.keys_ks,
+        &state.acl_ks,
         &state.seed_store,
         auth,
+        &state.audit_sink,
         &req.key_type,
         &req.derivation_path,
         &payload_bytes,
@@ -375,33 +385,13 @@ pub(super) async fn handle_derive_and_sign(
     )
     .await
     {
-        Ok(body) => {
-            // A signature is the most consequential thing this agent does with a key,
-            // and these two are the only signing paths that persist no key record — so
-            // without a line here, a derived-key signature leaves the agent with no
-            // evidence it ever happened. The derivation path is the resource: it is
-            // what identifies *which* key signed, and it is not itself secret.
-            if let Err(e) = audit::record_with_detail(
-                &state.audit_sink,
-                "keys.derive-and-sign",
-                &auth.did,
-                Some(&req.derivation_path),
-                "success",
-                Some(TRANSPORT_TRUST_TASK),
-                None,
-                Some(&format!("keyType={} alg={}", req.key_type, req.algorithm)),
-            )
-            .await
-            {
-                tracing::warn!(error = %e, "audit record failed for keys.derive-and-sign");
-            }
-            success_response(&doc, body)
-        }
+        Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
 
-/// Handler for `keys/derive-and-sign-document/0.1`. Admin only.
+/// Handler for `keys/derive-and-sign-document/0.1`. Super-admin, path inside
+/// `m/26'/9'`: enforced, and audited, in the operation.
 ///
 /// Attaches an `eddsa-jcs-2022` Data-Integrity proof to the document, signed as
 /// the key derived at the requested path — without persisting a key record.
@@ -410,23 +400,16 @@ pub(super) async fn handle_derive_and_sign_document(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let req: DeriveAndSignDocumentBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let audit_path = req.derivation_path.clone();
-    let audit_detail = format!(
-        "keyType={} proofPurpose={}",
-        req.key_type,
-        req.proof_purpose.as_deref().unwrap_or("assertionMethod")
-    );
     match operations::keys::derive_and_sign_document(
         &state.keys_ks,
+        &state.acl_ks,
         &state.seed_store,
         auth,
+        &state.audit_sink,
         &req.key_type,
         &req.derivation_path,
         req.document,
@@ -435,31 +418,52 @@ pub(super) async fn handle_derive_and_sign_document(
     )
     .await
     {
-        Ok(body) => {
-            // Sibling of `derive-and-sign` above, and the same reasoning. The
-            // document itself is deliberately not recorded — it is the caller's
-            // content, may carry anything, and the trail answers "which key
-            // signed, under what purpose", not "what did it say".
-            if let Err(e) = audit::record_with_detail(
-                &state.audit_sink,
-                "keys.derive-and-sign-document",
-                &auth.did,
-                Some(&audit_path),
-                "success",
-                Some(TRANSPORT_TRUST_TASK),
-                None,
-                Some(&audit_detail),
-            )
-            .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    "audit record failed for keys.derive-and-sign-document"
-                );
-            }
-            success_response(&doc, body)
-        }
+        Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `keys/import-wrapping-key/0.1`. Admin only — the authority
+/// `keys/import` needs, since a wrapping key is useful for nothing else and
+/// each one costs this agent memory until it expires.
+///
+/// Mints a fresh Ed25519 key pair per request and keeps only its X25519
+/// counterpart, in memory, single-use, for 60 seconds
+/// ([`vta_keys::wrapping::WrappingKeyCache`]). The public half goes back as a
+/// `did:key` in this agent's signed response, which a producer must verify
+/// before sealing to it: the transports that need a wrapping key are the ones
+/// with an intermediary that could substitute its own. Replaces
+/// `GET /keys/import/wrapping-key`, which returned an X25519 JWK unsigned, and
+/// is reachable over every transport — over HTTPS it is what makes a key import
+/// possible at all, since the cleartext carrier is refused there.
+pub(super) async fn handle_import_wrapping_key(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::specs::keys::import_wrapping_key::v0_1 as spec;
+    if let Err(e) = auth.require_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    if let Err(resp) = parse_payload::<spec::Payload>(&doc) {
+        return resp;
+    }
+    let key = state.wrapping_cache.generate().await;
+    let body = serde_json::json!({
+        "wrappingKey": key.public_did,
+        "keyId": key.kid,
+        "expiresAt": key.expires_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    });
+    // Through the generated type, so the `did:key:z6Mk…` pattern is checked on
+    // the way out.
+    match serde_json::from_value::<spec::Response>(body) {
+        Ok(r) => success_response(&doc, r),
+        Err(e) => reject_with(
+            &doc,
+            RejectReason::InternalError {
+                reason: format!("wrapping key does not match its schema: {e}"),
+            },
+        ),
     }
 }
 
@@ -650,22 +654,119 @@ mod key_export_tests {
         );
     }
 
-    /// An admin passes the gate — it derives `KeyExport` — and reaches the
-    /// lookup, which is what proves the refusal above was the capability and
-    /// not some other check.
+    /// An admin passes the gate — it derives `KeyExport` — and, over an
+    /// end-to-end transport, reaches the lookup, which is what proves the
+    /// refusal above was the capability and not some other check.
     #[tokio::test]
     async fn an_admin_passes_the_key_export_gate() {
         let (state, _dir) = build_signing_test_app_state().await;
-        let out = handle_export_secret(
-            &state,
-            &claims("did:key:zOperator", Role::Admin),
-            export_doc(),
+        let out = super::super::transport::with_confidentiality(
+            super::super::transport::TransportConfidentiality::EndToEnd,
+            handle_export_secret(
+                &state,
+                &claims("did:key:zOperator", Role::Admin),
+                export_doc(),
+            ),
         )
         .await;
+        // The key does not exist, so the lookup refuses it — as out of scope,
+        // since an absent key and another context's key look alike to a
+        // scoped caller. What matters is that the refusal is not the gate's.
+        let body = String::from_utf8_lossy(&out.body);
         assert!(
-            !refused_by_the_gate(&out),
-            "an admin derives KeyExport and must reach the key lookup"
+            !body.contains("key-export capability"),
+            "an admin derives KeyExport and must reach the key lookup: {body}"
         );
+        assert!(body.contains("not within the caller's scope"), "{body}");
+    }
+
+    /// The two refusals about the key answer with the codes
+    /// `keys/export-secret/0.1` declares, to a caller entitled to the key.
+    #[tokio::test]
+    async fn refusals_about_the_key_carry_the_declared_codes() {
+        use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
+        let (state, _dir) = build_signing_test_app_state().await;
+        for (id, origin, exportable, code) in [
+            (
+                "k-locked",
+                KeyOrigin::Derived,
+                Some(false),
+                "keys/export-secret:notExportable",
+            ),
+            (
+                "k-inside",
+                KeyOrigin::Internal,
+                None,
+                "keys/export-secret:neverExportable",
+            ),
+        ] {
+            let now = chrono::Utc::now();
+            state
+                .keys_ks
+                .insert(
+                    crate::keys::store_key(id),
+                    &KeyRecord {
+                        key_id: id.into(),
+                        derivation_path: "m/26'/0'/0'/0'".into(),
+                        key_type: KeyType::Ed25519,
+                        status: KeyStatus::Active,
+                        public_key: "z6MkUnused".into(),
+                        label: None,
+                        context_id: None,
+                        seed_id: None,
+                        exportable,
+                        origin,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                )
+                .await
+                .unwrap();
+            let uri: TypeUri = vta_sdk::trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1
+                .parse()
+                .unwrap();
+            let doc = TrustTask::new(
+                format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                uri,
+                json!({ "keyId": id }),
+            );
+            let mut super_admin = claims("did:key:zRootAdmin", Role::Admin);
+            super_admin.allowed_contexts.clear();
+            let out = super::super::transport::with_confidentiality(
+                super::super::transport::TransportConfidentiality::EndToEnd,
+                handle_export_secret(&state, &super_admin, doc),
+            )
+            .await;
+            let body: Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(
+                body.pointer("/payload/code").and_then(Value::as_str),
+                Some(code),
+                "{body}"
+            );
+        }
+    }
+
+    /// `keys/export-secret/0.1` over the HTTPS binding is refused even for an
+    /// entitled caller: TLS terminates wherever the operator terminates it, so
+    /// the key would exist in plaintext there. The refusal names the fix.
+    #[tokio::test]
+    async fn an_export_over_https_is_refused_and_says_which_transports_work() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let out = super::super::transport::with_binding(
+            "https",
+            super::super::transport::with_confidentiality(
+                super::super::transport::TransportConfidentiality::HopByHop,
+                handle_export_secret(
+                    &state,
+                    &claims("did:key:zOperator", Role::Admin),
+                    export_doc(),
+                ),
+            ),
+        )
+        .await;
+        assert!(refused_by_the_gate(&out));
+        let body = String::from_utf8_lossy(&out.body);
+        assert!(body.contains("DIDComm or TSP"), "{body}");
     }
 
     /// What the role floor could not express: export narrowed away from one
@@ -686,5 +787,107 @@ mod key_export_tests {
             refused_by_the_gate(&out),
             "a narrowing without key-export removes it, even from an admin"
         );
+    }
+}
+
+#[cfg(test)]
+mod import_wrapping_key_tests {
+    use crate::acl::Role;
+    use crate::auth::AuthClaims;
+    use crate::test_support::build_signing_test_app_state;
+    use serde_json::{Value, json};
+
+    async fn ask(state: &crate::server::AppState, seed: u8, role: Role) -> Value {
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let (did, _) = crate::test_support::did_for_seed(seed);
+        let mut doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": vta_sdk::trust_tasks::TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
+            "issuer": did,
+            "recipient": vta_did,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {},
+        }))
+        .unwrap();
+        crate::test_support::sign_as(seed, &mut doc);
+        let claims = AuthClaims {
+            did,
+            role,
+            allowed_contexts: vec![],
+            ..Default::default()
+        };
+        let out = super::super::dispatch_trust_task_core(
+            state,
+            &claims,
+            &serde_json::to_vec(&doc).unwrap(),
+            super::super::transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        serde_json::from_slice(&out.body).expect("a JSON document")
+    }
+
+    /// keys/import-wrapping-key/0.1: an admin gets a fresh Ed25519 `did:key`
+    /// in the agent's signed answer, a new one every time; the key opens a
+    /// bundle sealed to its X25519 counterpart exactly once.
+    #[tokio::test]
+    async fn an_admin_gets_a_fresh_signed_did_key_that_opens_one_sealed_bundle() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let first = ask(&state, 0x68, Role::Admin).await;
+        let second = ask(&state, 0x68, Role::Admin).await;
+        let key = first["payload"]["wrappingKey"].as_str().expect("{first}");
+        assert!(key.starts_with("did:key:z6Mk"), "{first}");
+        assert!(first["payload"]["keyId"].is_string(), "{first}");
+        assert!(first["payload"]["expiresAt"].is_string(), "{first}");
+        assert!(first["proof"].is_object(), "the answer is signed: {first}");
+        assert_ne!(
+            first["payload"]["wrappingKey"],
+            second["payload"]["wrappingKey"]
+        );
+
+        // Seal to the did:key's X25519 counterpart; the cache opens it once.
+        use base64::Engine as _;
+        use vta_sdk::sealed_transfer::{
+            AssertionProof, InMemoryNonceStore, ProducerAssertion, RawPrivateKey, SealedPayloadV1,
+            armor, generate_ed25519_keypair, seal_payload,
+        };
+        let x = affinidi_crypto::did_key::ed25519_pub_to_x25519_bytes(
+            &affinidi_crypto::did_key::did_key_to_ed25519_pub(key).unwrap(),
+        )
+        .unwrap();
+        let (_s, prod) = generate_ed25519_keypair();
+        let bundle = seal_payload(
+            &x,
+            [9u8; 16],
+            ProducerAssertion {
+                producer_did: affinidi_crypto::did_key::ed25519_pub_to_did_key(&prod),
+                proof: AssertionProof::PinnedOnly,
+            },
+            &SealedPayloadV1::RawPrivateKey(RawPrivateKey {
+                key_type: "ed25519".into(),
+                key_bytes_b64: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode([0x33u8; 32]),
+            }),
+            &InMemoryNonceStore::new(),
+        )
+        .await
+        .unwrap();
+        let armored = armor::encode(&bundle);
+        let (kind, bytes) = state.wrapping_cache.unwrap_sealed(&armored).await.unwrap();
+        assert_eq!(
+            (kind.as_str(), bytes.as_slice()),
+            ("ed25519", &[0x33u8; 32][..])
+        );
+        assert!(
+            state.wrapping_cache.unwrap_sealed(&armored).await.is_err(),
+            "single use"
+        );
+    }
+
+    /// The authority `keys/import` needs: anyone else is refused.
+    #[tokio::test]
+    async fn a_non_admin_is_refused_a_wrapping_key() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let resp = ask(&state, 0x69, Role::Reader).await;
+        assert_eq!(resp["payload"]["code"], "permissionDenied", "{resp}");
     }
 }

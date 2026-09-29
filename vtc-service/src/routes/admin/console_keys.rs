@@ -147,6 +147,7 @@ impl From<&ConsoleKeyDelegation> for ConsoleKey {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = ConsoleKeyListResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct ListResponse {
     /// The caller's own console keys, newest first, revoked ones included so
@@ -156,6 +157,7 @@ pub struct ListResponse {
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = ConsoleKeyRevokeResponse)]
 #[serde(rename_all = "camelCase")]
 pub struct RevokeResponse {
     pub console_did: String,

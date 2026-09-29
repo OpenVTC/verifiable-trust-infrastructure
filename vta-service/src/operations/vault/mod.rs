@@ -116,19 +116,36 @@ pub const PROXY_LOGIN_ID_TOKEN_TTL_SECS: u64 = 300;
 ///
 /// Auth: gated by `InternalAuthority` per the operations-layer convention.
 /// The caller (vault proxy-login handler) has already validated the
-/// `ProxyLogin` capability + the entry's context scope; this helper
-/// trusts those gates.
+/// `ProxyLogin` capability + the entry's context scope. The *key* is a
+/// separate question those gates never asked: this helper holds `key_id` to
+/// `entry_context_id`'s subtree (key custody rule 7) before loading it.
 pub async fn load_signing_key_by_id(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     audit: &vta_audit::SharedAuditSink,
     key_id: &str,
+    entry_context_id: &str,
 ) -> Result<SigningKey, AppError> {
+    // Rule 7 of key custody: `key_id` is the vault entry's `signingKeyId`, which
+    // whoever wrote the entry chose. `InternalAuthority` skips the ACL, so
+    // without this check an entry naming `{vta_did}#key-0` (or another
+    // tenant's key) makes the VTA sign as that key for the entry's writer.
+    crate::operations::key_custody::require_referenced_key_in_scope(
+        keys_ks,
+        key_id,
+        entry_context_id,
+        audit,
+        "internal:vault-proxy-login",
+        "vault-proxy-login",
+    )
+    .await?;
     let authority = InternalAuthority::new("vault-proxy-login");
     let resp = crate::operations::keys::get_key_secret_internal(
         keys_ks,
         imported_ks,
+        contexts_ks,
         seed_store,
         audit,
         authority,
@@ -149,18 +166,35 @@ pub async fn load_signing_key_by_id(
 ///
 /// Auth: gated by `InternalAuthority`. The caller (sign-trust-task
 /// handler) has already validated the `SignTrustTask` capability and
-/// the entry's context scope.
+/// the entry's context scope. The key is held to `entry_context_id`'s
+/// subtree here (key custody rule 7).
 pub async fn load_signing_secret_by_id(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     audit: &vta_audit::SharedAuditSink,
     key_id: &str,
+    entry_context_id: &str,
 ) -> Result<Secret, AppError> {
+    // Rule 7 of key custody: `key_id` is the vault entry's `signingKeyId`, which
+    // whoever wrote the entry chose. `InternalAuthority` skips the ACL, so
+    // without this check an entry naming `{vta_did}#key-0` (or another
+    // tenant's key) makes the VTA sign as that key for the entry's writer.
+    crate::operations::key_custody::require_referenced_key_in_scope(
+        keys_ks,
+        key_id,
+        entry_context_id,
+        audit,
+        "internal:vault-sign-trust-task",
+        "vault-sign-trust-task",
+    )
+    .await?;
     let authority = InternalAuthority::new("vault-sign-trust-task");
     let resp = crate::operations::keys::get_key_secret_internal(
         keys_ks,
         imported_ks,
+        contexts_ks,
         seed_store,
         audit,
         authority,

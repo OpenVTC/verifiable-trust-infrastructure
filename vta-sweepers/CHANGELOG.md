@@ -2,6 +2,18 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.3.16](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sweepers-v0.3.15...vta-sweepers-v0.3.16) — 2026-09-27
+
+
+## [0.3.15](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sweepers-v0.3.14...vta-sweepers-v0.3.15) — 2026-09-26
+
+
+## [0.3.14](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sweepers-v0.3.13...vta-sweepers-v0.3.14) — 2026-09-26
+
+
+## [0.3.13](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sweepers-v0.3.12...vta-sweepers-v0.3.13) — 2026-09-24
+
+
 ## [0.3.12](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sweepers-v0.3.11...vta-sweepers-v0.3.12) — 2026-09-23
 
 

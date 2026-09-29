@@ -105,6 +105,9 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("vault/release", Risk::Sensitive),
     ("vault/proxy-login", Risk::Sensitive),
     ("keys/export-secret", Risk::Sensitive),
+    // The root seed, sealed to the caller: the export of every key this VTA
+    // holds, so it is classified with `keys/export-secret`.
+    ("vta/attestation/mnemonic-export", Risk::Sensitive),
     // Returns the private keys of a context's DID. The verb rule would read
     // `secrets` as an ordinary mutation, and the task's own `sideEffects` are
     // `none` — it reads and changes nothing — so neither the verb nor the side
@@ -206,6 +209,11 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     ("vta/contexts/preview-delete", Risk::ReadOnly),
     ("vta/webvh/agent-name/check", Risk::ReadOnly),
     ("trust-task-discovery", Risk::ReadOnly),
+    // Mints an ephemeral wrapping key that lives only in the VTA's memory for a
+    // minute and is discarded on first use — no record, nothing persisted. The
+    // verb rule would read it as an ordinary mutation; what it returns is a
+    // public key.
+    ("keys/import-wrapping-key", Risk::ReadOnly),
     // A backup export is a full-state dump — sensitive in both directions.
     ("vta/backup/initiate-export", Risk::Sensitive),
     ("vta/backup/complete-export", Risk::Sensitive),
@@ -232,7 +240,12 @@ const READ_VERBS: &[&str] = &[
     "domains",
     "render",
     "report",
+    // `vta/attestation/config-report`: fresh evidence over the booted
+    // config's digest — a public read, no state changes.
+    "config-report",
     "status",
+    // `vta/health/details`: the VTA's public health flags.
+    "details",
     "ping",
     "explain",
     "get-retention",

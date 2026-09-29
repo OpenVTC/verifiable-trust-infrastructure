@@ -493,6 +493,47 @@ already in flight). The re-assertion itself is a keepalive round-trip per pair,
 so it is the client-side timeout-loop work (D6) applied proactively at boot
 rather than reactively on first failure.
 
+### D10 — Re-invite an idle relationship before trusting it
+
+C2 leaves the sender to find a lost relationship by its own timer, so the first
+request after a peer lost its half always costs a full reply window before D6
+recovers it. A caller whose budget sits near that window reports the request as
+failed while the task in fact succeeds — observed from the browser wallet, which
+timed out a DID creation at 30s while the VTA's recovered answer arrived at
+30.07s.
+
+A peer loses state while quiet (a restart onto a build that did not persist, a
+data wipe, an operator reset) far more often than mid-conversation. So the VTA's
+outbound path (`TspSender::first_attempt`) re-asserts a relationship that is
+`Bidirectional` but has had no successful round trip for an hour
+(`TSP_IDLE_REESTABLISH_MS`), or has never been stamped: it resets our half and
+sends the request with a fresh invite (`send_reestablishing`, the D6 resend's
+path). A peer that kept its half re-accepts (D2) and answers; one that lost it
+admits the request on the invite (§3.6 bundling, the D3 gate). Nothing is
+signalled back, so C2 holds.
+
+- **The stamp is real now.** Every correlated reply calls `touch` (D5), which
+  nothing did before — so D5's idle eviction, which only sweeps stamped pairs,
+  had nothing to evict. `vta tsp-relationships list` shows the stamp.
+- **One re-invite per peer at a time** (`IdleReinvites`); a concurrent send goes
+  out the ordinary way. Deliberately not the D6 coordinator: a proactive
+  re-invite is not a recovery, and counting it as one would falsify D8's metrics.
+- **Direct, not nested**, for a cross-mediator peer, like the D6 resend — at most
+  once per idle hour per peer.
+- A timeout on the re-inviting send still goes on to D6.
+
+### Operator tooling — clearing relationship state by hand
+
+Everything above heals without an operator. When one does need to intervene —
+to reproduce a first contact, or to clear a relationship a peer will never
+honour — `vta tsp-relationships list | reset --peer <did> | delete --peer <did>
+| delete --all [--yes]` works on the stopped VTA's store. `reset` is the D4
+stale-half reset (`None` + cleared digests, capability kept); `delete` is the D5
+eviction's `forget`; `--all` also removes half-formed records, which D9's
+enumeration cannot see. Each endpoint holds its own half and the mediator holds
+none, so a clean re-handshake means clearing both ends — the DID hosting service
+has the equivalent `tsp-relationship-*` commands.
+
 ## Where the changes land
 
 | Change | Crate / file | Kind |

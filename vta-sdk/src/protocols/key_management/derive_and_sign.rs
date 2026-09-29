@@ -11,7 +11,13 @@ use crate::keys::KeyType;
 /// one-shot oracle over the seed's derivation tree. It lets a trusted admin
 /// (e.g. a fleet manager whose fleet seed *is* this VTA's seed) act as any
 /// derived child identity — such as a per-VTA super-admin at
-/// `m/26'/9'/<idx>'` — without leaving a `KeyRecord` per action. Admin-gated.
+/// `m/26'/9'/<idx>'` — without leaving a `KeyRecord` per action.
+///
+/// **Super-admin only, and `derivation_path` must lie strictly inside
+/// `m/26'/9'` with every index hardened.** The caller chooses the identity it
+/// signs as, so the VTA confines this oracle to the delegated-identity subtree:
+/// it never signs as a key a record exists for, the VTA's own included. A
+/// context-scoped admin, or a path outside the subtree, gets `permissionDenied`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]

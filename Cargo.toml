@@ -95,7 +95,9 @@ uniffi = "0.32"
 # the floor is now structural rather than a specific patch: do not move this
 # back below 0.9, and do not drop to a bare major.
 # 0.11 re-exports `affinidi-mdoc` 0.3 — see the coupling note on `coset` below.
-affinidi-tdk = "0.17"
+# 0.20 moves in lockstep with `trust-tasks-rs` 0.24 and `affinidi-messaging-sdk`
+# 0.30 (affinidi-tdk-rs #901/#902, the mediator-onto-Trust-Tasks-only cut).
+affinidi-tdk = "0.20"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -170,6 +172,28 @@ affinidi-messaging-delivery = "0.1"
 # `ReceivedMessage`, `MessagingError`) the delivery layer builds on. Referenced
 # directly by services that demux `MessagingService::subscribe()` inbound.
 affinidi-messaging-core = "0.1"
+# The messaging SDK, taken directly (not only through `affinidi-tdk`) so a
+# member's `tsp` feature can turn on the SDK's own `tsp` ops (`atm.tsp()`),
+# which `affinidi-tdk/tsp` does not forward. One requirement here rather than a
+# literal per member: five members asked for it by hand, and a literal that
+# lags the others does not fail — it resolves, and the lag only shows when
+# `affinidi-tdk` next moves a minor and the graph splits.
+#
+# It moves in lockstep with `affinidi-tdk` and `trust-tasks-rs`: its public API
+# carries `trust_tasks_rs` types (`MediatorAcl` among them), so a graph holding
+# two `trust-tasks-rs` versions does not compile. `default-features = false` so
+# a member adds only what it needs; `tests/e2e` asks for `default` explicitly.
+#
+# 0.27.1 is a FLOOR: it is the release in which `record_incoming_control`
+# answers a mutual §7.3 cancellation itself (Keyring VTI-38), which is what the
+# VTA's and VTC's `handle_tsp_control` rely on when they stop answering it.
+#
+# 0.30.0 raises the floor again: it is the release that moves in lockstep with
+# `trust-tasks-rs` 0.24 (affinidi-tdk-rs #901/#902 — the mediator serves Trust
+# Tasks only now, its legacy bare `mediator/1.0/{admin,account,acl}-management`
+# protocols removed). A `0.29` copy here alongside `trust-tasks-rs` 0.24 splits
+# the graph on `MediatorAcl` exactly as the comment above describes.
+affinidi-messaging-sdk = { version = "0.30", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
@@ -376,12 +400,65 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # `persona/profile/{retire,reinstate}` and binding `until`; 0.21.14, of
 # `persona/profile/{usage,timeline}` and face `reach`; 0.21.15, of `derived`
 # provenance, attribute `endorsements` and `vtc/invitations/deliver`.
-trust-tasks-rs = { version = "0.22.1", default-features = false, features = [
+#
+# 0.22.3 raises it again: it is the first release carrying the `git-ns` family
+# (`trust_tasks_rs::specs::git_ns`), which `all-specs` enables. 0.22 as a whole
+# moved in lockstep with `affinidi-messaging-sdk` 0.27 — see that entry.
+#
+# 0.22.5 raises it for `git-ns/view` 0.2, `git-ns/drift/resolve` 0.1,
+# `git-ns/namespace/reseat` 0.1, `git-ns/bridge/job` 0.2 and `git-ns/bridge/event` 0.2.
+#
+# 0.23.1 raises it again: it is the first release whose `git-ns/view` 0.4
+# declares its proof REQUIRED rather than RECOMMENDED, matching 0.1-0.3
+# (`vtc-service/src/git_ns/tasks.rs`'s dispatch comment and its
+# `GitNsCtx::sender` fallback were written for the RECOMMENDED-era 0.4 and are
+# stale below this floor). `trust-tasks-capability-client` published its own
+# 0.23.1 alongside it — still on `trust-tasks-rs = "^0.23"`, so the bump does
+# not split the graph — and is pinned to match rather than left on the bare
+# `0.23` line.
+#
+# 0.23.4 raises it again: it is the first release carrying `git-ns/view/0.5`,
+# `git-ns/namespace/list/0.1` and `git-ns/repo/list/0.1`
+# (trustoverip/dtgwg-trust-tasks-tf#659), and `auth/passkey/admin-list/0.1`
+# (#658) — `vtc-service/src/git_ns/admin_reads.rs`'s hand-written stand-ins and
+# `trust_tasks::passkey_admin_list_v0_1` were written for the pre-0.23.4 gap
+# and are gone below this floor.
+#
+# 0.23.6 raises it for `vta/health/details` 0.1, `vta/restore/status` 0.1,
+# `auth/revoke-session` 0.2 and `keys/import-wrapping-key` 0.1 — the Trust
+# Tasks that replace `GET /health/details`, the `/auth/sessions` REST routes and
+# `GET /keys/import/wrapping-key`.
+#
+# 0.24 moves in lockstep with `affinidi-tdk` 0.20 / `affinidi-messaging-sdk`
+# 0.30 (the mediator serves Trust Tasks only now — affinidi-tdk-rs #901/#902).
+# 0.24.1 is a FLOOR, not a preference: it is the first release whose generated
+# `auth/passkey/{enroll,invite,update}` 0.1 and `auth/revoke-session` 0.2
+# structs carry the trust-tasks #667 sign-trust-task spec text and are
+# permissive (members `Option`) — a handler dispatching one MUST validate the
+# raw payload against the embedded schema itself
+# (`ValidatedPayload::validate_value` / `parse_spec_payload`) rather than
+# trusting the generated struct's shape.
+#
+# 0.24.2 raises it again: it is the first release carrying `vta/services/
+# rollback/1.1` (trust-tasks #671).
+#
+# 0.24.4 raises it again: it is the first release carrying
+# `trust-task-discovery/0.3` (trust-tasks #677), whose `acceptanceWindow` both
+# VTI nodes advertise (VTI-TRN-047, `vti_common::trust_task::discovery`).
+# `trust-tasks-capability-client` published its own 0.24.4 alongside it, still
+# on `trust-tasks-rs = "^0.24"`, and is pinned to match.
+#
+# 0.24.6 raises it again: it is the first release carrying
+# `vta/contexts/update-did/1.1` (trust-tasks #684), whose nullable `did` is how
+# a context's DID is cleared. Below it `TASK_CONTEXTS_UPDATE_DID_1_1` does not
+# compile, and the dispatch spine has no schema to hold `did: null` to.
+# `trust-tasks-capability-client` is pinned to match, as before.
+trust-tasks-rs = { version = "0.24.6", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.22"
-trust-tasks-https = { version = "0.22", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-capability-client = "0.24.6"
+trust-tasks-https = { version = "0.24", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -392,7 +469,7 @@ trust-tasks-https = { version = "0.22", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.22", default-features = false }
+trust-tasks-didcomm = { version = "0.24", default-features = false }
 # The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
 # Trust-Task TSP frame must use: `{"type": …, "document": …}`.
 #
@@ -411,8 +488,8 @@ trust-tasks-didcomm = { version = "0.22", default-features = false }
 # keys in that shape; it signs through `operations::keys::sign_payload`, where
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
-trust-tasks-tsp = { version = "0.22", default-features = false }
-trust-tasks-proof = { version = "0.22", default-features = false, features = ["affinidi"] }
+trust-tasks-tsp = { version = "0.24", default-features = false }
+trust-tasks-proof = { version = "0.24", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }
@@ -641,4 +718,5 @@ type_complexity = "allow"
 # ever reports one, the fix is the same choice we faced here: patch it (fast,
 # and it will break again on the next minor bump) or cut the dependency edge
 # upstream (slower, permanent).
+
 

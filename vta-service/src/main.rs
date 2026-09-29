@@ -12,6 +12,8 @@ mod keys_cli;
 mod services_cli;
 #[cfg(feature = "setup")]
 mod setup;
+#[cfg(feature = "tsp")]
+mod tsp_relationships_cli;
 mod vault_cli;
 #[cfg(feature = "webvh")]
 mod webvh_cli;
@@ -346,6 +348,51 @@ enum Commands {
     Services {
         #[command(subcommand)]
         command: ServicesCommands,
+    },
+    /// Inspect and clear this VTA's persisted TSP relationships (offline).
+    ///
+    /// Each endpoint keeps its own half of every relationship; the mediator
+    /// holds none, so wiping it resets nothing. To make this VTA and a peer
+    /// meet as strangers again, clear both halves — here and on the peer.
+    /// Daemon must be stopped; `reset` and `delete` are refused when sealed.
+    #[cfg(feature = "tsp")]
+    TspRelationships {
+        #[command(subcommand)]
+        command: TspRelationshipCommands,
+    },
+}
+
+#[cfg(feature = "tsp")]
+#[derive(Subcommand)]
+enum TspRelationshipCommands {
+    /// List the established relationships, with when each was last active.
+    List,
+    /// Reset our half of a relationship to `None`, so the next send to the peer
+    /// re-invites. Keeps the cached peer capability.
+    Reset {
+        /// The peer's DID (its TSP VID).
+        #[arg(long)]
+        peer: String,
+        /// This VTA's VID for the pair. Needed only for a half-formed
+        /// relationship, which `list` cannot show.
+        #[arg(long)]
+        our: Option<String>,
+    },
+    /// Delete relationship records outright.
+    Delete {
+        /// The peer's DID (its TSP VID).
+        #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+        peer: Option<String>,
+        /// This VTA's VID for the pair. Needed only for a half-formed
+        /// relationship, which `list` cannot show.
+        #[arg(long, requires = "peer", conflicts_with = "all")]
+        our: Option<String>,
+        /// Delete every record, established or half-formed.
+        #[arg(long)]
+        all: bool,
+        /// Confirm `--all`. Without it, only reports what would be deleted.
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -711,6 +758,11 @@ enum ContextCommands {
         /// Requires `--admin-did`.
         #[arg(long, requires = "admin_did")]
         admin_expires: Option<String>,
+        /// Mark the admin entry as a one-time hand-off (VTI-ACL-054), so the
+        /// admin DID can roll over once to a VTA-minted long-term admin.
+        /// Requires `--admin-expires`.
+        #[arg(long, requires = "admin_expires")]
+        admin_handoff: bool,
     },
     /// Update an existing context.
     Update {
@@ -720,8 +772,12 @@ enum ContextCommands {
         #[arg(long)]
         name: Option<String>,
         /// Set the DID for this context.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_did")]
         did: Option<String>,
+        /// Leave the context with no DID of its own. The DID itself is not
+        /// deleted, so it can then be deleted or assigned again.
+        #[arg(long)]
+        clear_did: bool,
         /// New description.
         #[arg(long)]
         description: Option<String>,
@@ -793,7 +849,7 @@ enum WebvhCommands {
         /// Server identifier
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a WebVHHostingService endpoint)
+        /// Server DID (must resolve to a DID document the VTA can reach it through: TSPTransport, DIDCommMessaging, TrustTaskHTTPS, or WebVHHosting at an https:// origin)
         #[arg(long)]
         did: String,
         /// Human-readable label
@@ -975,8 +1031,9 @@ enum DidMgmtServerCommands {
         /// Server identifier.
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a
-        /// WebVHHostingService endpoint).
+        /// Server DID (must resolve to a DID document the VTA can reach it
+        /// through: TSPTransport, DIDCommMessaging, TrustTaskHTTPS, or
+        /// WebVHHosting at an https:// origin).
         #[arg(long)]
         did: String,
         /// Human-readable label.
@@ -2000,6 +2057,7 @@ async fn main() {
                     admin_did,
                     admin_label,
                     admin_expires,
+                    admin_handoff,
                 } => {
                     bootstrap_cli::run_context_create(
                         cli.config,
@@ -2010,6 +2068,7 @@ async fn main() {
                         admin_did,
                         admin_label,
                         admin_expires,
+                        admin_handoff,
                     )
                     .await
                 }
@@ -2017,9 +2076,18 @@ async fn main() {
                     id,
                     name,
                     did,
+                    clear_did,
                     description,
                 } => {
-                    bootstrap_cli::run_context_update(cli.config, id, name, did, description).await
+                    bootstrap_cli::run_context_update(
+                        cli.config,
+                        id,
+                        name,
+                        did,
+                        clear_did,
+                        description,
+                    )
+                    .await
                 }
                 ContextCommands::Delete { id, yes } => {
                     bootstrap_cli::run_context_delete(cli.config, id, yes).await
@@ -2216,6 +2284,36 @@ async fn main() {
             }
         }
         #[cfg(feature = "webvh")]
+        #[cfg(feature = "tsp")]
+        Some(Commands::TspRelationships { command }) => {
+            // SEALED CHECK: reset and delete write the relationships keyspace.
+            if !matches!(command, TspRelationshipCommands::List) {
+                check_seal(&cli.config).await;
+            }
+            let result = match command {
+                TspRelationshipCommands::List => tsp_relationships_cli::run_list(cli.config).await,
+                TspRelationshipCommands::Reset { peer, our } => {
+                    tsp_relationships_cli::run_reset(cli.config, peer, our).await
+                }
+                TspRelationshipCommands::Delete {
+                    peer,
+                    our,
+                    all,
+                    yes,
+                } => {
+                    use tsp_relationships_cli::Target;
+                    let target = match peer {
+                        Some(peer) if !all => Target::Peer { peer, our },
+                        _ => Target::All,
+                    };
+                    tsp_relationships_cli::run_delete(cli.config, target, yes).await
+                }
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Services { command }) => {
             // SEALED CHECK: every service mutation modifies the
             // VTA's state on disk + publishes a new LogEntry.
@@ -2350,7 +2448,8 @@ async fn main() {
 
             init_tracing(&config);
 
-            let store = store::Store::open(&config.store).expect("failed to open store");
+            let store = store::Store::open_with(&config.store, &config.fjall)
+                .expect("failed to open store");
             let seed_store: Arc<dyn keys::seed_store::SeedStore> =
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
 

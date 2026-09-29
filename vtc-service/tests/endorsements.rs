@@ -23,6 +23,8 @@ use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 
+use vti_rooms_dtg::test_support::Party;
+
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::endorsement_types::{EndorsementType, get_type, store_type};
 use vtc_service::members::{Member, store_member};
@@ -31,11 +33,13 @@ use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
 const REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
-const LIST_TYPES_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1";
 const DELETE_TYPE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 const ISSUE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/show/0.1";
+const SCHEMA_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/register/0.1";
+const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
+const ACCEPTS_DELETE_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
 const ADMIN_DID: &str = "did:key:zEndAdmin";
 const ISSUER_DID: &str = "did:key:zEndIssuer";
 const MEMBER_DID: &str = "did:key:zEndMember";
@@ -43,6 +47,9 @@ const SUBJECT_DID: &str = "did:key:zEndSubject";
 
 struct Fixture {
     router: axum::Router,
+    /// The endorsement-type writes are signed documents only; these sign them.
+    admin: Party,
+    member: Party,
     admin_token: String,
     issuer_token: String,
     member_token: String,
@@ -158,12 +165,35 @@ async fn build() -> Fixture {
     )
     .await;
 
+    let admin = Party::new();
+    let member = Party::new();
+    for (who, role) in [(&admin, VtcRole::Admin), (&member, VtcRole::Member)] {
+        store_acl_entry(
+            &vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: who.did.clone(),
+                role,
+                label: None,
+                allowed_contexts: vec![],
+                created_at: now,
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
     let audit_ks = vtc.state.audit_ks.clone();
     let endorsements_ks = vtc.state.endorsements_ks.clone();
     let router = vtc.router.clone();
 
     Fixture {
         router,
+        admin,
+        member,
         admin_token,
         issuer_token,
         member_token,
@@ -182,27 +212,51 @@ async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
 }
 
 // ─── Type registry ───────────────────────────────────────
+//
+// `register` and `delete` are signed documents at `POST /v1/trust-tasks`; the
+// helpers answer `(status, payload)`, where a refusal's payload carries its
+// `code` and `message`.
+
+async fn signed_task(
+    fix: &Fixture,
+    from: &Party,
+    task: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+        task,
+        payload,
+        &from.did,
+        vtc_service::test_support::TEST_VTC_DID,
+    )
+    .unwrap();
+    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
+        .unwrap();
+    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
+        .await
+        .unwrap();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/trust-tasks")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+        .unwrap();
+    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    (status, body["payload"].clone())
+}
 
 #[tokio::test]
 async fn register_happy_path() {
     let fix = build().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/endorsement-types")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", REGISTER_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "typeUri": "https://example.com/v1/skills/rust",
-                "description": "Rust expertise"
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, v) = body_value(resp).await;
-    assert_eq!(status, StatusCode::CREATED, "{v}");
+    let (status, v) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/rust",
+            "description": "Rust expertise"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
     // `{endorsementType: …}` since #1059 — the row was returned bare until
     // the witness compared the handler with its own schema.
     assert_eq!(
@@ -214,18 +268,8 @@ async fn register_happy_path() {
 #[tokio::test]
 async fn register_rejects_reserved_uri() {
     let fix = build().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/endorsement-types")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", REGISTER_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "typeUri": "CommunityRole" }).to_string(),
-        ))
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = register(&fix, json!({ "typeUri": "CommunityRole" })).await;
+    assert!(status.is_client_error(), "{body}");
     assert_eq!(rest_error_code(&body), REGISTER_ERR_RESERVED, "{body}");
 }
 
@@ -233,111 +277,40 @@ async fn register_rejects_reserved_uri() {
 async fn register_rejects_duplicate() {
     let fix = build().await;
     let uri = "https://example.com/v1/skills/rust";
-    for _ in 0..2 {
-        let req = Request::builder()
-            .method("POST")
-            .uri("/v1/endorsement-types")
-            .header("authorization", format!("Bearer {}", fix.admin_token))
-            .header("trust-task", REGISTER_TASK)
-            .header("content-type", "application/json")
-            .body(Body::from(json!({ "typeUri": uri }).to_string()))
-            .unwrap();
-        let _ = fix.router.clone().oneshot(req).await.unwrap();
-    }
-    // Second register should fail.
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/endorsement-types")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", REGISTER_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(json!({ "typeUri": uri }).to_string()))
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = register(&fix, json!({ "typeUri": uri })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // A second register fails.
+    let (status, body) = register(&fix, json!({ "typeUri": uri })).await;
+    assert!(status.is_client_error(), "{body}");
     assert_eq!(rest_error_code(&body), REGISTER_ERR_EXISTS, "{body}");
 }
 
 #[tokio::test]
 async fn register_requires_admin() {
     let fix = build().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/endorsement-types")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", REGISTER_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(json!({ "typeUri": "https://x/t" }).to_string()))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
-async fn list_types_enforces_its_own_task_per_method() {
-    // GET + POST share `/endorsement-types`, but each verb now gates on its
-    // own canonical task: the GET requires `list/0.1` and refuses the POST's
-    // `register/0.1` header (the former shared-mount workaround is gone).
-    let fix = build().await;
-    let get = |task: &str| {
-        Request::builder()
-            .method("GET")
-            .uri("/v1/endorsement-types")
-            .header("authorization", format!("Bearer {}", fix.admin_token))
-            .header("trust-task", task)
-            .body(Body::empty())
-            .unwrap()
-    };
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(get(LIST_TYPES_TASK))
-        .await
-        .unwrap();
-    let (status, v) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK, "{v}");
-
-    let resp = fix
-        .router
-        .clone()
-        .oneshot(get(REGISTER_TASK))
-        .await
-        .unwrap();
-    assert_ne!(
-        resp.status(),
-        StatusCode::OK,
-        "GET must refuse the register task header"
-    );
+    let (status, body) = signed_task(
+        &fix,
+        &fix.member,
+        REGISTER_TASK,
+        json!({ "typeUri": "https://x/t" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }
 
 #[tokio::test]
 async fn delete_type_404_when_unknown() {
     let fix = build().await;
-    let req = Request::builder()
-        .method("DELETE")
-        .uri("/v1/endorsement-types/https%3A%2F%2Fx%2Ft")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", DELETE_TYPE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = delete_type(&fix, "https://x/t").await;
+    assert!(status.is_client_error(), "{body}");
     assert_eq!(rest_error_code(&body), DELETE_ERR_NOT_FOUND, "{body}");
 }
 
 // ─── Issue ───────────────────────────────────────────────
 
 async fn register_type(fix: &Fixture, uri: &str) {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/endorsement-types")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", REGISTER_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(json!({ "typeUri": uri }).to_string()))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    let (status, body) = register(fix, json!({ "typeUri": uri })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 #[tokio::test]
@@ -500,7 +473,7 @@ async fn delete_type_refused_while_live_endorsement_exists() {
 
     // Try to delete the type — must 409 `inUse`.
     let (status, body) = delete_type(&fix, uri).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), DELETE_ERR_IN_USE, "{body}");
 }
 
@@ -516,7 +489,7 @@ async fn delete_type_refused_while_a_criterion_names_it() {
     register_vetting_criterion(&fix, "kernel-developer", uri).await;
 
     let (status, body) = delete_type(&fix, uri).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), DELETE_ERR_IN_USE, "{body}");
     // The console renders this text verbatim, so the criterion must be named:
     // "it is in use" the operator cannot act on.
@@ -527,31 +500,23 @@ async fn delete_type_refused_while_a_criterion_names_it() {
     );
 
     // Removing the criterion releases the type — the guard is not sticky.
-    let req = Request::builder()
-        .method("DELETE")
-        .uri("/v1/schemas/accepts/kernel-developer")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, body) = signed_task(
+        &fix,
+        &fix.admin,
+        ACCEPTS_DELETE_TASK,
+        json!({ "id": "kernel-developer" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let (status, body) = delete_type(&fix, uri).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["typeUri"], uri);
 }
 
-/// `DELETE /v1/endorsement-types/{uri}`, percent-encoding the URI into the path.
+/// `vtc/endorsement-types/delete/0.1`, signed by the fixture's admin.
 async fn delete_type(fix: &Fixture, uri: &str) -> (StatusCode, Value) {
-    let encoded = uri.replace(':', "%3A").replace('/', "%2F");
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/endorsement-types/{encoded}"))
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", DELETE_TYPE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+    signed_task(fix, &fix.admin, DELETE_TYPE_TASK, json!({ "typeUri": uri })).await
 }
 
 /// An endorsement type's `claimSchema` must not make the service read a local
@@ -633,7 +598,7 @@ async fn a_claim_schema_with_an_external_ref_is_refused_rather_than_fetched() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// A `credentialSchema` supplied by an admin must not make the service read a
@@ -651,26 +616,25 @@ async fn register_schema_refuses_an_external_ref() {
     let target = dir.path().join("ref-target.json");
     std::fs::write(&target, br#"{"type": "string"}"#).expect("write target");
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/schemas")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "typeUri": "https://example.test/ExternalRefCredential",
-                "dtgType": "ExternalRefCredential",
-                "kind": "issues",
-                "credentialSchema": { "$ref": format!("file://{}", target.display()) },
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(
-        status,
-        StatusCode::BAD_REQUEST,
+    let (status, body) = signed_task(
+        &fix,
+        &fix.admin,
+        SCHEMA_REGISTER_TASK,
+        json!({
+            "typeUri": "https://example.test/ExternalRefCredential",
+            "dtgType": "ExternalRefCredential",
+            "kind": "issues",
+            "credentialSchema": { "$ref": format!("file://{}", target.display()) },
+        }),
+    )
+    .await;
+    assert!(
+        !status.is_success(),
         "a schema with a file:// $ref must be refused, not resolved: {body}"
+    );
+    assert_eq!(
+        body["code"], "vtc/schemas/register:invalidCredentialSchema",
+        "{body}"
     );
 }
 
@@ -678,30 +642,24 @@ async fn register_schema_refuses_an_external_ref() {
 /// query references `EndorsementCredential`, so that per-type schema is
 /// registered first — `store_accepts` refuses a dangling type reference.
 async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &str) {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/schemas")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "typeUri": "EndorsementCredential",
-                "dtgType": "EndorsementCredential",
-                "kind": "accepts",
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    let (status, body) = signed_task(
+        fix,
+        &fix.admin,
+        SCHEMA_REGISTER_TASK,
+        json!({
+            "typeUri": "EndorsementCredential",
+            "dtgType": "EndorsementCredential",
+            "kind": "accepts",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "register schema: {body}");
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/schemas/accepts")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
+    let (status, body) = signed_task(
+        fix,
+        &fix.admin,
+        ACCEPTS_REGISTER_TASK,
+        json!({
                 "id": id,
                 "description": "Two vetters, at least one in person",
                 "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
@@ -715,12 +673,10 @@ async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &st
                     "maxStatementAge": "P120D",
                     "eligibleVetters": { "role": "vetter" },
                 },
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(status, StatusCode::CREATED, "register criterion: {body}");
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "register criterion: {body}");
 }
 
 // ─── Revoke ──────────────────────────────────────────────
@@ -940,16 +896,9 @@ fn rest_error_code(body: &Value) -> &str {
     body["code"].as_str().unwrap_or_default()
 }
 
+/// `vtc/endorsement-types/register/0.1`, signed by the fixture's admin.
 async fn register(fix: &Fixture, body: Value) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/endorsement-types")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", REGISTER_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+    signed_task(fix, &fix.admin, REGISTER_TASK, body).await
 }
 
 async fn issue(fix: &Fixture, type_uri: &str, claim: Value) -> (StatusCode, Value) {
@@ -993,12 +942,16 @@ async fn an_empty_or_oversized_type_uri_is_the_declared_invalid_uri() {
         format!("https://x/{}", "a".repeat(512)),
     ] {
         let (status, body) = register(&fix, json!({ "typeUri": uri })).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(rest_error_code(&body), REGISTER_ERR_INVALID_URI, "{body}");
+        assert!(status.is_client_error(), "{body}");
+        // An empty or oversized URI may already fail the payload schema.
+        assert!(
+            [REGISTER_ERR_INVALID_URI, "malformedRequest"].contains(&rest_error_code(&body)),
+            "{body}"
+        );
     }
     let at_cap = format!("https://x/{}", "a".repeat(512 - "https://x/".len()));
     let (status, body) = register(&fix, json!({ "typeUri": at_cap })).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// A claim over 8 KiB is `claimTooLarge` (400, unchanged).
@@ -1031,7 +984,7 @@ async fn a_claim_failing_the_type_claim_schema_is_the_declared_violation() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     for bad in [json!({ "level": "wizard" }), json!({ "other": 1 })] {
         let (status, body) = issue(&fix, uri, bad.clone()).await;
@@ -1076,7 +1029,8 @@ async fn a_claim_schema_that_is_not_a_json_schema_is_refused_at_registration() {
             "/properties/level/type",
         ),
         (json!({ "required": "level" }), "/required"),
-        (json!(true), "found a boolean"),
+        // Not an object at all: the payload schema refuses it first.
+        (json!(true), "true is not of type"),
     ]
     .into_iter()
     .enumerate()
@@ -1085,9 +1039,11 @@ async fn a_claim_schema_that_is_not_a_json_schema_is_refused_at_registration() {
         let (status, body) = register(&fix, json!({ "typeUri": uri, "claimSchema": schema })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{schema}: {body}");
         assert_eq!(rest_error_code(&body), malformed, "{schema}: {body}");
-        let message = body["error"].as_str().unwrap_or_default();
+        let message = body["message"].as_str().unwrap_or_default();
         assert!(
-            message.contains("claimSchema is not a valid JSON Schema") && message.contains(names),
+            (message.contains("claimSchema is not a valid JSON Schema")
+                || message.contains("payload failed schema validation"))
+                && message.contains(names),
             "the refusal must name the bad part — {schema}: {body}"
         );
         // Nothing was stored, so the type is still free to register properly.
@@ -1110,9 +1066,9 @@ async fn a_claim_schema_that_is_not_a_json_schema_is_refused_at_registration() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = register(&fix, json!({ "typeUri": "https://example.com/v1/plain" })).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// A type whose **stored** `claimSchema` will not compile answers issuance with
@@ -1171,7 +1127,7 @@ async fn a_type_with_a_corrupt_stored_claim_schema_names_the_type_not_the_claim(
         json!({ "typeUri": uri, "claimSchema": { "type": "object" } }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = issue(&fix, uri, json!({ "level": "expert" })).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 }
@@ -1247,4 +1203,55 @@ async fn an_unknown_endorsement_is_the_declared_not_found() {
         StatusCode::FORBIDDEN,
         "the capability check precedes the lookup: {body}"
     );
+}
+
+/// The bearer route enforces the bounds the signed door does, so the two doors
+/// agree about what registers (#1641 batch 4).
+///
+/// `description` is the task's published `maxLength: 1024`, which the signed
+/// door's schema check already held and this route did not. `claimSchema` is
+/// capped at 32 KiB serialised — the task publishes no bound, but a schema
+/// that registered here and could not fit a 64 KiB signed document would be
+/// the two doors disagreeing.
+#[tokio::test]
+async fn registration_enforces_its_size_bounds() {
+    let fix = build().await;
+    let malformed = trust_tasks_rs::StandardCode::MalformedRequest.as_str();
+
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/long-description",
+            "description": "x".repeat(1025),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(rest_error_code(&body), malformed, "{body}");
+
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/huge-schema",
+            "claimSchema": {
+                "type": "object",
+                // `CLAIM_SCHEMA_MAX_BYTES` (32 KiB); the padding alone reaches it.
+                "description": "x".repeat(32 * 1024),
+            },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(rest_error_code(&body), malformed, "{body}");
+
+    // At the bound itself, both register.
+    let (status, body) = register(
+        &fix,
+        json!({
+            "typeUri": "https://example.com/v1/skills/max-description",
+            "description": "x".repeat(1024),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }

@@ -13,8 +13,8 @@ import { renewIfNeeded, resetSession, setSessionExpiry } from "@/lib/session";
 
 // `GET /health` is unauth and deliberately minimal: it carries only
 // `{status, version, vtc_did}`. The `vta_did` / `mediator_url` /
-// `mediator_did` infrastructure detail moved to the admin-gated
-// `/v1/health/diagnostics` (P3.7) so it isn't a free unauth recon
+// `mediator_did` infrastructure detail moved to the administrator's signed
+// `vtc/registry/diagnostics/0.1` (P3.7) so it isn't a free unauth recon
 // oracle — read those from `DiagnosticsResponse` instead.
 export interface HealthResponse {
   status: string;
@@ -22,7 +22,7 @@ export interface HealthResponse {
   vtc_did?: string;
 }
 
-// `GET /v1/health/diagnostics` — admin-gated. Surfaces the trust-registry
+// `vtc/registry/diagnostics/0.1` — an administrator's signed read. Surfaces the trust-registry
 // reconciler state plus the identity/mediator detail that used to live on
 // `/health` (P3.7).
 //
@@ -73,6 +73,17 @@ export interface ApiError {
   status: number;
   /** Daemon-formatted error message when the body is JSON. */
   message: string;
+  /** A signed Trust Task's refusal code (`permissionDenied`,
+   *  `git-ns:selfGrantNotAllowed`, …), where the answer was a
+   *  `trust-task-error` document. */
+  code?: string;
+  /** That refusal's `details` — where an operation-bound step-up puts its
+   *  ceremony (`details.stepUpRequest`). */
+  details?: Record<string, unknown>;
+  /** The signed document that was refused — so a refusal that asks for an
+   *  operation-bound step-up can be answered and the *same* document sent
+   *  again (`postSignedDocument`). */
+  document?: SignedTrustTaskDocument;
 }
 
 /**
@@ -330,6 +341,252 @@ export const deleteJson = <T>(
   }, extra.requires);
 
 // ---------------------------------------------------------------------------
+// The signed door — `POST /v1/trust-tasks`
+// ---------------------------------------------------------------------------
+//
+// One seam, deliberately. `pnm-browser-plugin` puts signing in the channel
+// rather than at ~116 call sites, and the same reasoning applies here: a
+// plugin that built and signed its own document would be a second definition
+// of what a Trust Task document is, and the first one to drift verifies
+// nowhere.
+//
+// What arrives here is a task URI and a payload. What goes on the wire is a
+// `trust_tasks_rs::TrustTask` document — `{id, type, issuer, recipient,
+// issuedAt, payload, proof}` — issued by *this browser's* console `did:key`,
+// addressed to the VTC's own DID, and carrying an `eddsa-jcs-2022` proof. The
+// daemon verifies the proof against the document's own `issuer` (SPEC §4.7),
+// bounds `issuedAt` (10 minutes, VTI-OPS-024), checks the `recipient` binding
+// and records the `id` against replay; the verb handler then reads the
+// **signer's** authority — for a console key, the delegating admin's ACL row,
+// resolved at execution time (#1692).
+//
+// Three things this path deliberately does not do:
+//
+//  - **No bearer token.** The route reads none. The session cookie rides along
+//    because `credentials: "include"` is how this console talks to the daemon,
+//    and the CSRF header goes with it because the route sits behind the same
+//    middleware, but neither is what authorises the call.
+//  - **No `vtc-session-expired` event.** The generic `request` helper fires one
+//    on any 401/403, which is right for a bearer route and wrong here: the
+//    signed door answers 403 for "your delegation was revoked" and for "your
+//    admin row no longer permits this", and signing the operator out of a
+//    working session because a *document* was refused would be a bug that
+//    reads as a flaky console.
+//  - **No `Trust-Task` header.** The document's own `type` is the routing key.
+
+import {
+  buildTrustTaskDocument,
+  ed25519Available,
+  loadConsoleKey,
+  signTrustTaskDocument,
+  type SignedTrustTaskDocument,
+  type UnsignedTrustTaskDocument,
+} from "./console-key";
+
+/**
+ * Thrown when this browser cannot produce a signed document — no WebCrypto
+ * Ed25519, or no console key enrolled yet.
+ *
+ * A distinct type because the fix is the operator's, not the daemon's: its
+ * message says where to enable signing, and a screen that needs to can
+ * recognise it. The console has no other door for a signed verb.
+ */
+export class SigningUnavailableError extends Error {
+  constructor(readonly reason: "no-ed25519" | "no-key") {
+    super(
+      reason === "no-ed25519"
+        ? "this browser has no WebCrypto Ed25519, so the console cannot sign documents"
+        : "no console signing key is enrolled in this browser — enable console signing on the Console keys page",
+    );
+    this.name = "SigningUnavailableError";
+  }
+}
+
+/** The community DID a signed document must be addressed to. Cached per load. */
+let vtcDidPromise: Promise<string> | null = null;
+
+async function communityDid(): Promise<string> {
+  if (!vtcDidPromise) {
+    const pending = (async () => {
+      const health = await fetchHealth();
+      if (!health.vtc_did) {
+        // A VTC mid-setup has no DID, and `dispatch_trust_task_core` skips the
+        // recipient binding in that state — but a document with no `recipient`
+        // is refused outright by SPEC §4.8.2 audience binding, so there is
+        // nothing to address and nothing to sign.
+        throw new Error(
+          "this VTC has no DID configured yet, so a signed document has nothing to address",
+        );
+      }
+      return health.vtc_did;
+    })();
+    // Never cache a rejection. A `/health` that failed once — a reload
+    // mid-restart is the ordinary case — would otherwise leave every signed
+    // call in this tab failing for the life of the page.
+    pending.catch(() => {
+      if (vtcDidPromise === pending) vtcDidPromise = null;
+    });
+    vtcDidPromise = pending;
+  }
+  return vtcDidPromise;
+}
+
+/** Can this browser sign right now? Drives which door a screen offers. */
+export async function signingAvailable(): Promise<boolean> {
+  if (!(await ed25519Available())) return false;
+  return (await loadConsoleKey()) !== null;
+}
+
+/**
+ * A `trust-task-error` document's payload, as the framework defines it.
+ * `code` is the machine-readable one (`permissionDenied`, `taskFailed`,
+ * `malformedRequest`, …); `message` is safe to show.
+ */
+interface TrustTaskErrorPayload {
+  code?: string;
+  message?: string;
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Send `payload` as a signed Trust Task document and return the `#response`
+ * document's payload.
+ *
+ * Throws [`SigningUnavailableError`] when this browser cannot sign, and an
+ * [`ApiError`] for everything else, so existing error rendering is unchanged.
+ */
+export async function postSignedTrustTask<T>(
+  typeUri: string,
+  payload: unknown,
+): Promise<T> {
+  return postSignedDocument<T>(await signTrustTask(typeUri, payload));
+}
+
+/**
+ * A signed **read**: the same document, key and endpoint as
+ * [`postSignedTrustTask`], for a task that changes nothing — the `git-ns/*`
+ * administrator reads the Repos plugin renders.
+ *
+ * A separate export for one reason: a component test stands in for the
+ * console's *changes* by mocking `postSignedTrustTask`, and must still see
+ * its reads reach the fixtures. Reads have no bearer fallback either — the
+ * daemon answers them to the signer only — so [`SigningUnavailableError`]
+ * propagates to the screen, which says how to enable signing.
+ */
+export async function postSignedRead<T>(typeUri: string, payload: unknown): Promise<T> {
+  return postSignedDocument<T>(await signTrustTask(typeUri, payload));
+}
+
+/**
+ * Build and sign `payload` as a Trust Task document from this browser's
+ * console key, without sending it.
+ *
+ * Split out for the one flow that sends the **same** document twice: an
+ * operation-bound step-up (`crate::acl::bound_step_up`) is keyed by a digest
+ * of the document's type and payload, and the spine releases a refused
+ * document's `id`, so once the passkey gesture is recorded the identical
+ * signed document — carried on the refusal as `ApiError.document` — is sent
+ * again with [`postSignedDocument`]. Signing a fresh one would still match the
+ * digest, but would be a second act the operator never saw.
+ */
+async function signTrustTask(
+  typeUri: string,
+  payload: unknown,
+): Promise<SignedTrustTaskDocument> {
+  if (!(await ed25519Available())) {
+    throw new SigningUnavailableError("no-ed25519");
+  }
+  const key = await loadConsoleKey();
+  if (!key) throw new SigningUnavailableError("no-key");
+
+  const recipient = await communityDid();
+  const unsigned = buildTrustTaskDocument({
+    typeUri,
+    payload,
+    // The document is issued by the console key's own DID, not the operator's.
+    // SPEC §4.7 binds the proof to the in-band `issuer`, so they must be the
+    // same DID; the delegation is what connects that DID to the operator's
+    // authority, and it is read server-side on every document.
+    issuer: key.consoleDid,
+    recipient,
+  });
+  return signTrustTaskDocument(unsigned, key);
+}
+
+/**
+ * Post an already-signed document to `POST /v1/trust-tasks` and return its
+ * `#response` payload. A refusal throws an [`ApiError`] carrying the
+ * `trust-task-error`'s `code` and `details`.
+ */
+export async function postSignedDocument<T>(signed: SignedTrustTaskDocument): Promise<T> {
+  return postDocument<T>(signed);
+}
+
+/**
+ * Post `payload` as an **unsigned** Trust Task document naming `issuer`.
+ *
+ * For exactly one case: finishing a step-up passkey redemption
+ * (`auth/passkey/enroll/redeem/finish/0.1`) from the browser that ran
+ * `navigator.credentials.create` — a member who is no console user, so holds
+ * no key here. Its authority is the ceremony the member's **signed**
+ * `redeem/start` opened (sent by `cnm`); the VTC reads nothing from this
+ * document's issuer. Never for an approval: every approve-response is signed.
+ */
+export async function postUnsignedTrustTask<T>(
+  typeUri: string,
+  payload: unknown,
+  issuer: string,
+): Promise<T> {
+  const recipient = await communityDid();
+  return postDocument<T>(buildTrustTaskDocument({ typeUri, payload, issuer, recipient }));
+}
+
+async function postDocument<T>(
+  signed: UnsignedTrustTaskDocument | SignedTrustTaskDocument,
+): Promise<T> {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const csrf = csrfTokenFromCookie();
+  if (csrf) headers.set("X-CSRF-Token", csrf);
+
+  const res = await fetch("/v1/trust-tasks", {
+    method: "POST",
+    credentials: "include",
+    headers,
+    body: JSON.stringify(signed),
+  });
+
+  const body = (await res.json().catch(() => null)) as {
+    payload?: unknown;
+  } | null;
+
+  if (!res.ok) {
+    const err = (body?.payload ?? {}) as TrustTaskErrorPayload;
+    const apiError: ApiError = {
+      status: res.status,
+      message:
+        err.message ??
+        err.code ??
+        `${res.status} ${res.statusText} from the signed Trust Task endpoint`,
+    };
+    if (typeof err.code === "string") apiError.code = err.code;
+    if (err.details && typeof err.details === "object") apiError.details = err.details;
+    // Only a signed document is worth re-sending unchanged.
+    if ("proof" in signed) apiError.document = signed as SignedTrustTaskDocument;
+    throw apiError;
+  }
+
+  if (!body || !("payload" in body)) {
+    const apiError: ApiError = {
+      status: res.status,
+      message:
+        "the signed Trust Task endpoint answered without a `payload` — the response was not a Trust Task document",
+    };
+    throw apiError;
+  }
+  return body.payload as T;
+}
+
+// ---------------------------------------------------------------------------
 // Exempt helpers — for `/health`, `/admin/build-info.json`,
 // `/admin/plugins.json`, and any future route that's outside the
 // `TrustTaskRouter`. Spelling the carve-out explicitly at the call
@@ -378,19 +635,18 @@ export const fetchBuildInfo = (): Promise<BuildInfo> =>
 const DIAGNOSTICS_TASK =
   "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1";
 
-// Admin-gated identity + reconciler diagnostics. The dashboard reads
-// `vta_did` / `mediator_did` from here since P3.7 stripped them off
-// the unauth `/health` payload.
+// The administrator's identity + reconciler diagnostics, a signed read. The
+// dashboard reads `vta_did` / `mediator_did` from here since P3.7 stripped
+// them off the unauth `/health` payload.
 export const fetchDiagnostics = (): Promise<DiagnosticsResponse> =>
-  getJson<DiagnosticsResponse>("/v1/health/diagnostics", {
-    trustTask: DIAGNOSTICS_TASK,
-  });
+  postSignedRead<DiagnosticsResponse>(DIAGNOSTICS_TASK, {});
 
 // ── Trust-registry operator surface ─────────────────────────────────────
 //
-// `vtc/registry/{sync-jobs,records}/…`. The offline `vtc sync-jobs` CLI does
-// the same three things against a stopped daemon; these are the online half,
-// and they share the daemon's eligibility rule rather than re-deriving it.
+// `vtc/registry/{sync-jobs,records}/…`, each a signed document. The offline
+// `vtc sync-jobs` CLI does the same three things against a stopped daemon;
+// these are the online half, and they share the daemon's eligibility rule
+// rather than re-deriving it.
 const SYNC_JOBS_LIST_TASK =
   "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1";
 const SYNC_JOBS_RETRY_TASK =
@@ -403,10 +659,7 @@ const REGISTRY_RECORDS_TASK =
 export const fetchSyncJobs = (
   state?: "pending" | "inFlight" | "failed",
 ): Promise<SyncJobsListResponse> =>
-  getJson<SyncJobsListResponse>(
-    `/v1/registry/sync-jobs${state ? `?state=${state}` : ""}`,
-    { trustTask: SYNC_JOBS_LIST_TASK },
-  );
+  postSignedRead<SyncJobsListResponse>(SYNC_JOBS_LIST_TASK, state ? { state } : {});
 
 /**
  * Requeue one job, or every failed job.
@@ -418,25 +671,17 @@ export const fetchSyncJobs = (
 export const retrySyncJob = (
   target: { jobId: string } | { allFailed: true },
 ): Promise<SyncJobsRetryResponse> =>
-  postJson<SyncJobsRetryResponse>("/v1/registry/sync-jobs/retry", target, {
-    trustTask: SYNC_JOBS_RETRY_TASK,
-  });
+  postSignedTrustTask<SyncJobsRetryResponse>(SYNC_JOBS_RETRY_TASK, target);
 
 export const discardSyncJob = (
   jobId: string,
 ): Promise<SyncJobsDiscardResponse> =>
-  postJson<SyncJobsDiscardResponse>(
-    "/v1/registry/sync-jobs/discard",
-    { jobId },
-    { trustTask: SYNC_JOBS_DISCARD_TASK },
-  );
+  postSignedTrustTask<SyncJobsDiscardResponse>(SYNC_JOBS_DISCARD_TASK, { jobId });
 
 export const fetchRegistryRecords = (
   source: "registry" | "local",
 ): Promise<RegistryRecordsResponse> =>
-  getJson<RegistryRecordsResponse>(`/v1/registry/records?source=${source}`, {
-    trustTask: REGISTRY_RECORDS_TASK,
-  });
+  postSignedRead<RegistryRecordsResponse>(REGISTRY_RECORDS_TASK, { source });
 
 /**
  * The canonical `Session` shape, as published by the `auth/whoami/0.1`
@@ -468,7 +713,6 @@ export interface WhoamiResponse {
 }
 
 const WHOAMI_TASK = "https://trusttasks.org/spec/auth/whoami/0.1";
-const SIGN_OUT_TASK = "https://trusttasks.org/spec/auth/revoke-session/0.1";
 
 /** Fetch the caller's session identity. Throws on 401/403. */
 export const fetchWhoami = (): Promise<WhoamiResponse> =>
@@ -483,8 +727,8 @@ export const fetchWhoami = (): Promise<WhoamiResponse> =>
 
 // ── Runtime config ──────────────────────────────────────────────────────
 //
-// The console's first client for `/v1/admin/config`. Note the two-step
-// Save: PATCH writes the db-layer override but does **not** touch the
+// `config/{show,patch,reload}`, each a signed document. Note the two-step
+// Save: `patch` writes the db-layer override but does **not** touch the
 // running config, so a Save that stopped there would report success and
 // change nothing until the daemon happened to restart. `reload` is what
 // folds the overlay onto the live `AppConfig`.
@@ -494,10 +738,7 @@ const CONFIG_PATCH_TASK = "https://trusttasks.org/spec/config/patch/0.1";
 const CONFIG_RELOAD_TASK = "https://trusttasks.org/spec/config/reload/0.1";
 
 export const fetchEffectiveConfig = (): Promise<EffectiveConfig> =>
-  getJson<EffectiveConfig>("/v1/admin/config", {
-    trustTask: CONFIG_SHOW_TASK,
-    requires: ["fields"],
-  });
+  postSignedRead<EffectiveConfig>(CONFIG_SHOW_TASK, {});
 
 /**
  * Write config overrides and put them into effect.
@@ -509,22 +750,19 @@ export const fetchEffectiveConfig = (): Promise<EffectiveConfig> =>
 export async function saveConfig(
   overrides: Record<string, unknown>,
 ): Promise<ConfigPatchResponse> {
-  const result = await patchJson<ConfigPatchResponse>(
-    "/v1/admin/config",
-    { overrides },
-    { trustTask: CONFIG_PATCH_TASK, requires: ["applied", "rejected"] },
-  );
+  const result = await postSignedTrustTask<ConfigPatchResponse>(CONFIG_PATCH_TASK, {
+    overrides,
+  });
   if (result.applied.length > 0) {
-    await postJson<unknown>("/v1/admin/config/reload", undefined, {
-      trustTask: CONFIG_RELOAD_TASK,
-    });
+    await postSignedTrustTask<unknown>(CONFIG_RELOAD_TASK, {});
   }
   return result;
 }
 
-/** Revoke the server-side session and clear browser cookies. */
+/** Revoke the server-side session and clear browser cookies. Sign-out ends the
+ *  cookie session, which no Trust Task describes, so it carries no task. */
 export const signOut = async (): Promise<void> => {
-  await postJson<void>("/v1/auth/sign-out", undefined, { trustTask: SIGN_OUT_TASK });
+  await postJsonExempt<void>("/v1/auth/sign-out", undefined);
   // Drop the expiry so a subsequent sign-in starts from that session's
   // own deadline rather than renewing against the dead one's.
   resetSession();
@@ -557,9 +795,7 @@ export const issueInvitation = (
   const body: Record<string, unknown> = { subjectDid };
   if (validityDays !== undefined) body.validityDays = validityDays;
   if (role) body.role = role;
-  return postJson<IssueInvitationResponse>("/v1/invitations", body, {
-    trustTask: ISSUE_INVITATION_TASK,
-  });
+  return postSignedTrustTask<IssueInvitationResponse>(ISSUE_INVITATION_TASK, body);
 };
 
 const REVOKE_INVITATION_TASK =
@@ -576,20 +812,17 @@ export interface InvitationListItem {
 }
 
 /** List issued invitations (newest first). Its own Trust Task: listing the
- * registry and minting a bearer credential are different contracts, even
- * though GET and POST share the /invitations path. */
+ * registry and minting a bearer credential are different contracts. */
 export const listInvitations = (): Promise<{ invitations: InvitationListItem[] }> =>
-  getJson<{ invitations: InvitationListItem[] }>("/v1/invitations", {
-    trustTask: LIST_INVITATIONS_TASK,
-  });
+  postSignedRead<{ invitations: InvitationListItem[] }>(LIST_INVITATIONS_TASK, {});
 
 /** Revoke an outstanding invitation by VIC id (flips its revocation bit). */
 export const revokeInvitation = (
   id: string,
 ): Promise<{ id: string; revokedAt: string; newlyRevoked: boolean }> =>
-  deleteJson<{ id: string; revokedAt: string; newlyRevoked: boolean }>(
-    `/v1/invitations/${encodeURIComponent(id)}`,
-    { trustTask: REVOKE_INVITATION_TASK },
+  postSignedTrustTask<{ id: string; revokedAt: string; newlyRevoked: boolean }>(
+    REVOKE_INVITATION_TASK,
+    { id },
   );
 
 const DELIVER_INVITATION_TASK =
@@ -613,11 +846,7 @@ export const deliverInvitation = (
   id: string,
   channel: DeliverChannel,
 ): Promise<DeliverInvitationResponse> =>
-  postJson<DeliverInvitationResponse>(
-    "/v1/invitations/deliver",
-    { id, channel },
-    { trustTask: DELIVER_INVITATION_TASK },
-  );
+  postSignedTrustTask<DeliverInvitationResponse>(DELIVER_INVITATION_TASK, { id, channel });
 
 const RELATIONSHIPS_GRAPH_TASK =
   "https://trusttasks.org/spec/vtc/relationships/graph/0.2";
@@ -665,9 +894,7 @@ export interface RelationshipsGraph {
  * relationship (VRC pairs) alike, for the connections-graph view.
  * Admin-gated. */
 export const fetchRelationshipsGraph = (): Promise<RelationshipsGraph> =>
-  getJson<RelationshipsGraph>("/v1/relationships/graph", {
-    trustTask: RELATIONSHIPS_GRAPH_TASK,
-  });
+  postSignedRead<RelationshipsGraph>(RELATIONSHIPS_GRAPH_TASK, {});
 
 const MEMBER_RELATIONSHIPS_TASK =
   "https://trusttasks.org/spec/vtc/relationships/list/0.2";
@@ -709,10 +936,7 @@ export interface RecognitionCheck {
 /** Ask whether this community recognises (trusts) a foreign issuer/community
  * DID — the operator's per-DID window into the recognition graph. */
 export const checkRecognition = (did: string): Promise<RecognitionCheck> =>
-  getJson<RecognitionCheck>(
-    `/v1/recognition/check?did=${encodeURIComponent(did)}`,
-    { trustTask: RECOGNITION_CHECK_TASK },
-  );
+  postSignedRead<RecognitionCheck>(RECOGNITION_CHECK_TASK, { did });
 
 /** Probe: returns the whoami response when signed in, null when not. */
 export async function probeSession(): Promise<WhoamiResponse | null> {

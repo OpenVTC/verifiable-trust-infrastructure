@@ -1,13 +1,15 @@
 //! The online operator surface for the trust-registry reconciler.
 //!
-//! Four admin-gated endpoints, one per Trust Task in the
+//! Four administrator verbs, one per Trust Task in the
 //! `vtc/registry/{sync-jobs,records}` family
-//! (trustoverip/dtgwg-trust-tasks-tf#460):
+//! (trustoverip/dtgwg-trust-tasks-tf#460), each a signed document served by
+//! the spine on every transport (`trust_tasks::admin_tasks`); none has a
+//! REST route:
 //!
-//! - `GET  /v1/registry/sync-jobs`         — what is queued, and what failed
-//! - `POST /v1/registry/sync-jobs/retry`   — requeue an abandoned job
-//! - `POST /v1/registry/sync-jobs/discard` — drop one that should not be
-//! - `GET  /v1/registry/records`           — enumerate the recognition graph
+//! - `sync-jobs/list`    — what is queued, and what failed
+//! - `sync-jobs/retry`   — requeue an abandoned job
+//! - `sync-jobs/discard` — drop one that should not be
+//! - `records/list`      — enumerate the recognition graph
 //!
 //! ## Why these exist here rather than only on the CLI
 //!
@@ -22,17 +24,9 @@
 //! [`crate::sync_jobs_cli::requeue`] and the same eligibility rule the CLI
 //! applies, so "only a `Failed` row may move" is written once.
 
-use axum::Json;
-use axum::extract::{Query, State};
 use tracing::info;
 use uuid::Uuid;
 
-use vta_sdk::openapi::{
-    RegistryRecordsList01Response, RegistrySyncJobsDiscard01Payload,
-    RegistrySyncJobsDiscard01Response, RegistrySyncJobsList01Response,
-    RegistrySyncJobsRetry01Payload, RegistrySyncJobsRetry01Response,
-};
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use trust_tasks_rs::specs::vtc::registry::records::list as records_list;
@@ -133,31 +127,11 @@ fn job_wire(job: &SyncJob, retention_days: u32) -> Result<list_spec::v0_1::Job, 
         .map_err(|e| AppError::Internal(format!("sync job does not fit its schema: {e}")))
 }
 
-#[utoipa::path(
-    get, path = "/registry/sync-jobs",
-    operation_id = "registrySyncJobsList", tag = "registry",
-    params(
-        ("state" = Option<String>, Query, description = "pending | inFlight | failed. Omit for every state."),
-        ("cursor" = Option<String>, Query, description = "Continuation token from a previous page's nextCursor."),
-        ("limit" = Option<u32>, Query, description = "Page size, clamped to 1..=200 (default 50)."),
-    ),
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "The reconciliation queue", body = RegistrySyncJobsList01Response),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn sync_jobs_list(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    // The published payload itself, deserialized from the query string. A GET
-    // has no body, but the members are flat and their names are the wire's, so
-    // the generated type is the contract here exactly as it would be in a body
-    // — and a hand-written mirror of it is what
-    // `generated_wire_types_census` refuses.
-    Query(q): Query<list_spec::v0_1::Payload>,
-) -> Result<Json<RegistrySyncJobsList01Response>, AppError> {
+/// `vtc/registry/sync-jobs/list/0.1`.
+pub(crate) async fn sync_jobs_list(
+    state: &AppState,
+    q: list_spec::v0_1::Payload,
+) -> Result<list_spec::v0_1::Response, AppError> {
     let want = match q.state {
         None => None,
         Some(list_spec::v0_1::State::Pending) => Some(SyncJobState::Pending),
@@ -208,33 +182,23 @@ pub async fn sync_jobs_list(
         .next_cursor(next_cursor)
         .try_into()
         .map_err(|e| AppError::Internal(format!("list response does not fit its schema: {e}")))?;
-    Ok(Json(response.into()))
+    Ok(response)
 }
 
 // ---------------------------------------------------------------------------
 // sync-jobs/retry
 // ---------------------------------------------------------------------------
 
-#[utoipa::path(
-    post, path = "/registry/sync-jobs/retry",
-    operation_id = "registrySyncJobsRetry", tag = "registry",
-    request_body = RegistrySyncJobsRetry01Payload,
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "What was requeued, and what was declined", body = RegistrySyncJobsRetry01Response),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn sync_jobs_retry(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<RegistrySyncJobsRetry01Payload>,
-) -> Result<Json<RegistrySyncJobsRetry01Response>, AppError> {
+/// `vtc/registry/sync-jobs/retry/0.1`, by `actor`.
+pub(crate) async fn sync_jobs_retry(
+    state: &AppState,
+    actor: &str,
+    body: retry_spec::v0_1::Payload,
+) -> Result<retry_spec::v0_1::Response, AppError> {
     // The payload is an untagged enum admitting exactly one of the two
     // members, so the discriminator is decided by serde rather than by a
     // branch here that could get it wrong.
-    let targets: Vec<SyncJob> = match &*body {
+    let targets: Vec<SyncJob> = match &body {
         retry_spec::v0_1::Payload::Variant0 { job_id, .. } => {
             let id = Uuid::parse_str(job_id)
                 .map_err(|_| AppError::Validation("jobId is not an identifier".into()))?;
@@ -262,7 +226,7 @@ pub async fn sync_jobs_retry(
     // A named job that no longer exists is `notFound`, not an error: it may
     // have been retried, discarded, or swept between the operator reading the
     // list and pressing the button, and that race is ordinary.
-    let named_missing = match &*body {
+    let named_missing = match &body {
         retry_spec::v0_1::Payload::Variant0 { job_id, .. } if targets.is_empty() => {
             Some(job_id.to_string())
         }
@@ -304,7 +268,7 @@ pub async fn sync_jobs_retry(
             job_id = %job.id,
             did = %job.member_did,
             kind = job.kind.as_str(),
-            actor = %auth.0.did,
+            %actor,
             "sync job requeued by an operator",
         );
         requeued.push(
@@ -325,31 +289,19 @@ pub async fn sync_jobs_retry(
         .skipped(skipped)
         .try_into()
         .map_err(|e| AppError::Internal(format!("retry response does not fit its schema: {e}")))?;
-    Ok(Json(response.into()))
+    Ok(response)
 }
 
 // ---------------------------------------------------------------------------
 // sync-jobs/discard
 // ---------------------------------------------------------------------------
 
-#[utoipa::path(
-    post, path = "/registry/sync-jobs/discard",
-    operation_id = "registrySyncJobsDiscard", tag = "registry",
-    request_body = RegistrySyncJobsDiscard01Payload,
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "The job was deleted", body = RegistrySyncJobsDiscard01Response),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "No such job"),
-        (status = 409, description = "The job is not in the terminal failed state"),
-    ),
-)]
-pub async fn sync_jobs_discard(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<RegistrySyncJobsDiscard01Payload>,
-) -> Result<Json<RegistrySyncJobsDiscard01Response>, AppError> {
+/// `vtc/registry/sync-jobs/discard/0.1`, by `actor`.
+pub(crate) async fn sync_jobs_discard(
+    state: &AppState,
+    actor: &str,
+    body: discard_spec::v0_1::Payload,
+) -> Result<discard_spec::v0_1::Response, AppError> {
     let id = Uuid::parse_str(&body.job_id)
         .map_err(|_| AppError::Validation("jobId is not an identifier".into()))?;
 
@@ -371,7 +323,7 @@ pub async fn sync_jobs_discard(
         job_id = %job.id,
         did = %job.member_did,
         kind = job.kind.as_str(),
-        actor = %auth.0.did,
+        %actor,
         "sync job discarded by an operator — the registry's record for this member is unchanged",
     );
 
@@ -382,7 +334,7 @@ pub async fn sync_jobs_discard(
         .map_err(|e| {
             AppError::Internal(format!("discard response does not fit its schema: {e}"))
         })?;
-    Ok(Json(response.into()))
+    Ok(response)
 }
 
 // ---------------------------------------------------------------------------
@@ -404,32 +356,11 @@ fn record_wire(
         .map_err(|e| AppError::Internal(format!("record does not fit its schema: {e}")))
 }
 
-#[utoipa::path(
-    get, path = "/registry/records",
-    operation_id = "registryRecordsList", tag = "registry",
-    params(
-        ("source" = Option<String>, Query, description = "registry (default) or local."),
-        ("entityId" = Option<String>, Query, description = "Filter to records about this entity."),
-        ("authorityId" = Option<String>, Query, description = "Filter to records asserted by this authority."),
-        ("action" = Option<String>, Query, description = "Filter to records for this action."),
-        ("resource" = Option<String>, Query, description = "Filter to records for this resource."),
-        ("cursor" = Option<String>, Query, description = "Continuation token from a previous page's nextCursor."),
-        ("limit" = Option<u32>, Query, description = "Page size, clamped to 1..=200 (default 50)."),
-    ),
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Trust records from the requested view", body = RegistryRecordsList01Response),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 502, description = "The registry could not be enumerated"),
-        (status = 503, description = "No trust registry is configured"),
-    ),
-)]
-pub async fn records_list(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Query(q): Query<records_list::v0_1::Payload>,
-) -> Result<Json<RegistryRecordsList01Response>, AppError> {
+/// `vtc/registry/records/list/0.1`.
+pub(crate) async fn records_list(
+    state: &AppState,
+    q: records_list::v0_1::Payload,
+) -> Result<records_list::v0_1::Response, AppError> {
     // The specification's default: a caller who did not think about it gets
     // the authoritative view, not the community's own belief about it.
     let source = q.source.unwrap_or(records_list::v0_1::Source::Registry);
@@ -517,5 +448,5 @@ pub async fn records_list(
         .map_err(|e| {
             AppError::Internal(format!("records response does not fit its schema: {e}"))
         })?;
-    Ok(Json(response.into()))
+    Ok(response)
 }

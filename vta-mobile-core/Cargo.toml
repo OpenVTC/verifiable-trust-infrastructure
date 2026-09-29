@@ -41,13 +41,6 @@ chrono = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 # Multibase (base58btc) encoding of the signature into `proofValue`.
 multibase = { workspace = true }
-# The match code is hex over the decoded digest bytes, not over the multibase
-# string — see `consent::match_code_from_digest`.
-hex = { workspace = true }
-# `CachedDidResolver` — the VerificationMethodResolver that resolves a request
-# proof's verificationMethod through the crate's shared DID resolver cache, so
-# the device can verify a VTA-signed request no matter the issuer's DID method.
-trust-tasks-proof = { workspace = true }
 # ed25519→x25519 key-agreement derivation + did:key encoding for the DIDComm
 # holder identity (the X25519 key matches the holder did:key's keyAgreement, so
 # a sender resolving the did:key can authcrypt to it). Tested TDK conversions —
@@ -62,8 +55,11 @@ tracing-subscriber = { workspace = true }
 # DID resolution. Default config is local (did:key / did:peer resolve offline);
 # networked methods (did:web / did:webvh) need network-mode config — later.
 affinidi-did-resolver-cache-sdk = { workspace = true }
+# Local (no-network) did:key resolution, to check an approval key is listed
+# under `assertionMethod` before signing a decision with it.
+affinidi-did-common = { workspace = true }
 # DIDComm v2 authcrypt/anoncrypt pack + unpack. Pinned to vta-sdk's version.
-affinidi-messaging-didcomm = "0.15"
+affinidi-messaging-didcomm = "0.15.9"
 # Mediator-connected DIDComm session (ATM): the `MediatorSession` FFI wraps
 # `vta-sdk::DIDCommSession` (connect + receive_next) so the mobile approver can
 # pull VTA-pushed step-up approve-requests off the mediator — reusing the SDK
@@ -72,7 +68,7 @@ affinidi-messaging-didcomm = "0.15"
 # lookup the approval sheets render through. Costs a DID resolution plus an
 # outbound fetch per claimed name, which is why the app resolves lazily and
 # caches; see `crate::display_name`.
-vta-sdk = { path = "../vta-sdk", version = "0.51", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.56", features = [
   "session",
   "tsp",
   "agent-names",

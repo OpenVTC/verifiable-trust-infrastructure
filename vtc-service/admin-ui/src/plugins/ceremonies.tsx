@@ -17,7 +17,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 
-import { getJson, postJson } from "@/lib/api";
+import { postSignedRead } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso } from "@/lib/format";
 import {
@@ -73,10 +73,10 @@ interface JoinRequestsPage {
 }
 
 async function fetchPendingCount(): Promise<number> {
-  const page = await getJson<JoinRequestsPage>(
-    "/v1/join-requests?status=pending&limit=50",
-    { trustTask: TRUST_TASK_JOIN_REQUESTS },
-  );
+  const page = await postSignedRead<JoinRequestsPage>(TRUST_TASK_JOIN_REQUESTS, {
+    status: "pending",
+    limit: 50,
+  });
   return page.totalEstimate ?? page.items.length;
 }
 
@@ -347,11 +347,11 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
     }
 
     try {
-      const resp = await postJson<TestResponse>(
-        `/v1/policies/${policy.id}/test`,
-        { query: `data.${ceremony.pkg}.decision`, input: facts },
-        { trustTask: TRUST_TASK_TEST },
-      );
+      const resp = await postSignedRead<TestResponse>(TRUST_TASK_TEST, {
+        id: policy.id,
+        query: `data.${ceremony.pkg}.decision`,
+        input: facts,
+      });
       const v = pluckDecision(resp) as Verdict | null;
       // Land the verdict as the token reaches the Verdict stage.
       window.setTimeout(
@@ -734,7 +734,7 @@ function PolicyManager({
   });
 
   const activate = useMutation({
-    mutationFn: activatePolicy,
+    mutationFn: (id: string) => activatePolicy(id, purpose),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["policies", purpose] });
       void qc.invalidateQueries({ queryKey: ["active-policy", purpose] });
@@ -758,7 +758,7 @@ function PolicyManager({
         purpose,
         regoSource: row.module,
       });
-      await activatePolicy(created.id);
+      await activatePolicy(created.id, purpose);
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["policies", purpose] });

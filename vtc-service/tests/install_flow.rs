@@ -10,9 +10,7 @@
 //! 4. `POST /v1/admin/bootstrap` — first ACL admin written.
 //! 5. `POST /v1/admin/passkeys/register/{start,finish}` — second passkey.
 //! 6. `GET  /v1/admin/passkeys` — both passkeys present.
-//! 7. `PUT  /v1/community/profile` + `GET  /v1/community/profile`.
-//! 8. `PATCH /v1/admin/config` — `log.level` updates.
-//! 9. `POST /v1/admin/config/restart` — refused without supervisor (412).
+//! 7. The community profile setup wrote is in place.
 //! 10. Second `POST /v1/install/claim/start` — refused (carve-out closed).
 //!
 //! Closes the Phase-0 behavioural gate (Checkpoint E in the plan).
@@ -59,9 +57,6 @@ const BOOTSTRAP_TASK: &str = "https://trusttasks.org/spec/vtc/admin/bootstrap/0.
 const ENROLL_START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2";
 const ENROLL_FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2";
 const LIST_TASK: &str = "https://trusttasks.org/spec/auth/passkey/list/0.1";
-const COMMUNITY_PROFILE_TASK: &str = "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
-const ADMIN_CONFIG_PATCH_TASK: &str = "https://trusttasks.org/spec/config/patch/0.1";
-const RESTART_TASK: &str = "https://trusttasks.org/spec/config/restart/0.1";
 
 struct Fixture {
     state: AppState,
@@ -357,21 +352,14 @@ async fn end_to_end_install_flow_phase_0_gate() {
     assert!(labels.contains("second device"));
 
     // ----------------------------------------------------------------
-    // Step 7 — community/profile round-trip
+    // Step 7 — the community profile is in place. Reading it over the wire
+    // is the signed `vtc/community/profile/show/0.1` (`community_profile.rs`).
     // ----------------------------------------------------------------
-    let (status, body) = request(
-        &fix.router,
-        "GET",
-        "/v1/community/profile",
-        COMMUNITY_PROFILE_TASK,
-        Some(&admin_token),
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    // `show` nests the profile under `profile` (#1094).
-    let body = &body["profile"];
-    assert_eq!(body["name"], "Example Community");
+    let profile = vtc_service::community::load_profile(&fix.state.community_ks)
+        .await
+        .unwrap()
+        .expect("profile written by setup");
+    assert_eq!(profile.name, "Example Community");
 
     // Verify ACL admin record matches the bootstrapped DID
     let acl = vti_common::acl::list_acl_entries(&fix.state.acl_ks)
@@ -381,41 +369,9 @@ async fn end_to_end_install_flow_phase_0_gate() {
     assert_eq!(acl[0].did, admin_did);
     assert_eq!(acl[0].role, Role::Admin);
 
-    // ----------------------------------------------------------------
-    // Step 8 — admin/config PATCH applies a hot-reloadable setting
-    // ----------------------------------------------------------------
-    let (status, body) = request(
-        &fix.router,
-        "PATCH",
-        "/v1/admin/config",
-        ADMIN_CONFIG_PATCH_TASK,
-        Some(&admin_token),
-        Some(json!({ "overrides": { "log.level": "debug" } })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "config PATCH: {body}");
-    assert_eq!(body["applied"], json!(["log.level"]));
-
-    // ----------------------------------------------------------------
-    // Step 9 — restart without supervisor → 412 SupervisorRequired
-    // ----------------------------------------------------------------
-    let (status, body) = request(
-        &fix.router,
-        "POST",
-        "/v1/admin/config/restart",
-        RESTART_TASK,
-        Some(&admin_token),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("SupervisorRequired"),
-        "expected SupervisorRequired, got {body}"
-    );
+    // The runtime configuration (`config/patch`, `config/restart`) is a
+    // signed document only, driven through the signed door in
+    // `admin_config.rs` and `admin_verbs_spine.rs`.
 
     // ----------------------------------------------------------------
     // Step 10 — second claim/start with the same token is rejected

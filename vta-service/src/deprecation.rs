@@ -68,10 +68,14 @@ pub fn superseded(route: &'static str, successor: &'static str) -> HeaderMap {
 // folded add and update into that one task.
 //
 // A route absent from this table is absent on purpose: `/auth`, `/bootstrap`,
-// `/backup` blob streaming, `/keys/import/wrapping-key`, `/metrics` and
-// `/.well-known` are genuinely REST and are not going anywhere. `/services/*`
-// used to be listed here too, as the one block with no twin at all; it has one
-// now, and its entries are at the end of this table.
+// `/backup` blob streaming, `/metrics` and `/.well-known` are genuinely REST
+// and are not going anywhere. So are the passkey-VM enrolment routes, which are
+// the WebAuthn exception and carry a row in `REST_EXCEPTIONS` below rather
+// than here. (`/keys/import/wrapping-key` was listed here as
+// REST too; it is the `keys/import-wrapping-key/0.1` Trust Task now, and the
+// route is removed rather than superseded.) `/services/*` was the last block
+// here; its routes are removed, and service management is the `vta/services/*`
+// Trust Tasks only.
 /// The table, for tests that need to assert on its contents.
 pub fn superseded_table() -> &'static [(&'static str, &'static str, &'static str, &'static str)] {
     SUPERSEDED
@@ -174,7 +178,7 @@ const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
         "PUT",
         "/contexts/{id}/did",
         "PUT /contexts/{id}/did",
-        trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
+        trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
     ),
     (
         "GET",
@@ -417,140 +421,83 @@ const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
         "POST /api/trust-tasks",
         "/trust-tasks",
     ),
-    // ─── /services/* ────────────────────────────────────────────────────
-    //
-    // These twenty were the last block with no twin at all, which is why the
-    // note above used to exclude them. trust-tasks #243 specified the family
-    // and the handlers landed alongside this, so they are superseded like
-    // everything else — and the metric now covers the whole retirement
-    // candidate set rather than most of it.
-    //
-    // Four verbs collapse across four transports because the task is
-    // parameterised by `service`: sixteen routes point at four tasks. The two
-    // drain routes share a path and split on method — GET lists what is
-    // draining, POST cancels a drain — which is why they map to different
-    // successors despite the identical path.
-    (
-        "GET",
-        "/services",
-        "GET /services",
-        trust_tasks::TASK_SERVICES_LIST_1_0,
-    ),
-    (
-        "GET",
-        "/services/didcomm",
-        "GET /services/didcomm",
-        trust_tasks::TASK_SERVICES_GET_1_0,
-    ),
-    (
-        "GET",
-        "/services/didcomm/drain",
-        "GET /services/didcomm/drain",
-        trust_tasks::TASK_SERVICES_DRAIN_LIST_1_0,
-    ),
-    (
-        "POST",
-        "/services/didcomm/disable",
-        "POST /services/didcomm/disable",
-        trust_tasks::TASK_SERVICES_DISABLE_1_0,
-    ),
-    (
-        "POST",
-        "/services/didcomm/drain",
-        "POST /services/didcomm/drain",
-        trust_tasks::TASK_SERVICES_DRAIN_CANCEL_1_0,
-    ),
-    (
-        "POST",
-        "/services/didcomm/enable",
-        "POST /services/didcomm/enable",
-        trust_tasks::TASK_SERVICES_ENABLE_1_0,
-    ),
-    (
-        "POST",
-        "/services/didcomm/rollback",
-        "POST /services/didcomm/rollback",
-        trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
-    ),
-    (
-        "POST",
-        "/services/didcomm/update",
-        "POST /services/didcomm/update",
-        trust_tasks::TASK_SERVICES_UPDATE_1_0,
-    ),
-    (
-        "POST",
-        "/services/rest/disable",
-        "POST /services/rest/disable",
-        trust_tasks::TASK_SERVICES_DISABLE_1_0,
-    ),
-    (
-        "POST",
-        "/services/rest/enable",
-        "POST /services/rest/enable",
-        trust_tasks::TASK_SERVICES_ENABLE_1_0,
-    ),
-    (
-        "POST",
-        "/services/rest/rollback",
-        "POST /services/rest/rollback",
-        trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
-    ),
-    (
-        "POST",
-        "/services/rest/update",
-        "POST /services/rest/update",
-        trust_tasks::TASK_SERVICES_UPDATE_1_0,
-    ),
-    (
-        "POST",
-        "/services/tsp/disable",
-        "POST /services/tsp/disable",
-        trust_tasks::TASK_SERVICES_DISABLE_1_0,
-    ),
-    (
-        "POST",
-        "/services/tsp/enable",
-        "POST /services/tsp/enable",
-        trust_tasks::TASK_SERVICES_ENABLE_1_0,
-    ),
-    (
-        "POST",
-        "/services/tsp/rollback",
-        "POST /services/tsp/rollback",
-        trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
-    ),
-    (
-        "POST",
-        "/services/tsp/update",
-        "POST /services/tsp/update",
-        trust_tasks::TASK_SERVICES_UPDATE_1_0,
-    ),
-    (
-        "POST",
-        "/services/webauthn/disable",
-        "POST /services/webauthn/disable",
-        trust_tasks::TASK_SERVICES_DISABLE_1_0,
-    ),
-    (
-        "POST",
-        "/services/webauthn/enable",
-        "POST /services/webauthn/enable",
-        trust_tasks::TASK_SERVICES_ENABLE_1_0,
-    ),
-    (
-        "POST",
-        "/services/webauthn/rollback",
-        "POST /services/webauthn/rollback",
-        trust_tasks::TASK_SERVICES_ROLLBACK_1_0,
-    ),
-    (
-        "POST",
-        "/services/webauthn/update",
-        "POST /services/webauthn/update",
-        trust_tasks::TASK_SERVICES_UPDATE_1_0,
-    ),
 ];
+
+// ─── REST routes kept on purpose ───────────────────────────────────────────
+
+/// A REST route that stays REST because the protocol it serves is not one a
+/// Trust Task can carry, and so has no successor to be superseded by.
+///
+/// The standing rule is that every remote operation is a Trust Task, carried
+/// over TSP, DIDComm or HTTPS. The only transport restriction it permits is a
+/// foreign-protocol interface: OAuth / WebAuthn ceremonies and DID resolution
+/// files. A row here is that exception made explicit, with the reason beside
+/// it, so a route that looks like an unconverted legacy route can be told
+/// apart from one that is REST by design.
+#[derive(Debug, Clone, Copy)]
+pub struct RestException {
+    /// HTTP method, upper-case.
+    pub method: &'static str,
+    /// The route's axum `MatchedPath` pattern.
+    pub path: &'static str,
+    /// The foreign protocol that makes the route REST.
+    pub protocol: &'static str,
+    /// The Trust Task a DID-holding client uses for the same operation, when
+    /// one exists. The route is kept for the caller that cannot sign one.
+    pub twin: Option<&'static str>,
+    /// Why this route cannot be a Trust Task, in one line.
+    pub reason: &'static str,
+}
+
+/// Why the passkey-VM routes stay REST.
+const PASSKEY_VM_REASON: &str = "passkey enrolment is a WebAuthn ceremony driven from a browser \
+     (the VTA auth portal, examples/vta-auth-demo) that holds only the bearer token \
+     passkey-login issued, and no DID key with which to sign a Trust Task";
+
+/// The REST exceptions.
+///
+/// Pinned two ways: `every_rest_exception_names_a_live_route`
+/// (`tests/api_integration.rs`) fails when a row outlives its route, and
+/// `no_route_is_both_an_exception_and_superseded` below fails when a route is
+/// declared both REST-by-design and on its way out.
+///
+/// Only the WebAuthn exception is tabulated so far; the other genuinely-REST
+/// families are named in prose above the superseded-route table.
+const REST_EXCEPTIONS: &[RestException] = &[
+    RestException {
+        method: "POST",
+        path: "/did/verification-methods/passkey/challenge",
+        protocol: "WebAuthn",
+        twin: Some(trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1),
+        reason: PASSKEY_VM_REASON,
+    },
+    RestException {
+        method: "POST",
+        path: "/did/verification-methods/passkey",
+        protocol: "WebAuthn",
+        twin: Some(trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1),
+        reason: PASSKEY_VM_REASON,
+    },
+    RestException {
+        method: "GET",
+        path: "/did/verification-methods/passkey",
+        protocol: "WebAuthn",
+        twin: Some(trust_tasks::TASK_PASSKEY_VMS_LIST_0_1),
+        reason: PASSKEY_VM_REASON,
+    },
+    RestException {
+        method: "DELETE",
+        path: "/did/verification-methods/passkey/{fragment}",
+        protocol: "WebAuthn",
+        twin: Some(trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1),
+        reason: PASSKEY_VM_REASON,
+    },
+];
+
+/// The REST-exception table, for tests that assert on its contents.
+pub fn rest_exceptions_table() -> &'static [RestException] {
+    REST_EXCEPTIONS
+}
 
 /// Middleware: tag any response served by a superseded REST route.
 ///
@@ -691,6 +638,16 @@ const SUPERSEDED_TASKS: &[SupersededTask] = &[
         successor: trust_tasks::TASK_DID_TEMPLATES_UPDATE_3_0,
         reason: "3.0 accepts a template declaring `schemaVersion` 2 and a `keys` block, \
                  which names each key slot's algorithms",
+    },
+    // ── contexts ────────────────────────────────────────────────────────
+    //
+    // 1.0 has no defect for what it expresses and stays dispatched through the
+    // same handler; it simply cannot say "no DID".
+    SupersededTask {
+        uri: trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
+        successor: trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
+        reason: "1.1 accepts `did: null`, which clears the context's DID, and requires a \
+                 string `did` to be a DID; 1.0 can only replace one",
     },
     // ── auth ────────────────────────────────────────────────────────────
     SupersededTask {
@@ -960,5 +917,45 @@ mod superseded_task_tests {
         let before = seen.len();
         seen.dedup();
         assert_eq!(before, seen.len(), "a URI is listed more than once");
+    }
+}
+
+#[cfg(test)]
+mod rest_exception_tests {
+    use super::*;
+
+    #[test]
+    fn no_route_is_both_an_exception_and_superseded() {
+        // A row in both tables would say "REST by design" and "migrate away"
+        // about the same route, and `mark_superseded` would stamp a
+        // `Deprecation` header on a route that is not going anywhere.
+        for e in REST_EXCEPTIONS {
+            assert!(
+                !SUPERSEDED
+                    .iter()
+                    .any(|(m, p, _, _)| *m == e.method && *p == e.path),
+                "`{} {}` is listed as a REST exception and as superseded",
+                e.method,
+                e.path
+            );
+        }
+    }
+
+    #[test]
+    fn every_exception_says_why() {
+        for e in REST_EXCEPTIONS {
+            assert!(
+                !e.protocol.is_empty(),
+                "`{} {}` names no protocol",
+                e.method,
+                e.path
+            );
+            assert!(
+                !e.reason.is_empty(),
+                "`{} {}` gives no reason",
+                e.method,
+                e.path
+            );
+        }
     }
 }

@@ -3,8 +3,9 @@
 //! **D2 P2a cut-over**: this used to build an
 //! `affinidi-messaging-didcomm-service` `Router` (type-routed handler table +
 //! `MessagePolicy` middleware) wrapped in a `BridgeHandler`. That framework is
-//! gone. [`dispatch`] is now a plain `msg.typ` match that calls the same ~50
-//! handler functions directly — they are unchanged, taking
+//! gone. [`dispatch`] is now a plain `msg.typ` match: the Trust-Task binding
+//! envelope, plus plumbing (trust-ping, pickup status, problem-report). Every
+//! other type falls to `handle_unknown`. The handlers take
 //! `(HandlerContext, Message, Extension<T>)` from [`crate::messaging::shim`].
 //! The [`crate::server`] inbound loop drives it off
 //! [`affinidi_messaging_delivery::MessagingService::subscribe`].
@@ -12,8 +13,9 @@
 //! The `MessagePolicy` auth gate (`require_encrypted` + verified-sender-or-none)
 //! now lives in the inbound loop, which sets `Message::from` to the
 //! cryptographically-authenticated sender before calling [`dispatch`] (the
-//! `#620` anti-spoof guarantee), so every handler's `auth_from_message` /
-//! `ctx.sender_did` sees only a proven sender.
+//! `#620` anti-spoof guarantee). No handler here authorises on that sender:
+//! the only authorised surface is the Trust-Task envelope, whose document proof
+//! must be bound to it.
 
 use std::sync::Arc;
 
@@ -34,21 +36,8 @@ use crate::store::KeyspaceHandle;
 #[cfg(feature = "didcomm")]
 use super::handlers;
 
-#[cfg(all(feature = "tee", feature = "didcomm"))]
-use vta_sdk::protocols::attestation_management;
-#[cfg(all(feature = "webvh", feature = "didcomm"))]
-use vta_sdk::protocols::did_management;
-#[cfg(all(feature = "webvh", feature = "didcomm"))]
-use vta_sdk::protocols::protocol_management;
-// `provision-integration` is unconditionally enabled via the
-// `vta-sdk` feature list in vta-service's Cargo.toml — no cfg gate.
-#[cfg(all(feature = "webvh", feature = "didcomm"))]
-use vta_sdk::protocols::provision_integration_management;
 #[cfg(feature = "didcomm")]
-use vta_sdk::protocols::{
-    self, acl_management, audit_management, context_management, credential_exchange,
-    key_management, seed_management, vta_management,
-};
+use vta_sdk::protocols;
 
 /// Trust-ping protocol identifiers (was the framework's `TRUST_PING_TYPE` /
 /// `TRUST_PONG_TYPE`). Re-declared locally now the framework is gone.
@@ -113,11 +102,6 @@ pub struct VtaState {
     /// Per-mediator TTL sweeper.
     #[cfg(feature = "webvh")]
     pub drain_sweeper: Arc<crate::messaging::drain_sweeper::DrainSweeper>,
-    /// Per-webvh-server async mutex registry. Mirrored from
-    /// `AppState` so DIDComm-transport handlers serialise the same
-    /// daemon-REST auth-cache reads as REST handlers.
-    #[cfg(feature = "webvh")]
-    pub webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks,
     /// Pluggable telemetry sink — driven by both REST and DIDComm
     /// transport handlers so `mediator report` is consistent
     /// regardless of which transport posted the inbound event.
@@ -187,7 +171,6 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
             config: state.config.clone(),
             did_resolver: state.did_resolver.clone(),
             didcomm_bridge: state.didcomm_bridge.clone(),
-            webvh_auth_locks: state.webvh_auth_locks.clone(),
         }
     }
 }
@@ -196,14 +179,11 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
 /// [`AppState`].
 ///
 /// `VtaState` is a strict subset of `AppState` — every field is a cheap clone
-/// of the corresponding `AppState` field (an `Arc`, a `KeyspaceHandle`, or the
-/// `Arc`-backed [`WebvhAuthLocks`]). Building it this way is what guarantees the
-/// REST front-end and the DIDComm router share the *same* config `RwLock`,
-/// `WebvhAuthLocks`, mediator registry, drain sweeper, and telemetry sink
-/// (P1.1): a `PATCH /config` on the REST side is visible to DIDComm handlers,
-/// and the per-server webvh auth-cache lock serialises across both transports.
-/// Constructing `VtaState` with a freshly-minted webvh auth-lock registry or a
-/// freshly-wrapped config lock was a live divergence bug — don't reintroduce
+/// of the corresponding `AppState` field (an `Arc` or a `KeyspaceHandle`).
+/// Building it this way is what guarantees the REST front-end and the DIDComm
+/// router share the *same* config `RwLock`, mediator registry, drain sweeper,
+/// and telemetry sink (P1.1): a `PATCH /config` on the REST side is visible to
+/// DIDComm handlers. Constructing `VtaState` with a freshly-wrapped config lock was a live divergence bug — don't reintroduce
 /// it; always derive from the canonical `AppState`.
 impl From<&AppState> for VtaState {
     fn from(state: &AppState) -> Self {
@@ -230,8 +210,6 @@ impl From<&AppState> for VtaState {
             mediator_registry: Arc::clone(&state.mediator_registry),
             #[cfg(feature = "webvh")]
             drain_sweeper: Arc::clone(&state.drain_sweeper),
-            #[cfg(feature = "webvh")]
-            webvh_auth_locks: state.webvh_auth_locks.clone(),
             telemetry: Arc::clone(&state.telemetry),
             seed_store: state.seed_store.clone(),
             config: Arc::clone(&state.config),
@@ -310,7 +288,7 @@ fn trust_ping_reply(msg: &Message, sender_did: Option<&str>) -> Option<DIDCommRe
 pub async fn dispatch(
     msg: Message,
     ctx: HandlerContext,
-    vta_state: Arc<VtaState>,
+    _vta_state: Arc<VtaState>,
     app_state: AppState,
 ) -> Option<DIDCommResponse> {
     let t = msg.typ.clone();
@@ -330,277 +308,28 @@ pub async fn dispatch(
         return finish(handlers::handle_trust_task(ctx, msg, Extension(app_state)).await);
     }
 
-    // ── Key management ───────────────────────────────────────────────
-    if t == key_management::CREATE_KEY {
-        return finish(handlers::handle_create_key(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == key_management::GET_KEY {
-        return finish(handlers::handle_get_key(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == key_management::LIST_KEYS {
-        return finish(handlers::handle_list_keys(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == key_management::RENAME_KEY {
-        return finish(handlers::handle_rename_key(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == key_management::REVOKE_KEY {
-        return finish(handlers::handle_revoke_key(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == key_management::GET_KEY_SECRET {
-        return finish(handlers::handle_get_key_secret(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == key_management::SIGN_REQUEST {
-        return finish(handlers::handle_sign_request(ctx, msg, Extension(vta_state)).await);
-    }
+    // Every sender-authorised DIDComm protocol message (key, seed, context,
+    // ACL, audit, config, restart, backup, DID WebVH, protocol management,
+    // provision-integration typed as its task, step-up approve-request,
+    // credential query) was served here. None of them carried anything that
+    // proves who composed it beyond the DIDComm sender, so they are no longer
+    // served: every authorised operation over DIDComm is a Trust Task in the
+    // binding envelope above, whose document proof is bound to the sender.
+    // They fall through to `handle_unknown`.
 
-    // ── Seed management ──────────────────────────────────────────────
-    if t == seed_management::LIST_SEEDS {
-        return finish(handlers::handle_list_seeds(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == seed_management::ROTATE_SEED {
-        return finish(handlers::handle_rotate_seed(ctx, msg, Extension(vta_state)).await);
-    }
-
-    // ── Context management ───────────────────────────────────────────
-    if t == context_management::CREATE_CONTEXT {
-        return finish(handlers::handle_create_context(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == context_management::GET_CONTEXT {
-        return finish(handlers::handle_get_context(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == context_management::LIST_CONTEXTS {
-        return finish(handlers::handle_list_contexts(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == context_management::UPDATE_CONTEXT {
-        return finish(handlers::handle_update_context(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == context_management::UPDATE_CONTEXT_DID {
-        return finish(handlers::handle_update_context_did(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == context_management::PREVIEW_DELETE_CONTEXT {
-        return finish(
-            handlers::handle_preview_delete_context(ctx, msg, Extension(vta_state)).await,
-        );
-    }
-    if t == context_management::DELETE_CONTEXT {
-        return finish(handlers::handle_delete_context(ctx, msg, Extension(vta_state)).await);
-    }
-
-    // ── ACL management ───────────────────────────────────────────────
-    if t == acl_management::CREATE_ACL {
-        return finish(handlers::handle_create_acl(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == acl_management::GET_ACL {
-        return finish(handlers::handle_get_acl(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == acl_management::LIST_ACL {
-        return finish(handlers::handle_list_acl(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == acl_management::CHANGE_ROLE {
-        return finish(handlers::handle_change_acl_role(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == acl_management::UPDATE_ACL {
-        return finish(handlers::handle_update_acl(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == acl_management::DELETE_ACL {
-        return finish(handlers::handle_delete_acl(ctx, msg, Extension(vta_state)).await);
-    }
-    // Legacy FPN-private `swap-acl` + canonical Trust Task `acl/swap-key/0.1`
-    // both route to the same handler (dispatches on the incoming type).
-    if t == acl_management::SWAP_ACL || t == acl_management::ACL_SWAP_KEY {
-        return finish(
-            handlers::handle_swap_acl(ctx, msg, Extension(vta_state), Extension(app_state)).await,
-        );
-    }
-
-    // ── Audit management ─────────────────────────────────────────────
-    if t == audit_management::LIST_LOGS {
-        return finish(handlers::handle_list_logs(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == audit_management::GET_RETENTION {
-        return finish(handlers::handle_get_retention(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == audit_management::UPDATE_RETENTION {
-        return finish(handlers::handle_update_retention(ctx, msg, Extension(vta_state)).await);
-    }
-
-    // ── VTA management ───────────────────────────────────────────────
-    if t == vta_management::GET_CONFIG {
-        return finish(handlers::handle_get_config(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == vta_management::UPDATE_CONFIG {
-        return finish(handlers::handle_update_config(ctx, msg, Extension(vta_state)).await);
-    }
     if t == protocols::PROBLEM_REPORT_TYPE {
         return finish(handlers::handle_problem_report(ctx, msg).await);
     }
-    if t == vta_management::RESTART {
-        return finish(handlers::handle_restart(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == protocols::backup_management::EXPORT_BACKUP {
-        return finish(handlers::handle_backup_export(ctx, msg, Extension(vta_state)).await);
-    }
-    if t == protocols::backup_management::IMPORT_BACKUP {
-        return finish(handlers::handle_backup_import(ctx, msg, Extension(vta_state)).await);
-    }
 
-    // ── Credential exchange (AppState) ───────────────────────────────
-    if t == credential_exchange::ISSUE {
-        return finish(handlers::handle_credential_issue(ctx, msg, Extension(app_state)).await);
-    }
-    if t == credential_exchange::QUERY {
-        return finish(handlers::handle_credential_query(ctx, msg, Extension(app_state)).await);
-    }
-    if t == credential_exchange::OFFER {
-        return finish(handlers::handle_credential_offer(ctx, msg, Extension(app_state)).await);
-    }
+    // Credential exchange (`offer`, `issue`, `query`) was the last family
+    // served typed as itself. It is a Trust Task on the spine now, reached
+    // through the envelope above like everything else; typed as itself it
+    // falls to `handle_unknown`, which refuses it naming the envelope.
 
-    // ── DID WebVH management (webvh) ─────────────────────────────────
-    #[cfg(feature = "webvh")]
-    {
-        if t == did_management::CREATE_DID_WEBVH {
-            return finish(handlers::handle_create_did_webvh(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == did_management::GET_DID_WEBVH {
-            return finish(handlers::handle_get_did_webvh(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == did_management::GET_DID_WEBVH_LOG {
-            return finish(
-                handlers::handle_get_did_webvh_log(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-        if t == did_management::LIST_DIDS_WEBVH {
-            return finish(handlers::handle_list_dids_webvh(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == did_management::DELETE_DID_WEBVH {
-            return finish(handlers::handle_delete_did_webvh(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == did_management::ADD_WEBVH_SERVER {
-            return finish(handlers::handle_add_webvh_server(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == did_management::LIST_WEBVH_SERVERS {
-            return finish(
-                handlers::handle_list_webvh_servers(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-        if t == did_management::LIST_WEBVH_SERVER_DOMAINS {
-            return finish(
-                handlers::handle_list_webvh_server_domains(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-        if t == did_management::UPDATE_WEBVH_SERVER {
-            return finish(
-                handlers::handle_update_webvh_server(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-        if t == did_management::REMOVE_WEBVH_SERVER {
-            return finish(
-                handlers::handle_remove_webvh_server(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-        if t == did_management::UPDATE_DID_WEBVH {
-            return finish(handlers::handle_update_did_webvh(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == did_management::ROTATE_DID_WEBVH_KEYS {
-            return finish(
-                handlers::handle_rotate_did_webvh_keys(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-        if t == did_management::REGISTER_DID_WITH_SERVER {
-            return finish(
-                handlers::handle_register_did_with_server(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-    }
-
-    // ── Protocol management over DIDComm (webvh) ─────────────────────
-    #[cfg(feature = "webvh")]
-    {
-        use super::handlers_protocol as hp;
-        if t == protocol_management::DISABLE_DIDCOMM {
-            return finish(hp::handle_disable_didcomm(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::ENABLE_REST {
-            return finish(hp::handle_enable_rest(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::UPDATE_REST {
-            return finish(hp::handle_update_rest(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::DISABLE_REST {
-            return finish(hp::handle_disable_rest(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::ROLLBACK_REST {
-            return finish(hp::handle_rollback_rest(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::ENABLE_TSP {
-            return finish(hp::handle_enable_tsp(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::UPDATE_TSP {
-            return finish(hp::handle_update_tsp(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::DISABLE_TSP {
-            return finish(hp::handle_disable_tsp(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::ROLLBACK_TSP {
-            return finish(hp::handle_rollback_tsp(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::UPDATE_DIDCOMM {
-            return finish(hp::handle_update_didcomm(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::ROLLBACK_DIDCOMM {
-            return finish(hp::handle_rollback_didcomm(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::LIST_SERVICES {
-            return finish(hp::handle_list_services(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::LIST_DRAIN {
-            return finish(hp::handle_list_drain(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::DRAIN_CANCEL {
-            return finish(hp::handle_drain_cancel(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == protocol_management::MEDIATOR_REPORT {
-            return finish(hp::handle_mediator_report(ctx, msg, Extension(vta_state)).await);
-        }
-    }
-
-    // ── Provision-integration (webvh) ────────────────────────────────
-    #[cfg(feature = "webvh")]
-    {
-        // One version only, matching the Trust-Task dispatcher: the response
-        // carries `digestMultibase`, which 0.1's and 0.2's closed response
-        // schemas reject. Read from `CURRENT` rather than pinned to the 0.3
-        // constant so that the URI this accepts, the URI the handler answers
-        // under, and the URI vta-sdk's clients dispatch are one knob — the
-        // 0.3 cut-over moved two of those three and left provisioning broken
-        // on both counts.
-        if t == provision_integration_management::ProvisionSpecVersion::CURRENT.request_uri() {
-            return finish(
-                handlers::handle_provision_integration(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-    }
-
-    // ── Step-up approval (always) ────────────────────────────────────
-    if t == handlers::STEP_UP_APPROVE_REQUEST_TYPE
-        || t == handlers::STEP_UP_APPROVE_REQUEST_CANONICAL
-        || t == handlers::STEP_UP_APPROVE_REQUEST_CANONICAL_0_2
-    {
-        return finish(handlers::handle_step_up_approve(ctx, msg, Extension(vta_state)).await);
-    }
-
-    // ── TEE attestation (tee) ────────────────────────────────────────
-    #[cfg(feature = "tee")]
-    {
-        if t == attestation_management::GET_TEE_STATUS {
-            return finish(handlers::handle_tee_status(ctx, msg, Extension(vta_state)).await);
-        }
-        if t == attestation_management::REQUEST_ATTESTATION {
-            return finish(
-                handlers::handle_request_attestation(ctx, msg, Extension(vta_state)).await,
-            );
-        }
-    }
+    // The TEE attestation reads were bare `firstperson.network/vta/1.0/
+    // attestation/*` messages here, which nothing sent. They are
+    // `vta/attestation/*` Trust Tasks on the spine now, reached through the
+    // envelope above.
 
     // The `discovery/1.0/*` DIDComm protocol was routed here — unauthenticated
     // — until #1043 retired it with the task behind it. Capability discovery is
@@ -626,20 +355,6 @@ mod envelope_only_carriage {
     /// A sender the VTA has never heard of: the spine must still *answer* —
     /// with a refusal — which is only reachable past the router.
     const STRANGER: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
-
-    /// Served URIs that also have a task-typed arm in [`dispatch`]. Both have
-    /// task-typed senders: `vta_sdk::provision_integration::didcomm` still
-    /// sends `provision/integration` typed as the task, and the `swap-key` arm
-    /// shares its handler with the pre-envelope FPN `swap-acl` message. So
-    /// retiring either is a client migration first, not a router edit. Only
-    /// shrinks.
-    #[cfg(feature = "webvh")]
-    const LEGACY_TASK_TYPED_ARMS: &[&str] = &[
-        vta_sdk::protocols::acl_management::ACL_SWAP_KEY,
-        provision_integration_management::CANONICAL_PROVISION_INTEGRATION_0_3,
-    ];
-    #[cfg(not(feature = "webvh"))]
-    const LEGACY_TASK_TYPED_ARMS: &[&str] = &[vta_sdk::protocols::acl_management::ACL_SWAP_KEY];
 
     fn problem_comment(resp: &DIDCommResponse) -> Option<&str> {
         (resp.type_ == vta_sdk::protocols::PROBLEM_REPORT_TYPE)
@@ -708,19 +423,12 @@ mod envelope_only_carriage {
             );
         }
 
-        // A served URI the router *also* answers typed as itself is a legacy
-        // task-typed arm (the binding says it must be refused). The VTA keeps
-        // these for now — they predate the envelope and have callers — so they
-        // are pinned here instead: the list may only shrink, and an entry that
-        // no longer has an arm fails, so it cannot go stale.
-        typed_arm.sort_unstable();
-        let mut expected = LEGACY_TASK_TYPED_ARMS.to_vec();
-        expected.sort_unstable();
-        assert_eq!(
-            typed_arm, expected,
-            "the served URIs the router still answers typed as the task changed. A new one \
-             is a regression — carry it in the envelope instead; a removed one should be \
-             deleted from `LEGACY_TASK_TYPED_ARMS`"
+        // The binding makes the envelope the only carriage, and no served URI
+        // keeps a task-typed arm.
+        assert!(
+            typed_arm.is_empty(),
+            "served URIs the router answers typed as the task: {typed_arm:?} — carry them in \
+             the envelope instead"
         );
     }
 
@@ -729,6 +437,180 @@ mod envelope_only_carriage {
     fn a_non_trust_task_type_is_not_told_about_the_envelope() {
         assert!(
             handlers::trust_task_needs_envelope("https://example.com/protocols/x/1.0/y").is_none()
+        );
+    }
+}
+
+/// Keyring VTI-09 and VTI-27, over the DIDComm binding.
+///
+/// - **VTI-09**: a bare payload as the envelope body is refused with the same
+///   `malformedRequest` the VTC gives (`body did not parse as a Trust Task
+///   document: missing field `id``) — the VTA is not the lenient one.
+/// - **VTI-27**: a sender the ACL does not accept is answered with a signed
+///   `trust-task-error` in the binding envelope, never a problem-report, so a
+///   client keyed on the envelope type cannot read the refusal as a success.
+#[cfg(all(test, feature = "didcomm"))]
+mod keyring_vti_09_27 {
+    use super::*;
+    use crate::acl::{AclEntry, Role, store_acl_entry};
+    use crate::auth::session::now_epoch;
+    use serde_json::{Value, json};
+    use trust_tasks_didcomm::ENVELOPE_TYPE;
+
+    const KEYS_LIST: &str = "https://trusttasks.org/spec/keys/list/0.1";
+
+    /// Send `body` as the DIDComm envelope body from `sender`, through the
+    /// router the inbound loop calls, and return the reply.
+    async fn send(app_state: &AppState, sender: &str, body: Value) -> DIDCommResponse {
+        let vta_state = Arc::new(VtaState::from(app_state));
+        let msg = Message::build(
+            format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            ENVELOPE_TYPE.to_string(),
+            body,
+        )
+        .from(sender.to_string())
+        .finalize();
+        let ctx = HandlerContext {
+            sender_did: Some(sender.to_string()),
+        };
+        dispatch(msg, ctx, vta_state, app_state.clone())
+            .await
+            .expect("an enveloped Trust Task is always answered")
+    }
+
+    /// A signed request document from the identity `seed` names.
+    fn signed_request(seed: u8, type_uri: &str) -> Value {
+        let (did, _) = crate::test_support::did_for_seed(seed);
+        // The SDK's own builder, as a producer builds one; the recipient is
+        // never reached, because the ACL refuses first.
+        let mut doc = vta_sdk::trust_task_sign::build_unsigned(
+            type_uri,
+            json!({}),
+            &did,
+            "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        )
+        .expect("a well-formed document");
+        crate::test_support::sign_as(seed, &mut doc);
+        serde_json::to_value(doc).expect("serialise")
+    }
+
+    /// The reply is a `trust-task-error` (this service's one version of it)
+    /// carried in the binding envelope and signed by the VTA; returns its code
+    /// and message.
+    fn a_signed_trust_task_error(reply: &DIDCommResponse) -> (String, String) {
+        assert_eq!(
+            reply.type_, ENVELOPE_TYPE,
+            "a refusal of an enveloped Trust Task rides the envelope, not a problem-report: {:?}",
+            reply.body
+        );
+        let doc = &reply.body;
+        assert_eq!(
+            doc["type"].as_str(),
+            Some(
+                crate::trust_tasks::framework_error_type_uri()
+                    .to_string()
+                    .as_str()
+            ),
+            "{doc}"
+        );
+        assert!(doc.get("proof").is_some(), "the refusal is signed: {doc}");
+        (
+            doc["payload"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            doc["payload"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    }
+
+    /// VTI-09: a bare `keys/list` payload in the envelope is refused as
+    /// malformed — whether or not the sender holds an ACL entry, so it is the
+    /// document requirement refusing it, not the ACL.
+    #[tokio::test]
+    async fn vti_09_a_bare_payload_over_didcomm_is_refused_as_malformed() {
+        let (app_state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let (admin, _) = crate::test_support::did_for_seed(0x61);
+        store_acl_entry(
+            &app_state.acl_ks,
+            &AclEntry::new(&admin, Role::Admin, "test"),
+        )
+        .await
+        .unwrap();
+        let (stranger, _) = crate::test_support::did_for_seed(0x62);
+
+        for sender in [&admin, &stranger] {
+            let reply = send(&app_state, sender, json!({ "contextId": "ctx1" })).await;
+            let (code, message) = a_signed_trust_task_error(&reply);
+            assert_eq!(code, "malformedRequest", "{sender}: {message}");
+            assert!(
+                message.contains("missing field `id`"),
+                "{sender}: the refusal names what is missing, as the VTC's does: {message}"
+            );
+        }
+    }
+
+    /// VTI-27: a signed request from a DID with no ACL entry, and from one
+    /// whose grant has lapsed, is answered `permissionDenied` in a signed
+    /// `trust-task-error`, threaded to the request.
+    #[tokio::test]
+    async fn vti_27_an_acl_refusal_over_didcomm_is_a_signed_trust_task_error() {
+        let (app_state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let (lapsed, _) = crate::test_support::did_for_seed(0x64);
+        store_acl_entry(
+            &app_state.acl_ks,
+            &AclEntry::new(&lapsed, Role::Admin, "test")
+                .with_created_at(now_epoch().saturating_sub(7200))
+                .with_expires_at(Some(now_epoch().saturating_sub(60))),
+        )
+        .await
+        .unwrap();
+
+        for seed in [0x63u8, 0x64] {
+            let (sender, _) = crate::test_support::did_for_seed(seed);
+            let request = signed_request(seed, KEYS_LIST);
+            let reply = send(&app_state, &sender, request.clone()).await;
+            let (code, message) = a_signed_trust_task_error(&reply);
+            assert_eq!(code, "permissionDenied", "{sender}: {message}");
+            assert_eq!(
+                reply.body["threadId"], request["id"],
+                "{sender}: the refusal threads to the request it refuses"
+            );
+        }
+    }
+
+    /// VTI-27's other direction: an inbound `trust-task-error` is terminal and
+    /// gets no reply at all over DIDComm. The spine answers it with an empty
+    /// body, which the handler used to fail to parse — and `finish` turned that
+    /// into an `internal-error` problem-report sent back to the peer.
+    #[tokio::test]
+    async fn vti_27_an_inbound_trust_task_error_over_didcomm_is_not_answered() {
+        let (app_state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let vta_state = Arc::new(VtaState::from(&app_state));
+        let (peer, _) = crate::test_support::did_for_seed(0x65);
+        let error = json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "threadId": "urn:uuid:11111111-1111-1111-1111-111111111111",
+            "type": crate::trust_tasks::framework_error_type_uri().to_string(),
+            "payload": { "code": "permissionDenied", "message": "no" },
+        });
+        let msg = Message::build(
+            format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            ENVELOPE_TYPE.to_string(),
+            error,
+        )
+        .from(peer.clone())
+        .finalize();
+        let ctx = HandlerContext {
+            sender_did: Some(peer),
+        };
+        let reply = dispatch(msg, ctx, vta_state, app_state.clone()).await;
+        assert!(
+            reply.is_none(),
+            "an inbound error is never answered: {:?}",
+            reply.map(|r| (r.type_, r.body))
         );
     }
 }

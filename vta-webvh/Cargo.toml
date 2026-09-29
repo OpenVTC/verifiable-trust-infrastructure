@@ -1,8 +1,8 @@
 [package]
 name = "vta-webvh"
-description = "WebVH hosting infrastructure for the VTA — the DID-record store, the HTTP client to a did:webvh hosting server, and its DID-auth handshake"
+description = "WebVH hosting infrastructure for the VTA — the local did:webvh DID-record and hosting-server store"
 readme = "README.md"
-version = "0.2.22"
+version = "0.3.0"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -20,24 +20,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.3" }
-vti-common = { path = "../vti-common", version = "0.24" }
-vta-sdk = { path = "../vta-sdk", version = "0.51" }
-affinidi-tdk = { workspace = true }
-serde = { workspace = true }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.4" }
+vti-common = { path = "../vti-common", version = "0.29" }
+vta-sdk = { path = "../vta-sdk", version = "0.56" }
 serde_json = { workspace = true }
-# Not a test-only dependency any more: the host sends `createdAt` as an RFC3339
-# string on the DIDComm agent-name listing (its payload schema types it as
-# `format: date-time`) and as Unix seconds over REST, so the wire type parses
-# both — see `AgentNameEntryWire`.
-chrono = { workspace = true }
-tracing = { workspace = true }
-url = { workspace = true }
-reqwest = { workspace = true }
-zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-ed25519-dalek = { workspace = true }
+chrono = { workspace = true }
 tempfile = "3"
 tokio = { workspace = true }
-wiremock = "0.6"

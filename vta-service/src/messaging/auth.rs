@@ -1,32 +1,8 @@
-use affinidi_tdk::didcomm::Message;
-
 use crate::acl::check_acl_full;
 use crate::auth::AuthClaims;
 use crate::auth::session::{now_epoch, resolve_did_session};
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
-
-/// Extract sender DID from a DIDComm message and look up their ACL entry,
-/// returning unified `AuthClaims`.
-///
-/// Routes through [`check_acl_full`] (rather than the lower-level
-/// `get_acl_entry`) so that `expires_at` is enforced identically to the
-/// REST path. A time-bounded ACL grant must stop working over both
-/// transports the moment it lapses; previously the DIDComm-side lookup
-/// skipped the expiry check, leaving expired credentials live for any
-/// caller still talking via DIDComm.
-pub async fn auth_from_message(
-    msg: &Message,
-    acl_ks: &KeyspaceHandle,
-    sessions_ks: &KeyspaceHandle,
-) -> Result<AuthClaims, AppError> {
-    let did = msg
-        .from
-        .as_deref()
-        .ok_or_else(|| AppError::Authentication("message has no sender (from)".into()))?;
-
-    auth_from_did(did, acl_ks, sessions_ks).await
-}
 
 /// Resolve claims for a **Trust-Task envelope** arriving on an intrinsic-sender
 /// transport (DIDComm authcrypt, raw TSP).
@@ -90,6 +66,28 @@ pub async fn auth_for_trust_task_envelope(
 
     let type_uri = ceremony::peek_type_uri(body);
     match type_uri.as_deref() {
+        // An issuer or verifier: a counterparty to this holder, not an operator
+        // of it, so it holds no ACL entry by design. The handler acts with the
+        // VTA's own authority under its own gate (an offer only with a
+        // configured holder identity, a presentation only to a trusted verifier
+        // or after approval) and reads the proven sender only as the party to
+        // answer — the claim reaches nothing.
+        // A public task (`vta_sdk::trust_tasks::PUBLIC_URIS`): anyone may ask,
+        // so a sender the ACL does not know gets the same zero-authority claim
+        // an anonymous HTTPS caller does.
+        Some(uri) if crate::trust_tasks::is_public_task(uri) => {
+            Ok(ceremony::ceremony_claims(sender_did))
+        }
+        Some(uri) if crate::trust_tasks::credential_exchange::is_counterparty_task(uri) => {
+            tracing::debug!(
+                sender = %sender_did,
+                type_uri = %uri,
+                acl = %denial,
+                "credential-exchange step from a counterparty with no ACL standing — \
+                 dispatching on a zero-authority claim"
+            );
+            Ok(ceremony::ceremony_claims(sender_did))
+        }
         Some(uri)
             if ceremony::is_ceremony_task(uri)
                 && ceremony::may_attempt_ceremony(state, uri, sender_did).await =>
@@ -138,12 +136,11 @@ pub async fn auth_for_trust_task_envelope(
 /// Resolve an envelope-authenticated sender DID into unified `AuthClaims`.
 ///
 /// This is the DID-based core shared by every intrinsic-sender transport
-/// (DIDComm authcrypt via [`auth_from_message`], raw-TSP via
-/// `messaging::tsp_inbound`). The caller has *already* proven the sender
-/// DID cryptographically — by unpacking an authcrypt envelope, or by
-/// TSP unpack returning the verified `sender_vid` — so this function only
-/// performs ACL lookup + session resolution + claim construction, never
-/// signature verification.
+/// (DIDComm, raw TSP). It performs ACL lookup + session resolution + claim
+/// construction, never signature verification: the caller must already have
+/// proven `did`. For TSP that is the verified `sender_vid`; for DIDComm it is
+/// the document proof `trust_tasks::bind_document_to_sender` binds to the
+/// sender — the DIDComm sender alone is not proof.
 ///
 /// Routes through [`check_acl_full`] (rather than the lower-level
 /// `get_acl_entry`) so that `expires_at` is enforced identically to the
@@ -200,18 +197,6 @@ mod tests {
     use crate::store::Store;
     use vti_common::config::StoreConfig;
 
-    fn message_from(did: &str) -> Message {
-        // Builds the minimal message shape `auth_from_message` consumes —
-        // only `from` is read by the function under test.
-        Message::build(
-            "test-id".to_string(),
-            "https://example.com/test/1.0/ping".to_string(),
-            serde_json::json!({}),
-        )
-        .from(did.to_string())
-        .finalize()
-    }
-
     async fn fresh_acl_ks() -> (Store, KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&StoreConfig {
@@ -241,10 +226,7 @@ mod tests {
         .await
         .unwrap();
 
-        let msg = message_from(did);
-        let err = auth_from_message(&msg, &acl_ks, &sessions_ks)
-            .await
-            .unwrap_err();
+        let err = auth_from_did(did, &acl_ks, &sessions_ks).await.unwrap_err();
         assert!(
             matches!(err, AppError::Forbidden(ref m) if m.contains("expired")),
             "expected Forbidden(expired), got {err:?}"
@@ -266,10 +248,7 @@ mod tests {
         .await
         .unwrap();
 
-        let msg = message_from(did);
-        let claims = auth_from_message(&msg, &acl_ks, &sessions_ks)
-            .await
-            .unwrap();
+        let claims = auth_from_did(did, &acl_ks, &sessions_ks).await.unwrap();
         assert_eq!(claims.did, did);
         assert_eq!(claims.role, Role::Admin);
         assert_eq!(claims.allowed_contexts, vec!["ctx-a", "ctx-b"]);
@@ -285,8 +264,7 @@ mod tests {
             .await
             .unwrap();
 
-        let msg = message_from(&format!("{base}#zBase"));
-        let claims = auth_from_message(&msg, &acl_ks, &sessions_ks)
+        let claims = auth_from_did(&format!("{base}#zBase"), &acl_ks, &sessions_ks)
             .await
             .unwrap();
         assert_eq!(claims.did, base);
@@ -344,17 +322,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(claims.did, base);
-    }
-
-    #[tokio::test]
-    async fn missing_sender_is_authentication_error() {
-        let (_store, acl_ks, sessions_ks, _dir) = fresh_acl_ks().await;
-        let mut msg = message_from("did:key:zAnything");
-        msg.from = None;
-        let err = auth_from_message(&msg, &acl_ks, &sessions_ks)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, AppError::Authentication(_)), "got {err:?}");
     }
 
     // ── The ceremony carve-out ───────────────────────────────────────────
@@ -442,6 +409,65 @@ mod tests {
                 .expect("a delegated step-up approver holds neither ACL entry nor set membership");
         assert_eq!(claims.role, Role::Monitor);
         assert!(claims.allowed_contexts.is_empty());
+    }
+
+    /// An issuer or verifier is a counterparty to this holder, not an operator
+    /// of it: its `offer`, `issue` or `query` reaches the handler from a DID the
+    /// ACL has never heard of, on a claim that reaches nothing. Before these
+    /// were Trust Tasks they bypassed this gate by not being in the envelope at
+    /// all — and skipped every document check with it.
+    #[tokio::test]
+    async fn a_credential_exchange_step_from_a_counterparty_is_dispatched_with_no_authority() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        for uri in [
+            vta_sdk::protocols::credential_exchange::OFFER,
+            vta_sdk::protocols::credential_exchange::ISSUE,
+            vta_sdk::protocols::credential_exchange::QUERY,
+        ] {
+            let claims = auth_for_trust_task_envelope(&state, "did:key:zIssuer", &envelope(uri))
+                .await
+                .unwrap_or_else(|e| panic!("{uri} from a counterparty must dispatch: {e:?}"));
+            assert_eq!(claims.did, "did:key:zIssuer", "{uri}");
+            assert_eq!(claims.role, Role::Monitor, "{uri}");
+            assert!(claims.allowed_contexts.is_empty(), "{uri}");
+            assert!(!claims.is_super_admin(), "{uri}");
+        }
+    }
+
+    /// A public task (`vta_sdk::trust_tasks::PUBLIC_URIS`) is answered to anyone:
+    /// a sender the ACL has never heard of reaches it on a claim that reaches
+    /// nothing, as an anonymous HTTPS caller does.
+    #[tokio::test]
+    async fn a_public_task_from_an_unknown_sender_is_dispatched_with_no_authority() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        for uri in vta_sdk::trust_tasks::PUBLIC_URIS {
+            let claims = auth_for_trust_task_envelope(&state, "did:key:zVerifier", &envelope(uri))
+                .await
+                .unwrap_or_else(|e| panic!("{uri} is public: {e:?}"));
+            assert_eq!(claims.role, Role::Monitor, "{uri}");
+            assert!(claims.allowed_contexts.is_empty(), "{uri}");
+            assert!(!claims.is_super_admin(), "{uri}");
+        }
+    }
+
+    /// Only the three steps a counterparty *sends*. The operator's approval
+    /// surface over deferred presentations stays behind the ACL, and so do the
+    /// steps this VTA sends (`request`, `present`), which it never receives.
+    #[tokio::test]
+    async fn the_counterparty_carve_out_covers_no_other_credential_task() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        for uri in [
+            vta_sdk::protocols::credential_exchange::PENDING_LIST,
+            vta_sdk::protocols::credential_exchange::PENDING_APPROVE,
+            vta_sdk::protocols::credential_exchange::PENDING_DENY,
+            vta_sdk::protocols::credential_exchange::REQUEST,
+            vta_sdk::protocols::credential_exchange::PRESENT,
+        ] {
+            let err = auth_for_trust_task_envelope(&state, "did:key:zIssuer", &envelope(uri))
+                .await
+                .expect_err(uri);
+            assert!(matches!(err, AppError::Forbidden(_)), "{uri}: got {err:?}");
+        }
     }
 
     /// The carve-out is for ceremony tasks and nothing else. The same

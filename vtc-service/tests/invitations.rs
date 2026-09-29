@@ -7,14 +7,16 @@
 use std::sync::Arc;
 
 use affinidi_status_list::StatusPurpose;
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use tower::ServiceExt;
 use uuid::Uuid;
 use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
+use vti_rooms_dtg::test_support::Party;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::members::{Member, store_member};
@@ -47,10 +49,27 @@ fn rest_error_code(body: &Value) -> &str {
 }
 
 struct Fixture {
-    router: axum::Router,
     admin_token: String,
     member_token: String,
+    admin: Party,
+    member: Party,
     _vtc: TestVtc,
+}
+
+impl Fixture {
+    /// A request the suite used to send a bearer route, sent as the signed
+    /// document it is now (`common::legacy`).
+    async fn send(&self, req: Request<Body>) -> axum::response::Response {
+        common::legacy::send(
+            &self._vtc,
+            &[
+                (self.admin_token.as_str(), &self.admin),
+                (self.member_token.as_str(), &self.member),
+            ],
+            req,
+        )
+        .await
+    }
 }
 
 async fn build() -> Fixture {
@@ -150,11 +169,14 @@ async fn build() -> Fixture {
     )
     .await;
 
-    let router = vtc.router.clone();
+    // The signers the bearer tokens stand for on the signed door.
+    let admin = common::signed::party_with_role(&vtc, VtcRole::Admin, &[]).await;
+    let member = common::signed::party_with_role(&vtc, VtcRole::Member, &[]).await;
     Fixture {
-        router,
         admin_token,
         member_token,
+        admin,
+        member,
         _vtc: vtc,
     }
 }
@@ -182,7 +204,7 @@ fn issue_req(token: &str, body: Value) -> Request<Body> {
 async fn admin_issues_a_revocable_vic_bound_to_the_invitee() {
     let fix = build().await;
     let req = issue_req(&fix.admin_token, json!({ "subjectDid": INVITEE_DID }));
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let resp = fix.send(req).await;
     let (status, v) = body_value(resp).await;
     assert_eq!(status, StatusCode::CREATED, "{v}");
 
@@ -205,7 +227,7 @@ async fn admin_issues_a_revocable_vic_bound_to_the_invitee() {
 async fn non_privileged_member_cannot_issue() {
     let fix = build().await;
     let req = issue_req(&fix.member_token, json!({ "subjectDid": INVITEE_DID }));
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let resp = fix.send(req).await;
     let (status, _) = body_value(resp).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
@@ -215,7 +237,7 @@ async fn inviting_an_existing_member_is_a_conflict() {
     let fix = build().await;
     // MEMBER_DID already has a member row.
     let req = issue_req(&fix.admin_token, json!({ "subjectDid": MEMBER_DID }));
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let resp = fix.send(req).await;
     let (status, _) = body_value(resp).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
@@ -229,7 +251,7 @@ async fn issuing_an_invitation_emits_audit() {
         &fix.admin_token,
         json!({ "subjectDid": INVITEE_DID, "role": "moderator" }),
     );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let resp = fix.send(req).await;
     let (status, _) = body_value(resp).await;
     assert_eq!(status, StatusCode::CREATED);
 
@@ -271,7 +293,7 @@ async fn inviting_a_departed_tombstoned_did_is_allowed() {
         .unwrap();
 
     let req = issue_req(&fix.admin_token, json!({ "subjectDid": departed }));
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let resp = fix.send(req).await;
     let (status, v) = body_value(resp).await;
     assert_eq!(
         status,
@@ -287,7 +309,7 @@ async fn invite_can_grant_a_role_via_scopes() {
         &fix.admin_token,
         json!({ "subjectDid": INVITEE_DID, "role": "moderator" }),
     );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let resp = fix.send(req).await;
     let (status, v) = body_value(resp).await;
     assert_eq!(status, StatusCode::CREATED, "{v}");
     let scopes = v["vic"]["credentialSubject"]["scopes"]
@@ -305,7 +327,7 @@ async fn issue_list_revoke_round_trip() {
 
     // Issue → the registry lists it as live.
     let req = issue_req(&fix.admin_token, json!({ "subjectDid": INVITEE_DID }));
-    let (status, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let (status, v) = body_value(fix.send(req).await).await;
     assert_eq!(status, StatusCode::CREATED, "{v}");
     let vic_id = v["vic"]["id"].as_str().expect("vic id").to_string();
 
@@ -316,7 +338,7 @@ async fn issue_list_revoke_round_trip() {
         .header("trust-task", LIST_TASK)
         .body(Body::empty())
         .unwrap();
-    let (status, v) = body_value(fix.router.clone().oneshot(list_req).await.unwrap()).await;
+    let (status, v) = body_value(fix.send(list_req).await).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     let row = v["invitations"]
         .as_array()
@@ -337,7 +359,7 @@ async fn issue_list_revoke_round_trip() {
         .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
-    let (status, v) = body_value(fix.router.clone().oneshot(del).await.unwrap()).await;
+    let (status, v) = body_value(fix.send(del).await).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["newlyRevoked"], json!(true));
 
@@ -349,7 +371,7 @@ async fn issue_list_revoke_round_trip() {
         .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
-    let (status, v) = body_value(fix.router.clone().oneshot(del2).await.unwrap()).await;
+    let (status, v) = body_value(fix.send(del2).await).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["newlyRevoked"], json!(false));
 }
@@ -359,12 +381,12 @@ async fn revoke_unknown_invitation_is_404() {
     let fix = build().await;
     let del = Request::builder()
         .method("DELETE")
-        .uri("/v1/invitations/urn:uuid:does-not-exist")
+        .uri("/v1/invitations/urn:uuid:00000000-0000-4000-8000-000000000000")
         .header("authorization", format!("Bearer {}", fix.admin_token))
         .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
-    let (status, _) = body_value(fix.router.clone().oneshot(del).await.unwrap()).await;
+    let (status, _) = body_value(fix.send(del).await).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -375,7 +397,7 @@ async fn invite_refuses_admin_role() {
         &fix.admin_token,
         json!({ "subjectDid": INVITEE_DID, "role": "admin" }),
     );
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let resp = fix.send(req).await;
     let (status, _) = body_value(resp).await;
     assert_eq!(
         status,
@@ -406,7 +428,8 @@ impl Invitee {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use ed25519_dalek::Signer;
         let header = json!({ "typ": "openid4vci-proof+jwt", "alg": "EdDSA",
-                             "kid": format!("{}#key-0", self.did) });
+                             "kid": format!("{}#{}", self.did,
+                                            self.did.strip_prefix("did:key:").unwrap()) });
         let payload = json!({ "iss": self.did, "aud": VTC_DID,
                               "iat": chrono::Utc::now().timestamp(), "nonce": code });
         let h = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
@@ -437,11 +460,8 @@ async fn post(
         req = req.header("authorization", format!("Bearer {t}"));
     }
     let resp = fix
-        .router
-        .clone()
-        .oneshot(req.body(Body::from(body.to_string())).unwrap())
-        .await
-        .unwrap();
+        .send(req.body(Body::from(body.to_string())).unwrap())
+        .await;
     body_value(resp).await
 }
 
@@ -599,7 +619,7 @@ async fn deliver_refuses_what_it_cannot_deliver() {
         "offer",
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
     assert_eq!(rest_error_code(&v), INVITATION_DELIVER_ERR_NOT_FOUND, "{v}");
 
     // Not an inviter.
@@ -615,9 +635,7 @@ async fn deliver_refuses_what_it_cannot_deliver() {
 
     // Revoked.
     let resp = fix
-        .router
-        .clone()
-        .oneshot(
+        .send(
             Request::builder()
                 .method("DELETE")
                 .uri(format!("/v1/invitations/{id}"))
@@ -626,8 +644,7 @@ async fn deliver_refuses_what_it_cannot_deliver() {
                 .body(Body::empty())
                 .unwrap(),
         )
-        .await
-        .unwrap();
+        .await;
     assert_eq!(resp.status(), StatusCode::OK);
     let (status, v) = deliver(&fix, &id, "offer").await;
     assert_eq!(status, StatusCode::CONFLICT);

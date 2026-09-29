@@ -21,9 +21,7 @@ use vta_sdk::protocol::services::{
     RollbackDidcommRequest, RollbackRestRequest, RollbackTspRequest, UpdateRestRequest,
     UpdateTspRequest,
 };
-use vta_sdk::protocol::{
-    DisableDidcommRequest, EnableDidcommConflictBody, EnableDidcommRequest, UpdateDidcommRequest,
-};
+use vta_sdk::protocol::{DisableDidcommRequest, EnableDidcommRequest, UpdateDidcommRequest};
 
 use crate::display::{NAME_HEADER, NameBook, UNNAMED, book_from_acl, inline, shorten_did};
 
@@ -32,6 +30,11 @@ use crate::display::{NAME_HEADER, NameBook, UNNAMED, book_from_acl, inline, shor
 /// `pnm services list` — show current REST + DIDComm advertisements.
 pub async fn cmd_services_list(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
     let response = client.list_services().await?;
+
+    if crate::render::is_json_output() {
+        crate::render::print_json(&response)?;
+        return Ok(());
+    }
 
     println!("Services advertised on this VTA's DID document:");
     println!();
@@ -248,17 +251,13 @@ pub async fn cmd_services_didcomm_enable(
     req.handshake_timeout_secs = handshake_timeout_secs;
     let resp = match client.enable_didcomm(req).await {
         Ok(resp) => resp,
-        Err(VtaError::Conflict(body)) => {
-            if let Ok(conflict) = serde_json::from_str::<EnableDidcommConflictBody>(&body)
-                && conflict.error == "didcomm_already_enabled"
-            {
-                println!("DIDComm already enabled.");
-                if let Some(mediator_did) = conflict.mediator_did {
-                    println!("  Mediator DID:   {mediator_did}");
-                }
-                return Ok(());
-            }
-            return Err(VtaError::Conflict(body).into());
+        // The task answers an already-enabled DIDComm as a conflict whose
+        // message names the command to run instead; enabling twice is not a
+        // failure worth an error, so say so and stop.
+        Err(VtaError::Conflict(body)) if body.contains("DIDComm is already enabled") => {
+            println!("DIDComm already enabled.");
+            println!("  To change the mediator: pnm services didcomm update --mediator-did <did>");
+            return Ok(());
         }
         Err(e) => return Err(e.into()),
     };

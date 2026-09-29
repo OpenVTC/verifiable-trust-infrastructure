@@ -98,7 +98,7 @@ use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
 use crate::error::TaskError;
-use crate::members::{get_member, store_member};
+use crate::members::get_member;
 use crate::server::AppState;
 use crate::status_list;
 
@@ -179,6 +179,7 @@ async fn take_challenge(state: &AppState, id: Uuid) -> Result<Option<RotationCha
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[schema(as = RotationChallengeResponse)]
 pub struct ChallengeResponse {
     pub rotation_id: Uuid,
     pub expires_at: DateTime<Utc>,
@@ -230,14 +231,28 @@ pub async fn challenge(
     body: Option<Json<ChallengeBody>>,
 ) -> Result<(StatusCode, Json<ChallengeResponse>), TaskError> {
     let reason = body.and_then(|Json(b)| b.reason);
+    Ok((
+        StatusCode::OK,
+        Json(challenge_inner(&state, &auth.did, reason).await?),
+    ))
+}
+
+/// Mint a rotation challenge for `caller_did` — the operation behind the
+/// bearer route above and the `vtc/members/rotate-challenge/0.1` Trust Task,
+/// which authorizes from the document's proof signer.
+pub(crate) async fn challenge_inner(
+    state: &AppState,
+    caller_did: &str,
+    reason: Option<DidRotationReason>,
+) -> Result<ChallengeResponse, TaskError> {
     // Caller must be a current member — anyone with a session
     // could mint a challenge otherwise.
-    let _acl = get_acl_entry(&state.acl_ks, &auth.did)
+    let _acl = get_acl_entry(&state.acl_ks, caller_did)
         .await?
         .ok_or_else(|| {
             TaskError::declared(
                 ROTATE_CHALLENGE_ERR_NOT_MEMBER,
-                AppError::NotFound(format!("no ACL row for {} — not a member", auth.did)),
+                AppError::NotFound(format!("no ACL row for {caller_did} — not a member")),
             )
         })?;
 
@@ -246,36 +261,33 @@ pub async fn challenge(
     let expires_at = now + chrono::Duration::seconds(CHALLENGE_TTL_SECS);
     let challenge = RotationChallenge {
         id,
-        did: auth.did.clone(),
+        did: caller_did.to_string(),
         expires_at,
         reason,
     };
-    store_challenge(&state, &challenge).await?;
+    store_challenge(state, &challenge).await?;
 
     // Canonical template — the caller substitutes `newDid`.
     let template = serde_json::json!({
         "rotationId": id.to_string(),
-        "oldDid": auth.did,
+        "oldDid": caller_did,
         "newDid": "<fill in>",
         "expiresAt": expires_at.timestamp(),
     });
 
     info!(
         rotation_id = %id,
-        did = %auth.did,
+        did = %caller_did,
         reason = ?reason,
         "DID rotation challenge issued"
     );
 
-    Ok((
-        StatusCode::OK,
-        Json(ChallengeResponse {
-            rotation_id: id,
-            expires_at,
-            signing_payload_hex: hex::encode(ROTATION_DOMAIN_TAG),
-            canonical_template: template,
-        }),
-    ))
+    Ok(ChallengeResponse {
+        rotation_id: id,
+        expires_at,
+        signing_payload_hex: hex::encode(ROTATION_DOMAIN_TAG),
+        canonical_template: template,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -322,16 +334,32 @@ pub async fn rotate(
     State(state): State<AppState>,
     Json(body): Json<FinishBody>,
 ) -> Result<(StatusCode, Json<FinishResponse>), TaskError> {
+    Ok((
+        StatusCode::OK,
+        Json(rotate_inner(&state, &auth.did, body).await?),
+    ))
+}
+
+/// Complete a rotation `caller_did` opened — the operation behind the bearer
+/// route above and the `vtc/members/rotate/0.1` Trust Task. `caller_did` is
+/// whoever the door authenticated (the session DID, or the document's proof
+/// signer) and must equal `oldDid`; the two in-payload signatures are what
+/// authorize the swap itself.
+pub(crate) async fn rotate_inner(
+    state: &AppState,
+    caller_did: &str,
+    body: FinishBody,
+) -> Result<FinishResponse, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
 
     // 1. Authenticated session must match `oldDid`.
-    if auth.did != body.old_did {
+    if caller_did != body.old_did {
         return Err(AppError::Forbidden(format!(
-            "session DID ({}) does not match oldDid ({})",
-            auth.did, body.old_did
+            "authenticated DID ({caller_did}) does not match oldDid ({})",
+            body.old_did
         ))
         .into());
     }
@@ -342,7 +370,7 @@ pub async fn rotate(
 
     // 3. Consume the challenge row. Single-use: `take_challenge`
     //    removes it before we run any further checks.
-    let challenge = take_challenge(&state, body.rotation_id)
+    let challenge = take_challenge(state, body.rotation_id)
         .await?
         .ok_or_else(|| {
             TaskError::declared(
@@ -503,7 +531,7 @@ pub async fn rotate(
     //     leaves the credential pointers null — the operator
     //     can recover via the renewal endpoint.
     let (vmc_value, vec_value, vmc_id, vec_id) =
-        match reissue_credentials(&state, &body.new_did, &acl).await {
+        match reissue_credentials(state, &body.new_did, &acl).await {
             Ok(out) => out,
             Err(e) => {
                 warn!(error = %e, "rotation succeeded but credential re-issuance failed");
@@ -536,15 +564,12 @@ pub async fn rotate(
         "DID rotated"
     );
 
-    Ok((
-        StatusCode::OK,
-        Json(FinishResponse {
-            new_did: body.new_did,
-            method: method.to_string(),
-            vmc: vmc_value,
-            role_vec: vec_value,
-        }),
-    ))
+    Ok(FinishResponse {
+        new_did: body.new_did,
+        method: method.to_string(),
+        vmc: vmc_value,
+        role_vec: vec_value,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -568,7 +593,7 @@ fn method_of(did: &str) -> Result<&'static str, AppError> {
 /// Build the canonical signing payload — domain tag prefixed
 /// onto a key-ordered JSON object. Both signers (old + new) sign
 /// this exact byte sequence.
-fn canonical_signing_bytes(
+pub(crate) fn canonical_signing_bytes(
     rotation_id: Uuid,
     old_did: &str,
     new_did: &str,
@@ -613,7 +638,8 @@ fn verify_did_key_signature(did: &str, signing_bytes: &[u8], hex_sig: &str) -> R
 ///
 /// Refuses to fall back to other verification-method
 /// fragments — Phase 2 §10.5 + the workspace's webvh templates
-/// pin `#key-0` as the assertion-method canonical id.
+/// pin `#key-0`, listed under both authentication and assertionMethod;
+/// the key must be listed under authentication.
 async fn verify_did_webvh_signature(
     did: &str,
     payload: &[u8],
@@ -625,18 +651,22 @@ async fn verify_did_webvh_signature(
         .await
         .map_err(|e| format!("did:webvh resolve: {e}"))?;
     let target_vm_id = format!("{did}#key-0");
-    let vm = resolved
-        .doc
-        .verification_method
-        .iter()
-        .find(|m| m.id.as_str() == target_vm_id)
-        .ok_or_else(|| format!("verification method {target_vm_id} not present on {did}"))?;
+    // A rotation signature proves control of the DID, so `#key-0` must be a
+    // key the DID authorised for authentication, controlled by the DID itself
+    // (VTI-KEY-022) — not merely a key its document lists.
+    let vm = vta_sdk::trust_task_proof::purpose::authorised_method(
+        &resolved.doc,
+        did,
+        &target_vm_id,
+        vti_common::auth::ProofPurpose::Authentication,
+    )
+    .map_err(|e| format!("rotation key refused: {e}"))?;
     let pub_bytes = vm
         .get_public_key_bytes()
         .map_err(|e| format!("extract pubkey: {e}"))?;
     if pub_bytes.len() != 32 {
         return Err(format!(
-            "{target_vm_id} pubkey is {} bytes, expected 32 (Ed25519)",
+            "the rotation key is {} bytes, expected 32 (Ed25519)",
             pub_bytes.len()
         ));
     }
@@ -698,8 +728,7 @@ async fn reissue_credentials(
     )
     .await?;
 
-    // Update Member row pointers.
-    let mut member_mut = member;
+    // Update Member row pointers, re-read under the members edit lock.
     let vmc_value = serde_json::to_value(&vmc)
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
     let role_vec_value = serde_json::to_value(&role_vec)
@@ -707,8 +736,12 @@ async fn reissue_credentials(
     // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
     // Rotation mints a grant naming the new DID, so the acknowledgement the member
     // sent under the old one no longer matches and is dropped.
-    member_mut.record_issued_credentials(vmc_value.clone(), role_vec_value);
-    store_member(&state.members_ks, &member_mut).await?;
+    crate::members::storage::edit_member(&state.members_ks, new_did, |m| {
+        m.record_issued_credentials(vmc_value.clone(), role_vec_value);
+        true
+    })
+    .await?
+    .ok_or_else(|| AppError::Conflict("the member left while this was in progress".into()))?;
     let vec_value = serde_json::to_value(&role_vec)
         .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?;
 

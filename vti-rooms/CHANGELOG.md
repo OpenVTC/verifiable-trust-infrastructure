@@ -2,6 +2,21 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.2.22](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.2.21...vti-rooms-v0.2.22) — 2026-09-27
+
+
+## [0.2.21](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.2.20...vti-rooms-v0.2.21) — 2026-09-27
+
+
+## [0.2.20](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.2.19...vti-rooms-v0.2.20) — 2026-09-26
+
+
+## [0.2.19](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.2.18...vti-rooms-v0.2.19) — 2026-09-26
+
+
+## [0.2.18](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.2.17...vti-rooms-v0.2.18) — 2026-09-24
+
+
 ## [0.2.17](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-rooms-v0.2.16...vti-rooms-v0.2.17) — 2026-09-23
 
 

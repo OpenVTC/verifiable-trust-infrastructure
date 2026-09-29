@@ -21,8 +21,6 @@ use serde::{Deserialize, Serialize};
 use crate::client::VtaClient;
 #[cfg(feature = "client")]
 use crate::error::VtaError;
-#[cfg(feature = "client")]
-use crate::protocols::protocol_management;
 
 /// Request body for `POST /services/didcomm/enable`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,138 +128,485 @@ pub struct DisableDidcommResponse {
 }
 
 #[cfg(feature = "client")]
+mod via_trust_tasks {
+    //! The `vta/services/*` Trust Tasks behind the typed SDK methods.
+    //!
+    //! Every method here used to be a bespoke REST route (`/services/…`,
+    //! `/mediators/…`) reached through `rpc`, whose DIDComm and TSP arms
+    //! answered `UnsupportedTransport` — so `pnm services …` worked only over
+    //! REST. They go through `rpc_tt` now: one signed Trust Task, over whichever
+    //! transport the client holds. The methods keep their signatures and return
+    //! types; this module builds the spec payload and maps the generated
+    //! response back to them.
+
+    use chrono::{DateTime, SecondsFormat, Utc};
+    use serde_json::{Value, json};
+    use trust_tasks_rs::specs::vta::services as spec;
+
+    use super::services::{
+        DrainEntry, DrainListResponse, RollbackResponse, ServiceMutationResponse, ServiceState,
+        ServicesListResponse,
+    };
+    use super::{MediatorReport, MediatorStats, SenderLastSeen};
+    use crate::client::VtaClient;
+    use crate::error::VtaError;
+    use crate::trust_tasks as uri;
+
+    pub(super) fn ts(t: DateTime<Utc>) -> String {
+        t.to_rfc3339_opts(SecondsFormat::Secs, true)
+    }
+
+    /// The service kind as the registry spells it.
+    #[derive(Clone, Copy)]
+    pub(super) enum Kind {
+        Rest,
+        Didcomm,
+        Tsp,
+        Webauthn,
+    }
+
+    impl Kind {
+        fn wire(self) -> &'static str {
+            match self {
+                Kind::Rest => "rest",
+                Kind::Didcomm => "didcomm",
+                Kind::Tsp => "tsp",
+                Kind::Webauthn => "webauthn",
+            }
+        }
+    }
+
+    /// The members of a `config` object: exactly the ones the named service
+    /// takes, since the spec refuses a member that does not apply.
+    pub(super) enum Config {
+        Url(String),
+        Mediator {
+            mediator_did: String,
+            force: Option<bool>,
+            handshake_timeout_secs: Option<u64>,
+        },
+    }
+
+    impl Config {
+        fn to_json(&self) -> Value {
+            match self {
+                Config::Url(url) => json!({ "url": url }),
+                Config::Mediator {
+                    mediator_did,
+                    force,
+                    handshake_timeout_secs,
+                } => {
+                    let mut c = json!({ "mediatorDid": mediator_did });
+                    if let Some(f) = force {
+                        c["force"] = json!(f);
+                    }
+                    if let Some(t) = handshake_timeout_secs {
+                        c["handshakeTimeoutSecs"] = json!(t);
+                    }
+                    c
+                }
+            }
+        }
+    }
+
+    /// A mutation's result, in the shape every verb shares.
+    pub(super) struct Mutation {
+        pub log_entry_version_id: String,
+        pub effective_at: String,
+        pub drain_until: Option<String>,
+        pub draining_mediator: Option<String>,
+        pub vta_did: String,
+        pub serverless: bool,
+    }
+
+    impl From<spec::enable::v1_0::ServiceMutationResult> for Mutation {
+        fn from(r: spec::enable::v1_0::ServiceMutationResult) -> Self {
+            Self {
+                log_entry_version_id: r.log_entry_version_id.to_string(),
+                effective_at: ts(r.effective_at),
+                drain_until: r.drain_until.map(ts),
+                draining_mediator: r.draining_mediator,
+                vta_did: r.vta_did.unwrap_or_default(),
+                serverless: r.serverless,
+            }
+        }
+    }
+
+    impl From<Mutation> for ServiceMutationResponse {
+        fn from(m: Mutation) -> Self {
+            Self {
+                log_entry_version_id: m.log_entry_version_id,
+                effective_at: m.effective_at,
+                drain_until: m.drain_until,
+                vta_did: m.vta_did,
+                serverless: m.serverless,
+            }
+        }
+    }
+
+    // `enable`, `update` and `disable` each have their own generated
+    // `ServiceMutationResult`, identical in shape; the response is decoded as
+    // `enable`'s, which the JSON of all three satisfies by construction.
+    type MutationResponse = spec::enable::v1_0::Response;
+
+    impl VtaClient {
+        pub(super) async fn services_enable(
+            &self,
+            kind: Kind,
+            config: Config,
+            timeout: u64,
+        ) -> Result<Mutation, VtaError> {
+            let payload = json!({ "service": kind.wire(), "config": config.to_json() });
+            let r: MutationResponse = self
+                .rpc_tt(uri::TASK_SERVICES_ENABLE_1_0, payload, timeout)
+                .await?;
+            Ok(r.result.into())
+        }
+
+        pub(super) async fn services_update(
+            &self,
+            kind: Kind,
+            config: Config,
+            drain_ttl_secs: Option<u64>,
+            timeout: u64,
+        ) -> Result<Mutation, VtaError> {
+            let mut payload = json!({ "service": kind.wire(), "config": config.to_json() });
+            if let Some(ttl) = drain_ttl_secs {
+                payload["drainTtlSecs"] = json!(ttl);
+            }
+            let r: MutationResponse = self
+                .rpc_tt(uri::TASK_SERVICES_UPDATE_1_1, payload, timeout)
+                .await?;
+            Ok(r.result.into())
+        }
+
+        pub(super) async fn services_disable(
+            &self,
+            kind: Kind,
+            drain_ttl_secs: Option<u64>,
+            timeout: u64,
+        ) -> Result<Mutation, VtaError> {
+            let mut payload = json!({ "service": kind.wire() });
+            if let Some(ttl) = drain_ttl_secs {
+                payload["drainTtlSecs"] = json!(ttl);
+            }
+            let r: MutationResponse = self
+                .rpc_tt(uri::TASK_SERVICES_DISABLE_1_0, payload, timeout)
+                .await?;
+            Ok(r.result.into())
+        }
+
+        pub(super) async fn services_rollback(
+            &self,
+            kind: Kind,
+            drain_ttl_secs: Option<u64>,
+            timeout: u64,
+        ) -> Result<RollbackResponse, VtaError> {
+            let mut payload = json!({ "service": kind.wire() });
+            if let Some(secs) = drain_ttl_secs {
+                payload["drainTtlSecs"] = secs.into();
+            }
+            let r: spec::rollback::v1_1::Response = self
+                .rpc_tt(uri::TASK_SERVICES_ROLLBACK_1_1, payload, timeout)
+                .await?;
+            let r = r.result;
+            Ok(RollbackResponse {
+                log_entry_version_id: r.log_entry_version_id.unwrap_or_default(),
+                effective_at: r.effective_at.map(ts).unwrap_or_default(),
+                kind: rollback_kind(r.kind).into(),
+                drain_until: r.drain_until.map(ts),
+                draining_mediator: r.draining_mediator,
+                vta_did: r.vta_did.unwrap_or_default(),
+                serverless: r.serverless,
+            })
+        }
+
+        pub(super) async fn services_list(&self) -> Result<ServicesListResponse, VtaError> {
+            let r: spec::list::v1_0::Response = self
+                .rpc_tt(uri::TASK_SERVICES_LIST_1_0, json!({}), 30)
+                .await?;
+            Ok(ServicesListResponse {
+                services: r.services.into_iter().filter_map(state).collect(),
+            })
+        }
+
+        /// `Ok(None)` when the transport has never been configured — `get`
+        /// answers that as not-found, distinct from configured-and-disabled.
+        pub(super) async fn services_get(
+            &self,
+            kind: Kind,
+        ) -> Result<Option<ServiceState>, VtaError> {
+            let r: Result<spec::get::v1_0::Response, VtaError> = self
+                .rpc_tt(
+                    uri::TASK_SERVICES_GET_1_0,
+                    json!({ "service": kind.wire() }),
+                    30,
+                )
+                .await;
+            match r {
+                Ok(r) => Ok(serde_json::to_value(r.state)
+                    .ok()
+                    .and_then(|v| serde_json::from_value::<spec::list::v1_0::ServiceState>(v).ok())
+                    .and_then(state)),
+                Err(VtaError::NotFound(_)) => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+
+        pub(super) async fn services_drain_list(&self) -> Result<DrainListResponse, VtaError> {
+            let r: spec::drain::list::v1_0::Response = self
+                .rpc_tt(uri::TASK_SERVICES_DRAIN_LIST_1_0, json!({}), 30)
+                .await?;
+            Ok(DrainListResponse {
+                entries: r
+                    .entries
+                    .into_iter()
+                    .map(|e| DrainEntry {
+                        mediator_did: e.mediator_did.to_string(),
+                        endpoint: e.endpoint,
+                        drains_until: ts(e.drains_until),
+                    })
+                    .collect(),
+            })
+        }
+
+        pub(super) async fn services_drain_cancel(
+            &self,
+            mediator_did: &str,
+        ) -> Result<String, VtaError> {
+            let r: spec::drain::cancel::v1_0::Response = self
+                .rpc_tt(
+                    uri::TASK_SERVICES_DRAIN_CANCEL_1_0,
+                    json!({ "mediatorDid": mediator_did }),
+                    30,
+                )
+                .await?;
+            Ok(r.mediator_did.to_string())
+        }
+
+        pub(super) async fn services_report(
+            &self,
+            since: Option<&str>,
+            until: Option<&str>,
+        ) -> Result<MediatorReport, VtaError> {
+            let mut payload = json!({});
+            if let Some(s) = since {
+                payload["since"] = json!(s);
+            }
+            if let Some(u) = until {
+                payload["until"] = json!(u);
+            }
+            let r: spec::report::v0_1::Response = self
+                .rpc_tt(uri::TASK_SERVICES_REPORT_0_1, payload, 30)
+                .await?;
+            Ok(MediatorReport {
+                since: r.since.map(ts),
+                until: ts(r.until),
+                mediators: r
+                    .mediators
+                    .into_iter()
+                    .map(|m| MediatorStats {
+                        mediator_did: m.mediator_did.to_string(),
+                        inbound_count: m.inbound_count,
+                        first_seen: ts(m.first_seen),
+                        last_seen: ts(m.last_seen),
+                    })
+                    .collect(),
+                senders: r
+                    .senders
+                    .into_iter()
+                    .map(|s| SenderLastSeen {
+                        sender_did: s.sender_did.to_string(),
+                        last_seen_mediator: s.last_seen_mediator.to_string(),
+                        last_seen_at: ts(s.last_seen_at),
+                    })
+                    .collect(),
+            })
+        }
+    }
+
+    /// [`RollbackResponse::kind`]'s documented snake_case form. The wire says
+    /// `noOp`, and the CLI (like any caller reading the documented values)
+    /// tests for `no_op`, so this is spelled out rather than serialised.
+    fn rollback_kind(k: spec::rollback::v1_1::RollbackResultKind) -> &'static str {
+        use spec::rollback::v1_1::RollbackResultKind as K;
+        match k {
+            K::Disabled => "disabled",
+            K::Enabled => "enabled",
+            K::Updated => "updated",
+            K::NoOp => "no_op",
+            // `#[non_exhaustive]`: a kind this build does not know.
+            _ => "unknown",
+        }
+    }
+
+    /// The published flat state as the SDK's tagged enum. A kind this build
+    /// does not know (the generated enum is `#[non_exhaustive]`) is dropped
+    /// rather than guessed at.
+    fn state(s: spec::list::v1_0::ServiceState) -> Option<ServiceState> {
+        use spec::list::v1_0::ServiceKind as K;
+        Some(match s.kind {
+            K::Rest => ServiceState::Rest {
+                enabled: s.enabled,
+                url: s.url,
+            },
+            K::Didcomm => ServiceState::Didcomm {
+                enabled: s.enabled,
+                mediator_did: s.mediator_did,
+                routing_keys: Vec::new(),
+            },
+            K::Tsp => ServiceState::Tsp {
+                enabled: s.enabled,
+                mediator_did: s.mediator_did,
+            },
+            K::Webauthn => ServiceState::Webauthn {
+                enabled: s.enabled,
+                url: s.url,
+            },
+            _ => return None,
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The wire's `noOp` reaches callers as the documented `no_op`, which
+        /// is what the CLI tests for to print "nothing to do".
+        #[test]
+        fn a_no_op_rollback_reads_as_the_documented_no_op() {
+            let r: spec::rollback::v1_1::RollbackResultKind =
+                serde_json::from_value(json!("noOp")).unwrap();
+            assert_eq!(rollback_kind(r), "no_op");
+        }
+    }
+}
+
+#[cfg(feature = "client")]
+use via_trust_tasks::{Config, Kind};
+
+#[cfg(feature = "client")]
 impl VtaClient {
-    /// Enable DIDComm on a REST-only VTA. Spec: success criterion #1.
+    /// Enable DIDComm on a VTA that does not advertise it yet
+    /// (`vta/services/enable`, `service: didcomm`).
     ///
-    /// The VTA must be configured with a vta_did, must currently
-    /// have `services.didcomm = false`, and the caller must have
-    /// super-admin role. On success, the VTA publishes a new WebVH
-    /// LogEntry advertising the mediator and registers it as
-    /// active.
-    ///
-    /// **First-enable handshake:** the route runs a transient
-    /// `DIDCommService` round-trip against the candidate mediator
-    /// before publishing — see
-    /// `vta_service::messaging::transient_handshake`. The operation
-    /// itself uses [`AlwaysOkProver`] because the steady-state
-    /// `DIDCommService` doesn't exist yet at first-enable. The
-    /// live-prover path through `update_didcomm` covers the
-    /// steady-state case.
+    /// The VTA must be configured with a vta_did and have `services.didcomm =
+    /// false`, and the caller must be super-admin. On success it publishes a
+    /// new WebVH LogEntry advertising the mediator and registers it as active,
+    /// after a transient handshake against the candidate mediator. Reachable
+    /// over any transport the client holds — HTTPS on a REST-only VTA.
     pub async fn enable_didcomm(
         &self,
         req: EnableDidcommRequest,
     ) -> Result<EnableDidcommResponse, VtaError> {
-        match &self.transport {
-            crate::client::Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                Self::ensure_token_valid(client, base_url, auth).await?;
-                let token = auth.lock().await.token.clone();
-                let req = client
-                    .post(format!("{base_url}/services/didcomm/enable"))
-                    .json(&req);
-                let resp = Self::with_auth_token(req, &token).send().await?;
-                Self::handle_response(resp).await
-            }
-            #[cfg(feature = "session")]
-            crate::client::Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
-                "enable_didcomm is REST-only".into(),
-            )),
-            #[cfg(feature = "tsp")]
-            crate::client::Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
-                "enable_didcomm is REST-only".into(),
-            )),
-        }
+        let m = self
+            .services_enable(
+                Kind::Didcomm,
+                Config::Mediator {
+                    mediator_did: req.mediator_did.clone(),
+                    force: req.force.then_some(true),
+                    handshake_timeout_secs: req.handshake_timeout_secs,
+                },
+                60,
+            )
+            .await?;
+        Ok(EnableDidcommResponse {
+            new_version_id: m.log_entry_version_id,
+            mediator_did: req.mediator_did,
+            // Not in the Trust Task's result: the endpoint is the mediator's
+            // own DID document's to say, and the CLI prints it only when set.
+            mediator_endpoint: String::new(),
+            vta_did: m.vta_did,
+            serverless: m.serverless,
+        })
     }
 
-    /// Read the current DIDComm runtime status. Auth: super-admin (parity with
-    /// `GET /services` / `list_services`, which exposes the same `mediator_did`).
+    /// Whether DIDComm is advertised, and through which mediator
+    /// (`vta/services/get`, `service: didcomm`). Auth: super-admin.
+    ///
+    /// `websocket_status` is not part of the published state and is always
+    /// `None`; a live connection check is `GET /health/details`.
     pub async fn didcomm_status(&self) -> Result<DidcommStatusResponse, VtaError> {
-        match &self.transport {
-            crate::client::Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                crate::client::VtaClient::ensure_token_valid(client, base_url, auth).await?;
-                let token = auth.lock().await.token.clone();
-                let req = client.get(format!("{base_url}/services/didcomm"));
-                let resp = crate::client::VtaClient::with_auth_token(req, &token)
-                    .send()
-                    .await?;
-                crate::client::VtaClient::handle_response(resp).await
-            }
-            #[cfg(feature = "session")]
-            crate::client::Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
-                "didcomm status is REST-only in the SDK".into(),
-            )),
-            #[cfg(feature = "tsp")]
-            crate::client::Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
-                "didcomm status is REST-only in the SDK".into(),
-            )),
-        }
+        Ok(match self.services_get(Kind::Didcomm).await? {
+            Some(services::ServiceState::Didcomm {
+                enabled,
+                mediator_did,
+                ..
+            }) => DidcommStatusResponse {
+                enabled,
+                mediator_did,
+                websocket_status: None,
+            },
+            _ => DidcommStatusResponse {
+                enabled: false,
+                mediator_did: None,
+                websocket_status: None,
+            },
+        })
     }
 
-    /// Disable DIDComm. Refuses if REST is also disabled
+    /// Disable DIDComm. Refuses if it is the last advertised transport
     /// (`NoProtocolRemaining`). Drain TTL semantics:
-    /// - `0` = immediate teardown (REST transport only).
-    /// - `>= 3600` = drain window over DIDComm transport (server
-    ///   enforces 1h minimum).
+    /// - `0` = immediate teardown, honoured only when the request did not
+    ///   arrive through the mediator being torn down.
+    /// - otherwise a drain window; over a DIDComm- or TSP-carried request the
+    ///   server enforces a 1h floor.
     pub async fn disable_didcomm(
         &self,
         req: DisableDidcommRequest,
     ) -> Result<DisableDidcommResponse, VtaError> {
-        self.rpc(
-            protocol_management::DISABLE_DIDCOMM,
-            serde_json::to_value(&req)?,
-            protocol_management::DISABLE_DIDCOMM_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/services/didcomm/disable")).json(&req),
-        )
-        .await
+        let m = self
+            .services_disable(Kind::Didcomm, Some(req.drain_ttl_secs), 30)
+            .await?;
+        Ok(DisableDidcommResponse {
+            new_version_id: m.log_entry_version_id,
+            prior_mediator_did: m.draining_mediator.unwrap_or_default(),
+            drains_until: m.drain_until,
+            vta_did: m.vta_did,
+            serverless: m.serverless,
+        })
     }
 
-    /// Update which DIDComm mediator the VTA's `#vta-didcomm`
-    /// service entry advertises. Runs the pre-promotion handshake
-    /// against the new mediator and places the prior mediator in
-    /// drain state for the requested TTL.
-    ///
-    /// (T2.3 rename — was `migrate_mediator`. Operation is the
-    /// same; the naming aligns with the unified `services
-    /// {kind} {verb}` surface.)
+    /// Replace the DIDComm mediator the VTA advertises
+    /// (`vta/services/update/1.1`). Runs the pre-promotion handshake against the
+    /// new mediator and places the prior one in drain for the requested TTL —
+    /// one drain covering every mediated transport it carried.
     pub async fn update_didcomm(
         &self,
         req: UpdateDidcommRequest,
     ) -> Result<UpdateDidcommResponse, VtaError> {
-        self.rpc(
-            protocol_management::UPDATE_DIDCOMM,
-            serde_json::to_value(&req)?,
-            protocol_management::UPDATE_DIDCOMM_RESULT,
-            120,
-            |c, url| c.post(format!("{url}/services/didcomm/update")).json(&req),
-        )
-        .await
+        let m = self
+            .services_update(
+                Kind::Didcomm,
+                Config::Mediator {
+                    mediator_did: req.new_mediator_did.clone(),
+                    force: req.force.then_some(true),
+                    handshake_timeout_secs: req.handshake_timeout_secs,
+                },
+                Some(req.drain_ttl_secs),
+                120,
+            )
+            .await?;
+        Ok(UpdateDidcommResponse {
+            new_version_id: m.log_entry_version_id,
+            prior_mediator_did: m.draining_mediator.unwrap_or_default(),
+            active_mediator_did: req.new_mediator_did,
+            active_mediator_endpoint: String::new(),
+            drains_until: m.drain_until.unwrap_or_default(),
+            vta_did: m.vta_did,
+            serverless: m.serverless,
+        })
     }
 
-    // ── REST service-management client methods (P1 wire types,
-    //    P5 client surface) ──────────────────────────────────────────
-
-    /// Enable REST advertisement on the VTA's DID document by
-    /// publishing a `#vta-rest` service entry. Spec §3.4.
+    /// Enable REST advertisement (`#vta-rest`). Spec §3.4.
     pub async fn enable_rest(
         &self,
         req: services::EnableRestRequest,
     ) -> Result<services::ServiceMutationResponse, VtaError> {
-        self.rpc(
-            protocol_management::ENABLE_REST,
-            serde_json::to_value(&req)?,
-            protocol_management::ENABLE_REST_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/services/rest/enable")).json(&req),
-        )
-        .await
+        Ok(self
+            .services_enable(Kind::Rest, Config::Url(req.url), 30)
+            .await?
+            .into())
     }
 
     /// Update the URL on the existing `#vta-rest` service entry.
@@ -269,75 +614,46 @@ impl VtaClient {
         &self,
         req: services::UpdateRestRequest,
     ) -> Result<services::ServiceMutationResponse, VtaError> {
-        self.rpc(
-            protocol_management::UPDATE_REST,
-            serde_json::to_value(&req)?,
-            protocol_management::UPDATE_REST_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/services/rest/update")).json(&req),
-        )
-        .await
+        Ok(self
+            .services_update(Kind::Rest, Config::Url(req.url), None, 30)
+            .await?
+            .into())
     }
 
-    /// Remove the `#vta-rest` entry from the VTA's DID document.
-    /// Refused with `LastServiceRefused` when DIDComm is also off.
+    /// Remove the `#vta-rest` entry. Refused with `LastServiceRefused` when it
+    /// is the last advertised transport.
     pub async fn disable_rest(
         &self,
-        req: services::DisableRestRequest,
+        _req: services::DisableRestRequest,
     ) -> Result<services::ServiceMutationResponse, VtaError> {
-        self.rpc(
-            protocol_management::DISABLE_REST,
-            serde_json::to_value(&req)?,
-            protocol_management::DISABLE_REST_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/services/rest/disable")).json(&req),
-        )
-        .await
+        Ok(self.services_disable(Kind::Rest, None, 30).await?.into())
     }
 
-    // ── Fail-forward rollback client methods (P3 server, P5
-    //    client surface) ──────────────────────────────────────────
-
-    /// Fail-forward the most recent REST mutation by re-applying
-    /// the snapshotted prior state. Spec §3.5a.
+    /// Fail-forward the most recent REST mutation. Spec §3.5a.
     pub async fn rollback_rest(
         &self,
-        req: services::RollbackRestRequest,
+        _req: services::RollbackRestRequest,
     ) -> Result<services::RollbackResponse, VtaError> {
-        self.rpc(
-            protocol_management::ROLLBACK_REST,
-            serde_json::to_value(&req)?,
-            protocol_management::ROLLBACK_REST_RESULT,
-            60,
-            |c, url| c.post(format!("{url}/services/rest/rollback")).json(&req),
-        )
-        .await
+        self.services_rollback(Kind::Rest, None, 60).await
     }
 
-    // ── TSP service-management client methods ──────────────────────
-    //
-    // TSP advertises a **mediator DID** (the VTA's TSP VID), not a
-    // URL — so these mirror the REST methods exactly except for the
-    // request types carrying `mediator_did` and the `/services/tsp/…`
-    // paths. All four go through `self.rpc(…)` (reachable over both
-    // REST and DIDComm); `enable_tsp` is NOT REST-only the way
-    // `enable_didcomm` is.
-
-    /// Enable TSP advertisement on the VTA's DID document by
-    /// publishing a `#tsp` service entry pointing at the mediator
-    /// DID. Spec §3.4.
+    /// Enable TSP advertisement (`#tsp` → the mediator DID). Spec §3.4.
     pub async fn enable_tsp(
         &self,
         req: services::EnableTspRequest,
     ) -> Result<services::ServiceMutationResponse, VtaError> {
-        self.rpc(
-            protocol_management::ENABLE_TSP,
-            serde_json::to_value(&req)?,
-            protocol_management::ENABLE_TSP_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/services/tsp/enable")).json(&req),
-        )
-        .await
+        Ok(self
+            .services_enable(
+                Kind::Tsp,
+                Config::Mediator {
+                    mediator_did: req.mediator_did,
+                    force: None,
+                    handshake_timeout_secs: None,
+                },
+                30,
+            )
+            .await?
+            .into())
     }
 
     /// Update the mediator DID on the existing `#tsp` service entry.
@@ -345,65 +661,47 @@ impl VtaClient {
         &self,
         req: services::UpdateTspRequest,
     ) -> Result<services::ServiceMutationResponse, VtaError> {
-        self.rpc(
-            protocol_management::UPDATE_TSP,
-            serde_json::to_value(&req)?,
-            protocol_management::UPDATE_TSP_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/services/tsp/update")).json(&req),
-        )
-        .await
+        Ok(self
+            .services_update(
+                Kind::Tsp,
+                Config::Mediator {
+                    mediator_did: req.mediator_did,
+                    force: None,
+                    handshake_timeout_secs: None,
+                },
+                None,
+                30,
+            )
+            .await?
+            .into())
     }
 
-    /// Remove the `#tsp` entry from the VTA's DID document.
-    /// Refused with `LastServiceRefused` when TSP is the only
-    /// advertised transport.
+    /// Remove the `#tsp` entry. Refused with `LastServiceRefused` when it is
+    /// the last advertised transport.
     pub async fn disable_tsp(
         &self,
-        req: services::DisableTspRequest,
+        _req: services::DisableTspRequest,
     ) -> Result<services::ServiceMutationResponse, VtaError> {
-        self.rpc(
-            protocol_management::DISABLE_TSP,
-            serde_json::to_value(&req)?,
-            protocol_management::DISABLE_TSP_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/services/tsp/disable")).json(&req),
-        )
-        .await
+        Ok(self.services_disable(Kind::Tsp, None, 30).await?.into())
     }
 
-    /// Fail-forward the most recent TSP mutation by re-applying the
-    /// snapshotted prior state. Spec §3.5a.
+    /// Fail-forward the most recent TSP mutation. Spec §3.5a.
     pub async fn rollback_tsp(
         &self,
-        req: services::RollbackTspRequest,
+        _req: services::RollbackTspRequest,
     ) -> Result<services::RollbackResponse, VtaError> {
-        self.rpc(
-            protocol_management::ROLLBACK_TSP,
-            serde_json::to_value(&req)?,
-            protocol_management::ROLLBACK_TSP_RESULT,
-            60,
-            |c, url| c.post(format!("{url}/services/tsp/rollback")).json(&req),
-        )
-        .await
+        self.services_rollback(Kind::Tsp, None, 60).await
     }
 
-    // ── WebAuthn service-management client methods ─────────────────
-
-    /// Enable WebAuthn-RP advertisement on the VTA's DID document by
-    /// publishing a `#vta-webauthn` service entry.
+    /// Enable WebAuthn-RP advertisement (`#vta-webauthn`).
     pub async fn enable_webauthn(
         &self,
         req: services::EnableWebauthnRequest,
     ) -> Result<services::ServiceMutationResponse, VtaError> {
-        self.rpc(
-            protocol_management::ENABLE_WEBAUTHN,
-            serde_json::to_value(&req)?,
-            protocol_management::ENABLE_WEBAUTHN_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/services/webauthn/enable")).json(&req),
-        )
-        .await
+        Ok(self
+            .services_enable(Kind::Webauthn, Config::Url(req.url), 30)
+            .await?
+            .into())
     }
 
     /// Update the URL on the existing `#vta-webauthn` entry.
@@ -411,105 +709,78 @@ impl VtaClient {
         &self,
         req: services::UpdateWebauthnRequest,
     ) -> Result<services::ServiceMutationResponse, VtaError> {
-        self.rpc(
-            protocol_management::UPDATE_WEBAUTHN,
-            serde_json::to_value(&req)?,
-            protocol_management::UPDATE_WEBAUTHN_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/services/webauthn/update")).json(&req),
-        )
-        .await
+        Ok(self
+            .services_update(Kind::Webauthn, Config::Url(req.url), None, 30)
+            .await?
+            .into())
     }
 
-    /// Remove the `#vta-webauthn` entry AND strip passkey VMs from
-    /// every DID this VTA controls (hard-disable semantics).
-    /// Refused with `LastServiceRefused` when removing WebAuthn
-    /// would leave no transport advertised.
+    /// Remove the `#vta-webauthn` entry AND strip passkey VMs from every DID
+    /// this VTA controls. Longer timeout: the cleanup publishes a WebVH update
+    /// per affected DID.
     pub async fn disable_webauthn(
         &self,
-        req: services::DisableWebauthnRequest,
+        _req: services::DisableWebauthnRequest,
     ) -> Result<services::ServiceMutationResponse, VtaError> {
-        // Longer timeout than REST/DIDComm disable because the
-        // passkey-VM cleanup iterates every DID this VTA controls
-        // and publishes a WebVH update per affected DID.
-        self.rpc(
-            protocol_management::DISABLE_WEBAUTHN,
-            serde_json::to_value(&req)?,
-            protocol_management::DISABLE_WEBAUTHN_RESULT,
-            300,
-            |c, url| {
-                c.post(format!("{url}/services/webauthn/disable"))
-                    .json(&req)
-            },
-        )
-        .await
+        Ok(self
+            .services_disable(Kind::Webauthn, None, 300)
+            .await?
+            .into())
     }
 
-    /// Fail-forward the most recent WebAuthn mutation by re-applying
-    /// the snapshotted prior state.
+    /// Fail-forward the most recent WebAuthn mutation.
     pub async fn rollback_webauthn(
         &self,
-        req: services::RollbackWebauthnRequest,
+        _req: services::RollbackWebauthnRequest,
     ) -> Result<services::RollbackResponse, VtaError> {
-        self.rpc(
-            protocol_management::ROLLBACK_WEBAUTHN,
-            serde_json::to_value(&req)?,
-            protocol_management::ROLLBACK_WEBAUTHN_RESULT,
-            300,
-            |c, url| {
-                c.post(format!("{url}/services/webauthn/rollback"))
-                    .json(&req)
-            },
-        )
-        .await
+        self.services_rollback(Kind::Webauthn, None, 300).await
     }
 
-    /// Fail-forward the most recent DIDComm mutation. Threads
-    /// `drain_ttl_secs` through to the dispatched forward op for
-    /// the disable / update arms.
+    /// Fail-forward the most recent DIDComm mutation.
+    ///
+    /// `drain_ttl_secs` rides `vta/services/rollback/1.1`: how long a mediator
+    /// the rollback leaves draining keeps accepting delivery. Omitted, the
+    /// agent applies its default; over a request arriving through the mediator
+    /// being replaced it raises a shorter window to its floor.
     pub async fn rollback_didcomm(
         &self,
         req: services::RollbackDidcommRequest,
     ) -> Result<services::RollbackResponse, VtaError> {
-        self.rpc(
-            protocol_management::ROLLBACK_DIDCOMM,
-            serde_json::to_value(&req)?,
-            protocol_management::ROLLBACK_DIDCOMM_RESULT,
-            120,
-            |c, url| {
-                c.post(format!("{url}/services/didcomm/rollback"))
-                    .json(&req)
-            },
-        )
-        .await
+        self.services_rollback(Kind::Didcomm, req.drain_ttl_secs, 120)
+            .await
     }
 
-    // ── Read-only inspection (P4 server, P5 client surface) ──────
-
-    /// Inspect the VTA's currently-advertised transport services.
-    /// Returns one entry per kind in canonical DIDComm-then-REST
-    /// order.
+    /// The VTA's currently-advertised transport services, in canonical order.
     pub async fn list_services(&self) -> Result<services::ServicesListResponse, VtaError> {
-        self.rpc(
-            protocol_management::LIST_SERVICES,
-            serde_json::Value::Null,
-            protocol_management::LIST_SERVICES_RESULT,
-            30,
-            |c, url| c.get(format!("{url}/services")),
-        )
-        .await
+        self.services_list().await
     }
 
-    /// List currently-draining mediators. Empty list is normal.
+    /// Mediators still draining. Empty is normal.
     pub async fn list_drain(&self) -> Result<services::DrainListResponse, VtaError> {
-        self.rpc(
-            protocol_management::LIST_DRAIN,
-            serde_json::Value::Null,
-            protocol_management::LIST_DRAIN_RESULT,
-            30,
-            |c, url| c.get(format!("{url}/services/didcomm/drain")),
-        )
-        .await
+        self.services_drain_list().await
+    }
+
+    /// End a drain early, dropping the listener for that mediator at once.
+    /// Refused for the active mediator, or one that is not registered.
+    pub async fn drain_cancel(
+        &self,
+        req: DrainCancelRequest,
+    ) -> Result<DrainCancelResponse, VtaError> {
+        Ok(DrainCancelResponse {
+            mediator_did: self.services_drain_cancel(&req.mediator_did).await?,
+        })
+    }
+
+    /// The mediator-attribution report (`vta/services/report`): per-mediator
+    /// inbound counts and each sender's last-seen mediator, across every
+    /// mediated transport, so an operator can spot senders still on the prior
+    /// mediator before ending a drain. `since`/`until` are optional RFC 3339.
+    pub async fn mediator_report(
+        &self,
+        since: Option<&str>,
+        until: Option<&str>,
+    ) -> Result<MediatorReport, VtaError> {
+        self.services_report(since, until).await
     }
 }
 
@@ -604,85 +875,4 @@ pub struct MediatorReport {
     pub until: String,
     pub mediators: Vec<MediatorStats>,
     pub senders: Vec<SenderLastSeen>,
-}
-
-#[cfg(feature = "client")]
-impl VtaClient {
-    /// Cancel a drain entry early, dropping the listener for that
-    /// mediator immediately. Refuses if the named DID is the
-    /// active mediator (use `services disable didcomm` instead) or
-    /// not registered at all.
-    pub async fn drain_cancel(
-        &self,
-        req: DrainCancelRequest,
-    ) -> Result<DrainCancelResponse, VtaError> {
-        self.rpc(
-            protocol_management::DRAIN_CANCEL,
-            serde_json::to_value(&req)?,
-            protocol_management::DRAIN_CANCEL_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/mediators/drain/cancel")).json(&req),
-        )
-        .await
-    }
-
-    /// Query the mediator-attribution report. `since`/`until` are
-    /// optional RFC 3339 timestamps. Returns per-mediator inbound
-    /// counts and per-sender last-seen mediator (so operators can
-    /// spot senders still using the prior mediator after a
-    /// migrate).
-    pub async fn mediator_report(
-        &self,
-        since: Option<&str>,
-        until: Option<&str>,
-    ) -> Result<MediatorReport, VtaError> {
-        let since_owned = since.map(str::to_string);
-        let until_owned = until.map(str::to_string);
-        let qs = build_report_query(since_owned.as_deref(), until_owned.as_deref());
-        self.rpc(
-            protocol_management::MEDIATOR_REPORT,
-            serde_json::json!({
-                "since": since_owned,
-                "until": until_owned,
-            }),
-            protocol_management::MEDIATOR_REPORT_RESULT,
-            30,
-            move |c, url| {
-                let url = if qs.is_empty() {
-                    format!("{url}/mediators/report")
-                } else {
-                    format!("{url}/mediators/report?{qs}")
-                };
-                c.get(url)
-            },
-        )
-        .await
-    }
-}
-
-#[cfg(feature = "client")]
-fn build_report_query(since: Option<&str>, until: Option<&str>) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(s) = since {
-        parts.push(format!("since={}", url_encode(s)));
-    }
-    if let Some(u) = until {
-        parts.push(format!("until={}", url_encode(u)));
-    }
-    parts.join("&")
-}
-
-#[cfg(feature = "client")]
-fn url_encode(s: &str) -> String {
-    // RFC 3339 timestamps contain `:` and `+`; the latter is the
-    // form-urlencoded representation of a space and would mangle
-    // the timestamp on the server side. Encode the unsafe chars
-    // explicitly.
-    s.chars()
-        .flat_map(|c| match c {
-            ':' => "%3A".chars().collect::<Vec<_>>(),
-            '+' => "%2B".chars().collect::<Vec<_>>(),
-            _ => vec![c],
-        })
-        .collect()
 }

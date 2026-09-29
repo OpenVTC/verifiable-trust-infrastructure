@@ -21,7 +21,6 @@ pub struct TestStore {
     _dir: tempfile::TempDir,
     pub store: Store,
     pub keys_ks: KeyspaceHandle,
-    pub webvh_ks: KeyspaceHandle,
     pub data_dir: PathBuf,
 }
 
@@ -35,7 +34,6 @@ pub async fn open_test_store() -> TestStore {
     .expect("open store");
     TestStore {
         keys_ks: store.keyspace(vta_keyspaces::KEYS).expect("keys ks"),
-        webvh_ks: store.keyspace(vta_keyspaces::WEBVH).expect("webvh ks"),
         _dir: dir,
         store,
         data_dir,
@@ -52,9 +50,11 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         vta_name: None,
         public_url: None,
         resolver_url: None,
+        did_cache: Default::default(),
         server: Default::default(),
         log: Default::default(),
         store: StoreConfig { data_dir },
+        fjall: Default::default(),
         messaging: None,
         mediator_readiness: Default::default(),
         services: Default::default(),

@@ -1,6 +1,10 @@
 //! Seeds slice trust-task handlers.
 //!
-//! Auth: Admin for list/rotate.
+//! Auth: **super-admin** for list/rotate. Seed state is instance-wide
+//! (FTL-29904). The gate lives in `operations::seeds`, not here, so REST, Trust
+//! Task and DIDComm share one audited refusal. There is deliberately no role
+//! pre-check in this file: a role-only check (`require_admin`) is exactly the
+//! defect that let a context-scoped admin rotate the seed.
 //!
 //! The per-key secret export that used to live here has moved to
 //! `keys/export-secret/0.1`, in the family it belongs to. It was never a
@@ -19,34 +23,35 @@ use crate::server::AppState;
 
 use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, success_response};
 
-/// Handler for `spec/vta/seeds/list/1.0`. Admin only.
+/// Handler for `spec/vta/seeds/list/1.0`. Super-admin only (gated in the operation).
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let _req: ListSeedsBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match operations::seeds::list_seeds(&state.keys_ks, TRANSPORT_TRUST_TASK).await {
+    match operations::seeds::list_seeds(
+        &state.keys_ks,
+        auth,
+        &state.audit_sink,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
 
-/// Handler for `spec/vta/seeds/rotate/1.0`. Admin only.
+/// Handler for `spec/vta/seeds/rotate/1.0`. Super-admin only (gated in the operation).
 pub(super) async fn handle_rotate(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_admin() {
-        return app_error_to_reject(&doc, e);
-    }
     let req: RotateSeedBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -56,7 +61,7 @@ pub(super) async fn handle_rotate(
         &state.imported_ks,
         &state.seed_store,
         &state.audit_sink,
-        &auth.did,
+        auth,
         req.mnemonic.as_deref(),
         TRANSPORT_TRUST_TASK,
     )

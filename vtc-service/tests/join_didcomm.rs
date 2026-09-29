@@ -30,6 +30,8 @@
 //! means a silent send failure and a lost frame look identical from the
 //! assertion. [`init_tracing`] installs the subscriber so they don't.
 
+mod common;
+
 use std::time::Duration;
 
 /// Install a `RUST_LOG`-driven subscriber once per test binary.
@@ -641,44 +643,285 @@ async fn a_delivered_invitation_arrives_as_an_offer() {
     let vtc_did = mock.vtc_did().to_string();
     let invitee = mock.client.did().to_string();
 
-    let (status, issued) = rest_post(
-        &mock,
-        "/v1/invitations",
+    let _ = admin_token;
+    // The invitation verbs are signed documents; an administrator of the
+    // community signs them.
+    let admin = common::signed::admin(&mock.vtc).await;
+    let (status, issued) = common::signed::call(
+        &mock.vtc,
+        &admin,
         "https://trusttasks.org/spec/vtc/invitations/issue/0.1",
-        &admin_token,
         json!({ "subjectDid": invitee }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "{issued}");
-    let id = issued["vic"]["id"].as_str().expect("vic id").to_string();
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let id = issued["payload"]["vic"]["id"]
+        .as_str()
+        .expect("vic id")
+        .to_string();
 
-    let (status, delivered) = rest_post(
-        &mock,
-        "/v1/invitations/deliver",
+    let (status, delivered) = common::signed::call(
+        &mock.vtc,
+        &admin,
         "https://trusttasks.org/spec/vtc/invitations/deliver/0.1",
-        &admin_token,
         json!({ "id": id, "channel": "message" }),
     )
     .await;
+    let delivered = delivered["payload"].clone();
     assert_eq!(status, StatusCode::OK, "{delivered}");
     assert!(
         delivered.get("offer").is_none(),
         "the offer went to the invitee: {delivered}"
     );
 
-    let (typ, body) = mock
+    let offer_doc = mock
         .client
-        .next_pushed(Duration::from_secs(15))
+        .next_pushed_document(Duration::from_secs(15))
         .await
         .expect("the offer reaches the invited DID");
-    assert_eq!(typ, vta_sdk::protocols::credential_exchange::OFFER);
+    assert_eq!(
+        offer_doc["type"],
+        vta_sdk::protocols::credential_exchange::OFFER
+    );
+    assert_eq!(offer_doc["issuer"], vtc_did);
+    assert_eq!(offer_doc["recipient"], invitee);
+    assert!(
+        offer_doc["proof"].is_object(),
+        "a pushed offer is a signed Trust Task: {offer_doc}"
+    );
+    let body = &offer_doc["payload"];
     let offer = &body["credential_offer"];
     assert_eq!(offer["credential_issuer"], vtc_did);
-    assert!(
-        offer["grants"]["urn:ietf:params:oauth:grant-type:pre-authorized_code"]
-            ["pre-authorized_code"]
-            .is_string(),
-        "{offer}"
-    );
+    let code = offer["grants"]["urn:ietf:params:oauth:grant-type:pre-authorized_code"]
+        ["pre-authorized_code"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the offer carries a pre-authorized code: {offer}"))
+        .to_string();
     assert!(body.get("credential").is_none() && offer.get("credential").is_none());
+
+    // The invitee answers on the offer's thread with a `request` whose
+    // key-binding proof is by its own DID key. The transport carries back only
+    // the empty `#response` courtesy acknowledgement (SPEC §4.4.2)...
+    let offer_id = offer_doc["id"].as_str().expect("offer id").to_string();
+    let request = mock.client.credential_request(
+        &vtc_did,
+        &code,
+        "https://openvtc.org/credentials/InvitationCredential",
+    );
+    match mock
+        .client
+        .try_request_in_thread(
+            &vtc_did,
+            vta_sdk::protocols::credential_exchange::REQUEST,
+            request,
+            &offer_id,
+            Duration::from_secs(15),
+        )
+        .await
+    {
+        ReplyOutcome::Reply(ack) => {
+            assert_eq!(
+                ack["type"],
+                format!(
+                    "{}#response",
+                    vta_sdk::protocols::credential_exchange::REQUEST
+                ),
+                "{ack}"
+            );
+            assert_eq!(
+                ack["payload"],
+                json!({}),
+                "an acknowledgement carries nothing"
+            );
+        }
+        other => panic!("the request was not accepted: {other:?}"),
+    }
+
+    // ...and the credential arrives as the next task on the thread: a signed
+    // `credential-exchange/issue` to the invitee.
+    let issue_doc = mock
+        .client
+        .next_trust_task(Duration::from_secs(15))
+        .await
+        .expect("the invitation is issued to the invitee");
+    assert_eq!(
+        issue_doc["type"],
+        vta_sdk::protocols::credential_exchange::ISSUE
+    );
+    assert_eq!(
+        issue_doc["threadId"], offer_id,
+        "issue answers on the offer's thread"
+    );
+    assert_eq!(issue_doc["recipient"], invitee);
+    assert!(issue_doc["proof"].is_object(), "{issue_doc}");
+    let issue: IssueBody =
+        serde_json::from_value(issue_doc["payload"].clone()).expect("issue payload");
+    assert!(
+        issue
+            .credential_response
+            .and_then(|r| r.credential)
+            .is_some(),
+        "the issue carries the invitation credential"
+    );
+}
+
+/// A join query goes out as a signed `credential-exchange/query` whose `id` is
+/// the thread its single-use challenge is keyed by, and the holder's `present`
+/// on that thread is answered on the transport with the empty acknowledgement
+/// and with a signed `join-requests/submit-receipt` pushed on the same thread.
+///
+/// Before, the query was a bare DIDComm message and the `present` a bare reply,
+/// which the binding requires a consumer to refuse and TSP could not carry.
+#[tokio::test]
+async fn a_join_query_is_answered_by_a_present_on_its_thread() {
+    init_tracing();
+    let mock = MockVtcDidcomm::start().await;
+    seed_join_ceremony(&mock).await;
+    let vtc_did = mock.vtc_did().to_string();
+    let holder = mock.client.did().to_string();
+
+    let admin = common::signed::admin(&mock.vtc).await;
+    let (status, sent) = common::signed::call(
+        &mock.vtc,
+        &admin,
+        "https://trusttasks.org/spec/vtc/join-requests/query/0.1",
+        json!({ "holderDid": holder, "criterionId": "membership" }),
+    )
+    .await;
+    let sent = sent["payload"].clone();
+    assert_eq!(status, StatusCode::OK, "{sent}");
+    assert_eq!(
+        sent["delivered"], true,
+        "the query was queued to the holder: {sent}"
+    );
+    let thread_id = sent["threadId"].as_str().expect("threadId").to_string();
+
+    let query_doc = mock
+        .client
+        .next_pushed_document(Duration::from_secs(15))
+        .await
+        .expect("the query reaches the holder");
+    assert_eq!(
+        query_doc["type"],
+        vta_sdk::protocols::credential_exchange::QUERY
+    );
+    assert_eq!(
+        query_doc["id"], thread_id,
+        "the query opens the challenge's thread"
+    );
+    assert!(query_doc["proof"].is_object(), "{query_doc}");
+    let nonce = query_doc["payload"]["nonce"]
+        .as_str()
+        .expect("the query carries its nonce")
+        .to_string();
+
+    // A held credential that verifies: self-issued by the holder's key, which is
+    // all this test needs — whether the issuer is trusted is the join policy's
+    // question, and a referral still produces a receipt.
+    let holder_key = mock.client.holder_secret();
+    let issuer_did = holder_key.id.split('#').next().unwrap().to_string();
+    let subject = json!({ "id": issuer_did, "givenName": "Ada", "memberSince": "2024-01-01" });
+    let mut vc = json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "type": ["VerifiableCredential", "MembershipCredential"],
+        "issuer": issuer_did,
+        "validFrom": "2024-01-01T00:00:00Z",
+        "credentialSubject": subject,
+    });
+    let vc_proof = affinidi_data_integrity::DataIntegrityProof::sign(
+        &vc,
+        holder_key,
+        affinidi_data_integrity::SignOptions::new().with_proof_purpose("assertionMethod"),
+    )
+    .await
+    .expect("sign the held credential");
+    vc["proof"] = serde_json::to_value(&vc_proof).expect("a proof serialises");
+    let held = HeldCredential {
+        id: "vmc-held".into(),
+        format: "ldp_vc".into(),
+        claims: subject.clone(),
+        vct: None,
+        doctype: None,
+        supports_holder_binding: true,
+        vc,
+    };
+    let dcql = query_doc["payload"]["dcql_query"].clone();
+    let candidates =
+        select_credentials(&dcql, &[held]).expect("the held credential satisfies the query");
+    let vp_token = build_vp_token(&candidates, mock.client.holder_secret(), &nonce, &vtc_did)
+        .await
+        .expect("assemble vp_token");
+
+    match mock
+        .client
+        .try_request_in_thread(
+            &vtc_did,
+            vta_sdk::protocols::credential_exchange::PRESENT,
+            json!({ "vp_token": vp_token }),
+            &thread_id,
+            Duration::from_secs(20),
+        )
+        .await
+    {
+        ReplyOutcome::Reply(ack) => {
+            assert_eq!(
+                ack["type"],
+                format!(
+                    "{}#response",
+                    vta_sdk::protocols::credential_exchange::PRESENT
+                ),
+                "{ack}"
+            );
+            assert_eq!(ack["payload"], json!({}));
+        }
+        other => panic!("the present was not accepted: {other:?}"),
+    }
+
+    let receipt = mock
+        .client
+        .next_trust_task(Duration::from_secs(15))
+        .await
+        .expect("the submit receipt reaches the presenter");
+    assert_eq!(
+        receipt["type"],
+        vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_RECEIPT_TYPE
+    );
+    assert_eq!(receipt["threadId"], thread_id);
+    assert_eq!(receipt["recipient"], holder);
+    assert!(receipt["proof"].is_object(), "{receipt}");
+    assert!(
+        receipt["payload"]["requestId"].is_string(),
+        "the receipt names the join request: {receipt}"
+    );
+    mock.shutdown().await;
+}
+
+/// `credential-exchange/request` and `present` are served on the spine, and
+/// only there: typed as themselves — the bare DIDComm shape the VTC used to
+/// answer — they are refused at the DIDComm layer naming the binding envelope
+/// (`bindings/didcomm/0.2` §2). The general census in
+/// `didcomm_envelope_binding.rs` covers every dispatched URI; this pins the two
+/// that were the last bare arms, so reintroducing one fails by name.
+#[tokio::test]
+async fn a_bare_credential_exchange_step_is_refused_naming_the_envelope() {
+    let mock = MockVtcDidcomm::start().await;
+    let vtc_did = mock.vtc_did().to_string();
+    for uri in [
+        vta_sdk::protocols::credential_exchange::REQUEST,
+        vta_sdk::protocols::credential_exchange::PRESENT,
+    ] {
+        match mock
+            .client
+            .try_request_task_typed(&vtc_did, uri, json!({}), Duration::from_secs(15))
+            .await
+        {
+            ReplyOutcome::Problem(p) => assert!(
+                p.comment
+                    .contains(vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE),
+                "{uri}: the refusal names the envelope: {p:?}"
+            ),
+            other => panic!("{uri} typed as itself must be refused, got {other:?}"),
+        }
+    }
+    mock.shutdown().await;
 }

@@ -47,8 +47,9 @@
 use chrono::DateTime;
 use trust_tasks_rs::specs::auth::{
     authenticate::v0_1 as authenticate, challenge::v0_1 as challenge, refresh::v0_1 as refresh,
-    revoke_session::v0_1 as revoke_session, whoami::v0_1 as whoami,
+    revoke_session::v0_2 as revoke_session, whoami::v0_1 as whoami,
 };
+use trust_tasks_rs::specs::messaging::ping::v0_1 as ping;
 use trust_tasks_rs::{Payload, TrustTask};
 
 use crate::error::FfiError;
@@ -78,7 +79,7 @@ pub struct AuthChallenge {
 }
 
 /// Parsed token bundle (+ session summary) from an `authenticate` response.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct AuthTokens {
     pub access_token: String,
     /// Token presentation scheme — almost always `"Bearer"`. The native layer
@@ -91,6 +92,24 @@ pub struct AuthTokens {
     pub acr: Option<String>,
     /// Authentication methods references (e.g. `["did"]`).
     pub amr: Vec<String>,
+}
+
+/// Written by hand so the access and refresh tokens never reach a log: a derived `Debug` would print them.
+impl std::fmt::Debug for AuthTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthTokens")
+            .field("access_token", &"<redacted>")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("refresh_expires_in", &self.refresh_expires_in)
+            .field("acr", &self.acr)
+            .field("amr", &self.amr)
+            .finish()
+    }
 }
 
 /// The auth service's view of the holder, from a `whoami` response — the full
@@ -277,7 +296,28 @@ pub fn parse_whoami_response(json: String) -> Result<SessionInfo, FfiError> {
     })
 }
 
-/// Build a signed `auth/revoke-session/0.1` that invalidates one named session.
+/// Build a signed `messaging/ping/0.1` liveness probe to the VTA.
+///
+/// Over TSP this is how the device announces its reachability: the VTA records
+/// the sealed sender of any inbound frame as TSP-reachable (learn-from-inbound)
+/// and answers the ping. It is holder-signed like every other document the
+/// device sends — the VTA refuses an unsigned one (`proofRequired`). `env.id`
+/// doubles as the ping's correlation `nonce`.
+#[uniffi::export]
+pub fn build_messaging_ping(
+    env: AuthEnvelope,
+    signer: Box<dyn Signer>,
+) -> Result<String, FfiError> {
+    let payload: ping::Payload = ping::Payload::builder()
+        .nonce(Some(env.id.clone()))
+        .try_into()
+        .map_err(conv)?;
+    let mut doc = envelope_doc(&env, payload)?;
+    attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
+    serialize(&doc)
+}
+
+/// Build a signed `auth/revoke-session/0.2` that invalidates one named session.
 /// `reason` is an optional audit-log rationale (e.g. `"logout"`, `"device-lost"`,
 /// `"key-rotation"`). `auth/revoke-session` is `IS_PROOF_REQUIRED == true`, so
 /// the holder-signed proof (via `signer`) authorizes the revocation.
@@ -288,23 +328,37 @@ pub fn build_revoke_session(
     reason: Option<String>,
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
-    let payload = revoke_session::Payload::Variant0 {
-        session_id: revoke_session::PayloadVariant0SessionId::try_from(session_id).map_err(conv)?,
-        // `reason` is a bounded newtype as of the 0.17 registry, not a bare
-        // `String`. Parsing it here fails on the device that would otherwise
-        // sign a document the auth service must reject.
-        reason: reason
-            .map(revoke_session::PayloadVariant0Reason::try_from)
-            .transpose()
-            .map_err(conv)?,
-        ext: None,
-    };
+    // 0.24's generated `revoke_session::v0_2::Payload` is a single flat,
+    // `#[non_exhaustive]` permissive struct (every member `Option`) rather
+    // than the old one-of-two-variants enum: the schema's "exactly one of
+    // `sessionId`, `all`, `subject`" constraint is no longer encoded in the
+    // Rust type, only in the JSON Schema the auth service validates the raw
+    // payload against. Building through `builder()` (rather than a struct
+    // literal, which `#[non_exhaustive]` refuses outside this crate) and
+    // leaving the other members unset is what keeps this call one of the
+    // schema's valid shapes.
+    let payload: revoke_session::Payload = revoke_session::Payload::builder()
+        .session_id(Some(
+            // `reason` and `sessionId` are bounded newtypes as of the 0.17
+            // registry, not bare `String`s. Parsing them here fails on the
+            // device that would otherwise sign a document the auth service
+            // must reject.
+            revoke_session::PayloadSessionId::try_from(session_id).map_err(conv)?,
+        ))
+        .reason(
+            reason
+                .map(revoke_session::PayloadReason::try_from)
+                .transpose()
+                .map_err(conv)?,
+        )
+        .try_into()
+        .map_err(conv)?;
     let mut doc = envelope_doc(&env, payload)?;
     attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
     serialize(&doc)
 }
 
-/// Build a signed `auth/revoke-session/0.1` that invalidates **every** session
+/// Build a signed `auth/revoke-session/0.2` that invalidates **every** session
 /// the auth service holds for the holder (e.g. "log out everywhere"). `reason`
 /// is an optional audit-log rationale. Holder-signed, as
 /// [`build_revoke_session`].
@@ -314,20 +368,24 @@ pub fn build_revoke_all_sessions(
     reason: Option<String>,
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
-    let payload = revoke_session::Payload::Variant1 {
-        all: true,
-        reason: reason
-            .map(revoke_session::PayloadVariant1Reason::try_from)
-            .transpose()
-            .map_err(conv)?,
-        ext: None,
-    };
+    // See the comment in `build_revoke_session`: 0.24's `Payload` is one flat,
+    // `#[non_exhaustive]` permissive struct now, not an enum of variants.
+    let payload: revoke_session::Payload = revoke_session::Payload::builder()
+        .all(Some(true))
+        .reason(
+            reason
+                .map(revoke_session::PayloadReason::try_from)
+                .transpose()
+                .map_err(conv)?,
+        )
+        .try_into()
+        .map_err(conv)?;
     let mut doc = envelope_doc(&env, payload)?;
     attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
     serialize(&doc)
 }
 
-/// Parse an `auth/revoke-session/0.1#response` — the number of sessions
+/// Parse an `auth/revoke-session/0.2#response` — the number of sessions
 /// invalidated. Zero is a valid outcome (e.g. the session was already revoked).
 #[uniffi::export]
 pub fn parse_revoke_session_response(json: String) -> Result<u64, FfiError> {
@@ -732,7 +790,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             v["type"],
-            "https://trusttasks.org/spec/auth/revoke-session/0.1"
+            "https://trusttasks.org/spec/auth/revoke-session/0.2"
         );
         assert_eq!(v["payload"]["sessionId"], "sess-1");
         assert_eq!(v["payload"]["reason"], "logout");
@@ -753,6 +811,54 @@ mod tests {
             affinidi_data_integrity::VerifyOptions::default(),
         )
         .expect("the revoke proof must verify against the holder key");
+    }
+
+    /// The TSP reachability announce is a signed ping: the VTA refuses an
+    /// unsigned document on either messaging transport.
+    #[test]
+    fn messaging_ping_is_signed_under_authentication_and_verifies() {
+        let (signer, pk, mb) = enclave_signer(13);
+        let did = signer.did();
+        let e = AuthEnvelope {
+            id: "urn:uuid:ping-1".to_string(),
+            holder_did: did.clone(),
+            vta_did: "did:web:vta.example".to_string(),
+            issued_at: "2026-09-25T10:00:00Z".to_string(),
+        };
+        let json = build_messaging_ping(e, signer).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "https://trusttasks.org/spec/messaging/ping/0.1");
+        assert_eq!(v["issuer"], did.as_str());
+        assert_eq!(v["recipient"], "did:web:vta.example");
+        assert_eq!(v["payload"]["nonce"], "urn:uuid:ping-1");
+        assert_eq!(v["proof"]["proofPurpose"], "authentication");
+
+        let doc: TrustTask<ping::Payload> = serde_json::from_str(&json).unwrap();
+        let di: affinidi_data_integrity::DataIntegrityProof =
+            serde_json::from_value(serde_json::to_value(doc.proof.clone().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(di.verification_method, format!("{did}#{mb}"));
+        let mut unsigned = doc;
+        unsigned.proof = None;
+        di.verify_with_public_key(
+            &unsigned,
+            pk.as_bytes(),
+            affinidi_data_integrity::VerifyOptions::default(),
+        )
+        .expect("the ping proof must verify against the holder key");
+    }
+
+    /// A document issued in a name other than the signer's is refused before
+    /// anything is signed: the VTA binds proof signer, issuer and transport
+    /// sender to one DID, so it could never be accepted.
+    #[test]
+    fn a_document_issued_in_another_name_is_not_signed() {
+        let (signer, _pk, _mb) = enclave_signer(14);
+        let err = build_whoami(env(), signer).unwrap_err();
+        assert!(
+            matches!(&err, FfiError::InvalidInput { reason } if reason.contains("issuer")),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -778,7 +884,7 @@ mod tests {
     fn parses_revoke_session_response_count() {
         let json = r#"{
           "id": "rv-1",
-          "type": "https://trusttasks.org/spec/auth/revoke-session/0.1#response",
+          "type": "https://trusttasks.org/spec/auth/revoke-session/0.2#response",
           "issuer": "did:web:vta.example",
           "recipient": "did:key:zHolder",
           "payload": { "revokedCount": 3 }

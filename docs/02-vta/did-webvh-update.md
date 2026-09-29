@@ -38,108 +38,68 @@ Both are exposed via three surfaces: REST, DIDComm, and `vta-sdk`'s
 - **`rotate-keys`** is the explicit "rotate everything" entry point.
   Same effective state as `update` with a freshly rebuilt doc.
 
-## REST
+## Trust Tasks
 
-### Update
+Both operations are Trust Tasks keyed on the DID, reached the same way over
+TSP, DIDComm or HTTPS (`POST /trust-tasks`):
 
-```http
-POST /contexts/{ctx_id}/dids/{scid}/update
-Authorization: Bearer <admin token for ctx_id>
-Content-Type: application/json
-```
+- `https://trusttasks.org/spec/vta/webvh/dids/update/1.0`
+- `https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0`
+- `https://trusttasks.org/spec/vta/webvh/dids/realign-keys/1.0` — the repair
+  that renames a DID's key records onto the verification-method ids its
+  published document declares (`dryRun` returns the plan without writing).
 
-Body:
+The earlier `POST /contexts/{ctx_id}/dids/{scid}/{update,rotate-keys}` and
+`POST /webvh/dids/{did}/realign-keys` routes, and the `did-management/1.0`
+`update-did-webvh` / `rotate-did-webvh-keys` messages, are removed.
 
-```json
-{
-  "document":           { "id": "did:webvh:...", "@context": [...], ... } | null,
-  "pre_rotation_count": 2 | null,
-  "witnesses":          { "threshold": 1, "witnesses": [{ "id": "z6Mk..." }] } | null,
-  "watchers":           ["https://watcher.example.com"] | null,
-  "ttl":                3600 | null,
-  "label":              "rotate after audit" | null,
-  "expectedVersionId":  "2-zMk..." | null
-}
-```
-
-Response `200`:
+### Update payload
 
 ```json
 {
-  "did":                       "did:webvh:Q.../host:slug",
-  "new_version_id":            "3-zMk...",
-  "new_scid":                  "Q...",
-  "new_log_entry":             "{\"versionId\":\"3-...\",...}",
-  "update_keys_count":         1,
-  "pre_rotation_key_count":    2
+  "did":                "did:webvh:Q...:host:slug",
+  "document":           { "id": "did:webvh:...", "@context": [...], ... },
+  "preRotationCount":   2,
+  "witnesses":          { "threshold": 1, "witnesses": [{ "id": "z6Mk..." }] },
+  "watchers":           ["https://watcher.example.com"],
+  "ttl":                3600,
+  "label":              "rotate after audit",
+  "expectedVersionId":  "2-zMk..."
 }
 ```
 
-Error mapping:
+Every member but `did` is optional.
 
-| Status | Cause |
-|---|---|
-| 400 | Invalid document (id mismatch / missing required fields), invalid witness DID, invalid watcher URL |
-| 404 | Unknown SCID OR caller is not admin in the DID's context (collapsed for cross-context privacy) |
-| 409 | Optimistic-concurrency mismatch — DID was updated by another caller between load and write; retry |
-| 500 | Library error, persistence error, publish error |
-
-### Rotate keys
-
-```http
-POST /contexts/{ctx_id}/dids/{scid}/rotate-keys
-Authorization: Bearer <admin token for ctx_id>
-Content-Type: application/json
-```
-
-Body:
+### Rotate-keys payload
 
 ```json
 {
-  "pre_rotation_count": 2 | null,
-  "label":              "scheduled key rotation" | null
+  "did":              "did:webvh:Q...:host:slug",
+  "preRotationCount": 2,
+  "label":            "scheduled key rotation"
 }
 ```
 
-Response: same `UpdateDidWebvhResultBody` shape as the update endpoint.
+### Response
 
-### `curl` example
-
-```bash
-# Update — toggle pre-rotation off
-curl -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"pre_rotation_count": 0}' \
-  https://vta.example.com/contexts/primary/dids/Q.../update
-
-# Rotate keys
-curl -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"label": "Q3 scheduled rotation"}' \
-  https://vta.example.com/contexts/primary/dids/Q.../rotate-keys
-```
-
-## DIDComm
-
-Two new message types extend `https://firstperson.network/protocols/did-management/1.0`:
-
-- `update-did-webvh` / `update-did-webvh-result`
-- `rotate-did-webvh-keys` / `rotate-did-webvh-keys-result`
-
-Body shape (envelope wrapping the same fields as the REST body):
+Both answer the same body:
 
 ```json
 {
-  "context_id": "primary",
-  "scid":       "Q...",
-  "body":       { ... UpdateDidWebvhBody ... }
+  "did":                 "did:webvh:Q...:host:slug",
+  "newVersionId":        "3-zMk...",
+  "newScid":             "Q...",
+  "newLogEntry":         "{\"versionId\":\"3-...\",...}",
+  "updateKeysCount":     1,
+  "preRotationKeyCount": 2
 }
 ```
 
-Result body identical to REST. Errors surface as `problem-report` with
-the same semantic mapping as the HTTP status codes above.
+Refusals: `malformedRequest` for an invalid document (id mismatch, missing
+required fields), witness DID or watcher URL; `taskFailed` with
+`details.reason` `not_found` for an unknown DID or one outside the caller's
+context (collapsed for cross-context privacy), and with `conflict` when
+`expectedVersionId` no longer matches, so retry against the new head.
 
 ## SDK
 
@@ -150,9 +110,8 @@ use vta_sdk::protocols::did_management::update::{
 };
 
 // Update
-let result = client.update_did_webvh(
-    "primary",
-    "Q...",
+let result = client.update_did_webvh_by_did(
+    "did:webvh:Q...:host:slug",
     UpdateDidWebvhBody {
         pre_rotation_count: Some(0),
         ..Default::default()
@@ -160,9 +119,8 @@ let result = client.update_did_webvh(
 ).await?;
 
 // Rotate keys
-let result = client.rotate_did_webvh_keys(
-    "primary",
-    "Q...",
+let result = client.rotate_did_webvh_keys_by_did(
+    "did:webvh:Q...:host:slug",
     RotateDidWebvhKeysBody {
         label: Some("scheduled".into()),
         ..Default::default()
@@ -203,13 +161,51 @@ the new convention; subsequent updates use the fast path.
 
 ## Behaviour notes
 
-- **Verification-method fragment ids are monotonic.** Each rotate-keys
-  call mints `#key-N`, `#key-N+1`, … starting from the DID's
-  `next_fragment_id`. Old fragment ids are never reused so external
-  references to specific keys remain unambiguous across log history.
-- **Old keys are not deleted.** After a rotation, the previous
+- **Rotate-keys replaces key material in place.** Each verification method
+  keeps its id, `type` and algorithm (an X25519 key-agreement method gets a
+  new X25519 key, an ML-DSA method a new ML-DSA key) and every relationship —
+  all five, including `capabilityInvocation` / `capabilityDelegation` — keeps
+  pointing at it. Consumers that address their own keys by id (the VTA's
+  `{vta_did}#key-0` / `#key-1`, the VTC's `#key-0` / `#key-1`) keep working;
+  `did:webvh`'s version history is what tells the key an id named before the
+  rotation from the one it names now. **Changed:** earlier builds renumbered
+  every method to a fresh `#key-N` (from `next_fragment_id`), minted Ed25519
+  for every method whatever its algorithm, remapped only three relationships
+  and wrote no key records for the new keys — so a rotated DID could not be
+  signed or decrypted as. A DID rotated by such a build should be rotated
+  again (or its document repaired with `update`) after upgrading.
+- **Key records follow the rotation.** Each new key gets an active record
+  under its method id, inheriting the old one's label and exportability (a
+  non-exportable key's replacement is non-exportable). The replaced record is
+  kept as `{method id}@{versionId}` with status `revoked`, so history is
+  queryable and the VTA refuses to sign with it. A method backed by an
+  internal (non-extractable) key is refused rather than downgraded to a
+  derived one.
+- **A rotation that published always promotes its records.** The new keys are
+  staged as inert `{method id}@rotating-{uuid}` records before the log entry is
+  written. Their promotion runs in the same spawned task as the log write, so a
+  client that disconnects or a transport that times out after the write was
+  issued cannot leave published keys behind only revoked staging records. A
+  crash in that window is finished at the next boot, before the VTA loads its
+  own keys: a staging record whose key the DID's stored log publishes is
+  promoted (the key it replaces retired under the version it was last current
+  at), and every other staging record is removed.
+- **Old authorization keys are not deleted.** After a rotation, the previous
   version's handles move from `webvh:` to `superseded:webvh:` for
-  audit / recovery. The legacy `key:{key_id}` records are left alone.
+  audit / recovery.
+- **Rotating the VTA's own DID reloads its live keys at once.** The new
+  signing and key-agreement secrets replace the old ones in the resolver the
+  DIDComm and TSP legs read, so the VTA signs with the new key from that moment
+  and never with the retired one. Because method ids are preserved, the old and
+  new key-agreement keys share one id and cannot both be held: a message
+  encrypted to the retired key and still in transit fails to decrypt and must be
+  resent.
+- **Other services holding a rotated DID's keys must reload them.** A mediator
+  or other integration that fetched its DID's secrets (`vta/contexts/secrets`)
+  keeps using the old keys until it fetches again. **Do not rotate a VTC's
+  `vtc-host` DID yet:** the VTC derives its at-rest storage key, audit key and
+  install-token key from its DID's `#key-0` seed, so adopting rotated keys would
+  leave it unable to read its own encrypted state.
 - **Concurrent updates** are detected via optimistic concurrency on
   `WebvhDidRecord.log_entry_count`. Within one VTA process, updates to the
   same DID are serialized from log-head read through persistence and publish,

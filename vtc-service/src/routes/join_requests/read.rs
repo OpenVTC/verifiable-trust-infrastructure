@@ -2,7 +2,7 @@
 //! read endpoints (M1.9.1).
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -30,21 +30,13 @@ pub struct ListJoinRequestsQuery {
 }
 
 /// GET /join-requests — list join requests (admin work queue). Auth: Admin.
-#[utoipa::path(
-    get, path = "/join-requests", tag = "join-requests",
-    security(("bearer_jwt" = [])),
-    params(ListJoinRequestsQuery),
-    responses(
-        (status = 200, description = "Paginated join requests", body = Paginated<JoinRequest>),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_join_requests(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<ListJoinRequestsQuery>,
-) -> Result<Json<Paginated<JoinRequest>>, AppError> {
+/// `vtc/join-requests/list/0.1`, on either door: the signed document the
+/// spine serves (`trust_tasks::community_tasks`), and the bearer route below,
+/// which stays while `vtc-client`'s `list_join_requests` calls it.
+pub(crate) async fn list_join_requests_inner(
+    state: &AppState,
+    query: ListJoinRequestsQuery,
+) -> Result<Paginated<JoinRequest>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
     let audit_writer = state
         .audit_writer
@@ -69,26 +61,32 @@ pub async fn list_join_requests(
     let filter_status = query.status.unwrap_or(JoinStatus::Pending);
     page.items.retain(|r| r.status == filter_status);
 
-    Ok(Json(page))
+    Ok(page)
+}
+
+#[utoipa::path(
+    get, path = "/join-requests", tag = "join-requests",
+    security(("bearer_jwt" = [])),
+    params(ListJoinRequestsQuery),
+    responses(
+        (status = 200, description = "Paginated join requests", body = Paginated<JoinRequest>),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn list_join_requests(
+    _admin: AdminAuth,
+    State(state): State<AppState>,
+    Query(query): Query<ListJoinRequestsQuery>,
+) -> Result<Json<Paginated<JoinRequest>>, AppError> {
+    list_join_requests_inner(&state, query).await.map(Json)
 }
 
 /// GET /join-requests/{id} — show a single join request. Auth: Admin.
-#[utoipa::path(
-    get, path = "/join-requests/{id}", tag = "join-requests",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Join request id")),
-    responses(
-        (status = 200, description = "Join request", body = JoinRequestEnvelope),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Join request not found"),
-    ),
-)]
-pub async fn show_join_request(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<JoinRequestEnvelope>, TaskError> {
+pub(crate) async fn show_join_request(
+    state: &AppState,
+    id: Uuid,
+) -> Result<JoinRequestEnvelope, TaskError> {
     let req = get_join_request(&state.join_requests_ks, id)
         .await?
         .ok_or_else(|| {
@@ -97,35 +95,22 @@ pub async fn show_join_request(
                 AppError::NotFound(format!("join request not found: {id}")),
             )
         })?;
-    Ok(Json(JoinRequestEnvelope { request: req }))
+    Ok(JoinRequestEnvelope { request: req })
 }
 
 /// The vetting facts a join request was decided on.
-#[utoipa::path(
-    get, path = "/join-requests/{id}/vetting", tag = "join-requests",
-    operation_id = "joinRequestVettingShow",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Join request id")),
-    responses(
-        (status = 200, description = "The vetting facts recorded for the request; `vetting` is absent when none were", body = JoinRequestVettingResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Join request not found"),
-    ),
-)]
-pub async fn show_join_request_vetting(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<JoinRequestVettingResponse>, AppError> {
+pub(crate) async fn vetting_of(
+    state: &AppState,
+    id: Uuid,
+) -> Result<JoinRequestVettingResponse, AppError> {
     get_join_request(&state.join_requests_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("join request not found: {id}")))?;
     let Some(stored) = crate::join::get_vetting_facts(&state.join_requests_ks, id).await? else {
-        return Ok(Json(JoinRequestVettingResponse {
+        return Ok(JoinRequestVettingResponse {
             request_id: id,
             vetting: None,
-        }));
+        });
     };
     let withdrawn: std::collections::HashSet<(String, String)> =
         crate::vetting::revocation::list_notices(&state.vetting_revocations_ks)
@@ -134,7 +119,7 @@ pub async fn show_join_request_vetting(
             .map(|n| (n.issuer, n.statement_id))
             .collect();
     let facts = stored.facts;
-    Ok(Json(JoinRequestVettingResponse {
+    Ok(JoinRequestVettingResponse {
         request_id: id,
         vetting: Some(JoinRequestVetting {
             criterion_id: facts.criterion_id,
@@ -170,7 +155,7 @@ pub async fn show_join_request_vetting(
             needs: facts.needs,
             recorded_at: stored.recorded_at,
         }),
-    }))
+    })
 }
 
 /// `GET /v1/join-requests/{id}/vetting` response.

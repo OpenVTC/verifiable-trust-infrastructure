@@ -147,6 +147,12 @@ pub enum PolicyPurpose {
     /// revokes the grants the sweep issued. Wire form `vetterEligibility`, like
     /// every purpose; the package spells it `vetter_eligibility`.
     VetterEligibility,
+    /// What this community allows inside the forge namespaces it governs
+    /// (`vtc.git_namespace`, the `git-ns/*` Trust Tasks). Evaluated only after the
+    /// rights model's fixed rules pass, and able only to refuse — it narrows,
+    /// never widens. Also carries the community's `settings`
+    /// (`cascade_on_departure`, …). Wire form `gitNamespace`.
+    GitNamespace,
 }
 
 impl PolicyPurpose {
@@ -154,7 +160,7 @@ impl PolicyPurpose {
     /// boot-time default-policy loader (M2.5) so missing rows can
     /// be filled from the bundled defaults without listing each
     /// purpose explicitly at the call site.
-    pub const ALL: [PolicyPurpose; 12] = [
+    pub const ALL: [PolicyPurpose; 13] = [
         PolicyPurpose::Join,
         PolicyPurpose::Removal,
         PolicyPurpose::Personhood,
@@ -167,6 +173,7 @@ impl PolicyPurpose {
         PolicyPurpose::RoleChange,
         PolicyPurpose::Rooms,
         PolicyPurpose::VetterEligibility,
+        PolicyPurpose::GitNamespace,
     ];
 
     /// Lowercase camelCase wire form of this purpose. Stable wire
@@ -186,6 +193,7 @@ impl PolicyPurpose {
             PolicyPurpose::RoleChange => "roleChange",
             PolicyPurpose::Rooms => "rooms",
             PolicyPurpose::VetterEligibility => "vetterEligibility",
+            PolicyPurpose::GitNamespace => "gitNamespace",
         }
     }
 
@@ -215,6 +223,10 @@ impl PolicyPurpose {
             // Probed by a fixed package: a policy in any other package answers
             // nothing, which the sweep logs and acts on for no one.
             PolicyPurpose::VetterEligibility => Some("vtc.vetter_eligibility"),
+            // Probed by a fixed package: a policy in any other package answers
+            // nothing, which refuses every git-namespace request — closed, and
+            // mysterious without this check at upload.
+            PolicyPurpose::GitNamespace => Some("vtc.git_namespace"),
             _ => None,
         }
     }
@@ -275,6 +287,7 @@ mod tests {
             (PolicyPurpose::Relationships, json!("relationships")),
             (PolicyPurpose::RoleChange, json!("roleChange")),
             (PolicyPurpose::VetterEligibility, json!("vetterEligibility")),
+            (PolicyPurpose::GitNamespace, json!("gitNamespace")),
         ];
         for (purpose, wire) in cases {
             assert_eq!(serde_json::to_value(purpose).unwrap(), wire);
@@ -315,7 +328,7 @@ mod tests {
         // the bundled default would silently never load. Drive the
         // count + exhaustiveness assertion off the same constant
         // so a missed entry surfaces at test time.
-        assert_eq!(PolicyPurpose::ALL.len(), 12);
+        assert_eq!(PolicyPurpose::ALL.len(), 13);
         for purpose in PolicyPurpose::ALL {
             // Compiles iff the match is total — `as_str` exhaustively
             // matches every variant; this exists so the assertion

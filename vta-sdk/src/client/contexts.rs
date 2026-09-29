@@ -70,6 +70,10 @@ impl VtaClient {
     }
 
     /// Update the DID for a context. Requires Admin role with access to the context.
+    ///
+    /// Sent as `vta/contexts/update-did/1.1`, which requires `did` to be a DID
+    /// (DID Core §3.1) — a malformed one is refused by the agent's schema check
+    /// rather than stored as the context's identity.
     pub async fn update_context_did(
         &self,
         id: &str,
@@ -77,8 +81,24 @@ impl VtaClient {
     ) -> Result<ContextResponse, VtaError> {
         let did = did.into();
         self.rpc_tt(
-            crate::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
+            crate::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
             serde_json::json!({ "id": id, "did": &did }),
+            30,
+        )
+        .await
+    }
+
+    /// Clear a context's DID, leaving it with no identity of its own — the
+    /// state of a context created without one. Requires Admin role with access
+    /// to the context.
+    ///
+    /// `vta/contexts/update-did/1.1` with `did: null`. The DID itself is not
+    /// deleted; this is what lets `webvh/dids/delete` then proceed on a DID the
+    /// context was acting as. Clearing a context with no DID succeeds.
+    pub async fn clear_context_did(&self, id: &str) -> Result<ContextResponse, VtaError> {
+        self.rpc_tt(
+            crate::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
+            serde_json::json!({ "id": id, "did": null }),
             30,
         )
         .await

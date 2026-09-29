@@ -1,0 +1,257 @@
+// Repos admin API — the reads the Repos plugin renders.
+//
+// Two kinds of read, and the difference is who may make them.
+//
+// **The administrator's reads are signed Trust Tasks.** The namespaces, the
+// repositories and the break-glass records are `git-ns/namespace/list/0.1`,
+// `git-ns/repo/list/0.1` and `git-ns/view/0.5` (`scope: administrator`,
+// `breakGlass: true`), signed with this browser's console key and posted to
+// `/v1/trust-tasks` — the same documents `cnm git` sends over TSP or
+// DIDComm. The daemon answers them to a namespace's administrators only (the
+// community-administrator capability, or `git.ns.admin` on the namespace),
+// never on the strength of a session, so there is no bearer fallback: a
+// browser that cannot sign gets `SigningUnavailableError`, which the screens
+// turn into "enable console signing".
+//
+// **The rest are console projections** no specification defines — rights,
+// drift, jobs, the registry mirror, linked accounts, activity — which the
+// daemon mounts behind the admin session with **no** Trust-Task binding
+// (`routes/mod.rs`). They go through `getJsonExempt` for that reason, which is
+// the smell the helper is meant to be: each one is named here.
+//
+// Writes are not in this file. Every change is a signed `git-ns/*` Trust Task;
+// `actions.ts` builds them and sends them from this browser's console key
+// where one is enrolled.
+
+import { getJsonExempt, postSignedRead } from "@/lib/api";
+import type {
+  GitNsAccountList,
+  GitNsActivity,
+  GitNsBreakGlassMark,
+  GitNsDepartedGrants,
+  GitNsDriftItem,
+  GitNsJobList,
+  GitNsNamespaceList,
+  GitNsProjection,
+  GitNsRepoList,
+  GitNsRightList,
+  MembersPage,
+} from "@/lib/wire-types";
+
+import type { GitNsBreakGlassItem, GitNsBreakGlassList } from "./model";
+import { breakGlassState } from "./model";
+
+const TASK_MEMBERS_LIST = "https://trusttasks.org/spec/vtc/members/list/0.1";
+
+// trust-tasks-rs 0.23.4 generates the Rust side of these
+// (`git_ns::admin_reads`, trustoverip/dtgwg-trust-tasks-tf#659). No
+// TypeScript binding is published, so the URIs and the view response shape
+// below stay hand-written here, matching the spec.
+export const TASK_NAMESPACE_LIST = "https://trusttasks.org/spec/git-ns/namespace/list/0.1";
+export const TASK_REPO_LIST = "https://trusttasks.org/spec/git-ns/repo/list/0.1";
+export const TASK_VIEW = "https://trusttasks.org/spec/git-ns/view/0.5";
+
+/** The parts of a `git-ns/view/0.5#response` the break-glass list and the drift read. */
+interface GitNsViewAnswer {
+  namespaces: { id: string; forge: string; owner: string }[];
+  repos?: {
+    resource: string;
+    sync: { state: string; checkedAt?: string; drift: GitNsDriftItem[] };
+  }[];
+  rights: {
+    subject: string;
+    right: string;
+    resource: string;
+    grantedAt: string;
+    breakGlass?: GitNsBreakGlassMark | null;
+  }[];
+}
+
+/** The outstanding drift on one repository: its `repos[].sync` in the view. */
+export interface GitNsDriftRow {
+  resource: string;
+  state: string;
+  checkedAt?: string;
+  drift: GitNsDriftItem[];
+}
+
+/** Every repository with outstanding drift. */
+export interface GitNsDriftList {
+  repos: GitNsDriftRow[];
+}
+
+/** Query keys. Everything under `["git-ns"]` is refreshed together. */
+export const gitNsKeys = {
+  all: ["git-ns"] as const,
+  namespaces: ["git-ns", "namespaces"] as const,
+  repos: ["git-ns", "repos"] as const,
+  rights: ["git-ns", "rights"] as const,
+  departed: ["git-ns", "departed"] as const,
+  drift: ["git-ns", "drift"] as const,
+  jobs: ["git-ns", "jobs"] as const,
+  projection: ["git-ns", "projection"] as const,
+  accounts: ["git-ns", "accounts"] as const,
+  activity: (namespace: string) => ["git-ns", "activity", namespace] as const,
+  members: ["git-ns", "members"] as const,
+  breakGlass: ["git-ns", "break-glass"] as const,
+};
+
+/** The namespaces this administrator administers — every one, for a
+ *  community administrator (`git-ns/namespace/list/0.1`). */
+export const fetchNamespaces = (): Promise<GitNsNamespaceList> =>
+  postSignedRead<GitNsNamespaceList>(TASK_NAMESPACE_LIST, {});
+
+/** Every repository. Filtering happens client-side: the overview shows every
+ *  namespace's counts at once, and a per-namespace request would be one round
+ *  trip per card for rows the next click needs anyway. */
+export const fetchRepos = (): Promise<GitNsRepoList> =>
+  postSignedRead<GitNsRepoList>(TASK_REPO_LIST, {});
+
+/** Live rights, recorded and role-derived, across every namespace. */
+export const fetchRights = (): Promise<GitNsRightList> =>
+  getJsonExempt<GitNsRightList>("/v1/git-ns/rights");
+
+export const fetchIssuedByDeparted = (): Promise<GitNsDepartedGrants> =>
+  getJsonExempt<GitNsDepartedGrants>("/v1/git-ns/rights/issued-by-departed");
+
+/**
+ * Every repository whose forge differs from the projection, in the namespaces
+ * the caller administers: `git-ns/view/0.5` with `scope: administrator`,
+ * whose `repos[].sync` is the drift the bridge last reported.
+ */
+export async function fetchDrift(): Promise<GitNsDriftList> {
+  const view = await postSignedRead<GitNsViewAnswer>(TASK_VIEW, { scope: "administrator" });
+  return { repos: driftRows(view) };
+}
+
+/** The repositories in `view` with outstanding drift. */
+export function driftRows(view: GitNsViewAnswer): GitNsDriftRow[] {
+  return (view.repos ?? [])
+    .filter((r) => r.sync.drift.length > 0)
+    .map((r) => ({
+      resource: r.resource,
+      state: r.sync.state,
+      checkedAt: r.sync.checkedAt,
+      drift: r.sync.drift,
+    }));
+}
+
+export const fetchJobs = (): Promise<GitNsJobList> =>
+  getJsonExempt<GitNsJobList>("/v1/git-ns/jobs");
+
+export const fetchProjection = (): Promise<GitNsProjection> =>
+  getJsonExempt<GitNsProjection>("/v1/git-ns/projection");
+
+/** Members' linked forge accounts (`git-ns/account/link`). `id` is
+ *  authoritative; `login` is display only — logins are renamed and
+ *  re-registered. */
+export const fetchAccounts = (): Promise<GitNsAccountList> =>
+  getJsonExempt<GitNsAccountList>("/v1/git-ns/accounts");
+
+/**
+ * What happened in one namespace, newest first: rights changes, drift and
+ * bridge jobs, read from the git-ns audit rows and the job queue.
+ *
+ * Narrowed server-side to namespaces the *caller* administers, so a community
+ * administrator who holds no `git.ns.admin` there is answered 403 — which the
+ * screens render as that, not as an empty history.
+ */
+export const fetchActivity = (namespace: string, limit = 100): Promise<GitNsActivity> =>
+  getJsonExempt<GitNsActivity>(
+    `/v1/git-ns/activity?namespace=${encodeURIComponent(namespace)}&limit=${limit}`,
+  );
+
+/**
+ * Break-glass records — self-granted elevated rights (`git-ns/right/break-glass`)
+ * — in the namespaces the caller administers: every one for a community
+ * administrator, those of their own namespaces for a namespace admin, and
+ * `git-ns/view:notAdministrator` for anyone else. Ratified ones included, as
+ * their history.
+ *
+ * `git-ns/view/0.5` with `scope: administrator` and `breakGlass: true`,
+ * shaped here into the list the screens render: each record with its
+ * namespace and its state, unratified and delayed first, newest first.
+ *
+ * Read by the shell's banner on every page as well as by the Repos list, so
+ * it lives under `gitNsKeys.all` and refreshes with every change sent here.
+ */
+export async function fetchBreakGlass(): Promise<GitNsBreakGlassList> {
+  const view = await postSignedRead<GitNsViewAnswer>(TASK_VIEW, {
+    scope: "administrator",
+    breakGlass: true,
+  });
+  return { items: breakGlassItems(view) };
+}
+
+/** A `breakGlass: true` view as break-glass items. */
+export function breakGlassItems(view: GitNsViewAnswer, now = Date.now()): GitNsBreakGlassItem[] {
+  const items: GitNsBreakGlassItem[] = [];
+  for (const r of view.rights ?? []) {
+    const mark = r.breakGlass;
+    const state = breakGlassState(mark, now);
+    if (!mark || !state) continue;
+    const nsResource = r.resource.split("/").slice(0, 2).join("/");
+    const ns = (view.namespaces ?? []).find((n) => `${n.forge}/${n.owner}` === nsResource);
+    items.push({
+      namespace: ns?.id ?? "",
+      namespaceResource: nsResource,
+      subject: r.subject,
+      right: r.right,
+      resource: r.resource,
+      grantedAt: r.grantedAt,
+      breakGlass: mark,
+      state,
+    });
+  }
+  return items.sort(
+    (a, b) =>
+      Number(a.state === "ratified") - Number(b.state === "ratified") ||
+      b.breakGlass.at.localeCompare(a.breakGlass.at),
+  );
+}
+
+/** The listing clamps a page to 200; asking for more returns 200 silently. */
+const MEMBERS_PAGE = 200;
+
+/** One page of current members, for the person picker. */
+export async function fetchMembersPage(
+  cursor: string | null,
+): Promise<{ members: { did: string; label?: string | null }[]; nextCursor: string | null }> {
+  const page = await postSignedRead<MembersPage>(TASK_MEMBERS_LIST, {
+    limit: MEMBERS_PAGE,
+    ...(cursor ? { cursor } : {}),
+  });
+  return {
+    members: (page.items ?? []).map((m) => ({ did: m.did, label: m.label })),
+    nextCursor: page.nextCursor ?? null,
+  };
+}
+
+/** DID → forge host → linked account. */
+export type ForgeAccounts = Map<string, Map<string, { id: string; login: string }>>;
+
+/** Current members' accounts only: one whose member's access lapsed is still
+ *  theirs (nobody else may link it) but projects no role and cannot be
+ *  adopted, so no screen offers either for it. */
+export function indexAccounts(list: GitNsAccountList | undefined): ForgeAccounts {
+  const out: ForgeAccounts = new Map();
+  for (const a of list?.accounts ?? []) {
+    if (!a.memberCurrent) continue;
+    const byHost = out.get(a.member) ?? new Map<string, { id: string; login: string }>();
+    byHost.set(a.forge, { id: a.id, login: a.login });
+    out.set(a.member, byHost);
+  }
+  return out;
+}
+
+/** The member whose linked account on `forge` has this id, if any. */
+export function memberForAccount(
+  forges: ForgeAccounts,
+  forge: string,
+  id: string,
+): string | undefined {
+  for (const [did, byHost] of forges) {
+    if (byHost.get(forge)?.id === id) return did;
+  }
+  return undefined;
+}

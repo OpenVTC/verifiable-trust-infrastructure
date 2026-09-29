@@ -233,6 +233,22 @@ pub async fn upload(
     State(state): State<AppState>,
     Json(body): Json<UploadBody>,
 ) -> Result<(StatusCode, Json<UploadResponse>), AppError> {
+    let response = upload_inner(&state, &admin.0.did, body).await?;
+    let status = if response.created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(response)))
+}
+
+/// Compile, check and store a revision as `actor` — `policy/upsert/0.2`, on the
+/// route and the spine alike.
+pub(crate) async fn upload_inner(
+    state: &AppState,
+    actor: &str,
+    body: UploadBody,
+) -> Result<UploadResponse, AppError> {
     let unsupported = body.unsupported();
     if !unsupported.is_empty() {
         return Err(AppError::Validation(format!(
@@ -284,7 +300,7 @@ pub async fn upload(
     let version = current_version + 1;
     let created = current_version == 0;
 
-    let mut policy = new_policy(purpose, body.module, sha256, admin.0.did.clone(), version);
+    let mut policy = new_policy(purpose, body.module, sha256, actor.to_string(), version);
     policy.id = id;
     policy.name = Some(body.name.clone());
     policy.description = body.description.clone();
@@ -293,7 +309,7 @@ pub async fn upload(
     let sha256_hex = hex::encode(sha256);
     audit_writer
         .write(
-            &admin.0.did,
+            actor,
             None,
             AuditEvent::PolicyUploaded(PolicyUploadedData {
                 policy_id: id.to_string(),
@@ -305,7 +321,7 @@ pub async fn upload(
         .await?;
 
     info!(
-        actor = admin.0.did.as_str(),
+        actor = actor,
         policy_id = %id,
         purpose = purpose.as_str(),
         version,
@@ -313,17 +329,10 @@ pub async fn upload(
         "policy uploaded"
     );
 
-    Ok((
-        if created {
-            StatusCode::CREATED
-        } else {
-            StatusCode::OK
-        },
-        Json(UploadResponse {
-            policy: (&policy).into(),
-            created,
-        }),
-    ))
+    Ok(UploadResponse {
+        policy: (&policy).into(),
+        created,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +355,23 @@ pub async fn activate(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ActivateResponse>, AppError> {
+    activate_inner(&state, &admin.0.did, id, None)
+        .await
+        .map(Json)
+}
+
+/// Make revision `id` live for its purpose, as `actor` — `policy/activate/0.1`,
+/// on the route and the spine alike.
+///
+/// `purpose` is the one the caller named, where it named one: a revision's
+/// purpose is fixed by its Rego package, so a caller naming another is refused
+/// rather than having the revision bound somewhere it cannot decide.
+pub(crate) async fn activate_inner(
+    state: &AppState,
+    actor: &str,
+    id: Uuid,
+    purpose: Option<PolicyPurpose>,
+) -> Result<ActivateResponse, AppError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -360,6 +386,16 @@ pub async fn activate(
     // Re-probe before flipping it live: a policy uploaded before the
     // package gate (or via a path that bypassed `upload`) must not be
     // activated into a silent default-deny for its ceremony.
+    if let Some(named) = purpose
+        && named != policy.purpose
+    {
+        return Err(AppError::Validation(format!(
+            "policy {id} decides {}, not {}: a revision's purpose is fixed by its Rego package",
+            policy.purpose.as_str(),
+            named.as_str()
+        )));
+    }
+
     validate_purpose_package(&compile(&policy.rego_source, policy.id)?, policy.purpose)?;
 
     let previous = get_active_policy_id(&state.active_policies_ks, policy.purpose).await?;
@@ -380,7 +416,7 @@ pub async fn activate(
     let sha256_hex = hex::encode(policy.sha256);
     audit_writer
         .write(
-            &admin.0.did,
+            actor,
             None,
             AuditEvent::PolicyActivated(PolicyActivatedData {
                 policy_id: id.to_string(),
@@ -392,21 +428,21 @@ pub async fn activate(
         .await?;
 
     info!(
-        actor = admin.0.did.as_str(),
+        actor = actor,
         policy_id = %id,
         purpose = policy.purpose.as_str(),
         previous = ?previous,
         "policy activated"
     );
 
-    Ok(Json(ActivateResponse {
+    Ok(ActivateResponse {
         activated: id,
         purpose: policy.purpose,
         ext: Some(serde_json::json!({
             "org.openvtc": { "sha256": sha256_hex }
         })),
         previous_policy_id: previous,
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -425,24 +461,12 @@ pub const TEST_ERR_EVALUATION_FAILED: &str = test_codes::EVALUATION_FAILED.code;
 /// **Does not activate** the policy and does not mutate any state
 /// beyond log lines. Used by operators to dry-run a candidate
 /// upload before flipping the active pointer.
-#[utoipa::path(
-    post, path = "/policies/{id}/test", tag = "policies",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Policy revision id")),
-    request_body = TestBody,
-    responses(
-        (status = 200, description = "Policy evaluation result", body = TestResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Policy not found"),
-    ),
-)]
-pub async fn test(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(body): Json<TestBody>,
-) -> Result<Json<TestResponse>, TaskError> {
+pub(crate) async fn test(
+    state: &AppState,
+    actor: &str,
+    id: Uuid,
+    body: TestBody,
+) -> Result<TestResponse, TaskError> {
     let policy = get_policy(&state.policies_ks, id).await?.ok_or_else(|| {
         TaskError::declared(
             TEST_ERR_NOT_FOUND,
@@ -470,16 +494,16 @@ pub async fn test(
     let result = evaluate(&compiled, &body.query, body.input).map_err(evaluation_failed)?;
 
     info!(
-        actor = admin.0.did.as_str(),
+        actor = actor,
         policy_id = %id,
         purpose = policy.purpose.as_str(),
         "policy tested"
     );
 
-    Ok(Json(TestResponse {
+    Ok(TestResponse {
         id,
         purpose: policy.purpose,
         sha256: hex::encode(policy.sha256),
         result,
-    }))
+    })
 }

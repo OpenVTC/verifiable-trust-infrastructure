@@ -141,9 +141,11 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         vta_name: None,
         public_url: None,
         resolver_url: None,
+        did_cache: Default::default(),
         server: Default::default(),
         log: Default::default(),
         store: StoreConfig { data_dir },
+        fjall: Default::default(),
         messaging: None,
         mediator_readiness: Default::default(),
         services: Default::default(),
@@ -180,7 +182,6 @@ pub fn test_deps(ts: &TestStore) -> ProvisionIntegrationDeps {
         config: Arc::new(RwLock::new(test_app_config(ts.data_dir.clone()))),
         did_resolver: None,
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
-        webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
     }
 }
 
@@ -207,18 +208,21 @@ pub const TEST_ADMIN_SEED: [u8; 32] = [0x7A; 32];
 ///
 /// `VtaClient` verifies replies now
 /// (OpenVTC/verifiable-trust-infrastructure#1341), and production has always
-/// signed them with `{vta_did}#key-0` for every DID method that is not
-/// `did:peer` (`server.rs`). A mock that cannot sign is therefore not a cheap
+/// signed them with its own key for every DID method that is not `did:peer`
+/// (`server.rs`). A mock that cannot sign is therefore not a cheap
 /// stand-in any more — it is a VTA that behaves in a way no real one does, and
 /// every test through it fails with the client blaming the reply.
 pub const TEST_VTA_SEED: [u8; 32] = [0x5A; 32];
 
-/// The mock VTA's `did:key` and its `#key-0` verification method.
+/// The mock VTA's `did:key` and its verification method,
+/// `did:key:<id>#<id>` — the one method a did:key has, and the one production
+/// signs as (`server.rs`, the did:key branch of `AuthInit`). A did:key has no
+/// `#key-0`, and a verifier refuses a proof naming one (VTI-KEY-022).
 ///
 /// Derived, not written down: a literal here is what the sentinel was.
 pub fn test_vta_did() -> (String, String) {
     let (did, _vm) = did_for_seed(TEST_VTA_SEED[0]);
-    let vm = format!("{did}#key-0");
+    let vm = crate::operations::credentials::vta_signing_vm(&did);
     (did, vm)
 }
 
@@ -325,36 +329,17 @@ pub fn sign_as_test_admin(doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>
 /// and signs with another is refused for that rather than for whatever it meant
 /// to check.
 pub fn sign_as(seed: u8, doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>) {
-    use affinidi_data_integrity::DataIntegrityProof;
-    use affinidi_data_integrity::crypto_suites::CryptoSuite;
-    use affinidi_data_integrity::prepare_sign_input;
-    use ed25519_dalek::{Signer, SigningKey};
+    sign_as_for(seed, "assertionMethod", doc)
+}
 
+/// As [`sign_as`], with the proof made for `purpose`.
+pub fn sign_as_for(
+    seed: u8,
+    purpose: &str,
+    doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>,
+) {
     let (_did, vm) = did_for_seed(seed);
-    let sk = SigningKey::from_bytes(&[seed; 32]);
-    let mut di = DataIntegrityProof::new(
-        CryptoSuite::EddsaJcs2022,
-        vm,
-        "assertionMethod".to_string(),
-        None,
-        Some(
-            chrono::Utc::now()
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-                .to_string(),
-        ),
-        None,
-    );
-    doc.proof = None;
-    let input = prepare_sign_input(&*doc, &di, CryptoSuite::EddsaJcs2022)
-        .expect("the test document prepares for signing");
-    di.proof_value = Some(multibase::encode(
-        multibase::Base::Base58Btc,
-        sk.sign(&input).to_bytes(),
-    ));
-    doc.proof = Some(
-        serde_json::from_value(serde_json::to_value(&di).expect("proof serialises"))
-            .expect("proof round-trips into the framework type"),
-    );
+    sign_with_vm(seed, &vm, purpose, doc);
 }
 
 pub fn super_admin_claims() -> AuthClaims {
@@ -530,7 +515,7 @@ async fn provision_vta_signing_identity(
     // The same key, as a `Secret` the response signer can use.
     //
     // Production sets `signing_vm_id` to `{vta_did}#key-0` for did:webvh and
-    // did:key alike (`server.rs`, the non-`did:peer` branch of `AuthInit`), so
+    // to `did:key:<id>#<id>` for did:key (`server.rs`, `AuthInit`), so
     // a REST-only VTA signs its answers with its own key and needs no transport
     // identity to do it. This harness never ran that path — it populated the
     // signer only from `build_transport_state`, which requires a `did:peer:2` —
@@ -552,11 +537,11 @@ async fn provision_vta_signing_identity(
             None,
         )
         .expect("construct the VTA's own signing secret");
-        secret.id = key_id.clone();
-        VtaOwnSigner {
-            vm_id: key_id.clone(),
-            secret,
-        }
+        // The record is stored under `#key-0` whatever the method; the proof
+        // names the method the DID document lists.
+        let vm_id = crate::operations::credentials::vta_signing_vm(&vta_did);
+        secret.id = vm_id.clone();
+        VtaOwnSigner { vm_id, secret }
     };
 
     save_key_record(
@@ -628,8 +613,24 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
         config: Arc::new(RwLock::new(config)),
         did_resolver: Some(resolver),
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
-        webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
     };
+    // The operator every provisioning test acts as ([`super_admin_claims`])
+    // must hold an entry: an ACL write is bounded by the writer's own entry
+    // (VTI-ACL-053), and a real caller could not have authenticated without
+    // one.
+    if crate::acl::get_acl_entry(&ts.acl_ks, &test_admin_did().0)
+        .await
+        .expect("read ACL")
+        .is_none()
+    {
+        seed_acl_entry(
+            &ts.acl_ks,
+            &test_admin_did().0,
+            crate::acl::Role::Admin,
+            vec![],
+        )
+        .await;
+    }
     (vta_did, deps)
 }
 
@@ -857,6 +858,39 @@ pub struct TestAppContext {
 }
 
 impl TestAppContext {
+    /// Make `did` this VTA's own DID, as a restart onto it would: the config
+    /// names it, and the bridge signs outbound documents with its `#key-0`,
+    /// so what the VTA sends a peer is issued and signed by one identity.
+    ///
+    /// The key must already be in the keystore, as a DID this VTA minted has.
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    pub async fn adopt_vta_did(&self, did: &str) {
+        use affinidi_secrets_resolver::SecretsResolver as _;
+        self.config.write().await.vta_did = Some(did.to_string());
+        let vm_id = format!("{did}#key-0");
+        let key = crate::operations::keys::key_secret_for_test_support(
+            &self.keys_ks,
+            &self.state.imported_ks,
+            &self.contexts_ks,
+            &*self.state.seed_store,
+            &self.state.audit_sink,
+            &vm_id,
+        )
+        .await
+        .expect("the adopted DID's #key-0 is in the keystore");
+        let mut secret = affinidi_tdk::secrets_resolver::secrets::Secret::from_multibase(
+            &key.private_key_multibase,
+            None,
+        )
+        .expect("the key is a signing secret");
+        secret.id = vm_id.clone();
+        let (resolver, _task) = affinidi_secrets_resolver::ThreadedSecretsResolver::new(None).await;
+        resolver.insert(secret).await;
+        self.state
+            .didcomm_bridge
+            .set_document_signer(Arc::new(resolver), vm_id);
+    }
+
     /// Mint a signing identity **and** a matching token, for a test that drives
     /// the VTA through `vta_sdk::VtaClient`.
     ///
@@ -906,8 +940,21 @@ impl TestAppContext {
     /// no ATM, so authenticated-endpoint tests take this shortcut (the same one
     /// the route-integration suite uses): store an `Authenticated` session and
     /// encode a matching AAL1 JWT. An empty `contexts` vec is super-admin.
+    ///
+    /// Also writes the ACL row the token stands for, when there is none: a real
+    /// token is only minted for a DID with an entry, and an ACL write is
+    /// bounded by the writer's own entry (VTI-ACL-053). A row the test seeded
+    /// itself is left as it is.
     pub async fn mint_token(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
         use vti_common::auth::session::{Session, SessionState, store_session};
+        if let Ok(parsed) = crate::acl::Role::parse(role)
+            && crate::acl::get_acl_entry(&self.acl_ks, did)
+                .await
+                .expect("read ACL")
+                .is_none()
+        {
+            seed_acl_entry(&self.acl_ks, did, parsed, contexts.clone()).await;
+        }
         let session_id = format!("sess-{}", uuid::Uuid::new_v4());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1008,8 +1055,9 @@ pub struct VtaTransportIdentity {
 
 /// The VTA's own response-signing key, as production wires it.
 ///
-/// `{vta_did}#key-0` — the same verification method `server.rs` puts in
-/// `signing_vm_id` for every DID method that is not `did:peer`. Carried out of
+/// The same verification method `server.rs` puts in `signing_vm_id` for every
+/// DID method that is not `did:peer`: `{vta_did}#key-0`, or
+/// `did:key:<id>#<id>` for a did:key. Carried out of
 /// [`provision_vta_signing_identity`] rather than re-derived, so the harness
 /// signs with the key it actually provisioned.
 pub(crate) struct VtaOwnSigner {
@@ -1144,6 +1192,39 @@ pub async fn build_provisionable_test_app() -> (axum::Router, TestAppContext) {
     .await
 }
 
+/// Answers a resolution with one of [`TestAppOptions::preseed_did_docs`]'
+/// documents, then declines (`None`) for every other DID, so the method's
+/// normal chain runs unchanged behind it.
+///
+/// `DIDCacheClient::add_did_document` only seeds the resolver's *cache* — it
+/// does not survive an eviction. A verifier that fails a proof against a
+/// cached document re-resolves the signer once, fresh, before refusing it
+/// (VTI-KEY-134), and a fresh resolution goes straight to the resolver chain,
+/// bypassing the cache entirely. Without a resolver here, that forced
+/// re-resolution of a stub DID like `webvh-host.test` cannot be satisfied —
+/// there is nothing at that address — and the caller sees a key-retrieval
+/// failure instead of the forged proof it meant to prove out. Prepending this
+/// resolver in front of the chain means the forced re-resolution finds the
+/// same document the cache would have, so a genuinely bad proof is refused as
+/// exactly that.
+#[derive(Clone)]
+struct PreseededDidResolver {
+    docs: Arc<std::collections::HashMap<String, affinidi_tdk::did_common::Document>>,
+}
+
+impl affinidi_did_resolver_cache_sdk::Resolver for PreseededDidResolver {
+    fn name(&self) -> &str {
+        "test-preseeded-docs"
+    }
+
+    fn resolve(
+        &self,
+        did: &affinidi_tdk::did_common::DID,
+    ) -> affinidi_did_resolver_cache_sdk::Resolution {
+        self.docs.get(&did.to_string()).cloned().map(Ok)
+    }
+}
+
 /// Backing builder for [`build_test_app`] / [`build_provisionable_test_app`].
 pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestAppContext) {
     use base64::Engine;
@@ -1189,7 +1270,6 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         .expect("seed ctx1");
     }
     let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
-    let cache_ks = store.keyspace(crate::keyspaces::CACHE).unwrap();
     let vault_ks = store.keyspace(crate::keyspaces::VAULT).unwrap();
     let vault_ks_ctx = vault_ks.clone();
     let service_state_ks = store.keyspace(crate::keyspaces::SERVICE_STATE).unwrap();
@@ -1285,15 +1365,43 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     // Build the DID resolver and pre-seed any caller-supplied documents into its
     // cache. `resolve()` is cache-first, so a seeded `did:webvh:<scid>:<domain>`
     // resolves in-process (no network) to its loopback `WebVHHosting` endpoint.
+    //
+    // The same documents also go in front of the resolver chain
+    // (`PreseededDidResolver`), not only the cache: a proof checked against a
+    // cached document that fails is re-resolved once, fresh, before it is
+    // refused (VTI-KEY-134), and a fresh resolution does not consult the
+    // cache. Without the chain entry, that forced re-resolution of a stub DID
+    // has nothing to answer it.
     let did_resolver = {
         let mut resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
             .await
             .ok();
         if let Some(client) = resolver.as_mut() {
+            let mut preseeded_docs = std::collections::HashMap::new();
             for (did, doc_json) in &opts.preseed_did_docs {
-                let doc = serde_json::from_value(doc_json.clone())
-                    .expect("preseed DID document must deserialize into a resolver Document");
-                client.add_did_document(did, doc).await;
+                let doc: affinidi_tdk::did_common::Document =
+                    serde_json::from_value(doc_json.clone())
+                        .expect("preseed DID document must deserialize into a resolver Document");
+                client.add_did_document(did, doc.clone()).await;
+                preseeded_docs.insert(did.clone(), doc);
+            }
+            if !preseeded_docs.is_empty() {
+                let preseeded_docs = Arc::new(preseeded_docs);
+                let methods: std::collections::HashSet<_> = preseeded_docs
+                    .keys()
+                    .filter_map(|did| did.parse::<affinidi_tdk::did_common::DID>().ok())
+                    .map(|did| affinidi_did_resolver_cache_sdk::MethodName::from(&did.method()))
+                    .collect();
+                for method in methods {
+                    client
+                        .prepend_resolver(
+                            method,
+                            Box::new(PreseededDidResolver {
+                                docs: preseeded_docs.clone(),
+                            }),
+                        )
+                        .expect("prepend the preseeded-doc resolver for a fresh test method");
+                }
             }
         }
         resolver
@@ -1348,7 +1456,6 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         did_templates_ks,
         audit_ks,
         imported_ks,
-        cache_ks,
         vault_ks,
         consent_ks: store.keyspace(crate::keyspaces::CONSENT).unwrap(),
         consent_approvers_ks: store.keyspace(crate::keyspaces::CONSENT_APPROVERS).unwrap(),
@@ -1382,8 +1489,6 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         mediator_registry,
         #[cfg(feature = "webvh")]
         drain_sweeper,
-        #[cfg(feature = "webvh")]
-        webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
         telemetry,
         wrapping_cache: crate::keys::wrapping::WrappingKeyCache::new(),
         config: config.clone(),
@@ -1402,6 +1507,16 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
         #[cfg(feature = "tsp")]
         tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        trust_task_pushes_ks: store
+            .keyspace(crate::keyspaces::TRUST_TASK_PUSHES)
+            .expect("trust_task_pushes keyspace"),
+        #[cfg(any(feature = "didcomm", feature = "tsp"))]
+        outbox_ks: store
+            .keyspace(crate::keyspaces::OUTBOX)
+            .expect("outbox keyspace"),
+        #[cfg(all(test, any(feature = "didcomm", feature = "tsp")))]
+        push_log: Default::default(),
         // Not feature-gated, in test scaffolding as in `build_app_state`: reply
         // correlation is a document concern, so the spine consults it on every
         // transport. A test agent with no registry would dispatch a reply as a
@@ -1411,12 +1526,28 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         tsp_recovery: std::sync::Arc::new(affinidi_messaging_sdk::RecoveryCoordinator::new(
             affinidi_messaging_sdk::BackoffPolicy::default(),
         )),
+        #[cfg(feature = "tsp")]
+        tsp_relationships: vti_common::relationship_store::build_relationship_store(
+            store
+                .keyspace(crate::keyspaces::RELATIONSHIPS)
+                .expect("relationships keyspace"),
+        ),
+        #[cfg(feature = "tsp")]
+        tsp_idle_reinvites: Default::default(),
         jwt_keys: Some(jwt_keys.clone()),
         atm: transport.atm.or(opts.atm),
         tee: None,
         restart_tx,
         metrics_handle: None,
     };
+    // As `server::build_app_state` does: the bridge signs what this VTA sends a
+    // peer (a DID hosting service, among others) with its own key.
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    if let (Some(resolver), Some(vm_id)) = (&state.secrets_resolver, &state.signing_vm_id) {
+        state
+            .didcomm_bridge
+            .set_document_signer(resolver.clone(), vm_id.clone());
+    }
 
     let state_for_ctx = state.clone();
     // Quotas are read live from the harness config, as in production, so a
@@ -1523,272 +1654,142 @@ pub async fn seed_acl_entry(
 #[cfg(feature = "webvh")]
 pub const STUB_WEBVH_DID_URL: &str = "https://webvh-host.test/dids/persona/did.jsonl";
 
-/// A minimal in-process stub of a **webvh hosting server** — just enough of the
-/// REST API (`webvh_client.rs`) for the VTA's `create_did_webvh` server-managed
-/// path to complete a round-trip: authenticate, reserve a path
-/// (`request_uri`), and publish the signed `did.jsonl`.
+/// A minimal in-process stub of a **DID hosting service** — just enough of its
+/// Trust-Task surface (`POST /api/trust-tasks`) for the VTA's server-managed
+/// webvh paths to complete a round-trip: reserve a path, publish, delete, the
+/// agent-name verbs, the DID listing and the caller's domains.
 ///
-/// It ignores the VTA's auth credentials (returns canned tokens) and persists
-/// nothing — the actual DID minting happens VTA-side via `didwebvh-rs`; the host
-/// only needs to hand back a valid WebVH URL and accept the publish. Pair it
-/// with a resolver-seeded server DID (see [`MockVta::start_with_webvh_host`]).
-/// Bound to a random loopback port; shuts down on drop.
+/// It behaves like the real control plane where the VTA depends on it:
+///
+/// - a request without a proof made for `authentication` is refused with
+///   `proofRequired` / `proofInvalid`, so a VTA that stopped signing would fail
+///   every round-trip rather than pass against a lenient stub;
+/// - each request payload must parse as the generated type for its task
+///   (unknown members refused), so a wrong shape is `malformedRequest`;
+/// - every answer is a `#response` threaded to the request, addressed back to
+///   its issuer and signed by the host's own DID ([`STUB_WEBVH_SERVER_DID`]),
+///   whose document [`MockVta::start_with_webvh_host`] seeds into the VTA's
+///   resolver with the key under `authentication`.
+///
+/// It persists nothing: the DID is minted VTA-side; the host hands back a
+/// valid WebVH URL and accepts the publish. Bound to a random loopback port;
+/// shuts down on drop.
 #[cfg(feature = "webvh")]
 pub struct StubWebvhHost {
     base_url: String,
-    /// Number of upcoming `PUT /api/dids/{mnemonic}` publishes to fail with a
-    /// 500 before accepting again — lets a test simulate a transient host
-    /// outage and assert the VTA self-recovers. Shared with the route handler.
+    /// Number of upcoming `did/register` publishes to refuse before accepting
+    /// again — lets a test simulate a transient host outage and assert the VTA
+    /// self-recovers. Shared with the handler.
     fail_puts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    /// Number of `DELETE /api/dids/{mnemonic}` calls the host has accepted, so
-    /// a test can tell a deletion that reached the host from one that did not.
+    /// Number of `did/delete` requests the host has accepted, so a test can
+    /// tell a deletion that reached the host from one that did not.
     deletes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// When set, replies are signed by a key that is not the host's, while
+    /// still naming the host's verification method — a forged answer.
+    forge_replies: std::sync::Arc<std::sync::atomic::AtomicBool>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// The stub hosting service's DID. A valid-format `did:webvh`; resolution is
+/// served from the seeded cache, not the network.
+#[cfg(feature = "webvh")]
+pub const STUB_WEBVH_SERVER_DID: &str = "did:webvh:stubscid0000000000000000:webvh-host.test";
+
+/// The seed of the stub hosting service's signing key.
+#[cfg(feature = "webvh")]
+const STUB_WEBVH_SERVER_SEED: u8 = 0x5E;
+
+/// Attach an `eddsa-jcs-2022` proof made by `seed`'s key under the
+/// verification method `vm`, for `purpose`.
+pub fn sign_with_vm(
+    seed: u8,
+    vm: &str,
+    purpose: &str,
+    doc: &mut trust_tasks_rs::TrustTask<serde_json::Value>,
+) {
+    use affinidi_data_integrity::DataIntegrityProof;
+    use affinidi_data_integrity::crypto_suites::CryptoSuite;
+    use affinidi_data_integrity::prepare_sign_input;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let sk = SigningKey::from_bytes(&[seed; 32]);
+    let mut di = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        vm.to_string(),
+        purpose.to_string(),
+        None,
+        Some(
+            chrono::Utc::now()
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                .to_string(),
+        ),
+        None,
+    );
+    doc.proof = None;
+    let input = prepare_sign_input(&*doc, &di, CryptoSuite::EddsaJcs2022)
+        .expect("the test document prepares for signing");
+    di.proof_value = Some(multibase::encode(
+        multibase::Base::Base58Btc,
+        sk.sign(&input).to_bytes(),
+    ));
+    doc.proof = Some(
+        serde_json::from_value(serde_json::to_value(&di).expect("proof serialises"))
+            .expect("proof round-trips into the framework type"),
+    );
+}
+
 #[cfg(feature = "webvh")]
 impl StubWebvhHost {
+    /// The stub hosting service's DID document: its signing key under
+    /// `authentication` and `assertionMethod`, and a `WebVHHosting` service at
+    /// `base_url`, which is where the VTA derives the HTTPS Trust-Task base.
+    pub fn server_did_document(base_url: &str) -> serde_json::Value {
+        let (_did, key_vm) = did_for_seed(STUB_WEBVH_SERVER_SEED);
+        let public_key = key_vm.rsplit('#').next().unwrap_or_default().to_string();
+        let vm = format!("{STUB_WEBVH_SERVER_DID}#key-0");
+        serde_json::json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": STUB_WEBVH_SERVER_DID,
+            "verificationMethod": [{
+                "id": vm,
+                "type": "Multikey",
+                "controller": STUB_WEBVH_SERVER_DID,
+                "publicKeyMultibase": public_key,
+            }],
+            "authentication": [vm],
+            "assertionMethod": [vm],
+            "service": [{
+                "id": format!("{STUB_WEBVH_SERVER_DID}#webvh"),
+                "type": "WebVHHosting",
+                "serviceEndpoint": base_url,
+            }]
+        })
+    }
+
     /// Start the stub host on a random loopback port and return once bound.
     pub async fn start() -> StubWebvhHost {
         use axum::routing::post;
-        use serde_json::json;
         use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::atomic::AtomicUsize;
 
-        // Shared publish-failure budget: the PUT handler fails while this is
-        // > 0, decrementing each time, so a test can outage the host for N
-        // publishes and watch the VTA recover afterwards.
         let fail_puts = Arc::new(AtomicUsize::new(0));
         let deletes = Arc::new(AtomicUsize::new(0));
+        let forge_replies = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        /// Reject a request that arrives without an `Authorization: Bearer`
-        /// header. The real hosting daemon returns 401 "missing or invalid
-        /// Authorization header" here; the stub mirrors that so a test can
-        /// prove the VTA's publish path actually authenticates (regression
-        /// guard for the `from_server` → `from_server_authenticated` fix).
-        fn require_bearer(headers: &axum::http::HeaderMap) -> Result<(), axum::http::StatusCode> {
-            let ok = headers
-                .get(axum::http::header::AUTHORIZATION)
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v.starts_with("Bearer ") && v.len() > "Bearer ".len());
-            if ok {
-                Ok(())
-            } else {
-                Err(axum::http::StatusCode::UNAUTHORIZED)
-            }
-        }
-
-        async fn tokens() -> axum::Json<serde_json::Value> {
-            // Daemon's flat `AuthenticateResponse` — `{ session, tokens }`
-            // with OAuth2-style *relative* expiries (`expiresIn` seconds).
-            axum::Json(json!({
-                "session": {
-                    "id": "stub-session",
-                    "subject": "did:webvh:stub:vta",
-                    "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                    "expiresAt": "2026-01-02T00:00:00Z",
-                },
-                "tokens": {
-                    "accessToken": "stub-access-token",
-                    "refreshToken": "stub-refresh-token",
-                    "tokenType": "Bearer",
-                    "expiresIn": 9_999_999u64,
-                    "refreshExpiresIn": 9_999_999u64,
-                }
-            }))
-        }
-
-        let router = axum::Router::new()
-            .route(
-                "/api/auth/challenge",
-                post(|| async {
-                    // Daemon's flat `ChallengeResponse` shape —
-                    // `{ challenge, sessionId, expiresAt }`, no `data`
-                    // envelope. (The token endpoints below stay
-                    // `{ sessionId, data }`, matching TokenResponseWire.)
-                    axum::Json(json!({
-                        "challenge": "stub-challenge-0000000000000000",
-                        "sessionId": "stub-session",
-                        "expiresAt": "2099-01-01T00:00:00Z"
-                    }))
-                }),
-            )
-            .route("/api/auth/", post(tokens))
-            .route("/api/auth/refresh", post(tokens))
-            // Agent names live on the *host*, not in the VTA — which is why
-            // every `agent-name/*` task refuses a serverless DID. The host
-            // takes one `update` verb carrying the target state (`bound`,
-            // `parked`, …) rather than a verb per operation, so set / remove /
-            // disable / enable all land here.
-            .route(
-                "/api/agent-names/update",
-                post(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::Json(json!({ "record": {} })))
-                }),
-            )
-            // `remove` is its own verb, not an `update` state: releasing a name
-            // returns it to the pool, which is a different act from parking it.
-            .route(
-                "/api/agent-names/remove",
-                post(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::Json(json!({ "record": {} })))
-                }),
-            )
-            .route(
-                "/api/agent-names/check",
-                post(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    // Available and unreserved: the arm a caller checks before
-                    // claiming, and the one whose shape the VTA relays.
-                    Ok::<_, axum::http::StatusCode>(axum::Json(json!({
-                        "name": "coverage-agent",
-                        "domain": "webvh-host.test",
-                        "available": true,
-                        "reserved": false,
-                    })))
-                }),
-            )
-            // `GET /api/dids?owner=…` — the host's view of the DIDs it holds
-            // for one owner. `servers/{reconcile,retire-orphan}` both read it
-            // to compare the host's list against the VTA's records.
-            //
-            // Answers with one slot the VTA has **no** record of. Reconcile's
-            // job is to report the difference between two sets, so this makes
-            // both arms non-empty at once: the slot below is `host_only`, and
-            // the DID the test mints is `agent_only`. An empty list would prove
-            // only one arm, and a list echoing the VTA's own records would
-            // prove neither.
-            //
-            // It is also what makes `servers/retire-orphan` reachable — a slot
-            // is retireable precisely when it is host-only.
-            .route(
-                "/api/dids",
-                axum::routing::get(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::Json(json!([{
-                        "mnemonic": "cov-orphan-slot",
-                        "domain": "webvh-host.test",
-                        "disabled": false,
-                        "updatedAt": 1_767_225_600u64,
-                    }])))
-                }),
-            )
-            // The caller-scoped domain listing. A real `did-hosting-control`
-            // serves this so an operator can discover which tenant domains
-            // their credential may mint into; the VTA proxies it for
-            // `vta/webvh/servers/domains/0.1`. One domain is enough to exercise
-            // the response shape, and `default: true` makes it the one a mint
-            // with no explicit `--domain` resolves to.
-            .route(
-                "/api/me/domains",
-                axum::routing::get(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::Json(
-                        // `name` / `defaultDomain` / `status` / `createdAt`,
-                        // matching `vta_webvh::MyDomainEntry`. Two details a
-                        // stub gets wrong by guessing: `createdAt` is **Unix
-                        // seconds**, not RFC 3339 — the VTA converts when it
-                        // relays into the canonical `DomainEntry`, which does
-                        // want a string — and the canonical shape *requires*
-                        // it, so omitting it fails the relayed schema rather
-                        // than the decode.
-                        json!({
-                            "domains": [{
-                                "name": "webvh-host.test",
-                                "defaultDomain": true,
-                                "status": "active",
-                                "createdAt": 1_767_225_600u64,
-                            }],
-                            "default": "webvh-host.test",
-                        }),
-                    ))
-                }),
-            )
-            .route(
-                "/api/dids",
-                post(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::Json(
-                        // camelCase `didUrl` — the real daemon
-                        // (`did-hosting-common::RequestUriResponse`) serializes
-                        // camelCase, and the client deserializes with
-                        // `rename_all = "camelCase"`. Emitting snake_case here
-                        // made the stub diverge from the wire shape it exists to
-                        // imitate, so the round-trip failed to decode.
-                        json!({ "didUrl": STUB_WEBVH_DID_URL, "mnemonic": "stub-mnemonic" }),
-                    ))
-                }),
-            )
-            .route(
-                "/api/dids/register",
-                post(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::Json(
-                        // camelCase `didUrl` — the real daemon
-                        // (`did-hosting-common::RequestUriResponse`) serializes
-                        // camelCase, and the client deserializes with
-                        // `rename_all = "camelCase"`. Emitting snake_case here
-                        // made the stub diverge from the wire shape it exists to
-                        // imitate, so the round-trip failed to decode.
-                        json!({ "didUrl": STUB_WEBVH_DID_URL, "mnemonic": "stub-mnemonic" }),
-                    ))
-                }),
-            )
-            .route(
-                "/api/dids/check",
-                post(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::Json(json!({ "available": true })))
-                }),
-            )
-            .route(
-                // `GET` answers the DID's record, whose `agentNames` array is
-                // what `agent-name/list` reads. `createdAt` is Unix seconds
-                // here as it is on the domain listing — the wire type has a
-                // custom deserializer for it, which is the tell.
-                "/api/dids/{mnemonic}",
-                axum::routing::get(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::Json(json!({
-                        "agentNames": [{
-                            "name": "coverage-agent",
-                            "enabled": true,
-                            "createdAt": 1_767_225_600u64,
-                        }],
-                    })))
-                })
-                .put({
+        let router =
+            axum::Router::new().route(
+                "/api/trust-tasks",
+                post({
                     let fail_puts = fail_puts.clone();
-                    move |headers: axum::http::HeaderMap| {
-                        let fail_puts = fail_puts.clone();
-                        async move {
-                            require_bearer(&headers)?;
-                            // Simulate a transient host outage while the budget
-                            // lasts. The real daemon commits nothing on a 500,
-                            // so this mirrors "the publish didn't land".
-                            if fail_puts
-                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                                    n.checked_sub(1)
-                                })
-                                .is_ok()
-                            {
-                                return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-                            }
-                            Ok::<_, axum::http::StatusCode>(axum::http::StatusCode::OK)
-                        }
-                    }
-                })
-                .delete({
                     let deletes = deletes.clone();
-                    move |headers: axum::http::HeaderMap| {
+                    let forge_replies = forge_replies.clone();
+                    move |axum::Json(doc): axum::Json<serde_json::Value>| {
+                        let fail_puts = fail_puts.clone();
                         let deletes = deletes.clone();
+                        let forge = forge_replies.load(std::sync::atomic::Ordering::SeqCst);
                         async move {
-                            require_bearer(&headers)?;
-                            deletes.fetch_add(1, Ordering::SeqCst);
-                            Ok::<_, axum::http::StatusCode>(axum::http::StatusCode::OK)
+                            axum::Json(stub_host_answer(&doc, &fail_puts, &deletes, forge).await)
                         }
                     }
                 }),
@@ -1813,6 +1814,7 @@ impl StubWebvhHost {
             base_url,
             fail_puts,
             deletes,
+            forge_replies,
             shutdown: Some(tx),
             handle: Some(handle),
         }
@@ -1824,16 +1826,196 @@ impl StubWebvhHost {
         &self.base_url
     }
 
-    /// Fail the next `n` publishes (`PUT /api/dids/{mnemonic}`) with a 500,
+    /// Refuse the next `n` publishes (`did/register`) with `internalError`,
     /// then accept again — a transient outage a test can recover from.
     pub fn fail_next_publishes(&self, n: usize) {
         self.fail_puts.store(n, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// How many `DELETE /api/dids/{mnemonic}` calls the host has accepted.
+    /// How many `did/delete` requests the host has accepted.
     pub fn deletes(&self) -> usize {
         self.deletes.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    /// Sign every later reply with a key that is not the host's.
+    pub fn forge_replies(&self) {
+        self.forge_replies
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The stub hosting service's answer to one request document.
+#[cfg(feature = "webvh")]
+async fn stub_host_answer(
+    doc: &serde_json::Value,
+    fail_puts: &std::sync::atomic::AtomicUsize,
+    deletes: &std::sync::atomic::AtomicUsize,
+    forge: bool,
+) -> serde_json::Value {
+    use serde_json::{Value, json};
+    use std::sync::atomic::Ordering;
+    use trust_tasks_rs::specs::did_management as dm;
+
+    const CREATED: &str = "2026-01-01T00:00:00Z";
+    const DM: &str = "https://trusttasks.org/spec/did-management/";
+
+    let request_id = doc["id"].as_str().unwrap_or_default().to_string();
+    let requester = doc["issuer"].as_str().unwrap_or_default().to_string();
+    let type_uri = doc["type"].as_str().unwrap_or_default().to_string();
+    let error = |code: &str, message: &str| {
+        json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "threadId": request_id,
+            "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+            "issuer": STUB_WEBVH_SERVER_DID,
+            "recipient": requester,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": { "code": code, "message": message, "retryable": false },
+        })
+    };
+
+    // The control plane refuses an unsigned request, and an operational one
+    // signed for anything but `authentication`.
+    match doc["proof"]["proofPurpose"].as_str() {
+        None => return error("proofRequired", "a proof is required"),
+        Some("authentication") => {}
+        Some(_) => {
+            return error(
+                "proofInvalid",
+                "operational tasks are signed for authentication",
+            );
+        }
+    }
+    if doc["recipient"] != STUB_WEBVH_SERVER_DID {
+        return error("malformedRequest", "not addressed to this service");
+    }
+
+    let payload = doc["payload"].clone();
+    fn conforms<P: serde::de::DeserializeOwned>(v: &Value) -> bool {
+        serde_json::from_value::<P>(v.clone()).is_ok()
+    }
+    let record = |mnemonic: &str| {
+        json!({
+            "mnemonic": mnemonic,
+            "owner": requester,
+            "didUrl": STUB_WEBVH_DID_URL,
+            "domain": "webvh-host.test",
+            "createdAt": CREATED,
+            "updatedAt": CREATED,
+            "versionCount": 1,
+        })
+    };
+    let task = type_uri.strip_prefix(DM).unwrap_or_default();
+    let (valid, answer) = match task {
+        "did/check-name/0.1" => (
+            conforms::<dm::did::check_name::v0_1::Payload>(&payload),
+            json!({ "available": true, "reserved": true, "record": record("stub-mnemonic") }),
+        ),
+        "did/register/0.1" => {
+            if fail_puts
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                // A transient outage: the publish did not land.
+                return error("internalError", "the host is unavailable");
+            }
+            (
+                conforms::<dm::did::register::v0_1::Payload>(&payload),
+                json!({ "record": record("stub-mnemonic") }),
+            )
+        }
+        "did/delete/0.1" => {
+            let ok = conforms::<dm::did::delete::v0_1::Payload>(&payload);
+            if ok {
+                deletes.fetch_add(1, Ordering::SeqCst);
+            }
+            (
+                ok,
+                json!({ "record": record(payload["mnemonic"].as_str().unwrap_or("x")) }),
+            )
+        }
+        "agent-name/update/0.1" => (
+            conforms::<dm::agent_name::update::v0_1::Payload>(&payload),
+            json!({ "record": record("stub-mnemonic") }),
+        ),
+        "agent-name/remove/0.1" => (
+            conforms::<dm::agent_name::remove::v0_1::Payload>(&payload),
+            json!({ "record": record("stub-mnemonic") }),
+        ),
+        "agent-name/list/0.1" => (
+            conforms::<dm::agent_name::list::v0_1::Payload>(&payload),
+            json!({
+                "mnemonic": payload["mnemonic"],
+                "agentNames": [{ "name": "coverage-agent", "enabled": true, "createdAt": CREATED }],
+            }),
+        ),
+        "agent-name/check/0.1" => (
+            conforms::<dm::agent_name::check::v0_1::Payload>(&payload),
+            json!({
+                "name": "coverage-agent",
+                "domain": "webvh-host.test",
+                "available": true,
+                "reserved": false,
+            }),
+        ),
+        // The host's view of the slots it holds for this VTA: one slot the VTA
+        // has **no** record of, so a reconcile against it reports both arms
+        // (the slot is host-only; the DID a test mints is agent-only), and
+        // `servers/retire-orphan` has something retireable.
+        "did/list/0.1" => (
+            conforms::<dm::did::list::v0_1::Payload>(&payload),
+            json!({
+                "records": [{
+                    "mnemonic": "cov-orphan-slot",
+                    "owner": requester,
+                    "domain": "webvh-host.test",
+                    "disabled": false,
+                    "createdAt": CREATED,
+                    "updatedAt": CREATED,
+                    "versionCount": 0,
+                }],
+                "total": 1,
+            }),
+        ),
+        "me/domains/0.1" => (
+            conforms::<dm::me::domains::v0_1::Payload>(&payload),
+            json!({
+                "domains": [{
+                    "name": "webvh-host.test",
+                    "defaultDomain": true,
+                    "status": "active",
+                    "createdAt": CREATED,
+                }],
+                "default": "webvh-host.test",
+            }),
+        ),
+        _ => return error("notImplemented", "the stub does not serve this task"),
+    };
+    if !valid {
+        return error("malformedRequest", "the payload does not match its schema");
+    }
+
+    let mut reply: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "threadId": request_id,
+        "type": format!("{type_uri}#response"),
+        "issuer": STUB_WEBVH_SERVER_DID,
+        "recipient": requester,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "payload": answer,
+    }))
+    .expect("the stub's reply is a Trust Task");
+    sign_with_vm(
+        if forge {
+            STUB_WEBVH_SERVER_SEED.wrapping_add(1)
+        } else {
+            STUB_WEBVH_SERVER_SEED
+        },
+        &format!("{STUB_WEBVH_SERVER_DID}#key-0"),
+        "authentication",
+        &mut reply,
+    );
+    serde_json::to_value(&reply).expect("the stub's reply serialises")
 }
 
 #[cfg(feature = "webvh")]
@@ -1947,21 +2129,9 @@ impl MockVta {
     /// with `create_did_webvh { server_id: Some(MockVta::WEBVH_SERVER_ID), .. }`.
     #[cfg(feature = "webvh")]
     pub async fn start_with_webvh_host() -> MockVta {
-        use serde_json::json;
-
         let host = StubWebvhHost::start().await;
-        // A valid-format did:webvh (`<scid>:<domain>`); the domain is cosmetic
-        // because resolution is served from the seeded cache, not the network.
-        let server_did = "did:webvh:stubscid0000000000000000:webvh-host.test".to_string();
-        let server_doc = json!({
-            "@context": ["https://www.w3.org/ns/did/v1"],
-            "id": server_did,
-            "service": [{
-                "id": format!("{server_did}#webvh"),
-                "type": "WebVHHosting",
-                "serviceEndpoint": host.base_url(),
-            }]
-        });
+        let server_did = STUB_WEBVH_SERVER_DID.to_string();
+        let server_doc = StubWebvhHost::server_did_document(host.base_url());
 
         let opts = TestAppOptions {
             provisionable_vta: true,
@@ -2143,6 +2313,7 @@ impl MockVta {
             &vta_did,
             &mediator_did,
             ctx.outbox_ks.clone(),
+            ctx.state.trust_task_pushes_ks.clone(),
             ctx.relationships_ks.clone(),
             std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             ctx.state.did_resolver.as_ref(),
@@ -2329,6 +2500,14 @@ impl MockVta {
     #[cfg(feature = "webvh")]
     pub fn webvh_host_deletes(&self) -> usize {
         self.webvh_host.as_ref().map_or(0, StubWebvhHost::deletes)
+    }
+
+    /// Make the stub host sign every later reply with a key that is not its
+    /// own. A no-op for a mock without one.
+    pub fn forge_webvh_host_replies(&self) {
+        if let Some(host) = &self.webvh_host {
+            host.forge_replies();
+        }
     }
 
     /// Test-only corruption: move a version's key handles to the `superseded:`
@@ -2695,6 +2874,11 @@ mod transport_harness_tests {
             let mediator_did = mock.mediator_did().to_string();
             let log = std::sync::Arc::new(std::sync::Mutex::new(PeerLog::default()));
             let loop_log = log.clone();
+            // The peer signs its replies: the VTA releases a waiter only to a
+            // reply its peer verifiably signed.
+            let reply_key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&did, &priv_mb)
+                .expect("a did:key names its own verification method");
+            let reply_issuer = did.clone();
             let loop_handle = tokio::spawn(async move {
                 loop {
                     // Resolve the poll before the reply send below: `receive_next`
@@ -2737,10 +2921,21 @@ mod transport_harness_tests {
                     // `respond_with` threads the reply on the request's
                     // `threadId`-or-`id` (SPEC §4.9) — the same key the VTA's
                     // `pending_replies` waiter is registered under.
-                    let reply = request.respond_with(
+                    let mut reply = request.respond_with(
                         format!("urn:uuid:d6-reply-{}", request.id),
                         serde_json::json!({ "answered": true }),
                     );
+                    reply.issuer = Some(reply_issuer.clone());
+                    if let Err(e) =
+                        vta_sdk::trust_task_sign::sign_in_place_with(&mut reply, &reply_key).await
+                    {
+                        loop_log
+                            .lock()
+                            .expect("peer log")
+                            .faults
+                            .push(format!("the reply could not be signed: {e}"));
+                        continue;
+                    }
                     if let Ok(bytes) = serde_json::to_vec(&reply) {
                         let sent = loop_session
                             .send_document(&vta_did, &mediator_did, &bytes)
@@ -2969,6 +3164,91 @@ mod transport_harness_tests {
             "and it settled as a success — the relationship recovered and the reply arrived"
         );
         assert_eq!(metrics.give_ups, 0, "a recovered peer is not given up on");
+
+        peer.stop().await;
+        mock.shutdown().await;
+    }
+
+    /// An idle relationship is re-asserted before the send rather than trusted,
+    /// and the reply stamps it active again (`TSP_IDLE_REESTABLISH_MS`, D5).
+    ///
+    /// The peer here kept its half, which is the case the re-invite must not
+    /// break: a peer that still holds the relationship re-accepts (D2) and
+    /// answers the request that travelled with the invite. The case the
+    /// re-invite exists for — a peer that lost its half — then costs nothing
+    /// extra either, because the invite goes first; what would otherwise have
+    /// happened there is the silent drop and a full reply window before D6.
+    #[tokio::test]
+    async fn an_idle_relationship_is_reinvited_with_the_request_and_restamped() {
+        use affinidi_messaging_sdk::protocols::tsp::{RelationshipState, RelationshipStore as _};
+
+        let mock = MockVta::start_with_transports().await;
+        let peer = AnsweringPeer::spawn(&mock, 0x9d).await;
+        let tsp = crate::operations::outbound::TspSender::from_app_state(&mock.ctx.state)
+            .expect("a mediator-connected VTA has a TSP transport")
+            // Room for a real round trip, as in the answering-peer D6 test.
+            .with_reply_timeout(std::time::Duration::from_secs(30));
+        let store = mock.ctx.state.tsp_relationships.clone();
+        let our = mock.vta_did().to_string();
+        let now_ms = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_millis() as u64
+        };
+
+        // Established, but last heard from two hours ago.
+        store
+            .set(&our, peer.did(), RelationshipState::Bidirectional)
+            .await
+            .expect("seed the relationship");
+        store
+            .touch(&our, peer.did(), now_ms() - 2 * 60 * 60 * 1000)
+            .await
+            .expect("age the relationship");
+        assert!(
+            tsp.idle_reestablish_due(peer.did()).await,
+            "a relationship idle past the threshold is re-invited"
+        );
+
+        let thread = "urn:uuid:idle-reinvite-req-1";
+        let request = trust_tasks_rs::TrustTask::new(
+            thread,
+            vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1
+                .parse::<trust_tasks_rs::TypeUri>()
+                .expect("acl/grant/0.1 is a valid Type URI"),
+            serde_json::json!({}),
+        );
+        let framed = vta_sdk::tsp_binding::wrap_envelope(
+            &serde_json::to_vec(&request).expect("serialise the request"),
+        );
+
+        let out = tsp.first_attempt(peer.did(), None, thread, &framed).await;
+        assert!(
+            matches!(out, crate::operations::outbound::TspAttempt::Reply(_)),
+            "a peer that kept its half re-accepts and answers the request sent with \
+             the invite — {}",
+            peer.report()
+        );
+
+        let stamped = store
+            .last_active(&our, peer.did())
+            .await
+            .expect("read the stamp")
+            .expect("a reply stamps the relationship");
+        assert!(
+            now_ms().saturating_sub(stamped) < 60_000,
+            "the stamp is the reply's, not the aged one"
+        );
+        assert!(
+            !tsp.idle_reestablish_due(peer.did()).await,
+            "a freshly active relationship is trusted on the next send"
+        );
+        assert_eq!(
+            tsp.recovery().metrics().attempts,
+            0,
+            "a proactive re-invite is not a D6 recovery and is not counted as one"
+        );
 
         peer.stop().await;
         mock.shutdown().await;

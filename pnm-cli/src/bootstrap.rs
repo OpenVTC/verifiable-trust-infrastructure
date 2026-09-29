@@ -300,6 +300,19 @@ pub async fn run_open(
                 "Load these platform secrets into the messaging-bridge connector's secret store."
             );
         }
+        SealedPayloadV1::SeedMnemonic(m) => {
+            println!("Payload: SeedMnemonic");
+            if let Some(ref did) = m.vta_did {
+                println!("  VTA DID: {did}");
+            }
+            println!();
+            println!(
+                "\x1b[1;33m⚠ This is the VTA's root seed. Write it down offline, then clear this \
+                 terminal. It will not be shown again.\x1b[0m"
+            );
+            println!();
+            println!("  {}", m.mnemonic);
+        }
     }
 
     if let Some(path) = out {
@@ -694,16 +707,13 @@ pub async fn run_connect(
 /// is currently using (REST or DIDComm), writing the returned
 /// armored bundle to disk.
 ///
-/// The VTA runs the same shared library fn for both transports and
-/// the offline `vta bootstrap provision-integration` CLI; the only
-/// difference between paths is the wire form of the request /
-/// response. `VtaClient::provision_integration` dispatches:
-/// - REST → `POST /bootstrap/provision-integration` with the
-///   bearer token from the open session.
-/// - DIDComm → `provision-integration/1.0` message over the open
-///   authcrypt session. The VTA enforces that the DIDComm sender
-///   DID matches the VP holder before issuing the bundle
-///   (privilege-laundering guard).
+/// The VTA runs the same shared library fn for every transport and
+/// the offline `vta bootstrap provision-integration` CLI.
+/// `VtaClient::provision_integration` sends the signed
+/// `provision/integration/0.3` Trust Task over whichever transport the
+/// open session holds (TSP, DIDComm, or HTTPS on `/trust-tasks`). The
+/// relayer (this session) and the VP holder may differ: the bundle is
+/// sealed to the holder, so the relayer cannot open it.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_provision_integration(
     client: &vta_sdk::client::VtaClient,
@@ -895,6 +905,7 @@ fn variant_name(p: &SealedPayloadV1) -> &'static str {
         SealedPayloadV1::AdminRotation(_) => "AdminRotation",
         SealedPayloadV1::IssuedCredential(_) => "IssuedCredential",
         SealedPayloadV1::MessagingBridgeCredentials(_) => "MessagingBridgeCredentials",
+        SealedPayloadV1::SeedMnemonic(_) => "SeedMnemonic",
     }
 }
 

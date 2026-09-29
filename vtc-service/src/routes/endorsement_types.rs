@@ -34,20 +34,15 @@
 //! fjall key — keeps colons and slashes in operator-supplied
 //! URIs from colliding with the keyspace prefix discipline.
 
-use axum::Json;
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
 use vti_common::audit::{AuditEvent, EndorsementTypeDeletedData, EndorsementTypeRegisteredData};
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated};
 
 use trust_tasks_rs::specs::vtc::endorsement_types::delete::v0_1::Response as DeleteTaskResponse;
-use vta_sdk::openapi::EndorsementTypeDelete01Response;
 
 use crate::endorsement_types::{
     EndorsementType, RESERVED_TYPE_URIS, TYPE_URI_MAX_BYTES, delete_type, get_type, list_types,
@@ -105,28 +100,69 @@ pub struct RegisterBody {
     pub description: Option<String>,
 }
 
-#[utoipa::path(
-    post, path = "/endorsement-types",
-    operation_id = "endorsementTypeRegister", tag = "endorsement-types",
-    security(("bearer_jwt" = [])),
-    request_body = RegisterBody,
-    responses(
-        (status = 201, description = "Endorsement type registered", body = RegisterResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn register(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<RegisterBody>,
-) -> Result<(StatusCode, Json<RegisterResponse>), TaskError> {
+/// The largest `claimSchema` a registration accepts, measured serialised.
+///
+/// The task publishes no bound, but the signed door caps a whole document at
+/// 64 KiB, and a schema that registers over the bearer route but not over the
+/// signed one is two doors disagreeing. 32 KiB leaves the document envelope,
+/// the proof and the other members plenty of room, and is an order of
+/// magnitude past any claim schema written for an endorsement.
+pub const CLAIM_SCHEMA_MAX_BYTES: usize = 32 * 1024;
+
+/// `description`'s bound, as `vtc/endorsement-types/register/0.1` publishes it
+/// (`maxLength: 1024`, in characters).
+pub const DESCRIPTION_MAX_CHARS: usize = 1024;
+
+/// The registration, independent of the door it arrived through — the bearer
+/// route above and the signed `vtc/endorsement-types/register/0.1` document
+/// (`trust_tasks::handle_endorsement_type_register`) both call this, so the
+/// two cannot answer differently. `actor_did` is whoever the door
+/// authenticated: the session's subject on one, the verified signer on the
+/// other; it is what the audit row and `createdByDid` name.
+pub(crate) async fn register_inner(
+    state: &AppState,
+    actor_did: &str,
+    body: RegisterBody,
+) -> Result<RegisterResponse, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
 
     // Validation.
+    //
+    // The two size bounds come first and carry the framework's
+    // `malformedRequest`, as the schema check below does: the task declares no
+    // code for an oversized member. The signed door's schema check already
+    // refuses a long `description`; enforcing it here is what makes the bearer
+    // route agree.
+    if body
+        .description
+        .as_ref()
+        .is_some_and(|d| d.chars().count() > DESCRIPTION_MAX_CHARS)
+    {
+        return Err(TaskError::declared(
+            malformed_request_code(),
+            AppError::Validation(format!(
+                "description exceeds {DESCRIPTION_MAX_CHARS} characters"
+            )),
+        ));
+    }
+    if let Some(schema) = body.claim_schema.as_ref() {
+        let size = serde_json::to_vec(schema)
+            .map(|b| b.len())
+            .unwrap_or(usize::MAX);
+        if size > CLAIM_SCHEMA_MAX_BYTES {
+            return Err(TaskError::declared(
+                malformed_request_code(),
+                AppError::Validation(format!(
+                    "claimSchema is {size} bytes serialised; the limit is \
+                     {CLAIM_SCHEMA_MAX_BYTES}. Shorten the schema and register \
+                     again."
+                )),
+            ));
+        }
+    }
     let uri = body.type_uri.trim();
     if uri.is_empty() {
         return Err(TaskError::declared(
@@ -181,13 +217,13 @@ pub async fn register(
         claim_schema: body.claim_schema,
         description: body.description.clone(),
         created_at: Utc::now(),
-        created_by_did: auth.0.did.clone(),
+        created_by_did: actor_did.to_string(),
     };
     store_type(&state.endorsement_types_ks, &row).await?;
 
     audit_writer
         .write(
-            &auth.0.did,
+            actor_did,
             None,
             AuditEvent::EndorsementTypeRegistered(EndorsementTypeRegisteredData {
                 type_uri: uri.to_string(),
@@ -196,14 +232,11 @@ pub async fn register(
         )
         .await?;
 
-    info!(type_uri = %uri, by = %auth.0.did, "endorsement type registered");
+    info!(type_uri = %uri, by = %actor_did, "endorsement type registered");
 
-    Ok((
-        StatusCode::CREATED,
-        Json(RegisterResponse {
-            endorsement_type: row,
-        }),
-    ))
+    Ok(RegisterResponse {
+        endorsement_type: row,
+    })
 }
 
 /// `{ endorsementType: … }` — the shape `vtc/endorsement-types/register/0.1`
@@ -220,27 +253,18 @@ pub struct RegisterResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema, utoipa::IntoParams)]
+#[schema(as = EndorsementTypeListQuery)]
 pub struct ListQuery {
     pub cursor: Option<String>,
     pub limit: Option<usize>,
 }
 
-#[utoipa::path(
-    get, path = "/endorsement-types",
-    operation_id = "endorsementTypeList", tag = "endorsement-types",
-    security(("bearer_jwt" = [])),
-    params(ListQuery),
-    responses(
-        (status = 200, description = "Paginated list of endorsement types", body = Paginated<EndorsementType>),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<ListQuery>,
-) -> Result<Json<Paginated<EndorsementType>>, AppError> {
+/// `vtc/endorsement-types/list/0.1`. A signed document served by the spine
+/// (`trust_tasks::community_tasks`).
+pub(crate) async fn list(
+    state: &AppState,
+    query: ListQuery,
+) -> Result<Paginated<EndorsementType>, AppError> {
     let limit = query.limit.unwrap_or(50).clamp(1, LIST_MAX_LIMIT);
     let audit_key = state
         .audit_writer
@@ -261,48 +285,21 @@ pub async fn list(
         limit,
     )
     .await?;
-    Ok(Json(page))
+    Ok(page)
 }
 
 // ─── Delete ──────────────────────────────────────────────
 
-/// The response is the **generated** `vtc/endorsement-types/delete/0.1`
-/// type, not a local restatement of it.
-///
-/// A hand-written `{ typeUri }` lived here until the census in
-/// `vta-sdk/tests/generated_wire_types_census.rs` named it. It had been
-/// invisible to that census only because it carried no doc comment
-/// saying which task it restated — giving it one, while renaming it out
-/// of a three-way `DeleteResponse` collision, is what surfaced a
-/// violation that predated the rename.
-///
-/// `utoipa::ToSchema` cannot be derived on a foreign type, so the handler
-/// returns [`EndorsementTypeDelete01Response`] — the `spec_types!` newtype
-/// whose schema is rendered from the specification's own — wrapping the
-/// generated value rather than describing the shape a second time.
-///
-/// Returning the wrapper, not the bare generated type, is what
-/// `openapi_response_census` requires: the `body =` annotation and the
-/// handler's return type must name the same thing, because that annotation
-/// is what generates the console's `wire.ts` and a mismatch ships a console
-/// reading a shape the daemon never sends.
-#[utoipa::path(
-    delete, path = "/endorsement-types/{type_uri}",
-    operation_id = "endorsementTypeDelete", tag = "endorsement-types",
-    security(("bearer_jwt" = [])),
-    params(("type_uri" = String, Path, description = "Endorsement type URI")),
-    responses(
-        (status = 200, description = "Endorsement type deleted", body = EndorsementTypeDelete01Response),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Endorsement type not found"),
-    ),
-)]
-pub async fn delete(
-    auth: AdminAuth,
-    State(state): State<AppState>,
-    Path(type_uri): Path<String>,
-) -> Result<(StatusCode, Json<EndorsementTypeDelete01Response>), TaskError> {
+/// The deletion, independent of the door it arrived through — the bearer
+/// route above and the signed `vtc/endorsement-types/delete/0.1` document
+/// (`trust_tasks::handle_endorsement_type_delete`) both call this. It answers
+/// with the generated response type; the bearer route wraps it in the OpenAPI
+/// newtype, and the signed door returns it as the document's payload.
+pub(crate) async fn delete_inner(
+    state: &AppState,
+    actor_did: &str,
+    type_uri: String,
+) -> Result<DeleteTaskResponse, TaskError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -345,7 +342,7 @@ pub async fn delete(
 
     audit_writer
         .write(
-            &auth.0.did,
+            actor_did,
             None,
             AuditEvent::EndorsementTypeDeleted(EndorsementTypeDeletedData {
                 type_uri: type_uri.clone(),
@@ -354,20 +351,14 @@ pub async fn delete(
         )
         .await?;
 
-    info!(type_uri = %type_uri, by = %auth.0.did, "endorsement type deleted");
+    info!(type_uri = %type_uri, by = %actor_did, "endorsement type deleted");
 
-    Ok((
-        StatusCode::OK,
-        Json({
-            let body: DeleteTaskResponse = DeleteTaskResponse::builder()
-                .type_uri(type_uri)
-                .try_into()
-                .map_err(|e| {
-                    AppError::Internal(format!("delete response does not match its schema: {e}"))
-                })?;
-            body.into()
-        }),
-    ))
+    Ok(DeleteTaskResponse::builder()
+        .type_uri(type_uri)
+        .try_into()
+        .map_err(|e| {
+            AppError::Internal(format!("delete response does not match its schema: {e}"))
+        })?)
 }
 
 /// The 409 body for a type something still references.

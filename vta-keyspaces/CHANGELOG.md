@@ -2,6 +2,121 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.4.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.4.0...vta-keyspaces-v0.4.1) — 2026-09-27
+
+
+## [0.4.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.3.4...vta-keyspaces-v0.4.0) — 2026-09-27
+
+
+### Added
+
+- **webvh**: Reach the DID hosting service with Trust Tasks only ([#1789](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1789))
+
+* feat(webvh)!: reach the DID hosting service with Trust Tasks only
+
+  Stage 2b of the webvh-service Trust Tasks plan (trust-tasks #661). The
+  VTA's REST client to the hosting service and WebvhTransport::Rest are
+  removed; one client, vta-service/src/webvh_host.rs, makes every call as a
+  Trust Task typed with the generated did-management bindings, over the
+  transport the seam picks (TSP > DIDComm > HTTPS POST {base}/trust-tasks).
+
+  - The HTTPS base defaults to {WebVHHosting origin}/api, where the hosting
+    service serves its binding; https:// only, or http:// to loopback.
+  - Every reply must carry the host's proof (SignedByRecipient), thread to
+    the request, be addressed to this VTA and have the asked-for type.
+    Refusals are read from trust-task-error documents by spec code;
+    did/problem-report is no longer read.
+  - servers/domains reads me/domains; reconcile and retire-orphan read the
+    paged did/list {records, total} and now work over Trust Tasks. A listing
+    that disagrees with its total is refused.
+  - The DID-auth handshake, the server-auth token cache, WebvhAuthLocks and
+    the WebVHHostingService alias are gone. vta-webvh is the store only.
+
+  The test hosting service is now a Trust-Task host that refuses unsigned
+  requests and signs its answers; a forged answer is refused.
+
+- **vta-service**: Remove the unused /cache and /acl/swap routes ([#1786](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1786))
+
+* feat(vta-service)!: remove the unused /cache and /acl/swap routes
+
+  Two REST routes with no client left, removed under the rule that every remote
+  API is a transport-agnostic Trust Task.
+
+  - `GET|PUT|DELETE /cache/{key}`: a per-DID key-value store nothing in the
+    workspace, the CLIs or the browser clients called, and with no Trust Task.
+    The route, `operations::cache`, `AppState::cache_ks` and the `cache`
+    keyspace go with it (it was never backed up; no restore reads it).
+  - `POST /acl/swap`: self-service key rotation is `acl/swap-key/0.1`, which
+    the SDK already sends on every transport (`swap_acl_for`).
+
+
+
+## [0.3.4](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.3.3...vta-keyspaces-v0.3.4) — 2026-09-26
+
+
+### Added
+
+- **vta**: Device pushes go through the durable Trust Task push engine ([#1767](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1767))
+
+* feat(vtc): push to a member over TSP once it has spoken TSP here, when its DID document says nothing
+
+  A member whose DID document advertises no transport — a `did:key` wallet,
+  which cannot carry services — was always pushed to over DIDComm, even when it
+  was demonstrably listening on TSP. The VTA already solved this for device
+  push by learning from inbound (`tsp_reach`): a verified TSP frame proves the
+  sender is on TSP now. The VTC had no equivalent.
+
+  - `TspReachability` moves from vta-service to `vti_common::tsp_reach` so both
+    nodes share one. The VTA re-exports it at its old path, unchanged.
+  - The shared push engine (`vti_common::trust_task_push`) takes it through
+    `PushContext::learned_tsp`. A recipient whose document advertises nothing
+    is tried over TSP first while fresh, with DIDComm behind it. A peer that
+    switched back gives no error on TSP, only silence, and escalation on
+    missing evidence is what recovers. What a document does advertise still
+    wins: learning only fills in for one that says nothing.
+  - The VTC records the verified sender of every inbound TSP frame
+    (`handle_tsp`) in `AppState::tsp_reach`, and `member_push` passes it to the
+    engine.
+
+
+
+## [0.3.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.3.2...vta-keyspaces-v0.3.3) — 2026-09-26
+
+
+### Changed
+
+- **vti-common**: Move the task-consent core out of vta-policy so the VTC can share it (VTI-APV-014) ([#1730](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1730))
+
+VTI-APV-014 requires consent from a party other than the requester before
+  anyone is granted unrestricted act scope. The VTC is to meet it with the same
+  `task-consent/*` ceremony the VTA runs (VTI-VTC-020: one model, not a parallel
+  one), but the ceremony's data layer lived in `vta-policy`, which the VTC cannot
+  depend on. This moves it to `vti-common` first, so the VTC work that follows
+  reuses it rather than copying it.
+
+  - `vta-policy/src/consent.rs` -> `vti_common::task_consent` and
+    `vta-policy/src/effects.rs` -> `vti_common::task_consent::effects`, moved
+    with their history. `vta_policy::{consent, effects}` re-export them, so
+    every existing path still resolves and the VTA's behaviour is unchanged.
+  - `domain_digest(domain, type_uri, payload, salt)` exposes the digest
+    construction for another domain tag. The VTC's operation-bound step-up
+    carried a byte-for-byte copy of it under `vtc/step-up/v1\0`; it now calls
+    this instead.
+  - `digest_matches_its_pinned_vectors` pins both domains against vectors
+    computed independently of this code, so the move provably changed no
+    digest: a stored pending or grant, and a mark in flight, still resolve
+    after an upgrade.
+  - The `vta/task-consent/v1\0` tag is kept, since it keys the pendings and
+    grants in flight. It separates this digest from others, not one node from
+    another, because a pending never leaves the node that minted it.
+
+  No wire change and no behaviour change.
+
+
+
+## [0.3.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.3.1...vta-keyspaces-v0.3.2) — 2026-09-24
+
+
 ## [0.3.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-keyspaces-v0.3.0...vta-keyspaces-v0.3.1) — 2026-09-23
 
 

@@ -79,7 +79,6 @@ pub async fn strip_all_passkey_vms(
     did_resolver: &DIDCacheClient,
     didcomm_bridge: &Arc<DIDCommBridge>,
     auth: &AuthClaims,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<CleanupSummary, AppError> {
     let dids = webvh_store::list_dids(webvh_ks).await?;
@@ -134,7 +133,6 @@ pub async fn strip_all_passkey_vms(
             seed_store,
             did_resolver,
             didcomm_bridge,
-            auth_locks: webvh_auth_locks,
             // No `AppState` here — this cleanup runs from a passkey
             // context that holds keyspaces and a bridge, not a mediator
             // socket. The seam falls to DIDComm, which is what this path

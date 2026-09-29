@@ -430,6 +430,13 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
         "VPC persona annotation (#1067) — bound ahead of its spec while \
          dtgwg-cred-spec#9 (how a VPC binds to an edge) is open upstream",
     ),
+    // `auth/passkey/admin-list/0.1` was bound here ahead of its release and
+    // went back to zero once trust-tasks-rs indexed and generated it
+    // (`auth::passkey::admin_list::v0_1` replaced the hand-written stand-in).
+    // `git-ns/bridge/job/0.4` and `git-ns/namespace/reseat/0.3` were sent
+    // and served ahead of their release here, and went back to zero with
+    // trust-tasks-rs 0.23, which generates both.
+    //
     // Hidden vetting's four tasks (`zkp-pcs`) were bound ahead of the 0.22 line reaching this
     // graph, and went back to zero with it: trust-tasks-rs 0.22.2 serves all four.
     //
@@ -471,7 +478,7 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        6,
+        4,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
@@ -519,7 +526,10 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
          under that name. It exported no seed and no mnemonic; it was a per-key secret export \
          wearing the name of what it was migrated from, and moving it to the keys family is \
          what let it be specified honestly. The `vta/seeds/*` entries that remain are \
-         list and rotate, and the note still holds for them",
+         list and rotate, and the note still holds for them. \
+         6 -> 4 is the retirement of `vta/attestation/{status,report}/1.0`: the attestation \
+         reads are the canonical public `vta/attestation/{status,report}/0.1` tasks \
+         (dtgwg-trust-tasks-tf#654), and the unspecced 1.0 URIs are no longer bound",
     ),
 ];
 
@@ -623,12 +633,31 @@ fn collect_prefixed(dir: &Path, prefix: &str, out: &mut BTreeSet<String>) {
         let path = entry.expect("dir entry").path();
         if path.is_dir() {
             collect_prefixed(&path, prefix, out);
-        } else if path
+            continue;
+        }
+        if !path
             .extension()
             .is_some_and(|e| e == "rs" || e == "ts" || e == "tsx")
         {
-            collect_prefixed_in_file(&path, prefix, out);
+            continue;
         }
+        // Skip the console's own test files, for the reason
+        // [`collect_prefixed_in_file`] already records on the other side of
+        // this comparison: a URI in a fixture is not wiring. A test names a
+        // URI to *simulate* a server, and it may legitimately name one the
+        // console only ever receives — `trust-task-error/0.5` is the framework
+        // error document's type, which no route binds and no client sends, so
+        // reading it as a `Trust-Task` header reports a dead page that does
+        // not exist. Every URI the console really puts on the wire is a
+        // `trustTask:` option in non-test source, so nothing is lost.
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.contains(".test."))
+        {
+            continue;
+        }
+        collect_prefixed_in_file(&path, prefix, out);
     }
 }
 
@@ -668,8 +697,114 @@ fn collect_prefixed_in_file(path: &Path, prefix: &str, out: &mut BTreeSet<String
 /// as `header?: never` — so the URI is hand-copied on both sides, in two
 /// languages, and only this assertion pairs them.
 ///
-/// There is no exception table. A header the router does not enforce is not a
-/// case to document; it is a dead page.
+/// There is no exception table for headers. A header the router does not
+/// enforce is not a case to document; it is a dead page. Signed-document types
+/// are not headers, and are checked against the dispatcher instead
+/// ([`SIGNED_DOCUMENT_TYPES`]).
+/// The signed-document types the admin console sends — the Repos plugin's
+/// `git-ns/*` changes (`plugins/repos/actions.ts`). Checked against
+/// `git_ns::tasks::served_uris` in the test below; not headers.
+const SIGNED_DOCUMENT_TYPES: &[&str] = &[
+    "https://trusttasks.org/spec/git-ns/namespace/bind/0.1",
+    "https://trusttasks.org/spec/git-ns/namespace/unbind/0.1",
+    "https://trusttasks.org/spec/git-ns/namespace/reseat/0.3",
+    "https://trusttasks.org/spec/git-ns/right/grant/0.3",
+    "https://trusttasks.org/spec/git-ns/right/revoke/0.3",
+    "https://trusttasks.org/spec/git-ns/right/break-glass/0.1",
+    "https://trusttasks.org/spec/git-ns/right/ratify/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/adopt/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/transfer/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/archive/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/create/0.3",
+    "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
+    "https://trusttasks.org/spec/git-ns/roles/reproject/0.1",
+    // The administrator's reads, which replaced the console's bearer views.
+    "https://trusttasks.org/spec/git-ns/view/0.5",
+    "https://trusttasks.org/spec/git-ns/namespace/list/0.1",
+    "https://trusttasks.org/spec/git-ns/repo/list/0.1",
+];
+
+/// Document types the console sends that the *spine* dispatches rather than
+/// the git-ns family: the answer to an operation-bound step-up
+/// (`trust_tasks::handle_step_up_approve_response`), which the console sends
+/// when a break-glass is refused with `details.stepUpRequest`; and members'
+/// step-up passkeys (`trust_tasks::step_up_passkey_tasks`) — an
+/// administrator's invite, revocation and listing, and the browser's finish
+/// of a redemption the member's `cnm` started; and the admin verbs whose REST
+/// routes are gone.
+const SPINE_DOCUMENT_TYPES: &[&str] = &[
+    "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
+    "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2",
+    "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1",
+    "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2",
+    "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2",
+    "https://trusttasks.org/spec/auth/passkey/admin-list/0.1",
+    // Verbs with no REST route: the console signs them.
+    "https://trusttasks.org/spec/acl/list/0.1",
+    "https://trusttasks.org/spec/acl/show/0.1",
+    "https://trusttasks.org/spec/acl/grant/0.1",
+    "https://trusttasks.org/spec/acl/change-role/0.1",
+    "https://trusttasks.org/spec/acl/revoke/0.1",
+    "https://trusttasks.org/spec/vtc/community/profile/update/0.1",
+    "https://trusttasks.org/spec/vtc/members/purge/0.1",
+    "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1",
+    "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1",
+    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2",
+    // The administrator's operational verbs (`trust_tasks::admin_tasks`).
+    "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1",
+    "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1",
+    "https://trusttasks.org/spec/vtc/registry/sync-jobs/retry/0.1",
+    "https://trusttasks.org/spec/vtc/registry/sync-jobs/discard/0.1",
+    "https://trusttasks.org/spec/vtc/registry/records/list/0.1",
+    "https://trusttasks.org/spec/audit/list/0.1",
+    "https://trusttasks.org/spec/config/show/0.1",
+    "https://trusttasks.org/spec/config/patch/0.1",
+    "https://trusttasks.org/spec/config/reload/0.1",
+    "https://trusttasks.org/spec/vtc/admin/invites/list/0.1",
+    "https://trusttasks.org/spec/vtc/admin/invites/create/0.1",
+    "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1",
+    "https://trusttasks.org/spec/auth/sessions/list/0.1",
+    "https://trusttasks.org/spec/auth/revoke-session/0.2",
+    // The administrator's community verbs (`trust_tasks::community_tasks`).
+    "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
+    "https://trusttasks.org/spec/vtc/ceremonies/list/0.1",
+    "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1",
+    "https://trusttasks.org/spec/vtc/recognition/check/0.1",
+    "https://trusttasks.org/spec/vtc/members/list/0.1",
+    "https://trusttasks.org/spec/vtc/members/removed/0.1",
+    "https://trusttasks.org/spec/vtc/members/show/0.1",
+    "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1",
+    "https://trusttasks.org/spec/vtc/join-requests/list/0.1",
+    "https://trusttasks.org/spec/vtc/join-requests/show/0.1",
+    "https://trusttasks.org/spec/vtc/relationships/graph/0.2",
+    "https://trusttasks.org/spec/vtc/invitations/issue/0.1",
+    "https://trusttasks.org/spec/vtc/invitations/list/0.1",
+    "https://trusttasks.org/spec/vtc/invitations/revoke/0.1",
+    "https://trusttasks.org/spec/vtc/invitations/deliver/0.1",
+    // The policy log (`trust_tasks::policy_tasks`).
+    "https://trusttasks.org/spec/policy/list/0.2",
+    "https://trusttasks.org/spec/policy/active/0.1",
+    "https://trusttasks.org/spec/policy/upsert/0.2",
+    "https://trusttasks.org/spec/policy/activate/0.1",
+    "https://trusttasks.org/spec/vtc/policies/test/0.1",
+    // The administration surfaces that had only bearer REST
+    // (`trust_tasks::surface_tasks`).
+    "https://trusttasks.org/spec/vtc/community/branding/show/0.1",
+    "https://trusttasks.org/spec/vtc/community/branding/update/0.1",
+    "https://trusttasks.org/spec/vtc/community/join-discovery/show/0.1",
+    "https://trusttasks.org/spec/vtc/community/join-discovery/update/0.1",
+    "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.1",
+    "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1",
+    "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1",
+    "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1",
+    "https://trusttasks.org/spec/vtc/rooms/list/0.1",
+];
+
 #[test]
 fn every_admin_ui_task_is_enforced_by_a_route() {
     const SPEC_PREFIX: &str = "https://trusttasks.org/spec/";
@@ -707,7 +842,52 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
         enforced.len()
     );
 
-    let orphans: Vec<&String> = sent.difference(&enforced).collect();
+    // Document types the console signs and posts to `/v1/trust-tasks`, where
+    // the dispatcher routes on the document's own `type` — no REST route binds
+    // them, because they have no bearer door. They are not headers, so they
+    // are paired with the dispatcher's registry instead of the router: each
+    // must be served there, and a URI listed here stops counting as a header
+    // only because it is.
+    let served: BTreeSet<&str> = vtc_service::git_ns::tasks::served_uris()
+        .into_iter()
+        .collect();
+    for uri in SIGNED_DOCUMENT_TYPES {
+        assert!(
+            served.contains(uri),
+            "the admin console signs `{uri}` as a document type, but the git-ns dispatcher does \
+             not serve it — the console would send a document nobody dispatches"
+        );
+        assert!(
+            sent.contains(*uri),
+            "`{uri}` is allowlisted as a console document type but the console no longer sends \
+             it — remove it from SIGNED_DOCUMENT_TYPES"
+        );
+    }
+    let dispatched: BTreeSet<&str> = vtc_service::test_support::served_trust_task_uris()
+        .into_iter()
+        .collect();
+    for uri in SPINE_DOCUMENT_TYPES {
+        assert!(
+            dispatched.contains(uri),
+            "the admin console sends `{uri}` as a document type, but the spine does not \
+             dispatch it — the console would send a document nobody serves"
+        );
+        assert!(
+            sent.contains(*uri),
+            "`{uri}` is allowlisted as a console document type but the console no longer sends \
+             it — remove it from SPINE_DOCUMENT_TYPES"
+        );
+    }
+    let documents: BTreeSet<String> = SIGNED_DOCUMENT_TYPES
+        .iter()
+        .chain(SPINE_DOCUMENT_TYPES)
+        .map(|u| u.to_string())
+        .collect();
+
+    let orphans: Vec<&String> = sent
+        .difference(&enforced)
+        .filter(|u| !documents.contains(*u))
+        .collect();
     assert!(
         orphans.is_empty(),
         "the admin UI sends {} Trust-Task header(s) no route enforces — each is \

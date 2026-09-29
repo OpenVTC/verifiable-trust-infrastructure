@@ -58,7 +58,20 @@ pub async fn put_branding(
     // the body is the manifest's `CommunityBranding`, as documented above.
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<JoinManifest02CommunityBranding>, AppError> {
-    let body = read_branding(&body).map_err(|e| AppError::Validation(e.to_string()))?;
+    update_branding(&state, &admin.0.did, &body)
+        .await
+        .map(|b| Json(b.into()))
+}
+
+/// Replace the branding as `actor` — `vtc/community/branding/update/0.1`, on
+/// the route and the spine alike. The caller has established that `actor` is
+/// an administrator.
+pub(crate) async fn update_branding(
+    state: &AppState,
+    actor: &str,
+    body: &serde_json::Value,
+) -> Result<vta_sdk::protocols::join_requests::manifest::v0_2::CommunityBranding, AppError> {
+    let body = read_branding(body).map_err(|e| AppError::Validation(e.to_string()))?;
     // Fail closed, as the profile route does: a change that cannot be audited
     // is not made.
     let writer = state
@@ -74,7 +87,7 @@ pub async fn put_branding(
     if !changed.is_empty() {
         writer
             .write(
-                &admin.0.did,
+                actor,
                 None,
                 AuditEvent::CommunityBrandingUpdated(CommunityBrandingUpdatedData {
                     fields_changed: changed.clone(),
@@ -83,5 +96,5 @@ pub async fn put_branding(
             .await?;
         info!(fields_changed = ?changed, "community branding updated");
     }
-    Ok(Json(stored.into()))
+    Ok(stored)
 }

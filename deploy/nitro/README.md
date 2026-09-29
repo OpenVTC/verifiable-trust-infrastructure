@@ -87,12 +87,23 @@ storage, and signed enclave images.
 > > the enclave returned — in particular that `tee.kms.key_arn` is the tenant's own
 > > key, not one the parent controls.
 >
-> Use **`POST /attestation/config-report`** with a fresh caller nonce:
+> Ask for **`vta/attestation/config-report/0.1`** with a fresh nonce of your own.
+> It is a public Trust Task: no session, no ACL entry, no request proof — over
+> TSP, DIDComm, or anonymously over HTTPS as here. The VTA requires `issuedAt`
+> and `recipient` on every document.
 >
 > ```bash
-> curl -s https://<vta>/attestation/config-report \
->   -H 'content-type: application/json' -d '{"nonce":"<hex>"}'
-> # → { configDigestSha384, configView (base64), nonce, teeType,
+> VTA_DID='<the VTA DID>'
+> NONCE=$(openssl rand -hex 32)   # keep it: the evidence must bind exactly this
+> curl -s https://<vta>/trust-tasks -H 'content-type: application/json' -d "{
+>   \"id\": \"urn:uuid:$(uuidgen | tr 'A-Z' 'a-z')\",
+>   \"type\": \"https://trusttasks.org/spec/vta/attestation/config-report/0.1\",
+>   \"recipient\": \"$VTA_DID\",
+>   \"issuedAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+>   \"payload\": { \"nonce\": \"$NONCE\" }
+> }"
+> # → the VTA's signed `…/config-report/0.1#response`; its payload is
+> #   { configDigestSha384, configView (base64), nonce, teeType,
 > #     evidence (base64 COSE_Sign1), generatedAt }
 > ```
 >
@@ -561,8 +572,8 @@ docker build -f Dockerfile.nitro \
 | Available on REST | Available on DIDComm |
 |---|---|
 | `GET /health` | Key management (create, list, get, revoke, secrets) |
-| `GET,POST /attestation/report` | ACL management (CRUD) |
-| `GET /attestation/status` | Config management |
+| `POST /trust-tasks` — the public `vta/attestation/*` reads | ACL management (CRUD) |
+| | Config management |
 | `POST /auth/challenge` | Credential generation |
 | `POST /auth/` | Context management |
 | `POST /auth/refresh` | Seed rotation |
@@ -1122,13 +1133,20 @@ enable_websocket_endpoint = "${ENABLE_WEBSOCKET_ENDPOINT:true}"
 
 [cache]
 capacity_count = "${CACHE_CAPACITY_COUNT:1000}"
-expire = "${EXPIRE:300}"
+expire = "${EXPIRE:60}"
 EOF
 
 # Start it — must run from the directory containing conf/cache-conf.toml
 cd ~/vta-resolver
 nohup affinidi-did-resolver-cache-server > resolver.log 2>&1 &
 ```
+
+The sidecar's `expire` (seconds) is how long it serves a DID document from
+its own cache. The VTA caches on top of it (`[did_cache] ttl_secs`, default
+60 s), and a VTA-side forced refresh does not reach the sidecar, so **a key
+revoked from a DID document can keep verifying for up to the VTA's TTL plus
+the sidecar's `expire`**. Keep `expire` at 60 or lower; the upstream default
+of 300 would stretch that window to six minutes.
 
 The VTA's `config.toml` sets `resolver_url = "ws://127.0.0.1:4445/did/v1/ws"`
 which routes through socat inside the enclave → vsock:5600 → proxy →
@@ -1313,9 +1331,34 @@ TOKEN=$(curl -s -X POST http://localhost:8443/auth/challenge -H 'Content-Type: a
 curl -s http://localhost:8443/attestation/mnemonic \
     -H "Authorization: Bearer $JWT" | jq
 
-# Export (one-time, entropy zeroed after)
-curl -s -X POST http://localhost:8443/attestation/mnemonic \
-    -H "Authorization: Bearer $JWT" | jq '.mnemonic'
+# Export (one-time, entropy zeroed after) with the Trust Task
+# spec/vta/attestation/mnemonic-export/1.0. The REST route
+# POST /attestation/mnemonic refuses with 403: a bearer token alone never
+# releases the mnemonic. The request is always a document the super admin
+# signs (proofPurpose authentication, issuer = your DID, recipient = the VTA's
+# DID, a fresh issuedAt and a new id).
+#
+# Over DIDComm or TSP: on the offline machine that will hold the backup, mint
+# an ephemeral key and nonce, and send the payload
+# {"clientDid": <client_did from req.json>, "nonce": <nonce from req.json>}.
+pnm bootstrap request --out req.json
+#
+# At first boot, before the VTA is reachable over DIDComm or TSP, POST the
+# signed document to /trust-tasks over HTTPS instead. This path is allowed
+# only when clientDid is exactly your own did:key, the one that signed the
+# request. A TLS terminator holding your token then cannot change whom the
+# mnemonic is sealed to. It can still keep the sealed bundle, so use a
+# did:key kept for this backup, and retire it (remove its ACL entry, destroy
+# its key) once the words are written down.
+#
+# The response carries a sealed `bundle` and its `digest`. Confirm the digest
+# out of band, then open it on the machine that holds the key it was sealed
+# to. For the ephemeral key from `pnm bootstrap request`:
+pnm bootstrap open --bundle bundle.armor --expect-digest <digest>
+# For the first-boot path the bundle is sealed to your did:key's X25519
+# counterpart, which `pnm bootstrap open` does not hold: open it with
+# vta_sdk::sealed_transfer::open_bundle and that key's seed. There is no CLI
+# command for this path yet.
 ```
 
 After 5 minutes (or one successful export), the entropy is permanently zeroed.
@@ -1341,13 +1384,17 @@ No mnemonic export is possible on subsequent boots (no entropy exists).
 curl http://localhost:8443/health
 # → {"status":"ok","version":"0.1.2","tee_status":{"tee_type":"nitro","detected":true}}
 
-# TEE attestation
-curl http://localhost:8443/attestation/status
-
-# Fresh attestation report
-curl -X POST http://localhost:8443/attestation/report \
-    -H 'Content-Type: application/json' \
-    -d '{"nonce":"deadbeef0123456789abcdef01234567"}'
+# TEE attestation and a fresh report are public Trust Tasks on /trust-tasks
+# (vta/attestation/status/0.1, vta/attestation/report/0.1). The report binds a
+# 32-byte nonce of your own; the VTA requires issuedAt and recipient.
+VTA_DID='<the VTA DID>'
+curl -s -X POST http://localhost:8443/trust-tasks -H 'Content-Type: application/json' -d "{
+  \"id\": \"urn:uuid:$(uuidgen | tr 'A-Z' 'a-z')\",
+  \"type\": \"https://trusttasks.org/spec/vta/attestation/report/0.1\",
+  \"recipient\": \"$VTA_DID\",
+  \"issuedAt\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",
+  \"payload\": { \"nonce\": \"$(openssl rand -hex 32)\" }
+}"
 ```
 
 ## Troubleshooting
@@ -1514,7 +1561,6 @@ nitro-cli run-enclave --eif-path vta.eif --cpu-count 1 --memory 512 --enclave-ci
 
 # 5. Verify the new image works
 curl http://localhost:8443/health
-curl http://localhost:8443/attestation/status
 
 # 6. Lock down: remove the old PCR0 from the policy
 ./deploy/nitro/setup-kms-policy.sh \

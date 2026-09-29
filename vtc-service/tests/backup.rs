@@ -347,127 +347,174 @@ async fn excluding_the_audit_log_also_excludes_its_checkpoints() {
 }
 
 // ---------------------------------------------------------------------------
-// #1600 — the codes `vtc/backup/{export,import}/0.1` declare, read from the
-// generated bindings and observed through the REST routes.
+// There is no bearer route: a backup moves only over TSP or DIDComm. The codes
+// `vtc/backup/{export,import}/0.1` declare are covered on the Trust Task door
+// (`trust_tasks::backup_export_tests`, `trust_tasks::backup_tasks`).
 // ---------------------------------------------------------------------------
 
-const EXPORT_ERR_PASSWORD_TOO_SHORT: &str =
-    trust_tasks_rs::specs::vtc::backup::export::v0_1::error_codes::PASSWORD_TOO_SHORT.code;
-const IMPORT_ERR_DECRYPTION_FAILED: &str =
-    trust_tasks_rs::specs::vtc::backup::import::v0_1::error_codes::DECRYPTION_FAILED.code;
-
-const EXPORT_TASK: &str = "https://trusttasks.org/spec/vtc/backup/export/0.1";
-const IMPORT_TASK: &str = "https://trusttasks.org/spec/vtc/backup/import/0.1";
-
-/// The extended error code carried by a REST error body (`{"error", "code"}`).
-fn rest_error_code(body: &serde_json::Value) -> &str {
-    body["code"].as_str().unwrap_or_default()
-}
-
-async fn post_backup(
-    vtc: &TestVtc,
-    path: &str,
-    task: &str,
-    body: serde_json::Value,
-) -> (axum::http::StatusCode, serde_json::Value) {
+/// The inline `/v1/backup/{export,import}` routes are gone, not refused, so a
+/// super-admin's bearer request finds nothing to answer it.
+#[tokio::test]
+async fn the_inline_backup_routes_are_gone() {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
-    let token = vtc.admin_token().await;
-    let req = axum::http::Request::builder()
-        .method("POST")
-        .uri(path)
-        .header("content-type", "application/json")
-        .header("Trust-Task", task)
-        .header("Authorization", format!("Bearer {token}"))
-        .body(axum::body::Body::from(body.to_string()))
-        .unwrap();
-    let res = vtc.router.clone().oneshot(req).await.unwrap();
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
-    )
+    let a = TestVtc::builder().vtc_did(VTC_DID).build().await;
+    let token = a.admin_token().await;
+    for path in ["/v1/backup/export", "/v1/backup/import"] {
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("content-type", "application/json")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(axum::body::Body::from(
+                serde_json::json!({ "password": PW }).to_string(),
+            ))
+            .unwrap();
+        let res = a.router.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        // 405 where a GET route matches the same path: either way,
+        // nothing answers a POST.
+        assert!(
+            status == axum::http::StatusCode::NOT_FOUND
+                || status == axum::http::StatusCode::METHOD_NOT_ALLOWED,
+            "{path}: {status} {}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
 }
 
-/// A password under the minimum is `passwordTooShort` (400, unchanged).
-/// The minimum is the workspace's `MIN_BACKUP_PASSWORD_LEN`, so one character
-/// short of it is the boundary.
+// ---------------------------------------------------------------------------
+// The code `vtc/backup/export/0.1` declares, on every end-to-end transport the
+// harness offers. The same signed document goes through the same spine either
+// way; only the carriage differs.
+// ---------------------------------------------------------------------------
+
+/// The end-to-end transports a backup is served on.
+#[cfg(feature = "didcomm-harness")]
+#[derive(Debug, Clone, Copy)]
+enum Transport {
+    DIDComm,
+    #[cfg(feature = "tsp")]
+    Tsp,
+}
+
+#[cfg(feature = "didcomm-harness")]
+impl Transport {
+    const ALL: &[Transport] = &[
+        Transport::DIDComm,
+        #[cfg(feature = "tsp")]
+        Transport::Tsp,
+    ];
+
+    /// A VTC reachable on this transport.
+    async fn start(self) -> vtc_service::test_support::MockVtcDidcomm {
+        use vtc_service::test_support::MockVtcDidcomm;
+        match self {
+            Transport::DIDComm => MockVtcDidcomm::start().await,
+            #[cfg(feature = "tsp")]
+            Transport::Tsp => MockVtcDidcomm::start_with_tsp().await,
+        }
+    }
+
+    /// A session to `mock` on this transport, as `did` holding `key`.
+    async fn connect(
+        self,
+        mock: &vtc_service::test_support::MockVtcDidcomm,
+        did: &str,
+        key: &str,
+    ) -> vta_sdk::client::VtaClient {
+        use vta_sdk::client::VtaClient;
+        let (vtc, mediator) = (mock.vtc_did(), mock.mediator_did());
+        match self {
+            Transport::DIDComm => VtaClient::connect_didcomm(did, key, vtc, mediator, None).await,
+            #[cfg(feature = "tsp")]
+            Transport::Tsp => VtaClient::connect_tsp(did, key, vtc, mediator, None).await,
+        }
+        .unwrap_or_else(|e| panic!("connect over {self:?}: {e}"))
+    }
+}
+
+/// A deterministic `did:key` and its multibase private key.
+#[cfg(feature = "didcomm-harness")]
+fn did_key_from_seed(seed_byte: u8) -> (String, String) {
+    let seed = [seed_byte; 32];
+    let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let did = format!(
+        "did:key:{}",
+        vta_sdk::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes())
+    );
+    let mut buf = vec![0x80, 0x26];
+    buf.extend_from_slice(&seed);
+    (did, multibase::encode(multibase::Base::Base58Btc, &buf))
+}
+
+/// The declared code a session reported a refusal under: the client surfaces
+/// an undeclared-by-it code as `trust task failed [<code>]: <message>`.
+#[cfg(feature = "didcomm-harness")]
+fn tt_error_code(err: &vta_sdk::error::VtaError) -> Option<String> {
+    let text = err.to_string();
+    let rest = text.split_once("trust task failed [")?.1;
+    Some(rest.split_once(']')?.0.to_string())
+}
+
+/// A super-admin's export with a password under the minimum is answered with
+/// `vtc/backup/export:passwordTooShort` — the code its spec declares — on
+/// every end-to-end transport, and nothing is exported.
+#[cfg(feature = "didcomm-harness")]
 #[tokio::test]
 async fn the_export_task_answers_with_the_code_its_spec_declares() {
-    let vtc = TestVtc::builder().vtc_did(VTC_DID).build().await;
+    use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
+    use vtc_service::backup::EXPORT_ERR_PASSWORD_TOO_SHORT;
+
     let short = "x".repeat(vta_sdk::protocols::backup_management::MIN_BACKUP_PASSWORD_LEN - 1);
-    let (status, body) = post_backup(
-        &vtc,
-        "/v1/backup/export",
-        EXPORT_TASK,
-        serde_json::json!({ "password": short }),
-    )
-    .await;
-    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(
-        rest_error_code(&body),
-        EXPORT_ERR_PASSWORD_TOO_SHORT,
-        "{body}"
-    );
-}
+    for &transport in Transport::ALL {
+        let mock = transport.start().await;
+        {
+            let mut config = mock.vtc.state.config.write().await;
+            config.secrets.backend = Some(vtc_service::config::SecretBackend::Plaintext);
+            config.config_path = mock.vtc.data_dir().join("config.toml");
+            vtc_service::keys::seed_store::create_secret_store(&config)
+                .expect("plaintext store")
+                .set(b"signing-bundle")
+                .await
+                .expect("seed the store");
+        }
+        let (admin_did, admin_key) = did_key_from_seed(0x5c);
+        store_acl_entry(
+            &mock.vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: admin_did.clone(),
+                role: VtcRole::Admin,
+                label: None,
+                allowed_contexts: vec![],
+                created_at: 0,
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("seed the super-admin");
+        mock.register_local_did(&admin_did).await;
 
-/// A password that does not decrypt the envelope is `decryptionFailed`
-/// (401, unchanged), and so is a ciphertext altered after export — both fail
-/// the same GCM tag. An envelope of the wrong shape is not: it is a 400 with
-/// no code, because nothing was decrypted.
-#[tokio::test]
-async fn the_import_task_answers_with_the_code_its_spec_declares() {
-    let a = TestVtc::builder().vtc_did(VTC_DID).build().await;
-    let a_store = PlaintextSecretStore::new(a.data_dir());
-    a_store.set(b"bundle").await.unwrap();
-    let envelope = export_backup(&a.state, &a_store, PW, false).await.unwrap();
-    let envelope = serde_json::to_value(&envelope).unwrap();
+        let client = transport.connect(&mock, &admin_did, &admin_key).await;
+        let err = client
+            .dispatch_trust_task(
+                "https://trusttasks.org/spec/vtc/backup/export/0.1",
+                serde_json::json!({ "password": short }),
+                30,
+            )
+            .await
+            .expect_err("a short password exports nothing");
+        assert_eq!(
+            tt_error_code(&err).as_deref(),
+            Some(EXPORT_ERR_PASSWORD_TOO_SHORT),
+            "over {transport:?}: {err}"
+        );
 
-    let b = TestVtc::builder().vtc_did(VTC_DID).build().await;
-
-    let (status, body) = post_backup(
-        &b,
-        "/v1/backup/import",
-        IMPORT_TASK,
-        serde_json::json!({ "backup": envelope, "password": "not-the-password-at-all" }),
-    )
-    .await;
-    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "{body}");
-    assert_eq!(
-        rest_error_code(&body),
-        IMPORT_ERR_DECRYPTION_FAILED,
-        "{body}"
-    );
-
-    // Flip the first ciphertext character to another base64 digit.
-    let mut tampered = envelope.clone();
-    let ct = tampered["ciphertext"].as_str().unwrap().to_string();
-    let first = if ct.starts_with('A') { "B" } else { "A" };
-    tampered["ciphertext"] = serde_json::Value::String(format!("{first}{}", &ct[1..]));
-    let (status, body) = post_backup(
-        &b,
-        "/v1/backup/import",
-        IMPORT_TASK,
-        serde_json::json!({ "backup": tampered, "password": PW }),
-    )
-    .await;
-    assert_eq!(status, axum::http::StatusCode::UNAUTHORIZED, "{body}");
-    assert_eq!(
-        rest_error_code(&body),
-        IMPORT_ERR_DECRYPTION_FAILED,
-        "{body}"
-    );
-
-    let mut unsupported = envelope.clone();
-    unsupported["version"] = serde_json::json!(999);
-    let (status, body) = post_backup(
-        &b,
-        "/v1/backup/import",
-        IMPORT_TASK,
-        serde_json::json!({ "backup": unsupported, "password": PW }),
-    )
-    .await;
-    assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(rest_error_code(&body), "", "{body}");
+        client.shutdown().await;
+        mock.shutdown().await;
+    }
 }

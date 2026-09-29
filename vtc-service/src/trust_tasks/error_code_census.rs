@@ -377,14 +377,14 @@ fn witnesses() -> Vec<Witness> {
         witness!(
             s::policies::test::v0_1::error_codes::NOT_FOUND,
             crate::routes::policies::admin::TEST_ERR_NOT_FOUND,
-            "policies.rs",
-            "the_policy_test_task_answers_with_the_codes_its_spec_declares"
+            "policy_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
         ),
         witness!(
             s::policies::test::v0_1::error_codes::EVALUATION_FAILED,
             crate::routes::policies::admin::TEST_ERR_EVALUATION_FAILED,
-            "policies.rs",
-            "the_policy_test_task_answers_with_the_codes_its_spec_declares"
+            "policy_spine.rs",
+            "the_codes_the_specifications_declare_are_answered"
         ),
         witness!(
             s::website::files::delete::v0_1::error_codes::NOT_FOUND,
@@ -443,12 +443,6 @@ fn witnesses() -> Vec<Witness> {
             "the_export_task_answers_with_the_code_its_spec_declares"
         ),
         witness!(
-            s::backup::import::v0_1::error_codes::DECRYPTION_FAILED,
-            crate::backup::IMPORT_ERR_DECRYPTION_FAILED,
-            "backup.rs",
-            "the_import_task_answers_with_the_code_its_spec_declares"
-        ),
-        witness!(
             s::community::profile::update::v0_1::error_codes::VALIDATION_FAILED,
             crate::routes::community::profile::PROFILE_UPDATE_ERR_VALIDATION_FAILED,
             "community_profile.rs",
@@ -458,13 +452,13 @@ fn witnesses() -> Vec<Witness> {
             s::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH,
             crate::routes::admin::config::IMPORT_ERR_COMMUNITY_DID_MISMATCH,
             "admin_config.rs",
-            "import_refuses_mismatched_community_did_with_409"
+            "import_refuses_mismatched_community_did"
         ),
         witness!(
             s::config::import::v0_1::error_codes::UNSUPPORTED_SCHEMA_VERSION,
             crate::routes::admin::config::IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION,
             "admin_config.rs",
-            "import_wrong_schema_version_returns_400"
+            "import_wrong_schema_version_is_refused"
         ),
         witness!(
             s::directory::query::v0_1::error_codes::NOT_FOUND,
@@ -597,6 +591,120 @@ fn witnesses() -> Vec<Witness> {
             crate::routes::recognise::RECOGNISE_ERR_CREDENTIAL_INVALID,
             "recognise.rs",
             "the_recognise_task_answers_with_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::community::requested_attributes::update::v0_1::error_codes::DUPLICATE_TYPE,
+            crate::trust_tasks::surface_tasks::REQUESTED_ERR_DUPLICATE_TYPE,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::register::v0_1::error_codes::INVALID_CREDENTIAL_SCHEMA,
+            crate::trust_tasks::surface_tasks::SCHEMAS_REGISTER_ERR_INVALID_CREDENTIAL_SCHEMA,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::show::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::surface_tasks::SCHEMAS_SHOW_ERR_NOT_FOUND,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::delete::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::surface_tasks::SCHEMAS_DELETE_ERR_NOT_FOUND,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::delete::v0_1::error_codes::IN_USE,
+            crate::trust_tasks::surface_tasks::SCHEMAS_DELETE_ERR_IN_USE,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::accepts::register::v0_1::error_codes::INVALID_QUERY,
+            crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_ERR_INVALID_QUERY,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::accepts::register::v0_1::error_codes::UNREGISTERED_TYPE,
+            crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_ERR_UNREGISTERED_TYPE,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::accepts::register::v0_1::error_codes::UNREGISTERED_STATEMENT_TYPE,
+            crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_ERR_UNREGISTERED_STATEMENT_TYPE,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::accepts::register::v0_1::error_codes::INVALID_VETTING,
+            crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_ERR_INVALID_VETTING,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::accepts::show::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::surface_tasks::ACCEPTS_SHOW_ERR_NOT_FOUND,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::accepts::delete::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::surface_tasks::ACCEPTS_DELETE_ERR_NOT_FOUND,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::relationships::suspend::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::surface_tasks::SUSPEND_ERR_NOT_FOUND,
+            "surface_verbs_spine.rs",
+            "the_lifecycle_and_join_codes_are_answered"
+        ),
+        witness!(
+            s::relationships::suspend::v0_1::error_codes::ALREADY_SUSPENDED,
+            crate::trust_tasks::surface_tasks::SUSPEND_ERR_ALREADY_SUSPENDED,
+            "surface_verbs_spine.rs",
+            "the_lifecycle_and_join_codes_are_answered"
+        ),
+        witness!(
+            s::relationships::suspend::v0_1::error_codes::TERMINAL,
+            crate::trust_tasks::surface_tasks::SUSPEND_ERR_TERMINAL,
+            "surface_verbs_spine.rs",
+            "the_lifecycle_and_join_codes_are_answered"
+        ),
+        witness!(
+            s::relationships::restore::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::surface_tasks::RESTORE_ERR_NOT_FOUND,
+            "surface_verbs_spine.rs",
+            "the_lifecycle_and_join_codes_are_answered"
+        ),
+        witness!(
+            s::relationships::restore::v0_1::error_codes::NOT_SUSPENDED,
+            crate::trust_tasks::surface_tasks::RESTORE_ERR_NOT_SUSPENDED,
+            "surface_verbs_spine.rs",
+            "the_lifecycle_and_join_codes_are_answered"
+        ),
+        witness!(
+            s::relationships::restore::v0_1::error_codes::TERMINAL,
+            crate::trust_tasks::surface_tasks::RESTORE_ERR_TERMINAL,
+            "surface_verbs_spine.rs",
+            "the_lifecycle_and_join_codes_are_answered"
+        ),
+        witness!(
+            s::join_requests::vetting::show::v0_1::error_codes::NOT_FOUND,
+            crate::trust_tasks::surface_tasks::JOIN_VETTING_ERR_NOT_FOUND,
+            "surface_verbs_spine.rs",
+            "the_lifecycle_and_join_codes_are_answered"
+        ),
+        witness!(
+            s::join_requests::query::v0_1::error_codes::CRITERION_NOT_FOUND,
+            crate::trust_tasks::surface_tasks::JOIN_QUERY_ERR_CRITERION_NOT_FOUND,
+            "surface_verbs_spine.rs",
+            "the_lifecycle_and_join_codes_are_answered"
         ),
     ];
     #[cfg(feature = "vetting-pcs")]
@@ -751,6 +859,12 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         s::join_requests::submit::v0_2::error_codes::POLICY_UNSATISFIED,
         s::vetting::revoke_statement::v0_1::error_codes::DIGEST_MISMATCH,
         s::vetting::revoke_statement::v0_1::error_codes::ISSUER_MISMATCH,
+        // `notPublishable` is the join manifest refusing a criterion every
+        // earlier check admitted. The request schema bounds `id` and
+        // `description` exactly as the manifest's `Criterion` does, and the
+        // query is an object once DCQL has parsed it, so no schema-valid
+        // registration reaches it; the arm stays for a manifest that narrows.
+        s::schemas::accepts::register::v0_1::error_codes::NOT_PUBLISHABLE,
         // BASELINE-END
     ]
 }
@@ -758,7 +872,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// The length of [`unwitnessed`], asserted. Lower it as witnesses land; raising
 /// it means a newly bound task declares codes nothing tests, which is the
 /// thing this census exists to stop.
-const UNWITNESSED: usize = 8;
+const UNWITNESSED: usize = 9;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

@@ -212,6 +212,14 @@ pub async fn list_policies(
     State(state): State<AppState>,
     Query(query): Query<ListPoliciesQuery>,
 ) -> Result<Json<PolicyListResponse>, AppError> {
+    list_policies_inner(&state, query).await.map(Json)
+}
+
+/// The listing `policy/list/0.2` answers, on the route and the spine alike.
+pub(crate) async fn list_policies_inner(
+    state: &AppState,
+    query: ListPoliciesQuery,
+) -> Result<PolicyListResponse, AppError> {
     let mut unsupported = Vec::new();
     if query.context_id.is_some() {
         unsupported.push("contextId");
@@ -248,11 +256,11 @@ pub async fn list_policies(
                 items.push(PolicyResponse::from_policy(p, true));
             }
         }
-        return Ok(Json(PolicyListResponse {
+        return Ok(PolicyListResponse {
             policies: items.iter().map(|r| (&r.policy).into()).collect(),
             truncated: false,
             cursor: None,
-        }));
+        });
     }
 
     let limit = query
@@ -307,11 +315,11 @@ pub async fn list_policies(
         })
         .collect();
 
-    Ok(Json(PolicyListResponse {
+    Ok(PolicyListResponse {
         policies: items.iter().map(|r| (&r.policy).into()).collect(),
         truncated: page.next_cursor.is_some(),
         cursor: page.next_cursor,
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -334,12 +342,20 @@ pub async fn show_policy(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<PolicyGetResponse>, AppError> {
+    show_policy_inner(&state, id).await.map(Json)
+}
+
+/// One revision, as `policy/get/0.1` answers it.
+pub(crate) async fn show_policy_inner(
+    state: &AppState,
+    id: Uuid,
+) -> Result<PolicyGetResponse, AppError> {
     let policy = get_policy(&state.policies_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("policy not found: {id}")))?;
-    Ok(Json(PolicyGetResponse {
+    Ok(PolicyGetResponse {
         policy: (&policy).into(),
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -376,21 +392,10 @@ pub struct ActiveQuery {
     pub context_id: Option<String>,
 }
 
-#[utoipa::path(
-    get, path = "/policies/active", tag = "policies",
-    security(("bearer_jwt" = [])),
-    params(ActiveQuery),
-    responses(
-        (status = 200, description = "Active policy bindings", body = ActiveBindingsResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn active_policies(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<ActiveQuery>,
-) -> Result<Json<ActiveBindingsResponse>, AppError> {
+pub(crate) async fn active_policies(
+    state: &AppState,
+    query: ActiveQuery,
+) -> Result<ActiveBindingsResponse, AppError> {
     if query.context_id.is_some() {
         return Err(AppError::Validation(
             "this maintainer does not implement the contextId filter: a VTC is a \
@@ -413,5 +418,5 @@ pub async fn active_policies(
             });
         }
     }
-    Ok(Json(ActiveBindingsResponse { bindings }))
+    Ok(ActiveBindingsResponse { bindings })
 }

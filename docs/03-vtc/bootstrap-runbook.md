@@ -74,7 +74,8 @@ vtc --config /srv/vtc/config.toml admin invite --did <admin DID>
 a claim through it always leaves a DID that can sign in. `--ttl <seconds>`
 changes the default 900. It needs the daemon stopped because it opens the store
 directly. Once an admin exists, invite further admins from the running console
-(**Access control → Invite**) or with `POST /v1/admin/invites`.
+(**Access control → Invite**) or with a signed `vtc/admin/invites/create/0.1`
+document, sent over any transport the VTC serves.
 
 > **Claim before you add any other admin.** `POST /v1/admin/bootstrap` refuses
 > with `409` once *any* admin ACL entry exists, and the install page treats
@@ -188,9 +189,10 @@ Two paths, and both ask the *granting* operator for their passkey first
 factor, not just a live session):
 
 - **Promote an existing member.** Console → **Members → *the member* → Promote
-  to admin**. Over the API this is `acl/change-role/0.1`:
-  `PATCH /v1/acl/{did}` with `{"fromRole": "<their current role>", "toRole":
-  "admin"}`. `fromRole` is a compare-and-swap guard — if their role moved since
+  to admin**. Over the API this is a signed `acl/change-role/0.1` document
+  (`POST /v1/trust-tasks`, or any transport the VTC serves) with
+  `{"subject": "<did>", "fromRole": "<their current role>", "toRole":
+  "admin"}`; the ACL has no REST route. `fromRole` is a compare-and-swap guard — if their role moved since
   you read it, the change is refused rather than applied over the top.
   `PATCH /v1/members/{did}` with `{"role": "admin"}` is **not** this: it
   answers `adminRoleForbidden` and points here.
@@ -200,6 +202,38 @@ factor, not just a live session):
 You cannot promote *yourself*, with or without a passkey: admin elevation
 takes a second person, not a second factor. If you are the only admin and have
 lost your passkey, the offline `vtc … acl add` above is the break-glass.
+
+Making someone an **unrestricted** admin — an admin grant with no scopes,
+promoting a member who has none, or an admin invite — takes a second person
+in a stronger sense too: another unrestricted admin has to consent
+(VTI-APV-014). The request is sent to them, and you send the same operation
+again once one has approved.
+
+An approver without a device enrolled to receive the push answers from `cnm`.
+The requester relays the refusal they received (its `details.consentRequests`
+holds one VTC-signed request per approver), and the approver runs:
+
+```sh
+cnm consent show    refusal.json    # verify it and show what it asks
+cnm consent approve refusal.json    # asks you to type the requester's code
+cnm consent deny    refusal.json --reason "not expected"
+```
+
+`cnm` refuses a request the VTC did not sign, one addressed to another
+approver, and one that has expired. Approving needs the six-character code the
+requester's screen shows, typed or passed as `--match-code`. A code that
+differs means the change being approved is not the change that would run, so
+nothing is sent. Requests last 15 minutes.
+
+A community with a single unrestricted admin has
+nobody to ask, which is why `vtc setup` takes an optional `co_admin_did`. If
+you installed without one, add the second offline with `vtc acl add`, daemon
+stopped.
+
+Every offline ACL change — `vtc acl add` and `remove`, `vtc create-did-key
+--admin`, `vtc admin invite` — skips these checks by design, and each is
+recorded: the daemon writes an `AclBreakGlassWritten` audit row for it when it
+next starts, naming the command, the DID and the host it ran on.
 
 ## Part 2 — the first vetter
 

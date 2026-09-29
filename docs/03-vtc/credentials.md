@@ -217,7 +217,8 @@ each needing its `Trust-Task` header and a bearer token):
 
 | Task | Route | Who |
 |---|---|---|
-| List, register, delete endorsement types | `GET /endorsement-types`, `POST /endorsement-types`, `DELETE /endorsement-types/{type_uri}` | admin |
+| List endorsement types | `GET /endorsement-types` | admin |
+| Register, delete endorsement types | signed `vtc/endorsement-types/{register,delete}/0.1` documents at `POST /trust-tasks` (no REST route) | admin |
 | Issue an endorsement | `POST /credentials/endorsements` | issuer or admin |
 | List, show endorsements | `GET /credentials/endorsements`, `GET /credentials/endorsements/{id}` | issuer or admin |
 | Revoke an endorsement | `DELETE /credentials/endorsements/{id}` | issuer or admin |

@@ -151,7 +151,19 @@ pub async fn run_phase1_init(
     )?;
     writeln!(
         writer,
-        "  roll-outs; the entry is promoted to permanent on first auth."
+        "  roll-outs. Keep --admin-handoff: it lets the setup DID hand off once"
+    )?;
+    writeln!(
+        writer,
+        "  to a long-term admin the VTA mints, bounded by your own authority."
+    )?;
+    writeln!(
+        writer,
+        "  Without it the last step of setup is refused (VTI-ACL-053), and the"
+    )?;
+    writeln!(
+        writer,
+        "  marker cannot be added later — only by deleting and re-granting."
     )?;
     writeln!(writer)?;
     if let Some(cmd) = finalise_command {

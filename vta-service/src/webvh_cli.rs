@@ -231,10 +231,6 @@ pub async fn run_create_did(
 
     let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
-    // Offline CLI: no shared AppState, so create a local per-server
-    // auth-lock registry for any daemon-REST authentication a publish
-    // may need.
-    let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
     let deps = operations::did_webvh::CreateDidWebvhDeps {
         keys_ks: &keys_ks,
         imported_ks: &imported_ks,
@@ -246,10 +242,8 @@ pub async fn run_create_did(
         config: &config,
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
-        auth_locks: &auth_locks,
         acl_ks: None,
         // Offline: no mediator socket to lend, so the seam cannot choose
-        // TSP. Same reason as the `auth_locks` note above.
         #[cfg(feature = "tsp")]
         tsp: None,
     };
@@ -393,7 +387,6 @@ pub async fn run_delete_did(
     let auth = cli_super_admin();
     let did_resolver = vta_sdk::resolver::shared_did_resolver_from_env().await?;
     let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
-    let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
     let deps = operations::did_webvh::WebvhDeps {
         delete_cascade: Some(crate::operations::did_webvh::DeleteCascadeDeps {
             acl_ks: &acl_ks,
@@ -408,9 +401,7 @@ pub async fn run_delete_did(
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
-        auth_locks: &auth_locks,
         // Offline: no mediator socket to lend, so the seam cannot choose
-        // TSP. Same reason as the `auth_locks` note above.
         #[cfg(feature = "tsp")]
         tsp: None,
     };
@@ -626,7 +617,6 @@ pub async fn run_edit_did(
 
     let auth = cli_super_admin();
     let vta_did = config.vta_did.clone();
-    let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
     let deps = crate::operations::did_webvh::WebvhDeps {
         // `update` publishes a new log entry; it deletes nothing.
         delete_cascade: None,
@@ -638,9 +628,7 @@ pub async fn run_edit_did(
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
         didcomm_bridge: &didcomm_bridge,
-        auth_locks: &auth_locks,
         // Offline: no mediator socket to lend, so the seam cannot choose
-        // TSP. Same reason as the `auth_locks` note above.
         #[cfg(feature = "tsp")]
         tsp: None,
     };
@@ -717,7 +705,6 @@ pub async fn run_register_did(
     let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
-    let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
 
     let auth = cli_super_admin();
     let deps = operations::did_webvh::WebvhDeps {
@@ -731,9 +718,7 @@ pub async fn run_register_did(
         seed_store: &*seed_store,
         did_resolver: &did_resolver,
         didcomm_bridge: &didcomm_bridge,
-        auth_locks: &auth_locks,
         // Offline: no mediator socket to lend, so the seam cannot choose
-        // TSP. Same reason as the `auth_locks` note above.
         #[cfg(feature = "tsp")]
         tsp: None,
     };

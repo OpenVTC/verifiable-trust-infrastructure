@@ -261,7 +261,10 @@ mod tests {
         );
         let out = inline(&book, DID);
         assert!(out.contains("unverified"));
-        assert!(out.contains(YELLOW), "an unchecked claim must stand out");
+        assert!(
+            out.contains(YELLOW.code()),
+            "an unchecked claim must stand out"
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! `provision-integration` — shared library function driven by both the
-//! VTA CLI (`vta bootstrap provision-integration`) and the HTTP endpoint
-//! (`POST /bootstrap/provision-integration`).
+//! VTA CLI (`vta bootstrap provision-integration`) and the
+//! `provision/integration` Trust Task.
 //!
 //! See `docs/02-vta/provision-integration.md` for the full design.
 //!
@@ -124,11 +124,6 @@ pub struct ProvisionIntegrationDeps {
     pub config: Arc<RwLock<AppConfig>>,
     pub did_resolver: Option<DIDCacheClient>,
     pub didcomm_bridge: Arc<DIDCommBridge>,
-    /// Per-server webvh auth-cache mutex registry, shared with the rest
-    /// of the process via `AppState`. Needed so a provisioned
-    /// server-managed DID authenticates its publish to the hosting
-    /// daemon (challenge → VTA-signed JWS → Bearer token).
-    pub webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks,
 }
 
 impl From<&AppState> for ProvisionIntegrationDeps {
@@ -149,7 +144,6 @@ impl From<&AppState> for ProvisionIntegrationDeps {
             didcomm_bridge: state.didcomm_bridge.clone(),
             #[cfg(not(any(feature = "didcomm", feature = "tsp")))]
             didcomm_bridge: std::sync::Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder()),
-            webvh_auth_locks: state.webvh_auth_locks.clone(),
         }
     }
 }
@@ -502,7 +496,6 @@ pub async fn provision_integration(
                 config: &config,
                 did_resolver,
                 didcomm_bridge: &state.didcomm_bridge,
-                auth_locks: &state.webvh_auth_locks,
                 acl_ks: Some(&state.acl_ks),
                 // `ProvisionIntegrationDeps` carries no mediator socket, so the
                 // seam falls to DIDComm here. Provisioning is also the one moment
@@ -586,7 +579,9 @@ pub async fn provision_integration(
     // at mint time (X25519 KA isn't BIP-32 derived at its own path, so
     // `get_key_secret` can't recompute it). Skip the readback in that
     // case; the webvh branch still goes through `get_key_secret` so it
-    // exercises the same authz surface as any admin-triggered read.
+    // exercises the same authz surface as any export — `key-export`, scope,
+    // the exportability refusals and the durable `key.secret_export` row —
+    // sealed to the holder (VTI-VTA-030).
     let mut secrets = BTreeMap::new();
     // Extra signing keys, and the slot-tagged view of the pair they sit beside.
     // Both stay empty on the did:key / did:peer branches and for every v1
@@ -599,21 +594,25 @@ pub async fn provision_integration(
         let signing_secret_resp = super::keys::get_key_secret(
             &state.keys_ks,
             &state.imported_ks,
+            &state.contexts_ks,
+            &state.acl_ks,
             &state.seed_store,
             &state.audit,
             auth,
             &signing_key_id,
-            "provision-integration",
+            super::keys::ExportChannel::Sealed("provision-integration"),
         )
         .await?;
         let ka_secret_resp = super::keys::get_key_secret(
             &state.keys_ks,
             &state.imported_ks,
+            &state.contexts_ks,
+            &state.acl_ks,
             &state.seed_store,
             &state.audit,
             auth,
             &ka_key_id,
-            "provision-integration",
+            super::keys::ExportChannel::Sealed("provision-integration"),
         )
         .await?;
 
@@ -658,11 +657,13 @@ pub async fn provision_integration(
             let resp = super::keys::get_key_secret(
                 &state.keys_ks,
                 &state.imported_ks,
+                &state.contexts_ks,
+                &state.acl_ks,
                 &state.seed_store,
                 &state.audit,
                 auth,
                 key_id,
-                "provision-integration",
+                super::keys::ExportChannel::Sealed("provision-integration"),
             )
             .await?;
             additional_material.push(SlotKeyPair {
@@ -736,37 +737,16 @@ pub async fn provision_integration(
     // rollover. The ephemeral `client_did` is never written to the
     // ACL when rollover is in effect — its only role is opening the
     // bundle.
-    match super::acl::create_acl(
-        &state.acl_ks,
-        &state.audit,
-        &state.contexts_ks,
+    register_admin(
+        state,
         auth,
-        super::acl::CreateAclParams {
-            did: admin_did.clone(),
-            role: Role::Admin,
-            label: request.label().map(str::to_string),
-            allowed_contexts: allowed_contexts_for(admin_scope, &context),
-            ..Default::default()
-        },
-        "provision-integration",
+        &client_did,
+        &admin_did,
+        request.label().map(str::to_string),
+        allowed_contexts_for(admin_scope, &context),
+        &context,
     )
-    .await
-    {
-        Ok(_) => {}
-        // Re-running provision-integration against the same admin_did
-        // while the ACL row already exists is either a retry or an
-        // operator-driven refresh. Either way the intent is harmless
-        // — carry on without bumping the row, surface the conflict in
-        // the returned summary if callers need to log.
-        Err(AppError::Conflict(_)) => {
-            info!(
-                admin_did = %admin_did,
-                context = %context,
-                "ACL row already exists — reusing for provision-integration"
-            );
-        }
-        Err(e) => return Err(e),
-    }
+    .await?;
 
     // ── 5.5. Retire the ephemeral after admin rollover ──────────────
     //
@@ -959,6 +939,127 @@ pub async fn provision_integration(
 }
 
 use vta_sdk::hex::lower as hex_lower;
+
+/// Write the long-term admin's ACL row.
+///
+/// Two ways, chosen by who is asking:
+///
+/// - **The ephemeral itself, rolling over to a new DID, under a hand-off
+///   marker** (VTI-ACL-054): the successor is written and the ephemeral's row
+///   removed in one atomic step, bounded by the granter's recorded authority
+///   rather than by the ephemeral's own expiry
+///   ([`super::acl::exercise_handoff`]). It carries the ephemeral's capability
+///   narrowing, additive capabilities included.
+/// - **Anyone else** (an operator, a relayer, or an ephemeral with no marker):
+///   an ordinary grant, bounded by the caller's own entry (VTI-ACL-053). An
+///   expiring ephemeral without a marker is refused here (VTI-ACL-058), and
+///   the ephemeral is retired afterwards by
+///   [`retire_ephemeral_after_rollover`].
+async fn register_admin(
+    state: &ProvisionIntegrationDeps,
+    auth: &AuthClaims,
+    client_did: &str,
+    admin_did: &str,
+    label: Option<String>,
+    allowed_contexts: Vec<String>,
+    context: &str,
+) -> Result<(), AppError> {
+    let rolling_over_itself = admin_did != client_did && auth.did == client_did;
+    if rolling_over_itself && super::acl::holds_handoff(&state.acl_ks, client_did).await? {
+        let capabilities = get_acl_entry(&state.acl_ks, client_did)
+            .await?
+            .map(|e| e.capabilities)
+            .unwrap_or_default();
+        super::acl::exercise_handoff(
+            &state.acl_ks,
+            &state.audit,
+            &state.contexts_ks,
+            auth,
+            super::acl::HandOffSuccessor {
+                did: admin_did.to_string(),
+                role: Role::Admin,
+                label,
+                allowed_contexts,
+                capabilities,
+            },
+            "provision-integration",
+            Some(context),
+        )
+        .await?;
+        return Ok(());
+    }
+    if rolling_over_itself {
+        refuse_unmarked_expiring_rollover(state, client_did, context).await?;
+    }
+    match super::acl::create_acl(
+        &state.acl_ks,
+        &state.audit,
+        &state.contexts_ks,
+        auth,
+        super::acl::CreateAclParams {
+            did: admin_did.to_string(),
+            role: Role::Admin,
+            label,
+            allowed_contexts,
+            ..Default::default()
+        },
+        "provision-integration",
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        // Re-running provision-integration against the same admin_did while
+        // its row already exists is a retry or an operator-driven refresh:
+        // carry on without bumping the row. Only here — a hand-off that lost a
+        // race is not a retry, and its successor was never written.
+        Err(AppError::Conflict(_)) => {
+            info!(
+                admin_did = %admin_did,
+                context = %context,
+                "ACL row already exists — reusing for provision-integration"
+            );
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Refuse an ephemeral that rolls itself over with an expiring entry and no
+/// hand-off marker, with an error that names the fix.
+///
+/// The long-term row is permanent, so an ordinary grant from an expiring caller
+/// is refused by VTI-ACL-053 anyway, but its generic text ("give it an expiry
+/// no later than yours") points the operator at the wrong remedy: the
+/// successor must be permanent, and what is missing is the granter's one-time
+/// hand-off (VTI-ACL-054). The marker is set only at creation (VTI-ACL-055),
+/// so the fix is a re-grant, and the message prints it.
+async fn refuse_unmarked_expiring_rollover(
+    state: &ProvisionIntegrationDeps,
+    client_did: &str,
+    context: &str,
+) -> Result<(), AppError> {
+    let Some(entry) = get_acl_entry(&state.acl_ks, client_did).await? else {
+        return Ok(());
+    };
+    let Some(expires_at) = entry.expires_at else {
+        return Ok(());
+    };
+    // Re-grant exactly the scope it holds; an unrestricted admin takes no
+    // `--contexts`, and a row authorized nowhere is shown the context it
+    // asked to provision into.
+    let contexts = match entry.act_scope() {
+        vti_common::acl::ActScope::Contexts(cs) => format!(" --contexts {}", cs.join(",")),
+        vti_common::acl::ActScope::All => String::new(),
+        vti_common::acl::ActScope::None => format!(" --contexts {context}"),
+    };
+    Err(AppError::Forbidden(format!(
+        "{client_did}'s entry expires at {expires_at} and carries no one-time hand-off, so \
+         it cannot roll over to the permanent long-term admin (VTI-ACL-053, VTI-ACL-054). \
+         The hand-off is set only when the entry is created — re-grant it, then retry: \
+         `pnm acl delete --did {client_did}` then `pnm acl create --did {client_did} \
+         --role admin{contexts} --expires 1h --handoff`"
+    )))
+}
 
 /// Retire the ephemeral `client_did`'s ACL row after the VTA has rolled
 /// the long-term admin over to a freshly-minted `admin_did`. Emits an
@@ -1165,32 +1266,16 @@ async fn provision_admin_rotation(
     //
     // Re-run safety: a second AdminRotation against the same admin_did
     // hits a Conflict — same handling as the TemplateBootstrap path.
-    match super::acl::create_acl(
-        &state.acl_ks,
-        &state.audit,
-        &state.contexts_ks,
+    register_admin(
+        state,
         auth,
-        super::acl::CreateAclParams {
-            did: admin_did.clone(),
-            role: Role::Admin,
-            label: request.label().map(str::to_string),
-            allowed_contexts: allowed_contexts_for(admin_scope, context),
-            ..Default::default()
-        },
-        "provision-integration",
+        client_did,
+        &admin_did,
+        request.label().map(str::to_string),
+        allowed_contexts_for(admin_scope, context),
+        context,
     )
-    .await
-    {
-        Ok(_) => {}
-        Err(AppError::Conflict(_)) => {
-            info!(
-                admin_did = %admin_did,
-                context = %context,
-                "ACL row already exists — reusing for provision-integration (admin rotation)"
-            );
-        }
-        Err(e) => return Err(e),
-    }
+    .await?;
 
     // ── 2.5. Retire the ephemeral after admin rollover ──────────────
     //
@@ -2805,6 +2890,185 @@ mod tests {
         assert_eq!(swap.outcome, "success");
         assert_eq!(swap.channel.as_deref(), Some("provision-integration"));
         assert_eq!(swap.context_id.as_deref(), Some("ctx-swap"));
+    }
+
+    /// An ephemeral granted a time-boxed row (`pnm contexts create
+    /// --admin-expires 1h`) that is itself the authenticated caller cannot
+    /// roll over to a permanent successor: nothing it writes may outlive it
+    /// (VTI-ACL-053). The row carries no marker that tells a bootstrap
+    /// hand-off apart from any other time-boxed admin, and exempting the
+    /// rollover would let every time-boxed admin make itself permanent. The
+    /// grant is refused before anything is minted, and the ephemeral keeps its
+    /// row. Grant the ephemeral without an expiry (the rollover retires it), or
+    /// have an operator whose own entry does not expire run the provisioning.
+    #[tokio::test]
+    async fn an_expiring_ephemeral_cannot_roll_over_to_a_permanent_successor() {
+        use crate::acl::{AclEntry, Role, store_acl_entry};
+
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "ctx-eph", "Ephemeral ctx")
+            .await
+            .expect("create context");
+
+        let request = signed_admin_rotation_request("vta-admin", "ctx-eph").await;
+        let client_did = request.holder().to_string();
+        let expires = vti_common::auth::session::now_epoch() + 3600;
+        let ephemeral_row = AclEntry::new(client_did.clone(), Role::Admin, "operator")
+            .with_contexts(vec!["ctx-eph".into()])
+            .with_expires_at(Some(expires));
+        store_acl_entry(&deps.acl_ks, &ephemeral_row)
+            .await
+            .expect("seed ephemeral ACL row");
+
+        let auth = AuthClaims {
+            did: client_did.clone(),
+            allowed_contexts: vec!["ctx-eph".into()],
+            ..super_admin_claims()
+        };
+        let err = provision_integration(
+            &deps,
+            &auth,
+            ProvisionIntegrationParams {
+                request,
+                context: "ctx-eph".into(),
+                admin_scope: AdminScope::Context,
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .err()
+        .expect("a permanent successor would outlive its granter");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("VTI-ACL-053")),
+            "{err:?}"
+        );
+        // The refusal names the fix — the missing one-time hand-off, re-granted
+        // at creation — not the generic "give it an expiry" (#1738's bound).
+        let AppError::Forbidden(msg) = &err else {
+            unreachable!()
+        };
+        assert!(msg.contains("VTI-ACL-054"), "{msg}");
+        assert!(
+            msg.contains(&format!("pnm acl delete --did {client_did}")),
+            "{msg}"
+        );
+        assert!(
+            msg.contains(&format!(
+                "pnm acl create --did {client_did} --role admin --contexts ctx-eph --expires 1h --handoff"
+            )),
+            "{msg}"
+        );
+
+        let kept = crate::acl::get_acl_entry(&deps.acl_ks, &client_did)
+            .await
+            .expect("acl get")
+            .expect("the ephemeral is not retired by a refused rollover");
+        assert_eq!(kept.expires_at, Some(expires));
+    }
+
+    /// The same flow with the granter's hand-off marker (VTI-ACL-054): the
+    /// ephemeral rolls over once to a permanent successor, and its own row is
+    /// consumed in the same step.
+    #[tokio::test]
+    async fn a_marked_ephemeral_rolls_over_once() {
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "ctx-eph", "Ephemeral ctx")
+            .await
+            .expect("create context");
+
+        let request = signed_admin_rotation_request("vta-admin", "ctx-eph").await;
+        let client_did = request.holder().to_string();
+        crate::operations::acl::create_acl(
+            &deps.acl_ks,
+            &deps.audit,
+            &deps.contexts_ks,
+            &super_admin_claims(),
+            crate::operations::acl::CreateAclParams {
+                did: client_did.clone(),
+                role: crate::acl::Role::Admin,
+                allowed_contexts: vec!["ctx-eph".into()],
+                expires_at: Some(vti_common::auth::session::now_epoch() + 3600),
+                handoff: true,
+                ..Default::default()
+            },
+            "test",
+        )
+        .await
+        .expect("the operator marks the ephemeral");
+
+        let auth = AuthClaims {
+            did: client_did.clone(),
+            allowed_contexts: vec!["ctx-eph".into()],
+            ..super_admin_claims()
+        };
+        let params = || ProvisionIntegrationParams {
+            request: request.clone(),
+            context: "ctx-eph".into(),
+            admin_scope: AdminScope::Context,
+            assertion_mode: AssertionMode::PinnedOnly,
+            vc_validity: None,
+        };
+        let output = provision_integration(&deps, &auth, params())
+            .await
+            .map_err(|e| format!("{e:?}"))
+            .expect("the hand-off");
+
+        let successor = crate::acl::get_acl_entry(&deps.acl_ks, &output.summary.admin_did)
+            .await
+            .expect("acl get")
+            .expect("successor row");
+        assert_eq!(successor.expires_at, None, "the operator's expiry");
+        assert!(successor.handoff.is_none());
+        assert!(
+            crate::acl::get_acl_entry(&deps.acl_ks, &client_did)
+                .await
+                .expect("acl get")
+                .is_none(),
+            "the ephemeral's row is consumed"
+        );
+
+        // Once: the ephemeral no longer has standing to do it again.
+        assert!(provision_integration(&deps, &auth, params()).await.is_err());
+    }
+
+    /// `vta bootstrap provision-integration` runs offline as the synthesised
+    /// `cli:provision-integration` principal, which has no ACL entry. The
+    /// admin grant must still be written: v0.44.0 refused it with "has no ACL
+    /// entry of its own" (VTI-ACL-053 applied to a non-caller).
+    #[tokio::test]
+    async fn offline_cli_provision_integration_writes_the_admin_grant() {
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "webvh", "webvh")
+            .await
+            .expect("create context");
+
+        let auth = AuthClaims::unsafe_local_cli_super_admin("provision-integration");
+        let request = signed_admin_rotation_request("vta-admin", "webvh").await;
+
+        let output = provision_integration(
+            &deps,
+            &auth,
+            ProvisionIntegrationParams {
+                request,
+                context: "webvh".into(),
+                admin_scope: AdminScope::Context,
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .expect("offline provision-integration");
+
+        let entry = crate::acl::get_acl_entry(&deps.acl_ks, &output.summary.admin_did)
+            .await
+            .expect("ACL lookup")
+            .expect("admin grant written");
+        assert_eq!(entry.role, crate::acl::Role::Admin);
+        assert_eq!(entry.created_by, "cli:provision-integration");
     }
 
     #[tokio::test]

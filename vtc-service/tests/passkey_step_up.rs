@@ -54,9 +54,6 @@ fn wrap_options<T: serde::de::DeserializeOwned>(inner: &serde_json::Value) -> T 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/login/start/0.2";
 const FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
-/// Promotion is a role transition, so it is `acl/change-role` — not
-/// `vtc/members/update`, which refuses `role: admin` outright (#1645).
-const CHANGE_ROLE_TASK: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 
 struct Fixture {
     state: AppState,
@@ -470,88 +467,9 @@ async fn plain_login_is_unchanged_by_the_purpose_field() {
     assert!(!session.elevation_active(now_epoch()));
 }
 
-#[tokio::test]
-async fn a_step_up_authorises_the_promotion_it_was_run_for() {
-    // The whole point of the API split, end to end: the ceremony that proves
-    // the operator is present is a *different request* from the operation it
-    // authorises, and the elevation window is what ties them together.
-    let (mut fix, other_did) = build_fixture().await;
-    let admin = fix.admin_did.clone();
-    let (_session_id, token) = session_for(&fix, &admin).await;
-
-    // The second enrolled admin is already `Admin` in the fixture, so promote
-    // a plain member instead.
-    let target = "did:key:zMemberToPromote";
-    vtc_service::acl::store_acl_entry(
-        &fix.state.acl_ks,
-        &vtc_service::acl::VtcAclEntry {
-            did: target.into(),
-            role: vtc_service::acl::VtcRole::Member,
-            label: None,
-            allowed_contexts: vec![],
-            created_at: now_epoch(),
-            created_by: admin.clone(),
-            updated_at: None,
-            updated_by: None,
-            expires_at: None,
-        },
-    )
-    .await
-    .unwrap();
-    vtc_service::members::store_member(
-        &fix.state.members_ks,
-        &vtc_service::members::Member::fresh(target),
-    )
-    .await
-    .unwrap();
-    let _ = other_did;
-
-    // Without an elevation the promotion is refused, and says why.
-    let promote = json!({ "fromRole": "member", "toRole": "admin" });
-    let (status, body) = request_method(
-        &fix.router,
-        "PATCH",
-        &format!("/v1/acl/{target}"),
-        CHANGE_ROLE_TASK,
-        Some(&token),
-        Some(promote.clone()),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
-    assert_eq!(body["error"], "step_up_required", "got {body}");
-
-    // Step up, then retry — and this time the promotion completes.
-    let (status, body) = step_up_start(&fix, Some(&token)).await;
-    assert_eq!(status, StatusCode::OK, "start: {body}");
-    let auth_id = body["authId"].as_str().unwrap().to_string();
-    let options: RequestChallengeResponse = wrap_options(&body["options"]);
-    let assertion = fix.authenticator.authenticate(&options, RP_ORIGIN);
-    let (status, _) = request(
-        &fix.router,
-        "/v1/auth/passkey-login/finish",
-        FINISH_TASK,
-        Some(&token),
-        Some(json!({ "auth_id": auth_id, "credential": assertion })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    let (status, body) = request_method(
-        &fix.router,
-        "PATCH",
-        &format!("/v1/acl/{target}"),
-        CHANGE_ROLE_TASK,
-        Some(&token),
-        Some(promote),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "the elevation must open the gate, got {body}"
-    );
-    assert_eq!(body["entry"]["role"], "admin", "got {body}");
-}
+// A promotion is a signed `acl/change-role`, authorized by a passkey gesture
+// bound to that one document rather than by a session elevation:
+// `signed_step_up.rs` drives it end to end.
 
 #[tokio::test]
 async fn a_step_up_ceremony_cannot_be_replayed() {

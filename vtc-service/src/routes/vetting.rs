@@ -31,8 +31,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 use vta_sdk::openapi::{
-    VetterGrant01Payload, VetterGrant01Response, VetterList01Payload, VetterList01Response,
-    VetterResend01Response, VetterShow01Payload, VetterShow01Response,
+    VetterGrant01Payload, VetterGrant01Response, VetterResend01Response, VetterShow01Payload,
+    VetterShow01Response,
 };
 use vta_sdk::protocols::vetting::{
     AutoGrantConfig, AutoGrantStatus, VetterGrantListResponse, read_checked,
@@ -123,38 +123,6 @@ pub async fn resend_vetter(
     ))
 }
 
-/// The public vetter listing, as applicants see it.
-///
-/// The body and the answer are `vtc/vetting/vetters/list/0.1`'s, and both go
-/// through [`crate::vetting::profiles::list`], so the console previews exactly
-/// what `POST /v1/trust-tasks` returns to an applicant with the same filters.
-#[utoipa::path(
-    post, path = "/vetting/vetters/list",
-    operation_id = "vettingVetterListing", tag = "vetting",
-    security(("bearer_jwt" = [])),
-    request_body = VetterList01Payload,
-    responses(
-        (status = 200, description = "A page of listed vetters", body = VetterList01Response),
-        (status = 400, description = "A filter breaks its bounds, or the cursor was issued for other filters"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_listed_vetters(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    // Read as JSON, then checked against the published schema before parsing:
-    // the body is `vtc/vetting/vetters/list/0.1`'s payload, as documented above.
-    Json(body): Json<serde_json::Value>,
-) -> Result<Json<VetterList01Response>, AppError> {
-    let body: VetterList01Payload = read_checked(&body)
-        .map(VetterList01Payload)
-        .map_err(|e| AppError::Validation(e.to_string()))?;
-    Ok(Json(
-        crate::vetting::profiles::list(&state, &body).await?.into(),
-    ))
-}
-
 /// One vetter's grant status, as an applicant would be told it.
 ///
 /// The body and the answer are `vtc/vetting/vetters/show/0.1`'s, and both go
@@ -231,7 +199,7 @@ pub async fn put_auto_grant(
 }
 
 /// Whether a withdrawn statement touches a standing membership.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RevocationReviewState {
     /// No current member was admitted on the statement.
@@ -293,6 +261,17 @@ pub async fn list_revocations(
     _admin: AdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<VettingRevocationListResponse>, AppError> {
+    Ok(Json(VettingRevocationListResponse {
+        revocations: revocation_rows(&state).await?,
+    }))
+}
+
+/// Every withdrawal notice, newest first, with the join requests and standing
+/// members it touches — what `vtc/vetting/revocations/list/0.1` pages, on the
+/// route and the spine alike.
+pub(crate) async fn revocation_rows(
+    state: &AppState,
+) -> Result<Vec<VettingRevocationRow>, AppError> {
     // (issuer, statement id) → approved requests that counted it.
     let mut counted_by: HashMap<(String, String), Vec<(Uuid, String)>> = HashMap::new();
     for request in list_join_requests(&state.join_requests_ks).await? {
@@ -342,5 +321,5 @@ pub async fn list_revocations(
             recorded_at: notice.recorded_at,
         });
     }
-    Ok(Json(VettingRevocationListResponse { revocations: rows }))
+    Ok(rows)
 }

@@ -1,9 +1,26 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { VetterGrantRow } from "@/lib/wire-types";
 import { VettersPanel } from "@/plugins/vetting/VettersPanel";
-import { type MockRoute, mockFetch, renderWithProviders } from "@/test/render";
+import {
+  MEMBERS_LIST_TASK,
+  type MockRoute,
+  mockFetch,
+  renderWithProviders,
+  sentPayloads,
+  taskRoute,
+} from "@/test/render";
+
+// Naming a vetter is a signed document; the test browser holds no key, so it
+// goes through the unsigned stand-in to the `mockFetch` table.
+vi.mock("@/lib/api", async (original) => ({
+  ...(await original<typeof import("@/lib/api")>()),
+  postSignedRead: (await import("@/test/signed-read")).unsignedRead,
+  postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
+}));
+
+const GRANT_TASK = "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
 
 const CAROL = "did:key:z6MkCarolCarolCarolCarolCarolCarolCarol";
 const DAN = "did:key:z6MkDanDanDanDanDanDanDanDanDanDanDanDan";
@@ -55,15 +72,13 @@ const member = (did: string, label: string) => ({
 
 function routes(extra: MockRoute[] = []): MockRoute[] {
   return [
-    { path: "/v1/vetting/vetters", body: { vetters: GRANTS } },
-    {
-      path: "/v1/vetting/auto-grant",
-      body: { enabled: false, sweepMinutes: 60, validitySeconds: 31_536_000 },
-    },
-    {
-      path: "/v1/members",
-      body: { items: [member(CAROL, "Carol"), member(ERIN, "Erin")] },
-    },
+    taskRoute("https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1", {
+      items: GRANTS,
+    }),
+    taskRoute("https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1", {
+      autoGrant: { enabled: false, sweepMinutes: 60, validitySeconds: 31_536_000 },
+    }),
+    taskRoute(MEMBERS_LIST_TASK, { items: [member(CAROL, "Carol"), member(ERIN, "Erin")] }),
     { path: "/v1/acl", body: { entries: [], truncated: false } },
     ...extra,
   ];
@@ -148,17 +163,12 @@ describe("VettersPanel", () => {
   it("refuses a validity beyond two years, then grants within the bounds", async () => {
     const requests = mockFetch(
       routes([
-        {
-          method: "POST",
-          path: "/v1/vetting/vetters",
-          status: 201,
-          body: {
-            endorsementId: "grant-erin",
-            credentialId: "urn:uuid:erin",
-            validFrom: "2026-09-12T00:00:00Z",
-            validUntil: "2026-10-12T00:00:00Z",
-          },
-        },
+        taskRoute(GRANT_TASK, {
+          endorsementId: "grant-erin",
+          credentialId: "urn:uuid:erin",
+          validFrom: "2026-09-12T00:00:00Z",
+          validUntil: "2026-10-12T00:00:00Z",
+        }),
       ]),
     );
     renderWithProviders(<VettersPanel />);
@@ -187,17 +197,10 @@ describe("VettersPanel", () => {
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Grant vetter role" }));
 
-    await waitFor(() =>
-      expect(
-        requests.some((r) => r.method === "POST" && r.url === "/v1/vetting/vetters"),
-      ).toBe(true),
-    );
-    const grant = requests.find(
-      (r) => r.method === "POST" && r.url === "/v1/vetting/vetters",
-    )!;
-    expect(grant.body).toEqual({ memberDid: ERIN, validitySeconds: 30 * 86_400 });
-    expect(grant.headers.get("Trust-Task")).toBe(
-      "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1",
-    );
+    await waitFor(() => expect(sentPayloads(requests, GRANT_TASK)).toHaveLength(1));
+    expect(sentPayloads(requests, GRANT_TASK)[0]).toEqual({
+      memberDid: ERIN,
+      validitySeconds: 30 * 86_400,
+    });
   });
 });

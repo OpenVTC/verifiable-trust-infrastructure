@@ -107,6 +107,17 @@ pub const VETTER_PROFILES: &str = "vetter_profiles";
 /// requires the record to be **shared across every binding** — see
 /// `crate::trust_tasks::accepted_ids`.
 pub const ACCEPTED_IDS: &str = "accepted_ids";
+/// Git namespaces (`crate::git_ns`): the namespaces this community has bound
+/// on the forges, the repositories in them, the git rights recorded on each,
+/// and forge-account link attempts. The source of truth for every git right
+/// the community publishes — the registry and the forge are projections of it.
+pub const GIT_NS: &str = "git_ns";
+/// Outstanding `git-ns/bridge/job` jobs and their results.
+pub const GIT_NS_JOBS: &str = "git_ns_jobs";
+/// The mirror of what the git-namespace projection has published to the Trust
+/// Registry, and its audit-tail cursor. A cache of a remote effect, rebuilt by
+/// reconciling against [`GIT_NS`].
+pub const GIT_NS_PROJECTION: &str = "git_ns_projection";
 
 /// Console signing-key delegations (#1684): one row per console `did:key` at
 /// `console_key:<consoleDid>`, saying which admin DID that key may act as.
@@ -115,6 +126,36 @@ pub const ACCEPTED_IDS: &str = "accepted_ids";
 /// is — it carries no role and confers nothing on its own, so a console key
 /// never appears in `acl list`. See `crate::acl::console_key`.
 pub const CONSOLE_KEYS: &str = "console_keys";
+
+/// Operation-bound step-up marks (#1641): a pending mark per outstanding
+/// WebAuthn challenge (`pending:<challenge>`) and a redeemable one per
+/// recorded gesture (`mark:<adminDid>:<digest>`), each living 300 s. See
+/// `crate::acl::bound_step_up`.
+pub const STEP_UP_MARKS: &str = "step_up_marks";
+
+/// Members' step-up passkeys (`auth/passkey/enroll/invite/0.2`,
+/// `purpose: stepUp`): the invites (`invite:<tokenHash>`), redemption and
+/// revocation ceremonies, and the credentials themselves in the passkey
+/// store's own row format. A keyspace of its own **by construction**: login and
+/// session step-up read [`PASSKEY`] only, so a step-up passkey can never open
+/// or elevate a session. See `crate::step_up_passkey`.
+pub const STEP_UP_PASSKEYS: &str = "step_up_passkeys";
+
+/// Second-party consent for unrestricted admin authority (VTI-APV-014): the
+/// pending requests (`pending:<digest>`, indexed by `wire:<wireDigest>`) and
+/// completed grants (`grant:<digest>:<requester>`) of
+/// `vti_common::task_consent`. See `crate::acl::admin_consent`.
+pub const TASK_CONSENT: &str = "task_consent";
+
+/// Member pushes in flight and recently finished (`push:<id>`): the signed
+/// Trust Task, the transports still to try, and how it ended. Encrypted at rest
+/// under the storage key. See `crate::member_push`.
+pub const MEMBER_PUSHES: &str = "member_pushes";
+
+/// In-flight backup bundles (#1641): `bundle:<id>` records and `chunks:<id>`
+/// manifests for the chunked `backup/*` transfer, whose bytes are staged under
+/// `<data_dir>/backups`. See `vti_common::backup_transfer`.
+pub const BACKUP_BUNDLES: &str = "backup_bundles";
 
 /// Every keyspace the daemon opens, in `AppState` field order. The
 /// setup wizard pre-creates exactly this set; `server::run` opens
@@ -155,6 +196,14 @@ pub const ALL: &[&str] = &[
     VETTER_PROFILES,
     ACCEPTED_IDS,
     CONSOLE_KEYS,
+    STEP_UP_MARKS,
+    STEP_UP_PASSKEYS,
+    TASK_CONSENT,
+    MEMBER_PUSHES,
+    BACKUP_BUNDLES,
+    GIT_NS,
+    GIT_NS_JOBS,
+    GIT_NS_PROJECTION,
 ];
 
 /// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
@@ -206,6 +255,10 @@ pub const BACKED_UP: &[&str] = &[
     // A vetter's published profile is theirs to replace, not the community's to
     // reconstruct: a restore without it would silently unlist every vetter.
     VETTER_PROFILES,
+    // Who owns and who may commit to each governed repository. Restoring
+    // without it would restore a community whose published rights no longer
+    // have a source, and the next projection pass would withdraw them all.
+    GIT_NS,
 ];
 
 /// Keyspaces deliberately omitted from backup (P3.9): ephemeral auth,
@@ -245,6 +298,35 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // gesture. Nothing else goes with it: the ACL rows, the passkeys and the
     // bearer login all come back with the backup.
     CONSOLE_KEYS,
+    // Operation-bound step-up marks. Each authorizes one operation for five
+    // minutes and is spent by it; a restored mark would at best be expired and
+    // at worst let a passkey gesture made on one host authorize an act on
+    // another.
+    STEP_UP_MARKS,
+    // Members' step-up passkeys, excluded for the reason `passkey` is: a
+    // credential is bound to this relying party, and a restore into another
+    // host must not arrive with gestures that authorize break-glass there. A
+    // member re-enrols through a fresh invite.
+    STEP_UP_PASSKEYS,
+    // Consent requests and grants for unrestricted admin. Both live minutes
+    // and bind one operation against the ACL as it stood; restored elsewhere,
+    // a grant would authorize an act the approvers never saw on that host.
+    TASK_CONSENT,
+    // Pushes in flight: delivery bookkeeping for this deployment's own
+    // outbox, whose entries are not carried either. Restored elsewhere, a push
+    // would be re-sent by a node that never queued it.
+    MEMBER_PUSHES,
+    // In-flight backup transfers. A bundle is a five-minute conversation with
+    // one operator about one set of staged bytes, which a restore elsewhere
+    // does not have — and a backup that contained its own transfer state would
+    // be a backup of itself.
+    BACKUP_BUNDLES,
+    // Bridge jobs are convergent and re-derived: the projector sends the
+    // desired roles again, and an unfinished create shows as `pendingCreate`.
+    GIT_NS_JOBS,
+    // A mirror of the registry, like `registry_records`: rebuilt by the next
+    // reconciliation against the restored `git_ns`.
+    GIT_NS_PROJECTION,
 ];
 
 #[cfg(test)]
@@ -256,7 +338,10 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 35, "ALL must list every AppState keyspace");
+        // 38 top-level `*_ks` fields plus the three `AppState::git_ns` carries,
+        // plus the 2 hidden-vetting keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`)
+        // from the `zkp-pcs` development branch.
+        assert_eq!(ALL.len(), 43, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

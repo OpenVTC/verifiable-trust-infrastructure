@@ -22,11 +22,13 @@ pub(crate) async fn run(
             admin_label,
             admin_expires,
             admin_holder,
+            admin_handoff,
         } => match resolve_admin_acl_options(
             admin_did,
             admin_label,
             admin_expires.as_deref(),
             admin_holder,
+            admin_handoff,
         ) {
             Ok(admin) => {
                 contexts::cmd_context_create(client, &id, &name, description, parent, admin).await
@@ -37,11 +39,24 @@ pub(crate) async fn run(
             id,
             name,
             did,
+            clear_did,
             description,
-        } => contexts::cmd_context_update(client, &id, name, did, description).await,
-        ContextCommands::UpdateDid { id, did } => {
-            contexts::cmd_context_update_did(client, &id, &did).await
+        } => {
+            // The identity change goes through update-did, never
+            // `contexts/update` — which cannot clear and needs super-admin.
+            if clear_did {
+                if name.is_some() || description.is_some() {
+                    contexts::cmd_context_update(client, &id, name, None, description).await?;
+                }
+                contexts::cmd_context_clear_did(client, &id).await
+            } else {
+                contexts::cmd_context_update(client, &id, name, did, description).await
+            }
         }
+        ContextCommands::UpdateDid { id, did, clear } => match did {
+            Some(did) if !clear => contexts::cmd_context_update_did(client, &id, &did).await,
+            _ => contexts::cmd_context_clear_did(client, &id).await,
+        },
         ContextCommands::Delete { id, yes } => contexts::cmd_context_delete(client, &id, yes).await,
         ContextCommands::Bootstrap {
             id,
@@ -156,6 +171,7 @@ fn resolve_admin_acl_options(
     admin_label: Option<String>,
     admin_expires: Option<&str>,
     admin_holder: bool,
+    admin_handoff: bool,
 ) -> Result<contexts::AdminAclOptions, Box<dyn std::error::Error>> {
     let expires_at = match admin_expires {
         Some(s) => Some(
@@ -170,5 +186,6 @@ fn resolve_admin_acl_options(
         expires_at,
         expires_duration: admin_expires.map(str::to_string),
         holder: admin_holder,
+        handoff: admin_handoff,
     })
 }

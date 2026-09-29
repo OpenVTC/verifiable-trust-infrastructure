@@ -177,6 +177,151 @@ pub async fn generate_config_attestation(
     })
 }
 
+/// Serializes exports: the guard's reservation already refuses a second
+/// concurrent one, and this keeps the refusal from racing the audit row.
+static MNEMONIC_EXPORT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Release the TEE VTA's BIP-39 mnemonic **sealed** to the requester
+/// (`spec/vta/attestation/mnemonic-export/1.0`): super admin holding
+/// `key-export`, inside the first-boot export window, one time.
+///
+/// `channel` is the audit channel of an end-to-end transport (DIDComm authcrypt
+/// or TSP); the caller refuses every other transport before reaching here. The
+/// words are the VTA's root derivation material (VTI-VTA-001, VTI-KEY-033):
+/// sealed to the request's `client_did` under an `Attested` assertion whose
+/// quote binds `SHA256(client_ed25519 || nonce || producer_ed25519)`, and sent
+/// only over a channel no intermediary can read, so neither the words nor the
+/// sealed bundle exist anywhere TLS terminates.
+///
+/// Two-phase: the entropy is consumed only once the bundle exists and the
+/// release is recorded, so a failure cannot lose the root seed, and a failure
+/// leaves the export available to retry inside the window.
+pub async fn export_mnemonic_sealed(
+    state: &crate::server::AppState,
+    auth: &crate::auth::AuthClaims,
+    req: vta_sdk::sealed_transfer::BootstrapRequest,
+    channel: &str,
+) -> Result<vta_sdk::protocols::attestation_management::MnemonicExportResultBody, AppError> {
+    use sha2::{Digest, Sha256};
+    use vta_sdk::sealed_transfer::{
+        AssertionProof, AttestationQuoteAssertion, ProducerAssertion, SealedPayloadV1,
+        SeedMnemonicBundle, armor, bundle_digest, generate_ed25519_keypair, seal_payload,
+    };
+
+    auth.require_super_admin()?;
+    // The root seed is the export of every key this VTA holds: the same
+    // capability as any other export (VTI-VTA-003), not only the role.
+    crate::operations::keys::ensure_may_export(&state.acl_ks, auth, "attestation/mnemonic-export")
+        .await?;
+
+    if req.version != 1 {
+        return Err(AppError::Validation(format!(
+            "unsupported request version: {}",
+            req.version
+        )));
+    }
+    let client_ed25519_pub = req
+        .decode_client_ed25519_pub()
+        .map_err(|e| AppError::Validation(format!("invalid client_did: {e}")))?;
+    let client_x25519_pub = req
+        .decode_client_x25519_pub()
+        .map_err(|e| AppError::Validation(format!("invalid client_did: {e}")))?;
+    let bundle_id = req
+        .decode_nonce()
+        .map_err(|e| AppError::Validation(format!("invalid nonce: {e}")))?;
+
+    let tee = state.tee.as_ref().ok_or_else(|| {
+        tee_attestation_error("mnemonic export not available (TEE mode not active)")
+    })?;
+    let guard = tee.mnemonic_guard.as_ref().ok_or_else(|| {
+        tee_attestation_error(
+            "mnemonic export not available (TEE mode not active or no KMS bootstrap)",
+        )
+    })?;
+
+    let _serial = MNEMONIC_EXPORT_LOCK.lock().await;
+    // Two-phase: the entropy is consumed only once the bundle exists and the
+    // release is recorded, so a failure here cannot lose the root seed.
+    let reservation = guard.reserve()?;
+
+    let (_producer_seed, producer_ed_pub) = generate_ed25519_keypair();
+    let producer_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&producer_ed_pub);
+    let mut hasher = Sha256::new();
+    hasher.update(client_ed25519_pub);
+    hasher.update(bundle_id);
+    hasher.update(producer_ed_pub);
+    let user_data = hasher.finalize();
+    let report = tee
+        .state
+        .provider
+        .attest(user_data.as_slice(), &bundle_id)
+        .map_err(|e| AppError::Internal(format!("tee attest failed: {e}")))?;
+    let assertion = ProducerAssertion {
+        producer_did,
+        proof: AssertionProof::Attested(AttestationQuoteAssertion {
+            format: format!("{}", report.tee_type),
+            quote_b64: report.evidence,
+        }),
+    };
+    let vta_did = state.config.read().await.vta_did.clone();
+    let payload = SealedPayloadV1::SeedMnemonic(Box::new(SeedMnemonicBundle {
+        mnemonic: reservation.mnemonic().to_string(),
+        vta_did,
+    }));
+    let nonce_store =
+        crate::sealed_nonce_store::PersistentNonceStore::new(state.sealed_nonces_ks.clone());
+    let sealed = seal_payload(
+        &client_x25519_pub,
+        bundle_id,
+        assertion,
+        &payload,
+        &nonce_store,
+    )
+    .await;
+    drop(payload);
+    let bundle =
+        sealed.map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;
+    let digest = bundle_digest(&bundle);
+
+    // Recorded durably before the bundle leaves, and a failed write refuses
+    // the export — the same rule as `keys/export-secret` (VTI-VTA-003). The
+    // row names the caller, the recipient key and the transport; never the
+    // words.
+    crate::audit::record_with_detail(
+        &state.audit_sink,
+        "seed.mnemonic_export",
+        &auth.did,
+        Some(&req.client_did),
+        "success",
+        Some(channel),
+        None,
+        Some(&format!("bundle_sha256:{digest}")),
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(
+            target: vta_audit::AUDIT_WRITE_FAILURE_TARGET,
+            error = %e, actor = %auth.did,
+            "mnemonic export refused: its audit row could not be written"
+        );
+        AppError::Internal(
+            "the mnemonic was not released: the export could not be recorded in the audit \
+             trail, and an unrecorded export is not permitted (VTI-VTA-003)"
+                .into(),
+        )
+    })?;
+
+    let window_remaining_secs = reservation.window_remaining_secs();
+    reservation.commit();
+    Ok(
+        vta_sdk::protocols::attestation_management::MnemonicExportResultBody {
+            bundle: armor::encode(&bundle),
+            digest,
+            window_remaining_secs,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::BASE64;

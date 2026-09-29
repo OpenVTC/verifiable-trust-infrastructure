@@ -105,6 +105,12 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         vetting_pcs_issue_ks: store.keyspace("vetting_pcs_issue").unwrap(),
         accepted_ids_ks: store.keyspace("accepted_ids").unwrap(),
         console_keys_ks: store.keyspace("console_keys").unwrap(),
+        step_up_marks_ks: store.keyspace("step_up_marks").unwrap(),
+        step_up_passkeys_ks: store.keyspace("step_up_passkeys").unwrap(),
+        task_consent_ks: store.keyspace("task_consent").unwrap(),
+        member_pushes_ks: store.keyspace("member_pushes").unwrap(),
+        tsp_reach: std::sync::Arc::new(vti_common::tsp_reach::TspReachability::new()),
+        backup_bundles_ks: store.keyspace("backup_bundles").unwrap(),
         schemas_ks: store.keyspace("schemas").unwrap(),
         endorsements_ks: endorsements_ks.clone(),
         rooms_ks: rooms_ks.clone(),
@@ -135,6 +141,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         shutdown_tx: tokio::sync::watch::channel(false).0,
         supervisor: None,
         didcomm: std::sync::Arc::new(tokio::sync::OnceCell::new()),
+        git_ns: vtc_service::git_ns::GitNsHandles::open_unconnected(&store).unwrap(),
     };
     (state, dir)
 }

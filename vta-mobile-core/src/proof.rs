@@ -6,40 +6,176 @@
 //! [`Signer`] signs the result, and we assemble the proof. Used by the step-up
 //! DID-signed gate ([`crate::stepup`]) and VTA `authenticate` ([`crate::session`]).
 //!
-//! Verification: [`verify_signed_request`] is the gate every inbound approval
-//! request passes before its content may be shown to the operator (the
-//! task-consent request in [`crate::consent`], the step-up approve-request in
-//! [`crate::task`]). Any failure is [`FfiError::UntrustedIssuer`] — the typed
-//! "do not prompt" refusal.
-
-use std::sync::Arc;
+//! Every document the device sends is signed: the VTA and the VTC accept a
+//! Trust Task over DIDComm or TSP only when its proof verifies as its `issuer`
+//! and that issuer is the transport sender, so the proof is what authenticates
+//! the request. Requests are signed under [`REQUEST_PROOF_PURPOSE`]
+//! (`authentication`, [`attach_did_signed_proof`]). The exception is the human
+//! approver's own decision (the step-up `approve-response` and the
+//! `task-consent/decision`), where the proof is the approver's evidence and is
+//! signed under [`APPROVAL_PROOF_PURPOSE`] (`assertionMethod`,
+//! [`attach_approval_proof`]), with a key the approver's DID document lists
+//! under `assertionMethod`. Both refuse to sign a document that does not
+//! name the signer as its `issuer`, or that lacks a `recipient` or an
+//! `issuedAt`, because the peer would refuse it anyway.
+//!
+//! Verification, of two kinds:
+//!
+//! - [`verify_signed_request`] is the gate every inbound approval request passes
+//!   before its content may be shown to the operator (the task-consent request
+//!   in [`crate::consent`], the step-up approve-request in [`crate::task`]). Any
+//!   failure is [`FfiError::UntrustedIssuer`] — the typed "do not prompt"
+//!   refusal.
+//! - [`verify_reply`] is the gate every reply to a document the device sent
+//!   passes before anything reads it. Any failure is
+//!   [`FfiError::UnverifiedReply`].
 
 use affinidi_data_integrity::crypto_suites::CryptoSuite;
-use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions, prepare_sign_input};
+use affinidi_data_integrity::{DataIntegrityProof, prepare_sign_input};
 use multibase::Base;
 use serde::Serialize;
-use trust_tasks_proof::affinidi::CachedDidResolver;
 use trust_tasks_rs::{Proof, TrustTask};
+use vta_sdk::trust_task_proof::{TrustTaskVmResolver, verify_trust_task_proof_with};
 
 use crate::error::FfiError;
 use crate::keys::Signer;
 
+/// The proof purpose of every document this device signs. A Trust Task request
+/// is the device authenticating itself to its peer (VTI-KEY-106), and the peer
+/// requires the proof to verify as the transport sender.
+pub(crate) const REQUEST_PROOF_PURPOSE: &str = "authentication";
+
+/// The proof purpose a peer's reply must be signed under (VTI-KEY-106: the VTA
+/// and the VTC sign every response, errors included, with their operational
+/// key under `authentication`).
+pub(crate) const REPLY_PROOF_PURPOSE: &str = "authentication";
+
+/// The proof purpose the VTA signs the approval requests it pushes to a device
+/// under (step-up approve-request, consent and task-consent request). These are
+/// the VTA's operational messages, signed with its operational key under
+/// `authentication` (VTI-KEY-106), and the key must be listed there.
+pub(crate) const PUSHED_REQUEST_PROOF_PURPOSE: &str = "authentication";
+
+/// The proof purpose of the human approver's own decisions: the step-up
+/// `approve-response` and the `task-consent/decision`. Their proof is not only
+/// the device authenticating the message: it is the approver's evidence that
+/// the executor records, an assertion by the approver, so it is
+/// `assertionMethod`. The did-hosting RP (affinidi-webvh-service #213,
+/// `verify_approval`) refuses a decision under any other purpose, or by a key
+/// not listed under `assertionMethod`.
+pub(crate) const APPROVAL_PROOF_PURPOSE: &str = "assertionMethod";
+
 /// Build an `eddsa-jcs-2022` Data Integrity proof over `doc` (which MUST NOT yet
-/// carry a proof), signed via the native `signer`, and attach it. `created` is
-/// an RFC 3339 timestamp.
+/// carry a proof), signed via the native `signer` under
+/// [`REQUEST_PROOF_PURPOSE`], and attach it. `created` is an RFC 3339
+/// timestamp.
+///
+/// Refuses, before anything is signed, a document that
+///
+/// - already carries a proof,
+/// - has an empty `id`,
+/// - does not name the signer as its `issuer` (the peer binds the proof's
+///   signer, the `issuer` and the transport sender to one DID, so a document
+///   issued in someone else's name is refused there — and signing it here
+///   would be the device vouching for a claim it cannot make),
+/// - has no `recipient` (the proof must bind the document to one peer, or it
+///   could be replayed to another), or
+/// - has no `issuedAt`.
 pub(crate) fn attach_did_signed_proof<P: Serialize>(
     doc: &mut TrustTask<P>,
     signer: &dyn Signer,
     created: &str,
 ) -> Result<(), FfiError> {
+    attach_proof(doc, signer, created, REQUEST_PROOF_PURPOSE)
+}
+
+/// [`attach_did_signed_proof`] under [`APPROVAL_PROOF_PURPOSE`], for the human
+/// approver's own decision (step-up `approve-response`, `task-consent/decision`).
+/// The same refusals apply, and one more: the approver's DID document must list
+/// the signing key under `assertionMethod`. A consumer that checks the
+/// relationship would refuse the decision otherwise, after the human approved.
+pub(crate) fn attach_approval_proof<P: Serialize>(
+    doc: &mut TrustTask<P>,
+    signer: &dyn Signer,
+    created: &str,
+) -> Result<(), FfiError> {
+    let signer_did = signer.did();
+    let vm = did_key_vm(&signer_did)?;
+    let did_doc = local_did_document(&signer_did)?;
+    require_listed_under(&did_doc, &vm, APPROVAL_PROOF_PURPOSE)?;
+    attach_proof(doc, signer, created, APPROVAL_PROOF_PURPOSE)
+}
+
+/// The DID document of a locally resolvable DID (the device's `did:key`),
+/// without network I/O.
+fn local_did_document(did: &str) -> Result<serde_json::Value, FfiError> {
+    let invalid = |reason: String| FfiError::InvalidInput { reason };
+    let parsed: affinidi_did_common::DID = did
+        .parse()
+        .map_err(|e| invalid(format!("`{did}` is not a DID: {e}")))?;
+    let doc = parsed
+        .resolve()
+        .map_err(|e| invalid(format!("could not resolve `{did}` locally: {e}")))?;
+    serde_json::to_value(&doc)
+        .map_err(|e| invalid(format!("could not read the DID document of `{did}`: {e}")))
+}
+
+/// Refuse, before signing, unless `did_doc` lists `vm` under `relationship`.
+fn require_listed_under(
+    did_doc: &serde_json::Value,
+    vm: &str,
+    relationship: &str,
+) -> Result<(), FfiError> {
+    if lists_method_under(did_doc, vm, relationship) {
+        Ok(())
+    } else {
+        Err(FfiError::InvalidInput {
+            reason: format!(
+                "{vm} is not listed under `{relationship}` in its DID document; \
+                 a decision signed with it would be refused"
+            ),
+        })
+    }
+}
+
+fn attach_proof<P: Serialize>(
+    doc: &mut TrustTask<P>,
+    signer: &dyn Signer,
+    created: &str,
+    purpose: &str,
+) -> Result<(), FfiError> {
+    let refuse = |reason: String| Err(FfiError::InvalidInput { reason });
+    let signer_did = signer.did();
+    if doc.proof.is_some() {
+        return refuse("the document already carries a proof".into());
+    }
+    if doc.id.is_empty() {
+        return refuse("a signed document needs a unique `id`".into());
+    }
+    match doc.issuer.as_deref() {
+        Some(issuer) if issuer == signer_did => {}
+        Some(issuer) => {
+            return refuse(format!(
+                "the document names `{issuer}` as its issuer but would be signed by `{signer_did}`"
+            ));
+        }
+        None => return refuse("a signed document must name its issuer".into()),
+    }
+    if doc.recipient.as_deref().is_none_or(str::is_empty) {
+        return refuse("a signed document must name its recipient".into());
+    }
+    if doc.issued_at.is_none() {
+        return refuse("a signed document must carry `issuedAt`".into());
+    }
+
     // `DataIntegrityProof` is `#[non_exhaustive]` as of affinidi-data-integrity
     // 0.7.6 — build via `new` (the in-process `sign` would require the holder
     // key in Rust, which this flow deliberately avoids). `proof_value` is filled
     // in below after the native signer produces the signature.
     let mut proof_config = DataIntegrityProof::new(
         CryptoSuite::EddsaJcs2022,
-        did_key_vm(&signer.did())?,
-        "assertionMethod".to_string(),
+        did_key_vm(&signer_did)?,
+        purpose.to_string(),
         None,
         Some(created.to_string()),
         None,
@@ -78,7 +214,9 @@ pub(crate) fn attach_did_signed_proof<P: Serialize>(
 ///
 /// Enforced, in order:
 /// 1. the document carries an `issuer` and a `proof`;
-/// 2. the proof is a Data Integrity proof with `proofPurpose:assertionMethod`;
+/// 2. the proof is a Data Integrity proof with `proofPurpose:authentication`
+///    (the VTA signs these operational messages with its operational key,
+///    VTI-KEY-106);
 /// 3. the DID of `proof.verificationMethod` **is** the document `issuer` (a
 ///    valid signature only proves *some* key signed; authenticity additionally
 ///    requires that key to be the declared issuer's);
@@ -86,8 +224,9 @@ pub(crate) fn attach_did_signed_proof<P: Serialize>(
 ///    native layer holds (the enrolled VTA DID plus any granted executor DIDs).
 ///    Checked **before** any DID resolution so the device never performs
 ///    network I/O on behalf of a DID it is not enrolled with;
-/// 5. the signature verifies (`eddsa-jcs-2022` only) against key material
-///    resolved from the issuer's DID document, via the crate's shared resolver
+/// 5. the proof's verification method is listed under `authentication` in the
+///    issuer's DID document, and the signature verifies (`eddsa-jcs-2022` only)
+///    against key material resolved from it, via the crate's shared resolver
 ///    cache (`did:key` offline; `did:web` / `did:webvh` over the network).
 ///
 /// Verification runs over the **raw** JSON document (`proof` removed), not a
@@ -110,9 +249,9 @@ pub(crate) async fn verify_signed_request(
     let proof: DataIntegrityProof = serde_json::from_value(proof_value.clone())
         .map_err(|e| refuse(format!("proof is not a Data Integrity proof: {e}")))?;
 
-    if proof.proof_purpose != "assertionMethod" {
+    if proof.proof_purpose != PUSHED_REQUEST_PROOF_PURPOSE {
         return Err(refuse(format!(
-            "proof purpose is `{}`, not `assertionMethod`",
+            "proof purpose is `{}`, not `{PUSHED_REQUEST_PROOF_PURPOSE}`",
             proof.proof_purpose
         )));
     }
@@ -134,23 +273,193 @@ pub(crate) async fn verify_signed_request(
         )));
     }
 
-    // eddsa-jcs-2022 verifies the document with the proof member removed.
-    let mut unsigned = raw.clone();
-    if let Some(obj) = unsigned.as_object_mut() {
-        obj.remove("proof");
-    }
-
-    let resolver = CachedDidResolver::new(Arc::new(crate::resolver::client().await?.clone()));
-    proof
-        .verify(
-            &unsigned,
-            &resolver,
-            VerifyOptions::new().with_allowed_suites(vec![CryptoSuite::EddsaJcs2022]),
-        )
+    verify_signature(raw, &proof, issuer, PUSHED_REQUEST_PROOF_PURPOSE)
         .await
-        .map_err(|e| refuse(format!("proof verification failed: {e}")))?;
+        .map_err(refuse)?;
 
     Ok(issuer.to_string())
+}
+
+/// Verify the reply to a Trust Task this device sent, before anything reads it.
+///
+/// `request` is the document as sent; `expected_signer` is the peer it was sent
+/// to (the VTA DID). The reply is accepted only when all of these hold:
+///
+/// 1. its `type` is the request's `type` plus `#response`, or a
+///    `trust-task-error` — an answer to a different question is not an answer;
+/// 2. its `threadId` is the request's thread (`request.threadId ?? request.id`,
+///    SPEC §4.9). The request's `id` is fresh per request, so this binds the
+///    reply to this request and a replayed reply to an earlier one is refused;
+/// 3. its `issuer` is `expected_signer`, and its `recipient` is the request's
+///    `issuer` (this device);
+/// 4. it carries an `eddsa-jcs-2022` Data Integrity proof under
+///    `authentication` (VTI-KEY-106), whose `verificationMethod` belongs to
+///    `expected_signer` and is listed under `authentication` in that DID's
+///    document;
+/// 5. the signature verifies over the reply with its `proof` removed.
+///
+/// **Error replies are held to the same rule.** The VTA and the VTC sign
+/// refusals too (VTI-KEY-106), and an unattributable `trust-task-error` is no
+/// more the peer's word than an unattributable success — acting on one lets
+/// anyone on the path make the device believe its approval was refused.
+///
+/// Every failure is [`FfiError::UnverifiedReply`].
+pub(crate) async fn verify_reply(
+    request: &serde_json::Value,
+    reply: &serde_json::Value,
+    expected_signer: &str,
+) -> Result<(), FfiError> {
+    let refuse = |reason: String| FfiError::UnverifiedReply { reason };
+    let str_field = |doc: &serde_json::Value, name: &str| {
+        doc.get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+
+    if expected_signer.is_empty() {
+        return Err(refuse("no peer to verify the reply against".into()));
+    }
+    let request_id = str_field(request, "id")
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| refuse("the request has no `id` to thread a reply to".into()))?;
+    let request_type =
+        str_field(request, "type").ok_or_else(|| refuse("the request has no `type`".into()))?;
+    let our_did =
+        str_field(request, "issuer").ok_or_else(|| refuse("the request names no issuer".into()))?;
+    let expected_thread = str_field(request, "threadId").unwrap_or(request_id);
+
+    // 1. It answers this question.
+    let reply_type = str_field(reply, "type").unwrap_or_default();
+    let is_error = reply_type.starts_with(TRUST_TASK_ERROR_TYPE_PREFIX);
+    if !is_error && reply_type != format!("{request_type}#response") {
+        return Err(refuse(format!(
+            "the reply's type `{reply_type}` does not answer a `{request_type}` request"
+        )));
+    }
+
+    // 2. It answers this request.
+    match str_field(reply, "threadId") {
+        Some(thread) if thread == expected_thread => {}
+        Some(thread) => {
+            return Err(refuse(format!(
+                "the reply is threaded to `{thread}`, not to the request `{expected_thread}`"
+            )));
+        }
+        None => return Err(refuse("the reply carries no `threadId`".into())),
+    }
+
+    // 3. It is from the peer, to us.
+    match str_field(reply, "issuer") {
+        Some(issuer) if issuer == expected_signer => {}
+        Some(issuer) => {
+            return Err(refuse(format!(
+                "the reply is issued by `{issuer}`, not by `{expected_signer}`"
+            )));
+        }
+        None => return Err(refuse("the reply names no issuer".into())),
+    }
+    match str_field(reply, "recipient") {
+        Some(recipient) if recipient == our_did => {}
+        Some(recipient) => {
+            return Err(refuse(format!(
+                "the reply is addressed to `{recipient}`, not to `{our_did}`"
+            )));
+        }
+        None => return Err(refuse("the reply names no recipient".into())),
+    }
+
+    // 4 + 5. Its proof is the peer's, under `authentication`, and verifies.
+    let proof_value = reply
+        .get("proof")
+        .ok_or_else(|| refuse("the reply carries no proof".into()))?;
+    let proof: DataIntegrityProof = serde_json::from_value(proof_value.clone()).map_err(|e| {
+        refuse(format!(
+            "the reply's proof is not a Data Integrity proof: {e}"
+        ))
+    })?;
+    if proof.proof_purpose != REPLY_PROOF_PURPOSE {
+        return Err(refuse(format!(
+            "the reply's proof purpose is `{}`, not `{REPLY_PROOF_PURPOSE}`",
+            proof.proof_purpose
+        )));
+    }
+    let vm_did = proof
+        .verification_method
+        .split('#')
+        .next()
+        .unwrap_or_default();
+    if vm_did != expected_signer {
+        return Err(refuse(format!(
+            "the reply is signed by `{vm_did}`, not by `{expected_signer}`"
+        )));
+    }
+
+    verify_signature(reply, &proof, expected_signer, REPLY_PROOF_PURPOSE)
+        .await
+        .map_err(refuse)
+}
+
+/// The `type` prefix of a framework error document.
+const TRUST_TASK_ERROR_TYPE_PREFIX: &str = "https://trusttasks.org/spec/trust-task-error/";
+
+/// Verify the `eddsa-jcs-2022` Data Integrity proof on `raw` as `signer`'s,
+/// through vta-sdk's shared verifier.
+///
+/// The caller has already checked that the proof declares `relationship` and
+/// names a key of `signer`. The verifier binds the key to the purpose the proof
+/// declares (VTI-KEY-022): the key must be listed under that relationship in
+/// the signer's DID document, so a proof that says `authentication` made with a
+/// key listed only under `assertionMethod` is refused. It also re-resolves a
+/// cached DID document once before failing, so a signer that rotated a key in
+/// place is not refused on stale material (VTI-KEY-134).
+async fn verify_signature(
+    raw: &serde_json::Value,
+    proof: &DataIntegrityProof,
+    signer: &str,
+    relationship: &str,
+) -> Result<(), String> {
+    // Defence in depth: the verifier binds to the purpose the proof declares,
+    // so a caller that forgot to pin it would verify under the wrong one.
+    if proof.proof_purpose != relationship {
+        return Err(format!(
+            "proof purpose is `{}`, not `{relationship}`",
+            proof.proof_purpose
+        ));
+    }
+    if proof.cryptosuite != CryptoSuite::EddsaJcs2022 {
+        return Err("the proof is not an eddsa-jcs-2022 proof".to_string());
+    }
+    let doc: TrustTask<serde_json::Value> = serde_json::from_value(raw.clone())
+        .map_err(|e| format!("not a Trust Task document: {e}"))?;
+    let client = crate::resolver::client().await.map_err(|e| e.to_string())?;
+    let resolver = TrustTaskVmResolver::new(client.clone());
+    let proven = verify_trust_task_proof_with(&doc, &resolver)
+        .await
+        .map_err(|e| format!("proof verification failed: {e}"))?;
+    if proven != signer {
+        return Err(format!("the proof is by `{proven}`, not by `{signer}`"));
+    }
+    Ok(())
+}
+
+/// Whether `did_doc` lists the verification method `vm` under `relationship`,
+/// by absolute DID URL, by relative `#fragment`, or as an embedded method.
+fn lists_method_under(did_doc: &serde_json::Value, vm: &str, relationship: &str) -> bool {
+    let fragment = vm.find('#').map(|i| &vm[i..]);
+    let names_vm = |id: &str| id == vm || fragment.is_some_and(|f| id == f);
+    did_doc
+        .get(relationship)
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|entries| {
+            entries.iter().any(|entry| match entry {
+                serde_json::Value::String(id) => names_vm(id),
+                serde_json::Value::Object(m) => m
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(names_vm),
+                _ => false,
+            })
+        })
 }
 
 /// Derive the verification-method URI for a `did:key` holder. The mobile holder
@@ -167,7 +476,7 @@ pub(crate) fn did_key_vm(did: &str) -> Result<String, FfiError> {
 /// Deterministic executor keys + the production sign path, for the request
 /// verification tests in [`crate::consent`] and [`crate::task`]. Mirrors the
 /// VTA's `mint_signed_requests` (`vta-service` `consent_request.rs`): sign the
-/// proofless document with `eddsa-jcs-2022` / `assertionMethod`, attach the
+/// proofless document with `eddsa-jcs-2022` / `authentication`, attach the
 /// proof. `did:key` issuers resolve offline, so the tests exercise the full
 /// verify path without touching the network.
 #[cfg(test)]
@@ -194,15 +503,140 @@ pub(crate) mod test_support {
     /// Sign `doc` (which must not yet carry a proof) as the `seed` executor and
     /// attach the proof, exactly as the VTA signs an outbound request.
     pub(crate) async fn sign_as(doc: &mut serde_json::Value, seed: u8) {
+        sign_as_with_purpose(doc, seed, super::PUSHED_REQUEST_PROOF_PURPOSE).await;
+    }
+
+    /// [`sign_as`] under an explicit proof purpose — the VTA signs its replies
+    /// under `authentication`.
+    pub(crate) async fn sign_as_with_purpose(doc: &mut serde_json::Value, seed: u8, purpose: &str) {
         let proof = DataIntegrityProof::sign(
             &*doc,
             &secret_for(seed),
             SignOptions::new()
-                .with_proof_purpose("assertionMethod")
+                .with_proof_purpose(purpose)
                 .with_cryptosuite(CryptoSuite::EddsaJcs2022),
         )
         .await
         .expect("test signing cannot fail");
         doc["proof"] = serde_json::to_value(&proof).expect("proof serializes");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{lists_method_under, local_did_document, require_listed_under};
+
+    /// An approval is signed only with a key the approver lists under
+    /// `assertionMethod`; the device's `did:key` does.
+    #[test]
+    fn an_approval_key_must_be_listed_under_assertion_method() {
+        let doc = json!({
+            "id": "did:web:approver.example",
+            "authentication": ["#k1"],
+        });
+        let err = require_listed_under(&doc, "did:web:approver.example#k1", "assertionMethod")
+            .unwrap_err();
+        assert!(err.to_string().contains("assertionMethod"), "{err}");
+
+        let did = super::test_support::did_for(9);
+        let vm = super::did_key_vm(&did).unwrap();
+        let doc = local_did_document(&did).unwrap();
+        require_listed_under(&doc, &vm, "assertionMethod").unwrap();
+    }
+
+    /// A key the DID lists only under `assertionMethod` is not an
+    /// `authentication` key, however the reference is spelled.
+    #[test]
+    fn a_method_counts_only_under_the_relationship_that_lists_it() {
+        let doc = json!({
+            "id": "did:web:vta.example",
+            "authentication": ["did:web:vta.example#auth", { "id": "#embedded" }],
+            "assertionMethod": ["#assert"]
+        });
+        assert!(lists_method_under(
+            &doc,
+            "did:web:vta.example#auth",
+            "authentication"
+        ));
+        assert!(lists_method_under(
+            &doc,
+            "did:web:vta.example#embedded",
+            "authentication"
+        ));
+        assert!(!lists_method_under(
+            &doc,
+            "did:web:vta.example#assert",
+            "authentication"
+        ));
+        assert!(lists_method_under(
+            &doc,
+            "did:web:vta.example#assert",
+            "assertionMethod"
+        ));
+        assert!(!lists_method_under(
+            &doc,
+            "did:web:vta.example#auth",
+            "assertionMethod"
+        ));
+        assert!(!lists_method_under(
+            &doc,
+            "did:web:vta.example#other",
+            "authentication"
+        ));
+    }
+
+    /// A pushed request is refused when its key is one the issuer lists only
+    /// under `assertionMethod`, even though the proof says `authentication`:
+    /// the key must be authorised for the purpose the proof declares.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pushed_request_by_a_key_not_listed_under_authentication_is_refused() {
+        use affinidi_data_integrity::crypto_suites::CryptoSuite;
+        use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+        use affinidi_secrets_resolver::secrets::Secret;
+
+        async fn pushed_by(purpose_code: char) -> (String, serde_json::Value) {
+            let probe = Secret::generate_ed25519(None, Some(&[21; 32]));
+            let mb = probe.get_public_keymultibase().expect("public key");
+            let issuer = format!("did:peer:2.{purpose_code}{mb}");
+            let secret =
+                Secret::generate_ed25519(Some(&format!("{issuer}#key-1")), Some(&[21; 32]));
+            let mut doc = json!({
+                "id": "urn:uuid:pushed-1",
+                "type": "https://trusttasks.org/spec/task-consent/request/0.1",
+                "issuer": issuer,
+                "recipient": "did:key:z6MkApprover",
+                "issuedAt": "2026-09-25T10:00:00Z",
+                "payload": {},
+            });
+            let proof = DataIntegrityProof::sign(
+                &doc,
+                &secret,
+                SignOptions::new()
+                    .with_proof_purpose("authentication")
+                    .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+            )
+            .await
+            .expect("sign");
+            doc["proof"] = serde_json::to_value(&proof).unwrap();
+            (issuer, doc)
+        }
+
+        // `V`: the key is listed under `authentication` (and `assertionMethod`).
+        let (issuer, doc) = pushed_by('V').await;
+        super::verify_signed_request(&doc, std::slice::from_ref(&issuer))
+            .await
+            .expect("an authentication key verifies");
+
+        // `A`: the same key, listed under `assertionMethod` only.
+        let (issuer, doc) = pushed_by('A').await;
+        let err = super::verify_signed_request(&doc, std::slice::from_ref(&issuer))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, crate::FfiError::UntrustedIssuer { .. }),
+            "{err:?}"
+        );
     }
 }

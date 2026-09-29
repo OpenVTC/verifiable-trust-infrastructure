@@ -65,6 +65,14 @@ use crate::status_list;
 /// process-wide lock is the right grain.)
 static LAST_ADMIN_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+/// Take [`LAST_ADMIN_LOCK`] for a write that can end an admin outside this
+/// executor — `acl/revoke`, an `acl/grant` rewrite — so it serialises with
+/// `depart` and `remint` and the admin-set checks they all make
+/// (`crate::acl::admin_consent::check_attrition`) see one another's writes.
+pub(crate) async fn lock_admin_set() -> tokio::sync::MutexGuard<'static, ()> {
+    LAST_ADMIN_LOCK.lock().await
+}
+
 /// What the executor did. Carries back whatever the caller needs to
 /// audit + respond — currently the credentials minted on admit.
 #[derive(Debug)]
@@ -232,11 +240,13 @@ async fn admit(
 
     let mut member = Member::fresh(subject_did);
     member.publish_consent = publish_consent;
-    store_member(&state.members_ks, &member).await?;
+    {
+        let _edit = crate::members::storage::edit_lock().await;
+        store_member(&state.members_ks, &member).await?;
+    }
 
     let (vmc, role_vec, status_list_index) =
         issue_member_credentials(state, subject_did, role).await?;
-    member.status_list_index = Some(status_list_index);
     // Keep the bodies, not just the ids: the member's acknowledgement carries a
     // digest of the grant, and an id cannot be digested. See
     // [`crate::members::Member::current_vmc`].
@@ -244,8 +254,13 @@ async fn admit(
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
     let role_vec_value = serde_json::to_value(&role_vec)
         .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
-    member.record_issued_credentials(vmc_value, role_vec_value);
-    store_member(&state.members_ks, &member).await?;
+    crate::members::storage::edit_member(&state.members_ks, subject_did, |m| {
+        m.status_list_index = Some(status_list_index);
+        m.record_issued_credentials(vmc_value, role_vec_value);
+        true
+    })
+    .await?
+    .ok_or_else(|| AppError::Conflict("the member left while this was in progress".into()))?;
 
     // A new member row exists; keep the cached count in step (still under
     // LAST_ADMIN_LOCK, so it's serialised with the duplicate-admit guard).
@@ -370,6 +385,15 @@ async fn remint(
         }
     }
 
+    // A demotion ends an unrestricted admin, and must not leave nobody able to
+    // consent to another (VTI-APV-014, VTI-APV-009). After the broader guard
+    // above, so the community's very last admin is refused in those terms.
+    if !matches!(new_role, VtcRole::Admin)
+        && crate::acl::admin_consent::is_live_unrestricted(&acl, crate::auth::session::now_epoch())
+    {
+        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
+    }
+
     acl.role = new_role.clone();
     store_acl_entry(&state.acl_ks, &acl).await?;
 
@@ -377,14 +401,17 @@ async fn remint(
     // there *is* a member. An ACL-only subject has no role assertion to
     // re-issue (see `RemintOutcome::role_vec`).
     let role_vec = match get_member(&state.members_ks, subject_did).await? {
-        Some(mut member) => {
+        Some(_) => {
             let role_vec = issue_role_vec(state, subject_did, new_role).await?;
             let role_vec_value = serde_json::to_value(&role_vec)
                 .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
             // The grant is untouched by a role change, so the member's
             // acknowledgement of it still stands — only the VEC is repointed.
-            member.record_role_vec(role_vec_value);
-            store_member(&state.members_ks, &member).await?;
+            crate::members::storage::edit_member(&state.members_ks, subject_did, |m| {
+                m.record_role_vec(role_vec_value);
+                true
+            })
+            .await?;
             Some(role_vec)
         }
         None => None,
@@ -451,7 +478,8 @@ async fn depart(
 
     // No-last-admin invariant — checked before any write so a refusal
     // leaves the community untouched.
-    if let Some(acl) = get_acl_entry(&state.acl_ks, subject_did).await?
+    let acl = get_acl_entry(&state.acl_ks, subject_did).await?;
+    if let Some(acl) = acl.as_ref()
         && matches!(acl.role, VtcRole::Admin)
     {
         let other_admins = list_acl_entries(&state.acl_ks)
@@ -466,6 +494,14 @@ async fn depart(
             )));
         }
     }
+    // Removing an unrestricted admin also must not leave nobody able to consent
+    // to another (VTI-APV-014, VTI-APV-009). After the broader guard, so the
+    // community's very last admin is refused in those terms.
+    if let Some(acl) = acl.as_ref()
+        && crate::acl::admin_consent::is_live_unrestricted(acl, crate::auth::session::now_epoch())
+    {
+        crate::acl::admin_consent::check_attrition(state, subject_did).await?;
+    }
 
     let member = get_member(&state.members_ks, subject_did).await?;
     // Capture the revocation slot before the disposition path mutates
@@ -476,7 +512,12 @@ async fn depart(
 
     match (disposition, member) {
         (Disposition::Purge, existed) => {
-            delete_member(&state.members_ks, subject_did).await?;
+            // Under the members edit lock: a writer that read the row before
+            // the delete must not write it back after.
+            {
+                let _edit = crate::members::storage::edit_lock().await;
+                delete_member(&state.members_ks, subject_did).await?;
+            }
             // Free any personhood pseudonym this member held. Purge is the
             // *only* departure that does — tombstone and historical keep the
             // member row, and the person is still here. Releasing on those
@@ -513,13 +554,19 @@ async fn depart(
                 state.member_count_dec();
             }
         }
-        (Disposition::Tombstone, Some(mut m)) => {
-            m.tombstone();
-            store_member(&state.members_ks, &m).await?;
+        (Disposition::Tombstone, Some(_)) => {
+            crate::members::storage::edit_member(&state.members_ks, subject_did, |m| {
+                m.tombstone();
+                true
+            })
+            .await?;
         }
-        (Disposition::Historical, Some(mut m)) => {
-            m.mark_historical();
-            store_member(&state.members_ks, &m).await?;
+        (Disposition::Historical, Some(_)) => {
+            crate::members::storage::edit_member(&state.members_ks, subject_did, |m| {
+                m.mark_historical();
+                true
+            })
+            .await?;
         }
         // No Member row — Tombstone/Historical are trivially satisfied.
         (Disposition::Tombstone | Disposition::Historical, None) => {}

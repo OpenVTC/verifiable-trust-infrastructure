@@ -7,22 +7,33 @@
 //!    safe). Closes the rotation TOCTOU. A token that is *not* in the
 //!    index diverts to [`handle_unclaimed_refresh`] — the reuse
 //!    detection path.
-//! 2. Load session by the claimed `session_id`.
+//! 2. Load session by the claimed `session_id`, and refuse the token
+//!    unless it is the one the session currently issues
+//!    ([`SessionStore::current_refresh_hash`]) — one live chain per
+//!    session.
 //! 3. (DIDComm transports) Verify signer DID matches session DID.
 //!    REST transports can skip this — the refresh token itself is
 //!    the credential.
 //! 4. Reject sessions in non-`Authenticated` state.
-//! 5. Refresh-token expiry check.
+//! 5. Refresh-token expiry check, then the idle timeout — measured
+//!    against `last_seen`, which only genuine activity advances, so a
+//!    client renewing on a timer cannot hold a session open
+//!    indefinitely.
 //! 6. Preserve `(amr, acr)` from the pre-rotation session — a
 //!    step-upped `aal2` session stays at `aal2` across the rotation
 //!    instead of silently dropping to `aal1`.
-//! 7. Delete the old session (atomic with index already claimed).
-//! 8. Re-look-up ACL role (propagates revocation).
-//! 9. Mint a *new* session with a fresh `session_id`, access token,
-//!    and refresh token. The new session inherits the preserved
-//!    `(amr, acr)`.
-//! 10. Tombstone the spent token, then emit `Refreshed` audit event
-//!     and return canonical `AuthenticateResponse`.
+//! 7. Re-look-up ACL role (propagates revocation).
+//! 8. Rewrite the session in place with a new access token and
+//!    refresh token. The `session_id` is **kept**, not regenerated —
+//!    it is the DID-keyed canonical handle, and every tombstone in a
+//!    chain points at it, which is what lets a replay of an older
+//!    token still find and revoke the live session. The row is
+//!    overwritten rather than deleted-and-recreated, so a concurrent
+//!    authed request never observes a momentarily-missing session.
+//!    The rewritten session inherits the preserved `(amr, acr)`.
+//! 9. Tombstone the spent token.
+//! 10. Emit the `Refreshed` audit event and return the canonical
+//!     `AuthenticateResponse`.
 //!
 //! ## Reuse detection
 //!
@@ -57,7 +68,7 @@ use crate::auth::backend::{
     AuthAuditEvent, AuthBackend, RefreshInput, RefreshReuseReason, SessionStore,
 };
 use crate::auth::session::{
-    RefreshTombstone, Session, SessionState, now_epoch, refresh_token_hash,
+    RefreshTombstone, Session, SessionState, TombstoneCause, now_epoch, refresh_token_hash,
 };
 
 /// Process a `/auth/refresh` request.
@@ -87,6 +98,67 @@ pub async fn handle_refresh<B: AuthBackend>(
         .await
         .map_err(|e| AuthError::Internal(format!("get_session failed: {e:?}")))?
         .ok_or(AuthError::SessionNotFound)?;
+
+    // ---- 2a. The claimed token must be the one the session issues ----
+    //
+    // Claiming the index proves only that the token was issued here at some
+    // point. A session issues one refresh token at a time, and without this
+    // check any index entry that outlived its currency — the one before a
+    // re-login, or one written by a rotation that lost a race with a login —
+    // would still mint, into a second chain that never collides with the
+    // first, so reuse detection never fires. Retiring the old entry at login
+    // is best-effort and cannot close that race; refusing here does.
+    //
+    // Currency comes from the store's own record, not `session.refresh_token`:
+    // the row is read-modify-written by activity touches and step-up, which
+    // can put an older token back into it. The row is used only for sessions
+    // issued before the record existed.
+    let presented_hash = refresh_token_hash(&input.refresh_token);
+    let current_hash = match backend
+        .sessions()
+        .current_refresh_hash(&session_id)
+        .await
+        .map_err(|e| AuthError::Internal(format!("current_refresh_hash failed: {e:?}")))?
+    {
+        Some(hash) => Some(hash),
+        None => old_session.refresh_token.as_deref().map(refresh_token_hash),
+    };
+    if current_hash.as_deref() != Some(presented_hash.as_str()) {
+        let now = now_epoch();
+        // The claim above already removed its index entry, so the token is
+        // dead either way; the tombstone is what lets a later replay be
+        // recognised instead of looking like a stranger's token.
+        if let Err(e) = backend
+            .sessions()
+            .store_refresh_tombstone(
+                &input.refresh_token,
+                &RefreshTombstone {
+                    session_id: old_session.session_id.clone(),
+                    did: old_session.did.clone(),
+                    rotated_at: now,
+                    expires_at: now.saturating_add(backend.refresh_token_ttl()),
+                    successor_hash: current_hash.unwrap_or_default(),
+                    cause: TombstoneCause::Superseded,
+                },
+            )
+            .await
+        {
+            tracing::error!(
+                session_id = %old_session.session_id,
+                did = %old_session.did,
+                "failed to tombstone a superseded refresh token: {e:?}",
+            );
+        }
+        // Same outcome as a replay of a token a login retired, for the same
+        // reasons (see `handle_unclaimed_refresh`): refused, reported, and the
+        // current session left running.
+        backend.audit(AuthAuditEvent::RefreshSuperseded {
+            did: &old_session.did,
+            session_id: &old_session.session_id,
+            rotated_at: now,
+        });
+        return Err(AuthError::RefreshTokenInvalid.into());
+    }
 
     // ---- 3. (DIDComm) Signer-DID-matches-session-DID ----
 
@@ -170,7 +242,7 @@ pub async fn handle_refresh<B: AuthBackend>(
     // The `session_id` is **stable** — it is the caller's DID, the canonical
     // transport-agnostic session key. Only the refresh token and the access
     // token's `jti` (`token_id`) rotate; the old refresh index was already
-    // claimed-and-deleted atomically in step 4, and the old access token is
+    // claimed-and-deleted atomically in step 1, and the old access token is
     // superseded by the new `token_id` pin. We overwrite `session:{did}` in
     // place rather than delete-then-recreate, so a concurrent authed request
     // never observes a momentarily-missing session.
@@ -263,10 +335,14 @@ pub async fn handle_refresh<B: AuthBackend>(
         .sessions()
         .store_refresh_tombstone(
             &input.refresh_token,
-            &new_session_id,
-            &new_refresh_token,
-            now,
-            backend.refresh_token_ttl(),
+            &RefreshTombstone {
+                session_id: new_session_id.clone(),
+                did: old_session.did.clone(),
+                rotated_at: now,
+                expires_at: now.saturating_add(backend.refresh_token_ttl()),
+                successor_hash: refresh_token_hash(&new_refresh_token),
+                cause: TombstoneCause::Rotated,
+            },
         )
         .await
     {
@@ -318,7 +394,7 @@ pub async fn handle_refresh<B: AuthBackend>(
 
 /// Decide what a refresh token that is **not** in the live index means.
 ///
-/// Three outcomes:
+/// Four outcomes:
 ///
 /// - **No tombstone** — this node never issued the token, or issued it
 ///   so long ago that both the index and the tombstone have aged out.
@@ -327,6 +403,12 @@ pub async fn handle_refresh<B: AuthBackend>(
 /// - **Tombstone, and the replay is an innocent retry** — see
 ///   [`is_innocent_retry`]. The original rotation is replayed
 ///   idempotently; nothing is revoked and nothing rotates.
+/// - **Tombstone with cause [`TombstoneCause::Superseded`]** — the
+///   token was retired by a newer login rather than spent. Refused and
+///   audited as [`AuthAuditEvent::RefreshSuperseded`], but the session
+///   is **left running**: the retired token is already dead, and the
+///   usual cause is a second device still holding what it was issued
+///   before the user signed in elsewhere.
 /// - **Tombstone, anything else** — reuse. The session is revoked and
 ///   [`AuthAuditEvent::RefreshReuseDetected`] fires.
 async fn handle_unclaimed_refresh<B: AuthBackend>(
@@ -365,6 +447,7 @@ async fn handle_unclaimed_refresh<B: AuthBackend>(
             return Err(AuthError::SignerMismatch.into());
         }
         tracing::info!(
+            audit = true,
             session_id = %session.session_id,
             did = %session.did,
             age = now.saturating_sub(tombstone.rotated_at),
@@ -372,6 +455,34 @@ async fn handle_unclaimed_refresh<B: AuthBackend>(
              window — replaying the original rotation",
         );
         return replay_rotation(backend, session, now).await;
+    }
+
+    // ---- Retired by a newer login ----
+    //
+    // Handled before the reuse ladder below, and with a different
+    // outcome: refused, audited, session left running.
+    //
+    // The token is already dead — the login removed its index entry —
+    // so the security question is settled before we get here, and the
+    // only thing left to decide is whether to also kill the session
+    // that replaced it. Revoking would sign out the client that is
+    // demonstrably the live one in order to punish a client whose
+    // token has already stopped working, and the most common cause is
+    // not theft at all: a second device that logged in while the first
+    // sat idle leaves the first holding a retired token, and
+    // presenting it is the only way that client can find out. A
+    // re-login would then start the cycle over.
+    //
+    // It is still reported at `security_alert`, because a pre-login
+    // theft looks exactly like a stale device from here and only an
+    // operator correlating the two can say which it was.
+    if tombstone.cause == TombstoneCause::Superseded {
+        backend.audit(AuthAuditEvent::RefreshSuperseded {
+            did: &tombstone.did,
+            session_id: &tombstone.session_id,
+            rotated_at: tombstone.rotated_at,
+        });
+        return Err(AuthError::RefreshTokenInvalid.into());
     }
 
     // ---- Reuse ----
@@ -409,7 +520,10 @@ async fn handle_unclaimed_refresh<B: AuthBackend>(
     }
 
     backend.audit(AuthAuditEvent::RefreshReuseDetected {
-        did: session.as_ref().map(|s| s.did.as_str()).unwrap_or(""),
+        // From the tombstone, not the session: on the `SessionGone`
+        // path the row is absent by definition, and an alert that
+        // cannot name the account is not actionable.
+        did: &tombstone.did,
         session_id: &tombstone.session_id,
         rotated_at: tombstone.rotated_at,
         reason,
@@ -418,11 +532,16 @@ async fn handle_unclaimed_refresh<B: AuthBackend>(
     Err(AuthError::RefreshTokenInvalid.into())
 }
 
-/// Whether presenting an already-rotated token is a retry rather than
+/// Whether presenting an already-retired token is a retry rather than
 /// reuse.
 ///
 /// Every condition has to hold:
 ///
+/// - the token was retired by **rotation**, not by a re-login. The
+///   concession answers a lost rotation response; a client that has
+///   just logged in holds its new token and has no reason to present
+///   the old one, so allowing it there would hand the new token to
+///   whoever replayed a pre-login theft;
 /// - the session is still alive and `Authenticated` — there is
 ///   something to retry *into*;
 /// - the replay arrived **inside** the grace window — a client retrying
@@ -450,7 +569,8 @@ fn is_innocent_retry(
     now: u64,
     grace: u64,
 ) -> bool {
-    session.state == SessionState::Authenticated
+    tombstone.cause == TombstoneCause::Rotated
+        && session.state == SessionState::Authenticated
         && now.saturating_sub(tombstone.rotated_at) < grace
         && session
             .refresh_token
@@ -567,6 +687,9 @@ mod tests {
     struct MemStore {
         sessions: Mutex<HashMap<String, Session>>,
         refresh_index: Mutex<HashMap<String, String>>,
+        /// `session_id → hash` of the token it currently issues, written
+        /// only by `store_refresh_index` — as `KeyspaceSessionStore` does.
+        current: Mutex<HashMap<String, String>>,
         tombstones: Mutex<HashMap<String, RefreshTombstone>>,
     }
 
@@ -587,6 +710,7 @@ mod tests {
         }
 
         async fn delete_session(&self, id: &str) -> Result<(), AppError> {
+            self.current.lock().unwrap().remove(id);
             if let Some(s) = self.sessions.lock().unwrap().remove(id)
                 && let Some(t) = s.refresh_token
             {
@@ -596,6 +720,10 @@ mod tests {
         }
 
         async fn store_refresh_index(&self, token: &str, id: &str) -> Result<(), AppError> {
+            self.current
+                .lock()
+                .unwrap()
+                .insert(id.to_string(), refresh_token_hash(token));
             self.refresh_index
                 .lock()
                 .unwrap()
@@ -610,6 +738,10 @@ mod tests {
             Ok(self.refresh_index.lock().unwrap().remove(token))
         }
 
+        async fn current_refresh_hash(&self, id: &str) -> Result<Option<String>, AppError> {
+            Ok(self.current.lock().unwrap().get(id).cloned())
+        }
+
         async fn count_pending_challenges(&self, _: &str) -> Result<usize, AppError> {
             Ok(0)
         }
@@ -617,20 +749,12 @@ mod tests {
         async fn store_refresh_tombstone(
             &self,
             rotated: &str,
-            session_id: &str,
-            successor: &str,
-            rotated_at: u64,
-            ttl: u64,
+            tombstone: &RefreshTombstone,
         ) -> Result<(), AppError> {
-            self.tombstones.lock().unwrap().insert(
-                rotated.to_string(),
-                RefreshTombstone {
-                    session_id: session_id.to_string(),
-                    rotated_at,
-                    expires_at: rotated_at + ttl,
-                    successor_hash: refresh_token_hash(successor),
-                },
-            );
+            self.tombstones
+                .lock()
+                .unwrap()
+                .insert(rotated.to_string(), tombstone.clone());
             Ok(())
         }
 
@@ -660,6 +784,10 @@ mod tests {
         store: S,
         grace: u64,
         alerts: Arc<Mutex<Vec<(String, RefreshReuseReason)>>>,
+        /// `RefreshSuperseded` events, kept apart from `alerts` so a
+        /// test can assert that a superseded replay raised the *lower*
+        /// signal and did **not** raise a reuse alert.
+        superseded: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait]
@@ -708,14 +836,19 @@ mod tests {
         }
 
         fn audit(&self, event: AuthAuditEvent<'_>) {
-            if let AuthAuditEvent::RefreshReuseDetected {
-                session_id, reason, ..
-            } = event
-            {
-                self.alerts
-                    .lock()
-                    .unwrap()
-                    .push((session_id.to_string(), reason));
+            match event {
+                AuthAuditEvent::RefreshReuseDetected {
+                    session_id, reason, ..
+                } => {
+                    self.alerts
+                        .lock()
+                        .unwrap()
+                        .push((session_id.to_string(), reason));
+                }
+                AuthAuditEvent::RefreshSuperseded { session_id, .. } => {
+                    self.superseded.lock().unwrap().push(session_id.to_string());
+                }
+                _ => {}
             }
         }
     }
@@ -754,6 +887,7 @@ mod tests {
             store: MemStore::default(),
             grace,
             alerts: Arc::new(Mutex::new(Vec::new())),
+            superseded: Arc::new(Mutex::new(Vec::new())),
         };
         let token = seed(&b.store).await;
         (b, token)
@@ -770,6 +904,11 @@ mod tests {
         b: &MockBackend<S>,
     ) -> Vec<(String, RefreshReuseReason)> {
         b.alerts.lock().unwrap().clone()
+    }
+
+    /// Session ids named by `RefreshSuperseded` events.
+    fn superseded_alerts<S: SessionStore<Error = AppError>>(b: &MockBackend<S>) -> Vec<String> {
+        b.superseded.lock().unwrap().clone()
     }
 
     /// `AuthError::RefreshTokenInvalid` surfaces through the backend's
@@ -901,8 +1040,152 @@ mod tests {
         assert_eq!(b.store.session_count(), 1, "the client stays signed in");
     }
 
+    // ── Tokens retired by a re-login ────────────────────────────────
+
+    /// Stand in for what `/auth/` does when a fresh login supersedes the
+    /// previous token: the old index entry goes, and a `Superseded`
+    /// tombstone is left in its place.
+    async fn supersede(b: &MockBackend<MemStore>, old: &str, successor: &str) {
+        b.store.take_session_id_by_refresh(old).await.unwrap();
+        let now = now_epoch();
+        b.store
+            .store_refresh_tombstone(
+                old,
+                &RefreshTombstone {
+                    session_id: DID.to_string(),
+                    did: DID.to_string(),
+                    rotated_at: now,
+                    expires_at: now + 86_400,
+                    successor_hash: refresh_token_hash(successor),
+                    cause: TombstoneCause::Superseded,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// The whole point of separating the causes. The grace window is a
+    /// concession to a lost *rotation* response; a client that has just
+    /// logged in holds its new token, so a replay of the pre-login one
+    /// has no innocent reading. Were the concession allowed here, this
+    /// call would hand the caller the freshly minted token — a theft
+    /// before the re-login would be rewarded with the token that
+    /// replaced it.
+    #[tokio::test]
+    async fn a_superseded_token_is_never_treated_as_an_innocent_retry() {
+        // A wide grace and an unspent successor: every *other* condition
+        // for the concession is satisfied, so only the cause can refuse it.
+        let (b, stolen) = logged_in(3600).await;
+        let fresh_login_token = "token-from-the-second-login";
+        supersede(&b, &stolen, fresh_login_token).await;
+
+        let err = handle_refresh(&b, input(&stolen)).await.unwrap_err();
+
+        assert_refused(&err);
+        assert_eq!(
+            superseded_alerts(&b),
+            vec![DID.to_string()],
+            "it must raise the superseded signal, inside the grace window",
+        );
+    }
+
+    /// The security consequence of the case above, stated directly: the
+    /// replay must not yield a usable token under any circumstances.
+    #[tokio::test]
+    async fn replaying_a_superseded_token_never_yields_the_new_token() {
+        let (b, stolen) = logged_in(3600).await;
+        supersede(&b, &stolen, "token-from-the-second-login").await;
+
+        assert!(
+            handle_refresh(&b, input(&stolen)).await.is_err(),
+            "the pre-login token must never mint or replay a pair",
+        );
+    }
+
+    /// Superseded is *not* routed through reuse detection, and so does
+    /// not revoke.
+    ///
+    /// The retired token is already dead — the login took its index
+    /// entry — so revoking adds nothing against a thief, while the
+    /// ordinary cause is a second device presenting what it was issued
+    /// before the user signed in elsewhere. Killing the session there
+    /// would sign out the client that is demonstrably live, and the
+    /// re-login it forces would set the same trap again.
+    #[tokio::test]
+    async fn replaying_a_superseded_token_leaves_the_live_session_running() {
+        let (b, stolen) = logged_in(3600).await;
+        supersede(&b, &stolen, "token-from-the-second-login").await;
+
+        let _ = handle_refresh(&b, input(&stolen)).await;
+
+        assert_eq!(
+            b.store.session_count(),
+            1,
+            "the session that replaced the token must survive the replay",
+        );
+        assert_eq!(
+            alerts(&b),
+            vec![],
+            "and it must not be reported as reuse — the consequence differs",
+        );
+        assert_eq!(superseded_alerts(&b), vec![DID.to_string()]);
+    }
+
     /// The retry must not buy the session a fresh 24 hours; it replays a
     /// rotation that already happened.
+    /// The residual risk on #1683: a token whose index entry outlived a
+    /// re-login — the retirement at login is best-effort and a racing
+    /// rotation can slip past it — must not mint into a second chain.
+    ///
+    /// Remove the currency check in `handle_refresh` and this succeeds,
+    /// handing the holder of the old token a live chain beside the owner's.
+    #[tokio::test]
+    async fn a_surviving_index_entry_for_a_non_current_token_is_refused() {
+        let (b, stale) = logged_in(30).await;
+        // A later login makes `refresh-1` current. Put the old entry back,
+        // as a retirement that lost its race would leave it.
+        b.store.store_refresh_index("refresh-1", DID).await.unwrap();
+        b.store
+            .refresh_index
+            .lock()
+            .unwrap()
+            .insert(stale.clone(), DID.to_string());
+
+        let err = handle_refresh(&b, input(&stale)).await.unwrap_err();
+        assert_refused(&err);
+        assert_eq!(superseded_alerts(&b), vec![DID.to_string()]);
+        assert!(alerts(&b).is_empty(), "a superseded token is not reuse");
+
+        // The current chain is untouched, and a replay of the refused
+        // token is still recognised rather than looking like a stranger's.
+        handle_refresh(&b, input("refresh-1")).await.unwrap();
+        let tomb = b.store.tombstones.lock().unwrap().get(&stale).cloned();
+        assert_eq!(tomb.map(|t| t.cause), Some(TombstoneCause::Superseded));
+    }
+
+    /// A read-modify-write of the session row (an activity touch, a
+    /// DIDComm message resolving the session, a step-up) can write an older
+    /// `refresh_token` back into it after a rotation. Currency must not be
+    /// read from the row, or the owner's current token is refused and they
+    /// are signed out.
+    #[tokio::test]
+    async fn a_stale_row_does_not_refuse_the_current_token() {
+        let (b, first) = logged_in(30).await;
+        let rotated = handle_refresh(&b, input(&first)).await.unwrap();
+        let current = rotated.tokens.refresh_token.unwrap();
+
+        // The lost-update: a writer that read the row before the rotation
+        // saves its copy back.
+        let mut row = b.store.get_session(DID).await.unwrap().unwrap();
+        row.refresh_token = Some(first.clone());
+        b.store.store_session(&row).await.unwrap();
+
+        handle_refresh(&b, input(&current))
+            .await
+            .expect("the token the client holds is still current");
+        assert!(superseded_alerts(&b).is_empty());
+    }
+
     #[tokio::test]
     async fn a_retry_does_not_extend_the_refresh_deadline() {
         let (b, first) = logged_in(3600).await;
@@ -1015,6 +1298,7 @@ mod tests {
             store: NoTombstones::default(),
             grace: 30,
             alerts: Arc::new(Mutex::new(Vec::new())),
+            superseded: Arc::new(Mutex::new(Vec::new())),
         };
         let first = seed(&b.store).await;
 
@@ -1072,10 +1356,7 @@ mod tests {
             async fn store_refresh_tombstone(
                 &self,
                 _: &str,
-                _: &str,
-                _: &str,
-                _: u64,
-                _: u64,
+                _: &RefreshTombstone,
             ) -> Result<(), AppError> {
                 Err(AppError::Internal("tombstone store unavailable".into()))
             }
@@ -1091,6 +1372,7 @@ mod tests {
             store: FailingTombstones::default(),
             grace: 30,
             alerts: Arc::new(Mutex::new(Vec::new())),
+            superseded: Arc::new(Mutex::new(Vec::new())),
         };
         let first = seed(&b.store).await;
 

@@ -313,7 +313,7 @@ fn clear_dir_contents(dir: &Path) -> std::io::Result<()> {
 /// load-bearing — boxing just to mollify the lint would add
 /// indirection for no operational benefit.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SecretsBackendInput {
     /// OS keyring (libsecret / Keychain / Credential Vault). The
@@ -413,6 +413,88 @@ pub enum SecretsBackendInput {
     },
     /// Plaintext file under `data_dir`. **Not recommended** — for dev only.
     Plaintext,
+}
+
+/// Written by hand so the Vault token never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for SecretsBackendInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Keyring { service } => {
+                f.debug_struct("Keyring").field("service", service).finish()
+            }
+            Self::ConfigSeed => f.write_str("ConfigSeed"),
+            Self::Aws {
+                region,
+                secret_name,
+            } => f
+                .debug_struct("Aws")
+                .field("region", region)
+                .field("secret_name", secret_name)
+                .finish(),
+            Self::Gcp {
+                project,
+                secret_name,
+            } => f
+                .debug_struct("Gcp")
+                .field("project", project)
+                .field("secret_name", secret_name)
+                .finish(),
+            Self::Azure {
+                vault_url,
+                secret_name,
+            } => f
+                .debug_struct("Azure")
+                .field("vault_url", vault_url)
+                .field("secret_name", secret_name)
+                .finish(),
+            Self::Vault {
+                addr,
+                secret_path,
+                kv_mount,
+                secret_key,
+                namespace,
+                auth_method,
+                k8s_role,
+                k8s_mount,
+                k8s_jwt_path,
+                token,
+                approle_role_id,
+                approle_secret_id,
+                approle_mount,
+                skip_verify,
+            } => f
+                .debug_struct("Vault")
+                .field("addr", addr)
+                .field("secret_path", secret_path)
+                .field("kv_mount", kv_mount)
+                .field("secret_key", secret_key)
+                .field("namespace", namespace)
+                .field("auth_method", auth_method)
+                .field("k8s_role", k8s_role)
+                .field("k8s_mount", k8s_mount)
+                .field("k8s_jwt_path", k8s_jwt_path)
+                .field("token", &token.as_ref().map(|_| "<redacted>"))
+                .field("approle_role_id", approle_role_id)
+                .field(
+                    "approle_secret_id",
+                    &approle_secret_id.as_ref().map(|_| "<redacted>"),
+                )
+                .field("approle_mount", approle_mount)
+                .field("skip_verify", skip_verify)
+                .finish(),
+            Self::Kubernetes {
+                secret_name,
+                namespace,
+                secret_key,
+            } => f
+                .debug_struct("Kubernetes")
+                .field("secret_name", secret_name)
+                .field("namespace", namespace)
+                .field("secret_key", secret_key)
+                .finish(),
+            Self::Plaintext => f.write_str("Plaintext"),
+        }
+    }
 }
 
 fn default_keyring_service() -> String {
@@ -1125,6 +1207,7 @@ pub async fn apply_inputs(
         store: StoreConfig {
             data_dir: inputs.data_dir.clone(),
         },
+        fjall: Default::default(),
         services: inputs.services.clone(),
         messaging: messaging.clone(),
         mediator_readiness: Default::default(),
@@ -1141,6 +1224,7 @@ pub async fn apply_inputs(
         tee: Default::default(),
         hardened: inputs.hardened.clone(),
         resolver_url: inputs.resolver_url.clone(),
+        did_cache: Default::default(),
         config_path: inputs.config_path.clone(),
         unknown_keys: Vec::new(),
         effective_config_digest: None,
@@ -1702,6 +1786,7 @@ fn scratch_config_for_seed_store(
         server: ServerConfig::default(),
         log: LogConfig::default(),
         store: StoreConfig { data_dir },
+        fjall: Default::default(),
         services: ServicesConfig::default(),
         messaging: None,
         mediator_readiness: Default::default(),
@@ -1715,6 +1800,7 @@ fn scratch_config_for_seed_store(
         tee: Default::default(),
         hardened: Default::default(),
         resolver_url: None,
+        did_cache: Default::default(),
         config_path,
         unknown_keys: Vec::new(),
         effective_config_digest: None,
@@ -1878,11 +1964,6 @@ async fn create_simple_webvh_did(
         is_vta_identity,
     };
 
-    // Setup wizard: no shared AppState, so create a local per-server
-    // auth-lock registry. This path is serverless (mints from a URL),
-    // so it won't authenticate to a hosting server, but the deps bundle
-    // requires the field.
-    let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
     let deps = operations::did_webvh::CreateDidWebvhDeps {
         keys_ks,
         imported_ks,
@@ -1894,10 +1975,8 @@ async fn create_simple_webvh_did(
         config,
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
-        auth_locks: &auth_locks,
         acl_ks: None,
         // Offline: no mediator socket to lend, so the seam cannot choose
-        // TSP. Same reason as the `auth_locks` note above.
         #[cfg(feature = "tsp")]
         tsp: None,
     };

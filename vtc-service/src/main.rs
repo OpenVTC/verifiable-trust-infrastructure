@@ -359,7 +359,8 @@ async fn main() {
             init_tracing(&config);
             config.warn_unknown_keys(&unknown_keys);
 
-            let store = store::Store::open(&config.store).expect("failed to open store");
+            let store = store::Store::open_with(&config.store, &config.fjall)
+                .expect("failed to open store");
             let secret_store = create_secret_store(&config).expect("failed to create secret store");
 
             if let Err(e) = server::run(config, store, secret_store).await {
@@ -529,6 +530,17 @@ async fn run_invite_cli(
             expires_at: None,
         };
         store_acl_entry(&acl_ks, &entry).await?;
+        // An unrestricted admin made offline, without the consent the daemon
+        // requires (VTI-APV-014) — audited as the break-glass on the next boot.
+        vtc_service::install::record_offline_acl_write(
+            &store,
+            "vtc admin invite",
+            "grant",
+            &entry.did,
+            Some(&entry.role),
+            &entry.allowed_contexts,
+        )
+        .await?;
     }
 
     let minted = mint_install_token(&signer, &vtc_did, &admin_did, ttl_seconds)?;

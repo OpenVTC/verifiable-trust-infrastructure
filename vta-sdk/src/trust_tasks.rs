@@ -75,10 +75,13 @@ pub const TASK_AUTH_AUTHENTICATE_0_1: &str = "https://trusttasks.org/spec/auth/a
 /// token. Scope-monotonic.
 pub const TASK_AUTH_REFRESH_0_1: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
 
-/// `spec/auth/revoke-session/0.1` — revoke a session by id (or every
-/// session for the producer's subject).
-pub const TASK_AUTH_REVOKE_SESSION_0_1: &str =
-    "https://trusttasks.org/spec/auth/revoke-session/0.1";
+/// `spec/auth/revoke-session/0.2` — end one named session, every session of
+/// the caller (`all: true`), or every session of a `subject` the caller may
+/// manage in the ACL (VTI-SES-043 / VTI-ACL-050). Supersedes 0.1, which had no
+/// way to name another subject; 0.1 is no longer served — every 0.1 payload is
+/// a valid 0.2 payload, so a client moves by changing the URI.
+pub const TASK_AUTH_REVOKE_SESSION_0_2: &str =
+    <trust_tasks_rs::specs::auth::revoke_session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/auth/whoami/0.1` — introspect the caller's current session: the
 /// live `acr`/`amr` (reflecting any step-up since the token was minted) plus
@@ -329,6 +332,13 @@ pub const TASK_CONTEXTS_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/cont
 pub const TASK_CONTEXTS_UPDATE_DID_1_0: &str =
     "https://trusttasks.org/spec/vta/contexts/update-did/1.0";
 
+/// `spec/vta/contexts/update-did/1.1` — as 1.0, except `did` may be `null`,
+/// which clears the context's DID, and a string `did` must be a DID (DID Core
+/// §3.1). The only way to retire a context's last DID: `webvh/dids/delete`
+/// refuses a DID a context still acts as. Same payload type and handler as 1.0.
+pub const TASK_CONTEXTS_UPDATE_DID_1_1: &str =
+    <trust_tasks_rs::specs::vta::contexts::update_did::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/contexts/preview-delete/1.0` — preview resources affected
 /// by deletion. Payload:
 /// [`crate::protocols::context_management::delete::DeleteContextPreviewBody`].
@@ -403,6 +413,16 @@ pub const TASK_WEBVH_SERVERS_DOMAINS_0_1: &str =
 /// admissible only where it was. Refusing unconditionally is the reading that
 /// cannot leak a key; sealed and JWE carriers work on every transport.
 pub const TASK_KEYS_IMPORT_0_1: &str = "https://trusttasks.org/spec/keys/import/0.1";
+
+/// `spec/keys/import-wrapping-key/0.1` — a fresh, single-use, 60-second
+/// wrapping key to seal a private key to before sending it in
+/// [`TASK_KEYS_IMPORT_0_1`]'s `privateKeySealed` carrier. The key comes back as
+/// an Ed25519 `did:key`; seal to its X25519 counterpart. The response is the
+/// VTA's signed document, and a client **must** verify it before sealing — an
+/// unverified wrapping key is one the transport's intermediary may have chosen.
+/// Replaces `GET /keys/import/wrapping-key`.
+pub const TASK_KEYS_IMPORT_WRAPPING_KEY_0_1: &str =
+    <trust_tasks_rs::specs::keys::import_wrapping_key::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/vta/keys/rename/1.0` — rename a key's identifier.
 /// Payload: [`crate::protocols::key_management::rename::RenameKeyBody`].
@@ -529,6 +549,12 @@ pub const TASK_SERVICES_ENABLE_1_0: &str = "https://trusttasks.org/spec/vta/serv
 /// Refused when the transport is not enabled — that case is `enable`.
 pub const TASK_SERVICES_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/services/update/1.0";
 
+/// `spec/vta/services/update/1.1` — as 1.0, plus an optional `drainTtlSecs` for
+/// the mediated transports (`didcomm`, `tsp`): how long the replaced mediator
+/// keeps accepting delivery. One mediator carrying both drains once for both.
+pub const TASK_SERVICES_UPDATE_1_1: &str =
+    <trust_tasks_rs::specs::vta::services::update::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/services/disable/1.0` — stop advertising a transport.
 /// Payload: `{ service, drainTtlSecs? }`. Auth: super-admin.
 ///
@@ -547,6 +573,12 @@ pub const TASK_SERVICES_DISABLE_1_0: &str = "https://trusttasks.org/spec/vta/ser
 pub const TASK_SERVICES_ROLLBACK_1_0: &str =
     "https://trusttasks.org/spec/vta/services/rollback/1.0";
 
+/// `spec/vta/services/rollback/1.1` — as 1.0, plus an optional `drainTtlSecs`
+/// for the mediated transports: how long a mediator the rollback leaves
+/// draining keeps accepting delivery. Same rules as `update/1.1`'s.
+pub const TASK_SERVICES_ROLLBACK_1_1: &str =
+    <trust_tasks_rs::specs::vta::services::rollback::v1_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `spec/vta/services/drain/list/1.0` — DIDComm mediators still accepting
 /// delivery after being unadvertised. Payload: empty. Auth: super-admin.
 pub const TASK_SERVICES_DRAIN_LIST_1_0: &str =
@@ -559,6 +591,13 @@ pub const TASK_SERVICES_DRAIN_LIST_1_0: &str =
 /// which is the whole reason the drain window existed.
 pub const TASK_SERVICES_DRAIN_CANCEL_1_0: &str =
     "https://trusttasks.org/spec/vta/services/drain/cancel/1.0";
+
+/// `spec/vta/services/report/0.1` — per-mediator inbound counts and each
+/// sender's last-seen mediator over a window, across every mediated transport.
+/// Payload: `{ since?, until? }`. Auth: super-admin — it is a contact log of
+/// other parties' DIDs.
+pub const TASK_SERVICES_REPORT_0_1: &str =
+    <trust_tasks_rs::specs::vta::services::report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ─── Audit slice (canonical spec/audit/*, plus spec/vta/audit/*) ─────────
 
@@ -616,6 +655,19 @@ pub const TASK_AUDIT_UPDATE_RETENTION_1_0: &str =
 /// Auth: any authenticated user.
 pub const TASK_TRUST_TASK_DISCOVERY_0_1: &str =
     "https://trusttasks.org/spec/trust-task-discovery/0.1";
+
+/// `spec/trust-task-discovery/0.3` — 0.1's answer plus the responder's
+/// **acceptance window**: how long after `issuedAt` it still accepts a
+/// document, and its clock-skew tolerance, in whole seconds.
+///
+/// A VTI node advertises the window it applies, at response level
+/// (VTI-TRN-047); a sender holding a document before delivery uses it to
+/// decide when to issue a new attempt instead (VTI-TRN-045). Absence means the
+/// discoverer learnt nothing, never "no window".
+///
+/// Auth: any authenticated user, as 0.1.
+pub const TASK_TRUST_TASK_DISCOVERY_0_3: &str =
+    <trust_tasks_rs::specs::trust_task_discovery::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ─── Vault slice (spec/vault/*/0.1) ──────────────────────────────────────
 //
@@ -1444,10 +1496,9 @@ pub const TASK_PASSKEY_VMS_REVOKE_0_1: &str =
 // ─── Provision-integration (spec/vta/provision-integration/*) ───────────
 //
 // Feature-gated: handler requires `webvh` (DID-doc mutation + log
-// entries). The legacy REST handler is at
-// `POST /bootstrap/provision-integration`; the trust-task envelope
-// carries the same request/response shapes the SDK already exports
-// under `vta_sdk::provision_integration::http`.
+// entries). The trust-task envelope carries the request/response shapes
+// the SDK exports under `vta_sdk::provision_integration::http`; there is
+// no REST route.
 
 /// `provision/integration/0.3` — submit a VP-framed `BootstrapRequest` plus
 /// provisioning options to the VTA; receive a sealed `TemplateBootstrap` bundle
@@ -1872,24 +1923,68 @@ pub const TASK_BACKUP_PUT_CHUNK_1_0: &str = "https://trusttasks.org/spec/vta/bac
 
 // ─── Attestation slice (spec/vta/attestation/*) ──────────────────────────
 //
-// TEE-feature-gated and DELIBERATELY UNAUTHENTICATED on the wire
-// (the existing legacy `/attestation/status` + `/attestation/report`
-// REST routes don't take `AuthClaims`). Operators rely on TEE proofs
-// being publicly verifiable. These URIs live on the REST_ROUTED
-// allowlist for the parity harness; the dispatcher never sees them.
+// TEE-feature-gated. The three reads are **public**: a verifier asks before it
+// trusts the VTA, often holding no key the VTA knows, so they need no session,
+// no ACL entry and no request proof — see [`PUBLIC_URIS`]. What makes a report
+// the verifier's own is its nonce, bound into the evidence; the VTA signs every
+// response with its `authentication` key. Dispatched on the spine like every
+// other task, over TSP, DIDComm and HTTPS alike; they used to be REST-only
+// routes (`/attestation/{status,report,config-report}`) and a DIDComm arm
+// nothing sent to.
 
-/// `spec/vta/attestation/status/1.0` — return the VTA's TEE detection
-/// status (`tee_present`, attestation provider, etc.). No request
-/// body. Unauthenticated. TEE-feature-gated; returns
-/// `tee_attestation_error` when the binary lacks the `tee` feature.
-pub const TASK_ATTESTATION_STATUS_1_0: &str =
-    "https://trusttasks.org/spec/vta/attestation/status/1.0";
+/// `spec/vta/attestation/status/0.1` — which TEE the VTA detected at boot.
+/// Public. TEE-feature-gated.
+pub const TASK_ATTESTATION_STATUS_0_1: &str =
+    <trust_tasks_rs::specs::vta::attestation::status::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/vta/attestation/report/1.0` — produce a fresh attestation
-/// report with a client-supplied nonce. Unauthenticated.
-/// TEE-feature-gated.
-pub const TASK_ATTESTATION_REPORT_1_0: &str =
-    "https://trusttasks.org/spec/vta/attestation/report/1.0";
+/// `spec/vta/attestation/report/0.1` — fresh evidence binding the verifier's
+/// 32-byte nonce and the VTA's DID. Public. TEE-feature-gated.
+pub const TASK_ATTESTATION_REPORT_0_1: &str =
+    <trust_tasks_rs::specs::vta::attestation::report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/attestation/config-report/0.1` — fresh evidence binding the
+/// verifier's nonce and the SHA-384 of the secret-free view of the config the
+/// enclave booted. Public. TEE-feature-gated.
+pub const TASK_ATTESTATION_CONFIG_REPORT_0_1: &str =
+    <trust_tasks_rs::specs::vta::attestation::config_report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+// ─── Health + restore slice (spec/vta/{health,restore}/*) ──────────────
+//
+// Two tasks with fixed disclosure policies rather than one whose answer varies
+// with who asked: the public flags anyone may read, and the version + restore
+// record only an administrator may. They replace `GET /health/details`, which
+// answered all of it to any authenticated caller.
+
+/// `spec/vta/health/details/0.1` — the VTA's public health flags: status,
+/// mediator, TEE status, seal and storage-encryption state, TSP advertisement.
+/// **Public** ([`PUBLIC_URIS`]): the same answer for every asker, never the
+/// software version or the restore record. The response is the VTA's signed
+/// document.
+pub const TASK_VTA_HEALTH_DETAILS_0_1: &str =
+    <trust_tasks_rs::specs::vta::health::details::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/restore/status/0.1` — the VTA's software version and whether its
+/// state derives from a backup restore, with the VTI-VTA-051 restore record
+/// when it does. Administrators of the VTA only; the request proof is
+/// REQUIRED.
+pub const TASK_VTA_RESTORE_STATUS_0_1: &str =
+    <trust_tasks_rs::specs::vta::restore::status::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/vta/attestation/mnemonic-export/1.0` — release a TEE VTA's BIP-39 seed
+/// mnemonic once, inside the first-boot export window, **sealed** to the
+/// requester's ephemeral `did:key` (payload: a sealed-transfer
+/// `BootstrapRequest`; response:
+/// [`crate::protocols::attestation_management::MnemonicExportResultBody`]).
+///
+/// Unlike the public attestation reads this one is authenticated: super
+/// admin holding `key-export`, and **only over an end-to-end channel** (DIDComm
+/// authcrypt or TSP). Over Trust Tasks on HTTPS, and on the REST route it
+/// replaces (`POST /attestation/mnemonic`), it is refused with
+/// `permissionDenied`: the mnemonic is the VTA's root derivation material, and
+/// the seal alone does not keep the request and its sealed answer off an
+/// intermediary that terminates TLS. TEE-feature-gated.
+pub const TASK_ATTESTATION_MNEMONIC_EXPORT_1_0: &str =
+    "https://trusttasks.org/spec/vta/attestation/mnemonic-export/1.0";
 
 // ─── Consent slice (spec/consent/*) ──────────────────────────────────────
 //
@@ -2008,7 +2103,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_CHALLENGE_0_1,
     TASK_AUTH_AUTHENTICATE_0_1,
     TASK_AUTH_REFRESH_0_1,
-    TASK_AUTH_REVOKE_SESSION_0_1,
+    TASK_AUTH_REVOKE_SESSION_0_2,
     TASK_AUTH_WHOAMI_0_1,
     TASK_AUTH_SESSIONS_LIST_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_1,
@@ -2046,6 +2141,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONTEXTS_GET_1_0,
     TASK_CONTEXTS_UPDATE_1_0,
     TASK_CONTEXTS_UPDATE_DID_1_0,
+    TASK_CONTEXTS_UPDATE_DID_1_1,
     TASK_CONTEXTS_SECRETS_1_0,
     TASK_CONTEXTS_PREVIEW_DELETE_1_0,
     TASK_CONTEXTS_DELETE_1_0,
@@ -2053,6 +2149,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_KEYS_LIST_0_1,
     TASK_KEYS_CREATE_0_1,
     TASK_KEYS_IMPORT_0_1,
+    TASK_KEYS_IMPORT_WRAPPING_KEY_0_1,
     TASK_KEYS_SHOW_0_1,
     TASK_KEYS_RENAME_0_1,
     TASK_KEYS_REVOKE_0_1,
@@ -2069,10 +2166,13 @@ pub const ALL_URIS: &[&str] = &[
     TASK_SERVICES_GET_1_0,
     TASK_SERVICES_ENABLE_1_0,
     TASK_SERVICES_UPDATE_1_0,
+    TASK_SERVICES_UPDATE_1_1,
     TASK_SERVICES_DISABLE_1_0,
     TASK_SERVICES_ROLLBACK_1_0,
+    TASK_SERVICES_ROLLBACK_1_1,
     TASK_SERVICES_DRAIN_LIST_1_0,
     TASK_SERVICES_DRAIN_CANCEL_1_0,
+    TASK_SERVICES_REPORT_0_1,
     // Audit slice
     TASK_AUDIT_LIST_0_1,
     TASK_AUDIT_VERIFY_0_1,
@@ -2080,6 +2180,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUDIT_UPDATE_RETENTION_1_0,
     // Discovery
     TASK_TRUST_TASK_DISCOVERY_0_1,
+    TASK_TRUST_TASK_DISCOVERY_0_3,
     // Vault slice (0.1 + 0.2 + 0.3 dual-accept; delete is 0.1-only upstream)
     TASK_VAULT_LIST_0_1,
     TASK_VAULT_LIST_0_2,
@@ -2187,9 +2288,15 @@ pub const ALL_URIS: &[&str] = &[
     TASK_BACKUP_FINALIZE_IMPORT_1_1,
     TASK_BACKUP_GET_CHUNK_1_0,
     TASK_BACKUP_PUT_CHUNK_1_0,
-    // Attestation slice (REST-routed, unauthenticated)
-    TASK_ATTESTATION_STATUS_1_0,
-    TASK_ATTESTATION_REPORT_1_0,
+    // Health + restore slice
+    TASK_VTA_HEALTH_DETAILS_0_1,
+    TASK_VTA_RESTORE_STATUS_0_1,
+    // Attestation slice: three public reads …
+    TASK_ATTESTATION_STATUS_0_1,
+    TASK_ATTESTATION_REPORT_0_1,
+    TASK_ATTESTATION_CONFIG_REPORT_0_1,
+    // … and the authenticated, end-to-end-only mnemonic export
+    TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
     // Consent slice
     TASK_CONSENT_REQUEST_1_0,
     TASK_CONSENT_DECISION_1_0,
@@ -2279,11 +2386,11 @@ pub const ALL_URIS: &[&str] = &[
 
 /// The subset of [`ALL_URIS`] served by **dedicated REST routes** rather than
 /// the `/trust-tasks` dispatcher: pre-login auth (challenge / authenticate /
-/// refresh), passkey-login, and TEE attestation.
+/// refresh) and passkey-login.
 ///
 /// These are **not** reachable through the generic dispatcher
 /// ([`crate::client::VtaClient::dispatch_trust_task`]) — pre-login auth has no
-/// session to carry, and attestation is unauthenticated/public. A generic
+/// session to carry. A generic
 /// "invoke any operation" surface (e.g. an MCP `vta_call` gateway) should
 /// exclude them; use [`dispatch_routed_uris`].
 ///
@@ -2298,8 +2405,19 @@ pub const REST_ROUTED_URIS: &[&str] = &[
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_2,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
-    TASK_ATTESTATION_STATUS_1_0,
-    TASK_ATTESTATION_REPORT_1_0,
+];
+
+/// Tasks a caller may send with **no identity at all**: no session, no ACL
+/// entry, no request proof. The VTA dispatches them on a zero-authority claim
+/// over every transport — anonymously over HTTPS (behind the unauthenticated
+/// rate limiter), and from a sender its ACL does not know over DIDComm and TSP.
+/// Their specifications declare the request proof OPTIONAL and answer a public
+/// fact; a proof, when one is attached, must still verify and bind.
+pub const PUBLIC_URIS: &[&str] = &[
+    TASK_VTA_HEALTH_DETAILS_0_1,
+    TASK_ATTESTATION_STATUS_0_1,
+    TASK_ATTESTATION_REPORT_0_1,
+    TASK_ATTESTATION_CONFIG_REPORT_0_1,
 ];
 
 /// The operations reachable through the generic `/trust-tasks` dispatcher —
@@ -2327,9 +2445,10 @@ mod tests {
             assert!(ALL_URIS.contains(u), "REST_ROUTED uri not in ALL_URIS: {u}");
         }
         let dispatch = dispatch_routed_uris();
-        // Pre-login auth + attestation are excluded …
+        // Pre-login auth is excluded …
         assert!(!dispatch.contains(&TASK_AUTH_CHALLENGE_0_1));
-        assert!(!dispatch.contains(&TASK_ATTESTATION_STATUS_1_0));
+        // … the public attestation reads are dispatched, not REST-routed …
+        assert!(dispatch.contains(&TASK_ATTESTATION_STATUS_0_1));
         // … but dispatched auth + management ops remain reachable.
         assert!(dispatch.contains(&TASK_AUTH_WHOAMI_0_1));
         assert!(dispatch.contains(&TASK_AUTH_SESSIONS_LIST_0_1));

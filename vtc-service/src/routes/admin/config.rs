@@ -1,16 +1,18 @@
-//! `GET / PATCH /v1/admin/config` handlers.
+//! `config/{show,patch,reload,restart}/0.1` and `vtc/config/{export,import}/0.1`.
 //!
-//! Implements **M0.8.2** of the VTC MVP Phase 0 plan.
+//! Implements **M0.8.2** of the VTC MVP Phase 0 plan. Every one is a signed
+//! document served by the spine (`trust_tasks::admin_tasks` and the portable
+//! pair in `trust_tasks`); none has a REST route.
 //!
-//! - **GET**: returns the four-layer-merged [`EffectiveConfig`].
-//! - **PATCH**: writes overrides to the db-layer (`config` keyspace),
+//! - **show**: returns the four-layer-merged [`EffectiveConfig`].
+//! - **patch**: writes overrides to the db-layer (`config` keyspace),
 //!   returning `{ applied, pending_restart, rejected }` so the
 //!   caller can tell which keys took effect immediately, which
 //!   require a daemon restart (M0.8.3), and which were rejected
 //!   (and why).
 //!
 //! Every mutating handler emits an audit event keyed to the calling
-//! admin's real DID (the `AdminAuth` extractor's `did`). Sensitive
+//! admin's real DID (the document's signer). Sensitive
 //! values are run through `vti_common::audit::ConfigChange::redact_if`
 //! before the `ConfigChanged` event is persisted. Audit is
 //! fail-closed: a mutation that produces a change but cannot be
@@ -19,14 +21,11 @@
 
 use std::collections::HashMap;
 
-use axum::Json;
-use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::info;
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use crate::community::{CommunityProfile, CommunityProfileUpdate, load_profile, store_profile};
@@ -68,47 +67,34 @@ pub struct PatchResponse {
 /// One rejected key + the reason. Surfaced to the caller so the
 /// admin UX can present a meaningful error inline.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[schema(as = ConfigRejectedKey)]
 pub struct RejectedKey {
     pub key: String,
     pub reason: String,
 }
 
 /// GET handler.
-#[utoipa::path(
-    get, path = "/admin/config", tag = "admin",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Four-layer-merged effective config", body = EffectiveConfig),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn get_config(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<EffectiveConfig>, AppError> {
+pub(crate) async fn get_config(
+    state: &AppState,
+    keys: Option<&[String]>,
+) -> Result<EffectiveConfig, AppError> {
     let cfg = state.config.read().await;
     let store = ConfigStore::new(state.config_ks.clone());
-    let eff = compute_effective_config(&cfg, &store).await?;
-    Ok(Json(eff))
+    let mut eff = compute_effective_config(&cfg, &store).await?;
+    // `config/show`'s `keys` narrows the answer to the named keys; absent,
+    // every key the registry knows.
+    if let Some(keys) = keys {
+        eff.fields.retain(|f| keys.contains(&f.key));
+    }
+    Ok(eff)
 }
 
 /// PATCH handler.
-#[utoipa::path(
-    patch, path = "/admin/config", tag = "admin",
-    security(("bearer_jwt" = [])),
-    request_body = PatchRequest,
-    responses(
-        (status = 200, description = "Applied / pending-restart / rejected keys", body = PatchResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn patch_config(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Json(req): Json<PatchRequest>,
-) -> Result<(StatusCode, Json<PatchResponse>), AppError> {
+pub(crate) async fn patch_config(
+    state: &AppState,
+    actor: &str,
+    req: PatchRequest,
+) -> Result<PatchResponse, AppError> {
     let store = ConfigStore::new(state.config_ks.clone());
     // Snapshot the current db-layer overrides up front so each applied
     // key's audit record carries its real `old_value` + source.
@@ -129,6 +115,13 @@ pub async fn patch_config(
         };
 
         if let Err(e) = validate_value(def, &value) {
+            rejected.push(RejectedKey {
+                key,
+                reason: format!("validation failed: {e}"),
+            });
+            continue;
+        }
+        if let Err(e) = check_against_community(state, &key, &value).await {
             rejected.push(RejectedKey {
                 key,
                 reason: format!("validation failed: {e}"),
@@ -182,10 +175,10 @@ pub async fn patch_config(
     // (matches reload/restart/import). No applied changes → nothing to
     // audit, so a rejects-only or empty PATCH never needs the writer.
     if !audit_changes.is_empty() {
-        let audit_writer = require_audit_writer(&state)?;
+        let audit_writer = require_audit_writer(state)?;
         audit_writer
             .write(
-                &admin.0.did,
+                actor,
                 None,
                 AuditEvent::ConfigChanged(ConfigChangedData {
                     changes: audit_changes,
@@ -195,14 +188,11 @@ pub async fn patch_config(
             .await?;
     }
 
-    Ok((
-        StatusCode::OK,
-        Json(PatchResponse {
-            applied,
-            pending_restart,
-            rejected,
-        }),
-    ))
+    Ok(PatchResponse {
+        applied,
+        pending_restart,
+        rejected,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -237,20 +227,11 @@ pub struct ReloadResponse {
 /// runtime-state subscribers (tracing subscriber filter handle,
 /// session-cleanup interval, etc.) will plug into the same diff
 /// loop.
-#[utoipa::path(
-    post, path = "/admin/config/reload", tag = "admin",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Keys re-applied in-memory", body = ReloadResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn reload_config(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<ReloadResponse>, AppError> {
-    let audit_writer = require_audit_writer(&state)?;
+pub(crate) async fn reload_config(
+    state: &AppState,
+    actor: &str,
+) -> Result<ReloadResponse, AppError> {
+    let audit_writer = require_audit_writer(state)?;
 
     let store = ConfigStore::new(state.config_ks.clone());
 
@@ -291,7 +272,7 @@ pub async fn reload_config(
 
     audit_writer
         .write(
-            &admin.0.did,
+            actor,
             None,
             AuditEvent::ConfigReloaded(ConfigReloadedData {
                 keys_reloaded: keys_reloaded.clone(),
@@ -301,7 +282,7 @@ pub async fn reload_config(
 
     info!(?keys_reloaded, "config reloaded");
 
-    Ok(Json(ReloadResponse { keys_reloaded }))
+    Ok(ReloadResponse { keys_reloaded })
 }
 
 // ---------------------------------------------------------------------------
@@ -334,20 +315,11 @@ pub struct RestartResponse {
 /// On success the handler emits `RestartRequested` to the audit
 /// log *before* signalling shutdown — so the row survives even if
 /// the drain wedges.
-#[utoipa::path(
-    post, path = "/admin/config/restart", tag = "admin",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Restart requested", body = RestartResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn restart_config(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<RestartResponse>, AppError> {
-    let audit_writer = require_audit_writer(&state)?;
+pub(crate) async fn restart_config(
+    state: &AppState,
+    actor: &str,
+) -> Result<RestartResponse, AppError> {
+    let audit_writer = require_audit_writer(state)?;
 
     let supervisor = state.supervisor.ok_or_else(|| AppError::ServiceError {
         status: StatusCode::PRECONDITION_FAILED,
@@ -358,7 +330,7 @@ pub async fn restart_config(
 
     audit_writer
         .write(
-            &admin.0.did,
+            actor,
             None,
             AuditEvent::RestartRequested(RestartRequestedData {
                 drain_timeout_seconds: DEFAULT_DRAIN_TIMEOUT_SECS,
@@ -375,10 +347,10 @@ pub async fn restart_config(
     // drain still leaves the row behind.
     let _ = state.shutdown_tx.send(true);
 
-    Ok(Json(RestartResponse {
+    Ok(RestartResponse {
         supervisor,
         drain_timeout_seconds: DEFAULT_DRAIN_TIMEOUT_SECS,
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +367,26 @@ fn require_audit_writer(state: &AppState) -> Result<&AuditWriter, AppError> {
         })
 }
 
+/// The checks a value's shape cannot settle: whether the community, as it is
+/// now, can live with it. Run on every runtime write path — `config/patch` and
+/// the import — after [`validate_value`].
+///
+/// Today that is one key: an unrestricted-admin consent threshold the
+/// community cannot meet is refused here, when it is written, rather than
+/// discovered when it blocks a grant (VTI-APV-009).
+async fn check_against_community(
+    state: &AppState,
+    key: &str,
+    value: &Value,
+) -> Result<(), AppError> {
+    if key == crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD
+        && let Some(n) = value.as_u64()
+    {
+        crate::acl::admin_consent::check_threshold_meetable(state, n).await?;
+    }
+    Ok(())
+}
+
 /// Read the live in-memory value for `key` out of an `AppConfig`.
 /// Phase-0 keys only; unknown keys return `Value::Null`.
 fn lookup_live(cfg: &crate::config::AppConfig, key: &str) -> Value {
@@ -403,6 +395,9 @@ fn lookup_live(cfg: &crate::config::AppConfig, key: &str) -> Value {
         "server.port" => Value::Number(cfg.server.port.into()),
         "log.level" => Value::String(cfg.log.level.clone()),
         "auth.admin_idle_timeout" => Value::Number(cfg.auth.admin_idle_timeout.into()),
+        crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD => {
+            Value::Number(cfg.acl.unrestricted_admin_consent_threshold.into())
+        }
         _ => Value::Null,
     }
 }
@@ -438,6 +433,14 @@ fn apply_to_live(cfg: &mut crate::config::AppConfig, key: &str, value: &Value) -
         cfg.auth.admin_idle_timeout = n;
         return true;
     }
+    // The gate reads the effective value itself (`admin_consent::threshold`),
+    // so this only keeps the in-memory copy in step with what it enforces.
+    if key == crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD
+        && let Some(n) = value.as_u64().filter(|n| *n >= 1)
+    {
+        cfg.acl.unrestricted_admin_consent_threshold = n;
+        return true;
+    }
     false
 }
 
@@ -467,60 +470,56 @@ pub const EXPORT_SCHEMA_VERSION: u32 = 1;
 /// to check it against.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[derive(utoipa::ToSchema)]
 pub struct ConfigExportDocument {
     pub schema_version: u32,
     pub exported_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub community_profile: Option<CommunityProfile>,
     pub config_overrides: HashMap<String, Value>,
+    /// The published shape's extension point. Accepted and not
+    /// interpreted: `deny_unknown_fields` refused it until #1641 batch 3,
+    /// so a schema-valid document carrying `ext` was refused as malformed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ext: Option<Value>,
 }
 
-/// `POST /v1/admin/config/export` response — canonical
 /// `vtc/config/export/0.1#response`. The document is returned under a
 /// named member rather than as the bare body: the registry response
 /// convention requires `additionalProperties: false` plus an `ext`
 /// extension point, and neither attaches to a bare `$ref`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
 pub struct ExportResponse {
     pub document: ConfigExportDocument,
 }
 
-#[utoipa::path(
-    post, path = "/admin/config/export", tag = "admin",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Portable config + community-profile export", body = ExportResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn export_config(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<ExportResponse>, AppError> {
+/// The export, as the signed `vtc/config/export/0.1` document
+/// (`trust_tasks::handle_config_export`) answers it.
+///
+/// There is no bearer route for this task. It declares `proof` REQUIRED, so
+/// the signed document is its only binding (#1641 phase 2, batch 3); the
+/// `POST /v1/admin/config/export` route it replaced had no client.
+pub(crate) async fn export_inner(state: &AppState) -> Result<ExportResponse, AppError> {
     let community_profile = load_profile(&state.community_ks).await?;
     let store = ConfigStore::new(state.config_ks.clone());
     let config_overrides = store.snapshot().await?;
 
-    Ok(Json(ExportResponse {
+    Ok(ExportResponse {
         document: ConfigExportDocument {
             schema_version: EXPORT_SCHEMA_VERSION,
             exported_at: Utc::now(),
             community_profile,
             config_overrides,
+            ext: None,
         },
-    }))
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Import (diff-and-confirm)
 // ---------------------------------------------------------------------------
 
-/// `POST /v1/admin/config/import` request — canonical
-/// `vtc/config/import/0.1`.
+/// The `vtc/config/import/0.1` payload, as the import reads it.
 ///
 /// `confirm` rides in the **payload**, not a query string: a Trust
 /// Task is the same interface over REST, DIDComm and TSP, and only
@@ -530,12 +529,18 @@ pub async fn export_config(
 /// the one whose mistake is recoverable — a caller who meant to apply
 /// and previewed loses a round-trip, where the reverse has already
 /// overwritten a live community's configuration.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImportRequest {
     pub document: ConfigExportDocument,
     #[serde(default)]
     pub confirm: bool,
+    /// The task's extension point — accepted and not interpreted, for the
+    /// reason given on [`ConfigExportDocument::ext`]. Declared so that
+    /// `deny_unknown_fields` admits it, and never read.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub ext: Option<Value>,
 }
 
 /// A single field an import would change, or did — canonical
@@ -549,7 +554,6 @@ pub struct ImportRequest {
 /// distinction survives on the wire.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
 pub struct FieldDiff {
     pub key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -558,8 +562,7 @@ pub struct FieldDiff {
     pub new_value: Option<Value>,
 }
 
-/// `POST /v1/admin/config/import` response — canonical
-/// `vtc/config/import/0.1#response`.
+/// The import's response — canonical `vtc/config/import/0.1#response`.
 ///
 /// One shape for both paths. On a preview the change arrays are what
 /// *would* be written; on an apply they are what *was*. That is why
@@ -567,7 +570,6 @@ pub struct FieldDiff {
 /// know which it is holding.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
 pub struct ImportResponse {
     /// `preview` when `confirm` was not set; `imported` after the
     /// document was applied.
@@ -594,7 +596,6 @@ pub struct ImportResponse {
 /// Whether an import response describes a dry run or a completed apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
 pub enum ImportStatus {
     Preview,
     Imported,
@@ -607,25 +608,21 @@ pub const IMPORT_ERR_UNSUPPORTED_SCHEMA_VERSION: &str =
 pub const IMPORT_ERR_COMMUNITY_DID_MISMATCH: &str =
     trust_tasks_rs::specs::vtc::config::import::v0_1::error_codes::COMMUNITY_DID_MISMATCH.code;
 
-#[utoipa::path(
-    post, path = "/admin/config/import", tag = "admin",
-    security(("bearer_jwt" = [])),
-    request_body = ImportRequest,
-    responses(
-        (status = 200, description = "Import diff (preview) or applied changes", body = ImportResponse),
-        (status = 400, description = "Document carries an unsupported schemaVersion"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 409, description = "Document was taken from a different community"),
-    ),
-)]
-pub async fn import_config(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<ImportRequest>,
-) -> Result<(StatusCode, Json<ImportResponse>), crate::error::TaskError> {
+/// The import — preview or apply — as the signed `vtc/config/import/0.1`
+/// document (`trust_tasks::handle_config_import`) runs it. `actor_did` is the
+/// document's verified signer, and it is what the audit rows name.
+///
+/// There is no bearer route for this task, for the reason given on
+/// [`export_inner`].
+pub(crate) async fn import_inner(
+    state: &AppState,
+    actor_did: &str,
+    body: ImportRequest,
+) -> Result<ImportResponse, crate::error::TaskError> {
     use crate::error::TaskError;
-    let ImportRequest { document, confirm } = body;
+    let ImportRequest {
+        document, confirm, ..
+    } = body;
     let req = document;
 
     // Version first: a document whose shape we cannot vouch for must not be
@@ -694,6 +691,13 @@ pub async fn import_config(
             });
             continue;
         }
+        if let Err(e) = check_against_community(state, key, new_value).await {
+            rejected.push(RejectedKey {
+                key: key.clone(),
+                reason: format!("validation failed: {e}"),
+            });
+            continue;
+        }
         let old = current_overrides.get(key).cloned();
         if old.as_ref() != Some(new_value) {
             overrides_diff.push(FieldDiff {
@@ -713,16 +717,13 @@ pub async fn import_config(
             .filter(|d| matches!(lookup(&d.key), Some(def) if def.requires_restart))
             .map(|d| d.key.clone())
             .collect();
-        return Ok((
-            StatusCode::OK,
-            Json(ImportResponse {
-                status: ImportStatus::Preview,
-                profile_changes: profile_diff,
-                override_changes: overrides_diff,
-                pending_restart,
-                rejected,
-            }),
-        ));
+        return Ok(ImportResponse {
+            status: ImportStatus::Preview,
+            profile_changes: profile_diff,
+            override_changes: overrides_diff,
+            pending_restart,
+            rejected,
+        });
     }
 
     // --- apply --------------------------------------------------------
@@ -730,10 +731,10 @@ pub async fn import_config(
     // half a profile applied. Overrides are persisted one key at a
     // time, so a fjall-side error mid-loop reports back via
     // `rejected` rather than aborting.
-    let audit_writer = require_audit_writer(&state)?;
+    let audit_writer = require_audit_writer(state)?;
 
     let community_profile_applied = if let Some(incoming) = req.community_profile.clone() {
-        apply_profile_import(&state, incoming, current_profile.as_ref()).await?
+        apply_profile_import(state, incoming, current_profile.as_ref()).await?
     } else {
         Vec::new()
     };
@@ -782,7 +783,7 @@ pub async fn import_config(
     if !audit_changes.is_empty() {
         audit_writer
             .write(
-                &admin.0.did,
+                actor_did,
                 None,
                 AuditEvent::ConfigChanged(ConfigChangedData {
                     changes: audit_changes,
@@ -794,7 +795,7 @@ pub async fn import_config(
     if !community_profile_applied.is_empty() {
         audit_writer
             .write(
-                &admin.0.did,
+                actor_did,
                 None,
                 AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
                     fields_changed: community_profile_applied.clone(),
@@ -834,62 +835,45 @@ pub async fn import_config(
         .filter(|d| config_overrides_applied.contains(&d.key))
         .collect();
 
-    Ok((
-        StatusCode::OK,
-        Json(ImportResponse {
-            status: ImportStatus::Imported,
-            profile_changes,
-            override_changes,
-            pending_restart,
-            rejected,
-        }),
-    ))
+    Ok(ImportResponse {
+        status: ImportStatus::Imported,
+        profile_changes,
+        override_changes,
+        pending_restart,
+        rejected,
+    })
 }
 
 /// Apply the incoming profile to `community_ks`. Returns the list of
 /// field names that changed (driving the
 /// `CommunityProfileUpdated.fieldsChanged` audit payload).
 ///
-/// If no profile exists yet the incoming profile is stored as-is
-/// (and **all** populated fields are reported as changed, matching
-/// `CommunityProfileUpdate::apply`'s contract).
+/// Every import goes through `CommunityProfileUpdate::apply`, so every
+/// imported profile meets the caps an edit must: the text-length bounds, the
+/// 16 KiB `extensions` bound, the `http(s)`-only `logoUrl` and governance URL,
+/// the personhood overclaim refusal. Those caps exist because the profile is
+/// served on the unauthenticated public-profile endpoint and `logoUrl` lands
+/// in an `<img src>` there.
+///
+/// When no profile is stored yet, the patch is applied to a default profile
+/// for the incoming community DID — keeping the imported `createdAt` — and
+/// the result is stored even if nothing differs from the defaults, because
+/// the community had no profile at all. This path used to store the import
+/// verbatim, which skipped every one of those caps: an import was the one way
+/// to publish a `javascript:` logo URL.
 async fn apply_profile_import(
     state: &AppState,
     incoming: CommunityProfile,
     current: Option<&CommunityProfile>,
 ) -> Result<Vec<String>, AppError> {
-    let Some(current) = current else {
-        // Fresh install — store the import verbatim and report every
-        // non-default-shaped field as changed.
-        let mut changed = Vec::new();
-        if !incoming.name.is_empty() {
-            changed.push("name".into());
+    let (mut updated, fresh) = match current {
+        Some(current) => (current.clone(), false),
+        None => {
+            let mut base = CommunityProfile::new(incoming.community_did.clone(), "");
+            base.created_at = incoming.created_at;
+            (base, true)
         }
-        if !incoming.description.is_empty() {
-            changed.push("description".into());
-        }
-        if incoming.logo_url.is_some() {
-            changed.push("logoUrl".into());
-        }
-        if incoming.public_url.is_some() {
-            changed.push("publicUrl".into());
-        }
-        if incoming.contact_email.is_some() {
-            changed.push("contactEmail".into());
-        }
-        if incoming.language != "en" {
-            changed.push("language".into());
-        }
-        if !incoming.extensions.is_null() {
-            changed.push("extensions".into());
-        }
-        store_profile(&state.community_ks, &incoming).await?;
-        return Ok(changed);
     };
-
-    // Existing profile — build a `CommunityProfileUpdate` from the
-    // import and let it diff + apply. This reuses the existing
-    // extension-size guard.
     let patch = CommunityProfileUpdate {
         name: Some(incoming.name),
         description: Some(incoming.description),
@@ -901,9 +885,8 @@ async fn apply_profile_import(
         personhood: Some(incoming.personhood),
         extensions: Some(incoming.extensions),
     };
-    let mut updated = current.clone();
     let changed = patch.apply(&mut updated)?;
-    if !changed.is_empty() {
+    if fresh || !changed.is_empty() {
         store_profile(&state.community_ks, &updated).await?;
     }
     Ok(changed)

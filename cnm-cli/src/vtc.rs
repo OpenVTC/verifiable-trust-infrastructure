@@ -1,6 +1,6 @@
 //! Reaching the community itself — the VTC — rather than the community's VTA.
 //!
-//! `cnm vetting`, `cnm audit`, `cnm backup` and `cnm did-log` are community
+//! `cnm vetting`, `cnm audit`, `cnm backup`, `cnm git` and `cnm did-log` are community
 //! administration: they drive routes the VTC serves, not the VTA. They
 //! authenticate *to the VTC* as this community profile's own identity, with
 //! **the VTC's DID as the audience**.
@@ -15,6 +15,7 @@
 //! this module can fall back to the VTA's.
 
 use vta_cli_common::render::bin_name;
+use vta_sdk::session::TransportChoice;
 use vtc_client::{VtcClient, VtcError};
 
 use crate::auth;
@@ -133,6 +134,156 @@ async fn connect_as(
         client,
         client_did: client_did.to_string(),
     })
+}
+
+/// Connect to `target` over a channel confidential end-to-end — TSP when the
+/// VTC advertises it, else DIDComm — as this community profile's identity.
+///
+/// For the verbs the VTC serves only end to end (a community backup, whose
+/// password and bundle would otherwise exist in plaintext wherever TLS
+/// terminates). There is no REST fallback: a VTC that advertises neither
+/// transport cannot be backed up from here, and the error says so.
+pub async fn connect_end_to_end(keyring_key: &str, target: &VtcTarget) -> CliResult<Connected> {
+    connect_with(keyring_key, target, Reach::EndToEnd).await
+}
+
+/// Connect to `target` for signed Trust Tasks, as this community profile's
+/// identity, over the transport `transport` picks — the same choice every
+/// `cnm` command makes: TSP when the VTC advertises it, else DIDComm, else a
+/// signed document over HTTPS (`--transport` pins one).
+///
+/// The HTTPS client holds no session and no token: each task is signed with
+/// the profile's key and posted to the document endpoint, so nothing here
+/// needs the DID to be an administrator. A session is attributed to the same
+/// DID, which is the only one the VTC accepts a document from on it.
+///
+/// Close what this returns with [`VtcClient::shutdown`] on every path out.
+pub async fn connect_for_tasks(
+    keyring_key: &str,
+    target: &VtcTarget,
+    transport: TransportChoice,
+) -> CliResult<Connected> {
+    connect_with(keyring_key, target, Reach::Tasks(transport)).await
+}
+
+/// Which transports a connection may use.
+#[derive(Debug, Clone, Copy)]
+enum Reach {
+    /// TSP, else DIDComm; never HTTPS.
+    EndToEnd,
+    /// As the operator's `--transport` says, HTTPS included.
+    Tasks(TransportChoice),
+}
+
+async fn connect_with(keyring_key: &str, target: &VtcTarget, reach: Reach) -> CliResult<Connected> {
+    use vta_sdk::session::VtaEndpoint;
+    let session = auth::loaded_session(keyring_key).ok_or_else(|| {
+        format!(
+            "no stored identity for this community profile. Run `{} setup` first.",
+            bin_name()
+        )
+    })?;
+    let (did, key) = (&session.client_did, &session.private_key_multibase);
+    let connected = |client: VtcClient| Connected {
+        client,
+        client_did: did.to_string(),
+    };
+    let https = || connected(VtcClient::anonymous(&target.base, &target.did));
+
+    let choice = match reach {
+        Reach::EndToEnd => TransportChoice::Auto,
+        Reach::Tasks(choice) => choice,
+    };
+    if choice == TransportChoice::Rest {
+        return Ok(https());
+    }
+    let (tsp, didcomm) = match vta_sdk::session::resolve_vta_endpoint(&target.did).await {
+        Ok(VtaEndpoint::Tsp {
+            mediator_did,
+            didcomm_mediator_did,
+            ..
+        }) => (Some(mediator_did), didcomm_mediator_did),
+        Ok(VtaEndpoint::DIDComm { mediator_did, .. }) => (None, Some(mediator_did)),
+        Ok(_) => (None, None),
+        Err(e) if matches!(reach, Reach::Tasks(TransportChoice::Auto)) => {
+            eprintln!(
+                "warning: could not resolve the VTC's DID {} ({e}); sending signed documents \
+                 over HTTPS",
+                target.did
+            );
+            return Ok(https());
+        }
+        Err(e) => {
+            return Err(format!("could not resolve the VTC's DID {}: {e}", target.did).into());
+        }
+    };
+
+    let try_tsp = matches!(choice, TransportChoice::Auto | TransportChoice::Tsp);
+    let try_didcomm = matches!(choice, TransportChoice::Auto | TransportChoice::Didcomm);
+    let mut failed: Vec<String> = Vec::new();
+    if try_tsp && let Some(m) = &tsp {
+        match VtcClient::connect_tsp(did, key, &target.did, m, Some(&target.base)).await {
+            Ok(c) => return Ok(connected(c)),
+            Err(e) => failed.push(format!("TSP via {m}: {e}")),
+        }
+    }
+    if try_didcomm && let Some(m) = &didcomm {
+        if !failed.is_empty() {
+            eprintln!("warning: {}; using DIDComm via {m}", failed.join("; "));
+        }
+        match VtcClient::connect_didcomm(did, key, &target.did, m, Some(&target.base)).await {
+            Ok(c) => return Ok(connected(c)),
+            Err(e) => failed.push(format!("DIDComm via {m}: {e}")),
+        }
+    }
+
+    let why = if failed.is_empty() {
+        None
+    } else {
+        Some(failed.join("; "))
+    };
+    match (reach, choice) {
+        (Reach::Tasks(_), TransportChoice::Auto) => {
+            if let Some(why) = why {
+                eprintln!(
+                    "warning: could not open a session to the VTC ({why}); sending signed \
+                     documents over HTTPS"
+                );
+            }
+            Ok(https())
+        }
+        (Reach::EndToEnd, _) => Err(match why {
+            Some(why) => format!("could not open a session to the VTC {}: {why}", target.did),
+            None => format!(
+                "{} advertises no DIDComm or TSP service. A community backup moves only over \
+                 a channel confidential end-to-end, and the VTC refuses it over REST.",
+                target.did
+            ),
+        }
+        .into()),
+        (Reach::Tasks(_), pinned) => {
+            let name = if pinned == TransportChoice::Tsp {
+                "TSP"
+            } else {
+                "DIDComm"
+            };
+            Err(match why {
+                Some(why) => format!(
+                    "could not open a {name} session to the VTC {}: {why}\nDrop \
+                     `--transport` to let {bin} choose, or pass `--transport rest`.",
+                    target.did,
+                    bin = bin_name()
+                ),
+                None => format!(
+                    "{} advertises no {name} service, and `--transport` pins it.\nDrop \
+                     `--transport` to let {bin} choose.",
+                    target.did,
+                    bin = bin_name()
+                ),
+            }
+            .into())
+        }
+    }
 }
 
 /// What to tell the operator when the VTC does not accept the profile's DID.

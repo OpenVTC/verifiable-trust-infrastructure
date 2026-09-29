@@ -16,6 +16,8 @@
 use std::sync::Arc;
 
 use affinidi_status_list::StatusPurpose;
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -381,37 +383,49 @@ async fn revoke_404_on_unknown() {
 
 // ─── Suspend / restore (#1079) ───────────────────────────
 //
-// The states the graph had no vocabulary for. These exercise the routes end to
-// end rather than the resolver in isolation — the unit tests in
-// `credentials::lifecycle` pin the precedence rule, and what has to be checked
-// here is that the HTTP surface is gated the way revocation is, that the log is
-// actually persisted, and that the graph read changes as a result.
+// The states the graph had no vocabulary for, as signed Trust Tasks
+// (`vtc/relationships/{suspend,restore}/0.1`). The unit tests in
+// `credentials::lifecycle` pin the precedence rule; what is checked here is
+// that the verbs are gated the way revocation is — the edge's issuer, or an
+// administrator — that the log is persisted, and that the graph read changes.
 
-/// Post a lifecycle verb with no body. Deliberately body-less: an edge issued
-/// under a membership DID needs no authorization object, and a route that only
-/// worked with one would be unusable by the attributed form.
-async fn lifecycle_verb(fix: &Fixture, id: Uuid, verb: &str, token: &str) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri(format!("/v1/relationships/{id}/{verb}"))
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::empty())
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+const SUSPEND_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/suspend/0.1";
+const RESTORE_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/restore/0.1";
+
+/// Send a lifecycle verb signed by `by`, with no reason: an edge needs no
+/// authorization object, because its issuer's own proof is the authorization.
+async fn lifecycle_verb(
+    fix: &Fixture,
+    id: Uuid,
+    verb: &str,
+    by: &vti_rooms_dtg::test_support::Party,
+) -> (StatusCode, Value) {
+    let task = if verb == "suspend" {
+        SUSPEND_TASK
+    } else {
+        RESTORE_TASK
+    };
+    common::signed::call(&fix._vtc, by, task, json!({ "id": id.to_string() })).await
+}
+
+/// A member of the fixture's community, holding its own key.
+async fn member_party(fix: &Fixture) -> vti_rooms_dtg::test_support::Party {
+    common::signed::party_with_role(&fix._vtc, VtcRole::Member, &[]).await
+}
+
+/// `vtc/relationships/graph/0.2`, signed by a fresh unrestricted administrator:
+/// the reply's status and payload.
+async fn graph_as_admin(vtc: &TestVtc) -> (StatusCode, Value) {
+    let admin = common::signed::admin(vtc).await;
+    let (status, doc) = common::signed::call(vtc, &admin, GRAPH_TASK, json!({})).await;
+    (status, doc["payload"].clone())
 }
 
 /// Whether the community graph currently reports the pair as a mutual
 /// relationship. Read through the admin surface rather than the keyspace,
 /// because the claim is about what an operator is told.
 async fn pair_is_complete(fix: &Fixture) -> bool {
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/relationships/graph")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", GRAPH_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let (status, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let (status, v) = graph_as_admin(&fix._vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     v["edges"]
         .as_array()
@@ -425,13 +439,14 @@ async fn pair_is_complete(fix: &Fixture) -> bool {
 #[tokio::test]
 async fn suspending_a_half_breaks_the_edge_and_restoring_it_returns() {
     let fix = build_fixture().await;
-    let a_to_b = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
-    seed_relationship(&fix, SUBJECT_DID, ISSUER_DID).await;
+    let issuer = member_party(&fix).await;
+    let a_to_b = seed_relationship(&fix, &issuer.did, SUBJECT_DID).await;
+    seed_relationship(&fix, SUBJECT_DID, &issuer.did).await;
     assert!(pair_is_complete(&fix).await, "precondition: reciprocated");
 
-    let (status, v) = lifecycle_verb(&fix, a_to_b, "suspend", &fix.issuer_token).await;
+    let (status, v) = lifecycle_verb(&fix, a_to_b, "suspend", &issuer).await;
     assert_eq!(status, StatusCode::OK, "{v}");
-    assert_eq!(v["state"]["state"], "suspended", "{v}");
+    assert_eq!(v["payload"]["state"]["state"], "suspended", "{v}");
     assert!(
         !pair_is_complete(&fix).await,
         "a suspended half is not consent"
@@ -443,23 +458,29 @@ async fn suspending_a_half_breaks_the_edge_and_restoring_it_returns() {
         .await
         .unwrap()
         .expect("the row survives a suspension");
-    assert_eq!(row.vrc_jsonld, fake_vrc(ISSUER_DID, SUBJECT_DID));
+    assert_eq!(row.vrc_jsonld, fake_vrc(&issuer.did, SUBJECT_DID));
 
-    let (status, v) = lifecycle_verb(&fix, a_to_b, "restore", &fix.issuer_token).await;
+    let (status, v) = lifecycle_verb(&fix, a_to_b, "restore", &issuer).await;
     assert_eq!(status, StatusCode::OK, "{v}");
-    assert_eq!(v["state"]["state"], "yes", "{v}");
+    assert_eq!(v["payload"]["state"]["state"], "yes", "{v}");
     assert!(pair_is_complete(&fix).await, "restoration puts it back");
 }
 
 /// Gated exactly as revocation is. A member who is merely *named* by an edge
 /// does not control it — otherwise a counterparty could mute another party's
-/// assertion about them.
+/// assertion about them — and is told the edge does not exist.
 #[tokio::test]
-async fn suspend_is_forbidden_for_the_subject() {
+async fn suspend_is_not_found_for_the_subject() {
     let fix = build_fixture().await;
-    let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
-    let (status, _) = lifecycle_verb(&fix, id, "suspend", &fix.subject_token).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    let issuer = member_party(&fix).await;
+    let subject = member_party(&fix).await;
+    let id = seed_relationship(&fix, &issuer.did, &subject.did).await;
+    let (_, v) = lifecycle_verb(&fix, id, "suspend", &subject).await;
+    assert_eq!(
+        common::signed::error_code(&v),
+        Some("vtc/relationships/suspend:notFound"),
+        "{v}"
+    );
 
     let row = vtc_service::relationships::get_relationship(&fix.relationships_ks, id)
         .await
@@ -471,13 +492,13 @@ async fn suspend_is_forbidden_for_the_subject() {
     );
 }
 
-/// Moderation. Same route admins already have for revocation, and the trail
-/// distinguishes the two capacities.
+/// Moderation, and the trail distinguishes the two capacities.
 #[tokio::test]
 async fn an_admin_can_suspend_and_the_trail_says_so() {
     let fix = build_fixture().await;
     let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
-    let (status, v) = lifecycle_verb(&fix, id, "suspend", &fix.admin_token).await;
+    let admin = common::signed::admin(&fix._vtc).await;
+    let (status, v) = lifecycle_verb(&fix, id, "suspend", &admin).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 
     let mut saw = false;
@@ -492,29 +513,35 @@ async fn an_admin_can_suspend_and_the_trail_says_so() {
     assert!(saw, "a suspension must leave an audit entry");
 }
 
-/// Restoration reverses a suspension and nothing else — 409, not 400: the
-/// request is well formed and the caller is entitled to make it; it is the
-/// edge's state that refuses.
+/// Restoration reverses a suspension and nothing else.
 #[tokio::test]
-async fn restoring_an_edge_that_is_not_suspended_is_a_conflict() {
+async fn restoring_an_edge_that_is_not_suspended_is_refused() {
     let fix = build_fixture().await;
-    let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
-    let (status, v) = lifecycle_verb(&fix, id, "restore", &fix.issuer_token).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    let issuer = member_party(&fix).await;
+    let id = seed_relationship(&fix, &issuer.did, SUBJECT_DID).await;
+    let (_, v) = lifecycle_verb(&fix, id, "restore", &issuer).await;
+    assert_eq!(
+        common::signed::error_code(&v),
+        Some("vtc/relationships/restore:notSuspended"),
+        "{v}"
+    );
 }
 
 #[tokio::test]
-async fn suspending_an_already_suspended_edge_is_a_conflict() {
+async fn suspending_an_already_suspended_edge_is_refused() {
     let fix = build_fixture().await;
-    let id = seed_relationship(&fix, ISSUER_DID, SUBJECT_DID).await;
+    let issuer = member_party(&fix).await;
+    let id = seed_relationship(&fix, &issuer.did, SUBJECT_DID).await;
     assert_eq!(
-        lifecycle_verb(&fix, id, "suspend", &fix.issuer_token)
-            .await
-            .0,
+        lifecycle_verb(&fix, id, "suspend", &issuer).await.0,
         StatusCode::OK
     );
-    let (status, _) = lifecycle_verb(&fix, id, "suspend", &fix.issuer_token).await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    let (_, v) = lifecycle_verb(&fix, id, "suspend", &issuer).await;
+    assert_eq!(
+        common::signed::error_code(&v),
+        Some("vtc/relationships/suspend:alreadySuspended"),
+        "{v}"
+    );
 
     let row = vtc_service::relationships::get_relationship(&fix.relationships_ks, id)
         .await
@@ -528,11 +555,33 @@ async fn suspending_an_already_suspended_edge_is_a_conflict() {
 }
 
 #[tokio::test]
-async fn lifecycle_verbs_404_on_an_unknown_edge() {
+async fn lifecycle_verbs_are_not_found_on_an_unknown_edge() {
     let fix = build_fixture().await;
+    let admin = common::signed::admin(&fix._vtc).await;
+    for (verb, code) in [
+        ("suspend", "vtc/relationships/suspend:notFound"),
+        ("restore", "vtc/relationships/restore:notFound"),
+    ] {
+        let (_, v) = lifecycle_verb(&fix, Uuid::new_v4(), verb, &admin).await;
+        assert_eq!(common::signed::error_code(&v), Some(code), "{verb}: {v}");
+    }
+}
+
+/// The bearer routes are gone.
+#[tokio::test]
+async fn the_lifecycle_bearer_routes_are_gone() {
+    let fix = build_fixture().await;
+    let id = Uuid::new_v4();
     for verb in ["suspend", "restore"] {
-        let (status, _) = lifecycle_verb(&fix, Uuid::new_v4(), verb, &fix.admin_token).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{verb}");
+        assert!(
+            !common::signed::bearer_route_served(
+                &fix._vtc,
+                "POST",
+                &format!("/v1/relationships/{id}/{verb}")
+            )
+            .await,
+            "{verb}"
+        );
     }
 }
 
@@ -676,15 +725,7 @@ async fn graph_separates_complete_edges_from_half_edges() {
     // ISSUER → STRANGER — never answered, so a half-edge.
     let a_to_c = seed_relationship(&fix, ISSUER_DID, STRANGER_DID).await;
 
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/relationships/graph")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", GRAPH_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = graph_as_admin(&fix._vtc).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 
     let nodes: Vec<&str> = v["nodes"]
@@ -732,15 +773,16 @@ async fn graph_separates_complete_edges_from_half_edges() {
 #[tokio::test]
 async fn graph_is_admin_only() {
     let fix = build_fixture().await;
-    let req = Request::builder()
-        .method("GET")
-        .uri("/v1/relationships/graph")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", GRAPH_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    // The route refused an `Issuer`'s session; a plain member is refused too.
+    for role in [VtcRole::Issuer, VtcRole::Member] {
+        let party = common::signed::party_with_role(&fix._vtc, role.clone(), &[]).await;
+        let (_, doc) = common::signed::call(&fix._vtc, &party, GRAPH_TASK, json!({})).await;
+        assert_eq!(
+            common::signed::error_code(&doc),
+            Some("permissionDenied"),
+            "{role}: {doc}"
+        );
+    }
 }
 
 // ─── Publish under a pairwise relationship DID ────────────
@@ -1612,10 +1654,8 @@ mod pairwise {
         const PERSONA: u8 = 0x45;
         const RDID2: u8 = 0x46;
         const PEER2_RDID: u8 = 0x47;
-        const GRAPH_ADMIN: u8 = 0x7A;
 
         const PERSONA_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/persona/0.1";
-        const GRAPH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/graph/0.2";
 
         /// A signed VPC: issued under `persona_seed`'s P-DID, naming
         /// `counterparty_seed` as the subject. DTG Credentials §VPC.
@@ -1713,66 +1753,10 @@ mod pairwise {
 
         /// The admin connections graph is where the correlation a persona
         /// enables actually becomes visible, so the assertions that matter
-        /// read it rather than the storage layer. Seeds its own admin because
-        /// the `pairwise` fixture only has the one member session.
+        /// read it rather than the storage layer, signed by an administrator of
+        /// its own because the `pairwise` fixture only has the one member.
         async fn graph_edges(fix: &Pw) -> Vec<Value> {
-            let now = now_epoch();
-            let admin = did_for(GRAPH_ADMIN);
-            store_acl_entry(
-                &fix._vtc.state.acl_ks,
-                &VtcAclEntry {
-                    did: admin.clone(),
-                    role: VtcRole::Admin,
-                    label: None,
-                    allowed_contexts: vec![],
-                    created_at: now,
-                    created_by: "did:key:vtc-install".into(),
-                    updated_at: None,
-                    updated_by: None,
-                    expires_at: None,
-                },
-            )
-            .await
-            .unwrap();
-            store_member(&fix._vtc.state.members_ks, &Member::fresh(&admin))
-                .await
-                .unwrap();
-            let session_id = format!("sess-{}", Uuid::new_v4());
-            store_session(
-                &fix._vtc.state.sessions_ks,
-                &Session {
-                    session_id: session_id.clone(),
-                    did: admin.clone(),
-                    challenge: "test".into(),
-                    state: SessionState::Authenticated,
-                    created_at: now,
-                    last_seen: now,
-                    refresh_token: None,
-                    refresh_expires_at: None,
-                    tee_attested: false,
-                    amr: Vec::new(),
-                    acr: String::new(),
-                    acr_expires_at: None,
-                    token_id: None,
-                    session_pubkey_b58btc: None,
-                },
-            )
-            .await
-            .unwrap();
-            let claims =
-                fix._vtc
-                    .jwt_keys
-                    .new_claims(admin, session_id, "admin".into(), vec![], 3600, true);
-            let token = fix._vtc.jwt_keys.encode(&claims).unwrap();
-
-            let req = Request::builder()
-                .method("GET")
-                .uri("/v1/relationships/graph")
-                .header("authorization", format!("Bearer {token}"))
-                .header("trust-task", GRAPH_TASK)
-                .body(Body::empty())
-                .unwrap();
-            let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+            let (status, body) = graph_as_admin(&fix._vtc).await;
             assert_eq!(status, StatusCode::OK, "graph: {body}");
             body["edges"].as_array().cloned().unwrap_or_default()
         }

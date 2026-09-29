@@ -2,7 +2,7 @@
 name = "vta-backup"
 description = "VTA backup/restore subsystem — encrypted full-state export/import, the sealed backup-bundle store, and its TTL sweeper"
 readme = "README.md"
-version = "0.5.2"
+version = "0.7.0"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -27,15 +27,15 @@ webvh = ["vta-keyspaces/webvh"]
 tee = ["vta-config/tee"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.24" }
+vti-common = { path = "../vti-common", version = "0.29" }
 # Nonce and bundle-id generation. Was reached through `aes_gcm::aead::OsRng`,
 # a re-export aes-gcm 0.11 dropped; this crate always needed a CSPRNG of its
 # own and was borrowing one from its cipher.
 rand = { workspace = true }
-vta-sdk = { path = "../vta-sdk", version = "0.51" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.3" }
-vta-keys = { path = "../vta-keys", version = "0.6" }
-vta-config = { path = "../vta-config", version = "0.6" }
+vta-sdk = { path = "../vta-sdk", version = "0.56" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.4" }
+vta-keys = { path = "../vta-keys", version = "0.8" }
+vta-config = { path = "../vta-config", version = "0.8" }
 vta-support = { path = "../vta-support", version = "0.5" }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -53,6 +53,11 @@ argon2 = "0.6"
 async-trait = "0.1"
 
 [dev-dependencies]
-vta-webvh = { path = "../vta-webvh", version = "0.2" }
+# Path-only on purpose: `cargo publish` strips a versionless path dev-dependency,
+# so publishing vta-backup does not need vta-webvh on crates.io first. With a
+# version it did — and release-plz orders by normal dependencies only, so it
+# published vta-backup before vta-webvh and the release stopped there,
+# stranding vta-service and everything after it (the 0.56 release).
+vta-webvh = { path = "../vta-webvh" }
 tempfile = "3"
 toml = { workspace = true }

@@ -4,10 +4,11 @@ use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::Cr
 use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine;
 use chrono::Utc;
-use multibase::Base;
 use p256::elliptic_curve::sec1::ToSec1Point;
 use tracing::info;
 use zeroize::Zeroize;
+
+use vti_common::acl::Capability;
 
 use vta_sdk::protocols::key_management::{
     create::CreateKeyResultBody,
@@ -146,10 +147,16 @@ pub async fn create_key(
     contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     audit: &vta_audit::SharedAuditSink,
+    acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     params: CreateKeyParams,
     channel: &str,
 ) -> Result<CreateKeyResultBody, AppError> {
+    // `KeyMint` decides *whether* (Keyring VTI-23); the context resolution
+    // below decides *where*. First, so a refused caller learns nothing about
+    // which contexts or key ids exist.
+    ensure_may_mint_key(acl_ks, auth, "keys/create").await?;
+
     // Caller-supplied key_ids must stay in the plain-identifier class.
     // VM-shaped ids (`did:...#key-0`) are minted by internal paths only
     // — an API caller who could take one would shadow another DID's
@@ -190,9 +197,27 @@ pub async fn create_key(
         .await;
     }
 
-    // Resolve derivation path: use explicit value, or auto-derive from context
+    // Resolve derivation path: use explicit value, or auto-derive from context.
+    //
+    // An explicit path is key custody's rule 4: super-admin only, and it must
+    // belong to the context the record will carry. Without this check a
+    // context-scoped admin could derive any key the VTA holds (another tenant's,
+    // the VTA's own) and record it under its own context, where
+    // `get_key_secret`'s scope check reads the record's context and releases
+    // it. See `vta_keys::custody`.
     let derivation_path = match params.derivation_path {
-        Some(path) if !path.is_empty() => path,
+        Some(path) if !path.is_empty() => {
+            super::key_custody::authorize_explicit_key_path(
+                contexts_ks,
+                auth,
+                &path,
+                context_id.as_deref(),
+                audit,
+                channel,
+            )
+            .await?;
+            path
+        }
         _ => {
             let ctx_id = context_id.as_ref().ok_or_else(|| {
                 AppError::Validation(
@@ -234,7 +259,12 @@ pub async fn create_key(
             let p256_secret = bip32.derive_p256(&derivation_path)?;
             let verifying_key = p256_secret.secret_key.public_key();
             let encoded = verifying_key.to_sec1_point(true);
-            multibase::encode(Base::Base58Btc, encoded.as_bytes())
+            // Multicodec-prefixed (`p256-pub`), exactly as key custody encodes
+            // the same key when it is exported — so the record, the export and
+            // any DID document built from the record all publish one form, and
+            // a verifier can read the algorithm off the key (VTI-KEY-012). The
+            // bare SEC1 point stored here before named no algorithm at all.
+            encode_public_multibase(&KeyType::P256, encoded.as_bytes())
         }
         KeyType::MlDsa44 => {
             let s = bip32.derive_ml_dsa_44(&derivation_path)?;
@@ -375,7 +405,9 @@ pub async fn import_key(
             let secret_bytes: [u8; 32] = private_bytes.as_slice().try_into().unwrap();
             let secret = x25519_dalek::StaticSecret::from(secret_bytes);
             let public = x25519_dalek::PublicKey::from(&secret);
-            let pub_multibase = multibase::encode(Base::Base58Btc, public.as_bytes());
+            // Multicodec-prefixed (`x25519-pub`), as every other published key
+            // is (VTI-KEY-012: a key names its own algorithm).
+            let pub_multibase = encode_public_multibase(&KeyType::X25519, public.as_bytes());
             (pub_multibase, "x25519")
         }
         KeyType::P256 => {
@@ -383,7 +415,7 @@ pub async fn import_key(
                 .map_err(|e| AppError::Validation(format!("invalid P-256 private key: {e}")))?;
             let public = secret_key.public_key();
             let encoded = public.to_sec1_point(true);
-            let pub_multibase = multibase::encode(Base::Base58Btc, encoded.as_bytes());
+            let pub_multibase = encode_public_multibase(&KeyType::P256, encoded.as_bytes());
             (pub_multibase, "p256")
         }
         // `KeyType` is `#[non_exhaustive]`, so this arm is required. Import
@@ -740,26 +772,454 @@ pub async fn revoke_key(
     })
 }
 
+/// The caller's stored ACL entry, for a capability gate.
+///
+/// `Ok(None)` means the caller has no entry and its role decides — the
+/// process-local synthesized identities (the offline CLI's `cli:<channel>`
+/// sentinel) and nothing else reach here without one. A store error **refuses**:
+/// an unreadable entry must not become a grant, and the caller is told only that
+/// the capability could not be confirmed while the operator gets the reason.
+async fn entry_for_capability_gate(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    what: &str,
+    capability: &str,
+) -> Result<Option<vti_common::acl::AclEntry>, AppError> {
+    vti_common::acl::get_acl_entry(acl_ks, &auth.did)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                error = %e, did = %auth.did, capability,
+                "could not read the ACL entry for a capability check; refusing"
+            );
+            AppError::Forbidden(format!(
+                "{what} denied: could not confirm that {} carries the {capability} capability",
+                auth.did
+            ))
+        })
+}
+
+/// Whether `entry` (or, with none, the caller's role) carries `cap` — the role's
+/// set narrowed by the entry's own list, as every capability gate reads it.
+fn entry_or_role_has(
+    entry: Option<&vti_common::acl::AclEntry>,
+    auth: &AuthClaims,
+    cap: Capability,
+) -> bool {
+    match entry {
+        Some(entry) => vti_common::acl::entry_has_capability(entry, cap),
+        None => vti_common::acl::role_has_capability(&auth.role, cap),
+    }
+}
+
+/// The export gate: the caller must hold [`Capability::KeyExport`] (VTI-VTA-003).
+///
+/// This is the one implementation of it, and it lives here — in the operation,
+/// not in a handler — because the export surface is reachable over REST, DIDComm
+/// and the Trust-Task spine (itself carried over HTTPS, DIDComm and TSP). It used
+/// to be applied by the `keys/export-secret` handler alone, so the same export
+/// over `GET /keys/{id}/secret` or DIDComm `get-key-secret` checked only the
+/// admin *role*: an admin narrowed without `key-export` could still take a key by
+/// choosing a different transport. Checked in the operation, a transport added
+/// later cannot be wired without it.
+///
+/// Reads the caller's **entry**, so a narrowing that removes `key-export` binds
+/// the very next export. Runs before the key or context is looked up, so a
+/// refused caller learns nothing about which ids exist.
+///
+/// The refusal names the exact command that fixes it — the caller is often a
+/// service logging at boot, and the person reading that log is the one who has
+/// to run it.
+pub(crate) async fn ensure_may_export(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    what: &str,
+) -> Result<(), AppError> {
+    let entry = entry_for_capability_gate(acl_ks, auth, what, "key-export").await?;
+    if entry_or_role_has(entry.as_ref(), auth, Capability::KeyExport) {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "{what} denied: {} does not carry the key-export capability. Releasing a \
+         private key is an export, and VTI-VTA-003 gates export on a capability \
+         distinct from using the key; only an admin derives it, so a service that \
+         holds a context's keys must be an admin scoped to that context. {}",
+        auth.did,
+        key_export_fix(entry.as_ref(), &auth.did)
+    )))
+}
+
+/// The generic signing-oracle gate: the caller must hold [`Capability::Sign`].
+///
+/// `Sign` is "the capability to use the key" VTI-VTA-003 distinguishes export
+/// from, and the capability VTI-VTA-007 distinguishes from the constrained
+/// signing grants (`sign-trust-task`, `room-present`, …). Every role that can
+/// reach the oracle derives it, so an un-narrowed entry loses nothing; what this
+/// adds is that an operator who narrowed `sign` away from an entry gets the
+/// refusal they asked for — before, the role floor was the only check, and the
+/// narrowing was silently ignored on every transport.
+pub(crate) async fn ensure_may_sign(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    what: &str,
+) -> Result<(), AppError> {
+    let entry = entry_for_capability_gate(acl_ks, auth, what, "sign").await?;
+    if entry_or_role_has(entry.as_ref(), auth, Capability::Sign) {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "{what} denied: {} does not carry the sign capability",
+        auth.did
+    )))
+}
+
+/// The key-creation gate: the caller must hold [`Capability::KeyMint`].
+///
+/// `key-mint` is the capability that gates "creating new keys within scope"
+/// (VTI spec Appendix C.2), and VTI-ACL-030 makes the entry's effective set —
+/// the role's ceiling narrowed by its own list — what decides. `keys/create`
+/// used to check the admin *role* instead, at both of its surfaces (the Trust
+/// Task handler and `POST /keys`), which was wrong in both directions: an
+/// `initiator`, whose ceiling carries `KeyMint`, was refused (Keyring VTI-23 —
+/// a least-privilege manager could not mint a persona's keys), and an admin
+/// narrowed without `key-mint` was let through.
+///
+/// Here, in the operation, for the reason [`ensure_may_export`] gives: a
+/// transport added later cannot be wired without it. `webvh/dids/create`
+/// applies the same capability (`did_webvh::ensure_may_mint`); the context
+/// check in [`create_key`] still bounds *where*, and key custody still refuses
+/// a caller-chosen derivation path to anyone but a super-admin.
+pub(crate) async fn ensure_may_mint_key(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    what: &str,
+) -> Result<(), AppError> {
+    let entry = entry_for_capability_gate(acl_ks, auth, what, "key-mint").await?;
+    if entry_or_role_has(entry.as_ref(), auth, Capability::KeyMint) {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "{what} denied: {} does not carry the key-mint capability",
+        auth.did
+    )))
+}
+
+/// The command an operator runs so `did` may export.
+///
+/// Built from the caller's stored entry, because the right command depends on it:
+///
+/// - **no entry** — create one, as an admin of the context;
+/// - **a non-admin with a context scope** — `change-role` to admin, which keeps the scope
+///   (and, like any admin grant, confers the rest of what an admin of that context holds);
+/// - **a non-admin with no context** — scope it first: promoting an entry with no contexts
+///   would make it a *super*-admin, so that is never suggested;
+/// - **an admin narrowed without `key-export`** — re-state the narrowing with `key-export`
+///   added, rather than suggesting `--capabilities-all`, which would also undo whatever
+///   else the narrowing deliberately removed.
+fn key_export_fix(entry: Option<&vti_common::acl::AclEntry>, did: &str) -> String {
+    use vta_sdk::acl::ActScope;
+
+    let Some(entry) = entry else {
+        return format!(
+            "Grant it with: pnm acl create --did {did} --role admin --contexts <CONTEXT>"
+        );
+    };
+    if entry.role != crate::acl::Role::Admin {
+        let promote = format!(
+            "pnm acl change-role --did {did} --from {} --to admin",
+            entry.role
+        );
+        let narrowed = restated_narrowing(entry);
+        return match (entry.act_scope(), narrowed) {
+            (ActScope::Contexts(_), None) => format!("Grant it with: {promote}"),
+            (ActScope::Contexts(_), Some(caps)) => {
+                format!("Grant it with: {promote} && pnm acl update {did} --capabilities {caps}")
+            }
+            // Authorized nowhere (or, defensively, anything else): scope first.
+            _ => format!(
+                "Scope it to the context first, then promote it: \
+                 pnm acl update {did} --contexts <CONTEXT> && {promote}"
+            ),
+        };
+    }
+    match restated_narrowing(entry) {
+        Some(caps) => format!("Grant it with: pnm acl update {did} --capabilities {caps}"),
+        // An un-narrowed admin derives `KeyExport`, so reaching here means something other
+        // than the narrowing withheld it — say what to look at rather than guess a command.
+        None => format!("Inspect the entry with: pnm acl get {did}"),
+    }
+}
+
+/// The entry's stored capability list with `key-export` added, as the comma-separated
+/// value `pnm acl update --capabilities` takes — or `None` when the entry is not narrowed.
+///
+/// `--capabilities` *replaces* the list, so the command has to carry every name already
+/// there; a bare `--capabilities key-export` would narrow an admin to that one power.
+fn restated_narrowing(entry: &vti_common::acl::AclEntry) -> Option<String> {
+    if entry.capabilities.is_empty() {
+        return None;
+    }
+    let name = |c: &Capability| {
+        serde_json::to_value(c)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+    };
+    let mut names: Vec<String> = entry.capabilities.iter().filter_map(name).collect();
+    if let Some(key_export) = name(&Capability::KeyExport)
+        && !names.contains(&key_export)
+    {
+        names.push(key_export);
+    }
+    Some(names.join(","))
+}
+
+/// Load the record `key_id` names **for a caller**, answering "absent" and
+/// "not yours" identically.
+///
+/// A caller whose scope is restricted learns nothing about ids outside it: a
+/// key that does not exist and a key in a context it cannot act in get the same
+/// refusal, with a message that names neither the key's context nor whether it
+/// exists. Only a super-admin — who can reach every key — is told a key is
+/// absent. Without this, `keys/export-secret` and `keys/sign` were an existence
+/// oracle for every key id in the VTA, and their "no access to context: X"
+/// refusal also named the context the key lived in.
+pub(crate) async fn load_record_in_caller_scope(
+    keys_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    key_id: &str,
+) -> Result<KeyRecord, AppError> {
+    let out_of_reach =
+        || AppError::Forbidden(format!("key `{key_id}` is not within the caller's scope"));
+    let record: Option<KeyRecord> = keys_ks.get(keys::store_key(key_id)).await?;
+    let Some(record) = record else {
+        return Err(if auth.is_super_admin() {
+            AppError::NotFound(format!("key {key_id} not found"))
+        } else {
+            out_of_reach()
+        });
+    };
+    let reachable = match record.context_id.as_deref() {
+        Some(ctx) => auth.has_context_access(ctx),
+        None => auth.is_super_admin(),
+    };
+    if !reachable {
+        return Err(out_of_reach());
+    }
+    Ok(record)
+}
+
+/// How the channel a released private key travels over protects it — stated
+/// by the caller of [`get_key_secret`], because only the transport knows.
+///
+/// A type rather than a flag so that a new call site has to say which case it
+/// is in. The `&str` is the audit `channel` the export is recorded under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportChannel<'a> {
+    /// Encrypted by the transport to the requester alone: DIDComm authcrypt,
+    /// or TSP. No intermediary — mediator included — holds the plaintext.
+    EndToEnd(&'a str),
+    /// Sealed to the recipient before it leaves the VTA
+    /// (`vta_sdk::sealed_transfer`, HPKE), whatever carries the envelope.
+    Sealed(&'a str),
+    /// Never leaves this host: an on-host CLI running as the VTA's own OS user.
+    Local(&'a str),
+    /// Confidential in transit at best — REST, and Trust Tasks over HTTPS. TLS
+    /// terminates wherever the operator terminates it, so the plaintext key
+    /// would exist there. **Refused**: see [`get_key_secret`].
+    HopByHop(&'a str),
+}
+
+impl<'a> ExportChannel<'a> {
+    /// The audit `channel` this export is recorded under.
+    pub fn audit_channel(self) -> &'a str {
+        match self {
+            Self::EndToEnd(c) | Self::Sealed(c) | Self::Local(c) | Self::HopByHop(c) => c,
+        }
+    }
+}
+
+/// Release a key's private material to the caller — `keys/export-secret`, over
+/// every transport.
+///
+/// Every check a release needs, in the order the specification sets
+/// (`keys/export-secret/0.1` § Authorization: entitlement first, then the two
+/// refusals no authority satisfies, then the response):
+///
+/// 1. **`KeyExport`** ([`ensure_may_export`]), before the key is looked up;
+/// 2. **a confidential channel** — an [`ExportChannel::HopByHop`] export is
+///    refused. `keys/export-secret/0.1` requires the exchange to be "carried
+///    over a channel confidential to the two parties", and the response is a
+///    private key in the clear; over REST or HTTPS it would exist in plaintext
+///    wherever TLS terminates. `keys/import` refuses the cleartext carrier over
+///    the same transports for the same reason. Checked before the key is
+///    looked up, so the refusal says nothing about which ids exist;
+/// 3. **scope** — the key's context, or super-admin for an unscoped key;
+/// 4. **never an internal key**, to anybody;
+/// 5. **never a key marked non-exportable**;
+/// 6. a **durable audit row**, written before the material is returned — see
+///    [`release_key_secret`].
+///
+/// The transports are thin: `GET /keys/{id}/secret`, DIDComm `get-key-secret`
+/// and the `keys/export-secret/0.1` handler all call this and nothing else, so
+/// none of them carries a check the others lack.
+#[allow(clippy::too_many_arguments)]
 pub async fn get_key_secret(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    key_id: &str,
+    channel: ExportChannel<'_>,
+) -> Result<GetKeySecretResultBody, AppError> {
+    export_key_secret(
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        acl_ks,
+        seed_store,
+        audit,
+        auth,
+        key_id,
+        channel,
+    )
+    .await
+    .map_err(AppError::from)
+}
+
+/// Why a key's private half is refused **about the key rather than the
+/// caller** — the two refusals `keys/export-secret/0.1` gives codes of their
+/// own, because retrying with more authority changes neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyExportRefusal {
+    /// An internal key: generated inside this VTA, reproducible nowhere, never
+    /// released to anybody — `keys/export-secret:neverExportable`.
+    NeverExportable,
+    /// Marked non-exportable by `keys/set-exportability` — a decision that can
+    /// be reversed, by more authority than imposed it —
+    /// `keys/export-secret:notExportable`.
+    NotExportable,
+}
+
+impl KeyExportRefusal {
+    /// The local part of the task's extended error code.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NeverExportable => "neverExportable",
+            Self::NotExportable => "notExportable",
+        }
+    }
+}
+
+/// The error [`export_key_secret`] returns: a refusal about the key, typed so a
+/// transport that can name it (the Trust-Task spine) does, or any other error.
+#[derive(Debug)]
+pub enum KeyExportError {
+    Refused(KeyExportRefusal, String),
+    Other(AppError),
+}
+
+impl From<AppError> for KeyExportError {
+    fn from(e: AppError) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl From<KeyExportError> for AppError {
+    /// For transports with no code to carry: a refusal about the key is a 403
+    /// with the same message.
+    fn from(e: KeyExportError) -> Self {
+        match e {
+            KeyExportError::Refused(_, message) => AppError::Forbidden(message),
+            KeyExportError::Other(e) => e,
+        }
+    }
+}
+
+/// [`get_key_secret`] with the refusals about the key kept typed — what the
+/// `keys/export-secret/0.1` handler calls so it can answer `notExportable` /
+/// `neverExportable`. Same checks in the same order: the capability, the
+/// channel and the caller's scope are all established first, so those codes
+/// are only ever said to a caller already entitled to the key (the spec's
+/// "after establishing entitlement and before assembling a response").
+#[allow(clippy::too_many_arguments)]
+pub async fn export_key_secret(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    key_id: &str,
+    channel: ExportChannel<'_>,
+) -> Result<GetKeySecretResultBody, KeyExportError> {
+    ensure_may_export(acl_ks, auth, "keys/export-secret").await?;
+    if let ExportChannel::HopByHop(_) = channel {
+        return Err(AppError::Forbidden(
+            "keys/export-secret refused: a private key is released only over a channel \
+             confidential end to end — DIDComm or TSP — or sealed to its recipient, and \
+             this request arrived over REST/HTTPS, where TLS terminates wherever the \
+             operator terminates it and the key would exist in plaintext there. Retry over \
+             DIDComm or TSP, or run the export on the VTA host."
+                .into(),
+        )
+        .into());
+    }
+    release_key_secret(
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        seed_store,
+        audit,
+        auth,
+        key_id,
+        channel.audit_channel(),
+    )
+    .await
+}
+
+/// Checks 3–6 of [`get_key_secret`]: scope, the internal-key and
+/// non-exportable refusals, and the durable audit row. The one place a private
+/// key leaves the VTA. Private: every caller goes through [`get_key_secret`]
+/// and so through the capability and channel gates.
+///
+/// `get_key_secret_internal` is deliberately NOT gated by exportability: it is
+/// the *use* surface, loading a key so the VTA can sign or decrypt with it, and
+/// a key that may not leave may still be used.
+///
+/// # The audit row is a precondition of the release
+///
+/// VTI-VTA-003 requires an export to be audited, and elsewhere in this module
+/// the row is best-effort, because a failed write must not fail an operation
+/// that has already happened — refusing to revoke a key because the log is full
+/// protects nobody. An export is the opposite case: nothing has happened until
+/// the material is returned, and once it has, it cannot be taken back. So the
+/// row is written first and a failed write **refuses the export**. The row
+/// carries who (`actor`), which key (`resource`), its context, and the
+/// transport (`channel`) — never the material.
+#[allow(clippy::too_many_arguments)]
+async fn release_key_secret(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     audit: &vta_audit::SharedAuditSink,
     auth: &AuthClaims,
     key_id: &str,
     channel: &str,
-) -> Result<GetKeySecretResultBody, AppError> {
-    let record: KeyRecord = keys_ks
-        .get(keys::store_key(key_id))
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("key {key_id} not found")))?;
+) -> Result<GetKeySecretResultBody, KeyExportError> {
+    let record = load_record_in_caller_scope(keys_ks, auth, key_id).await?;
 
-    if let Some(ref ctx) = record.context_id {
-        auth.require_context(ctx)?;
-    } else if !auth.is_super_admin() {
-        return Err(AppError::Forbidden(
-            "only super admin can access keys without a context".into(),
-        ));
+    // A revoked key is refused like a missing one would be to its owner: its
+    // record is kept for history (and a rotation's retired and staging records
+    // are revoked by construction), not so its private half can still leave.
+    if record.status != KeyStatus::Active {
+        return Err(KeyExportError::Other(AppError::Forbidden(format!(
+            "key `{key_id}` is not active and its private half is not released"
+        ))));
     }
 
     // Internal keys are refused here too. `InternalAuthority` bypasses the ACL,
@@ -767,29 +1227,36 @@ pub async fn get_key_secret(
     // surface at all, and an internal caller wanting a signature must go
     // through the signing oracle like everyone else.
     if record.origin == KeyOrigin::Internal {
-        return Err(AppError::Forbidden(format!(
-            "key `{key_id}` is an internal key and is never exported, including \
-             under internal authority"
-        )));
+        return Err(KeyExportError::Refused(
+            KeyExportRefusal::NeverExportable,
+            format!(
+                "key `{key_id}` is an internal key and is never exported, including \
+                 under internal authority"
+            ),
+        ));
     }
 
     // The exportability restriction, enforced at the one place a private key
-    // leaves the VTA. This function is the export surface — the callers are
-    // `seeds/export-mnemonic`, `build_did_secrets_bundle` (and so
-    // `vta/contexts/secrets`), and the operator's own CLI export prompt.
-    // `get_key_secret_internal` is deliberately NOT gated here: it is the *use*
-    // surface, loading a key so the VTA can sign or decrypt with it, and a key
-    // that may not leave may still be used. Gating it would break the VTA's own
-    // signing rather than protect anything, because nothing it returns reaches
-    // a caller.
+    // leaves the VTA — every export path (`keys/export-secret` on each
+    // transport, `vta/contexts/secrets`, the offline CLI exports, and
+    // provisioning's read-back) arrives here. `get_key_secret_internal` is
+    // deliberately NOT gated: it is the *use* surface, and gating it would break
+    // the VTA's own signing rather than protect anything, because nothing it
+    // returns reaches a caller.
     //
     // `None` means exportable — see `KeyRecord::exportable`. Only an explicit
     // `Some(false)` refuses, so records written before the member existed are
     // unaffected.
     if record.exportable == Some(false) {
-        return Err(AppError::Forbidden(format!(
-            "key `{key_id}` is marked non-exportable and its private half is never              released; it can still be used for signing and key agreement. Changing              that needs `keys/set-exportability` with authority beyond the one that              set it"
-        )));
+        return Err(KeyExportError::Refused(
+            KeyExportRefusal::NotExportable,
+            format!(
+                "key `{key_id}` is marked non-exportable and its private half is never \
+                 released; it can still be used for signing and key agreement. Changing \
+                 that needs `keys/set-exportability` with authority beyond the one that \
+                 set it"
+            ),
+        ));
     }
 
     let (public_key_multibase, private_key_multibase) = match record.origin {
@@ -797,9 +1264,10 @@ pub async fn get_key_secret(
         // second, local refusal so deleting that guard cannot quietly turn this
         // match into an export path for them.
         KeyOrigin::Internal => {
-            return Err(AppError::Forbidden(format!(
-                "key `{key_id}` is an internal key and is never exported"
-            )));
+            return Err(KeyExportError::Refused(
+                KeyExportRefusal::NeverExportable,
+                format!("key `{key_id}` is an internal key and is never exported"),
+            ));
         }
         KeyOrigin::Imported => {
             // Decrypt from imported_secrets keyspace
@@ -818,76 +1286,28 @@ pub async fn get_key_secret(
             secret_bytes.zeroize();
             (record.public_key.clone(), priv_mb)
         }
+        // Through key custody: the record's path must lie in its context's base,
+        // so a record carrying a foreign path is refused here rather than
+        // exported (VTI-KEY-032, `vta_keys::custody` rule 6).
         KeyOrigin::Derived => {
-            let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
-                .await
-                .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
-                key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
-            })?;
-
-            match record.key_type {
-                KeyType::Ed25519 => {
-                    let secret = bip32.derive_ed25519(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::X25519 => {
-                    let secret = bip32.derive_x25519(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::P256 => {
-                    let p256_secret = bip32.derive_p256(&record.derivation_path)?;
-                    let public_key = p256_secret.secret_key.public_key();
-                    let encoded = public_key.to_sec1_point(true);
-                    let pub_mb = encode_public_multibase(&KeyType::P256, encoded.as_bytes());
-                    let priv_mb = encode_private_multibase(
-                        &KeyType::P256,
-                        &p256_secret.secret_key.to_bytes(),
-                    );
-                    (pub_mb, priv_mb)
-                }
-                KeyType::MlDsa44 => {
-                    let secret = bip32.derive_ml_dsa_44(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::MlDsa65 => {
-                    let secret = bip32.derive_ml_dsa_65(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                // `KeyType` is `#[non_exhaustive]`, so this arm is required. It
-                // refuses rather than falling back: every branch above derives
-                // through a scheme-specific SLIP-0010 path and there is no
-                // generic one, so a wildcard could only return a key of some
-                // other algorithm under this label.
-                other => {
-                    return Err(AppError::Validation(format!(
-                        "key derivation does not support {other} yet"
-                    )));
-                }
-            }
+            let key = super::key_custody::derive_record_key(
+                contexts_ks,
+                keys_ks,
+                &**seed_store,
+                audit,
+                &auth.did,
+                &record,
+                channel,
+            )
+            .await?;
+            let (public, private) = key.multibase_pair()?;
+            (public, (*private).clone())
         }
     };
 
-    info!(channel, key_id = %key_id, "key secret retrieved");
-    audit!(
-        "key.secret_export",
-        actor = &auth.did,
-        resource = key_id,
-        outcome = "success"
-    );
-    audit::record_best_effort(
+    // Durable before the material is returned, and refusing on failure — see
+    // "The audit row is a precondition of the release" above.
+    if let Err(e) = audit::record(
         audit,
         "key.secret_export",
         &auth.did,
@@ -896,7 +1316,27 @@ pub async fn get_key_secret(
         Some(channel),
         record.context_id.as_deref(),
     )
-    .await;
+    .await
+    {
+        let mut private_key_multibase = private_key_multibase;
+        private_key_multibase.zeroize();
+        tracing::error!(
+            target: vta_audit::AUDIT_WRITE_FAILURE_TARGET,
+            error = %e, channel, key_id = %key_id, actor = %auth.did,
+            "key export refused: its audit row could not be written"
+        );
+        return Err(KeyExportError::Other(AppError::Internal(format!(
+            "key `{key_id}` was not released: the export could not be recorded in the \
+             audit trail, and an unrecorded export is not permitted (VTI-VTA-003)"
+        ))));
+    }
+    info!(channel, key_id = %key_id, "key secret retrieved");
+    audit!(
+        "key.secret_export",
+        actor = &auth.did,
+        resource = key_id,
+        outcome = "success"
+    );
 
     Ok(GetKeySecretResultBody {
         key_id: record.key_id,
@@ -1010,7 +1450,32 @@ pub async fn set_key_exportability(
     Ok(record)
 }
 
-/// Internal-authority variant of [`get_key_secret`] that bypasses the
+/// [`get_key_secret_internal`] for the test harness, which sits outside
+/// `operations` and so cannot mint an [`InternalAuthority`](super::internal_authority::InternalAuthority).
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) async fn key_secret_for_test_support(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    audit: &vta_audit::SharedAuditSink,
+    key_id: &str,
+) -> Result<GetKeySecretResultBody, AppError> {
+    get_key_secret_internal(
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        seed_store,
+        audit,
+        super::internal_authority::InternalAuthority::new("test-support"),
+        key_id,
+        "test-support",
+    )
+    .await
+}
+
+/// Internal-authority variant of [`get_key_secret`] — the **use** surface,
+/// audited as `key.internal_use` — that bypasses the
 /// `auth.require_context` / `auth.is_super_admin` gates.
 ///
 /// Required because the provision-integration flow needs to load the
@@ -1028,6 +1493,7 @@ pub async fn set_key_exportability(
 pub async fn get_key_secret_internal(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     audit: &vta_audit::SharedAuditSink,
     authority: super::internal_authority::InternalAuthority,
@@ -1041,6 +1507,15 @@ pub async fn get_key_secret_internal(
 
     // Deliberately no `auth.require_context` / `is_super_admin` gate —
     // possessing an `InternalAuthority` IS the gate.
+
+    // Internal authority skips the ACL, not the key's lifecycle: a revoked key
+    // (retired by a rotation, or revoked outright) must not keep signing or
+    // decrypting for the VTA.
+    if record.status != KeyStatus::Active {
+        return Err(AppError::Forbidden(format!(
+            "key `{key_id}` is not active and is not loaded for use"
+        )));
+    }
 
     let (public_key_multibase, private_key_multibase) = match record.origin {
         // Unreachable: the early return above refuses internal keys. Kept as a
@@ -1067,79 +1542,41 @@ pub async fn get_key_secret_internal(
             secret_bytes.zeroize();
             (record.public_key.clone(), priv_mb)
         }
+        // Through key custody even under internal authority: `InternalAuthority`
+        // bypasses the ACL, not the rule that a record's path belongs to its
+        // context.
         KeyOrigin::Derived => {
-            let seed = load_seed_bytes(keys_ks, seed_store, record.seed_id)
-                .await
-                .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
-                key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
-            })?;
-
-            match record.key_type {
-                KeyType::Ed25519 => {
-                    let secret = bip32.derive_ed25519(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::X25519 => {
-                    let secret = bip32.derive_x25519(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::P256 => {
-                    let p256_secret = bip32.derive_p256(&record.derivation_path)?;
-                    let public_key = p256_secret.secret_key.public_key();
-                    let encoded = public_key.to_sec1_point(true);
-                    let pub_mb = encode_public_multibase(&KeyType::P256, encoded.as_bytes());
-                    let priv_mb = encode_private_multibase(
-                        &KeyType::P256,
-                        &p256_secret.secret_key.to_bytes(),
-                    );
-                    (pub_mb, priv_mb)
-                }
-                KeyType::MlDsa44 => {
-                    let secret = bip32.derive_ml_dsa_44(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                KeyType::MlDsa65 => {
-                    let secret = bip32.derive_ml_dsa_65(&record.derivation_path)?;
-                    (
-                        secret.get_public_keymultibase()?,
-                        secret.get_private_keymultibase()?,
-                    )
-                }
-                // `KeyType` is `#[non_exhaustive]`, so this arm is required. It
-                // refuses rather than falling back: every branch above derives
-                // through a scheme-specific SLIP-0010 path and there is no
-                // generic one, so a wildcard could only return a key of some
-                // other algorithm under this label.
-                other => {
-                    return Err(AppError::Validation(format!(
-                        "key derivation does not support {other} yet"
-                    )));
-                }
-            }
+            let key = super::key_custody::derive_record_key(
+                contexts_ks,
+                keys_ks,
+                seed_store,
+                audit,
+                &authority.audit_actor(),
+                &record,
+                channel,
+            )
+            .await?;
+            let (public, private) = key.multibase_pair()?;
+            (public, (*private).clone())
         }
     };
 
+    // `key.internal_use`, not `key.secret_export`: nothing here leaves the VTA
+    // — the key is loaded so the VTA can sign or decrypt with it itself. Filed
+    // under the export action, every VC the VTA issued and every webvh publish
+    // it authenticated read as a key export, which buried the real exports an
+    // incident review is looking for under the VTA's own routine use.
     let actor = authority.audit_actor();
-    info!(channel, key_id = %key_id, actor = %actor, "key secret retrieved (internal)");
+    info!(channel, key_id = %key_id, actor = %actor, "key loaded for internal use");
     audit!(
-        "key.secret_export",
+        "key.internal_use",
         actor = &actor,
         resource = key_id,
         outcome = "success"
     );
     audit::record_best_effort(
         audit,
-        "key.secret_export",
+        "key.internal_use",
         &actor,
         Some(key_id),
         "success",
@@ -1223,10 +1660,21 @@ pub async fn sign_payload(
     domain: SigningDomain,
     channel: &str,
 ) -> Result<SignResultBody, AppError> {
-    let record: KeyRecord = keys_ks
-        .get(keys::store_key(key_id))
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("key {key_id} not found")))?;
+    // Gate 0 — the generic oracle needs `Sign` (VTI-VTA-003, VTI-VTA-007).
+    // Only for `Opaque`: those bytes came from a caller, which is the generic
+    // signing request `Sign` names. `ProtocolDefined` input is built inside the
+    // VTA by an operation that has already applied the constrained capability
+    // its own task requires (`credential-write` for a room's credentials, for
+    // instance) — and VTI-VTA-007 is precisely that such a grant must not have
+    // to carry the general one. Before any lookup, so a refused caller learns
+    // nothing about which key ids exist.
+    if domain == SigningDomain::Opaque {
+        ensure_may_sign(acl_ks, auth, "keys/sign").await?;
+    }
+
+    // Scope before existence: an out-of-scope caller gets the same refusal for
+    // a key that exists and one that does not.
+    let record = load_record_in_caller_scope(keys_ks, auth, key_id).await?;
 
     if record.status != KeyStatus::Active {
         return Err(AppError::Validation(
@@ -1341,40 +1789,41 @@ pub async fn sign_payload(
             secret_bytes.zeroize();
             sig
         }
+        // Through key custody: a record whose path lies outside its context's
+        // base is refused before anything is signed (`vta_keys::custody` rule 6).
         KeyOrigin::Derived => {
-            let seed = load_seed_bytes(keys_ks, &**seed_store, record.seed_id)
-                .await
-                .map_err(|e| AppError::Internal(format!("{e}")))?;
-            let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed).map_err(|e| {
-                key_derivation_error(format!("failed to create BIP-32 root key: {e}"))
-            })?;
-
-            match (algorithm, &record.key_type) {
-                (SignAlgorithm::EdDSA, KeyType::Ed25519) => {
-                    let derivation_path: vti_common::slip10::DerivationPath =
-                        record.derivation_path.parse().map_err(|e| {
-                            key_derivation_error(format!("invalid derivation path: {e}"))
-                        })?;
-                    let derived = bip32
-                        .derive(&derivation_path)
-                        .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
-                    let signing_key =
-                        ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
-                    use ed25519_dalek::Signer;
-                    signing_key.sign(payload).to_bytes().to_vec()
-                }
-                (SignAlgorithm::ES256, KeyType::P256) => {
-                    let p256_secret = bip32.derive_p256(&record.derivation_path)?;
+            if !matches!(
+                (algorithm, &record.key_type),
+                (SignAlgorithm::EdDSA, KeyType::Ed25519) | (SignAlgorithm::ES256, KeyType::P256)
+            ) {
+                return Err(AppError::Validation(format!(
+                    "algorithm {} incompatible with key type {}",
+                    algorithm, record.key_type
+                )));
+            }
+            let key = super::key_custody::derive_record_key(
+                contexts_ks,
+                keys_ks,
+                &**seed_store,
+                audit,
+                &auth.did,
+                &record,
+                channel,
+            )
+            .await?;
+            match record.key_type {
+                KeyType::P256 => {
+                    let p256_secret = key.p256_secret()?;
                     let signing_key = p256::ecdsa::SigningKey::from(&p256_secret.secret_key);
                     use p256::ecdsa::signature::Signer;
                     let sig: p256::ecdsa::Signature = signing_key.sign(payload);
                     sig.to_bytes().to_vec()
                 }
                 _ => {
-                    return Err(AppError::Validation(format!(
-                        "algorithm {} incompatible with key type {}",
-                        algorithm, record.key_type
-                    )));
+                    let bytes = key.ed25519_signing_key_bytes()?;
+                    let signing_key = ed25519_dalek::SigningKey::from_bytes(&bytes);
+                    use ed25519_dalek::Signer;
+                    signing_key.sign(payload).to_bytes().to_vec()
                 }
             }
         }
@@ -1434,19 +1883,41 @@ pub async fn sign_payload(
 /// This is the signing oracle that lets a fleet manager (whose fleet seed *is*
 /// this VTA's seed, ideally TEE-sealed) act as any derived child identity — e.g.
 /// a per-VTA super-admin at `m/26'/9'/<idx>'` — so the seed never leaves the
-/// VTA. **Admin-gated** (the strictest gate, like `create_key`): the caller can
-/// derive + sign as *any* path, so it must be a fully-trusted admin.
+/// VTA.
+///
+/// **Super-admin only, and only inside `m/26'/9'`**
+/// ([`vta_keys::custody::DELEGATED_IDENTITY_ROOT`]). The caller picks the
+/// identity it signs as, so a role-only gate let a context-scoped admin sign as
+/// any key the VTA holds, including its own `did:webvh` update key. The subtree
+/// confinement holds even for a super-admin: this oracle never signs as a key
+/// a record exists for. Every signature is audited with the path and a digest
+/// of what was signed (VTI-VTA-006).
+#[allow(clippy::too_many_arguments)]
 pub async fn derive_and_sign(
     keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     auth: &AuthClaims,
+    audit: &vta_audit::SharedAuditSink,
     key_type: &KeyType,
     derivation_path: &str,
     payload: &[u8],
     algorithm: &SignAlgorithm,
     channel: &str,
 ) -> Result<DeriveAndSignResultBody, AppError> {
-    auth.require_admin()?;
+    // The same `Sign` gate as the stored-key oracle: this signs caller-supplied
+    // bytes too, and a super-admin narrowed without `sign` asked not to.
+    ensure_may_sign(acl_ks, auth, "keys/derive-and-sign").await?;
+    let signing_bytes = super::key_custody::derive_delegated_identity(
+        keys_ks,
+        &**seed_store,
+        auth,
+        derivation_path,
+        "keys.derive-and-sign",
+        audit,
+        channel,
+    )
+    .await?;
 
     if !matches!(
         (algorithm, key_type),
@@ -1457,18 +1928,7 @@ pub async fn derive_and_sign(
         )));
     }
 
-    let seed = load_seed_bytes(keys_ks, &**seed_store, None)
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
-    let path: vti_common::slip10::DerivationPath = derivation_path
-        .parse()
-        .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
-    let derived = bip32
-        .derive(&path)
-        .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&signing_bytes);
     let public_key =
         encode_public_multibase(&KeyType::Ed25519, signing_key.verifying_key().as_bytes());
 
@@ -1481,6 +1941,16 @@ pub async fn derive_and_sign(
         derivation_path = %derivation_path,
         "ephemeral derive-and-sign (no key record persisted)"
     );
+    record_delegated_signature(
+        audit,
+        auth,
+        "keys.derive-and-sign",
+        derivation_path,
+        &format!("keyType={key_type} alg={algorithm}"),
+        payload,
+        channel,
+    )
+    .await;
 
     Ok(DeriveAndSignResultBody {
         public_key,
@@ -1497,18 +1967,42 @@ pub async fn derive_and_sign(
 /// proof is correct-by-construction for any `affinidi-data-integrity` verifier.
 /// This is how a fleet manager has its fleet VTA sign an `auth/authenticate/0.1`
 /// document as a per-VTA super-admin (`m/26'/9'/<idx>'`) — the seed never leaves
-/// the VTA. **Admin-gated.**
+/// the VTA. **Super-admin only, inside `m/26'/9'`**, for the reasons given on
+/// [`derive_and_sign`]. Audited with a digest of the signed document.
+#[allow(clippy::too_many_arguments)]
 pub async fn derive_and_sign_document(
     keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     auth: &AuthClaims,
+    audit: &vta_audit::SharedAuditSink,
     key_type: &KeyType,
     derivation_path: &str,
     mut document: serde_json::Value,
     proof_purpose: Option<&str>,
     channel: &str,
 ) -> Result<DeriveAndSignDocumentResultBody, AppError> {
-    auth.require_admin()?;
+    // `Sign`, as for `derive_and_sign`: the document is the caller's, and any
+    // JSON object is accepted, so this is a general signing request.
+    ensure_may_sign(acl_ks, auth, "keys/derive-and-sign-document").await?;
+    // A proof no verifier accepts is refused before any key is derived: the
+    // purpose must name a signing relationship (VTI-KEY-022), never
+    // `keyAgreement` or an arbitrary string. A did:key's key is listed under
+    // all four, so any of them verifies.
+    let proof_purpose =
+        vti_common::auth::ProofPurpose::parse(proof_purpose.unwrap_or("assertionMethod"))
+            .map_err(|e| AppError::Validation(format!("proofPurpose: {e}")))?
+            .as_str();
+    let signing_bytes = super::key_custody::derive_delegated_identity(
+        keys_ks,
+        &**seed_store,
+        auth,
+        derivation_path,
+        "keys.derive-and-sign-document",
+        audit,
+        channel,
+    )
+    .await?;
 
     if !matches!(key_type, KeyType::Ed25519) {
         return Err(AppError::Validation(format!(
@@ -1521,18 +2015,7 @@ pub async fn derive_and_sign_document(
         ));
     }
 
-    let seed = load_seed_bytes(keys_ks, &**seed_store, None)
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let bip32 = vti_common::slip10::ExtendedSigningKey::from_seed(&seed)
-        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
-    let path: vti_common::slip10::DerivationPath = derivation_path
-        .parse()
-        .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
-    let derived = bip32
-        .derive(&path)
-        .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&signing_bytes);
 
     // The derived identity's did:key + its verification method (did:key:zX#zX),
     // and a Secret built from the derived private key — identical to how the VTA
@@ -1553,7 +2036,7 @@ pub async fn derive_and_sign_document(
         &document,
         &secret,
         SignOptions::new()
-            .with_proof_purpose(proof_purpose.unwrap_or("assertionMethod"))
+            .with_proof_purpose(proof_purpose)
             .with_cryptosuite(CryptoSuite::EddsaJcs2022)
             .with_created(Utc::now()),
     )
@@ -1573,10 +2056,75 @@ pub async fn derive_and_sign_document(
         derivation_path = %derivation_path,
         "derive-and-sign-document (DI proof, no key record persisted)"
     );
+    let signed_bytes = serde_json::to_vec(&document)
+        .map_err(|e| AppError::Internal(format!("serialize signed document: {e}")))?;
+    record_delegated_signature(
+        audit,
+        auth,
+        "keys.derive-and-sign-document",
+        derivation_path,
+        &format!("keyType={key_type} proofPurpose={proof_purpose}"),
+        &signed_bytes,
+        channel,
+    )
+    .await;
     Ok(DeriveAndSignDocumentResultBody {
         signer_did,
         document,
     })
+}
+
+/// Audit a delegated-identity signature: who, as which path, and a SHA-256 of
+/// what was signed (VTI-VTA-006: record what was signed, for which caller). A
+/// digest, not the payload, because the payload may carry personal data an
+/// audit row must not embed (VTI-AUD-005).
+async fn record_delegated_signature(
+    audit: &vta_audit::SharedAuditSink,
+    auth: &AuthClaims,
+    action: &str,
+    derivation_path: &str,
+    detail: &str,
+    signed: &[u8],
+    channel: &str,
+) {
+    use sha2::Digest;
+    let digest = hex::encode(sha2::Sha256::digest(signed));
+    audit::record_with_detail_best_effort(
+        audit,
+        action,
+        &auth.did,
+        Some(derivation_path),
+        "success",
+        Some(channel),
+        None,
+        Some(&format!("{detail} sha256:{digest}")),
+    )
+    .await;
+}
+
+/// Find an **active** key of context `context_id` by its multibase public key.
+///
+/// For a caller that acts on the record it finds (realign-keys rewrites and
+/// deletes it). A record of another context, an unscoped record, or a revoked
+/// one is never returned, so a public key someone copied into their own
+/// document cannot reach a record they do not own.
+pub async fn find_key_by_public_multibase_in_context(
+    keys_ks: &KeyspaceHandle,
+    public_key: &str,
+    context_id: &str,
+) -> Result<Option<KeyRecord>, AppError> {
+    for (_, value) in keys_ks.prefix_iter_raw("key:").await? {
+        let Ok(record) = serde_json::from_slice::<KeyRecord>(&value) else {
+            continue;
+        };
+        if record.public_key == public_key
+            && record.status == KeyStatus::Active
+            && record.context_id.as_deref() == Some(context_id)
+        {
+            return Ok(Some(record));
+        }
+    }
+    Ok(None)
 }
 
 /// Find a VTA key by its multibase public key.
@@ -1741,6 +2289,161 @@ mod tests {
         }
     }
 
+    /// VTI-KEY-032 (found alongside FTL-29904): a context-scoped admin must not
+    /// make the VTA derive a key outside its own context's subtree. The target
+    /// here is the VTA's own `did:webvh` update-key path. Before the fix
+    /// `create_key` accepted it, recorded the key under the caller's context,
+    /// and `get_key_secret`'s scope check, which reads that context, then
+    /// released the VTA's private key.
+    #[tokio::test]
+    async fn vti_key_032_context_admin_cannot_derive_outside_its_context() {
+        let h = TestHarness::new().await;
+        let super_admin = h.super_admin_auth();
+        let tenant = h.context_admin_auth();
+
+        let victim = create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.acl_ks,
+            &super_admin,
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::Ed25519,
+                derivation_path: Some("m/26'/0'/0'/0'".into()),
+                key_id: Some("vta-update-key".into()),
+                mnemonic: None,
+                label: None,
+                context_id: None,
+            },
+            "test",
+        )
+        .await
+        .expect("super-admin creates the VTA's own key");
+
+        let attempt = create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.acl_ks,
+            &tenant,
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::Ed25519,
+                derivation_path: Some("m/26'/0'/0'/0'".into()),
+                key_id: Some("innocuous".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(attempt, Err(AppError::Forbidden(_))),
+            "a context admin must not choose a derivation path, got {:?}",
+            attempt.map(|c| c.public_key == victim.public_key)
+        );
+
+        // Defence in depth (custody rule 6): a record already planted this way,
+        // by a build before the fix or through a restore, is inert. It can be
+        // neither exported nor used to sign, even by its own context's admin.
+        let now = chrono::Utc::now();
+        let planted = KeyRecord {
+            key_id: "planted".into(),
+            derivation_path: "m/26'/0'/0'/0'".into(),
+            key_type: KeyType::Ed25519,
+            status: KeyStatus::Active,
+            public_key: victim.public_key.clone(),
+            label: None,
+            context_id: Some("test-ctx".into()),
+            exportable: None,
+            seed_id: None,
+            origin: KeyOrigin::Derived,
+            created_at: now,
+            updated_at: now,
+        };
+        h.keys_ks
+            .insert(keys::store_key("planted"), &planted)
+            .await
+            .unwrap();
+        let export = get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &h.audit,
+            &tenant,
+            "planted",
+            ExportChannel::Local("test"),
+        )
+        .await;
+        assert!(
+            matches!(export, Err(AppError::Forbidden(_))),
+            "export: {export:?}"
+        );
+        let sign = sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &h.audit,
+            &tenant,
+            "planted",
+            b"payload",
+            &SignAlgorithm::EdDSA,
+            SigningDomain::Opaque,
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(sign, Err(AppError::Forbidden(_))),
+            "sign: {sign:?}"
+        );
+    }
+
+    /// `keys/derive-and-sign` lets the caller pick the identity it signs as, so
+    /// it is super-admin only and confined to the delegated subtree: a tenant
+    /// admin cannot sign as the VTA (or anyone else) through it.
+    #[tokio::test]
+    async fn derive_and_sign_refuses_a_context_admin_and_foreign_paths() {
+        let h = TestHarness::new().await;
+        let sign = async |auth: &AuthClaims, path: &str| {
+            derive_and_sign(
+                &h.keys_ks,
+                &h.acl_ks,
+                &h.seed_store,
+                auth,
+                &h.audit,
+                &KeyType::Ed25519,
+                path,
+                b"x",
+                &SignAlgorithm::EdDSA,
+                "test",
+            )
+            .await
+        };
+        let tenant = h.context_admin_auth();
+        let admin = h.super_admin_auth();
+        assert!(matches!(
+            sign(&tenant, "m/26'/9'/0'").await,
+            Err(AppError::Forbidden(_))
+        ));
+        // The VTA's did:webvh update-key path: refused even for a super-admin.
+        assert!(matches!(
+            sign(&admin, "m/26'/0'/0'/0'").await,
+            Err(AppError::Forbidden(_))
+        ));
+        assert!(sign(&admin, "m/26'/9'/0'").await.is_ok());
+    }
+
     #[tokio::test]
     async fn create_key_refuses_to_overwrite_existing_record() {
         // Reproduces the silent-overwrite hole: a second create with the
@@ -1755,6 +2458,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -1776,6 +2480,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -1818,6 +2523,7 @@ mod tests {
                 &h.contexts_ks,
                 &h.seed_store,
                 &h.audit,
+                &h.acl_ks,
                 &auth,
                 CreateKeyParams {
                     internal: false,
@@ -1909,6 +2615,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -1976,6 +2683,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -2011,6 +2719,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -2047,6 +2756,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &auth,
             CreateKeyParams {
                 internal: false,
@@ -2103,8 +2813,10 @@ mod tests {
 
         let result = derive_and_sign(
             &h.keys_ks,
+            &h.acl_ks,
             &h.seed_store,
             &auth,
+            &h.audit,
             &KeyType::Ed25519,
             "m/26'/9'/0'",
             payload,
@@ -2151,8 +2863,10 @@ mod tests {
         assert!(
             derive_and_sign(
                 &h.keys_ks,
+                &h.acl_ks,
                 &h.seed_store,
                 &non_admin,
+                &h.audit,
                 &KeyType::Ed25519,
                 "m/26'/9'/0'",
                 payload,
@@ -2176,8 +2890,10 @@ mod tests {
 
         let res = derive_and_sign_document(
             &h.keys_ks,
+            &h.acl_ks,
             &h.seed_store,
             &auth,
+            &h.audit,
             &KeyType::Ed25519,
             "m/26'/9'/0'",
             doc.clone(),
@@ -2212,8 +2928,10 @@ mod tests {
         // Deterministic: same path → same signer.
         let res2 = derive_and_sign_document(
             &h.keys_ks,
+            &h.acl_ks,
             &h.seed_store,
             &auth,
+            &h.audit,
             &KeyType::Ed25519,
             "m/26'/9'/0'",
             doc,
@@ -2232,8 +2950,10 @@ mod tests {
         assert!(
             derive_and_sign_document(
                 &h.keys_ks,
+                &h.acl_ks,
                 &h.seed_store,
                 &non_admin,
+                &h.audit,
                 &KeyType::Ed25519,
                 "m/26'/9'/0'",
                 serde_json::json!({"x": 1}),
@@ -2286,6 +3006,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2363,6 +3084,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2414,6 +3136,7 @@ mod tests {
                 &h.contexts_ks,
                 &h.seed_store,
                 &h.audit,
+                &h.acl_ks,
                 &admin,
                 CreateKeyParams {
                     internal: false,
@@ -2547,6 +3270,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2612,6 +3336,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2709,6 +3434,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2765,6 +3491,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2816,6 +3543,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2903,6 +3631,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &admin,
             CreateKeyParams {
                 internal: false,
@@ -2986,6 +3715,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &h.super_admin_auth(),
             CreateKeyParams {
                 internal: false,
@@ -3014,6 +3744,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &h.super_admin_auth(),
             CreateKeyParams {
                 internal: true,
@@ -3040,11 +3771,13 @@ mod tests {
         let err = get_key_secret(
             &h.keys_ks,
             &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
             "k-internal",
-            "test",
+            ExportChannel::Local("test"),
         )
         .await
         .unwrap_err();
@@ -3075,11 +3808,13 @@ mod tests {
         get_key_secret(
             &h.keys_ks,
             &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
             "k-open",
-            "test",
+            ExportChannel::Local("test"),
         )
         .await
         .expect("absence must read as exportable");
@@ -3106,11 +3841,13 @@ mod tests {
         let err = get_key_secret(
             &h.keys_ks,
             &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
             "k-shut",
-            "test",
+            ExportChannel::Local("test"),
         )
         .await
         .unwrap_err();
@@ -3196,11 +3933,13 @@ mod tests {
         get_key_secret(
             &h.keys_ks,
             &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &h.audit,
             &h.super_admin_auth(),
             "k-reopen",
-            "test",
+            ExportChannel::Local("test"),
         )
         .await
         .expect("and the key exports again");
@@ -3314,6 +4053,7 @@ mod tests {
         let err = get_key_secret_internal(
             &h.keys_ks,
             &h.imported_ks,
+            &h.contexts_ks,
             &*h.seed_store,
             &h.audit,
             crate::operations::internal_authority::InternalAuthority::new("test"),
@@ -3325,6 +4065,44 @@ mod tests {
 
         assert!(
             matches!(&err, AppError::Forbidden(m) if m.contains("internal key")),
+            "{err:?}"
+        );
+    }
+
+    /// A revoked record — a key a rotation retired, or a rotation's inert
+    /// staging record — is kept for history only: the VTA's own loads do not
+    /// release its private half. (The export surface refuses it too; that half
+    /// is tested with the export gate.)
+    #[tokio::test]
+    async fn a_revoked_key_is_not_loaded() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-retired").await;
+        let mut record: KeyRecord = h
+            .keys_ks
+            .get(keys::store_key("k-retired"))
+            .await
+            .unwrap()
+            .unwrap();
+        record.status = KeyStatus::Revoked;
+        h.keys_ks
+            .insert(keys::store_key("k-retired"), &record)
+            .await
+            .unwrap();
+
+        let err = get_key_secret_internal(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &*h.seed_store,
+            &h.audit,
+            crate::operations::internal_authority::InternalAuthority::new("test"),
+            "k-retired",
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
             "{err:?}"
         );
     }
@@ -3373,6 +4151,7 @@ mod tests {
             &h.contexts_ks,
             &h.seed_store,
             &h.audit,
+            &h.acl_ks,
             &h.super_admin_auth(),
             CreateKeyParams {
                 internal: true,
@@ -3391,5 +4170,728 @@ mod tests {
             matches!(&err, AppError::Validation(m) if m.contains("explicit key_id")),
             "{err:?}"
         );
+    }
+
+    // ── the export and signing gates, on every channel ───────────────
+    //
+    // Phase 0 of the key-roles work: the `key-export` gate used to live in the
+    // `keys/export-secret` Trust-Task handler alone, so `GET /keys/{id}/secret`
+    // and DIDComm `get-key-secret` released keys to an admin narrowed without
+    // it; and `sign` was never checked anywhere. Both now live in the
+    // operation, and these tests hold them there for every channel a transport
+    // can state.
+
+    /// A sink that keeps what it is given — or refuses everything.
+    struct RecordingSink {
+        rows: Mutex<Vec<vta_sdk::protocols::audit_management::list::AuditLogEntry>>,
+        refuse: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl vta_audit::AuditSink for RecordingSink {
+        async fn record(
+            &self,
+            entry: &vta_sdk::protocols::audit_management::list::AuditLogEntry,
+        ) -> Result<(), AppError> {
+            if self.refuse {
+                return Err(AppError::Internal("audit sink unavailable".into()));
+            }
+            self.rows.lock().await.push(entry.clone());
+            Ok(())
+        }
+    }
+
+    fn recording_sink(refuse: bool) -> Arc<RecordingSink> {
+        Arc::new(RecordingSink {
+            rows: Mutex::new(Vec::new()),
+            refuse,
+        })
+    }
+
+    /// Every channel a caller can state, with the audit name each records.
+    fn every_channel() -> [ExportChannel<'static>; 4] {
+        [
+            ExportChannel::EndToEnd("didcomm"),
+            ExportChannel::Sealed("provision-integration"),
+            ExportChannel::Local("cli"),
+            ExportChannel::HopByHop("rest"),
+        ]
+    }
+
+    /// Store an ACL entry for `auth` — an admin of `test-ctx` narrowed to
+    /// `capabilities` — so the gates read it, as they do for every live caller.
+    async fn store_narrowed(h: &TestHarness, auth: &AuthClaims, capabilities: Vec<Capability>) {
+        vti_common::acl::store_acl_entry(
+            &h.acl_ks,
+            &vti_common::acl::AclEntry::new(&auth.did, auth.role.clone(), "did:key:zRoot")
+                .with_contexts(auth.allowed_contexts.clone())
+                .with_capabilities(capabilities),
+        )
+        .await
+        .expect("store the caller's entry");
+    }
+
+    async fn export(
+        h: &TestHarness,
+        audit: &vta_audit::SharedAuditSink,
+        auth: &AuthClaims,
+        key_id: &str,
+        channel: ExportChannel<'_>,
+    ) -> Result<GetKeySecretResultBody, AppError> {
+        get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            audit,
+            auth,
+            key_id,
+            channel,
+        )
+        .await
+    }
+
+    /// VTI-VTA-003: an admin narrowed without `key-export` is refused on every
+    /// channel — REST and DIDComm included, which is where it used to pass —
+    /// and the refusal names the capability and the fix. Nothing is recorded
+    /// as exported.
+    #[tokio::test]
+    async fn vti_vta_003_export_without_key_export_is_refused_on_every_channel() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-gated").await;
+        let auth = h.context_admin_auth();
+        store_narrowed(&h, &auth, vec![Capability::Sign, Capability::KeyMint]).await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+
+        for channel in every_channel() {
+            let err = export(&h, &audit, &auth, "k-gated", channel)
+                .await
+                .expect_err("narrowed away, key-export is gone on every transport");
+            assert!(
+                matches!(&err, AppError::Forbidden(m)
+                    if m.contains("key-export")
+                        && m.contains("--capabilities sign,key-mint,key-export")),
+                "{channel:?}: {err:?}"
+            );
+        }
+        assert!(
+            sink.rows.lock().await.is_empty(),
+            "a refused export must not be recorded as one"
+        );
+    }
+
+    /// The gate runs before the lookup: a caller without `key-export` gets the
+    /// same refusal for a key that exists and one that does not.
+    #[tokio::test]
+    async fn the_export_gate_does_not_reveal_which_keys_exist() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-real").await;
+        let auth = h.context_admin_auth();
+        store_narrowed(&h, &auth, vec![Capability::Sign]).await;
+        let real = export(&h, &h.audit, &auth, "k-real", ExportChannel::Local("t"))
+            .await
+            .unwrap_err()
+            .to_string();
+        let imaginary = export(&h, &h.audit, &auth, "k-none", ExportChannel::Local("t"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(real, imaginary);
+    }
+
+    /// `keys/export-secret/0.1`: the exchange must be confidential to the two
+    /// parties. An entitled caller asking over a hop-by-hop channel is refused,
+    /// told how to succeed, and nothing is released or recorded.
+    #[tokio::test]
+    async fn an_export_over_a_hop_by_hop_channel_is_refused_even_when_entitled() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-tls").await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+
+        let err = export(
+            &h,
+            &audit,
+            &h.super_admin_auth(),
+            "k-tls",
+            ExportChannel::HopByHop("rest"),
+        )
+        .await
+        .expect_err("REST never carries a private key");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("DIDComm or TSP")),
+            "the refusal must say which transports work: {err:?}"
+        );
+        assert!(sink.rows.lock().await.is_empty());
+
+        export(
+            &h,
+            &audit,
+            &h.super_admin_auth(),
+            "k-tls",
+            ExportChannel::EndToEnd("didcomm"),
+        )
+        .await
+        .expect("the same caller succeeds end to end");
+    }
+
+    /// A key marked non-exportable, and an internal key, are refused on every
+    /// channel that could otherwise release them — to a super-admin, with
+    /// `key-export`.
+    #[tokio::test]
+    async fn non_exportable_and_internal_keys_are_refused_on_every_channel() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-locked").await;
+        set_key_exportability(
+            &h.keys_ks,
+            &h.sessions_ks,
+            &h.audit,
+            &h.context_admin_auth(),
+            "k-locked",
+            false,
+            "test",
+        )
+        .await
+        .expect("restrict");
+        mint_internal(&h, "k-inside").await;
+
+        for channel in every_channel() {
+            if matches!(channel, ExportChannel::HopByHop(_)) {
+                // Refused before the key is read at all — asserted above.
+                continue;
+            }
+            let err = export(&h, &h.audit, &h.super_admin_auth(), "k-locked", channel)
+                .await
+                .expect_err("non-exportable");
+            assert!(
+                matches!(&err, AppError::Forbidden(m) if m.contains("non-exportable")),
+                "{channel:?}: {err:?}"
+            );
+            let err = export(&h, &h.audit, &h.super_admin_auth(), "k-inside", channel)
+                .await
+                .expect_err("internal");
+            assert!(
+                matches!(&err, AppError::Forbidden(m) if m.contains("internal key")),
+                "{channel:?}: {err:?}"
+            );
+        }
+    }
+
+    /// VTI-VTA-003 "and MUST be audited": a successful export leaves one
+    /// durable `key.secret_export` row naming who, which key, its context and
+    /// the transport — and never the material.
+    #[tokio::test]
+    async fn vti_vta_003_a_successful_export_writes_a_durable_audit_row() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-audited").await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+        let auth = h.context_admin_auth();
+
+        let released = export(
+            &h,
+            &audit,
+            &auth,
+            "k-audited",
+            ExportChannel::EndToEnd("trust-task/tsp"),
+        )
+        .await
+        .expect("an admin of the key's context exports it end to end");
+
+        let rows = sink.rows.lock().await;
+        let exports: Vec<_> = rows
+            .iter()
+            .filter(|r| r.action == "key.secret_export")
+            .collect();
+        assert_eq!(exports.len(), 1, "exactly one export row: {rows:?}");
+        let row = exports[0];
+        assert_eq!(row.actor, auth.did);
+        assert_eq!(row.resource.as_deref(), Some("k-audited"));
+        assert_eq!(row.context_id.as_deref(), Some("test-ctx"));
+        assert_eq!(row.channel.as_deref(), Some("trust-task/tsp"));
+        assert_eq!(row.outcome, "success");
+        let serialized = serde_json::to_string(row).unwrap();
+        assert!(
+            !serialized.contains(&released.private_key_multibase),
+            "the audit row must never carry the key material"
+        );
+    }
+
+    /// The row is a precondition of the release: a sink that cannot record
+    /// means no key leaves.
+    #[tokio::test]
+    async fn an_export_that_cannot_be_audited_is_refused() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-unrecorded").await;
+        let audit: vta_audit::SharedAuditSink = recording_sink(true);
+
+        let err = export(
+            &h,
+            &audit,
+            &h.super_admin_auth(),
+            "k-unrecorded",
+            ExportChannel::Local("cli"),
+        )
+        .await
+        .expect_err("an unrecorded export is not permitted");
+        assert!(
+            matches!(&err, AppError::Internal(m) if m.contains("VTI-VTA-003")),
+            "{err:?}"
+        );
+    }
+
+    async fn sign_as(
+        h: &TestHarness,
+        auth: &AuthClaims,
+        key_id: &str,
+        domain: SigningDomain,
+    ) -> Result<SignResultBody, AppError> {
+        sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &h.audit,
+            auth,
+            key_id,
+            b"hello",
+            &SignAlgorithm::EdDSA,
+            domain,
+            "test",
+        )
+        .await
+    }
+
+    /// VTI-VTA-003 / VTI-VTA-007: `sign` is the capability to use a key through
+    /// the generic oracle. An entry narrowed without it is refused opaque
+    /// signing — which, before, the role floor let straight through.
+    #[tokio::test]
+    async fn vti_vta_007_opaque_signing_without_sign_is_refused() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-sign").await;
+        let auth = h.context_admin_auth();
+
+        sign_as(&h, &auth, "k-sign", SigningDomain::Opaque)
+            .await
+            .expect("an un-narrowed admin derives sign");
+
+        store_narrowed(&h, &auth, vec![Capability::KeyExport]).await;
+        let err = sign_as(&h, &auth, "k-sign", SigningDomain::Opaque)
+            .await
+            .expect_err("narrowed away, sign is gone");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("sign capability")),
+            "{err:?}"
+        );
+        // Before the lookup: an id that does not exist is refused the same way.
+        let absent = sign_as(&h, &auth, "k-none", SigningDomain::Opaque)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), absent.to_string());
+    }
+
+    /// VTI-VTA-007 the other way round: a constrained grant must not need the
+    /// general one. Protocol-defined input is built inside the VTA by an
+    /// operation that applied its own capability, so `sign` is not demanded.
+    #[tokio::test]
+    async fn vti_vta_007_protocol_defined_signing_does_not_need_sign() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-room").await;
+        let auth = h.context_admin_auth();
+        store_narrowed(&h, &auth, vec![Capability::CredentialWrite]).await;
+
+        sign_as(&h, &auth, "k-room", SigningDomain::ProtocolDefined)
+            .await
+            .expect("a credential-write grant signs its own documents without sign");
+    }
+
+    /// The ephemeral oracles take caller bytes too, so they need `sign` — even
+    /// from a super-admin, when its entry was narrowed without it.
+    #[tokio::test]
+    async fn derive_and_sign_without_sign_is_refused() {
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+        store_narrowed(&h, &auth, vec![Capability::KeyExport]).await;
+
+        let err = derive_and_sign(
+            &h.keys_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &auth,
+            &h.audit,
+            &KeyType::Ed25519,
+            "m/26'/9'/0'",
+            b"hello",
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await
+        .expect_err("no sign");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("sign capability")),
+            "{err:?}"
+        );
+
+        let err = derive_and_sign_document(
+            &h.keys_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &auth,
+            &h.audit,
+            &KeyType::Ed25519,
+            "m/26'/9'/0'",
+            serde_json::json!({ "a": 1 }),
+            None,
+            "test",
+        )
+        .await
+        .expect_err("no sign");
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("sign capability")),
+            "{err:?}"
+        );
+    }
+
+    /// The VTA's own use of a key is recorded as `key.internal_use`, never as
+    /// an export — so `key.secret_export` rows are exactly the keys that left.
+    #[tokio::test]
+    async fn internal_use_is_not_recorded_as_an_export() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-used").await;
+        let sink = recording_sink(false);
+        let audit: vta_audit::SharedAuditSink = sink.clone();
+        get_key_secret_internal(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &*h.seed_store,
+            &audit,
+            crate::operations::internal_authority::InternalAuthority::new("test"),
+            "k-used",
+            "test",
+        )
+        .await
+        .expect("internal load");
+        let rows = sink.rows.lock().await;
+        assert!(
+            rows.iter().any(|r| r.action == "key.internal_use"),
+            "{rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.action == "key.secret_export"),
+            "internal use must not read as an export: {rows:?}"
+        );
+    }
+
+    /// A P-256 key's stored public key is the multicodec form (`p256-pub`),
+    /// identical to what custody publishes when the key is exported — one
+    /// encoding across record, export and document.
+    #[tokio::test]
+    async fn p256_record_and_export_agree_on_the_multicodec_public_key() {
+        let h = TestHarness::new().await;
+        let created = create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.acl_ks,
+            &h.super_admin_auth(),
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::P256,
+                derivation_path: None,
+                key_id: Some("k-p256".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("mint P-256");
+        let (_, bytes) = multibase::decode(&created.public_key).unwrap();
+        assert!(bytes.starts_with(KeyType::P256.multicodec_public()));
+        assert_eq!(bytes.len(), 2 + 33);
+
+        let exported = get_key_secret(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-p256",
+            ExportChannel::Local("test"),
+        )
+        .await
+        .expect("export");
+        assert_eq!(exported.public_key_multibase, created.public_key);
+    }
+
+    /// Scope before existence: a caller restricted to `test-ctx` gets one
+    /// refusal for a key in another context and for a key that does not
+    /// exist — naming neither — on both the export and the signing oracle.
+    #[tokio::test]
+    async fn out_of_scope_and_absent_keys_are_indistinguishable() {
+        let h = TestHarness::new().await;
+        create_context(&h.contexts_ks, "other-ctx", "Other")
+            .await
+            .unwrap();
+        create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.acl_ks,
+            &h.super_admin_auth(),
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some("k-elsewhere".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("other-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+        let auth = h.context_admin_auth();
+        let refuse = |id: &'static str| {
+            let h = &h;
+            let auth = auth.clone();
+            async move {
+                let e = export(h, &h.audit, &auth, id, ExportChannel::Local("t"))
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                let s = sign_as(h, &auth, id, SigningDomain::Opaque)
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                (e.replace(id, "<id>"), s.replace(id, "<id>"))
+            }
+        };
+        let real = refuse("k-elsewhere").await;
+        let absent = refuse("k-nowhere").await;
+        assert_eq!(real, absent);
+        assert!(
+            !real.0.contains("other-ctx"),
+            "must not name the key's context: {real:?}"
+        );
+    }
+
+    /// A revoked key's private half is not released, and internal authority
+    /// does not load it for use either.
+    #[tokio::test]
+    async fn revoked_keys_are_neither_exported_nor_loaded() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-gone").await;
+        revoke_key(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-gone",
+            "test",
+        )
+        .await
+        .expect("revoke");
+        let err = export(
+            &h,
+            &h.audit,
+            &h.super_admin_auth(),
+            "k-gone",
+            ExportChannel::Local("t"),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
+            "{err:?}"
+        );
+        let err = get_key_secret_internal(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &*h.seed_store,
+            &h.audit,
+            crate::operations::internal_authority::InternalAuthority::new("test"),
+            "k-gone",
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not active")),
+            "{err:?}"
+        );
+    }
+
+    // ── Keyring VTI-23: a manager's operations need a capability, not a role ──
+    //
+    // "Every operation a manager needs requires the admin role." Minting a key
+    // is `key-mint`, which an `initiator` holds; releasing one is `key-export`
+    // (VTI-VTA-003), which only an admin derives — an initiator acts as a key
+    // through the signing oracle instead (VTI-VTA-002).
+
+    /// A caller on `role` scoped to `test-ctx`, with its ACL entry stored so
+    /// the gates read the entry, as they do for every live caller.
+    async fn scoped_caller(
+        h: &TestHarness,
+        did: &str,
+        role: Role,
+        capabilities: Vec<Capability>,
+    ) -> AuthClaims {
+        let auth = AuthClaims {
+            did: did.to_string(),
+            role: role.clone(),
+            allowed_contexts: vec!["test-ctx".to_string()],
+            session_id: format!("{did}-session"),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        vti_common::acl::store_acl_entry(
+            &h.acl_ks,
+            &vti_common::acl::AclEntry::new(did, role, "did:key:zRoot")
+                .with_contexts(auth.allowed_contexts.clone())
+                .with_capabilities(capabilities),
+        )
+        .await
+        .expect("store the caller's entry");
+        auth
+    }
+
+    async fn create_as(
+        h: &TestHarness,
+        auth: &AuthClaims,
+        context_id: &str,
+    ) -> Result<CreateKeyResultBody, AppError> {
+        create_key(
+            &h.keys_ks,
+            &h.internal_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit,
+            &h.acl_ks,
+            auth,
+            CreateKeyParams {
+                internal: false,
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: None,
+                mnemonic: None,
+                label: Some("persona".into()),
+                context_id: Some(context_id.to_string()),
+            },
+            "test",
+        )
+        .await
+    }
+
+    /// An `initiator` carries `key-mint`, so it creates a key in its own
+    /// context. Before, `keys/create` demanded the admin role on both of its
+    /// surfaces.
+    #[tokio::test]
+    async fn vti_23_an_initiator_holding_key_mint_creates_a_key_in_its_context() {
+        let h = TestHarness::new().await;
+        let auth = scoped_caller(&h, "did:key:zManager", Role::Initiator, vec![]).await;
+        let key = create_as(&h, &auth, "test-ctx")
+            .await
+            .expect("an initiator derives key-mint");
+        let record: KeyRecord = h
+            .keys_ks
+            .get(keys::store_key(&key.key_id))
+            .await
+            .unwrap()
+            .expect("the key exists");
+        assert_eq!(record.context_id.as_deref(), Some("test-ctx"));
+    }
+
+    /// `key-mint` decides whether; the context scope still decides where.
+    #[tokio::test]
+    async fn vti_23_key_mint_does_not_reach_outside_the_callers_context() {
+        let h = TestHarness::new().await;
+        create_context(&h.contexts_ks, "other-ctx", "Other")
+            .await
+            .expect("create context");
+        let auth = scoped_caller(&h, "did:key:zManager", Role::Initiator, vec![]).await;
+        let err = create_as(&h, &auth, "other-ctx")
+            .await
+            .expect_err("another context is out of reach");
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
+    /// The entry is read: an admin narrowed without `key-mint` is refused — the
+    /// role check let it through — and so is a role whose ceiling lacks it.
+    #[tokio::test]
+    async fn vti_23_key_create_is_refused_without_key_mint() {
+        let h = TestHarness::new().await;
+        let narrowed = scoped_caller(
+            &h,
+            "did:key:zNarrowedAdmin",
+            Role::Admin,
+            vec![Capability::Sign],
+        )
+        .await;
+        let reader = scoped_caller(&h, "did:key:zReader", Role::Reader, vec![]).await;
+        for auth in [narrowed, reader] {
+            let err = create_as(&h, &auth, "test-ctx")
+                .await
+                .expect_err("no key-mint, no key");
+            assert!(
+                matches!(&err, AppError::Forbidden(m) if m.contains("key-mint")),
+                "{}: {err:?}",
+                auth.did
+            );
+        }
+    }
+
+    /// A caller holding `key-export` — an admin of the key's context — takes a
+    /// key from its context over an end-to-end channel.
+    #[tokio::test]
+    async fn vti_23_a_holder_of_key_export_exports_a_key_in_its_context() {
+        let h = TestHarness::new().await;
+        let record = mint_derived(&h, "k-persona").await;
+        let auth = scoped_caller(&h, "did:key:zCtxAdmin", Role::Admin, vec![]).await;
+        let out = export(
+            &h,
+            &h.audit,
+            &auth,
+            "k-persona",
+            ExportChannel::EndToEnd("didcomm"),
+        )
+        .await
+        .expect("an admin of the key's context holds key-export");
+        assert_eq!(out.key_id, record.key_id);
+    }
+
+    /// An `initiator` holds `sign` and not `key-export`, so it is refused on
+    /// every channel, at the gate, naming the capability rather than a role.
+    #[tokio::test]
+    async fn vti_23_an_initiator_is_refused_export_at_the_key_export_gate() {
+        let h = TestHarness::new().await;
+        mint_derived(&h, "k-persona").await;
+        let auth = scoped_caller(&h, "did:key:zManager", Role::Initiator, vec![]).await;
+        for channel in every_channel() {
+            let err = export(&h, &h.audit, &auth, "k-persona", channel)
+                .await
+                .expect_err("an initiator does not carry key-export");
+            assert!(
+                matches!(&err, AppError::Forbidden(m)
+                    if m.contains("key-export") && !m.contains("admin role required")),
+                "{channel:?}: {err:?}"
+            );
+        }
     }
 }

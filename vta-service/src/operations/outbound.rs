@@ -174,7 +174,7 @@ use affinidi_messaging_sdk::RecoveryAction;
 
 /// The outcome of one send-and-await-reply over TSP.
 #[cfg(feature = "tsp")]
-enum TspAttempt {
+pub(crate) enum TspAttempt {
     /// The peer answered; the reply document.
     Reply(Value),
     /// No answer within the window — the §7.2.2 silent-drop signature.
@@ -192,6 +192,67 @@ enum TspAttempt {
 #[cfg(feature = "tsp")]
 fn resend_after_reform(type_uri: &str) -> bool {
     vta_sdk::retry_safety::retry_safety(type_uri).is_some_and(|c| c.is_blind_retry_safe())
+}
+
+/// How long a relationship may go without a successful round trip before the
+/// next send re-invites alongside its payload rather than trusting it.
+///
+/// # Why a send re-invites at all
+///
+/// A peer that lost its half (a data wipe, an operator reset, a build that did
+/// not persist relationships) drops our next frame silently — §7.2.2 forbids it
+/// from saying so (design note C2) — and we learn of it only when
+/// [`TSP_REPLY_TIMEOUT_SECS`] expires and D6 recovers. That costs every such
+/// first request a full reply window, which any caller with a budget near it
+/// reports as a failure while the task in fact succeeds. A peer loses state
+/// while quiet far more often than mid-conversation, so a relationship that has
+/// been idle this long is re-asserted up front: our half is reset and the
+/// payload goes out with a fresh invite, which a peer that kept its half simply
+/// re-accepts (D2). Nothing is signalled back, so C2 still holds.
+///
+/// An hour keeps the extra invite rare on a busy pair while covering the gap a
+/// restart or reset leaves.
+#[cfg(feature = "tsp")]
+const TSP_IDLE_REESTABLISH_MS: u64 = 60 * 60 * 1000;
+
+/// Peers an idle-relationship re-invite is currently in flight to — the
+/// single-flight for [`TspSender::send_after_idle_reestablish`]. Shared through
+/// `AppState`, because a [`TspSender`] is built per request.
+#[cfg(feature = "tsp")]
+#[derive(Clone, Default)]
+pub struct IdleReinvites(std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>);
+
+#[cfg(feature = "tsp")]
+impl IdleReinvites {
+    /// Claim `peer`, or `None` if another send already holds it. The claim is
+    /// released when the guard drops, on every path out of the send.
+    fn claim(&self, peer: &str) -> Option<IdleReinviteClaim> {
+        let mut peers = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        peers.insert(peer.to_string()).then(|| IdleReinviteClaim {
+            peers: self.clone(),
+            peer: peer.to_string(),
+        })
+    }
+}
+
+#[cfg(feature = "tsp")]
+struct IdleReinviteClaim {
+    peers: IdleReinvites,
+    peer: String,
+}
+
+#[cfg(feature = "tsp")]
+impl Drop for IdleReinviteClaim {
+    fn drop(&mut self) {
+        self.peers
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.peer);
+    }
 }
 
 /// Wall-clock milliseconds for the recovery coordinator's clock.
@@ -212,6 +273,11 @@ pub struct TspSender {
     /// (an `Arc`) rather than rebuilt per sender so concurrent sends to one peer
     /// coalesce onto a single re-invite.
     recovery: std::sync::Arc<affinidi_messaging_sdk::RecoveryCoordinator>,
+    /// The durable relationship store, for last-active stamps (D5): written on
+    /// every reply, read to decide whether a send should re-invite first.
+    relationships: std::sync::Arc<crate::messaging::tsp_relationship_store::VtaRelationshipStore>,
+    /// Single-flight for idle re-invites, shared through `AppState`.
+    idle_reinvites: IdleReinvites,
     /// How long to wait for a reply before treating a send as a §7.2.2 drop.
     /// A field rather than the bare [`TSP_REPLY_TIMEOUT_SECS`] const only so a
     /// test can shorten it — production always gets the const default.
@@ -229,6 +295,8 @@ impl TspSender {
             transport: state.tsp_transport()?,
             replies: state.pending_replies.clone(),
             recovery: state.tsp_recovery.clone(),
+            relationships: state.tsp_relationships.clone(),
+            idle_reinvites: state.tsp_idle_reinvites.clone(),
             reply_timeout: std::time::Duration::from_secs(TSP_REPLY_TIMEOUT_SECS),
         })
     }
@@ -284,7 +352,7 @@ impl TspSender {
     ) -> TspAttempt {
         // Registered before the frame leaves: a reply that arrived between
         // sending and registering would find nothing waiting.
-        let waiting = self.replies.register(thread);
+        let waiting = self.replies.register(thread, recipient);
         let sent = if reestablish {
             self.transport.send_reestablishing(recipient, framed).await
         } else {
@@ -298,7 +366,10 @@ impl TspSender {
         }
         match tokio::time::timeout(self.reply_timeout, waiting).await {
             Ok(Ok(reply)) => match serde_json::to_value(reply) {
-                Ok(v) => TspAttempt::Reply(v),
+                Ok(v) => {
+                    self.mark_active(recipient).await;
+                    TspAttempt::Reply(v)
+                }
                 Err(e) => TspAttempt::SendFailed(format!("re-serialise the reply: {e}")),
             },
             Ok(Err(_)) => {
@@ -310,6 +381,95 @@ impl TspSender {
                 TspAttempt::Timeout
             }
         }
+    }
+
+    /// Stamp the relationship with `recipient` as active now (D5). Called only
+    /// on a correlated reply — a broken relationship must age out, not refresh
+    /// itself on every failed attempt. A failed write costs only an extra
+    /// re-invite on the next send, so it is logged, not surfaced.
+    async fn mark_active(&self, recipient: &str) {
+        let Some(our) = self.transport.our_vid() else {
+            return;
+        };
+        if let Err(e) = self.relationships.touch(&our, recipient, now_ms()).await {
+            tracing::debug!(peer = recipient, error = %e, "could not stamp TSP relationship activity");
+        }
+    }
+
+    /// Whether the next send to `recipient` should re-invite first: our half is
+    /// established, but no round trip has succeeded within
+    /// [`TSP_IDLE_REESTABLISH_MS`] — or none was ever recorded, which covers every
+    /// relationship formed before this stamp existed. A relationship that is not
+    /// established needs nothing here: the ordinary send already invites.
+    pub(crate) async fn idle_reestablish_due(&self, recipient: &str) -> bool {
+        use affinidi_messaging_sdk::protocols::tsp::RelationshipStore as _;
+        let Some(our) = self.transport.our_vid() else {
+            return false;
+        };
+        match self.relationships.get(&our, recipient).await {
+            Ok(affinidi_messaging_sdk::protocols::tsp::RelationshipState::Bidirectional) => {}
+            _ => return false,
+        }
+        match self.relationships.last_active(&our, recipient).await {
+            Ok(Some(at_ms)) => now_ms().saturating_sub(at_ms) > TSP_IDLE_REESTABLISH_MS,
+            Ok(None) => true,
+            // Unreadable: do what we would have done without the stamp.
+            Err(_) => false,
+        }
+    }
+
+    /// The first attempt at a send: re-inviting alongside it when the
+    /// relationship has been idle past [`TSP_IDLE_REESTABLISH_MS`], the ordinary
+    /// routed send otherwise. A `Timeout` from either goes on to D6.
+    pub(crate) async fn first_attempt(
+        &self,
+        recipient: &str,
+        peer_mediator: Option<&str>,
+        thread: &str,
+        framed: &[u8],
+    ) -> TspAttempt {
+        if self.idle_reestablish_due(recipient).await {
+            self.send_after_idle_reestablish(recipient, peer_mediator, thread, framed)
+                .await
+        } else {
+            self.send_and_await(recipient, peer_mediator, thread, framed, false)
+                .await
+        }
+    }
+
+    /// Send to a peer idle past [`TSP_IDLE_REESTABLISH_MS`]: reset our half and
+    /// send `framed` with a fresh invite. One send per peer does this at a time;
+    /// a concurrent one, or one whose reset fails, goes out the ordinary way —
+    /// and if the peer did lose its half, D6 recovers that one as before.
+    ///
+    /// This is the first send of `framed`, not a resend, so retry safety does not
+    /// apply. It is not a D6 recovery either, and does not touch that
+    /// coordinator or its metrics. Direct rather than nested for a cross-mediator
+    /// peer, as on the D6 resend: the SDK has no nested re-establishing send.
+    async fn send_after_idle_reestablish(
+        &self,
+        recipient: &str,
+        peer_mediator: Option<&str>,
+        thread: &str,
+        framed: &[u8],
+    ) -> TspAttempt {
+        let Some(_claim) = self.idle_reinvites.claim(recipient) else {
+            return self
+                .send_and_await(recipient, peer_mediator, thread, framed, false)
+                .await;
+        };
+        if let Err(e) = self.transport.reset_relationship(recipient).await {
+            tracing::debug!(peer = recipient, error = %e, "could not reset an idle TSP relationship");
+            return self
+                .send_and_await(recipient, peer_mediator, thread, framed, false)
+                .await;
+        }
+        tracing::info!(
+            peer = recipient,
+            "re-inviting an idle TSP relationship alongside the request"
+        );
+        self.send_and_await(recipient, None, thread, framed, true)
+            .await
     }
 
     /// D6 self-repair on a reply-timeout (design note `tsp-relationship-recovery.md`).
@@ -459,15 +619,37 @@ pub struct Outbound<'a> {
     /// the entry in [`OUTBOUND_SUPPORTED`] that would select it.
     #[cfg(feature = "didcomm")]
     bridge: &'a DIDCommBridge,
+    /// The Trust-Task HTTPS base to use when the peer advertises none, set by a
+    /// caller that knows the peer's product serves the binding at a fixed path
+    /// (see [`Outbound::with_https_base`]). It only ever fills an empty slot:
+    /// an advertised `TrustTaskHTTPS` endpoint wins, and TSP and DIDComm still
+    /// come first.
+    https_base: Option<String>,
 }
 
 impl<'a> Outbound<'a> {
+    /// Reach the peer over the Trust-Task HTTPS binding at `base` (the request
+    /// URL is `base + "/trust-tasks"`) when its DID document advertises no
+    /// Trust-Task HTTPS endpoint of its own.
+    ///
+    /// For a peer whose product documents where it serves the binding but whose
+    /// DID document does not say so — the DID hosting service serves
+    /// `POST /api/trust-tasks` at the origin its `WebVHHosting` service names.
+    /// It does not change the preference order: a peer that advertises TSP or
+    /// DIDComm is still reached over it. A caller setting this should also ask
+    /// for [`ReplyTrust::SignedByRecipient`], because TLS authenticates the
+    /// host, not the DID that composed the reply.
+    #[must_use]
+    pub fn with_https_base(mut self, base: Option<String>) -> Self {
+        self.https_base = base;
+        self
+    }
+
     /// A seam assembled from borrowed parts rather than from an `AppState`.
     ///
     /// For a caller whose own dependencies were threaded to it — today that is
-    /// the webvh layer, whose client is constructed deep inside
-    /// `WebvhTransport` and which carries a [`TspSender`] down from its
-    /// `WebvhDeps`. Passing `tsp: None` is a real answer, not a shortcut: a
+    /// the webvh layer, whose `WebvhHostClient` carries a [`TspSender`] down
+    /// from its `WebvhDeps`. Passing `tsp: None` is a real answer, not a shortcut: a
     /// CLI or a setup wizard holds no mediator socket, and the seam correctly
     /// falls to DIDComm there.
     ///
@@ -486,6 +668,7 @@ impl<'a> Outbound<'a> {
             tsp,
             #[cfg(feature = "didcomm")]
             bridge,
+            https_base: None,
         }
     }
 
@@ -509,6 +692,7 @@ impl<'a> Outbound<'a> {
             tsp: TspSender::from_app_state(state),
             #[cfg(feature = "didcomm")]
             bridge: state.didcomm_bridge.as_ref(),
+            https_base: None,
         }
     }
 }
@@ -524,18 +708,42 @@ impl<'a> Outbound<'a> {
 /// `OUTBOUND_SUPPORTED`, so a TSP-advertising peer was *selected* over TSP even
 /// when this sender held no `TspSender`, and the send then failed with an
 /// internal error instead of falling to the next shared transport.
+///
+/// A REST candidate is skipped — logged, not selected — when its endpoint is
+/// not `https://` (or `http://` to an exact loopback host —
+/// [`vta_sdk::protocol::matching::is_https_or_loopback`]): `send_rest` puts a
+/// signed document on the wire with no encryption of its own, so a peer
+/// advertising plain `http://` would otherwise have it delivered in the clear.
+/// TSP and DIDComm are unaffected — their advertised value is a mediator DID,
+/// not a URL this function dials. With REST the only shared protocol and its
+/// endpoint refused this way, selection falls through to the closed error
+/// below exactly as if the peer had advertised no REST at all.
 pub fn pick_transport(
     caps: &ServiceCapabilities,
     initiable: &[Protocol],
     peer: &str,
 ) -> Result<(Protocol, String), AppError> {
+    let mut rest_refused_plaintext = false;
     for protocol in Protocol::PREFERENCE_ORDER {
         if !initiable.contains(&protocol) {
             continue;
         }
-        if let Some(endpoint) = caps.endpoint(protocol) {
-            return Ok((protocol, endpoint.to_string()));
+        let Some(endpoint) = caps.endpoint(protocol) else {
+            continue;
+        };
+        if protocol == Protocol::Rest
+            && !vta_sdk::protocol::matching::is_https_or_loopback(endpoint)
+        {
+            tracing::warn!(
+                peer,
+                endpoint,
+                "ignoring a peer's plaintext http:// REST endpoint; only a loopback host may use \
+                 http://"
+            );
+            rest_refused_plaintext = true;
+            continue;
         }
+        return Ok((protocol, endpoint.to_string()));
     }
 
     let advertised: Vec<&str> = Protocol::PREFERENCE_ORDER
@@ -547,7 +755,7 @@ pub fn pick_transport(
 
     Err(AppError::Validation(format!(
         "no transport in common with `{peer}`: it advertises [{}] and this agent can \
-         initiate [{}]. This is not a peer that cannot be reached — it is one this agent cannot \
+         initiate [{}].{} This is not a peer that cannot be reached — it is one this agent cannot \
          yet start a conversation with, which is a gap in the agent rather than in the peer.",
         if advertised.is_empty() {
             "nothing".to_string()
@@ -555,6 +763,12 @@ pub fn pick_transport(
             advertised.join(", ")
         },
         ours.join(", "),
+        if rest_refused_plaintext {
+            " Its REST endpoint is plaintext http:// to a non-loopback host, so it was not \
+             usable."
+        } else {
+            ""
+        },
     )))
 }
 
@@ -611,7 +825,7 @@ impl Outbound<'_> {
         // every caller pays the whole thing in stack whether or not it is deep
         // already.
         //
-        // `webvh_didcomm` is deep already — it sits under `create_did_webvh`,
+        // `webvh_host` is deep already — it sits under `create_did_webvh`,
         // which is itself several awaits down — and calling this inline
         // overflowed the 2MB stack a `#[tokio::test]` worker gets. It surfaced
         // as `mock_vta` aborting with SIGABRT during a full-workspace run, on a
@@ -639,7 +853,10 @@ impl Outbound<'_> {
         })?;
         let doc_value = serde_json::to_value(&resolved.doc)
             .map_err(|e| AppError::Internal(format!("serialise the peer's DID document: {e}")))?;
-        let caps = ServiceCapabilities::from_did_document(&doc_value);
+        let mut caps = ServiceCapabilities::from_did_document(&doc_value);
+        if caps.rest.is_none() {
+            caps.rest.clone_from(&self.https_base);
+        }
         let (protocol, endpoint) = pick_transport(&caps, &self.initiable_protocols(), recipient)?;
 
         let reply = match protocol {
@@ -753,7 +970,7 @@ impl Outbound<'_> {
         let framed = vta_sdk::tsp_binding::wrap_envelope(&body);
 
         match tsp
-            .send_and_await(recipient, Some(peer_mediator), &thread, &framed, false)
+            .first_attempt(recipient, Some(peer_mediator), &thread, &framed)
             .await
         {
             TspAttempt::Reply(v) => Ok(v),
@@ -842,12 +1059,22 @@ async fn verify_reply(
     let vm_resolver = vti_common::auth::TrustTaskVmResolver::from_optional(Some(resolver.clone()));
     let signer = vti_common::auth::verify_trust_task_proof_with(&doc, &vm_resolver)
         .await
-        .map_err(|e| {
-            AppError::Forbidden(format!(
+        .map_err(|e| match e {
+            // Still a refusal, and deliberately not a 5xx: the SDK retries a
+            // 5xx under the caller's idempotency key, which would re-send a
+            // request the peer may already have applied. The reply is not
+            // believed; only the wording tells the operator why.
+            vti_common::auth::DiProofError::ResolverFailed(_) => AppError::Forbidden(format!(
+                "could not retrieve `{recipient}`'s verification key, so its reply was not \
+                 checked and is not believed ({e}). This is a key-retrieval failure, not a bad \
+                 proof: the request may have taken effect at `{recipient}`, so check its state \
+                 before sending it again"
+            )),
+            other => AppError::Forbidden(format!(
                 "the reply from `{recipient}` is unsigned or its proof does not verify \
-                 ({e}), so nothing in it can be believed — an unsigned answer is bytes, not \
+                 ({other}), so nothing in it can be believed — an unsigned answer is bytes, not \
                  evidence"
-            ))
+            )),
         })?;
 
     if signer != recipient {
@@ -896,6 +1123,95 @@ mod tests {
         .expect("a refusal needs no proof");
     }
 
+    /// A reply signed by a DID method this resolver cannot resolve fails at
+    /// resolution — before any signature is even inspected — and must be
+    /// reported as a retrieval failure, not folded into "does not verify".
+    /// The mutation may already have committed on the peer's side; only the
+    /// verification *fetch* failed (FTL-29595, fix direction 3, server-side
+    /// half: this is the VTA acting as an outbound caller to a peer/room-host).
+    #[tokio::test]
+    async fn a_resolver_failure_reports_retrieval_not_invalid_proof() {
+        let reply = serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000002",
+            "type": "https://trusttasks.org/spec/rooms/epoch/chain/0.1#response",
+            "issuer": "did:example:host",
+            "recipient": "did:example:agent",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": { "links": [] },
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "proofPurpose": "assertionMethod",
+                "verificationMethod": "did:example:host#key-0",
+                "created": "2026-01-01T00:00:00Z",
+                "proofValue": "z2aBcD"
+            }
+        });
+        let err = verify_reply(
+            &test_resolver().await,
+            &reply,
+            "did:example:host",
+            ReplyTrust::SignedByRecipient,
+        )
+        .await
+        .expect_err("did:example is not a method this resolver can resolve");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not retrieve"),
+            "expected a retrieval-failure message, got: {msg}"
+        );
+        assert!(msg.contains("before sending it again"), "got: {msg}");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "a retrieval failure must stay a refusal the SDK does not retry: {err:?}"
+        );
+        assert!(
+            !msg.contains("does not verify"),
+            "a retrieval failure must not read as an invalid proof: {msg}"
+        );
+    }
+
+    /// The control: an actual bad signature, reached through a `did:key`
+    /// verification method the resolver handles locally (so resolution
+    /// itself succeeds), must still say "does not verify".
+    #[tokio::test]
+    async fn an_actual_bad_signature_still_says_does_not_verify() {
+        let (recipient, _vm) = crate::test_support::did_for_seed(13);
+        let mut doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(serde_json::json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000003",
+            "type": "https://trusttasks.org/spec/rooms/epoch/chain/0.1#response",
+            "issuer": recipient,
+            "recipient": "did:key:zAgent",
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "payload": { "links": [] }
+        }))
+        .expect("well-formed reply");
+        crate::test_support::sign_as(13, &mut doc);
+
+        // Corrupt the signature — a one-character flip keeps the multibase
+        // string decodable, so this exercises "does not verify" rather than
+        // "malformed proof".
+        let proof = doc.proof.as_mut().expect("document is signed");
+        let last = proof.proof_value.pop().expect("non-empty proofValue");
+        proof.proof_value.push(if last == '1' { '2' } else { '1' });
+
+        let reply = serde_json::to_value(&doc).expect("doc serialises");
+        let err = verify_reply(
+            &test_resolver().await,
+            &reply,
+            &recipient,
+            ReplyTrust::SignedByRecipient,
+        )
+        .await
+        .expect_err("a corrupted signature must not verify");
+        let msg = err.to_string();
+        assert!(msg.contains("does not verify"), "got: {msg}");
+        assert!(
+            !msg.contains("could not retrieve"),
+            "a bad signature must not read as a retrieval failure: {msg}"
+        );
+    }
+
     /// An unsigned success reply is refused. Bytes off a socket attest to
     /// nothing, and every check downstream of this one is about *shape* — so an
     /// intermediary that rewrote a record listing would pass all of them.
@@ -935,6 +1251,67 @@ mod tests {
             pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").expect("reachable");
         assert_eq!(protocol, Protocol::Rest);
         assert_eq!(endpoint, "https://host.example");
+    }
+
+    /// A peer advertising REST over plain `http://` to a non-loopback host is
+    /// not reachable over REST at all: `send_rest` puts a signed document on
+    /// the wire in the clear, and a peer that only offers that is treated as
+    /// if it advertised nothing, failing closed with a named reason.
+    #[test]
+    fn a_peer_serving_plaintext_http_rest_is_refused() {
+        let caps = caps_from(serde_json::json!([{
+            "id": "#rest", "type": "TrustTaskHTTPS", "serviceEndpoint": "http://host.example"
+        }]));
+        let msg = pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer")
+            .expect_err("plaintext REST must not be selected")
+            .to_string();
+        assert!(
+            msg.contains("plaintext http://"),
+            "the refusal must say why: {msg}"
+        );
+    }
+
+    /// Lookalike hosts — a domain that merely contains a loopback address or
+    /// name — are ordinary DNS names, not loopback, and are refused exactly
+    /// like any other plaintext non-loopback endpoint.
+    #[test]
+    fn a_peer_serving_a_lookalike_loopback_host_over_http_is_refused() {
+        for endpoint in ["http://127.0.0.1.evil.com", "http://localhost.evil"] {
+            let caps = caps_from(serde_json::json!([{
+                "id": "#rest", "type": "TrustTaskHTTPS", "serviceEndpoint": endpoint
+            }]));
+            assert!(
+                pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").is_err(),
+                "{endpoint} must be refused"
+            );
+        }
+    }
+
+    /// Plain `http://` to exact loopback is still selectable, for local
+    /// development.
+    #[test]
+    fn a_peer_serving_http_to_loopback_is_still_reachable() {
+        let caps = caps_from(serde_json::json!([{
+            "id": "#rest", "type": "TrustTaskHTTPS", "serviceEndpoint": "http://127.0.0.1:8100"
+        }]));
+        let (protocol, endpoint) =
+            pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").expect("reachable");
+        assert_eq!(protocol, Protocol::Rest);
+        assert_eq!(endpoint, "http://127.0.0.1:8100");
+    }
+
+    /// A refused plaintext REST entry does not stop a shared higher-preference
+    /// transport from being picked — it only takes REST off the table.
+    #[test]
+    fn a_plaintext_rest_endpoint_does_not_block_a_shared_didcomm_transport() {
+        let caps = caps_from(serde_json::json!([
+            { "id": "#rest", "type": "TrustTaskHTTPS", "serviceEndpoint": "http://host.example" },
+            { "id": "#didcomm", "type": "DIDCommMessaging",
+              "serviceEndpoint": [{ "uri": "did:example:mediator", "accept": ["didcomm/v2"] }] }
+        ]));
+        let (protocol, _) =
+            pick_transport(&caps, OUTBOUND_SUPPORTED, "did:example:peer").expect("reachable");
+        assert_eq!(protocol, Protocol::Didcomm);
     }
 
     /// The case that matters in practice: a room host started with
@@ -1159,6 +1536,30 @@ mod tests {
         assert!(
             !DIDCOMM_MESSAGE_TYPE.starts_with("https://trusttasks.org/spec/"),
             "a `spec/` URI here is a task type on the wire: {DIDCOMM_MESSAGE_TYPE}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "tsp"))]
+mod idle_reinvite_tests {
+    use super::IdleReinvites;
+
+    #[test]
+    fn one_idle_reinvite_per_peer_at_a_time_and_released_on_drop() {
+        let reinvites = IdleReinvites::default();
+        let first = reinvites.claim("did:example:hosting").expect("free peer");
+        assert!(
+            reinvites.claim("did:example:hosting").is_none(),
+            "a second concurrent send to the same peer goes out the ordinary way"
+        );
+        assert!(
+            reinvites.claim("did:example:other").is_some(),
+            "other peers are independent"
+        );
+        drop(first);
+        assert!(
+            reinvites.claim("did:example:hosting").is_some(),
+            "the claim is released when the send finishes, whichever way"
         );
     }
 }

@@ -527,7 +527,7 @@ logged or shown on a lock screen).
 
 | Role | Holds | Does |
 |---|---|---|
-| **Push gateway** | the *app's* platform push credentials (APNs auth key, FCM service account, Web Push VAPID key) + a `handle → token` map | the only party that can deliver a push for this app. Issues an **opaque `WakeHandle`** for a registered token, enforces a VTA-provisioned allowlist, relays the contentless push. Operated by the **app publisher** (the Matrix-Sygnal topology). A separate service: `vti-push-gateway`, reachable over DIDComm (preferred) or HTTPS. |
+| **Push gateway** | the *app's* platform push credentials (APNs auth key, FCM service account, Web Push VAPID key) + a `handle → token` map | the only party that can deliver a push for this app. Issues an **opaque `WakeHandle`** for a registered token, enforces a VTA-provisioned allowlist, relays the contentless push. Operated by the **app publisher** (the Matrix-Sygnal topology). A separate service: `vti-push-gateway`, reachable over TSP (preferred), DIDComm, or HTTPS — transport-agnostic, same preference order as the rest of the stack. |
 | **Trigger** | a `WakeHandle` (opaque handle + gateway address) | decides *when* to wake. Either the device's **mediator** (queue-driven — it alone knows the device is offline with messages waiting) or its **VTA** (policy-driven — e.g. a step-up it's delegating to this device). A device MAY authorize both. |
 | **Device** | its platform push token | registers the token with the gateway, gets a handle, conveys that handle (never the token) to its VTA. |
 

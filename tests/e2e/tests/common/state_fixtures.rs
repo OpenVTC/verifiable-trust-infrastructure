@@ -54,7 +54,6 @@ use vta_service::didcomm_bridge::DIDCommBridge;
 use vta_service::keys::seed_store::PlaintextSeedStore;
 use vta_service::messaging::drain_sweeper::{DrainSweeper, teardown_channel};
 use vta_service::messaging::registry::MediatorListenerRegistry;
-use vta_service::operations::did_webvh::WebvhAuthLocks;
 use vta_service::operations::protocol::ServiceOpDeps;
 use vta_service::operations::protocol::snapshot::{
     self, DidcommSnapshot, RestSnapshot, ServiceConfigSnapshot,
@@ -195,8 +194,7 @@ impl StateFixture {
 
 /// Owns the per-test infrastructure a runtime-service operation needs that
 /// isn't part of the persisted [`StateFixture`] — seed store, DID resolver,
-/// DIDComm bridge, telemetry sink, mediator registry, drain sweeper, and the
-/// webvh auth locks. The protocol ops were consolidated onto a single borrowed
+/// DIDComm bridge, telemetry sink, mediator registry and drain sweeper. The protocol ops were consolidated onto a single borrowed
 /// [`ServiceOpDeps`] bundle ([`mod@vta_service::operations::protocol`]), so a
 /// caller builds this once and hands out [`OpInfra::deps`] per invocation.
 ///
@@ -211,7 +209,6 @@ pub struct OpInfra {
     telemetry: SharedTelemetrySink,
     registry: Arc<MediatorListenerRegistry>,
     sweeper: Arc<DrainSweeper>,
-    locks: WebvhAuthLocks,
 }
 
 impl OpInfra {
@@ -237,7 +234,6 @@ impl OpInfra {
             telemetry,
             registry,
             sweeper,
-            locks: WebvhAuthLocks::new(),
         }
     }
 
@@ -259,7 +255,6 @@ impl OpInfra {
             did_resolver: &self.resolver,
             didcomm_bridge: &self.bridge,
             telemetry: &self.telemetry,
-            webvh_auth_locks: &self.locks,
             registry: &self.registry,
             sweeper: &self.sweeper,
         }

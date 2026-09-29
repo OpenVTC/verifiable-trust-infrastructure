@@ -4,14 +4,18 @@ import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { ChevronsLeft, ChevronsRight, Menu, RefreshCw, X } from "lucide-react";
 
 import { getPlugins, subscribePlugins, type PluginManifest } from "@/plugin-api";
+import { BreakGlassBanner } from "@/components/BreakGlassBanner";
 import { PluginHost } from "@/components/PluginHost";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { probeSession, signOut, WhoamiResponse } from "@/lib/api";
+import { isSuperAdmin } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { useToast } from "@/lib/toast";
 import { Install } from "@/pages/Install";
+import { EnrolStepUpPage } from "@/pages/EnrolStepUp";
 import { Login } from "@/pages/Login";
+import { StepUpPage } from "@/pages/StepUp";
 
 /**
  * Hook that subscribes to plugin-registry changes and returns the
@@ -159,21 +163,33 @@ export default function App() {
     return <Install />;
   }
 
+  // Redeeming a step-up passkey invite needs no session: the invitee may be
+  // a member who is no console user at all.
+  if (pathname.startsWith("/enrol-step-up")) {
+    return <EnrolStepUpPage />;
+  }
   if (probe.isPending) {
     return <SignInLoading />;
   }
   if (!probe.data) {
+    // Nor does answering a bound step-up with a step-up passkey.
+    if (pathname.startsWith("/step-up")) {
+      return (
+        <main className="content">
+          <StepUpPage />
+        </main>
+      );
+    }
     return <Login />;
   }
 
   // A "super admin" is Admin role with no context restrictions.
   // Scope-filtered plugins surface server errors as 403s anyway, but
   // hiding them from the nav keeps the UX coherent.
-  const isSuperAdmin =
-    probe.data.roles.includes("admin") && probe.data.scopes.length === 0;
+  const superAdmin = isSuperAdmin(probe.data);
   const plugins = allPlugins.filter((p) => {
     if (!p.scopes || p.scopes.length === 0) return true;
-    if (p.scopes.includes("super-admin")) return isSuperAdmin;
+    if (p.scopes.includes("super-admin")) return superAdmin;
     return true;
   });
 
@@ -236,6 +252,9 @@ export default function App() {
         <ReloadPluginsButton />
       </aside>
       <main className="content">
+        {/* Not dismissible: it clears when every self-granted elevated right
+            has been ratified or revoked (git-ns/right/break-glass). */}
+        <BreakGlassBanner />
         <Routes>
           {plugins.map((p) => (
             <Route
@@ -248,6 +267,8 @@ export default function App() {
           {plugins[0] && (
             <Route path="/" element={<PluginHost plugin={plugins[0]} />} />
           )}
+          {/* A passkey step-up handed over from `cnm` (lib/bound-step-up.ts). */}
+          <Route path="/step-up" element={<StepUpPage />} />
           {/* Fallback for unknown URLs under /admin/ */}
           <Route path="*" element={<NotFound />} />
         </Routes>

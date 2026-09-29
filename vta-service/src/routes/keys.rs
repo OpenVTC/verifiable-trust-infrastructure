@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use vta_sdk::protocols::key_management::sign::SigningDomain;
 
 use vta_sdk::protocols::key_management::{
@@ -26,7 +26,7 @@ use crate::keys::KeyType;
 use crate::operations;
 use crate::server::AppState;
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct CreateKeyRequest {
     pub key_type: KeyType,
     /// Mint a non-extractable internal key. Absent or `false` is today's
@@ -41,7 +41,23 @@ pub struct CreateKeyRequest {
     pub context_id: Option<String>,
 }
 
-/// POST /keys — create a new key record. Auth: Admin or Initiator. Context-scoped.
+/// Written by hand so the mnemonic never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for CreateKeyRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateKeyRequest")
+            .field("key_type", &self.key_type)
+            .field("internal", &self.internal)
+            .field("derivation_path", &self.derivation_path)
+            .field("key_id", &self.key_id)
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
+            .field("label", &self.label)
+            .field("context_id", &self.context_id)
+            .finish()
+    }
+}
+
+/// POST /keys — create a new key record. Auth: the `key-mint` capability,
+/// checked in the operation (Keyring VTI-23). Context-scoped.
 #[utoipa::path(
     post, path = "/keys", tag = "keys",
     security(("bearer_jwt" = [])),
@@ -49,11 +65,11 @@ pub struct CreateKeyRequest {
     responses(
         (status = 201, description = "Key created", body = CreateKeyResponseBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin/initiator"),
+        (status = 403, description = "Caller does not carry the key-mint capability"),
     ),
 )]
 pub async fn create_key(
-    auth: AdminAuth,
+    auth: AuthClaims,
     State(state): State<AppState>,
     Json(req): Json<CreateKeyRequest>,
 ) -> Result<(StatusCode, Json<CreateKeyResponseBody>), AppError> {
@@ -63,7 +79,8 @@ pub async fn create_key(
         &state.contexts_ks,
         &state.seed_store,
         &state.audit_sink,
-        &auth.0,
+        &state.acl_ks,
+        &auth,
         operations::keys::CreateKeyParams {
             internal: req.internal.unwrap_or(false),
             key_type: req.key_type,
@@ -82,7 +99,12 @@ pub async fn create_key(
     ))
 }
 
-/// GET /keys/{key_id}/secret — retrieve private key material. Auth: Admin or Initiator.
+/// GET /keys/{key_id}/secret — **refused**: a private key is never released over
+/// REST. The operation checks the `key-export` capability (VTI-VTA-003) and then
+/// refuses the hop-by-hop channel, so an entitled caller is told to use
+/// `keys/export-secret/0.1` over DIDComm or TSP, or the on-host CLI, and an
+/// unentitled one is told it lacks the capability. Kept as a route so a legacy
+/// client gets that explanation rather than a bare 404.
 #[utoipa::path(
     get, path = "/keys/{key_id}/secret", tag = "keys",
     security(("bearer_jwt" = [])),
@@ -90,7 +112,7 @@ pub async fn create_key(
     responses(
         (status = 200, description = "Private key material", body = GetKeySecretResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin/initiator"),
+        (status = 403, description = "Always: a private key is not released over REST (use DIDComm or TSP), or the caller is not an admin / lacks key-export"),
         (status = 404, description = "Key not found"),
     ),
 )]
@@ -99,14 +121,19 @@ pub async fn get_key_secret(
     State(state): State<AppState>,
     Path(key_id): Path<String>,
 ) -> Result<Json<GetKeySecretResultBody>, AppError> {
+    // No policy gate: the operation refuses every REST export, and running the
+    // gate first would raise a step-up or consent request for an export that
+    // can never complete.
     let result = operations::keys::get_key_secret(
         &state.keys_ks,
         &state.imported_ks,
+        &state.contexts_ks,
+        &state.acl_ks,
         &state.seed_store,
         &state.audit_sink,
         &auth.0,
         &key_id,
-        "rest",
+        operations::keys::ExportChannel::HopByHop("rest"),
     )
     .await?;
     Ok(Json(result))
@@ -238,30 +265,44 @@ pub async fn list_keys(
 
 // ── Seed endpoints ────────────────────────────────────────────────
 
-/// GET /keys/seeds — list all seed records. Auth: Admin or Initiator.
+/// GET /keys/seeds — list seed generations (metadata only). Auth: super-admin.
+///
+/// The gate is in the operation, which audits a refusal; see
+/// `operations::key_custody::require_instance_authority`.
 #[utoipa::path(
     get, path = "/keys/seeds", tag = "keys",
     security(("bearer_jwt" = [])),
     responses(
         (status = 200, description = "Seed records", body = ListSeedsResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin/initiator"),
+        (status = 403, description = "Caller is not a super-admin"),
     ),
 )]
 pub async fn list_seeds(
-    _auth: AdminAuth,
+    auth: AuthClaims,
     State(state): State<AppState>,
 ) -> Result<Json<ListSeedsResultBody>, AppError> {
-    let result = operations::seeds::list_seeds(&state.keys_ks, "rest").await?;
+    let result =
+        operations::seeds::list_seeds(&state.keys_ks, &auth, &state.audit_sink, "rest").await?;
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Deserialize, utoipa::ToSchema)]
 pub struct RotateSeedRequest {
     pub mnemonic: Option<String>,
 }
 
-/// POST /keys/seeds/rotate — rotate the active seed, optionally supplying a mnemonic. Auth: Admin or Initiator.
+/// Written by hand so the mnemonic never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for RotateSeedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RotateSeedRequest")
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// POST /keys/seeds/rotate — rotate the instance-wide seed, optionally supplying
+/// a mnemonic. Auth: super-admin, gated and audited in the operation.
 #[utoipa::path(
     post, path = "/keys/seeds/rotate", tag = "keys",
     security(("bearer_jwt" = [])),
@@ -269,11 +310,11 @@ pub struct RotateSeedRequest {
     responses(
         (status = 200, description = "Seed rotated", body = RotateSeedResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin/initiator"),
+        (status = 403, description = "Caller is not a super-admin"),
     ),
 )]
 pub async fn rotate_seed(
-    _auth: AdminAuth,
+    auth: AuthClaims,
     State(state): State<AppState>,
     Json(req): Json<RotateSeedRequest>,
 ) -> Result<Json<RotateSeedResultBody>, AppError> {
@@ -282,7 +323,7 @@ pub async fn rotate_seed(
         &state.imported_ks,
         &state.seed_store,
         &state.audit_sink,
-        &_auth.0.did,
+        &auth,
         req.mnemonic.as_deref(),
         "rest",
     )
@@ -317,6 +358,19 @@ pub async fn sign_with_key(
     Json(req): Json<SignRequest>,
 ) -> Result<Json<SignResultBody>, AppError> {
     auth.require_write()?;
+    // The policy gate `keys/sign/0.1` meets on the Trust-Task spine, over the
+    // same payload shape — see `get_key_secret` above.
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth,
+        vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1,
+        &serde_json::json!({
+            "keyId": key_id,
+            "payload": req.payload,
+            "algorithm": req.algorithm,
+        }),
+    )
+    .await?;
     use base64::Engine;
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&req.payload)
@@ -344,7 +398,8 @@ pub async fn sign_with_key(
 
 /// POST /keys/derive-and-sign — ephemerally derive a key at a BIP-32 path, sign a
 /// base64url payload, and return `{ public_key, signature }` without persisting a
-/// key record. Auth: admin.
+/// key record. Auth: super-admin, path inside `m/26'/9'` (enforced and audited in the
+/// operation; see `vta_keys::custody`).
 #[utoipa::path(
     post, path = "/keys/derive-and-sign", tag = "keys",
     security(("bearer_jwt" = [])),
@@ -352,7 +407,7 @@ pub async fn sign_with_key(
     responses(
         (status = 200, description = "Derived public key + signature", body = DeriveAndSignResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not a super-admin, or the path is outside m/26'/9'"),
     ),
 )]
 pub async fn derive_and_sign_key(
@@ -360,7 +415,13 @@ pub async fn derive_and_sign_key(
     State(state): State<AppState>,
     Json(req): Json<DeriveAndSignBody>,
 ) -> Result<Json<DeriveAndSignResultBody>, AppError> {
-    auth.require_admin()?;
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth,
+        vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1,
+        &serde_json::to_value(&req)?,
+    )
+    .await?;
     use base64::Engine;
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&req.payload)
@@ -368,8 +429,10 @@ pub async fn derive_and_sign_key(
 
     let result = operations::keys::derive_and_sign(
         &state.keys_ks,
+        &state.acl_ks,
         &state.seed_store,
         &auth,
+        &state.audit_sink,
         &req.key_type,
         &req.derivation_path,
         &payload,
@@ -382,7 +445,8 @@ pub async fn derive_and_sign_key(
 
 /// POST /keys/derive-and-sign-document — derive a key at a BIP-32 path and
 /// attach an `eddsa-jcs-2022` Data-Integrity proof to the document, signed as
-/// the derived key, without persisting a key record. Auth: admin.
+/// the derived key, without persisting a key record. Auth: super-admin, path
+/// inside `m/26'/9'` (enforced and audited in the operation).
 #[utoipa::path(
     post, path = "/keys/derive-and-sign-document", tag = "keys",
     security(("bearer_jwt" = [])),
@@ -390,7 +454,7 @@ pub async fn derive_and_sign_key(
     responses(
         (status = 200, description = "Signer DID + DI-signed document", body = DeriveAndSignDocumentResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
+        (status = 403, description = "Caller is not a super-admin, or the path is outside m/26'/9'"),
     ),
 )]
 pub async fn derive_and_sign_document_key(
@@ -398,11 +462,19 @@ pub async fn derive_and_sign_document_key(
     State(state): State<AppState>,
     Json(req): Json<DeriveAndSignDocumentBody>,
 ) -> Result<Json<DeriveAndSignDocumentResultBody>, AppError> {
-    auth.require_admin()?;
+    crate::trust_tasks::rest_gate(
+        &state,
+        &auth,
+        vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
+        &serde_json::to_value(&req)?,
+    )
+    .await?;
     let result = operations::keys::derive_and_sign_document(
         &state.keys_ks,
+        &state.acl_ks,
         &state.seed_store,
         &auth,
+        &state.audit_sink,
         &req.key_type,
         &req.derivation_path,
         req.document,
@@ -415,36 +487,10 @@ pub async fn derive_and_sign_document_key(
 
 // ── Import key endpoints ─────────────────────────────────────────
 
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct WrappingKeyResponse {
-    pub kid: String,
-    pub kty: String,
-    pub crv: String,
-    pub x: String,
-}
-
-/// GET /keys/import/wrapping-key — get an ephemeral X25519 public key for REST key wrapping.
-#[utoipa::path(
-    get, path = "/keys/import/wrapping-key", tag = "keys",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Ephemeral wrapping public key", body = WrappingKeyResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn get_wrapping_key(
-    _auth: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<WrappingKeyResponse>, AppError> {
-    let (kid, x) = state.wrapping_cache.generate().await;
-    Ok(Json(WrappingKeyResponse {
-        kid,
-        kty: "OKP".into(),
-        crv: "X25519".into(),
-        x,
-    }))
-}
+// The wrapping key is `keys/import-wrapping-key/0.1`, a Trust Task over every
+// transport; `GET /keys/import/wrapping-key` is gone. The key comes back as an
+// Ed25519 `did:key` in the VTA's signed response — seal to its X25519
+// counterpart.
 
 /// REST `POST /keys/import` request body.
 ///
@@ -463,9 +509,9 @@ pub async fn get_wrapping_key(
 ///
 /// Use one of:
 /// - `private_key_sealed` — armored sealed-transfer bundle
-///   ([`SealedPayloadV1::RawPrivateKey`]). Preferred. Fetch the
-///   ephemeral wrapping pubkey from `GET /keys/import/wrapping-key`,
-///   then seal locally and POST.
+///   ([`SealedPayloadV1::RawPrivateKey`]). Preferred. Fetch an
+///   ephemeral wrapping key with the `keys/import-wrapping-key/0.1` Trust
+///   Task, verify its proof, then seal to its X25519 counterpart and POST.
 /// - `private_key_jwe` — legacy ECDH-ES + A256GCM compact JWE,
 ///   wrapped against the same ephemeral key. Retained for in-flight
 ///   callers; new code should pick `private_key_sealed`.
@@ -477,7 +523,7 @@ pub async fn get_wrapping_key(
 ///
 /// [`SealedPayloadV1::RawPrivateKey`]:
 ///     vta_sdk::sealed_transfer::SealedPayloadV1::RawPrivateKey
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 #[derive(utoipa::ToSchema)]
 pub struct ImportKeyRestRequest {
@@ -488,6 +534,25 @@ pub struct ImportKeyRestRequest {
     pub private_key_jwe: Option<String>,
     pub label: Option<String>,
     pub context_id: Option<String>,
+}
+
+/// Written by hand so the wrapped private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for ImportKeyRestRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportKeyRestRequest")
+            .field("key_type", &self.key_type)
+            .field(
+                "private_key_sealed",
+                &self.private_key_sealed.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "private_key_jwe",
+                &self.private_key_jwe.as_ref().map(|_| "<redacted>"),
+            )
+            .field("label", &self.label)
+            .field("context_id", &self.context_id)
+            .finish()
+    }
 }
 
 /// POST /keys/import — import an externally-created private key. Auth: Admin only.
@@ -528,8 +593,8 @@ pub async fn import_key(
         return Err(AppError::Validation(
             "one of private_key_sealed or private_key_jwe is required; raw \
              private_key_multibase over REST is not accepted (TLS-only \
-             confidentiality is insufficient — use the GET /keys/import/wrapping-key \
-             ECDH flow)"
+             confidentiality is insufficient — seal the key to a wrapping key from \
+             the keys/import-wrapping-key/0.1 Trust Task)"
                 .into(),
         ));
     };

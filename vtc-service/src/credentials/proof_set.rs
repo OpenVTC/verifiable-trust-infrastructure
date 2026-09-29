@@ -23,12 +23,19 @@
 //!
 //! # Acceptance rule
 //!
-//! `RequireAny`: at least one proof must verify. During the transition that is
-//! the only rule that works — a verifier is expected not to understand every
-//! suite on the document, and demanding all of them would make a post-quantum
-//! proof a liability to the classical verifier that cannot check it. Once the
-//! fleet holds PQC keys this tightens to `RequireAll`, which is a policy change
-//! rather than a code one.
+//! `RequireAll`: at least one proof, and **every** proof present must verify.
+//! A proof that is present but does not verify — a bad signature, a key the
+//! issuer did not authorise for the proof's purpose (VTI-KEY-022), a proof
+//! declaring the wrong purpose — is a refusal, not an absence: otherwise
+//! anyone could append a proof to a credential and have its failure ignored.
+//!
+//! One kind of proof is set aside rather than refused: a proof whose
+//! `cryptosuite` this build does not implement. A verifier cannot check it,
+//! so it neither counts toward the "at least one" nor refuses the set — that
+//! is what lets a hybrid credential carry a suite a classical verifier has
+//! never heard of. A verifier that needs a particular suite says so with
+//! [`require_suites`], and a set whose required suite is absent is refused.
+//! A malformed proof, or a known suite whose proof fails, is never skipped.
 //!
 //! # The rule that is not about cryptography
 //!
@@ -41,12 +48,17 @@
 
 use serde_json::Value as JsonValue;
 
-use affinidi_data_integrity::DataIntegrityProof;
+use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions, crypto_suites::CryptoSuite};
+use vti_common::auth::{ProofPurpose, PurposeBound, PurposeVmResolver};
 
-/// The proofs on `value`, whether it carries one or several.
+/// The proofs on `value` that this build can verify, whether it carries one
+/// or several.
 ///
 /// A bare object is one proof — the shape everything in this workspace emits
-/// today, and the reason this is not simply `Vec::deserialize`.
+/// today, and the reason this is not simply `Vec::deserialize`. A proof whose
+/// `cryptosuite` this build does not implement is left out (see the module
+/// docs); if that leaves nothing, the document is refused, because a verifier
+/// that can check none of its proofs has no basis to accept it.
 pub(crate) fn proof_set(proof_value: &JsonValue) -> Result<Vec<DataIntegrityProof>, String> {
     let raw: Vec<&JsonValue> = match proof_value {
         JsonValue::Array(items) => items.iter().collect(),
@@ -60,16 +72,55 @@ pub(crate) fn proof_set(proof_value: &JsonValue) -> Result<Vec<DataIntegrityProo
         );
     }
 
-    raw.iter()
-        .enumerate()
-        .map(|(i, v)| {
+    let mut proofs = Vec::with_capacity(raw.len());
+    for (i, v) in raw.iter().enumerate() {
+        if unsupported_suite(v) {
+            continue;
+        }
+        proofs.push(
             serde_json::from_value::<DataIntegrityProof>((*v).clone()).map_err(|e| {
                 // The index matters: with several proofs, "did not parse" alone
                 // leaves a caller unable to tell which one is malformed.
                 format!("proof {i} did not parse as a Data Integrity proof: {e}")
-            })
-        })
-        .collect()
+            })?,
+        );
+    }
+    if proofs.is_empty() {
+        return Err(
+            "no proof uses a cryptosuite this verifier implements, so none can be checked"
+                .to_string(),
+        );
+    }
+    Ok(proofs)
+}
+
+/// A Data Integrity proof naming, as a string, a `cryptosuite` this build
+/// does not implement. Anything else — including a proof with no suite, or a
+/// suite that is not a string — is left for the parser to refuse.
+fn unsupported_suite(v: &JsonValue) -> bool {
+    v.get("type").and_then(JsonValue::as_str) == Some("DataIntegrityProof")
+        && v.get("cryptosuite")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|suite| CryptoSuite::try_from(suite).is_err())
+}
+
+/// Local policy: refuse `proofs` unless each of `required` suites is among
+/// them. Apply it to the output of [`proof_set`] after [`accept_all`], which
+/// has already required every one of them to verify.
+#[allow(dead_code)] // no verifier requires a suite yet; the hook is the policy's
+pub(crate) fn require_suites(
+    proofs: &[DataIntegrityProof],
+    required: &[CryptoSuite],
+) -> Result<(), String> {
+    match required
+        .iter()
+        .find(|suite| !proofs.iter().any(|p| p.cryptosuite == **suite))
+    {
+        None => Ok(()),
+        Some(missing) => Err(format!(
+            "this verifier requires a {missing} proof, and the document carries none"
+        )),
+    }
 }
 
 /// The issuer DID a proof's `verificationMethod` names, before the fragment.
@@ -81,36 +132,70 @@ pub(crate) fn proof_signer_did(proof: &DataIntegrityProof) -> &str {
         .unwrap_or_default()
 }
 
-/// Apply the acceptance rule to the outcome of verifying each proof.
+/// Verify one proof over `doc` for `expected` — the purpose the document is
+/// relied on for (VTI-KEY-022): `assertionMethod` for a credential, which is an
+/// attestation, and `authentication` for a presentation or a holder binding,
+/// which proves control of an identifier.
 ///
-/// `outcomes` pairs each proof's signer DID with whether it verified.
-pub(crate) fn accept_any(outcomes: &[(String, Result<(), String>)]) -> Result<String, String> {
-    let verified: Vec<&String> = outcomes
-        .iter()
-        .filter(|(_, r)| r.is_ok())
-        .map(|(did, _)| did)
-        .collect();
-
-    let Some(first) = verified.first() else {
-        // Report every failure, not just the first. With a hybrid credential the
-        // interesting information is usually *which* suite failed — a classical
-        // proof that verifies beside a post-quantum one that does not says
-        // something quite different from the reverse.
-        let reasons: Vec<String> = outcomes
-            .iter()
-            .enumerate()
-            .filter_map(|(i, (did, r))| r.as_ref().err().map(|e| format!("proof {i} ({did}): {e}")))
-            .collect();
-        return Err(format!("no proof verified — {}", reasons.join("; ")));
-    };
-
-    if let Some(other) = verified.iter().find(|d| **d != *first) {
+/// The proof must declare that purpose, and its key is resolved for it, so a
+/// key its DID document lists only for another purpose — or only for key
+/// agreement — cannot make the proof.
+pub(crate) async fn verify_one<S>(
+    proof: &DataIntegrityProof,
+    doc: &S,
+    resolver: &(dyn PurposeVmResolver + '_),
+    expected: ProofPurpose,
+) -> Result<(), String>
+where
+    S: serde::Serialize + Sync,
+{
+    let bound = PurposeBound::for_proof(resolver, proof).map_err(|e| e.to_string())?;
+    if bound.purpose() != expected {
         return Err(format!(
-            "proofs verify for two different issuers ({first} and {other}); a document signed \
-             by more than one party cannot be reported as verified for one of them"
+            "proofPurpose is {}, but this document is relied on for {expected}",
+            bound.purpose()
         ));
     }
-    Ok((*first).clone())
+    proof
+        .verify(doc, &bound, VerifyOptions::new())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Apply the acceptance rule to the outcome of verifying each proof.
+///
+/// `outcomes` pairs each proof's signer DID with whether it verified. Every
+/// proof must have verified, there must be at least one, and they must all
+/// name one signer, which is returned.
+pub(crate) fn accept_all(outcomes: &[(String, Result<(), String>)]) -> Result<String, String> {
+    let Some((first, _)) = outcomes.first() else {
+        return Err("no proof to verify; a document with no proof is unsigned".to_string());
+    };
+
+    // Report every failure, not just the first: with a hybrid credential the
+    // interesting information is usually *which* suite failed.
+    let reasons: Vec<String> = outcomes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_, r))| r.as_ref().err().map(|e| format!("proof {i}: {e}")))
+        .collect();
+    if !reasons.is_empty() {
+        return Err(format!(
+            "{} of {} proofs did not verify, and every proof present must — {}",
+            reasons.len(),
+            outcomes.len(),
+            reasons.join("; ")
+        ));
+    }
+
+    if outcomes.iter().any(|(did, _)| did != first) {
+        return Err(
+            "proofs verify for two different issuers; a document signed by more than one \
+             party cannot be reported as verified for one of them"
+                .to_string(),
+        );
+    }
+    Ok(first.clone())
 }
 
 #[cfg(test)]
@@ -161,6 +246,47 @@ mod tests {
         assert!(err.contains("proof 1"), "unexpected: {err}");
     }
 
+    /// A proof in a suite this build does not implement is set aside, not
+    /// refused: the rest of the set is still checked.
+    #[test]
+    fn an_unsupported_suite_is_skipped() {
+        let mut pq = a_proof("did:example:alice#key-pq");
+        pq["cryptosuite"] = json!("example-future-2030");
+        let set = proof_set(&json!([a_proof("did:example:alice#key-0"), pq])).expect("parses");
+        assert_eq!(set.len(), 1);
+        assert_eq!(set[0].verification_method, "did:example:alice#key-0");
+    }
+
+    /// A set of which this verifier can check nothing is refused.
+    #[test]
+    fn only_unsupported_suites_is_refused() {
+        let mut pq = a_proof("did:example:alice#key-pq");
+        pq["cryptosuite"] = json!("example-future-2030");
+        let err = proof_set(&pq).expect_err("nothing to check");
+        assert!(err.contains("no proof uses a cryptosuite"), "{err}");
+    }
+
+    /// A proof with no suite is malformed, not unsupported.
+    #[test]
+    fn a_proof_with_no_suite_is_not_skipped() {
+        let mut p = a_proof("did:example:alice#key-0");
+        p.as_object_mut().unwrap().remove("cryptosuite");
+        assert!(proof_set(&json!([a_proof("did:example:alice#key-0"), p])).is_err());
+    }
+
+    /// Policy may require a suite; its absence refuses the set.
+    #[test]
+    fn a_required_suite_must_be_present() {
+        let set = proof_set(&a_proof("did:example:alice#key-0")).expect("parses");
+        require_suites(&set, &[CryptoSuite::EddsaJcs2022]).expect("present");
+        let err = require_suites(
+            &set,
+            &[CryptoSuite::EddsaJcs2022, CryptoSuite::EcdsaJcs2019],
+        )
+        .expect_err("ecdsa absent");
+        assert!(err.contains("ecdsa-jcs-2019"), "{err}");
+    }
+
     /// An empty array is distinguished from an unsigned document.
     #[test]
     fn an_empty_array_says_what_it_is() {
@@ -168,18 +294,36 @@ mod tests {
         assert!(err.contains("unsigned"), "unexpected: {err}");
     }
 
-    /// One good proof beside one bad one is accepted — that is the whole point
-    /// during the transition, when a verifier is expected not to understand
-    /// every suite on the document.
+    /// **A present-but-invalid proof is a refusal.** One good proof beside one
+    /// that does not verify is not a verified document: otherwise anyone can
+    /// append a proof to a credential and have its failure ignored.
     #[test]
-    fn one_verifying_proof_is_enough() {
+    fn one_failing_proof_refuses_the_set() {
         let did = "did:example:alice".to_string();
-        let out = accept_any(&[
-            (did.clone(), Err("unsupported suite".into())),
+        let err = accept_all(&[
+            (
+                did.clone(),
+                Err("key not listed under assertionMethod".into()),
+            ),
             (did.clone(), Ok(())),
         ])
-        .expect("one proof verified");
+        .expect_err("a failing proof refuses the set");
+        assert!(err.contains("1 of 2 proofs"), "unexpected: {err}");
+        assert!(err.contains("assertionMethod"), "unexpected: {err}");
+    }
+
+    /// Every proof verifying is accepted, and names the one signer.
+    #[test]
+    fn every_proof_verifying_is_accepted() {
+        let did = "did:example:alice".to_string();
+        let out = accept_all(&[(did.clone(), Ok(())), (did.clone(), Ok(()))]).expect("all verify");
         assert_eq!(out, did);
+    }
+
+    /// At least one proof is required.
+    #[test]
+    fn an_empty_outcome_set_is_refused() {
+        assert!(accept_all(&[]).is_err());
     }
 
     /// When nothing verifies, every reason is reported.
@@ -188,7 +332,7 @@ mod tests {
     /// failed, and a first-error-only message hides exactly that.
     #[test]
     fn no_verifying_proof_reports_every_reason() {
-        let err = accept_any(&[
+        let err = accept_all(&[
             ("did:example:alice".into(), Err("bad signature".into())),
             ("did:example:alice".into(), Err("unsupported suite".into())),
         ])
@@ -206,11 +350,127 @@ mod tests {
     /// reader trusts more.
     #[test]
     fn proofs_from_two_issuers_are_refused_even_when_both_verify() {
-        let err = accept_any(&[
+        let err = accept_all(&[
             ("did:example:alice".into(), Ok(())),
             ("did:example:mallory".into(), Ok(())),
         ])
         .expect_err("two issuers cannot be reported as one");
         assert!(err.contains("two different issuers"), "unexpected: {err}");
+        assert!(
+            !err.contains("mallory"),
+            "no identifiers in the refusal: {err}"
+        );
+    }
+
+    // ─── Real proofs through the real resolver ──────────────────────────
+
+    use crate::credentials::vm_resolver::DidVmResolver;
+    use affinidi_data_integrity::SignOptions;
+    use affinidi_secrets_resolver::secrets::Secret;
+    use vti_common::auth::ProofPurpose;
+
+    /// A did:key signer for `seed`, and the document every test signs.
+    fn did_key_signer(seed: u8) -> (String, Secret) {
+        let probe = Secret::generate_ed25519(None, Some(&[seed; 32]));
+        let mb = probe.get_public_keymultibase().expect("multikey");
+        let vm = format!("did:key:{mb}#{mb}");
+        (
+            vm.clone(),
+            Secret::generate_ed25519(Some(&vm), Some(&[seed; 32])),
+        )
+    }
+
+    async fn signed_proof(secret: &Secret, purpose: &str, doc: &JsonValue) -> DataIntegrityProof {
+        DataIntegrityProof::sign(doc, secret, SignOptions::new().with_proof_purpose(purpose))
+            .await
+            .expect("sign")
+    }
+
+    fn doc() -> JsonValue {
+        json!({ "type": ["VerifiableCredential"], "credentialSubject": { "id": "did:example:s" } })
+    }
+
+    /// did:key's one key is authorised for both purposes, as did:key defines.
+    #[tokio::test]
+    async fn a_did_key_proof_verifies_for_both_purposes() {
+        let (_, secret) = did_key_signer(0x31);
+        let resolver = DidVmResolver::new(None);
+        for (purpose, expected) in [
+            ("assertionMethod", ProofPurpose::AssertionMethod),
+            ("authentication", ProofPurpose::Authentication),
+        ] {
+            let proof = signed_proof(&secret, purpose, &doc()).await;
+            verify_one(&proof, &doc(), &resolver, expected)
+                .await
+                .unwrap_or_else(|e| panic!("{purpose}: {e}"));
+        }
+    }
+
+    /// A genuine signature for the wrong purpose is refused: a credential is
+    /// relied on as an attestation, and an `authentication` proof is not one.
+    #[tokio::test]
+    async fn a_proof_for_another_purpose_is_refused() {
+        let (_, secret) = did_key_signer(0x32);
+        let proof = signed_proof(&secret, "authentication", &doc()).await;
+        let err = verify_one(
+            &proof,
+            &doc(),
+            &DidVmResolver::new(None),
+            ProofPurpose::AssertionMethod,
+        )
+        .await
+        .expect_err("wrong purpose");
+        assert!(err.contains("relied on for assertionMethod"), "{err}");
+
+        let proof = signed_proof(&secret, "keyAgreement", &doc()).await;
+        assert!(
+            verify_one(
+                &proof,
+                &doc(),
+                &DidVmResolver::new(None),
+                ProofPurpose::AssertionMethod
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    /// A did:key names exactly one method; any other fragment is not its key.
+    #[tokio::test]
+    async fn a_did_key_with_a_foreign_fragment_is_refused() {
+        let (vm, _) = did_key_signer(0x33);
+        let did = vm.split('#').next().unwrap();
+        let err = DidVmResolver::new(None)
+            .resolve_ed25519(&format!("{did}#key-0"), ProofPurpose::AssertionMethod)
+            .await
+            .expect_err("#key-0 is not a did:key method");
+        assert!(err.to_string().contains("fragment must repeat"), "{err}");
+    }
+
+    /// **The proof-set rule end to end.** A valid proof beside a tampered one
+    /// from the same signer is refused.
+    #[tokio::test]
+    async fn a_proof_set_with_one_invalid_proof_is_refused() {
+        let (vm, secret) = did_key_signer(0x34);
+        let good = signed_proof(&secret, "assertionMethod", &doc()).await;
+        let mut bad = good.clone();
+        bad.proof_value = Some(
+            signed_proof(&secret, "assertionMethod", &json!({"other": 1}))
+                .await
+                .proof_value
+                .expect("proofValue"),
+        );
+        let resolver = DidVmResolver::new(None);
+        let did = vm.split('#').next().unwrap().to_string();
+        let mut outcomes = Vec::new();
+        for p in [&good, &bad] {
+            outcomes.push((
+                did.clone(),
+                verify_one(p, &doc(), &resolver, ProofPurpose::AssertionMethod).await,
+            ));
+        }
+        assert!(outcomes[0].1.is_ok(), "{:?}", outcomes[0].1);
+        let err = accept_all(&outcomes).expect_err("one invalid proof refuses the set");
+        assert!(err.contains("1 of 2 proofs"), "{err}");
     }
 }

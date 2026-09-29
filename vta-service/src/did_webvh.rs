@@ -173,11 +173,6 @@ pub async fn run_create_did_webvh(
         is_vta_identity: false,
     };
 
-    // Offline CLI: no shared AppState, so create a local per-server
-    // auth-lock registry. This path is serverless (`server_id: None`),
-    // so it won't authenticate to a hosting server, but the deps bundle
-    // requires the field.
-    let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
     let deps = operations::did_webvh::CreateDidWebvhDeps {
         keys_ks: &keys_ks,
         imported_ks: &imported_ks,
@@ -189,10 +184,8 @@ pub async fn run_create_did_webvh(
         config: &config,
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
-        auth_locks: &auth_locks,
         acl_ks: None,
         // Offline: no mediator socket to lend, so the seam cannot choose
-        // TSP. Same reason as the `auth_locks` note above.
         #[cfg(feature = "tsp")]
         tsp: None,
     };
@@ -276,15 +269,20 @@ pub async fn run_create_did_webvh(
         false
     };
     if want_export {
-        // Fetch key secrets via the operations layer
+        // Fetch key secrets via the operations layer — the same export gate
+        // as every transport. The CLI's synthesized super-admin has no ACL
+        // entry, so its role (admin) supplies `key-export`.
+        let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
         let signing_secret = crate::operations::keys::get_key_secret(
             &keys_ks,
             &imported_ks,
+            &contexts_ks,
+            &acl_ks,
             &Arc::from(seed_store),
             &audit,
             &auth,
             &result.signing_key_id,
-            "cli",
+            crate::operations::keys::ExportChannel::Local("cli"),
         )
         .await
         .map_err(|e| format!("failed to fetch signing key secret: {e}"))?;
@@ -299,11 +297,13 @@ pub async fn run_create_did_webvh(
             let ka_secret = crate::operations::keys::get_key_secret(
                 &keys_ks,
                 &imported_ks,
+                &contexts_ks,
+                &acl_ks,
                 &Arc::from(create_seed_store(&config)?),
                 &audit,
                 &auth,
                 &result.ka_key_id,
-                "cli",
+                crate::operations::keys::ExportChannel::Local("cli"),
             )
             .await
             .map_err(|e| format!("failed to fetch KA key secret: {e}"))?;
@@ -771,6 +771,7 @@ mod tests {
         let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
         let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
         let audit: vta_audit::SharedAuditSink = vta_audit::shared_keyspace_sink(audit_ks.clone());
         let seed_store = Arc::from(create_seed_store(&config).unwrap());
         let auth = cli_super_admin();
@@ -782,14 +783,17 @@ mod tests {
             .expect("DID id");
         let key_id = format!("{did}#key-0");
 
+        let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
         let secret = crate::operations::keys::get_key_secret(
             &keys_ks,
             &imported_ks,
+            &contexts_ks,
+            &acl_ks,
             &seed_store,
             &audit,
             &auth,
             &key_id,
-            "test",
+            crate::operations::keys::ExportChannel::Local("test"),
         )
         .await
         .expect("fetch key secret");
@@ -899,7 +903,6 @@ mod tests {
             .unwrap();
         let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
             Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
-        let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
         let deps = operations::did_webvh::CreateDidWebvhDeps {
             keys_ks: &keys_ks,
             imported_ks: &imported_ks,
@@ -911,10 +914,8 @@ mod tests {
             config: &config,
             did_resolver: &did_resolver,
             didcomm_bridge: &no_bridge,
-            auth_locks: &auth_locks,
             acl_ks: None,
             // Offline: no mediator socket to lend, so the seam cannot choose
-            // TSP. Same reason as the `auth_locks` note above.
             #[cfg(feature = "tsp")]
             tsp: None,
         };
@@ -954,11 +955,13 @@ mod tests {
         let secret = crate::operations::keys::get_key_secret(
             &keys_ks,
             &imported_ks,
+            &contexts_ks,
+            &store.keyspace(crate::keyspaces::ACL).unwrap(),
             &Arc::from(create_seed_store(&config).unwrap()),
             &audit,
             &cli_super_admin(),
             &format!("{}#key-0", result.did),
-            "test",
+            crate::operations::keys::ExportChannel::Local("test"),
         )
         .await
         .expect("fetch key secret");
@@ -1014,7 +1017,6 @@ mod tests {
             .unwrap();
         let no_bridge: Arc<crate::didcomm_bridge::DIDCommBridge> =
             Arc::new(crate::didcomm_bridge::DIDCommBridge::placeholder());
-        let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
         let deps = operations::did_webvh::CreateDidWebvhDeps {
             keys_ks: &keys_ks,
             imported_ks: &imported_ks,
@@ -1026,7 +1028,6 @@ mod tests {
             config,
             did_resolver: &did_resolver,
             didcomm_bridge: &no_bridge,
-            auth_locks: &auth_locks,
             acl_ks: None,
             #[cfg(feature = "tsp")]
             tsp: None,

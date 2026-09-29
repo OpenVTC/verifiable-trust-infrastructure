@@ -19,7 +19,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -41,21 +41,15 @@ use vti_common::store::KeyspaceHandle;
 
 use crate::{BackupTarget, RestoreCommitter};
 
-/// Default bundle TTL — 5 minutes per the design doc. Operators
-/// can override via the (future) `VTA_BACKUP_BUNDLE_TTL_SECS` env
-/// var; cap at 1 hour to prevent operator footguns.
-pub const DEFAULT_BUNDLE_TTL_SECS: u64 = 300;
-
-/// Hard ceiling on bundle TTL. 1 hour. A descriptor sitting around
-/// for hours invites token-replay attacks once the operator has
-/// closed their session.
-pub const MAX_BUNDLE_TTL_SECS: u64 = 3600;
-
-/// Per-DID cap on simultaneously-open (non-terminal) bundles.
-/// Prevents one operator from tying up disk by spamming
-/// `initiate-*` without ever finalizing. v1: 3. Future:
-/// config-driven.
-pub const MAX_OPEN_BUNDLES_PER_DID: usize = 3;
+// The TTL and cap rules are the node-neutral transfer's, shared with the VTC.
+pub use vti_common::backup_transfer::{
+    DEFAULT_BUNDLE_TTL_SECS, MAX_BUNDLE_TTL_SECS, MAX_OPEN_BUNDLES_PER_DID,
+};
+pub(crate) use vti_common::backup_transfer::{
+    bundle_ttl, enforce_kind, enforce_open_bundle_cap, parse_bundle_id, require_owned, sha256_hex,
+};
+#[cfg(unix)]
+pub(crate) use vti_common::backup_transfer::{set_dir_mode_700, set_file_mode_600};
 
 /// Borrowed deps for the descriptor ops. Avoids dragging the full
 /// `AppState` into the op layer (it's a server-runtime type)
@@ -456,38 +450,15 @@ pub async fn abort_bundle(
     auth.require_super_admin()?;
     let bundle_id = parse_bundle_id(&body.bundle_id)?;
 
-    let mut record = require_owned(deps.bundles_ks, &bundle_id, &auth.did).await?;
-
-    if record.state.is_terminal() {
-        info!(bundle_id = %bundle_id, state = ?record.state, "abort: bundle already terminal");
+    let aborted =
+        vti_common::backup_transfer::abort(deps.bundles_ks, &auth.did, &bundle_id).await?;
+    if !aborted {
+        info!(bundle_id = %bundle_id, "abort: bundle already terminal");
         return Ok(AbortBundleResultBody {
             bundle_id: bundle_id.to_string(),
             aborted: false,
         });
     }
-
-    // Best-effort delete of any staged bytes (export-side: bytes
-    // are on disk; import-side: only if upload already happened).
-    if let Some(path) = record.blob_path.clone()
-        && let Err(e) = tokio::fs::remove_file(&path).await
-    {
-        // NotFound is fine — already gone. Anything else: log
-        // but proceed; the sweeper will retry.
-        if e.kind() != std::io::ErrorKind::NotFound {
-            warn!(
-                bundle_id = %bundle_id,
-                path = %path.display(),
-                error = %e,
-                "abort: failed to delete staged bytes; sweeper will retry"
-            );
-        }
-    }
-
-    record.state = BundleState::Aborted;
-    record.blob_path = None;
-    backup_bundle_store::store_bundle(deps.bundles_ks, &record).await?;
-    // A chunked bundle's manifest and progress end with it. Absent for stream.
-    super::chunked::delete_plan(deps.bundles_ks, &bundle_id).await?;
 
     info!(bundle_id = %bundle_id, "abort: bundle cancelled");
     Ok(AbortBundleResultBody {
@@ -498,73 +469,10 @@ pub async fn abort_bundle(
 
 // ─── Internal helpers ────────────────────────────────────────────────
 
-pub(crate) fn bundle_ttl() -> Duration {
-    Duration::seconds(DEFAULT_BUNDLE_TTL_SECS as i64)
-}
-
 fn validate_algorithm(algorithm: &str) -> Result<(), AppError> {
     if algorithm != "stream" {
         return Err(AppError::Validation(format!(
             "unsupported transport algorithm: `{algorithm}`; this VTA supports: stream"
-        )));
-    }
-    Ok(())
-}
-
-pub(crate) async fn enforce_open_bundle_cap(
-    ks: &KeyspaceHandle,
-    did: &str,
-) -> Result<(), AppError> {
-    let all = backup_bundle_store::list_bundles(ks).await?;
-    let open = all
-        .iter()
-        .filter(|r| r.created_by == did && !r.state.is_terminal())
-        .count();
-    if open >= MAX_OPEN_BUNDLES_PER_DID {
-        return Err(AppError::Conflict(format!(
-            "operator `{did}` has {open} open backup bundles; \
-             abort or wait for expiry before initiating another \
-             (cap: {MAX_OPEN_BUNDLES_PER_DID})"
-        )));
-    }
-    Ok(())
-}
-
-pub(crate) fn parse_bundle_id(s: &str) -> Result<Uuid, AppError> {
-    Uuid::parse_str(s).map_err(|e| AppError::Validation(format!("invalid bundle_id `{s}`: {e}")))
-}
-
-/// Look up a bundle and verify the caller owns it. Returns `NotFound`
-/// for both "no such record" and "exists but wrong DID" so the API
-/// doesn't leak the existence of a peer super-admin's bundle.
-pub(crate) async fn require_owned(
-    ks: &KeyspaceHandle,
-    id: &Uuid,
-    caller_did: &str,
-) -> Result<BundleRecord, AppError> {
-    let record = backup_bundle_store::get_bundle(ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("bundle not found: {id}")))?;
-    if record.created_by != caller_did {
-        // Don't leak the bundle's existence.
-        warn!(
-            bundle_id = %id,
-            caller = %caller_did,
-            owner = %record.created_by,
-            "bundle owned by a different super-admin; treating as not-found"
-        );
-        return Err(AppError::NotFound(format!("bundle not found: {id}")));
-    }
-    Ok(record)
-}
-
-pub(crate) fn enforce_kind(record: &BundleRecord, expected: BundleKind) -> Result<(), AppError> {
-    if record.kind != expected {
-        // Treat as not-found — don't leak the existence of a bundle
-        // of the other kind with the same id.
-        return Err(AppError::NotFound(format!(
-            "bundle not found: {}",
-            record.bundle_id
         )));
     }
     Ok(())
@@ -629,36 +537,6 @@ fn transport_unavailable_internal() -> AppError {
 fn build_blob_url(public_url: &str, bundle_id: &Uuid) -> String {
     let base = public_url.trim_end_matches('/');
     format!("{base}/backup/blob/{bundle_id}")
-}
-
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let out = hasher.finalize();
-    let mut s = String::with_capacity(out.len() * 2);
-    for b in out {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-#[cfg(unix)]
-pub(crate) async fn set_dir_mode_700(path: &Path) -> Result<(), AppError> {
-    use std::os::unix::fs::PermissionsExt;
-    let perms = std::fs::Permissions::from_mode(0o700);
-    tokio::fs::set_permissions(path, perms)
-        .await
-        .map_err(AppError::Io)
-}
-
-#[cfg(unix)]
-pub(crate) async fn set_file_mode_600(path: &Path) -> Result<(), AppError> {
-    use std::os::unix::fs::PermissionsExt;
-    let perms = std::fs::Permissions::from_mode(0o600);
-    tokio::fs::set_permissions(path, perms)
-        .await
-        .map_err(AppError::Io)
 }
 
 #[cfg(test)]

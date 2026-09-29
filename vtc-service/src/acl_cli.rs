@@ -9,7 +9,7 @@
 //! (the store lives behind the vsock proxy there).
 //!
 //! For online ACL management against a running VTC, use the admin UI
-//! (ACL plugin) or the REST `/v1/acl` surface.
+//! (ACL plugin), `cnm`, or the signed `acl/*` Trust Tasks.
 
 use crate::store::keyspaces;
 use vta_sdk::display_name::{NameBook, NameSource, shorten_did};
@@ -142,6 +142,17 @@ pub async fn run_acl_add(args: AclAddArgs) -> CliResult {
         expires_at: args.expires.map(|ttl| now.saturating_add(ttl)),
     };
     store_acl_entry(&acl_ks, &entry).await?;
+    // The break-glass bypasses the consent and attrition rules; the daemon
+    // audits that it did on its next boot (VTI-APV-014).
+    crate::install::record_offline_acl_write(
+        &store,
+        "vtc acl add",
+        "grant",
+        &entry.did,
+        Some(&entry.role),
+        &entry.allowed_contexts,
+    )
+    .await?;
     store.persist().await?;
 
     println!(
@@ -168,6 +179,8 @@ pub async fn run_acl_remove(config_path: Option<PathBuf>, did: String) -> CliRes
         return Ok(());
     }
     delete_acl_entry(&acl_ks, &did).await?;
+    crate::install::record_offline_acl_write(&store, "vtc acl remove", "remove", &did, None, &[])
+        .await?;
     store.persist().await?;
     println!("Removed ACL entry for {did}.");
     Ok(())

@@ -2,6 +2,215 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.6.1...vta-backup-v0.7.0) — 2026-09-27
+
+
+### Added
+
+- **webvh**: Reach the DID hosting service with Trust Tasks only ([#1789](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1789))
+
+* feat(webvh)!: reach the DID hosting service with Trust Tasks only
+
+  Stage 2b of the webvh-service Trust Tasks plan (trust-tasks #661). The
+  VTA's REST client to the hosting service and WebvhTransport::Rest are
+  removed; one client, vta-service/src/webvh_host.rs, makes every call as a
+  Trust Task typed with the generated did-management bindings, over the
+  transport the seam picks (TSP > DIDComm > HTTPS POST {base}/trust-tasks).
+
+  - The HTTPS base defaults to {WebVHHosting origin}/api, where the hosting
+    service serves its binding; https:// only, or http:// to loopback.
+  - Every reply must carry the host's proof (SignedByRecipient), thread to
+    the request, be addressed to this VTA and have the asked-for type.
+    Refusals are read from trust-task-error documents by spec code;
+    did/problem-report is no longer read.
+  - servers/domains reads me/domains; reconcile and retire-orphan read the
+    paged did/list {records, total} and now work over Trust Tasks. A listing
+    that disagrees with its total is refused.
+  - The DID-auth handshake, the server-auth token cache, WebvhAuthLocks and
+    the WebVHHostingService alias are gone. vta-webvh is the store only.
+
+  The test hosting service is now a Trust-Task host that refuses unsigned
+  requests and signs its answers; a forged answer is refused.
+
+- **sdk**: Remove the last legacy backup and webvh surfaces; realign-keys is a Trust Task ([#1783](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1783))
+
+* feat!: remove the last legacy backup and webvh surfaces; realign-keys is a Trust Task
+
+  Every remote API is a spine-dispatched Trust Task over TSP, DIDComm and
+  HTTPS. What was left off the spine on these two surfaces was deprecated,
+  and most of it could no longer succeed anywhere. Test deployments carry no
+  compat, so it is deleted rather than refused.
+
+  Backup
+  - SDK `backup_export`, `backup_import`, `backup_import_with` (deprecated
+    since 0.21.3 / 0.49.0), the `backup-management/1.0` message constants, and
+    `ExportRequest` / `ImportRequest`.
+  - `pnm backup {export,import} --use-rest-legacy`. It could not work on any
+    transport: the VTA answered 403 over REST (VTI-VTA-003), and the SDK's
+    `rpc` refuses DIDComm and TSP. Its doc said "works only over DIDComm".
+  - The VTA's `POST /backup/{export,import}` and the VTC's
+    `POST /v1/backup/{export,import}`, which only ever answered 403. A backup
+    is the `vta/backup/*` (VTA) or `vtc/backup/export` + `backup/*` (VTC) Trust
+    Tasks, over an end-to-end transport only; that policy is unchanged.
+
+  webvh
+  - SDK `update_did_webvh` / `rotate_did_webvh_keys` (the `(context, scid)`
+    forms, deprecated since 0.20.32) and their message constants. The by-DID
+    `update_did_webvh_by_did` / `rotate_did_webvh_keys_by_did` are the only
+    forms.
+  - The VTA's `POST /contexts/{ctx}/dids/{scid}/{update,rotate-keys}` and
+    `POST /webvh/dids/{did}/realign-keys`.
+  - `realign_did_webvh_keys` was REST-only "deliberately". The reason was out of
+    date: the VTA already dispatched `webvh/dids/realign-keys/1.0`. The SDK now
+    sends the task, so `pnm did-mgmt dids realign-keys` works over TSP and
+    DIDComm too.
+
+  Tests
+  - The REST behaviour tests for update and rotate (metadata-only update,
+    document update, rotate, unknown DID, invalid document) are ported to
+    `/trust-tasks`. The removed routes are held gone.
+  - The webvh REST-parity consent test is dropped. The Trust Task consent path
+    it compared against is covered by the rest of `delegated_consent_e2e`.
+  - `mock_vta` drives the by-DID update.
+
+
+
+## [0.6.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.6.0...vta-backup-v0.6.1) — 2026-09-26
+
+
+## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.5.3...vta-backup-v0.6.0) — 2026-09-26
+
+
+### Changed
+
+- **vti-common**: Move the node-neutral backup transfer core out of vta-backup ([#1641](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1641)) ([#1721](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1721))
+
+The community node needs the backup transfer the agent already has. A VTC
+  backup, like any real node's, is too large for one Trust Task document, and the
+  node-neutral `backup/*` family (trustoverip/dtgwg-trust-tasks-tf#633, released
+  in trust-tasks-rs 0.22.7) is how it moves: a bundle, a manifest committed before
+  any byte moves, chunks pulled and pushed by index, a finalize that checks the
+  assembled bytes before trusting them.
+
+  `vta-backup` implements all of that for `vta/backup/*`, but the VTC cannot
+  depend on it — it pulls `vta-config`, `vta-keys`, `vta-support` and `vta-webvh`.
+  Only a thin layer of it is the agent's: serializing the agent's state into an
+  envelope, and applying one. The rest never asked what a bundle contains.
+
+  So that rest moves to `vti_common::backup_transfer`, which both nodes already
+  depend on for storage and auth:
+
+  - `bundle_store` — the `BundleRecord` state machine, token minting and the
+    constant-time token check (was `vta_backup::backup_bundle_store`);
+  - `sweeper` — TTL expiry and retention (was `vta_backup::backup_bundle_sweeper`);
+  - `chunked` — staging, the chunk plan, `get_chunk`, `initiate_import`,
+    `put_chunk`, `finalize_precheck` and the per-DID rate limiter (was
+    `vta_backup::ops::chunked`), plus `check_initiate` and a node-neutral chunked
+    `complete_export`;
+  - the ownership, kind, TTL and open-bundle-cap rules, and `abort`, from
+    `vta_backup::ops::descriptors`.
+
+  Files moved with `git mv`, so their history follows them. `vta-backup`
+  re-exports every moved module under its old path, keeps `initiate_export`
+  (which serializes the agent's state and hands the bytes to `stage_export`), and
+  routes `abort_bundle` through the shared `abort`. No behaviour changes, and no
+  public path in `vta-backup` disappears.
+
+  `vti-common` gains `subtle`, and now declares the tokio `fs` and `io-util`
+  features the moved code uses. `vta-backup` had used `tokio::fs` without
+  declaring `fs`, building only by feature unification.
+
+  The 32 moved tests run in `vti-common`, and `vta-backup`'s own suite (54) is
+  unchanged. The VTC's `backup/*` handlers follow in the next change.
+
+
+
+### Fixed
+
+- **vta-service**: Apply the key-export and sign capability checks on every transport ([#1733](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1733))
+
+* fix(vta-service): apply the key-export and sign capability checks on every transport
+
+  The KeyExport capability was checked only by the keys/export-secret
+  Trust-Task handler, so GET /keys/{id}/secret and DIDComm get-key-secret
+  released private keys to an admin whose entry was narrowed without
+  key-export. Capability::Sign was checked nowhere.
+
+  Both checks now live in the operation layer (VTI-VTA-003, VTI-VTA-007):
+
+  - get_key_secret requires key-export before any lookup, refuses a
+    hop-by-hop channel (keys/export-secret/0.1 requires a channel
+    confidential to the two parties), keeps the internal-key and
+    non-exportable refusals, and writes the key.secret_export audit row
+    durably before releasing the material, refusing if it cannot.
+  - The Trust-Task binding (https, didcomm, tsp) is recorded at the three
+    entry points and named in the export's audit channel.
+  - vta/contexts/secrets and provision-integration use the same gate.
+  - sign_payload requires sign for opaque caller bytes; derive-and-sign
+    and derive-and-sign-document require sign.
+  - The legacy REST and DIDComm key routes now consult the policy gate
+    with the matching Trust-Task URI.
+  - The TEE mnemonic export writes a durable audit row before release.
+
+
+
+### Security
+
+- **resolver**: One bounded DID-document cache per node, re-resolved once before a verification fails (VTI-KEY-134) ([#1737](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1737))
+
+* security(resolver)!: one bounded DID-document cache per node, re-resolved once before a verification fails (VTI-KEY-134)
+
+  The VTC ran two DID-document caches: the app resolver built in
+  `init_auth`, and a second one the messaging TDK built for itself
+  because it was given none. Both used the SDK defaults of a 300 s TTL and
+  100 entries. Every DIDComm and TSP message on the mediator socket was
+  checked against a cache the REST and Trust Task paths could not see or
+  evict. Neither cache was ever refreshed when a verification failed, so
+  a peer that rotated was refused as a forger until its entry aged out.
+
+  Bounded TTL (key-roles, dtgwg-vti-spec #42: VTI-KEY-060/062/122/123/134):
+
+  - A new `[did_cache]` section (`vti_common::config::DidCacheConfig`)
+    holds `ttl_secs` (default 60, refused outside 1..=300) and `capacity`
+    (default 1000). The VTA and the VTC read the same type.
+  - The TTL is what bounds how long a key revoked for compromise keeps
+    verifying: VTI-KEY-123 allows no overlap, and nothing else notices a
+    removal. A new key does not wait on the TTL, because of the refresh
+    below. 60 s caps the revocation window at a minute, for one resolution
+    per active DID per minute. 300 s, the SDK default and the old
+    behaviour, is the ceiling.
+  - `vta_sdk::resolver::build_verifier_did_cache_config` builds it, with
+    the webvh host policy the VTA already used. The VTC now uses that
+    policy too, so the private-host opt-in reaches it as well.
+
+  One cache:
+
+  - The VTC messaging TDK is handed the app resolver.
+  - The VTA already shared its resolver. Its fallback when there is no
+    app resolver now gets the same bounds, not the SDK defaults.
+
+  Re-resolve once, then fail closed (`vta_sdk::did_refresh`):
+
+  - `resolve_for_vm`: when a cached document does not list the method a
+    proof names, re-resolve it fresh once. This covers every Trust Task
+    proof on both nodes (`TrustTaskVmResolver`) and the VTC credential/VP
+    resolver (`DidVmResolver`).
+  - `verify_trust_task_proof_with`: when verification fails and the
+    signer's document came from the cache, evict it and verify once more.
+    This covers a key id kept with its material replaced.
+  - `unpack_refreshing_sender`: when an authcrypt unpack fails, evict the
+    sender named in the protected header (`skid`) and retry once. It is
+    used on the REST DIDComm auth and refresh paths of both nodes.
+  - Each forced refresh is rate-limited per DID (5 s, with at most 4096
+    DIDs tracked). A failing proof is something anyone can send, and
+    without the limit each one would make this node fetch a third party's
+    document.
+
+
+
+## [0.5.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.5.2...vta-backup-v0.5.3) — 2026-09-24
+
+
 ## [0.5.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.5.1...vta-backup-v0.5.2) — 2026-09-23
 
 

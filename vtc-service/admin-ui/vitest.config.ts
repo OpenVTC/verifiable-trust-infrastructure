@@ -4,8 +4,9 @@ import viteConfig from "./vite.config.ts";
 
 // Component and unit tests for the console. They run in jsdom against the
 // same `@/` alias and React plugin the build uses, so a test imports a plugin
-// exactly as `src/plugins/index.ts` does. `npm test` runs them once; the Rust
-// build does not, so run it before pushing a console change.
+// exactly as `src/plugins/index.ts` does. `npm test` runs them once. The Rust
+// build does not run them; CI's `Test (VTC admin UI)` job does, alongside
+// `npm run wire:check` and `tsc -b --noEmit`.
 export default mergeConfig(
   viteConfig,
   defineConfig({

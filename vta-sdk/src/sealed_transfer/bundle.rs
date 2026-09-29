@@ -8,7 +8,7 @@ use crate::did_secrets::DidSecretsBundle;
 
 /// A labeled key entry, used by the `AdminKeySet` payload variant for
 /// multi-admin / future expansion.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(deny_unknown_fields)]
 pub struct LabeledKey {
@@ -18,6 +18,17 @@ pub struct LabeledKey {
     /// Optional key type tag for downstream interpretation (e.g. "ed25519").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_type: Option<String>,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for LabeledKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LabeledKey")
+            .field("label", &self.label)
+            .field("key_b64", &"<redacted>")
+            .field("key_type", &self.key_type)
+            .finish()
+    }
 }
 
 /// Tagged, extensible payload sealed inside a [`SealedBundle`].
@@ -89,6 +100,47 @@ pub enum SealedPayloadV1 {
     /// variant — no existing variant changes (issue #512). See
     /// [`MessagingBridgeCredentialsBundle`].
     MessagingBridgeCredentials(Box<MessagingBridgeCredentialsBundle>),
+    /// A TEE VTA's BIP-39 seed mnemonic, released once during the first-boot
+    /// export window (`vta/attestation/mnemonic-export/1.0`, over DIDComm or
+    /// TSP, or signed at first boot over HTTPS — never plain REST) for an
+    /// offline paper backup.
+    ///
+    /// Sealed rather than returned as JSON: the mnemonic is the VTA's root
+    /// derivation material (VTI-VTA-001, VTI-KEY-033), and a plaintext response
+    /// exists in the clear wherever TLS terminates. Sealed to the operator's
+    /// ephemeral `did:key` under an `Attested` producer assertion, it is
+    /// readable only by that key and provably came from the enclave. Additive
+    /// variant — no existing variant changes.
+    SeedMnemonic(Box<SeedMnemonicBundle>),
+}
+
+/// The payload of [`SealedPayloadV1::SeedMnemonic`].
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeedMnemonicBundle {
+    /// The BIP-39 mnemonic phrase.
+    pub mnemonic: String,
+    /// The VTA whose seed this is, when it has a DID yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vta_did: Option<String>,
+}
+
+/// The words are the VTA's root derivation material: wiped from memory when
+/// the bundle goes, on every path — opened, sealed, or dropped on an error.
+impl Drop for SeedMnemonicBundle {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.mnemonic);
+    }
+}
+
+/// Written by hand so the mnemonic never reaches a log.
+impl std::fmt::Debug for SeedMnemonicBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeedMnemonicBundle")
+            .field("mnemonic", &"<redacted>")
+            .field("vta_did", &self.vta_did)
+            .finish()
+    }
 }
 
 /// Platform credentials for a single `vti-message-bridge` connector. Mirrors
@@ -138,7 +190,7 @@ pub struct IssuedCredentialBundle {
 /// `key_type` tag travels with the bytes so the server can reject a mismatch
 /// between the outer request's declared key type and what was actually
 /// sealed — a defence against a compromised client mis-declaring its key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(deny_unknown_fields)]
 pub struct RawPrivateKey {
@@ -146,6 +198,16 @@ pub struct RawPrivateKey {
     pub key_type: String,
     /// Raw private key bytes, base64url-no-pad.
     pub key_bytes_b64: String,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for RawPrivateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RawPrivateKey")
+            .field("key_type", &self.key_type)
+            .field("key_bytes_b64", &"<redacted>")
+            .finish()
+    }
 }
 
 /// A digital signature over the producer's pubkey + the bundle digest, by a

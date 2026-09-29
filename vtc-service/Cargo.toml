@@ -37,9 +37,10 @@ vetting-pcs = ["dep:vti-vetting-pcs", "dep:predicate-credential-system"]
 # This is Phase A of docs/05-design-notes/tsp-enablement.md §12 — "advertise
 # TSP + DIDComm; prefer TSP when both peers speak it" — and NOT the Phase B
 # flip. It enables `handle_tsp`, which answers an inbound TSP frame over TSP
-# because the caller is waiting on the TSP correlation. VTC-*initiated* sends
-# to a member (`AppState::send_to_member`) stay DIDComm until Phase B (§14 Q4);
-# nothing here touches that path.
+# because the caller is waiting on the TSP correlation. VTC-*initiated* Trust
+# Task pushes (`member_push`) follow TSP > DIDComm > REST by what the recipient
+# advertises (§14 Q4); the credential-exchange messages on
+# `AppState::send_to_member` stay DIDComm, having no TSP binding.
 #
 # The two legs: `vta-sdk/tsp` for the SDK capability, and `affinidi-tdk/tsp`
 # for `atm.tsp()` — the receive side reads TSP frames off the shared mediator
@@ -62,7 +63,7 @@ tsp = [
 # the crate's own integration tests via a `[dev-dependencies]` self-dep,
 # and by downstream multi-service harnesses (`vti-harness`). Kept out of
 # production builds — it pulls in `tempfile` and exposes seeding helpers.
-test-support = ["dep:tempfile"]
+test-support = ["dep:tempfile", "vti-common/test-support"]
 # In-process DIDComm join-requests harness for `MockVtc` (#436). Spins up an
 # embedded `affinidi-messaging-test-mediator`, stands up a VTC DIDComm responder
 # bound to the REAL `submit`/`manifest`/`status` handlers, and exercises the
@@ -130,7 +131,7 @@ vti-vetting-pcs = { path = "../vti-vetting-pcs", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
 vti-rooms = { path = "../vti-rooms", version = "0.2" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
-vti-common = { path = "../vti-common", version = "0.24", features = [
+vti-common = { path = "../vti-common", version = "0.29", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -148,7 +149,7 @@ vti-common = { path = "../vti-common", version = "0.24", features = [
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.4" }
-vta-sdk = { path = "../vta-sdk", version = "0.51", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.56", features = [
   "didcomm",
   "session",
   "config-session",
@@ -225,7 +226,7 @@ subtle = { workspace = true }
 # message handler in `messaging.rs` (M1.8.2). The service crate
 # accepts `Message` / `UnpackMetadata` by value but doesn't
 # re-export them.
-affinidi-messaging-didcomm = "0.15"
+affinidi-messaging-didcomm = "0.15.9"
 # Embedded in-process test mediator for the `didcomm-harness` feature
 # (`MockVtc::start_didcomm`, #436). Optional + feature-gated so it never
 # enters a production build; same crate the e2e suite uses.
@@ -236,7 +237,7 @@ affinidi-messaging-didcomm = "0.15"
 # mediator-side twin of the client-side failure this crate's TSP work is about.
 # Always on (not conditioned on this crate's `tsp`): the harness is test-only,
 # and a mediator that can route TSP is harmless to the DIDComm suite.
-affinidi-messaging-test-mediator = { version = "0.10", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.13", optional = true, features = [
     "tsp",
 ] }
 tokio-util = { workspace = true, features = ["rt"] }
@@ -254,6 +255,9 @@ toml = { workspace = true }
 serde_ignored = { workspace = true }
 tower-http = { workspace = true, features = ["cors", "trace", "timeout"] }
 tower_governor = "0.8"
+# The HTTPS Trust Task door's own limiters (`routing::trust_task_admission`),
+# sharing the per-address one with `tower_governor`'s layer.
+governor = "0.10"
 ipnetwork = { workspace = true }
 mime_guess = { version = "2", optional = true }
 unicode-normalization = { version = "0.1", optional = true }
@@ -294,7 +298,7 @@ regorus = { workspace = true }
 url = { workspace = true, optional = true }
 # BIP-39 mnemonic parsing for `vtc admin emergency-bootstrap` (M0.10).
 # Same pin as `vta-service`.
-bip39 = "2"
+bip39 = "3"
 # Argon2id for hashing admin-invite claim secrets (the out-of-band
 # code the invitee types alongside the install URL). Same pin as
 # `vta-service`'s backup-password KDF.
@@ -323,6 +327,10 @@ affinidi-crypto = { workspace = true }
 # backed stores. Also a `[dev-dependencies]` entry for the crate's own
 # `cargo test` (no feature flag) — both must stay in sync.
 tempfile = { version = "3", optional = true }
+# Renders the community DID as an SVG QR code for the landing page
+# (`GET /v1/community/did-qr.svg`). SVG only — the default `image`
+# feature would pull the whole `image` crate in for nothing.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
 trust-tasks-rs = { workspace = true }
@@ -338,7 +346,9 @@ vtc-service = { path = ".", features = ["test-support", "didcomm-harness"] }
 # failure: the client was silently broken on every route because nothing ever
 # ran the pair together. Dev-only, and `vtc-client` does not depend on
 # `vtc-service`, so there is no cycle.
-vtc-client = { path = "../vtc-client" }
+# `didcomm`: `tests/backup_didcomm.rs` drives the backup over a live session;
+# `tsp`: `tests/git_ns_vtc_client.rs` drives the git-ns calls over TSP too.
+vtc-client = { path = "../vtc-client", features = ["tsp"] }
 tempfile = "3"
 # Integration tests under `tests/` exercise the route stack via
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.

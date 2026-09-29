@@ -195,6 +195,13 @@ pub(crate) enum Commands {
         command: ApprovalsCommands,
     },
 
+    /// Answer a consent request as an approver: verify it, compare its code,
+    /// and sign the decision
+    Consent {
+        #[command(subcommand)]
+        command: ConsentCommands,
+    },
+
     /// Hand-authored Rego policy modules (power-user surface; for approval
     /// requirements use `pnm approvals`)
     Policy {
@@ -233,7 +240,7 @@ pub(crate) enum Commands {
     /// Your attributes and your faces sit ABOVE every trust context. Reaching
     /// them needs a credential granted `persona-holder`, and no role carries it
     /// — administering every context is not permission to read what sits above
-    /// them. Grant it with `pnm acl update --did <did> --capabilities
+    /// them. Grant it with `pnm acl update <did> --capabilities
     /// persona-holder`. Wearing, contacts and what leaves are context-scoped
     /// and take `--context`.
     Persona {
@@ -786,8 +793,9 @@ pub(crate) enum BootstrapCommands {
         #[arg(long)]
         out: std::path::PathBuf,
     },
-    /// Bridge a VP-framed BootstrapRequest to `POST /bootstrap/provision-integration`
-    /// on the configured VTA, writing the returned armored sealed bundle to disk.
+    /// Send a VP-framed BootstrapRequest to the configured VTA as the
+    /// `provision/integration` Trust Task, writing the returned armored sealed
+    /// bundle to disk.
     ///
     /// Mirrors the offline `vta bootstrap provision-integration` command;
     /// the difference is purely the transport — the VTA runs the same
@@ -986,16 +994,6 @@ pub(crate) enum BackupCommands {
         /// Replace the output file if it already exists.
         #[arg(long)]
         force: bool,
-        /// Fall back to the legacy inline `/backup/export` REST route
-        /// instead of the descriptor-pattern trust-task flow.
-        ///
-        /// The trust-task flow is the default as of rollout step 5
-        /// (`docs/05-design-notes/backup-descriptor-pattern.md`). This
-        /// escape hatch exists for an emergency where the descriptor
-        /// flow cannot complete — it is removed at step 6, along with
-        /// the legacy route itself.
-        #[arg(long)]
-        use_rest_legacy: bool,
     },
     /// Import VTA state from an encrypted backup file.
     ///
@@ -1012,11 +1010,6 @@ pub(crate) enum BackupCommands {
         /// a DID of its own. Without it a backup of another DID is refused.
         #[arg(long)]
         replace_identity: bool,
-        /// Fall back to the legacy inline `/backup/import` REST route
-        /// instead of the descriptor-pattern trust-task flow. See
-        /// `Export::use_rest_legacy`; removed at rollout step 6.
-        #[arg(long)]
-        use_rest_legacy: bool,
     },
 }
 
@@ -1042,6 +1035,19 @@ pub(crate) enum VtaCommands {
     },
     /// Show current VTA details
     Info,
+    /// Show the VTA's DID as a QR code, for a phone (Keyring) to scan.
+    ///
+    /// The code carries the bare DID and nothing else, so it is safe to show
+    /// on a shared screen. Offline: the DID comes from this machine's config
+    /// (`--vta` picks which VTA).
+    Qr {
+        /// Encode this DID instead of the VTA's.
+        #[arg(long)]
+        did: Option<String>,
+        /// Also write the code to this file as an SVG image.
+        #[arg(long, value_name = "FILE.svg")]
+        out: Option<std::path::PathBuf>,
+    },
     /// Restart the VTA service (soft restart — reloads config and reconnects)
     Restart,
 }
@@ -1054,7 +1060,8 @@ pub(crate) enum WebvhCommands {
         /// Server identifier
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a WebVHHostingService endpoint)
+        /// Server DID (its DID document must advertise TSPTransport, DIDCommMessaging,
+        /// TrustTaskHTTPS, or WebVHHosting at an https:// origin)
         #[arg(long)]
         did: String,
         /// Human-readable label
@@ -1223,8 +1230,9 @@ pub(crate) enum WebvhCommands {
     },
     /// List hosting domains a server makes available to this VTA.
     ///
-    /// Walks the configured webvh server's `GET /api/me/domains`
-    /// endpoint and prints the caller-scoped subset. Use this to
+    /// Asks the configured webvh server with the
+    /// `did-management/me/domains` Trust Task and prints the
+    /// caller-scoped subset. Use this to
     /// discover legitimate `--domain` values for `pnm did-mgmt
     /// create-did` / `register-did` before the first call. The
     /// system default is flagged with `(default)`.
@@ -1407,8 +1415,9 @@ pub(crate) enum DidMgmtServerCommands {
         /// Server identifier (operator-chosen, must be unique).
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a
-        /// WebVHHostingService endpoint).
+        /// Server DID (its DID document must advertise TSPTransport,
+        /// DIDCommMessaging, TrustTaskHTTPS, or WebVHHosting at an
+        /// https:// origin).
         #[arg(long)]
         did: String,
         /// Human-readable label.
@@ -1630,8 +1639,8 @@ pub(crate) enum DidMgmtDidCommands {
     },
     /// List the hosting domains a registered server makes available.
     ///
-    /// Calls the server's `GET /api/me/domains` endpoint and prints
-    /// the caller-scoped subset. Use this to discover legitimate
+    /// Asks the server with the `did-management/me/domains` Trust
+    /// Task and prints the caller-scoped subset. Use this to discover legitimate
     /// `--domain` values for `pnm did-mgmt dids create` /
     /// `pnm did-mgmt dids register` before the first call. The
     /// system default is flagged with `(default)`.
@@ -2102,6 +2111,15 @@ pub(crate) enum ContextCommands {
         /// Super-admin only, like every grant of holder authority.
         #[arg(long, requires = "admin_did")]
         admin_holder: bool,
+        /// Mark the admin entry as a **one-time hand-off** (VTI-ACL-054): the
+        /// admin DID may roll over once, while the entry is live, to a long-term
+        /// admin DID the VTA mints for it (provision-integration with an admin
+        /// template). The long-term admin is bounded by your own authority, and
+        /// takes your expiry rather than this entry's. Without it, the rollover
+        /// is refused because the long-term admin would outlive this entry.
+        /// Requires `--admin-expires`.
+        #[arg(long, requires = "admin_expires")]
+        admin_handoff: bool,
     },
     /// Update an existing context
     Update {
@@ -2111,8 +2129,13 @@ pub(crate) enum ContextCommands {
         #[arg(long)]
         name: Option<String>,
         /// Set the DID for this context
-        #[arg(long)]
+        #[arg(long, conflicts_with = "clear_did")]
         did: Option<String>,
+        /// Clear this context's DID, leaving it with no identity of its own.
+        /// The DID is not deleted. Sent as `vta/contexts/update-did/1.1`, so
+        /// it needs only admin over the context.
+        #[arg(long)]
+        clear_did: bool,
         /// New description
         #[arg(long)]
         description: Option<String>,
@@ -2122,7 +2145,12 @@ pub(crate) enum ContextCommands {
         /// Context ID
         id: String,
         /// The new DID to assign
-        did: String,
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        did: Option<String>,
+        /// Clear the context's DID instead, leaving it with no identity of its
+        /// own. The DID is not deleted.
+        #[arg(long)]
+        clear: bool,
     },
     /// Delete an application context and all associated resources
     Delete {
@@ -2277,8 +2305,10 @@ pub(crate) enum AclCommands {
     /// Create an ACL entry.
     ///
     /// Not idempotent — errors with 409 Conflict if an entry already exists
-    /// for the given DID. To change a role or context list on an existing
-    /// entry use `pnm acl update`. To revoke access use `pnm acl delete`.
+    /// for the given DID. To change an existing entry's role use `pnm acl
+    /// change-role`, which carries the compare-and-swap `pnm acl update`
+    /// refuses to do without. For its context list and everything else, use
+    /// `pnm acl update`. To revoke access use `pnm acl delete`.
     Create {
         /// DID to grant access to
         #[arg(long)]
@@ -2301,6 +2331,12 @@ pub(crate) enum AclCommands {
         /// Without this flag the entry is permanent.
         #[arg(long)]
         expires: Option<String>,
+        /// Mark the entry as a **one-time hand-off** (VTI-ACL-054): its subject
+        /// may roll over once, while the entry is live, to a successor bounded
+        /// by your own authority and expiry instead of this entry's. Requires
+        /// `--expires`.
+        #[arg(long, requires = "expires")]
+        handoff: bool,
         /// DID of the delegated AAL2 step-up approver for this subject
         /// (`stepUp.approver`) — the VID that ratifies the subject's step-ups
         /// when policy `mode: delegated` applies (e.g. the holder's phone).
@@ -2343,7 +2379,6 @@ pub(crate) enum AclCommands {
         #[arg(long, value_delimiter = ',')]
         capabilities: Option<Vec<String>>,
     },
-    /// Update an ACL entry
     /// Change a subject's role, guarded by a compare-and-swap.
     ///
     /// `--from` is the role you believe they hold. If another admin has
@@ -2363,6 +2398,11 @@ pub(crate) enum AclCommands {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Change an ACL entry's label, contexts, expiry or approve-authority.
+    ///
+    /// Not the role — that needs `pnm acl change-role` and its
+    /// compare-and-swap. Passing `--role` here is refused rather than
+    /// silently ignored.
     Update {
         /// DID of the entry to update
         did: String,
@@ -2444,6 +2484,39 @@ pub(crate) enum AclCommands {
     Delete {
         /// DID of the entry to delete
         did: String,
+    },
+}
+
+/// `pnm consent …` — answer a consent request this VTA raised, as an approver.
+#[derive(Subcommand)]
+pub(crate) enum ConsentCommands {
+    /// Verify a consent request and show what it asks. Sends nothing.
+    Show {
+        /// The request: a request document, the requester's refusal body, or
+        /// its `details` (`-` reads stdin).
+        request: std::path::PathBuf,
+    },
+    /// Approve a consent request, after comparing its match code.
+    Approve {
+        /// The request: a request document, the requester's refusal body, or
+        /// its `details` (`-` reads stdin).
+        request: std::path::PathBuf,
+        /// The code the requester's screen shows. Without it you are asked to
+        /// type it; approval never proceeds on a code nobody compared.
+        #[arg(long)]
+        match_code: Option<String>,
+        /// A note recorded with the decision (at most 500 characters).
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Deny a consent request. The requester has to ask again.
+    Deny {
+        /// The request: a request document, the requester's refusal body, or
+        /// its `details` (`-` reads stdin).
+        request: std::path::PathBuf,
+        /// Why, recorded with the decision (at most 500 characters).
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -3160,12 +3233,20 @@ where
     })
 }
 
+/// Print the PNM banner.
+///
+/// Only called when stderr is a terminal — a human is watching. Piped or
+/// redirected, it is six lines of noise in front of whatever the caller
+/// actually wanted, so the caller never sees it. Colour is dropped when
+/// `NO_COLOR` is set; the block glyphs are text, not escapes, so the logo
+/// still reads.
 pub(crate) fn print_banner() {
-    let cyan = "\x1b[36m";
-    let magenta = "\x1b[35m";
-    let yellow = "\x1b[33m";
-    let dim = "\x1b[2m";
-    let reset = "\x1b[0m";
+    let color = std::env::var_os("NO_COLOR").is_none();
+    let (cyan, magenta, yellow, dim, reset) = if color {
+        ("\x1b[36m", "\x1b[35m", "\x1b[33m", "\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "", "", "", "")
+    };
 
     eprintln!(
         r#"
@@ -3196,7 +3277,7 @@ pub(crate) fn install_force_exit_handler() {
             }
             if SHUTDOWN_REQUESTED.swap(true, Ordering::SeqCst) {
                 eprintln!("\nForcing exit.");
-                std::process::exit(130);
+                std::process::exit(crate::exit::INTERRUPTED);
             }
             eprintln!("\nShutting down — press Ctrl-C again to force exit.");
         }
@@ -4267,6 +4348,39 @@ mod removal_verb_tests {
         assert!(!yes);
     }
 
+    /// `vta qr` runs offline off the config, so it takes no positional
+    /// argument; `--did` and `--out` are the only knobs.
+    #[test]
+    fn vta_qr_parses_with_and_without_flags() {
+        let cli = Cli::try_parse_from(["pnm", "vta", "qr"]).unwrap();
+        let Commands::Vta {
+            command: VtaCommands::Qr { did, out },
+        } = cli.command
+        else {
+            panic!("expected `vta qr`");
+        };
+        assert!(did.is_none() && out.is_none());
+
+        let cli = Cli::try_parse_from([
+            "pnm",
+            "vta",
+            "qr",
+            "--did",
+            "did:key:z6Mk",
+            "--out",
+            "vta.svg",
+        ])
+        .unwrap();
+        let Commands::Vta {
+            command: VtaCommands::Qr { did, out },
+        } = cli.command
+        else {
+            panic!("expected `vta qr`");
+        };
+        assert_eq!(did.as_deref(), Some("did:key:z6Mk"));
+        assert_eq!(out.as_deref(), Some(std::path::Path::new("vta.svg")));
+    }
+
     /// `remove` was the name before removal commands were standardised on
     /// `delete`, and `--force` was its prompt-skip flag. Both stay accepted so
     /// no script breaks.
@@ -4358,6 +4472,45 @@ mod world_colour_tests {
             vec![
                 "slate", "indigo", "teal", "moss", "sand", "clay", "rose", "plum"
             ],
+        );
+    }
+}
+
+#[cfg(test)]
+mod acl_update_hint_tests {
+    use super::*;
+
+    /// The persona refusal (`vta-service` `trust_tasks/persona.rs`) and
+    /// `pnm persona --help` both tell an operator to run this. `pnm acl update`
+    /// takes the entry's DID positionally; the hint used to print `--did`,
+    /// which clap rejects, so the one command offered as the fix did not run.
+    #[test]
+    fn acl_update_accepts_the_persona_holder_grant_the_hints_print() {
+        let did = "did:key:z6MkExampleHolder";
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "acl",
+                "update",
+                did,
+                "--capabilities",
+                "persona-holder",
+            ])
+            .is_ok(),
+            "the printed grant must parse"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "acl",
+                "update",
+                "--did",
+                did,
+                "--capabilities",
+                "persona-holder",
+            ])
+            .is_err(),
+            "`--did` is not a flag of `acl update`; a hint spelling it that way is wrong"
         );
     }
 }

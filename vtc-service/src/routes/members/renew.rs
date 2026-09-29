@@ -43,7 +43,7 @@ use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
 use crate::error::TaskError;
-use crate::members::{get_member, store_member};
+use crate::members::get_member;
 use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
     get_policy,
@@ -88,7 +88,19 @@ pub async fn renew(
     auth: AuthClaims,
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<RenewResponse>), TaskError> {
-    let caller_did = auth.did.clone();
+    Ok((StatusCode::OK, Json(renew_inner(&state, &auth.did).await?)))
+}
+
+/// Renew `caller_did`'s VMC + role VEC — the operation behind both doors: the
+/// bearer route above and the `vtc/members/renew/0.1` Trust Task
+/// (`trust_tasks::member_tasks`), which authorizes from the document's proof
+/// signer. The member check is here, not in either door, so a DID with no ACL
+/// or member row gets `renew:notMember` whichever way it asked.
+pub(crate) async fn renew_inner(
+    state: &AppState,
+    caller_did: &str,
+) -> Result<RenewResponse, TaskError> {
+    let caller_did = caller_did.to_string();
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -110,7 +122,7 @@ pub async fn renew(
 
     // 2. Recover the prior Member row for the status-list slot
     // + the prior VMC's personhood flag (audit context).
-    let mut member = get_member(&state.members_ks, &caller_did)
+    let member = get_member(&state.members_ks, &caller_did)
         .await?
         .ok_or_else(|| {
             TaskError::declared(
@@ -164,7 +176,7 @@ pub async fn renew(
     // 3. Re-evaluate `personhood.rego` against the Member's
     //    persisted state (Phase 4 M4.2.2).
     let prior_personhood = member.personhood;
-    let policy_allow = evaluate_personhood(&state, &member).await?;
+    let policy_allow = evaluate_personhood(state, &member).await?;
 
     // M4.2.2: when the policy flips a previously-asserted
     // member's flag to `false`, branch on the operator's
@@ -212,8 +224,8 @@ pub async fn renew(
     )
     .await?;
 
-    // 5. Update the Member row.
-    member.status_list_index = Some(slot);
+    // 5. Update the Member row — re-read under the members edit lock, so a
+    // field another writer changed meanwhile (a forge-account link) is kept.
     // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
     // A renewed grant carries different claims and therefore a different digest, so
     // any acknowledgement bound to the previous one no longer matches it and is
@@ -224,15 +236,20 @@ pub async fn renew(
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
     let role_vec_value = serde_json::to_value(&role_vec)
         .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
-    member.record_issued_credentials(vmc_value, role_vec_value);
-    if downgrade_audit {
-        // Renewal-policy downgrade clears the asserted-at
-        // timestamp alongside the flag. The member must
-        // re-assert (M4.3) to reinstate.
-        member.personhood = false;
-        member.personhood_asserted_at = None;
-    }
-    store_member(&state.members_ks, &member).await?;
+    crate::members::storage::edit_member(&state.members_ks, &caller_did, |m| {
+        m.status_list_index = Some(slot);
+        m.record_issued_credentials(vmc_value, role_vec_value);
+        if downgrade_audit {
+            // Renewal-policy downgrade clears the asserted-at
+            // timestamp alongside the flag. The member must
+            // re-assert (M4.3) to reinstate.
+            m.personhood = false;
+            m.personhood_asserted_at = None;
+        }
+        true
+    })
+    .await?
+    .ok_or_else(|| AppError::Conflict("the member left while this was in progress".into()))?;
 
     // 6. Audit. `MembershipRenewed` always fires; paired
     //    `PersonhoodRevoked { reason: "renewal-policy" }` only
@@ -276,18 +293,15 @@ pub async fn renew(
         "membership renewed"
     );
 
-    Ok((
-        StatusCode::OK,
-        Json(RenewResponse {
-            did: caller_did,
-            vmc: serde_json::to_value(&vmc)
-                .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
-            role_vec: serde_json::to_value(&role_vec)
-                .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
-            personhood,
-            personhood_changed,
-        }),
-    ))
+    Ok(RenewResponse {
+        did: caller_did,
+        vmc: serde_json::to_value(&vmc)
+            .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
+        role_vec: serde_json::to_value(&role_vec)
+            .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
+        personhood,
+        personhood_changed,
+    })
 }
 
 /// Run the active `personhood.rego` against the renewal-time

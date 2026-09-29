@@ -2,12 +2,18 @@
 //! gates the spec defines:
 //!
 //! - **WebAuthn** ([`build_approve_response_webauthn`]) — the carried passkey
-//!   assertion over the challenge is the gate; no framework proof is attached.
+//!   assertion over the challenge is the gate. The document is still signed
+//!   by the approver's key: the VTA accepts a Trust Task over DIDComm or TSP
+//!   only when a proof binds it to its sender.
 //! - **DID-signed** ([`build_approve_response_did_signed`]) — a Data Integrity
 //!   proof (`eddsa-jcs-2022`) over the document is the gate, signed by the
 //!   subject's key. The private key never enters Rust: `affinidi-data-integrity`
 //!   produces the canonical signing input, the native [`crate::keys::Signer`]
 //!   signs it in the enclave, and we assemble the proof from the signature.
+//!
+//! Every approve-response proof is made under `assertionMethod`
+//! ([`crate::proof::APPROVAL_PROOF_PURPOSE`]): it is the human approver's own
+//! answer, not an operational request.
 
 use chrono::DateTime;
 use trust_tasks_rs::TrustTask;
@@ -15,7 +21,7 @@ use trust_tasks_rs::specs::auth::step_up::approve_response::v0_2 as approve_resp
 
 use crate::error::FfiError;
 use crate::keys::Signer;
-use crate::proof::attach_did_signed_proof;
+use crate::proof::attach_approval_proof;
 
 /// A WebAuthn assertion produced natively (`ASAuthorization` / Credential
 /// Manager). Binary fields are base64url-encoded, mirroring
@@ -55,12 +61,15 @@ pub struct ApproveResponseDraft {
 
 /// Build a passkey-backed `auth/step-up/approve-response/0.2`: decision
 /// `approved`, `evidence.kind = webauthn` carrying `assertion`. The assertion is
-/// the gate, so no framework proof is attached. Returns the serialized Trust
+/// the gate. The document additionally carries the approver's framework proof
+/// (via `signer`, whose DID must be `draft.issuer_did`), because the VTA refuses
+/// an unsigned Trust Task over DIDComm and TSP. Returns the serialized Trust
 /// Task JSON for the native layer to send back to the relying party.
 #[uniffi::export]
 pub fn build_approve_response_webauthn(
     draft: ApproveResponseDraft,
     assertion: WebAuthnAssertion,
+    signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
     let response: approve_response::AssertionResponseResponse =
         approve_response::AssertionResponseResponse::builder()
@@ -82,12 +91,13 @@ pub fn build_approve_response_webauthn(
             .try_into()
             .map_err(conv)?;
     let evidence = approve_response::Evidence::Webauthn(assertion_response);
-    let doc = assemble_doc(
+    let mut doc = assemble_doc(
         &draft,
         evidence,
         approve_response::PayloadDecision::Approved,
         None,
     )?;
+    attach_approval_proof(&mut doc, &*signer, &draft.issued_at)?;
     serialize(&doc)
 }
 
@@ -107,7 +117,7 @@ pub fn build_approve_response_did_signed(
         approve_response::PayloadDecision::Approved,
         None,
     )?;
-    attach_did_signed_proof(&mut doc, &*signer, &draft.issued_at)?;
+    attach_approval_proof(&mut doc, &*signer, &draft.issued_at)?;
     serialize(&doc)
 }
 
@@ -128,7 +138,7 @@ pub fn build_approve_response_denied(
         approve_response::PayloadDecision::Denied,
         Some(reason),
     )?;
-    attach_did_signed_proof(&mut doc, &*signer, &draft.issued_at)?;
+    attach_approval_proof(&mut doc, &*signer, &draft.issued_at)?;
     serialize(&doc)
 }
 
@@ -205,6 +215,35 @@ mod tests {
         }
     }
 
+    /// A test key standing in for the enclave, with the draft issued in its name.
+    struct EnclaveStub {
+        sk: ed25519_dalek::SigningKey,
+        did: String,
+    }
+    impl Signer for EnclaveStub {
+        fn did(&self) -> String {
+            self.did.clone()
+        }
+        fn sign(&self, payload: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+            use ed25519_dalek::Signer as _;
+            Ok(self.sk.sign(&payload).to_bytes().to_vec())
+        }
+    }
+
+    fn enclave(seed: u8) -> EnclaveStub {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        let did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&sk.verifying_key().to_bytes());
+        EnclaveStub { sk, did }
+    }
+
+    /// [`draft`], issued by `signer`.
+    fn draft_by(signer: &EnclaveStub) -> ApproveResponseDraft {
+        ApproveResponseDraft {
+            issuer_did: signer.did.clone(),
+            ..draft()
+        }
+    }
+
     fn assertion() -> WebAuthnAssertion {
         WebAuthnAssertion {
             credential_id: "Y3JlZF8xYTJiM2M".to_string(),
@@ -217,7 +256,10 @@ mod tests {
 
     #[test]
     fn builds_webauthn_approve_response_shape() {
-        let json = build_approve_response_webauthn(draft(), assertion()).unwrap();
+        let signer = enclave(5);
+        let json =
+            build_approve_response_webauthn(draft_by(&signer), assertion(), Box::new(signer))
+                .unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             v["type"],
@@ -225,13 +267,17 @@ mod tests {
         );
         assert_eq!(v["payload"]["decision"], "approved");
         assert_eq!(v["payload"]["evidence"]["kind"], "webauthn");
-        // No framework proof: the assertion is the gate.
-        assert!(v.get("proof").is_none());
+        // The assertion is the gate; the framework proof binds the document
+        // to its sender. It is the approver's own answer, so `assertionMethod`.
+        assert_eq!(v["proof"]["proofPurpose"], "assertionMethod");
     }
 
     #[test]
     fn webauthn_output_round_trips_back_through_the_typed_parser() {
-        let json = build_approve_response_webauthn(draft(), assertion()).unwrap();
+        let signer = enclave(5);
+        let json =
+            build_approve_response_webauthn(draft_by(&signer), assertion(), Box::new(signer))
+                .unwrap();
         let doc: TrustTask<approve_response::Payload> = serde_json::from_str(&json).unwrap();
         assert!(matches!(
             doc.payload.evidence,
@@ -243,7 +289,8 @@ mod tests {
     fn rejects_short_challenge() {
         let mut d = draft();
         d.challenge = "short".to_string(); // below the 16-char minimum
-        let err = build_approve_response_webauthn(d, assertion()).unwrap_err();
+        let err =
+            build_approve_response_webauthn(d, assertion(), Box::new(enclave(5))).unwrap_err();
         assert!(matches!(err, FfiError::InvalidInput { .. }));
     }
 
@@ -251,7 +298,8 @@ mod tests {
     fn rejects_bad_issued_at() {
         let mut d = draft();
         d.issued_at = "not-a-timestamp".to_string();
-        let err = build_approve_response_webauthn(d, assertion()).unwrap_err();
+        let err =
+            build_approve_response_webauthn(d, assertion(), Box::new(enclave(5))).unwrap_err();
         assert!(matches!(err, FfiError::InvalidInput { .. }));
     }
 
@@ -302,7 +350,10 @@ mod tests {
         }
 
         let json = build_approve_response_did_signed(
-            draft(),
+            ApproveResponseDraft {
+                issuer_did: did.clone(),
+                ..draft()
+            },
             Box::new(EnclaveStub {
                 sk,
                 did: did.clone(),
@@ -371,7 +422,10 @@ mod tests {
         }
 
         let json = build_approve_response_denied(
-            draft(),
+            ApproveResponseDraft {
+                issuer_did: did.clone(),
+                ..draft()
+            },
             "not something I authorized".to_string(),
             Box::new(EnclaveStub {
                 sk,
@@ -402,5 +456,26 @@ mod tests {
             affinidi_data_integrity::VerifyOptions::default(),
         )
         .expect("the denial's proof must verify against the holder's key");
+    }
+
+    /// Every approve-response is the human approver's own answer, signed under
+    /// `assertionMethod` by its issuer; one issued in a name other than the
+    /// signer's is refused before it is signed.
+    #[test]
+    fn approve_responses_are_signed_by_their_issuer_as_an_assertion() {
+        let signer = enclave(6);
+        let json =
+            build_approve_response_did_signed(draft_by(&signer), Box::new(enclave(6))).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["proof"]["proofPurpose"], "assertionMethod");
+        assert_eq!(v["issuer"], signer.did.as_str());
+        assert_eq!(v["recipient"], "did:web:bank.example");
+        assert!(v["issuedAt"].is_string());
+
+        let err = build_approve_response_did_signed(draft(), Box::new(enclave(6))).unwrap_err();
+        assert!(
+            matches!(&err, FfiError::InvalidInput { reason } if reason.contains("issuer")),
+            "{err:?}"
+        );
     }
 }

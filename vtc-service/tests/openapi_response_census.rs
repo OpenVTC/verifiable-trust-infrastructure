@@ -57,22 +57,10 @@ const UNTYPED_OK: &[(&str, &str)] = &[
          envelope — a hand-maintained copy of someone else's wire type, which is \
          the failure mode this census exists to prevent, not a fix for it.",
     ),
-    (
-        "join_requests/manifest.rs::admin_manifest",
-        "returns `Json<Value>` because a criterion's `vetting.ext` is part of what \
-         the community publishes and part of what its `requirementsDigest` covers, \
-         and `JoinManifest02Response` cannot carry it — `VettingRequirements` at the \
-         pinned trust-tasks-rs has no `ext` member. Declaring the generated type is \
-         the truthful annotation available: the served shape is that shape plus one \
-         namespaced extension, and an operator reading this endpoint should see what \
-         an applicant receives rather than a redacted copy of it. The console reads \
-         only the members the generated type names, so `wire.ts` stays correct. This \
-         entry goes when the 0.22 line reaches this graph and `ext` is typed.",
-    ),
 ];
 
 /// The size of [`UNTYPED_OK`], asserted so the list cannot grow quietly.
-const UNTYPED_OK_COUNT: usize = 2;
+const UNTYPED_OK_COUNT: usize = 1;
 
 #[test]
 fn every_documented_response_names_the_type_its_handler_returns() {

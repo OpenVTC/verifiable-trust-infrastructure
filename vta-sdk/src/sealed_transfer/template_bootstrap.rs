@@ -90,7 +90,7 @@ pub struct DidKeyMaterial {
 
 /// A single keypair with DID-URL-qualified key id. The private half is
 /// held in a [`Zeroizing`] buffer at rest.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeyPair {
     /// DID URL with fragment, e.g. `did:webvh:host/path#key-0`. Matches
@@ -103,6 +103,17 @@ pub struct KeyPair {
     /// [`Zeroizing`] via [`Self::private_zeroizing`] when loading into
     /// live memory.
     pub private_key_multibase: String,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for KeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyPair")
+            .field("key_id", &self.key_id)
+            .field("public_key_multibase", &self.public_key_multibase)
+            .field("private_key_multibase", &"<redacted>")
+            .finish()
+    }
 }
 
 impl KeyPair {
@@ -228,7 +239,7 @@ pub struct DidKeyMaterialV2 {
 /// prefix and this field must agree, and a consumer that can check should —
 /// they come from the same producer, so disagreement means a bug, not an
 /// attack.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SlotKeyPair {
     /// The template key slot this key was minted for: `signing`, `ka`,
@@ -245,6 +256,19 @@ pub struct SlotKeyPair {
     /// Multibase-encoded private key. Wrap in [`Zeroizing`] via
     /// [`Self::private_zeroizing`] when loading into live memory.
     pub private_key_multibase: String,
+}
+
+/// Written by hand so the private key never reaches a log: a derived `Debug` would print it.
+impl std::fmt::Debug for SlotKeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SlotKeyPair")
+            .field("slot", &self.slot)
+            .field("key_type", &self.key_type)
+            .field("key_id", &self.key_id)
+            .field("public_key_multibase", &self.public_key_multibase)
+            .field("private_key_multibase", &"<redacted>")
+            .finish()
+    }
 }
 
 impl DidKeyMaterialV2 {
