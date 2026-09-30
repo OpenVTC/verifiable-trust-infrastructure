@@ -4,9 +4,9 @@
 //! rather than by convention. A Trust Task's payload is a JSON document; three
 //! of these endpoints move **raw file bytes** and one carries only a path.
 //!
-//! - `GET /website/files/{path}` — file bytes out. **Not** a Trust Task.
-//! - `PUT /website/files/{path}` — file bytes in. **Not** a Trust Task.
-//! - `POST /website/deploy` — bundle bytes in. **Not** a Trust Task.
+//! The raw-byte routes (`GET`/`PUT /website/files/{path}`,
+//! `POST /website/deploy`) are gone: content moves as signed Trust Tasks
+//! (`tests/website_spine.rs`).
 //! - `DELETE /website/files/{path}` — a path, no payload. **Is** one, and now
 //!   carries its own canonical task instead of borrowing the `show` label.
 //!
@@ -129,63 +129,24 @@ async fn send(
     (status, err)
 }
 
-/// The router must actually build. Splitting `/website/files/{*path}` into two
-/// `.route()` calls on the same path relies on axum merging same-path method
-/// routers per verb — if that assumption were wrong this panics at
-/// construction, and every other test in this file would fail for the wrong
-/// reason.
+/// The raw-byte routes are gone: file content and bundles move as signed
+/// Trust Tasks (`vtc/website/upload/*`, `vtc/website/deploy`,
+/// `vtc/website/files/show`), and a request to the old paths reaches no
+/// handler.
 #[tokio::test]
-async fn the_split_file_mount_builds() {
+async fn the_raw_byte_routes_are_gone() {
     let fix = build_fixture().await;
-    // A request that reaches *any* handler on the mount proves both verbs
-    // survived the merge. 404 (no such file) is a handler response.
-    let (status, _) = send(
-        &fix,
-        "GET",
-        "/v1/website/files/nothing-here.txt",
-        None,
-        true,
-        None,
-    )
-    .await;
-    assert_ne!(
-        status,
-        StatusCode::METHOD_NOT_ALLOWED,
-        "GET was lost when the mount was split"
-    );
-}
-
-#[tokio::test]
-async fn raw_byte_routes_need_no_trust_task_header() {
-    // The de-listing. Sending no header must not be refused — these are not
-    // Trust Tasks.
-    //
-    // Asserted on the error *discriminator*, not the status: a re-added gate
-    // answers `TrustTaskMissing`, which is a 400, and these handlers have
-    // legitimate 400s of their own (a malformed bundle, a bad path). A
-    // status-only assertion would pass straight through a regression.
-    let fix = build_fixture().await;
-
-    for (method, uri, body) in [
-        ("GET", "/v1/website/files/index.html", None),
-        (
-            "PUT",
-            "/v1/website/files/index.html",
-            Some(b"<h1>hi</h1>".to_vec()),
-        ),
-        (
-            "POST",
-            "/v1/website/deploy",
-            Some(b"not-a-real-zip".to_vec()),
-        ),
+    let _root = configure_website(&fix, "live").await;
+    for (method, uri) in [
+        ("GET", "/v1/website/files/index.html"),
+        ("PUT", "/v1/website/files/index.html"),
+        ("POST", "/v1/website/deploy"),
     ] {
-        let (_, err) = send(&fix, method, uri, None, true, body).await;
+        // Sent with the delete task the path's remaining route binds, so its
+        // header gate passes and the method router answers.
         assert!(
-            !matches!(
-                err.as_deref(),
-                Some("TrustTaskMissing") | Some("TrustTaskMismatch")
-            ),
-            "{method} {uri} still demands a Trust-Task header (error={err:?})"
+            !common::signed::bearer_route_served_as(&fix._vtc, method, uri, DELETE_TASK).await,
+            "{method} {uri} is still served"
         );
     }
 }
@@ -245,22 +206,12 @@ async fn de_listing_removes_a_header_gate_not_the_auth_gate() {
     // first and this would pass without ever reaching the auth check.
     let fix = build_fixture().await;
 
-    for (method, uri, task, body) in [
-        ("GET", "/v1/website/files/index.html", None, None),
-        (
-            "PUT",
-            "/v1/website/files/index.html",
-            None,
-            Some(b"pwned".to_vec()),
-        ),
-        ("POST", "/v1/website/deploy", None, Some(b"pwned".to_vec())),
-        (
-            "DELETE",
-            "/v1/website/files/index.html",
-            Some(DELETE_TASK),
-            None,
-        ),
-    ] {
+    for (method, uri, task, body) in [(
+        "DELETE",
+        "/v1/website/files/index.html",
+        Some(DELETE_TASK),
+        None,
+    )] {
         let (status, _) = send(&fix, method, uri, task, false, body).await;
         assert_eq!(
             status,

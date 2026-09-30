@@ -1,20 +1,17 @@
-//! `POST /v1/website/deploy` (Phase 5 M5.5.3).
+//! Publishing a website bundle (Phase 5 M5.5.3): `vtc/website/deploy/0.1`,
+//! served on the spine (`trust_tasks::website_tasks`) for a bundle a chunked
+//! upload staged. There is no REST route.
 //!
-//! Accepts a tar.gz bundle, runs pre-extract path-safety on every
+//! Takes a tar.gz bundle, runs pre-extract path-safety on every
 //! entry, extracts to a staging directory, then atomically swaps
 //! into place. Live mode renames the staging dir over `root_dir`;
 //! managed mode creates a new `gen-N` directory and flips the
 //! `current` symlink.
 
-use axum::Json;
-use axum::body::Bytes;
-use axum::extract::State;
-use axum::http::StatusCode;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use vti_common::audit::{AuditEvent, WebsiteBundleDeployedData};
-use vti_common::auth::AdminAuth;
 
 use crate::error::AppError;
 use crate::server::AppState;
@@ -23,7 +20,7 @@ use crate::website::storage::{next_generation, prune_generations, swap_current_s
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeployResponse {
+pub(crate) struct DeployResponse {
     pub deploy_mode: String,
     pub bundle_sha256: String,
     pub bundle_size_bytes: u64,
@@ -31,11 +28,11 @@ pub struct DeployResponse {
     pub pruned_generations: u32,
 }
 
-pub async fn deploy(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    body: Bytes,
-) -> Result<(StatusCode, Json<DeployResponse>), AppError> {
+pub(crate) async fn deploy_inner(
+    state: &AppState,
+    actor: &str,
+    body: &[u8],
+) -> Result<DeployResponse, AppError> {
     let cfg = state.config.read().await;
     let max_bundle = cfg.website.max_bundle_size_mb.saturating_mul(1024 * 1024);
     let root_dir = cfg
@@ -62,13 +59,13 @@ pub async fn deploy(
     let decompressed_cap =
         max_bundle.saturating_mul(crate::website::bundle::DECOMPRESSION_EXPANSION_RATIO);
 
-    let bundle_sha = hex::encode(Sha256::digest(&body));
+    let bundle_sha = hex::encode(Sha256::digest(body));
     let bundle_size = body.len() as u64;
 
     let (target_generation, pruned) = match deploy_mode.as_str() {
         "live" => {
             let staging = root_dir.with_extension(format!("staging.{}", rand_suffix()));
-            verify_and_extract(&body, &staging, &blocklist, decompressed_cap)?;
+            verify_and_extract(body, &staging, &blocklist, decompressed_cap)?;
 
             // Atomic swap: rename old root aside, rename staging
             // to root. Best-effort cleanup of the previous dir.
@@ -91,7 +88,7 @@ pub async fn deploy(
         "managed" => {
             let gen_num = next_generation(&root_dir)?;
             let target_dir = root_dir.join(format!("gen-{gen_num}"));
-            verify_and_extract(&body, &target_dir, &blocklist, decompressed_cap)?;
+            verify_and_extract(body, &target_dir, &blocklist, decompressed_cap)?;
             swap_current_symlink(&root_dir, gen_num)?;
             let pruned = prune_generations(&root_dir, keep)?;
             (gen_num, pruned)
@@ -106,7 +103,7 @@ pub async fn deploy(
     if let Some(writer) = state.audit_writer.as_ref() {
         let _ = writer
             .write(
-                "admin",
+                actor,
                 None,
                 AuditEvent::WebsiteBundleDeployed(WebsiteBundleDeployedData {
                     bundle_sha256: bundle_sha.clone(),
@@ -119,16 +116,13 @@ pub async fn deploy(
             .await;
     }
 
-    Ok((
-        StatusCode::OK,
-        Json(DeployResponse {
-            deploy_mode,
-            bundle_sha256: bundle_sha,
-            bundle_size_bytes: bundle_size,
-            target_generation,
-            pruned_generations: pruned,
-        }),
-    ))
+    Ok(DeployResponse {
+        deploy_mode,
+        bundle_sha256: bundle_sha,
+        bundle_size_bytes: bundle_size,
+        target_generation,
+        pruned_generations: pruned,
+    })
 }
 
 fn rand_suffix() -> String {

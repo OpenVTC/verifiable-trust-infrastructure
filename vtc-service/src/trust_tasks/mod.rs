@@ -86,6 +86,9 @@ pub(crate) mod policy_tasks;
 pub(crate) mod surface_tasks;
 // `auth/signing-key/*`: the console's signing keys, as delegations.
 pub(crate) mod signing_key_tasks;
+// The website's content: chunked upload, deploy, ranged reads.
+#[cfg(feature = "website")]
+pub(crate) mod website_tasks;
 
 // The member-facing verbs that were HTTPS REST only: renewal, DID rotation,
 // personhood revocation, the relationship graph's member verbs and the
@@ -999,6 +1002,14 @@ async fn dispatch_typed(
                 None => unreachable!("admin_tasks::URIS names {uri}, which it does not route"),
             }
         }
+        #[cfg(feature = "website")]
+        uri if website_tasks::URIS.contains(&uri) => {
+            match website_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("website_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
         uri if signing_key_tasks::URIS.contains(&uri) => {
             match signing_key_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
@@ -1606,7 +1617,7 @@ mod spine_proof_tests {
         let hidden_vetting = if cfg!(feature = "vetting-pcs") { 4 } else { 0 };
         assert_eq!(
             required.len(),
-            91 + hidden_vetting,
+            96 + hidden_vetting,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1650,8 +1661,10 @@ mod spine_proof_tests {
              `vtc/schemas/accepts/{{register,delete}}`, `vtc/vetting/auto-grant/update`, \
              `vtc/relationships/{{suspend,restore}}`, `vtc/join-requests/query`; the reads \
              declare none and their handlers refuse an unsigned one regardless) + the 3 \
-             `auth/signing-key/{{enroll,list,revoke}}` tasks + the 4 \
-             hidden-vetting tasks under `vetting-pcs`; got {required:?}"
+             `auth/signing-key/{{enroll,list,revoke}}` tasks + the 5 website content \
+             verbs (`vtc/website/upload/{{begin,chunk,commit,abort}}`, `vtc/website/deploy`; \
+             `files/show` declares none and its handler refuses an unsigned one \
+             regardless) + the 4 hidden-vetting tasks under `vetting-pcs`; got {required:?}"
         );
     }
 
@@ -2136,6 +2149,19 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     signing_key_tasks::ENROLL_TYPE,
     signing_key_tasks::LIST_TYPE,
     signing_key_tasks::REVOKE_TYPE,
+    // The website's content, which replaced the raw-byte routes.
+    #[cfg(feature = "website")]
+    website_tasks::BEGIN_TYPE,
+    #[cfg(feature = "website")]
+    website_tasks::CHUNK_TYPE,
+    #[cfg(feature = "website")]
+    website_tasks::COMMIT_TYPE,
+    #[cfg(feature = "website")]
+    website_tasks::ABORT_TYPE,
+    #[cfg(feature = "website")]
+    website_tasks::DEPLOY_TYPE,
+    #[cfg(feature = "website")]
+    website_tasks::FILES_SHOW_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -4592,6 +4618,18 @@ mod tests {
             signing_key_tasks::ENROLL_TYPE,
             signing_key_tasks::LIST_TYPE,
             signing_key_tasks::REVOKE_TYPE,
+            #[cfg(feature = "website")]
+            website_tasks::BEGIN_TYPE,
+            #[cfg(feature = "website")]
+            website_tasks::CHUNK_TYPE,
+            #[cfg(feature = "website")]
+            website_tasks::COMMIT_TYPE,
+            #[cfg(feature = "website")]
+            website_tasks::ABORT_TYPE,
+            #[cfg(feature = "website")]
+            website_tasks::DEPLOY_TYPE,
+            #[cfg(feature = "website")]
+            website_tasks::FILES_SHOW_TYPE,
             // Hidden vetting. These four name a string constant rather than a generated
             // `TYPE_URI` because the pinned `trust-tasks-rs` does not carry their modules yet.
             // The specifications are merged (#618, #620) and the bindings generate as 0.22;
