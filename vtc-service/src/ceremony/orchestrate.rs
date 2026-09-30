@@ -23,7 +23,7 @@ use super::{
 };
 use crate::acl::{VtcRole, get_acl_entry};
 use crate::error::TaskError;
-use crate::members::{Disposition, get_member};
+use crate::members::{Disposition, Member, get_member};
 use crate::policy::{PolicyPurpose, load_active_compiled};
 use crate::server::AppState;
 
@@ -582,13 +582,16 @@ pub async fn remove_inner(
     // member did not exist while `members list` was warning about that very
     // row — two surfaces disagreeing about whether somebody is here.
     //
-    // Only genuinely-absent is still `not found`: neither row.
+    // Only a subject with nothing left to remove is `not found`: no ACL row
+    // and no *live* member row. A tombstoned or historical row is a departure
+    // already made; removing it again re-ran the whole ceremony, audited a
+    // second removal and pushed the member a second removal notice (OBS-02).
     //
     // Which task's code that is follows from who is asking, the same way the
     // removal policy tells the two apart (`actor.did == subject.did`): a
     // member leaving is `self-remove:notMember` ("nothing to remove"), an
     // admin removing somebody is `admin-remove:notFound`.
-    if target_acl.is_none() && target_member.is_none() {
+    if target_acl.is_none() && target_member.as_ref().is_none_or(Member::is_removed) {
         let code = if actor_did == target_did {
             SELF_REMOVE_ERR_NOT_MEMBER
         } else {

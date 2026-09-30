@@ -496,6 +496,30 @@ async fn admin_remove_404_for_unknown_did() {
     );
 }
 
+/// OBS-02: removing a member who has already departed is `notFound`, not a
+/// second removal — it used to re-run the ceremony, audit a second removal
+/// and push the member a second removal notice.
+#[tokio::test]
+async fn admin_remove_of_a_departed_member_is_not_found() {
+    let fix = build_fixture().await;
+    let target = "did:key:zDepartedTwice";
+    let _ = seed_member_with_session(&fix, target, VtcRole::Member).await;
+
+    let (status, body) = admin_remove(&fix, target, json!({ "reason": "first" })).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["disposition"], "tombstone");
+
+    let (status, body) = admin_remove(&fix, target, json!({ "reason": "again" })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "got {body}");
+    assert!(
+        body["code"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with(":notFound"),
+        "got {body}"
+    );
+}
+
 #[tokio::test]
 async fn admin_remove_overlong_reason_rejected() {
     let fix = build_fixture().await;
