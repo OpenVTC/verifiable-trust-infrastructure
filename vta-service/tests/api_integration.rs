@@ -982,22 +982,26 @@ async fn create_test_webvh_did(
     context_id: &str,
 ) -> (String, String, String) {
     let token = setup_webvh_context(app, ctx, context_id).await;
-    let (status, created) = app
+    // `POST /webvh/dids` is gone — `webvh/dids/create/1.0` on `/trust-tasks` is
+    // the only way in now, on every transport.
+    let (status, body) = app
         .request(post_auth(
-            "/webvh/dids",
+            "/trust-tasks",
             &token,
-            json!({
-                "context_id": context_id,
-                "url": "https://example.com/.well-known/did/did.jsonl",
-                "set_primary": false,
-            }),
+            signed_doc(
+                ctx,
+                &format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+                json!({
+                    "contextId": context_id,
+                    "url": "https://example.com/.well-known/did/did.jsonl",
+                    "setPrimary": false,
+                }),
+            ),
         ))
         .await;
-    assert_eq!(
-        status,
-        StatusCode::CREATED,
-        "create did: {status} {created}"
-    );
+    assert_eq!(status, StatusCode::OK, "create did: {status} {body}");
+    let created = &body["payload"];
     let scid = created["scid"]
         .as_str()
         .expect("scid in response")
