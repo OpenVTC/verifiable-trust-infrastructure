@@ -116,6 +116,7 @@ pub async fn enroll_submit_handler(
     let result = operations::passkey_vms::finish_enrollment(
         &deps,
         &state.passkey_vms_ks,
+        &state.sessions_ks,
         &auth.0,
         body,
         vta_did.as_deref(),

@@ -57,9 +57,7 @@ use uuid::Uuid;
 use crate::audit::audit;
 use crate::auth::AuthClaims;
 use crate::auth::session::{get_session, now_epoch, update_session};
-use crate::operations::passkey_login::{
-    VtaVmResolver, enumerate_passkey_vms, verify_passkey_login,
-};
+use crate::operations::passkey_login::{VtaVmResolver, verify_passkey_login};
 use crate::server::AppState;
 use vti_common::acl::{delegated_any_approver_covers, get_acl_entry};
 use vti_common::auth::step_up::{
@@ -166,7 +164,7 @@ fn gate_err_to_reject(e: GateError) -> RejectReason {
 /// any verification failure.
 async fn verify_webauthn_gate(
     state: &AppState,
-    approver: &str,
+    #[cfg_attr(not(feature = "webvh"), allow(unused))] approver: &str,
     challenge: &str,
     assertion: &approve_response::AssertionResponse,
 ) -> Result<(), RejectReason> {
@@ -205,22 +203,36 @@ async fn verify_webauthn_gate(
     // credential to the approver, whom the handler has already authorized for
     // the subject — the subject itself in self mode, the delegated approver
     // otherwise).
-    let vms = enumerate_passkey_vms(&resolver, approver)
-        .await
-        .map_err(|e| RejectReason::InternalError {
-            reason: format!("passkey VM enumeration: {e}"),
-        })?;
-    let vm = vms
-        .into_iter()
-        .find(|v| v.credential_id == credential_id)
-        .ok_or_else(invalid)?;
+    //
+    // Read from the approver's own locally-stored WebVH document
+    // (`operations::passkey_vms`), not the generic DID resolver:
+    // `webauthnCredentialId` is a VTA-specific verification-method property a
+    // generic resolver round-trip does not preserve —
+    // `passkey_login::enumerate_passkey_vms`'s own doc names this as an open
+    // "Phase 3" gap. Reading the local document sidesteps it for the one
+    // binding this gate actually needs; the signature itself still verifies
+    // through the generic resolver below, over the standard
+    // `publicKeyMultibase` that gap does not affect.
+    #[cfg(feature = "webvh")]
+    let found = crate::operations::passkey_vms::find_passkey_vm_by_credential_id(
+        &state.webvh_ks,
+        approver,
+        &credential_id,
+    )
+    .await
+    .map_err(|e| RejectReason::InternalError {
+        reason: format!("passkey VM lookup: {e}"),
+    })?;
+    #[cfg(not(feature = "webvh"))]
+    let found: Option<String> = None; // no webvh document, so no passkey VM either.
+    let vm_url = found.ok_or_else(invalid)?;
 
     let payload = vti_webauthn::AssertionPayload {
         credential_id,
         authenticator_data: dec(&assertion.response.authenticator_data).map_err(|_| invalid())?,
         client_data_json: dec(&assertion.response.client_data_json).map_err(|_| invalid())?,
         signature: dec(&assertion.response.signature).map_err(|_| invalid())?,
-        verification_method: vm.vm_url,
+        verification_method: vm_url,
     };
 
     verify_passkey_login(&payload, challenge.as_bytes(), &resolver, &config)
@@ -407,6 +419,25 @@ pub(super) async fn handle_approve_response(
     // 5. Approved — verify exactly one cryptographic gate, bound to the
     //    *signer* (the issuer/approver), which is the subject in self mode and
     //    the authorized delegated approver otherwise.
+    //
+    // Conformance item 4 (0.5 spec): refuse a gate this relying party did not
+    // offer *for this step-up*, before verifying it. `pending.acceptable_evidence`
+    // is what mint actually advertised (`mint_pending_step_up`), which is no
+    // longer both gates once the approver has an enrolled passkey — passkey-only
+    // step-up (security decision): from that point `did-signed` is refused here
+    // even though the cryptographic proof would verify, and an evidence kind
+    // this binary does not recognise was never offered either.
+    let evidence_kind = match payload.evidence.as_ref() {
+        None | Some(approve_response::Evidence::DidSigned) => Some("did-signed"),
+        Some(approve_response::Evidence::Webauthn(_)) => Some("webauthn"),
+        Some(_) => None,
+    };
+    if !evidence_kind.is_some_and(|k| pending.acceptable_evidence.iter().any(|e| e == k)) {
+        return reject_with(
+            &doc,
+            step_up_failure("auth/step-up/approve-response:noGate"),
+        );
+    }
     let factor: &str = match payload.evidence.as_ref() {
         None | Some(approve_response::Evidence::DidSigned) => {
             if let Err(e) = verify_did_signed_gate(&doc, &issuer).await {
@@ -438,10 +469,15 @@ pub(super) async fn handle_approve_response(
         // verify*, so there is no safe fallthrough — landing on the did-signed
         // arm would check a gate the approver did not present, and report the
         // step-up as satisfied on evidence this VTA never understood. Refuse.
+        // Unreachable in practice: `evidence_kind` is `None` for every such
+        // kind, which the membership check above already refused with
+        // `noGate` — kept for the match's exhaustiveness over a
+        // `#[non_exhaustive]` enum, and refuses the same way if it is ever
+        // reached.
         Some(_) => {
             return reject_with(
                 &doc,
-                step_up_failure("auth/step-up/approve-response:evidenceUnsupported"),
+                step_up_failure("auth/step-up/approve-response:noGate"),
             );
         }
     };
@@ -642,6 +678,37 @@ async fn load_step_up_signing_secret(state: &AppState, vta_did: &str) -> Result<
         })
 }
 
+/// Whether `did` already has at least one enrolled passkey verification
+/// method ([`operations::passkey_vms`](crate::operations::passkey_vms)'s
+/// enrolment ceremony).
+///
+/// Read from `did`'s own locally-stored WebVH document (`webvh_ks`) — the
+/// same source `list_passkeys` reads — rather than the generic DID resolver:
+/// passkeys are enrolled only on DIDs this VTA manages, so the local log is
+/// authoritative here, and it is cheaper than a resolve. A DID this VTA does
+/// not manage (unknown to the local store) has none by definition.
+///
+/// Drives passkey-only step-up (security decision): once true for the
+/// approver a step-up will be answered by, `mint_pending_step_up` stops
+/// offering `did-signed` and `handle_approve_response` stops accepting it.
+#[cfg(feature = "webvh")]
+async fn subject_has_passkey(state: &AppState, did: &str) -> bool {
+    crate::operations::passkey_vms::has_passkey_vm(&state.webvh_ks, did)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                did = %did, error = %e,
+                "could not determine passkey enrolment for step-up gating; treating as none"
+            );
+            false
+        })
+}
+
+#[cfg(not(feature = "webvh"))]
+async fn subject_has_passkey(_state: &AppState, _did: &str) -> bool {
+    false // no webvh document, so no passkey VM either.
+}
+
 /// Mint a pending step-up and build the **signed**
 /// `auth/step-up/approve-request/0.2` document the AAL1 caller hands to its
 /// approver (wallet / VTA). 0.2 differs from 0.1 only in the type URI and the
@@ -686,12 +753,25 @@ async fn mint_pending_step_up(
     // rather than elevating the session. `None` is the ordinary session
     // step-up. See `PendingStepUp::bound_to`.
     bound_to: Option<&str>,
+    // Passkey-only step-up (security decision): whether the approver this
+    // request will be answered by already has an enrolled passkey
+    // verification method ([`subject_has_passkey`]). When it does,
+    // `did-signed` is dropped from the offer below and
+    // `handle_approve_response` refuses it (`noGate`) even if a stale
+    // client sends it anyway. A subject with no passkey keeps both gates.
+    approver_has_passkey: bool,
 ) -> Result<Value, ()> {
     // The *stored* pending record keeps the kebab canonical form
     // (`did-signed`) that `vti_common::auth::step_up` documents — it's internal
     // state, not wire. The 0.2 wire spelling is camelCase (`didSigned`).
-    let acceptable = vec!["did-signed".to_string(), "webauthn".to_string()];
-    let acceptable_wire = vec!["didSigned".to_string(), "webauthn".to_string()];
+    let (acceptable, acceptable_wire) = if approver_has_passkey {
+        (vec!["webauthn".to_string()], vec!["webauthn".to_string()])
+    } else {
+        (
+            vec!["did-signed".to_string(), "webauthn".to_string()],
+            vec!["didSigned".to_string(), "webauthn".to_string()],
+        )
+    };
 
     // 256 bits of challenge entropy (two UUIDv4s) — comfortably over the spec's
     // ≥128-bit / ≥16-char minimum, using deps already present.
@@ -1221,6 +1301,7 @@ pub(super) async fn initiate_disclosure_step_up(
         "action": action,
     });
 
+    let approver_has_passkey = subject_has_passkey(state, &auth.did).await;
     match mint_pending_step_up(
         &state.sessions_ks,
         &vta_did,
@@ -1232,6 +1313,7 @@ pub(super) async fn initiate_disclosure_step_up(
         &reason,
         Some(&context),
         Some(preview_id),
+        approver_has_passkey,
     )
     .await
     {
@@ -1272,6 +1354,7 @@ pub(super) async fn initiate_self_step_up(
             };
         }
     };
+    let approver_has_passkey = subject_has_passkey(state, &auth.did).await;
     match mint_pending_step_up(
         &state.sessions_ks,
         &vta_did,
@@ -1283,6 +1366,7 @@ pub(super) async fn initiate_self_step_up(
         reason,
         authorization_context,
         None,
+        approver_has_passkey,
     )
     .await
     {
@@ -1447,6 +1531,7 @@ mod tests {
                 "rotate keys",
                 None,
                 None,
+                false,
             )
             .await
             .expect("mint succeeds"),
@@ -1566,6 +1651,7 @@ mod tests {
                 "finance wants to share salaryBand with travel",
                 Some(&ctx),
                 None,
+                false,
             )
             .await
             .expect("mint succeeds"),
@@ -1753,6 +1839,368 @@ mod tests {
             }
             other => panic!("expected both to be ProofInvalid, got {other:?}"),
         }
+    }
+
+    // ── Passkey-only step-up (security decision) ─────────────────────
+    //
+    // Once a subject has an enrolled passkey verification method, step-up for
+    // it MUST be satisfied by a passkey (webauthn) assertion only: mint stops
+    // offering `did-signed`, and `handle_approve_response` refuses it
+    // (`noGate`) even if a stale or bypassing client sends it anyway. A
+    // subject with no passkey keeps the original did-signed-or-webauthn offer.
+
+    /// Build a signed `auth/step-up/approve-response/0.2` document over an
+    /// arbitrary `payload` — [`signed_doc_for`] generalised: that helper
+    /// fixes the payload shape (no `evidence`, a hardcoded challenge), which
+    /// the passkey-gate tests need to vary (a real minted challenge,
+    /// `evidence.kind: webauthn`).
+    fn signed_approve_response(
+        sk: &SigningKey,
+        issuer_did: &str,
+        vm: &str,
+        payload: Value,
+    ) -> TrustTask<Value> {
+        let doc_json = json!({
+            "id": format!("urn:uuid:{}", Uuid::new_v4()),
+            "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.2",
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "issuer": issuer_did,
+            "recipient": "did:web:vta.example",
+            "payload": payload,
+        });
+        let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
+        let mut di = DataIntegrityProof::new(
+            CryptoSuite::EddsaJcs2022,
+            vm.to_string(),
+            "assertionMethod".to_string(),
+            None,
+            Some("2026-05-31T00:00:00Z".to_string()),
+            None,
+        );
+        let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
+        let sig = sk.sign(&input);
+        di.proof_value = Some(multibase::encode(Base::Base58Btc, sig.to_bytes()));
+        let proof_json = serde_json::to_value(&di).unwrap();
+        doc.proof = Some(serde_json::from_value::<Proof>(proof_json).unwrap());
+        doc
+    }
+
+    /// An `aal1`, single-`did`-factor session ready to elevate.
+    fn fresh_session(session_id: &str, did: &str) -> vti_common::auth::session::Session {
+        vti_common::auth::session::Session {
+            session_id: session_id.to_string(),
+            did: did.to_string(),
+            challenge: String::new(),
+            state: vti_common::auth::session::SessionState::Authenticated,
+            created_at: now_epoch(),
+            last_seen: now_epoch(),
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: vec!["did".to_string()],
+            acr: "aal1".to_string(),
+            acr_expires_at: None,
+            token_id: None,
+            session_pubkey_b58btc: None,
+        }
+    }
+
+    fn auth_claims_for(did: &str, session_id: &str) -> AuthClaims {
+        AuthClaims {
+            did: did.to_string(),
+            role: crate::acl::Role::Reader,
+            allowed_contexts: vec![],
+            session_id: session_id.to_string(),
+            access_expires_at: 0,
+            issued_at: 0,
+            amr: vec![],
+            acr: String::new(),
+        }
+    }
+
+    fn body_text(out: &TrustTaskOutcome) -> String {
+        String::from_utf8_lossy(&out.body).into_owned()
+    }
+
+    #[tokio::test]
+    async fn mint_drops_did_signed_when_the_approver_has_a_passkey() {
+        use vti_common::auth::step_up::get_pending_step_up;
+        use vti_common::config::StoreConfig;
+        use vti_common::store::Store;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::SESSIONS).unwrap();
+
+        let sk = SigningKey::from_bytes(&[60u8; 32]);
+        let (vta_did, mb) = did_key(&sk);
+        let secret = issuer_secret(&sk, &format!("{vta_did}#{mb}"));
+
+        let doc = mint_pending_step_up(
+            &ks,
+            &vta_did,
+            &secret,
+            "did:key:zPasskeyHolder",
+            "did:key:zPasskeyHolder",
+            false,
+            "sess-mint-pk",
+            "rotate keys",
+            None,
+            None,
+            true, // approver_has_passkey
+        )
+        .await
+        .expect("mint succeeds");
+
+        assert_eq!(doc["payload"]["acceptableEvidence"], json!(["webauthn"]));
+
+        let challenge = doc["payload"]["challenge"]
+            .as_str()
+            .expect("challenge string");
+        let pending = get_pending_step_up(&ks, challenge).await.unwrap().unwrap();
+        assert_eq!(pending.acceptable_evidence, vec!["webauthn".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn subject_with_no_passkey_keeps_did_signed_step_up() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+
+        let sk = SigningKey::from_bytes(&[61u8; 32]);
+        let (subject_did, mb) = did_key(&sk);
+        let vm = format!("{subject_did}#{mb}");
+        let session_id = "sess-no-pk";
+
+        vti_common::auth::session::store_session(
+            &state.sessions_ks,
+            &fresh_session(session_id, &subject_did),
+        )
+        .await
+        .unwrap();
+
+        // No passkey enrolled anywhere for this DID, so `subject_has_passkey`
+        // reports false and mint offers both gates — same as it always has.
+        let approver_has_passkey = subject_has_passkey(&state, &subject_did).await;
+        assert!(!approver_has_passkey);
+
+        let sk2 = SigningKey::from_bytes(&[62u8; 32]);
+        let (vta_did2, mb2) = did_key(&sk2);
+        let secret2 = issuer_secret(&sk2, &format!("{vta_did2}#{mb2}"));
+        let req = mint_pending_step_up(
+            &state.sessions_ks,
+            &vta_did2,
+            &secret2,
+            &subject_did,
+            &subject_did,
+            false,
+            session_id,
+            "reason",
+            None,
+            None,
+            approver_has_passkey,
+        )
+        .await
+        .unwrap();
+        let challenge = req["payload"]["challenge"].as_str().unwrap().to_string();
+
+        let payload = json!({
+            "subject": subject_did,
+            "sessionId": session_id,
+            "challenge": challenge,
+            "decision": "approved",
+            "grantedAcr": "aal2",
+        });
+        let doc = signed_approve_response(&sk, &subject_did, &vm, payload);
+        let auth = auth_claims_for(&subject_did, session_id);
+
+        let out = handle_approve_response(&state, &auth, doc).await;
+        let body = body_text(&out);
+        assert!(
+            body.contains("\"elevated\""),
+            "expected elevated, got: {body}"
+        );
+
+        let session = vti_common::auth::session::get_session(&state.sessions_ks, session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.acr, "aal2");
+        assert!(session.amr.iter().any(|m| m == "did"));
+    }
+
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn passkey_holder_did_signed_is_refused_and_webauthn_is_accepted() {
+        use crate::test_support::SoftAuthenticator;
+
+        const RP_ID: &str = "vta.test";
+        const ORIGIN: &str = "https://vta.test";
+
+        // `build_signing_test_app_state` sets `public_url =
+        // "https://vta.test"`, which `verify_webauthn_gate` derives its RP
+        // id/expected origin from.
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+
+        let sk = SigningKey::from_bytes(&[63u8; 32]);
+        let (subject_did, mb) = did_key(&sk);
+        let vm = format!("{subject_did}#{mb}");
+        let session_id = "sess-pk";
+
+        // Enroll a passkey VM for the subject — the local WebVH store (what
+        // `has_passkey_vm` / `find_passkey_vm_by_credential_id` read) plus the
+        // shared DID-resolver cache (what the signature check resolves
+        // `publicKeyMultibase` through). No live webvh host needed for
+        // either: a hand-built, unchained log line is enough for both reads
+        // (see `passkey_vms_of`'s and `preload_self_did_document`'s doc).
+        let authenticator = SoftAuthenticator::new(0x64);
+        let registration = authenticator.register(RP_ID, ORIGIN, "unused-registration-challenge");
+        let passkey_vm_id = format!("{subject_did}#passkey-x");
+        let doc_json = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": subject_did,
+            "verificationMethod": [{
+                "id": passkey_vm_id,
+                "type": "Multikey",
+                "controller": subject_did,
+                "publicKeyMultibase": registration.public_key_multibase,
+                "webauthnCredentialId": registration.credential_id,
+            }],
+            "authentication": [passkey_vm_id],
+        });
+        let log_line = json!({
+            "versionId": "1-test",
+            "versionTime": "2026-05-06T00:00:00Z",
+            "parameters": {},
+            "state": doc_json,
+        });
+        crate::webvh_store::store_did_log(
+            &state.webvh_ks,
+            &subject_did,
+            &serde_json::to_string(&log_line).unwrap(),
+        )
+        .await
+        .unwrap();
+        let mut resolver = state.did_resolver.clone().expect("resolver configured");
+        resolver
+            .add_did_document(&subject_did, serde_json::from_value(doc_json).unwrap())
+            .await;
+
+        vti_common::auth::session::store_session(
+            &state.sessions_ks,
+            &fresh_session(session_id, &subject_did),
+        )
+        .await
+        .unwrap();
+        let auth = auth_claims_for(&subject_did, session_id);
+
+        let approver_has_passkey = subject_has_passkey(&state, &subject_did).await;
+        assert!(approver_has_passkey, "the seeded passkey VM must be found");
+
+        let sk2 = SigningKey::from_bytes(&[65u8; 32]);
+        let (vta_did2, mb2) = did_key(&sk2);
+        let secret2 = issuer_secret(&sk2, &format!("{vta_did2}#{mb2}"));
+
+        // -- 1. A did-signed approve-response is refused with `noGate`. --
+        let req1 = mint_pending_step_up(
+            &state.sessions_ks,
+            &vta_did2,
+            &secret2,
+            &subject_did,
+            &subject_did,
+            false,
+            session_id,
+            "reason",
+            None,
+            None,
+            approver_has_passkey,
+        )
+        .await
+        .unwrap();
+        assert_eq!(req1["payload"]["acceptableEvidence"], json!(["webauthn"]));
+        let challenge1 = req1["payload"]["challenge"].as_str().unwrap().to_string();
+
+        let did_signed_payload = json!({
+            "subject": subject_did,
+            "sessionId": session_id,
+            "challenge": challenge1,
+            "decision": "approved",
+            "grantedAcr": "aal2",
+        });
+        let did_signed_doc = signed_approve_response(&sk, &subject_did, &vm, did_signed_payload);
+        let out1 = handle_approve_response(&state, &auth, did_signed_doc).await;
+        let body1 = body_text(&out1);
+        assert!(
+            body1.contains("noGate"),
+            "a passkey holder's did-signed approve-response must be refused with noGate, got: {body1}"
+        );
+        let unchanged = vti_common::auth::session::get_session(&state.sessions_ks, session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            unchanged.acr, "aal1",
+            "the refused response must not elevate anything"
+        );
+
+        // -- 2. A webauthn approve-response over the same passkey is accepted. --
+        let req2 = mint_pending_step_up(
+            &state.sessions_ks,
+            &vta_did2,
+            &secret2,
+            &subject_did,
+            &subject_did,
+            false,
+            session_id,
+            "reason",
+            None,
+            None,
+            approver_has_passkey,
+        )
+        .await
+        .unwrap();
+        let challenge2 = req2["payload"]["challenge"].as_str().unwrap().to_string();
+
+        // The WebAuthn `clientData.challenge` is base64url over the RAW BYTES
+        // of the step-up challenge string — `verify_webauthn_gate` passes
+        // `challenge.as_bytes()` as the expected-challenge bytes.
+        let webauthn_challenge_b64 = general_purpose::URL_SAFE_NO_PAD.encode(challenge2.as_bytes());
+        let assertion = authenticator.assert(RP_ID, ORIGIN, &webauthn_challenge_b64, true);
+
+        let webauthn_payload = json!({
+            "subject": subject_did,
+            "sessionId": session_id,
+            "challenge": challenge2,
+            "decision": "approved",
+            "grantedAcr": "aal2",
+            "evidence": {
+                "kind": "webauthn",
+                "assertion": {
+                    "id": assertion.credential_id,
+                    "rawId": assertion.credential_id,
+                    "type": "public-key",
+                    "response": {
+                        "authenticatorData": assertion.authenticator_data,
+                        "clientDataJSON": assertion.client_data_json,
+                        "signature": assertion.signature,
+                    },
+                },
+            },
+        });
+        let webauthn_doc = signed_approve_response(&sk, &subject_did, &vm, webauthn_payload);
+        let out2 = handle_approve_response(&state, &auth, webauthn_doc).await;
+        let body2 = body_text(&out2);
+        assert!(
+            body2.contains("\"elevated\""),
+            "a passkey holder's webauthn approve-response must be accepted, got: {body2}"
+        );
+        let elevated = vti_common::auth::session::get_session(&state.sessions_ks, session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(elevated.acr, "aal2");
+        assert!(elevated.amr.iter().any(|m| m == "passkey"));
     }
 }
 

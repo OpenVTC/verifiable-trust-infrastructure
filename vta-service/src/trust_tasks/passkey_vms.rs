@@ -156,6 +156,7 @@ pub(super) async fn handle_enroll_submit(
     match operations::passkey_vms::finish_enrollment(
         &deps,
         &state.passkey_vms_ks,
+        &state.sessions_ks,
         auth,
         req,
         vta_did.as_deref(),
