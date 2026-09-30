@@ -81,7 +81,7 @@ async fn whoami_reports_live_session_acr_not_stale_token() {
     let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
@@ -198,7 +198,7 @@ async fn whoami_reports_effective_capabilities_including_an_additive_grant() {
     let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
@@ -289,7 +289,7 @@ async fn whoami_does_not_invent_a_capability_nobody_granted() {
     let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
@@ -320,7 +320,7 @@ async fn whoami_without_bearer_is_unauthorized() {
     });
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
         .unwrap();

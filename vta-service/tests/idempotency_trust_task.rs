@@ -114,7 +114,7 @@ fn create_doc_as(seed: u8, envelope_id: &str, label: &str, idempotency_key: Opti
 async fn post(router: &axum::Router, token: &str, doc: &Value) -> (StatusCode, Value) {
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(doc).unwrap()))

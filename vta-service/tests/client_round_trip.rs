@@ -456,10 +456,6 @@ async fn webvh_get_did_round_trips_after_the_get_log_fold() {
     use vta_sdk::webvh::WebvhDidRecord;
 
     let mock = MockVta::start().await;
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkRoundTripAdmin", "admin", vec![])
-        .await;
     let client = mock.signing_client(0x30, "admin", vec![]).await;
 
     let did = "did:webvh:example.com:round-trip";
@@ -496,15 +492,36 @@ async fn webvh_get_did_round_trips_after_the_get_log_fold() {
     // `includeLog` failed to bind, the log would come back on every
     // record read — the fold would look like it worked while quietly
     // making every `dids/get` pay for the log.
-    let raw = |qs: &str| {
-        // Colons are legal path characters (RFC 3986 pchar), so the DID
-        // needs no escaping here.
-        let url = format!("{}/webvh/dids/{}{}", mock.base_url(), did, qs);
-        let token = token.clone();
+    //
+    // `GET /webvh/dids/{did}?includeLog=` was the REST twin of this task; it's
+    // gone (WebVH server/DID management is Trust Tasks only now), so the
+    // binding is exercised the same way every other caller reaches it: a
+    // signed `webvh/dids/get/1.0` document over `/trust-tasks`, read as the
+    // raw envelope so the `record`/`log` shape itself is checked, not just
+    // what the SDK's typed methods choose to project from it.
+    let (issuer_did, _) = vta_service::test_support::did_for_seed(0x30);
+    let issuer_token = mock.ctx.mint_token(&issuer_did, "admin", vec![]).await;
+    let raw = |include_log: bool| {
+        let url = format!("{}/trust-tasks", mock.base_url());
+        let token = issuer_token.clone();
+        let recipient = mock.ctx.vta_did.clone();
+        let issuer = issuer_did.clone();
         async move {
+            let mut doc: trust_tasks_rs::TrustTask<serde_json::Value> =
+                serde_json::from_value(serde_json::json!({
+                    "id": format!("urn:uuid:webvh-get-{include_log}"),
+                    "type": vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
+                    "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    "issuer": issuer,
+                    "recipient": recipient,
+                    "payload": { "did": did, "includeLog": include_log },
+                }))
+                .expect("envelope deserialises");
+            vta_service::test_support::sign_as(0x30, &mut doc);
             reqwest::Client::new()
-                .get(url)
+                .post(url)
                 .bearer_auth(token)
+                .json(&doc)
                 .send()
                 .await
                 .expect("request")
@@ -513,19 +530,19 @@ async fn webvh_get_did_round_trips_after_the_get_log_fold() {
                 .expect("json")
         }
     };
-    let without = raw("").await;
-    // Under `record`, not at the top level — the REST route shares its
-    // response type with the Trust Task, so both surfaces moved together.
-    assert_eq!(without["record"]["did"], did);
+    let without = raw(false).await;
+    // Under `payload.record`, not at the top level — the retired REST route
+    // shared this response type with the Trust Task, and both moved together.
+    assert_eq!(without["payload"]["record"]["did"], did, "{without}");
     assert!(
-        without.get("log").is_none(),
+        without["payload"].get("log").is_none(),
         "the log must be omitted unless requested: {without}"
     );
-    let with = raw("?includeLog=true").await;
+    let with = raw(true).await;
     // `log` is a sibling of `record`, not a member of it: it is not part of
     // the record the VTA stores, it is the DID's own history.
     assert_eq!(
-        with["log"], "{\"state\":{}}",
+        with["payload"]["log"], "{\"state\":{}}",
         "includeLog=true must return the log: {with}"
     );
 

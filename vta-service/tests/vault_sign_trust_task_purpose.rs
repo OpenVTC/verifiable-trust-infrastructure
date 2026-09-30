@@ -7,7 +7,7 @@
 //! `assertionMethod` on operational tasks refused every document a wallet
 //! session had the VTA sign for it.
 //!
-//! These tests sign through `/api/trust-tasks` with a real key held in the
+//! These tests sign through `/trust-tasks` with a real key held in the
 //! entry's context, then check the proof: its declared purpose, and that it
 //! verifies over the envelope under the principal's public key (so the purpose
 //! is inside the signature, not pasted on afterwards). The refusal paths cover
@@ -54,7 +54,7 @@ fn signed_doc(type_uri: &str, payload: Value) -> Value {
 async fn post(router: &axum::Router, token: &str, doc: &Value) -> (StatusCode, Value) {
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(doc).unwrap()))

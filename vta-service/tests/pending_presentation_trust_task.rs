@@ -127,7 +127,7 @@ fn tt(id: &str, type_uri: &str, issuer: &str, payload: Value) -> Value {
 async fn post_tt(router: &axum::Router, token: Option<&str>, doc: &Value) -> (StatusCode, Value) {
     let mut builder = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("content-type", "application/json");
     if let Some(t) = token {
         builder = builder.header("authorization", format!("Bearer {t}"));

@@ -57,7 +57,7 @@ decision := {"decision": "requireConsent", "requireConsent": {"approverSet": "op
 async fn post(router: &axum::Router, token: &str, doc: &Value) -> (StatusCode, Value) {
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(doc).unwrap()))
@@ -820,8 +820,12 @@ async fn rest_and_trust_task_reach_the_same_consent_decision() {
         "trust-task path must ask for consent: {tt_body}"
     );
 
-    // ── REST path: the same policy, the same answer. Before the shared gate
-    //    this returned 201 and the ACL entry was created.
+    // ── REST path: `/acl` is gone outright (see `deprecation` module docs —
+    //    ACL REST routes were deleted in one pass, no shim, no counter).
+    //    There is no longer a "REST reaches the same decision" to prove:
+    //    the only root-level fallback left is the did:webvh wildcard GET
+    //    route, so a POST here 405s rather than 404ing, and never reaches
+    //    the ACL gate at all. Assert the route is gone, not that it refuses.
     let rest_req = Request::builder()
         .method("POST")
         .uri("/acl")
@@ -831,24 +835,11 @@ async fn rest_and_trust_task_reach_the_same_consent_decision() {
         .unwrap();
     let resp = router.clone().oneshot(rest_req).await.unwrap();
     let rest_status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let rest_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
 
     assert_eq!(
         rest_status,
-        StatusCode::FORBIDDEN,
-        "REST must not bypass the consent rule: {rest_body}"
-    );
-    assert_eq!(
-        rest_body["error"], "auth:consent_required",
-        "REST must carry the same machine-readable reason: {rest_body}"
-    );
-    // The actionable half must survive the transport, not merely the refusal —
-    // `AppError::StepUpRequired` could not carry this, which is why the gate
-    // needed its own error variant.
-    assert!(
-        rest_body.get("challenge").is_some(),
-        "REST must carry the consent challenge, not just a 403: {rest_body}"
+        StatusCode::METHOD_NOT_ALLOWED,
+        "the retired /acl REST route must stay gone"
     );
 
     // And the mutation must not have happened on either path.
