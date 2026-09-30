@@ -1538,6 +1538,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         atm: transport.atm.or(opts.atm),
         tee: None,
         restart_tx,
+        #[cfg(feature = "rest")]
         metrics_handle: None,
     };
     // As `server::build_app_state` does: the bridge signs what this VTA sends a
@@ -2077,6 +2078,9 @@ struct MockVtaTransports {
     /// Cancels [`run_inbound_loop`](crate::messaging::service::run_inbound_loop).
     shutdown: tokio_util::sync::CancellationToken,
     loop_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Shared production messaging object. Retained outside the inbound task so
+    /// tests can inspect dynamically-added candidate transports.
+    messaging: Arc<crate::messaging::service::VtaMessaging>,
     /// The listener's ATM. Held so `shutdown` can stop its websocket: the
     /// mediator permits one socket per DID, and an abandoned one keeps
     /// auto-reconnecting (vta-sdk #830).
@@ -2085,6 +2089,63 @@ struct MockVtaTransports {
     /// alongside the ATM. Held so a test can reach the VTA-side relationship
     /// store (see [`MockVta::forget_tsp_relationship`]).
     profile: Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+}
+
+/// A candidate mediator configured for migration-handshake tests.
+///
+/// The VTA is registered as a local account before this is returned, with the
+/// caller-supplied ACL applied as an explicit, observable precondition.
+#[cfg(feature = "transport-harness")]
+#[derive(Debug)]
+pub struct MockCandidateInboxStatus {
+    pub queue_count: u64,
+    pub message_count: u64,
+    pub live_delivery: bool,
+}
+
+#[cfg(feature = "transport-harness")]
+pub struct MockCandidateMediator {
+    mediator: affinidi_messaging_test_mediator::TestMediatorHandle,
+}
+
+#[cfg(feature = "transport-harness")]
+impl MockCandidateMediator {
+    pub fn did(&self) -> &str {
+        self.mediator.did()
+    }
+
+    pub async fn acl_for(&self, did: &str) -> affinidi_messaging_test_mediator::MediatorACLSet {
+        self.mediator
+            .get_acl(did)
+            .await
+            .expect("read candidate mediator ACL")
+            .expect("candidate mediator account exists")
+    }
+
+    pub async fn inbox_status(&self, did: &str) -> MockCandidateInboxStatus {
+        use sha2::{Digest, Sha256};
+
+        let did_hash = hex::encode(Sha256::digest(did.as_bytes()));
+        let status = self
+            .mediator
+            .store()
+            .inbox_status(&did_hash)
+            .await
+            .expect("read candidate mediator inbox status");
+        MockCandidateInboxStatus {
+            queue_count: status.queue_count,
+            message_count: status.message_count,
+            live_delivery: status.live_delivery,
+        }
+    }
+
+    pub async fn shutdown(self) {
+        self.mediator.shutdown();
+        self.mediator
+            .join()
+            .await
+            .expect("candidate mediator joins cleanly");
+    }
 }
 
 impl MockVta {
@@ -2211,6 +2272,9 @@ impl MockVta {
         // nothing explaining it.
         let mediator = TestMediator::builder()
             .local_direct_delivery(true, false)
+            .enable_forwarding(true)
+            .enable_external_forwarding(true)
+            .enable_inter_mediator_relay(true)
             .spawn()
             .await
             .expect("spawn test mediator");
@@ -2308,19 +2372,21 @@ impl MockVta {
 
         // The listener's own ATM + websocket — separate from `AppState.atm`,
         // which has none (one socket per DID).
-        let messaging = crate::messaging::service::build_messaging(
-            secrets,
-            &vta_did,
-            &mediator_did,
-            ctx.outbox_ks.clone(),
-            ctx.state.trust_task_pushes_ks.clone(),
-            ctx.relationships_ks.clone(),
-            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            ctx.state.did_resolver.as_ref(),
-            None,
-        )
-        .await
-        .expect("build VTA messaging over the test mediator");
+        let messaging = Arc::new(
+            crate::messaging::service::build_messaging(
+                secrets,
+                &vta_did,
+                &mediator_did,
+                ctx.outbox_ks.clone(),
+                ctx.state.trust_task_pushes_ks.clone(),
+                ctx.relationships_ks.clone(),
+                std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                ctx.state.did_resolver.as_ref(),
+                None,
+            )
+            .await
+            .expect("build VTA messaging over the test mediator"),
+        );
         let atm = messaging.atm.clone();
         let messaging_profile = messaging.profile.clone();
 
@@ -2341,7 +2407,7 @@ impl MockVta {
         let shutdown = tokio_util::sync::CancellationToken::new();
         let loop_handle = tokio::spawn({
             let (messaging, state, vta_did, shutdown) = (
-                Arc::new(messaging),
+                Arc::clone(&messaging),
                 ctx.state.clone(),
                 vta_did.clone(),
                 shutdown.clone(),
@@ -2358,6 +2424,7 @@ impl MockVta {
             mediator_did,
             shutdown,
             loop_handle: Some(loop_handle),
+            messaging,
             atm,
             profile: messaging_profile,
         });
@@ -2392,6 +2459,72 @@ impl MockVta {
             .as_ref()
             .expect("mediator_did() requires start_with_transports()")
             .mediator_did
+    }
+
+    /// Spawn a candidate mediator and register this VTA as a local account with
+    /// the supplied ACL. This models the target of a live update handshake.
+    #[cfg(feature = "transport-harness")]
+    pub async fn spawn_candidate_mediator(
+        &self,
+        initial_acl: affinidi_messaging_test_mediator::MediatorACLSet,
+    ) -> MockCandidateMediator {
+        let mediator = affinidi_messaging_test_mediator::TestMediator::builder()
+            .global_acl_default(initial_acl.clone())
+            .local_did(self.vta_did().to_string())
+            .enable_forwarding(true)
+            .enable_external_forwarding(true)
+            .enable_inter_mediator_relay(true)
+            .spawn()
+            .await
+            .expect("spawn candidate mediator");
+        mediator
+            .set_acl(self.vta_did(), initial_acl)
+            .await
+            .expect("apply candidate mediator ACL");
+        MockCandidateMediator { mediator }
+    }
+
+    /// Live connection state of a dynamically-added candidate transport.
+    #[cfg(feature = "transport-harness")]
+    pub fn candidate_transport_state(
+        &self,
+        mediator_did: &str,
+    ) -> Option<affinidi_messaging_core::ConnState> {
+        self.transports
+            .as_ref()
+            .expect("candidate_transport_state() requires start_with_transports()")
+            .messaging
+            .service
+            .transport_state(mediator_did)
+    }
+
+    /// Run the production live mediator prover against a candidate mediator.
+    /// The mock must have been started with transports so its bridge owns the
+    /// running messaging service and ATM that an update operation would use.
+    #[cfg(feature = "transport-harness")]
+    pub async fn prove_candidate_mediator(
+        &self,
+        mediator_did: &str,
+        setup_acl: bool,
+    ) -> Result<(), crate::messaging::handshake::ProverFailure> {
+        use crate::messaging::handshake::{ListenerProver, ResolvedMediator};
+
+        let prover = crate::messaging::live_prover::DIDCommServiceProver::new(
+            Arc::clone(&self.ctx.state.didcomm_bridge),
+            self.vta_did(),
+        );
+        prover
+            .prove(
+                &ResolvedMediator {
+                    mediator_did: mediator_did.to_string(),
+                    endpoint: String::new(),
+                },
+                self.vta_did(),
+                std::time::Duration::from_secs(10),
+                setup_acl,
+                "test",
+            )
+            .await
     }
 
     /// Register `did` as a local account on the embedded mediator, so the
@@ -2607,6 +2740,72 @@ impl Drop for MockVta {
 mod transport_harness_tests {
     use super::*;
     use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+
+    fn closed_for_forwarded() -> affinidi_messaging_test_mediator::MediatorACLSet {
+        let mut acls = affinidi_messaging_test_mediator::acl::allow_all();
+        acls.set_receive_forwarded(false, true, true)
+            .expect("admin=true may always set this bit");
+        acls
+    }
+
+    #[tokio::test]
+    async fn live_prover_provisions_acl_and_completes_cross_mediator_trust_ping() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "vta_service::messaging=debug".into()),
+            )
+            .with_test_writer()
+            .try_init();
+        affinidi_messaging_test_mediator::install_default_crypto_provider();
+
+        let mock = MockVta::start_with_transports().await;
+        let candidate = mock.spawn_candidate_mediator(closed_for_forwarded()).await;
+
+        let before = candidate.acl_for(mock.vta_did()).await;
+        assert!(
+            !before.get_receive_forwarded().0,
+            "fixture must start closed so the test can observe ACL provisioning"
+        );
+
+        let candidate_did = candidate.did().to_string();
+        let mut proof = Box::pin(mock.prove_candidate_mediator(&candidate_did, true));
+        let connected = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    result = &mut proof => panic!("proof finished before candidate connected: {result:?}"),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
+                        if matches!(
+                            mock.candidate_transport_state(&candidate_did),
+                            Some(affinidi_messaging_core::ConnState::Connected)
+                        ) {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .is_ok();
+        assert!(connected, "candidate transport must become connected");
+
+        let proof = proof.await;
+        let transport_state = mock.candidate_transport_state(&candidate_did);
+        let inbox_status = candidate.inbox_status(mock.vta_did()).await;
+
+        let after = candidate.acl_for(mock.vta_did()).await;
+        assert!(after.get_receive_forwarded().0);
+        assert!(after.get_receive_messages().0);
+
+        mock.shutdown().await;
+        candidate.shutdown().await;
+        proof.unwrap_or_else(|error| {
+            panic!(
+                "ACL setup succeeded but candidate proof failed: {error:?}; \
+                 transport_state={transport_state:?}; inbox_status={inbox_status:?}"
+            )
+        });
+    }
 
     /// The point of the whole harness: the mock's DID must advertise both
     /// transports **to a resolver it has never touched**.
@@ -3196,6 +3395,24 @@ mod transport_harness_tests {
                 .expect("clock")
                 .as_millis() as u64
         };
+
+        // The peer's own invite reaches the VTA asynchronously, and recording
+        // it stamps the relationship's activity. Let that land first, or it
+        // can overwrite the aged stamp below and the relationship reads as
+        // freshly heard from.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while store
+            .get(&our, peer.did())
+            .await
+            .expect("read the relationship")
+            == RelationshipState::None
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the VTA never recorded the peer's invite"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
 
         // Established, but last heard from two hours ago.
         store

@@ -197,6 +197,12 @@ async fn sweep_all(
     sweep_once(join_requests_ks, retention_days, now).await?;
     let challenges =
         crate::credentials::present_challenge::sweep_expired(join_requests_ks, now).await?;
+    // Hidden-vetter admission (`zkp-pcs`): its challenges share this keyspace under a prefix of
+    // their own, and an applicant who asks for one and walks away leaves a row behind exactly
+    // as a holder who never presents does.
+    #[cfg(feature = "vetting-pcs")]
+    let challenges =
+        challenges + crate::vetting::pcs_challenge::sweep_expired(join_requests_ks, now).await?;
     let offers = crate::credentials::exchange::sweep_expired_pending(join_requests_ks, now).await?;
     let failed_jobs =
         crate::registry::storage::sweep_failed_sync_jobs(sync_queue_ks, retention_days, now)

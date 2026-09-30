@@ -603,6 +603,9 @@ pub async fn realize_join_verdict(
     let mut request = JoinRequest::new(applicant_did.to_string(), vp);
     request.vp_claims = vp_claims;
     request.registry_consent = registry_consent;
+    // The decision is made; the proof is not kept (see `vetting::redact_hidden_submission`).
+    let mut extensions = extensions;
+    crate::vetting::redact_hidden_submission(&mut extensions);
     request.extensions = extensions;
     request.attributes = attributes;
 
@@ -1158,6 +1161,9 @@ pub async fn supplement_inner(
     // policy's effects act on is the one carrying the evidence it read.
     request.vp_claims = extract_vp_claims(&vp);
     request.vp = vp;
+    // As on submit: decided, then not kept.
+    let mut extensions = extensions;
+    crate::vetting::redact_hidden_submission(&mut extensions);
     request.extensions = extensions;
 
     let admit = apply_verdict_to_request(

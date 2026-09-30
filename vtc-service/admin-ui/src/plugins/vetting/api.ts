@@ -1,17 +1,17 @@
 // Vetting admin API — what the vetting panels, the join-request detail and the
 // dashboard read and write.
 //
-// Naming a vetter, the vetter listing, the join manifest and the
-// endorsement-type writes are signed documents, sent from this browser's
-// console key. Resending a member's grant is admin REST under its task: the
-// signed `resend` is the vetter's own request for their credential, and names
-// no one else. The rest are admin REST the daemon mounts with no binding,
-// because no published task describes them — the grant listing, automatic
-// grants, withdrawal notices, a join request's vetting facts and community
-// branding — so they go through the `*Exempt` helpers instead of borrowing a
-// task URI that names something else.
+// Naming a vetter, the vetter listing, the join manifest, resending a grant
+// and the endorsement-type writes are all signed documents, sent from this
+// browser's console key — resend on `0.2`, which adds the `memberDid` an
+// administrator names to resend on a vetter's behalf (`0.1` alone, the
+// vetter's own request, names no one else). The rest are admin REST the
+// daemon mounts with no binding, because no published task describes them —
+// the grant listing, automatic grants, withdrawal notices, a join request's
+// vetting facts and community branding — so they go through the `*Exempt`
+// helpers instead of borrowing a task URI that names something else.
 
-import { deleteJson, postJson, postSignedRead, postSignedTrustTask } from "@/lib/api";
+import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import type {
   AcceptsCriterion,
   AutoGrantConfig,
@@ -39,8 +39,8 @@ import type {
 
 const TASK_VETTER_GRANT =
   "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
-const TASK_VETTER_RESEND =
-  "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1";
+const TASK_VETTER_RESEND_0_2 =
+  "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2";
 const TASK_VETTER_LIST =
   "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1";
 const TASK_ENDORSEMENT_REVOKE =
@@ -115,17 +115,13 @@ export const grantVetter = (args: {
 
 /** A grant is withdrawn like any endorsement. */
 export const revokeGrant = (endorsementId: string): Promise<unknown> =>
-  deleteJson<unknown>(
-    `/v1/credentials/endorsements/${encodeURIComponent(endorsementId)}`,
-    { trustTask: TASK_ENDORSEMENT_REVOKE },
-  );
+  postSignedTrustTask<unknown>(TASK_ENDORSEMENT_REVOKE, { endorsementId });
 
+/** An administrator resending a named vetter's live grant credential
+ * (`vtc/vetting/vetters/resend/0.2`'s `memberDid` route — a vetter's own
+ * resend, `0.1`, carries no payload and names nobody else). */
 export const resendGrant = (memberDid: string): Promise<VetterResendResponse> =>
-  postJson<VetterResendResponse>(
-    `/v1/vetting/vetters/${encodeURIComponent(memberDid)}/resend`,
-    undefined,
-    { trustTask: TASK_VETTER_RESEND },
-  );
+  postSignedTrustTask<VetterResendResponse>(TASK_VETTER_RESEND_0_2, { memberDid });
 
 const MAX_MEMBER_PAGES = 10;
 

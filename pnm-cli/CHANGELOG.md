@@ -2,6 +2,48 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.26.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.26.2...pnm-cli-v0.26.3) — 2026-09-30
+
+
+### Added
+
+- **vta**: Clear a context's DID with vta/contexts/update-did/1.1 ([#1828](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1828))
+
+* feat(vta): clear a context's DID with vta/contexts/update-did/1.1
+
+  Once a context had a DID it could be replaced but never removed:
+  update-did/1.0 requires a non-empty `did`, and contexts/update only sets
+  one. `webvh/dids/delete` refuses a DID a context still acts as and says
+  "reassign it first", so a context's last DID could not be retired short
+  of assigning another the operator did not want.
+
+  Serve update-did/1.1 (trust-tasks `feat(vta/contexts/update-did): 1.1`)
+  beside 1.0 through one handler. `did: null` clears — the record comes
+  back with `did` absent, and clearing a context with no DID succeeds. A
+  string `did` must be a DID; 1.1 is parsed into the generated
+  `update_did::v1_1::Payload`, whose `PayloadDid` holds the pattern, and
+  1.0 keeps its original body. 1.0 is listed as superseded by 1.1, and the
+  legacy `PUT /contexts/{id}/did` now names 1.1 as its successor.
+
+  - vta-sdk: `TASK_CONTEXTS_UPDATE_DID_1_1` (retry-safe);
+    `update_context_did` sends 1.1; new `clear_context_did`.
+  - pnm / cnm: `contexts update-did <id> --clear`, and
+    `contexts update <id> --clear-did` (conflicts with `--did`), both on
+    update-did so a context admin can do it.
+  - The delete blocker offers both fixes and names update-did rather than
+    contexts/update (super-admin only); its text also carried a run of
+    literal spaces from an unjoined line wrap.
+
+  Needs a trust-tasks-rs release carrying update_did::v1_1; see the TODO
+  on the floor in Cargo.toml.
+
+
+
+### Fixed
+
+- **vta**: Provision mediator ACL during DIDComm enable and update ([#1843](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1843))
+
+
 ## [0.26.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.26.1...pnm-cli-v0.26.2) — 2026-09-28
 
 

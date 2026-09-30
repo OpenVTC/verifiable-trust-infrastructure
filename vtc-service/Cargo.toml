@@ -16,6 +16,11 @@ repository.workspace = true
 
 [features]
 default = ["setup", "keyring", "website", "admin-ui", "tsp"]
+# Hidden-vetter admission (ZKP), development branch `zkp-pcs`. Off by default and
+# never in `default`. It adds no curve the graph did not already have —
+# `bls12_381_plus` arrives with `affinidi-bbs` behind the `bbs` feature — but it
+# does add the arkworks stack.
+vetting-pcs = ["dep:vti-vetting-pcs", "dep:predicate-credential-system"]
 # Trust Spanning Protocol transport. **Receive-side, and ON by default.**
 #
 # On by default because a DID document is a contract and this one is routinely
@@ -121,9 +126,12 @@ name = "vtc"
 path = "src/main.rs"
 
 [dependencies]
+# Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
+vti-vetting-pcs = { path = "../vti-vetting-pcs", optional = true }
+predicate-credential-system = { version = "0.1", optional = true }
 vti-rooms = { path = "../vti-rooms", version = "0.2" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
-vti-common = { path = "../vti-common", version = "0.29", features = [
+vti-common = { path = "../vti-common", version = "0.30", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -141,7 +149,7 @@ vti-common = { path = "../vti-common", version = "0.29", features = [
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.4" }
-vta-sdk = { path = "../vta-sdk", version = "0.56", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.57", features = [
   "didcomm",
   "session",
   "config-session",

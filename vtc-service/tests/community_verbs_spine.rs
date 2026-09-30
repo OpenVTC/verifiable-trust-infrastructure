@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use vti_rooms_dtg::test_support::Party;
 
 use common::signed::{
-    admin, bearer_route_served, bearer_route_served_as, call, error_code, party_with_role, payload,
-    post, seed_role, unsigned,
+    admin, bearer_route_served_as, call, error_code, party_with_role, payload, post, seed_role,
+    unsigned,
 };
 use vtc_service::acl::VtcRole;
 use vtc_service::members::{Member, store_member};
@@ -404,13 +404,12 @@ async fn the_bearer_routes_are_gone() {
     }
 }
 
-/// The member and join-request listings keep their bearer routes while
-/// `vtc-client` calls them.
+/// The member and join-request listings have no bearer route either.
 #[tokio::test]
-async fn the_listings_vtc_client_calls_keep_their_routes() {
+async fn the_listings_have_no_bearer_route() {
     let (vtc, _) = vtc().await;
-    assert!(bearer_route_served(&vtc, "GET", "/v1/members").await);
-    assert!(bearer_route_served(&vtc, "GET", "/v1/join-requests").await);
+    assert!(!bearer_route_served_as(&vtc, "GET", "/v1/members", MEMBERS_LIST).await);
+    assert!(!bearer_route_served_as(&vtc, "GET", "/v1/join-requests", JOIN_REQUESTS_LIST).await);
 }
 
 /// An issued invitation carries a bearer credential, and a delivered offer a

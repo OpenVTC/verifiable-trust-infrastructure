@@ -23,14 +23,10 @@
 //! `departure_preference`, then the policy's chosen disposition, then
 //! `tombstone`.
 
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use vti_common::error::AppError;
 
-use crate::auth::AdminAuth;
 use crate::ceremony::{LeaveOutcome, remove_inner};
 use crate::error::TaskError;
 use crate::members::Disposition;
@@ -77,11 +73,10 @@ const REASON_MAX: usize = 1024;
 /// Apply one `vtc/members/admin-remove/0.1` on behalf of `actor_did` — the
 /// whole of the operation, with no transport in it.
 ///
-/// Both doors call this: the bearer REST route below, and the signed-document
-/// arm in [`crate::trust_tasks`] (#1641 phase 2). Every check the REST route
-/// used to make inline is here, so neither door can lose one: the DID is well
-/// formed, an admin does not remove themselves through the admin verb, and the
-/// operator `reason` is capped.
+/// The signed-document arm in [`crate::trust_tasks`] (#1641 phase 2) calls
+/// this, on every transport. Every check is here: the DID is well formed, an
+/// admin does not remove themselves through the admin verb, and the operator
+/// `reason` is capped.
 pub(crate) async fn admin_remove_inner(
     state: &AppState,
     actor_did: &str,
@@ -106,38 +101,6 @@ pub(crate) async fn admin_remove_inner(
         .into());
     }
     remove_inner(state, actor_did, target_did, body.disposition, reason).await
-}
-
-/// DELETE /members/{did} — admin removes another member. Auth: Admin.
-///
-/// **Transitional bearer-token path (#1641).** `vtc/members/admin-remove/0.1`
-/// declares `proof` REQUIRED, and the authoritative binding is the signed
-/// Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
-/// the administrator and their authority is read from their ACL entry. This
-/// route authenticates by bearer JWT and verifies no document proof; it is kept
-/// only until the admin console can sign a Trust Task document, and is removed
-/// in the same change that gives it that.
-#[utoipa::path(
-    delete, path = "/members/{did}", tag = "members",
-    security(("bearer_jwt" = [])),
-    params(("did" = String, Path, description = "Member DID")),
-    request_body = RemoveBody,
-    responses(
-        (status = 200, description = "Member removed", body = RemoveResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin / removal denied by policy"),
-        (status = 404, description = "Member not found"),
-    ),
-)]
-pub async fn admin_remove(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(target_did): Path<String>,
-    body: Option<Json<RemoveBody>>,
-) -> Result<(StatusCode, Json<RemoveResponse>), TaskError> {
-    let body = body.map(|Json(b)| b).unwrap_or_default();
-    let outcome = admin_remove_inner(&state, &admin.0.did, &target_did, body).await?;
-    Ok((StatusCode::OK, Json(RemoveResponse::from(outcome))))
 }
 
 // ---------------------------------------------------------------------------

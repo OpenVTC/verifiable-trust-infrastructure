@@ -11,7 +11,7 @@
 //!   2. applicant `manifest` over DIDComm               → real `manifest_inner`, DCQL criteria
 //!   3. manifest DCQL → `vp_token` via `vta_sdk::vp`     → the OpenVTC **D4** capability
 //!   4. applicant `status` over DIDComm                 → real `status_inner`, still pending
-//!   5. admin `approve` over REST                        → real ceremony issues the VMC + role VEC
+//!   5. admin `approve` as a signed document              → real ceremony issues the VMC + role VEC
 //!   6. VMC delivered to the applicant **over DIDComm**  → `credential-exchange/issue` lands
 //!
 //! This is the template a downstream consumer (OpenVTC) copies to test its join
@@ -87,11 +87,8 @@ fn init_tracing() {
 /// see the comment at the assertion for why the previous 20s was marginal.
 const CREDENTIAL_PUSH_TIMEOUT: Duration = Duration::from_secs(60);
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
-use serde_json::{Value, json};
-use tower::ServiceExt;
+use axum::http::StatusCode;
+use serde_json::json;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::auth::session::now_epoch;
@@ -175,6 +172,7 @@ async fn seed_join_ceremony(mock: &MockVtcDidcomm) -> String {
             }),
             description: Some("Join evidence".into()),
             vetting: None,
+            hidden_vetting: None,
             created_at: chrono::Utc::now(),
             created_by_did: ADMIN_DID.into(),
         },
@@ -183,40 +181,6 @@ async fn seed_join_ceremony(mock: &MockVtcDidcomm) -> String {
     .expect("store Accepts criterion");
 
     mock.vtc.token(ADMIN_DID, "admin", vec![]).await
-}
-
-/// `POST` a Trust-Task against the VTC's REST router (the admin surface).
-async fn rest_post(
-    mock: &MockVtcDidcomm,
-    uri: &str,
-    trust_task: &str,
-    token: &str,
-    body: Value,
-) -> (StatusCode, Value) {
-    let res = mock
-        .vtc
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("Trust-Task", trust_task)
-                .header("Authorization", format!("Bearer {token}"))
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .expect("oneshot");
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json = if bytes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
-    };
-    (status, json)
 }
 
 #[tokio::test]
@@ -344,19 +308,20 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     );
     assert_eq!(recovered.status, "pending");
 
-    // 5. Admin approves over REST — the real ceremony admits the applicant,
-    //    issues the VMC + role VEC, and pushes them to the applicant's wallet
-    //    over DIDComm (`deliver_membership_credentials`).
-    let (code, body) = rest_post(
-        &mock,
-        &format!("/v1/join-requests/{request_id}/decide"),
+    // 5. An administrator approves with a signed decision — the real ceremony
+    //    admits the applicant, issues the VMC + role VEC, and pushes them to
+    //    the applicant's wallet over DIDComm (`deliver_membership_credentials`).
+    let _ = admin_token;
+    let admin = common::signed::admin(&mock.vtc).await;
+    let (code, doc) = common::signed::call(
+        &mock.vtc,
+        &admin,
         DECIDE_TASK,
-        &admin_token,
-        json!({ "decision": "approved" }),
+        json!({ "id": request_id, "decision": "approved" }),
     )
     .await;
-    assert_eq!(code, StatusCode::OK, "approve failed: {body}");
-    assert_eq!(body["status"], "approved");
+    assert_eq!(code, StatusCode::OK, "approve failed: {doc}");
+    assert_eq!(doc["payload"]["status"], "approved", "{doc}");
 
     // 6. The membership credential lands at the applicant over DIDComm — the
     //    full push the activation path (T6) needs.

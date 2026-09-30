@@ -164,6 +164,18 @@ fn collect_from_dir(dir: &Path, out: &mut BTreeSet<String>) {
         if path.extension().is_none_or(|e| e != "rs") {
             continue;
         }
+        // Hidden vetting's modules (`vetting/pcs*.rs`) are compiled only with `vetting-pcs`;
+        // without it their literals bind nothing, and scanning them would demand witnesses
+        // for tasks this build cannot serve.
+        if !cfg!(feature = "vetting-pcs")
+            && path.parent().is_some_and(|d| d.ends_with("vetting"))
+            && path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("pcs"))
+        {
+            continue;
+        }
         let text = std::fs::read_to_string(&path).expect("read source file");
         for (idx, _) in text.match_indices(VTC_PREFIX) {
             if idx == 0 || !text[..idx].ends_with('"') {
@@ -597,6 +609,7 @@ fn accepts_criterion() -> Value {
         query: dcql_query(),
         description: Some("A membership credential".into()),
         vetting: None,
+        hidden_vetting: None,
         created_at: TS.parse().expect("fixture timestamp"),
         created_by_did: OTHER_DID.into(),
     })
@@ -703,7 +716,8 @@ fn table() -> Vec<Conformance> {
     use vta_sdk::protocols::join_requests as jr;
     use vta_sdk::protocols::members as mem;
 
-    vec![
+    #[allow(unused_mut)]
+    let mut table = vec![
         // ─── admin ───────────────────────────────────────────────────
         checked!(
             s::admin::bootstrap::v0_1::Payload,
@@ -1107,6 +1121,7 @@ fn table() -> Vec<Conformance> {
                         query: json!({ "credentials": [] }),
                         description: Some("A verified email credential".into()),
                         vetting: None,
+                        hidden_vetting: None,
                         created_at: chrono::Utc::now(),
                         created_by_did: "did:key:zAdmin".into(),
                     }],
@@ -1561,6 +1576,23 @@ fn table() -> Vec<Conformance> {
             // `RevokeResponse` — routes/relationships.rs:423.
             json!({ "id": REQUEST_ID })
         ),
+        checked!(
+            s::relationships::revoke::v0_2::Payload,
+            s::relationships::revoke::v0_2::Response,
+            // The pairwise route: a `VrcRevokeAuthorization` bound to this
+            // document and to the edge, same shape as `publish/0.2`'s `pop`
+            // above with `relationship` in place of `vrcDigestMultibase`.
+            json!({
+                "id": REQUEST_ID,
+                "pop": {
+                    "type": "VrcRevokeAuthorization",
+                    "documentId": REQUEST_ID,
+                    "relationship": REQUEST_ID,
+                    "proof": { "type": "DataIntegrityProof" },
+                },
+            }),
+            json!({ "id": REQUEST_ID })
+        ),
         // ─── website ─────────────────────────────────────────────────
         checked!(
             s::website::files::list::v0_1::Payload,
@@ -1631,6 +1663,7 @@ fn table() -> Vec<Conformance> {
                         id: "kernel-developer".into(),
                         query: json!({ "credentials": [] }),
                         description: Some("Two vetters, one in person".into()),
+                        hidden_vetting: None,
                         vetting: Some(
                             serde_json::from_value(json!({
                                 "version": "0.1",
@@ -1784,6 +1817,21 @@ fn table() -> Vec<Conformance> {
             to_v(
                 s::vetting::vetters::resend::v0_1::Response::try_from(
                     s::vetting::vetters::resend::v0_1::Response::builder()
+                        .credential_id(format!("urn:uuid:{REQUEST_ID}"))
+                        .valid_until(TS.parse::<DateTime<chrono::Utc>>().unwrap()),
+                )
+                .expect("resend response")
+            )
+        ),
+        checked!(
+            s::vetting::vetters::resend::v0_2::Payload,
+            s::vetting::vetters::resend::v0_2::Response,
+            // The administrator's route: `memberDid` names whose grant to
+            // resend, instead of the sender's own (`0.1`'s empty payload).
+            json!({ "memberDid": OTHER_DID }),
+            to_v(
+                s::vetting::vetters::resend::v0_2::Response::try_from(
+                    s::vetting::vetters::resend::v0_2::Response::builder()
                         .credential_id(format!("urn:uuid:{REQUEST_ID}"))
                         .valid_until(TS.parse::<DateTime<chrono::Utc>>().unwrap()),
                 )
@@ -2047,6 +2095,144 @@ fn table() -> Vec<Conformance> {
                     updated_at: 1_787_500_000,
                 })],
             })
+        ),
+    ];
+    #[cfg(feature = "vetting-pcs")]
+    table.extend(pcs_witnesses());
+    table
+}
+
+/// Hidden vetting's four exchanges (`zkp-pcs`), witnessed only where they are bound.
+///
+/// Built directly from the generated types (`trust-tasks-rs` 0.22+): the same ones
+/// `vetting::pcs_tasks`'s handlers use. The multibase values are placeholders of the right
+/// alphabet; whether the library's real encoding of a root request and a token batch meets
+/// these schemas is asserted against live output in `vetting::pcs_issue`'s enrolment test,
+/// where one exists.
+#[cfg(feature = "vetting-pcs")]
+fn pcs_witnesses() -> Vec<Conformance> {
+    use trust_tasks_rs::specs::vtc as s;
+
+    /// Finish a generated builder into its `#[non_exhaustive]` type. Fixture data, so a
+    /// validation failure (a placeholder that stopped matching the specification's own pattern)
+    /// panics rather than threading a `Result` through every witness below.
+    fn finish<B, T: TryFrom<B>>(builder: B) -> T
+    where
+        T::Error: std::fmt::Display,
+    {
+        T::try_from(builder).unwrap_or_else(|e| panic!("fixture builds: {e}"))
+    }
+
+    const MB: &str = "z3yZe7d4yBMmB6ifs9NAJ3Z6z1pkcvXq5j3HLMdjU8uK";
+    let date = |d: &str| d.parse::<chrono::NaiveDate>().expect("fixture date");
+    let window = || {
+        finish::<_, s::vetting::vetters::event_mode::v0_1::Window>(
+            s::vetting::vetters::event_mode::v0_1::Window::builder()
+                .start_date(date("2026-10-05"))
+                .end_date(date("2026-10-07")),
+        )
+    };
+    vec![
+        checked!(
+            s::vetting::vetters::pcs_root::v0_1::Payload,
+            s::vetting::vetters::pcs_root::v0_1::Response,
+            to_v(finish::<_, s::vetting::vetters::pcs_root::v0_1::Payload>(
+                s::vetting::vetters::pcs_root::v0_1::Payload::builder()
+                    .label("vetter/2026-09")
+                    .id(MB)
+                    .request(finish::<
+                        _,
+                        s::vetting::vetters::pcs_root::v0_1::PayloadRequest,
+                    >(
+                        s::vetting::vetters::pcs_root::v0_1::PayloadRequest::builder()
+                            .encoding(finish::<
+                                _,
+                                s::vetting::vetters::pcs_root::v0_1::PayloadRequestEncoding,
+                            >(MB.to_string()))
+                            .t0(finish::<
+                                _,
+                                s::vetting::vetters::pcs_root::v0_1::PayloadRequestT0,
+                            >(MB.to_string()))
+                            .proof(finish::<
+                                _,
+                                s::vetting::vetters::pcs_root::v0_1::PayloadRequestProof,
+                            >(MB.to_string())),
+                    ))
+            )),
+            to_v(finish::<_, s::vetting::vetters::pcs_root::v0_1::Response>(
+                s::vetting::vetters::pcs_root::v0_1::Response::builder()
+                    .label("vetter/2026-09")
+                    .pre_credential(MB)
+            ))
+        ),
+        checked!(
+            s::vetting::vetters::pcs_tokens::v0_1::Payload,
+            s::vetting::vetters::pcs_tokens::v0_1::Response,
+            to_v(finish::<_, s::vetting::vetters::pcs_tokens::v0_1::Payload>(
+                s::vetting::vetters::pcs_tokens::v0_1::Payload::builder()
+                    .label("vetting-token/2026-09")
+                    .tick(3u64)
+                    .requests(vec![finish::<
+                        _,
+                        s::vetting::vetters::pcs_tokens::v0_1::PayloadRequestsItem,
+                    >(
+                        s::vetting::vetters::pcs_tokens::v0_1::PayloadRequestsItem::builder()
+                            .commitment(MB.to_string())
+                            .opening_proof(MB.to_string()),
+                    )])
+            )),
+            to_v(
+                finish::<_, s::vetting::vetters::pcs_tokens::v0_1::Response>(
+                    s::vetting::vetters::pcs_tokens::v0_1::Response::builder()
+                        .label("vetting-token/2026-09")
+                        .tick(3u64)
+                        .pre_credentials(vec![finish::<
+                            _,
+                            s::vetting::vetters::pcs_tokens::v0_1::ResponsePreCredentialsItem,
+                        >(MB.to_string())])
+                )
+            )
+        ),
+        checked!(
+            s::vetting::vetters::event_mode::v0_1::Payload,
+            s::vetting::vetters::event_mode::v0_1::Response,
+            to_v(finish::<_, s::vetting::vetters::event_mode::v0_1::Payload>(
+                s::vetting::vetters::event_mode::v0_1::Payload::builder()
+                    .event_id("devcon-2026")
+                    .tier("desk")
+                    .window(window())
+            )),
+            to_v(
+                finish::<_, s::vetting::vetters::event_mode::v0_1::Response>(
+                    s::vetting::vetters::event_mode::v0_1::Response::builder()
+                        .event_id("devcon-2026")
+                        .state("approved")
+                        .tier("desk")
+                        .window(window())
+                        .group_size(4u64)
+                        .group_floor(3i64)
+                        .label(Some(finish::<
+                            _,
+                            s::vetting::vetters::event_mode::v0_1::ResponseLabel,
+                        >(
+                            "vetting-token/devcon-2026/desk".to_string()
+                        )))
+                        .drip_per_tick(std::num::NonZeroU64::new(5))
+                        .closes_after(Some(date("2026-10-08")))
+                )
+            )
+        ),
+        checked!(
+            s::vetting::pcs_challenge::v0_1::Payload,
+            s::vetting::pcs_challenge::v0_1::Response,
+            to_v(finish::<_, s::vetting::pcs_challenge::v0_1::Payload>(
+                s::vetting::pcs_challenge::v0_1::Payload::builder()
+            )),
+            to_v(finish::<_, s::vetting::pcs_challenge::v0_1::Response>(
+                s::vetting::pcs_challenge::v0_1::Response::builder()
+                    .challenge("0123456789abcdef0123456789abcdef")
+                    .expires_at(TS.parse::<DateTime<chrono::Utc>>().unwrap())
+            ))
         ),
     ]
 }

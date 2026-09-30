@@ -52,8 +52,7 @@ operator surface (`pnm services enable|disable didcomm`,
   * `vta-service/src/operations/protocol/` — operation handlers
   * `vta-service/src/messaging/{registry,drain_store,drain_sweeper,handshake,live_prover,transient_handshake}.rs` — DIDComm mediator state machinery
   * `vta-service/src/operations/did_webvh/mod.rs` — LogEntry publication
-  * `vta-service/src/routes/protocol.rs` — REST handlers
-  * `vta-service/src/messaging/handlers_protocol.rs` — DIDComm handlers
+  * `vta-service/src/trust_tasks/services.rs` — transport-neutral service handlers
   * `vta-sdk/src/protocol/` — wire types (`vta_sdk::protocol::*`)
   * `vta-cli-common/src/commands/{services,mediator}.rs` — CLI commands
   * `vti-common/src/telemetry/` — pluggable telemetry sink
@@ -133,22 +132,40 @@ share the rule.
 
 ### 3.5 DIDComm-specific behavior
 
-`services didcomm enable --mediator-did <did>` is REST-only by nature
-(can't bootstrap DIDComm over DIDComm). Internally identical to
-today's `enable_didcomm` operation:
+`services didcomm enable --mediator-did <did> [--setup-acl]` is carried by the
+`vta/services/enable/1.0` Trust Task over any transport already available to the
+VTA (normally HTTPS on a REST-only VTA). Internally it calls `enable_didcomm`:
 
 1. Transient `DIDCommService` spun up
-2. Handshake against the candidate mediator
-3. On success, mediator pinned, transient teardown
-4. LogEntry published with DIDComm service entry
+2. If `--setup-acl` is set, provision the VTA's allow-all account ACL over the
+  transient profile
+3. Handshake trust-ping against the candidate mediator
+4. On success, mediator pinned, transient teardown
+5. LogEntry published with DIDComm service entry
 
-`services didcomm update --mediator-did <new-did> [--drain-ttl <dur>]`
-replaces today's `pnm mediator migrate`:
+ACL provisioning happens after the candidate websocket authenticates and
+before the forwarded self trust-ping. This ordering lets a VTA join a mediator
+whose global default is `ExplicitAllow` without a restart or out-of-band ACL
+grant. The same profile is reused so no second websocket competes for the
+mediator's one-socket-per-DID slot.
 
-1. Live `DIDCommServiceProver` handshake against new mediator
-2. New mediator becomes primary; old mediator moved to drain set
-3. Drain TTL = `--drain-ttl` arg, else **24h default** (new — see §3.6)
-4. LogEntry published with updated DIDComm service entry
+`services didcomm update --mediator-did <new-did> [--drain-ttl <dur>]
+[--setup-acl]` replaces today's `pnm mediator migrate`:
+
+1. Live `DIDCommServiceProver` connects to the new mediator
+2. If `--setup-acl` is set, provision the VTA's account ACL on that candidate
+  profile before trust-ping
+3. Complete the pre-promotion trust-ping
+4. New mediator becomes primary; old mediator moved to the drain set
+5. Drain TTL = `--drain-ttl` arg, else **24h default** (see §3.6)
+6. LogEntry published with the updated DIDComm service entry
+
+For both operations, a successful explicit request persists
+`messaging.setup_acl = true`; later requests that omit the flag do not turn it
+off, so startup can repair the mediator ACL after restart. `--setup-acl` and
+`--force` are mutually exclusive: force bypasses creation of the live profile
+that ACL provisioning requires. Until the shared task schema gains a native
+member, the option is carried as `ext["org.openvtc"].setupAcl`.
 
 `services didcomm disable [--drain-ttl <dur>]` replaces today's
 `disable_didcomm`. Removes DIDComm service entry; pins drain TTL on

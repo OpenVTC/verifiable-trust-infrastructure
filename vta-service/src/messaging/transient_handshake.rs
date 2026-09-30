@@ -97,7 +97,15 @@ pub async fn run_transient_handshake(
     }
 
     // Steps 2–5 against a transient service.
-    match transient_prove(&ctx, mediator_did, opts.timeout).await {
+    match transient_prove(
+        &ctx,
+        mediator_did,
+        opts.timeout,
+        opts.setup_acl,
+        &opts.channel,
+    )
+    .await
+    {
         Ok(()) => {
             let _ = telemetry
                 .record(
@@ -140,6 +148,8 @@ async fn transient_prove(
     ctx: &TransientHandshakeContext,
     mediator_did: &str,
     timeout: Duration,
+    setup_acl: bool,
+    channel: &str,
 ) -> Result<(), ProverFailure> {
     let connect_fail = |cause: String| ProverFailure {
         stage: HandshakeStage::Connect,
@@ -173,7 +183,7 @@ async fn transient_prove(
     // handler), and `prove_on` is about to open a socket. Everything fallible
     // runs inside it so a single path here can tear both down — one place to get
     // right, rather than one per `?`.
-    let outcome = prove_on(&atm, ctx, mediator_did, timeout).await;
+    let outcome = prove_on(&atm, ctx, mediator_did, timeout, setup_acl, channel).await;
 
     // Unconditional: success, ping failure, and every early return inside
     // `prove_on` land here.
@@ -188,6 +198,8 @@ async fn prove_on(
     ctx: &TransientHandshakeContext,
     mediator_did: &str,
     timeout: Duration,
+    setup_acl: bool,
+    channel: &str,
 ) -> Result<(), ProverFailure> {
     let connect_fail = |cause: String| ProverFailure {
         stage: HandshakeStage::Connect,
@@ -220,6 +232,17 @@ async fn prove_on(
                 "timeout enabling transient mediator websocket".to_string(),
             ));
         }
+    }
+
+    if setup_acl {
+        vta_sdk::acl_setup::set_client_acl_with_profile(
+            atm,
+            &profile,
+            &ctx.vta_did,
+            channel,
+            "VTA",
+        )
+        .await;
     }
 
     let transport: Arc<dyn MessageTransport> = Arc::new(

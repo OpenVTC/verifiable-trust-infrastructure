@@ -331,6 +331,8 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         endorsement_types_ks: endorsement_types_ks.clone(),
         vetting_revocations_ks: store.keyspace("vetting_revocations").unwrap(),
         vetter_profiles_ks: store.keyspace("vetter_profiles").unwrap(),
+        vetting_pcs_spent_ks: store.keyspace("vetting_pcs_spent").unwrap(),
+        vetting_pcs_issue_ks: store.keyspace("vetting_pcs_issue").unwrap(),
         accepted_ids_ks: store.keyspace("accepted_ids").unwrap(),
         schemas_ks: store.keyspace("schemas").unwrap(),
         endorsements_ks: endorsements_ks.clone(),
@@ -370,6 +372,9 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         supervisor: None,
         didcomm: std::sync::Arc::new(tokio::sync::OnceCell::new()),
         git_ns: vtc_service::git_ns::GitNsHandles::open_unconnected(&store).unwrap(),
+        large_document_budget: std::sync::Arc::new(
+            vtc_service::trust_tasks::size::LargeDocumentBudget::new(),
+        ),
     };
 
     let router = routes::router().with_state(state);

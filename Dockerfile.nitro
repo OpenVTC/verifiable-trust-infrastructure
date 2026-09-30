@@ -154,6 +154,7 @@ COPY vti-rooms/ vti-rooms/
 COPY vti-rooms-dtg/ vti-rooms-dtg/
 COPY vti-rooms-wasm/ vti-rooms-wasm/
 COPY vti-secrets/ vti-secrets/
+COPY vti-vetting-pcs/ vti-vetting-pcs/
 COPY vti-webauthn/ vti-webauthn/
 
 # Build the VTA enclave binary with selected feature flags. `--locked` so the

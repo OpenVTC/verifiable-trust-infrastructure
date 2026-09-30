@@ -1,19 +1,20 @@
 //! `cnm vetting …` — the community-admin side of peer identity vetting.
 //!
-//! Every command drives the VTC's vetting admin REST surface through
-//! [`vtc_client::VtcClient`]: the vetter grants (`/v1/vetting/vetters`), the
-//! automatic-grant configuration (`/v1/vetting/auto-grant`), the community's
-//! branding (`/v1/community/branding`) and the statement withdrawal notices
-//! (`/v1/vetting/revocations`). A grant is withdrawn like any endorsement,
-//! with `DELETE /v1/credentials/endorsements/{endorsementId}`.
+//! Every command drives the VTC's vetting admin surface through
+//! [`vtc_client::VtcClient`]: naming a vetter and revoking a grant are signed
+//! Trust Tasks (`vtc/vetting/vetters/grant/0.1`, `vtc/endorsements/revoke/0.1`
+//! — a grant is withdrawn like any endorsement); the automatic-grant
+//! configuration (`/v1/vetting/auto-grant`), the community's branding
+//! (`/v1/community/branding`) and the statement withdrawal notices
+//! (`/v1/vetting/revocations`) are admin REST with no Trust Task of their own.
 //!
 //! `bootstrap-pgp` seeds the first vetters from an existing OpenPGP web of
 //! trust; its graph and link logic is the pure [`wot`] and [`plan`] pair.
 //!
-//! The routes are REST-only and need a community-admin token, so every command
-//! authenticates to the VTC itself, with the VTC's DID as the audience (see
-//! [`crate::vtc`]), and fails with the fix when the VTC refuses. There are no
-//! retries here: a failed call is reported, not repeated.
+//! Every command needs a community-admin identity, and authenticates to the
+//! VTC itself, with the VTC's DID as the audience (see [`crate::vtc`]), and
+//! fails with the fix when the VTC refuses. There are no retries here: a
+//! failed call is reported, not repeated.
 
 mod bootstrap;
 pub mod plan;
@@ -45,6 +46,8 @@ use vtc_client::vetting::{
 use vtc_client::{VtcClient, VtcError};
 
 pub use bootstrap::BootstrapPgpArgs;
+
+use vta_sdk::session::TransportChoice;
 
 use crate::vtc::{self as vtc_target, VtcTarget};
 
@@ -116,12 +119,6 @@ pub enum VetterCommands {
     Revoke {
         /// The grant's endorsement id, from `cnm vetting vetters list`.
         endorsement_id: String,
-    },
-    /// Deliver a vetter's live grant credential again, when their wallet lost
-    /// it. Nothing new is issued.
-    Resend {
-        /// The vetter's member DID.
-        member_did: String,
     },
 }
 
@@ -300,44 +297,67 @@ pub enum BrandingField {
 }
 
 /// Run a `cnm vetting` command.
-pub async fn run(command: VettingCommands, keyring_key: &str, target: &VtcTarget) -> CliResult {
+///
+/// Naming and withdrawing a vetter are signed Trust Tasks over the transport
+/// `transport` picks ([`vtc_target::connect_for_tasks`]); the rest have no
+/// Trust Task served yet and use a bearer token ([`connect`]).
+pub async fn run(
+    command: VettingCommands,
+    keyring_key: &str,
+    target: &VtcTarget,
+    transport: TransportChoice,
+) -> CliResult {
     if let VettingCommands::BootstrapPgp(args) = command {
         // The keyring, roots and links are read and checked before any call to
         // the community, so a mistake in them costs no round trip.
-        return bootstrap::run(args, keyring_key, target).await;
+        return bootstrap::run(args, keyring_key, target, transport).await;
     }
-    let vtc = connect(keyring_key, target).await?;
+    let vtc = match &command {
+        VettingCommands::Vetters {
+            command: VetterCommands::Grant { .. } | VetterCommands::Revoke { .. },
+        } => {
+            vtc_target::connect_for_tasks(keyring_key, target, transport)
+                .await?
+                .client
+        }
+        _ => connect(keyring_key, target).await?,
+    };
+    let outcome = run_command(command, &vtc).await;
+    vtc.shutdown().await;
+    outcome
+}
+
+async fn run_command(command: VettingCommands, vtc: &VtcClient) -> CliResult {
     match command {
         VettingCommands::Vetters { command } => match command {
-            VetterCommands::List => cmd_vetters_list(&vtc).await,
+            VetterCommands::List => cmd_vetters_list(vtc).await,
             VetterCommands::Grant {
                 member_did,
                 validity,
-            } => cmd_vetters_grant(&vtc, &member_did, validity.as_deref()).await,
+            } => cmd_vetters_grant(vtc, &member_did, validity.as_deref()).await,
             VetterCommands::Revoke { endorsement_id } => {
-                cmd_vetters_revoke(&vtc, &endorsement_id).await
+                cmd_vetters_revoke(vtc, &endorsement_id).await
             }
-            VetterCommands::Resend { member_did } => cmd_vetters_resend(&vtc, &member_did).await,
         },
         VettingCommands::AutoGrant { command } => match command {
-            AutoGrantCommands::Show => cmd_auto_grant_show(&vtc).await,
+            AutoGrantCommands::Show => cmd_auto_grant_show(vtc).await,
             AutoGrantCommands::Set {
                 enabled,
                 sweep_minutes,
                 validity,
-            } => cmd_auto_grant_set(&vtc, enabled, sweep_minutes, validity.as_deref()).await,
+            } => cmd_auto_grant_set(vtc, enabled, sweep_minutes, validity.as_deref()).await,
         },
         VettingCommands::Ask { command } => match command {
-            AskCommands::Show => cmd_ask_show(&vtc).await,
+            AskCommands::Show => cmd_ask_show(vtc).await,
             AskCommands::Set {
                 require,
                 optional,
                 purpose,
                 nothing: _,
-            } => cmd_ask_set(&vtc, require, optional, purpose).await,
+            } => cmd_ask_set(vtc, require, optional, purpose).await,
         },
         VettingCommands::Branding { command } => match command {
-            BrandingCommands::Show => cmd_branding_show(&vtc).await,
+            BrandingCommands::Show => cmd_branding_show(vtc).await,
             BrandingCommands::Set {
                 display_name,
                 accent_color,
@@ -350,16 +370,17 @@ pub async fn run(command: VettingCommands, keyring_key: &str, target: &VtcTarget
                     logo_url,
                     clear,
                 };
-                cmd_branding_set(&vtc, change).await
+                cmd_branding_set(vtc, change).await
             }
         },
-        VettingCommands::Revocations => cmd_revocations(&vtc).await,
+        VettingCommands::Revocations => cmd_revocations(vtc).await,
         VettingCommands::BootstrapPgp(_) => unreachable!("handled above"),
     }
 }
 
-/// A community-admin [`VtcClient`], authenticated to the VTC with the VTC's
-/// DID as the audience.
+/// A community-admin [`VtcClient`] holding a bearer token, authenticated to
+/// the VTC with the VTC's DID as the audience — for the verbs with no Trust
+/// Task served yet.
 async fn connect(keyring_key: &str, target: &VtcTarget) -> CliResult<VtcClient> {
     Ok(vtc_target::connect(keyring_key, target).await?.client)
 }
@@ -536,29 +557,6 @@ async fn cmd_vetters_revoke(vtc: &VtcClient, endorsement_id: &str) -> CliResult 
     println!(
         "  {DIM}A vetter whose grant is revoked no longer counts toward any join, and their \
          profile is removed from listings.{RESET}"
-    );
-    Ok(())
-}
-
-async fn cmd_vetters_resend(vtc: &VtcClient, member_did: &str) -> CliResult {
-    let sent = vtc
-        .resend_vetter_grant(member_did)
-        .await
-        .map_err(|e| guidance(e, Op::Resend { member_did }))?;
-    if is_json_output() {
-        print_json(&sent)?;
-        return Ok(());
-    }
-    // R1.1: a send the transport accepted is not a delivery, so do not say
-    // "delivered".
-    println!(
-        "{GREEN}✓{RESET} Handed credential {} to the community's messaging transport for \
-         {member_did}.",
-        sent.credential_id.as_str()
-    );
-    println!("  Valid until:  {}", date(sent.valid_until));
-    println!(
-        "  {DIM}Delivery is not confirmed by the member's wallet; ask the vetter to check it.{RESET}"
     );
     Ok(())
 }
@@ -907,7 +905,6 @@ enum Op<'a> {
     VettersList,
     Grant { member_did: &'a str },
     Revoke { endorsement_id: &'a str },
-    Resend { member_did: &'a str },
     AutoGrantShow,
     AutoGrantSet,
     BrandingShow,
@@ -924,7 +921,6 @@ impl Op<'_> {
         match self {
             Self::VettersList | Self::Grant { .. } => "/v1/vetting/vetters",
             Self::Revoke { .. } => "/v1/credentials/endorsements/{id}",
-            Self::Resend { .. } => "/v1/vetting/vetters/{memberDid}/resend",
             Self::AutoGrantShow | Self::AutoGrantSet => "/v1/vetting/auto-grant",
             Self::BrandingShow | Self::BrandingSet => "/v1/community/branding",
             Self::AskShow | Self::AskSet => "/v1/community/requested-attributes",
@@ -965,19 +961,6 @@ fn guidance(err: VtcError, op: Op<'_>) -> Box<dyn std::error::Error> {
                 (Op::Revoke { endorsement_id }, 400) => format!(
                     "`{endorsement_id}` is not an endorsement id: {detail}\nEndorsement ids are \
                      UUIDs; copy one from `{bin} vetting vetters list`."
-                ),
-                (Op::Resend { member_did }, 404) => format!(
-                    "{member_did} holds no live vetter grant whose credential the community \
-                     kept, so there is nothing to resend.\nGrant one with `{bin} vetting vetters \
-                     grant {member_did}`. A grant recorded before credentials were kept cannot \
-                     be resent: revoke it (`{bin} vetting vetters revoke <endorsementId>`) and \
-                     grant again."
-                ),
-                (Op::Resend { member_did }, 503) => format!(
-                    "the community could not hand the credential to its messaging transport \
-                     ({detail}).\nThe grant still stands. Check the VTC's mediator is configured \
-                     and reachable (`{bin} health`), then re-run `{bin} vetting vetters resend \
-                     {member_did}`."
                 ),
                 (Op::AutoGrantSet, 400) => format!(
                     "the community refused the automatic-grant configuration: {detail}\n\
@@ -1225,21 +1208,6 @@ mod tests {
         )
         .to_string();
         assert!(revoke.contains("vetting vetters list"), "{revoke}");
-
-        let resend = guidance(
-            VtcError::Http {
-                status: 404,
-                body: String::new(),
-            },
-            Op::Resend {
-                member_did: "did:key:zCarol",
-            },
-        )
-        .to_string();
-        assert!(
-            resend.contains("vetting vetters grant did:key:zCarol"),
-            "{resend}"
-        );
 
         let grant = guidance(
             VtcError::Http {

@@ -34,11 +34,83 @@ fn rendered() -> String {
     out
 }
 
+/// The paths and schemas the `vetting-pcs` feature adds to the document.
+///
+/// The checked-in snapshot describes the **default** build, because that is the build the
+/// console is generated from and shipped against. A build with hidden-vetter admission compiled
+/// in legitimately serves one route more, and regenerating the snapshot under the feature would
+/// put a path into the shipped document that the shipped daemon does not have — the same class
+/// of silent lie this file exists to prevent, in the other direction.
+///
+/// So the feature build asserts the stronger thing: the document is the shipped one *plus
+/// exactly this*, and nothing else has moved. A second feature-gated route that forgot to come
+/// here fails with its own name in the message.
+#[cfg(feature = "vetting-pcs")]
+const VETTING_PCS_PATHS: &[&str] = &["/v1/vetting/hidden"];
+
+/// Likewise for the component schemas those paths pull in.
+#[cfg(feature = "vetting-pcs")]
+const VETTING_PCS_SCHEMAS: &[&str] = &["PublishHiddenVettingBody", "PublishHiddenVettingResponse"];
+
+/// Take the feature's additions back out, so what remains is comparable with the shipped
+/// document. Fails loudly if an addition it does not know about is present, or if one it expects
+/// is missing — both mean this list and the router have drifted.
+#[cfg(feature = "vetting-pcs")]
+fn without_vetting_pcs(mut doc: serde_json::Value) -> serde_json::Value {
+    for path in VETTING_PCS_PATHS {
+        let removed = doc
+            .get_mut("paths")
+            .and_then(|p| p.as_object_mut())
+            .and_then(|p| p.remove(*path));
+        assert!(
+            removed.is_some(),
+            "{path} is listed as a vetting-pcs addition but this build does not serve it"
+        );
+    }
+    for schema in VETTING_PCS_SCHEMAS {
+        let removed = doc
+            .get_mut("components")
+            .and_then(|c| c.get_mut("schemas"))
+            .and_then(|s| s.as_object_mut())
+            .and_then(|s| s.remove(*schema));
+        assert!(
+            removed.is_some(),
+            "{schema} is listed as a vetting-pcs addition but this build does not define it"
+        );
+    }
+    doc
+}
+
 #[test]
 fn the_checked_in_openapi_document_matches_this_build() {
     let want = rendered();
     let path = snapshot_path();
 
+    // Under the feature the built document is a superset, so the byte comparison below cannot
+    // apply and `UPDATE_OPENAPI` must not write a superset over the shipped document.
+    #[cfg(feature = "vetting-pcs")]
+    {
+        assert!(
+            std::env::var_os("UPDATE_OPENAPI").is_none(),
+            "regenerate the snapshot from a default-feature build — a document written under \
+             `vetting-pcs` would add a path the shipped daemon does not serve:\n\n    \
+             UPDATE_OPENAPI=1 cargo test -p vtc-service --test openapi_snapshot\n"
+        );
+        let built: serde_json::Value = serde_json::from_str(&want).expect("the document parses");
+        let shipped: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("snapshot is readable"))
+                .expect("the snapshot parses");
+        assert_eq!(
+            without_vetting_pcs(built),
+            shipped,
+            "with `vetting-pcs` compiled in, the document must be the shipped one plus exactly \
+             the hidden-vetting additions. Something else moved — regenerate from a \
+             default-feature build, or add the new route to VETTING_PCS_PATHS."
+        );
+        return;
+    }
+
+    #[allow(unreachable_code)]
     if std::env::var_os("UPDATE_OPENAPI").is_some() {
         std::fs::write(&path, &want).expect("snapshot is writable");
         eprintln!("wrote {}", path.display());

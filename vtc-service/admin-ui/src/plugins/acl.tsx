@@ -75,7 +75,8 @@ async function patchAclLabel(args: {
         role: args.entry.role,
         label: args.label,
         scopes: args.entry.scopes,
-        expiresAt: args.entry.expiresAt ?? null,
+        // Absent, never null: the schema types it as a string.
+        ...(args.entry.expiresAt ? { expiresAt: args.entry.expiresAt } : {}),
       },
       reason: "label updated from the admin UI",
     },
@@ -762,17 +763,20 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
       entry: {
         subject: did.trim(),
         role: role.trim(),
-        label: label.trim() === "" ? null : label.trim(),
+        // Blank optional fields are omitted, not null: the payload schema
+        // types `label` and `expiresAt` as strings, so null is a 400.
+        ...(label.trim() === "" ? {} : { label: label.trim() }),
         scopes,
         // Canonical `expiresAt` is RFC3339. Accept either an ISO
         // string or a unix epoch typed by the operator and normalise,
         // rather than sending an integer the server now rejects.
-        expiresAt:
-          exp === ""
-            ? null
-            : /^\d+$/.test(exp)
-              ? new Date(Number(exp) * 1000).toISOString()
-              : exp,
+        ...(exp === ""
+          ? {}
+          : {
+              expiresAt: /^\d+$/.test(exp)
+                ? new Date(Number(exp) * 1000).toISOString()
+                : exp,
+            }),
       },
     });
   };

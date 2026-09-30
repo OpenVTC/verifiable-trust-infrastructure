@@ -9,6 +9,7 @@ import {
   MEMBERS,
   RIGHTS,
 } from "@/plugins/repos/fixtures.test-data";
+import { TASK_ACCOUNT_LIST, TASK_RIGHT_LIST } from "@/plugins/repos/api";
 import {
   MEMBERS_LIST_TASK,
   mockFetch,
@@ -40,12 +41,14 @@ const routes = (
   taskRoute("https://trusttasks.org/spec/vtc/members/removed/0.1", { removed: [] }),
   taskRoute("https://trusttasks.org/spec/vtc/members/show/0.1", { member: member(BOB, "Bob Mensah") }),
   taskRoute("https://trusttasks.org/spec/acl/list/0.1", { entries: [], truncated: false }),
-  {
-    path: "/v1/git-ns/rights",
-    status: over.rightsStatus,
-    body: over.rightsStatus ? { error: "forbidden" } : { rights: over.rights ?? RIGHTS },
-  },
-  { path: "/v1/git-ns/accounts", body: { accounts: ACCOUNTS } },
+  taskRoute(
+    TASK_RIGHT_LIST,
+    over.rightsStatus
+      ? { code: "git-ns/right/list:notCommunityAdministrator", message: "forbidden" }
+      : { rights: over.rights ?? RIGHTS },
+    over.rightsStatus,
+  ),
+  taskRoute(TASK_ACCOUNT_LIST, { accounts: ACCOUNTS }),
 ];
 
 const mount = (route = "/members") =>
@@ -61,13 +64,15 @@ const rowOf = async (label: string) => {
 describe("Members — git rights (UI-13)", () => {
   it("marks an account whose member is no longer current", async () => {
     const r = routes().map((route) =>
-      route.path === "/v1/git-ns/accounts"
+      route.task === TASK_ACCOUNT_LIST
         ? {
             ...route,
             body: {
-              accounts: ACCOUNTS.map((a) =>
-                a.member === BOB ? { ...a, memberCurrent: false } : a,
-              ),
+              payload: {
+                accounts: ACCOUNTS.map((a) =>
+                  a.member === BOB ? { ...a, memberCurrent: false } : a,
+                ),
+              },
             },
           }
         : route,

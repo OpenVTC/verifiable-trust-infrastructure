@@ -663,6 +663,7 @@ mod tests {
         let cmd = didcomm(DidcommCommands::Update {
             new_mediator_did: "did:web:new-mediator".into(),
             drain_ttl: 86_400,
+            setup_acl: false,
             force: false,
             handshake_timeout: None,
         });
@@ -679,6 +680,7 @@ mod tests {
         let cmd = didcomm(DidcommCommands::Update {
             new_mediator_did: "did:web:new-mediator".into(),
             drain_ttl: 86_400,
+            setup_acl: false,
             force: false,
             handshake_timeout: None,
         });
@@ -689,6 +691,7 @@ mod tests {
     fn enable_repoints_a_pinned_mediator_hint() {
         let cmd = didcomm(DidcommCommands::Enable {
             mediator_did: "did:web:new-mediator".into(),
+            setup_acl: false,
             force: false,
             handshake_timeout: None,
         });

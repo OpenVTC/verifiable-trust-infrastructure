@@ -1,12 +1,15 @@
-//! Integration coverage for `POST /v1/members/me/renew`
-//! (Phase 2 M2.13).
+//! Integration coverage for `vtc/members/renew/0.1`, a signed document only
+//! (Phase 2 M2.13). Its bearer `POST /v1/members/me/renew` route was retired
+//! once the signed-document spine covered it (`trust_tasks::member_tasks`),
+//! so every request here goes through the signed door.
 //!
 //! Verifies:
 //! - Happy path re-mints VMC + role VEC and stamps the new
 //!   ids on the Member row.
 //! - Renewal reuses the same status-list slot the member was
 //!   allocated at join time.
-//! - 404 when the caller isn't a member.
+//! - `proofRequired` for an unsigned document.
+//! - The declared `notMember` for a caller whose ACL row is gone.
 //! - Both signed VCs verify against the daemon's signer.
 
 mod common;
@@ -14,34 +17,31 @@ mod common;
 use std::sync::Arc;
 
 use affinidi_status_list::StatusPurpose;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
-use serde_json::Value;
-use tower::ServiceExt;
-use vti_common::auth::session::{Session, SessionState, store_session};
+use axum::http::StatusCode;
+use serde_json::{Value, json};
 
-use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
+use vtc_service::acl::VtcRole;
 use vtc_service::credentials::LocalSigner;
 use vtc_service::members::{Member, get_member, store_member};
 use vtc_service::status_list;
 use vtc_service::test_support::TestVtc;
 
+use vti_rooms_dtg::test_support::Party;
+
 const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
 const PUBLIC_URL: &str = "https://vtc.example.com";
 const RENEW_TASK: &str = "https://trusttasks.org/spec/vtc/members/renew/0.1";
-const MEMBER_DID: &str = "did:key:zRenewMember";
 
 struct Fixture {
-    router: axum::Router,
-    member_token: String,
+    /// A member with a real key, signing the renewal document.
+    member: Party,
     signer: Arc<LocalSigner>,
     members_ks: vti_common::store::KeyspaceHandle,
     status_lists_ks: vti_common::store::KeyspaceHandle,
     policies_ks: vti_common::store::KeyspaceHandle,
     active_policies_ks: vti_common::store::KeyspaceHandle,
     audit_ks: vti_common::store::KeyspaceHandle,
-    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    // Owns the temp data dir + serves the router; must outlive them.
     _vtc: TestVtc,
 }
 
@@ -70,71 +70,22 @@ async fn build_fixture() -> Fixture {
             .unwrap();
     }
 
-    // Seed a Member ACL row + Member metadata row.
-    let now = vtc_service::auth::session::now_epoch();
-    store_acl_entry(
-        &vtc.state.acl_ks,
-        &VtcAclEntry {
-            did: MEMBER_DID.into(),
-            role: VtcRole::Member,
-            label: None,
-            allowed_contexts: vec![],
-            created_at: now,
-            created_by: "did:key:vtc-install".into(),
-            updated_at: None,
-            updated_by: None,
-            expires_at: None,
-        },
-    )
-    .await
-    .unwrap();
-    store_member(&vtc.state.members_ks, &Member::fresh(MEMBER_DID))
+    // Seed a Member ACL row + Member metadata row for a member with a real
+    // key — the renewal document must carry a signature the spine can verify.
+    let member = Party::new();
+    common::signed::seed_role(&vtc, &member.did, VtcRole::Member, &[]).await;
+    store_member(&vtc.state.members_ks, &Member::fresh(&member.did))
         .await
         .unwrap();
-
-    let session_id = "test-member-session";
-    store_session(
-        &vtc.state.sessions_ks,
-        &Session {
-            session_id: session_id.into(),
-            did: MEMBER_DID.into(),
-            challenge: "test".into(),
-            state: SessionState::Authenticated,
-            created_at: now,
-            last_seen: now,
-            refresh_token: None,
-            refresh_expires_at: None,
-            tee_attested: false,
-            amr: Vec::new(),
-            acr: String::new(),
-            acr_expires_at: None,
-            token_id: None,
-            session_pubkey_b58btc: None,
-        },
-    )
-    .await
-    .unwrap();
-
-    let member_claims = vtc.jwt_keys.new_claims(
-        MEMBER_DID.into(),
-        session_id.into(),
-        "reader".into(),
-        vec![],
-        3600,
-        true,
-    );
-    let member_token = vtc.jwt_keys.encode(&member_claims).unwrap();
 
     let members_ks = vtc.state.members_ks.clone();
     let status_lists_ks = vtc.state.status_lists_ks.clone();
     let policies_ks = vtc.state.policies_ks.clone();
     let active_policies_ks = vtc.state.active_policies_ks.clone();
     let audit_ks = vtc.state.audit_ks.clone();
-    let router = vtc.router.clone();
 
     Fixture {
-        router,
-        member_token,
+        member,
         signer,
         members_ks,
         status_lists_ks,
@@ -145,30 +96,20 @@ async fn build_fixture() -> Fixture {
     }
 }
 
-async fn body_json(body: Body) -> Value {
-    let bytes = body.collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-        let raw = String::from_utf8_lossy(&bytes);
-        panic!("response body was not JSON ({e}): {raw}")
-    })
+/// Renew, signed by `fix.member`: the reply's status and `#response` payload
+/// (or a refusal's `{code, message}`).
+async fn renew(fix: &Fixture) -> (StatusCode, Value) {
+    let (status, doc) = common::signed::call(&fix._vtc, &fix.member, RENEW_TASK, json!({})).await;
+    (status, doc["payload"].clone())
 }
 
 #[tokio::test]
 async fn renew_mints_fresh_vmc_and_role_vec() {
     let fix = build_fixture().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/renew")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", RENEW_TASK)
-        .header("content-type", "application/json")
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp.into_body()).await;
+    let (status, body) = renew(&fix).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
-    assert_eq!(body["did"], MEMBER_DID);
+    assert_eq!(body["did"], fix.member.did);
     assert_eq!(body["personhood"], false);
     assert_eq!(body["personhoodChanged"], false);
 
@@ -181,7 +122,7 @@ async fn renew_mints_fresh_vmc_and_role_vec() {
 
     // Member row updated with the new ids + the freshly-
     // allocated slot.
-    let m = get_member(&fix.members_ks, MEMBER_DID)
+    let m = get_member(&fix.members_ks, &fix.member.did)
         .await
         .unwrap()
         .unwrap();
@@ -203,24 +144,17 @@ async fn renew_reuses_existing_status_list_slot() {
     status_list::store_state(&fix.status_lists_ks, &state)
         .await
         .unwrap();
-    let mut m = get_member(&fix.members_ks, MEMBER_DID)
+    let mut m = get_member(&fix.members_ks, &fix.member.did)
         .await
         .unwrap()
         .unwrap();
     m.status_list_index = Some(pinned_slot);
     store_member(&fix.members_ks, &m).await.unwrap();
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/renew")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", RENEW_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, _) = renew(&fix).await;
+    assert_eq!(status, StatusCode::OK);
 
-    let m = get_member(&fix.members_ks, MEMBER_DID)
+    let m = get_member(&fix.members_ks, &fix.member.did)
         .await
         .unwrap()
         .unwrap();
@@ -231,17 +165,19 @@ async fn renew_reuses_existing_status_list_slot() {
     );
 }
 
+/// An unsigned document has nothing to authorize a self-service renewal
+/// with; the spine refuses it before `renew_inner` ever runs.
 #[tokio::test]
-async fn renew_requires_authentication() {
+async fn renew_without_a_proof_is_the_declared_proof_required() {
     let fix = build_fixture().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/renew")
-        .header("trust-task", RENEW_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let doc = common::signed::unsigned(&fix.member, RENEW_TASK, json!({}));
+    let (status, doc) = common::signed::post(&fix._vtc, &doc).await;
+    assert_eq!(
+        common::signed::error_code(&doc),
+        Some("proofRequired"),
+        "{doc}"
+    );
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{doc}");
 }
 
 // ─── Phase 4 M4.2.2: renewal personhood eval ─────────────
@@ -251,7 +187,7 @@ async fn renew_preserves_personhood_when_already_asserted() {
     // Member.personhood = true, default policy preserves on
     // renewal. The new VMC should carry personhood: true.
     let fix = build_fixture().await;
-    let mut m = get_member(&fix.members_ks, MEMBER_DID)
+    let mut m = get_member(&fix.members_ks, &fix.member.did)
         .await
         .unwrap()
         .unwrap();
@@ -259,22 +195,12 @@ async fn renew_preserves_personhood_when_already_asserted() {
     m.personhood_asserted_at = Some(chrono::Utc::now());
     store_member(&fix.members_ks, &m).await.unwrap();
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/renew")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", RENEW_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let (status, body) = renew(&fix).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["personhood"], true);
     assert_eq!(body["personhoodChanged"], false);
 
-    let m2 = get_member(&fix.members_ks, MEMBER_DID)
+    let m2 = get_member(&fix.members_ks, &fix.member.did)
         .await
         .unwrap()
         .unwrap();
@@ -297,7 +223,7 @@ async fn renew_default_downgrades_when_policy_drops_flag() {
 
     let fix = build_fixture().await;
 
-    let mut m = get_member(&fix.members_ks, MEMBER_DID)
+    let mut m = get_member(&fix.members_ks, &fix.member.did)
         .await
         .unwrap()
         .unwrap();
@@ -335,22 +261,12 @@ async fn renew_default_downgrades_when_policy_drops_flag() {
     .await
     .unwrap();
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/renew")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", RENEW_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "downgrade must succeed");
-
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    let (status, body) = renew(&fix).await;
+    assert_eq!(status, StatusCode::OK, "downgrade must succeed: {body}");
     assert_eq!(body["personhood"], false, "downgraded");
     assert_eq!(body["personhoodChanged"], true);
 
-    let m2 = get_member(&fix.members_ks, MEMBER_DID)
+    let m2 = get_member(&fix.members_ks, &fix.member.did)
         .await
         .unwrap()
         .unwrap();
@@ -378,28 +294,21 @@ async fn renew_default_downgrades_when_policy_drops_flag() {
 const RENEW_ERR_NOT_MEMBER: &str =
     trust_tasks_rs::specs::vtc::members::renew::v0_1::error_codes::NOT_MEMBER.code;
 
-/// The extended error code carried by a REST error body (`{"error", "code"}`).
+/// The extended error code carried by a refusal's payload.
 fn rest_error_code(body: &Value) -> &str {
     body["code"].as_str().unwrap_or_default()
 }
 
 /// A caller whose session outlived their membership — the ACL entry is gone —
-/// has nothing to renew. Same 404 as before, now with the declared code.
+/// has nothing to renew. `self_signer` admits them regardless (an absent row
+/// is not expired); `renew_inner` is what answers the declared `notMember`.
 #[tokio::test]
 async fn renew_by_a_caller_who_is_not_a_member_is_the_declared_not_member() {
     let fix = build_fixture().await;
-    vtc_service::acl::delete_acl_entry(&fix._vtc.state.acl_ks, MEMBER_DID)
+    vtc_service::acl::delete_acl_entry(&fix._vtc.state.acl_ks, &fix.member.did)
         .await
         .unwrap();
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/renew")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", RENEW_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    let body = body_json(resp.into_body()).await;
+    let (status, body) = renew(&fix).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), RENEW_ERR_NOT_MEMBER, "{body}");
 }

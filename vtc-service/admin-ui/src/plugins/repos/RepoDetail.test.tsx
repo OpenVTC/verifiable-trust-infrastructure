@@ -4,8 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { postSignedTrustTask, signingAvailable, type WhoamiResponse } from "@/lib/api";
 
 import { Repos } from "@/plugins/repos";
-import { mockFetch, renderWithProviders } from "@/test/render";
+import { mockFetch, renderWithProviders, taskRoute } from "@/test/render";
 
+import { TASK_ACTIVITY_LIST, TASK_RIGHT_LIST } from "./api";
 import {
   ACCOUNTS,
   ACME,
@@ -335,14 +336,14 @@ describe("Repo detail", () => {
         driftRoute([{ type: "roleChanged", resource: DOCS.resource, observed: "maintain", expected: "admin", account: hsato }]),
       ],
     });
-    const rightsRoute = routes.find((r) => r.path === "/v1/git-ns/rights")!;
-    const body = rightsRoute.body;
     const realFetch = globalThis.fetch;
     mockFetch(routes);
     const mocked = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (new URL(url, "http://x").pathname === "/v1/git-ns/rights") await held;
+      const reqBody =
+        typeof init?.body === "string" ? (JSON.parse(init.body) as { type?: string }) : undefined;
+      if (url === "/v1/trust-tasks" && reqBody?.type === TASK_RIGHT_LIST) await held;
       return mocked(input, init);
     }) as typeof fetch;
     try {
@@ -350,7 +351,7 @@ describe("Repo detail", () => {
       const drift = await screen.findByRole("region", { name: "Drift" });
       await waitFor(() => expect(drift.textContent).toMatch(/before offering to adopt/));
       expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
-      release(body);
+      release(undefined);
       // Once read, the lowering is recognised and still not offered.
       await waitFor(() => expect(drift.textContent).toMatch(/lowering, accepted by revoking/));
       expect(within(drift).queryByRole("button", { name: /^Adopt/ })).toBeNull();
@@ -587,9 +588,15 @@ describe("Repo detail", () => {
     expect(act.textContent).toMatch(/granted\s*committer/);
     // Only this repository's items, not the namespace's.
     expect(act.textContent).not.toMatch(/owner/);
-    expect(requests.some((r) => r.url === "/v1/git-ns/activity?namespace=ns_acme&limit=100")).toBe(
-      true,
-    );
+    expect(
+      requests.some(
+        (r) =>
+          r.url === "/v1/trust-tasks" &&
+          (r.body as { type?: string })?.type === TASK_ACTIVITY_LIST &&
+          JSON.stringify((r.body as { payload?: unknown }).payload) ===
+            JSON.stringify({ namespace: "ns_acme", limit: 100 }),
+      ),
+    ).toBe(true);
   });
 
   it("says activity is for namespace admins when the feed refuses", async () => {
@@ -602,7 +609,11 @@ describe("Repo detail", () => {
 
   it("says a scoped admin cannot read the community-wide records", async () => {
     mockFetch([
-      { path: "/v1/git-ns/rights", status: 403, body: { error: "super admin required" } },
+      taskRoute(
+        TASK_RIGHT_LIST,
+        { code: "git-ns/right/list:notCommunityAdministrator", message: "super admin required" },
+        422,
+      ),
       ...gitNsRoutes(),
     ]);
     mount(WIDGETS.resource);
@@ -632,7 +643,11 @@ describe("Repo detail", () => {
 
   it("does not say nothing is published while the rights are unreadable", async () => {
     mockFetch([
-      { path: "/v1/git-ns/rights", status: 403, body: { error: "super admin required" } },
+      taskRoute(
+        TASK_RIGHT_LIST,
+        { code: "git-ns/right/list:notCommunityAdministrator", message: "super admin required" },
+        422,
+      ),
       ...gitNsRoutes(),
     ]);
     mount(WIDGETS.resource);

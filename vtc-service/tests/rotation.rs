@@ -6,13 +6,10 @@ mod common;
 use std::sync::Arc;
 
 use affinidi_status_list::StatusPurpose;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use ed25519_dalek::{Signer, SigningKey};
-use http_body_util::BodyExt;
 use serde::Serialize;
 use serde_json::{Value, json};
-use tower::ServiceExt;
 use vti_common::auth::session::{Session, SessionState, list_sessions, store_session};
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
@@ -31,8 +28,9 @@ const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/rotate-cha
 const ROTATE_TASK: &str = "https://trusttasks.org/spec/vtc/members/rotate/0.1";
 
 struct Fixture {
-    router: axum::Router,
-    member_token: String,
+    /// The trust-task document signer — same key as `member_signing`, so it
+    /// can sign both the enclosing document and the rotation payload.
+    member: vti_rooms_dtg::test_support::Party,
     member_signing: SigningKey,
     member_did: String,
     members_ks: vti_common::store::KeyspaceHandle,
@@ -40,8 +38,24 @@ struct Fixture {
     sessions_ks: vti_common::store::KeyspaceHandle,
     audit_ks: vti_common::store::KeyspaceHandle,
     signer: Arc<LocalSigner>,
-    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    // Owns the temp data dir + serves the router; must outlive them.
     _vtc: TestVtc,
+}
+
+/// A [`Party`](vti_rooms_dtg::test_support::Party) for `seed`'s Ed25519 key —
+/// the fixed key `member_signing`/`member_did` also use, so this Party signs
+/// the trust-task document with the same key that signs its rotation payload.
+fn party_from_seed(seed: [u8; 32]) -> vti_rooms_dtg::test_support::Party {
+    let did = affinidi_crypto::did_key::ed25519_pub_to_did_key(
+        &SigningKey::from_bytes(&seed).verifying_key().to_bytes(),
+    );
+    vti_rooms_dtg::test_support::Party {
+        secret: vta_sdk::did_key::secrets_from_did_key(&did, &seed)
+            .expect("build secrets")
+            .signing,
+        secret_multibase: multibase::encode(multibase::Base::Base58Btc, seed),
+        did,
+    }
 }
 
 async fn build_fixture() -> Fixture {
@@ -128,25 +142,19 @@ async fn build_fixture() -> Fixture {
     .await
     .unwrap();
 
-    let member_claims = vtc.jwt_keys.new_claims(
-        member_did.clone(),
-        session_id.into(),
-        "reader".into(),
-        vec![],
-        3600,
-        true,
+    let member = party_from_seed([0xAA; 32]);
+    assert_eq!(
+        member.did, member_did,
+        "party_from_seed must agree with the did:key helper above"
     );
-    let member_token = vtc.jwt_keys.encode(&member_claims).unwrap();
 
     let members_ks = vtc.state.members_ks.clone();
     let acl_ks = vtc.state.acl_ks.clone();
     let sessions_ks = vtc.state.sessions_ks.clone();
     let audit_ks = vtc.state.audit_ks.clone();
-    let router = vtc.router.clone();
 
     Fixture {
-        router,
-        member_token,
+        member,
         member_signing,
         member_did,
         members_ks,
@@ -156,14 +164,6 @@ async fn build_fixture() -> Fixture {
         signer,
         _vtc: vtc,
     }
-}
-
-async fn body_json(body: Body) -> Value {
-    let bytes = body.collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-        let raw = String::from_utf8_lossy(&bytes);
-        panic!("response body was not JSON ({e}): {raw}")
-    })
 }
 
 #[derive(Serialize)]
@@ -193,25 +193,16 @@ async fn mint_challenge(fix: &Fixture) -> (String, i64) {
     mint_challenge_with_reason(fix, None).await
 }
 
-/// `reason` mirrors the optional `ChallengeBody`. `None` sends no body
-/// at all — the pre-existing wire shape, which must keep working.
+/// `reason` mirrors the optional `ChallengeBody`. `None` sends an empty
+/// payload — the pre-existing wire shape, which must keep working.
 async fn mint_challenge_with_reason(fix: &Fixture, reason: Option<&str>) -> (String, i64) {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/rotate/challenge")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", CHALLENGE_TASK);
-    let body = match reason {
-        Some(r) => {
-            builder = builder.header("content-type", "application/json");
-            Body::from(json!({ "reason": r }).to_string())
-        }
-        None => Body::empty(),
+    let payload = match reason {
+        Some(r) => json!({ "reason": r }),
+        None => json!({}),
     };
-    let req = builder.body(body).unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp.into_body()).await;
+    let (status, doc) = common::signed::call(&fix._vtc, &fix.member, CHALLENGE_TASK, payload).await;
+    assert_eq!(status, StatusCode::OK, "{doc}");
+    let body = &doc["payload"];
     let id = body["rotationId"].as_str().unwrap().to_string();
     // expiresAt is RFC3339 — convert to epoch for the canonical
     // payload.
@@ -219,6 +210,13 @@ async fn mint_challenge_with_reason(fix: &Fixture, reason: Option<&str>) -> (Str
         .unwrap()
         .timestamp();
     (id, expires_at)
+}
+
+/// `vtc/members/rotate/0.1`, signed by `fix.member`: the reply's status and
+/// `#response` payload (or a refusal's `{code, message}`).
+async fn finish_rotate(fix: &Fixture, payload: Value) -> (StatusCode, Value) {
+    let (status, doc) = common::signed::call(&fix._vtc, &fix.member, ROTATE_TASK, payload).await;
+    (status, doc["payload"].clone())
 }
 
 #[tokio::test]
@@ -236,26 +234,18 @@ async fn rotation_happy_path_swaps_acl_and_member() {
     let old_sig = hex::encode(fix.member_signing.sign(&payload).to_bytes());
     let new_sig = hex::encode(new_signing.sign(&payload).to_bytes());
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/rotate")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ROTATE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "rotationId": rotation_id,
-                "oldDid": fix.member_did,
-                "newDid": new_did,
-                "oldSignature": old_sig,
-                "newSignature": new_sig,
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp.into_body()).await;
+    let (status, body) = finish_rotate(
+        &fix,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": old_sig,
+            "newSignature": new_sig,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["newDid"], new_did);
     assert_eq!(body["method"], "did:key");
 
@@ -322,27 +312,20 @@ async fn rotation_did_webvh_requires_did_resolver() {
     let new_signing = SigningKey::from_bytes(&[0xBB; 32]);
     let new_sig = hex::encode(new_signing.sign(&payload).to_bytes());
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/rotate")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ROTATE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "rotationId": rotation_id,
-                "oldDid": fix.member_did,
-                "newDid": new_did,
-                "oldSignature": old_sig,
-                "newSignature": new_sig,
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, body) = finish_rotate(
+        &fix,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": old_sig,
+            "newSignature": new_sig,
+        }),
+    )
+    .await;
     // 500 (Internal) because the daemon is misconfigured —
     // not 400 (caller's fault).
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
 }
 
 #[tokio::test]
@@ -357,25 +340,18 @@ async fn rotation_rejects_unknown_did_method() {
     let new_signing = SigningKey::from_bytes(&[0xBB; 32]);
     let new_sig = hex::encode(new_signing.sign(&payload).to_bytes());
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/rotate")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ROTATE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "rotationId": rotation_id,
-                "oldDid": fix.member_did,
-                "newDid": new_did,
-                "oldSignature": old_sig,
-                "newSignature": new_sig,
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let (status, body) = finish_rotate(
+        &fix,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": old_sig,
+            "newSignature": new_sig,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
 #[tokio::test]
@@ -393,25 +369,21 @@ async fn rotation_rejects_bad_new_signature() {
     let wrong = SigningKey::from_bytes(&[0xDE; 32]);
     let bad_sig = hex::encode(wrong.sign(&payload).to_bytes());
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/rotate")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ROTATE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "rotationId": rotation_id,
-                "oldDid": fix.member_did,
-                "newDid": new_did,
-                "oldSignature": old_sig,
-                "newSignature": bad_sig,
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    // `signatureInvalid` is a declared code, so it rides the framework's flat
+    // 422 bucket for extended codes over the signed door (not the REST
+    // route's old 400).
+    let (status, body) = finish_rotate(
+        &fix,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": old_sig,
+            "newSignature": bad_sig,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 }
 
 #[tokio::test]
@@ -426,39 +398,26 @@ async fn rotation_id_is_single_use() {
     let old_sig = hex::encode(fix.member_signing.sign(&payload).to_bytes());
     let new_sig = hex::encode(new_signing.sign(&payload).to_bytes());
 
-    let make_req = || {
-        Request::builder()
-            .method("POST")
-            .uri("/v1/members/me/rotate")
-            .header("authorization", format!("Bearer {}", fix.member_token))
-            .header("trust-task", ROTATE_TASK)
-            .header("content-type", "application/json")
-            .body(Body::from(
-                json!({
-                    "rotationId": rotation_id,
-                    "oldDid": fix.member_did,
-                    "newDid": new_did,
-                    "oldSignature": old_sig,
-                    "newSignature": new_sig,
-                })
-                .to_string(),
-            ))
-            .unwrap()
+    let finish_payload = || {
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": old_sig,
+            "newSignature": new_sig,
+        })
     };
 
-    let resp = fix.router.clone().oneshot(make_req()).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "first call succeeds");
+    let (status, body) = finish_rotate(&fix, finish_payload()).await;
+    assert_eq!(status, StatusCode::OK, "first call succeeds: {body}");
 
-    // Second call: rotation_id is consumed, and the old DID no
-    // longer has a session (revoked in step 1). The endpoint
-    // returns 401 because the AuthClaims extractor can't verify
-    // the session. Either failure mode is acceptable; we
-    // assert any non-2xx.
-    let resp = fix.router.clone().oneshot(make_req()).await.unwrap();
+    // Second call: rotation_id is consumed — the old DID's ACL row is also
+    // gone by now, but `self_signer` admits an absent row regardless, so the
+    // refusal is the operation's own `rotationExpired`, not an auth failure.
+    let (status, body) = finish_rotate(&fix, finish_payload()).await;
     assert!(
-        !resp.status().is_success(),
-        "second call must not succeed, got {}",
-        resp.status()
+        !status.is_success(),
+        "second call must not succeed, got {status}: {body}"
     );
 }
 
@@ -480,25 +439,18 @@ async fn rotation_reason_reaches_the_audit_envelope() {
     let old_sig = hex::encode(fix.member_signing.sign(&payload).to_bytes());
     let new_sig = hex::encode(new_signing.sign(&payload).to_bytes());
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/rotate")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ROTATE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "rotationId": rotation_id,
-                "oldDid": fix.member_did,
-                "newDid": new_did,
-                "oldSignature": old_sig,
-                "newSignature": new_sig,
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, body) = finish_rotate(
+        &fix,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": old_sig,
+            "newSignature": new_sig,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let raw = fix
         .audit_ks
@@ -538,27 +490,18 @@ async fn rotation_without_a_reason_records_none() {
     let old_sig = hex::encode(fix.member_signing.sign(&payload).to_bytes());
     let new_sig = hex::encode(new_signing.sign(&payload).to_bytes());
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/rotate")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ROTATE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "rotationId": rotation_id,
-                "oldDid": fix.member_did,
-                "newDid": new_did,
-                "oldSignature": old_sig,
-                "newSignature": new_sig,
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    assert_eq!(
-        fix.router.clone().oneshot(req).await.unwrap().status(),
-        StatusCode::OK
-    );
+    let (status, body) = finish_rotate(
+        &fix,
+        json!({
+            "rotationId": rotation_id,
+            "oldDid": fix.member_did,
+            "newDid": new_did,
+            "oldSignature": old_sig,
+            "newSignature": new_sig,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let raw = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
     let rotated: Vec<AuditEnvelope> = raw
@@ -589,37 +532,16 @@ fn rest_error_code(body: &Value) -> &str {
     body["code"].as_str().unwrap_or_default()
 }
 
-/// POST a rotate-finish body and return `(status, body)`.
-async fn post_rotate(fix: &Fixture, body: Value) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/rotate")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ROTATE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let status = resp.status();
-    (status, body_json(resp.into_body()).await)
-}
-
 #[tokio::test]
 async fn a_rotation_challenge_for_a_non_member_is_the_declared_not_member() {
     let fix = build_fixture().await;
     vtc_service::acl::delete_acl_entry(&fix.acl_ks, &fix.member_did)
         .await
         .unwrap();
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/members/me/rotate/challenge")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", CHALLENGE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    let body = body_json(resp.into_body()).await;
+    let (status, doc) =
+        common::signed::call(&fix._vtc, &fix.member, CHALLENGE_TASK, json!({})).await;
+    let body = doc["payload"].clone();
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(
         rest_error_code(&body),
         ROTATE_CHALLENGE_ERR_NOT_MEMBER,
@@ -629,7 +551,8 @@ async fn a_rotation_challenge_for_a_non_member_is_the_declared_not_member() {
 
 /// `rotationExpired` covers a rotation id the community never issued (or has
 /// already spent); `signatureInvalid` covers either key failing to sign. Both
-/// keep their 400.
+/// are declared codes, so both ride the framework's flat 422 bucket over the
+/// signed door (not the REST route's old 400).
 #[tokio::test]
 async fn the_rotate_task_answers_with_the_codes_its_spec_declares() {
     let fix = build_fixture().await;
@@ -637,7 +560,7 @@ async fn the_rotate_task_answers_with_the_codes_its_spec_declares() {
     let new_did =
         affinidi_crypto::did_key::ed25519_pub_to_did_key(&new_signing.verifying_key().to_bytes());
 
-    let (status, body) = post_rotate(
+    let (status, body) = finish_rotate(
         &fix,
         json!({
             "rotationId": uuid::Uuid::new_v4().to_string(),
@@ -648,7 +571,7 @@ async fn the_rotate_task_answers_with_the_codes_its_spec_declares() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(
         rest_error_code(&body),
         ROTATE_ERR_ROTATION_EXPIRED,
@@ -661,7 +584,7 @@ async fn the_rotate_task_answers_with_the_codes_its_spec_declares() {
     // The *old* key's signature is the one that fails this time.
     let wrong = SigningKey::from_bytes(&[0xDE; 32]);
     let bad_old_sig = hex::encode(wrong.sign(&payload).to_bytes());
-    let (status, body) = post_rotate(
+    let (status, body) = finish_rotate(
         &fix,
         json!({
             "rotationId": rotation_id,
@@ -672,7 +595,7 @@ async fn the_rotate_task_answers_with_the_codes_its_spec_declares() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(
         rest_error_code(&body),
         ROTATE_ERR_SIGNATURE_INVALID,

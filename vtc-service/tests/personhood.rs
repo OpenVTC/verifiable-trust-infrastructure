@@ -1,7 +1,9 @@
-//! Integration coverage for personhood (Phase 4 M4.3 + M4.4): the challenge
-//! and the assertion, which are signed documents at `POST /v1/trust-tasks`
-//! (`vtc/members/personhood/{challenge,assert}/0.1`), and the revoke at
-//! `DELETE /v1/members/{did}/personhood`.
+//! Integration coverage for personhood (Phase 4 M4.3 + M4.4): the challenge,
+//! the assertion and the revoke are all signed documents at
+//! `POST /v1/trust-tasks` (`vtc/members/personhood/{challenge,assert,revoke}/0.1`)
+//! — the revoke's bearer `DELETE /v1/members/{did}/personhood` route was
+//! retired once the signed-document spine covered it
+//! (`trust_tasks::member_tasks`).
 //!
 //! Covers:
 //! - challenge mint happy path + non-member 404
@@ -28,7 +30,6 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use vti_common::audit::{AuditEnvelope, AuditEvent};
-use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 
 use vti_rooms_dtg::test_support::Party;
 
@@ -41,17 +42,19 @@ const PUBLIC_URL: &str = "https://vtc.example.com";
 const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1";
 const ASSERT_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/assert/0.1";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1";
-const MEMBER_DID: &str = "did:key:zPerson1";
+/// A data-only subject: seeded as a member, but never a document signer —
+/// stands in for "some other member" wherever a test names a subject it
+/// does not need to sign as.
 const OTHER_MEMBER_DID: &str = "did:key:zPerson2";
-const ADMIN_DID: &str = "did:key:zPersonAdmin";
 
 struct Fixture {
     router: axum::Router,
-    /// A member with a real key, who signs the challenge and assert documents.
+    /// A member with a real key, who signs the challenge, assert and
+    /// self-revoke documents.
     person: Party,
-    member_token: String,
-    other_member_token: String,
-    admin_token: String,
+    /// An administrator with a real key, who signs the admin-revoke
+    /// documents.
+    admin: Party,
     members_ks: vti_common::store::KeyspaceHandle,
     audit_ks: vti_common::store::KeyspaceHandle,
     // Owns the temp data dir + serves `router`'s state; must outlive them.
@@ -80,135 +83,27 @@ async fn build_fixture() -> Fixture {
             .unwrap();
     }
 
-    // Seed ACL + Member rows for member, other-member, admin.
-    let now = now_epoch();
-    for (did, role) in [
-        (MEMBER_DID, VtcRole::Member),
-        (OTHER_MEMBER_DID, VtcRole::Member),
-        (ADMIN_DID, VtcRole::Admin),
-    ] {
-        store_acl_entry(
-            &vtc.state.acl_ks,
-            &VtcAclEntry {
-                did: did.into(),
-                role,
-                label: None,
-                allowed_contexts: vec![],
-                created_at: now,
-                created_by: "did:key:vtc-install".into(),
-                updated_at: None,
-                updated_by: None,
-                expires_at: None,
-            },
-        )
+    // Seed ACL + Member rows for the data-only "other member".
+    let now = vti_common::auth::session::now_epoch();
+    store_acl_entry(
+        &vtc.state.acl_ks,
+        &VtcAclEntry {
+            did: OTHER_MEMBER_DID.into(),
+            role: VtcRole::Member,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: now,
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    store_member(&vtc.state.members_ks, &Member::fresh(OTHER_MEMBER_DID))
         .await
         .unwrap();
-        store_member(&vtc.state.members_ks, &Member::fresh(did))
-            .await
-            .unwrap();
-    }
-
-    // Mint tokens with fixed session ids so the AuthClaims extractor's
-    // session-state lookup succeeds (tee-attested, 1h TTL).
-    let member_token = {
-        let session_id = "sess-member";
-        store_session(
-            &vtc.state.sessions_ks,
-            &Session {
-                session_id: session_id.into(),
-                did: MEMBER_DID.into(),
-                challenge: "test".into(),
-                state: SessionState::Authenticated,
-                created_at: now,
-                last_seen: now,
-                refresh_token: None,
-                refresh_expires_at: None,
-                tee_attested: false,
-                amr: Vec::new(),
-                acr: String::new(),
-                acr_expires_at: None,
-                token_id: None,
-                session_pubkey_b58btc: None,
-            },
-        )
-        .await
-        .unwrap();
-        let claims = vtc.jwt_keys.new_claims(
-            MEMBER_DID.into(),
-            session_id.into(),
-            "reader".into(),
-            vec![],
-            3600,
-            true,
-        );
-        vtc.jwt_keys.encode(&claims).unwrap()
-    };
-    let other_member_token = {
-        let session_id = "sess-other";
-        store_session(
-            &vtc.state.sessions_ks,
-            &Session {
-                session_id: session_id.into(),
-                did: OTHER_MEMBER_DID.into(),
-                challenge: "test".into(),
-                state: SessionState::Authenticated,
-                created_at: now,
-                last_seen: now,
-                refresh_token: None,
-                refresh_expires_at: None,
-                tee_attested: false,
-                amr: Vec::new(),
-                acr: String::new(),
-                acr_expires_at: None,
-                token_id: None,
-                session_pubkey_b58btc: None,
-            },
-        )
-        .await
-        .unwrap();
-        let claims = vtc.jwt_keys.new_claims(
-            OTHER_MEMBER_DID.into(),
-            session_id.into(),
-            "reader".into(),
-            vec![],
-            3600,
-            true,
-        );
-        vtc.jwt_keys.encode(&claims).unwrap()
-    };
-    let admin_token = {
-        let session_id = "sess-admin";
-        store_session(
-            &vtc.state.sessions_ks,
-            &Session {
-                session_id: session_id.into(),
-                did: ADMIN_DID.into(),
-                challenge: "test".into(),
-                state: SessionState::Authenticated,
-                created_at: now,
-                last_seen: now,
-                refresh_token: None,
-                refresh_expires_at: None,
-                tee_attested: false,
-                amr: Vec::new(),
-                acr: String::new(),
-                acr_expires_at: None,
-                token_id: None,
-                session_pubkey_b58btc: None,
-            },
-        )
-        .await
-        .unwrap();
-        let claims = vtc.jwt_keys.new_claims(
-            ADMIN_DID.into(),
-            session_id.into(),
-            "admin".into(),
-            vec![],
-            3600,
-            true,
-        );
-        vtc.jwt_keys.encode(&claims).unwrap()
-    };
 
     let person = Party::new();
     store_acl_entry(
@@ -231,6 +126,24 @@ async fn build_fixture() -> Fixture {
         .await
         .unwrap();
 
+    let admin = Party::new();
+    store_acl_entry(
+        &vtc.state.acl_ks,
+        &VtcAclEntry {
+            did: admin.did.clone(),
+            role: VtcRole::Admin,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: now,
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+
     let members_ks = vtc.state.members_ks.clone();
     let audit_ks = vtc.state.audit_ks.clone();
     let router = vtc.router.clone();
@@ -238,9 +151,7 @@ async fn build_fixture() -> Fixture {
     Fixture {
         router,
         person,
-        member_token,
-        other_member_token,
-        admin_token,
+        admin,
         members_ks,
         audit_ks,
         _vtc: vtc,
@@ -291,6 +202,12 @@ async fn challenge(fix: &Fixture) -> String {
     .await;
     assert_eq!(status, StatusCode::OK, "{v}");
     v["challengeId"].as_str().unwrap().to_string()
+}
+
+/// `vtc/members/personhood/revoke/0.1`, signed by `by`: the reply's status
+/// and payload.
+async fn revoke(fix: &Fixture, by: &Party, subject: &str) -> (StatusCode, Value) {
+    signed(fix, by, REVOKE_TASK, json!({ "did": subject })).await
 }
 
 // ─── Challenge ─────────────────────────────────────────────
@@ -412,13 +329,13 @@ async fn assert_with_mismatched_signed_and_unsigned_challenge_is_refused() {
     );
 }
 
-// ─── Revoke endpoint ───────────────────────────────────────
+// ─── Revoke ───────────────────────────────────────────────
 
 #[tokio::test]
 async fn revoke_admin_flips_member_row_and_emits_audit() {
     let fix = build_fixture().await;
     // Mark member as previously asserted.
-    let mut m = get_member(&fix.members_ks, MEMBER_DID)
+    let mut m = get_member(&fix.members_ks, &fix.person.did)
         .await
         .unwrap()
         .unwrap();
@@ -427,21 +344,13 @@ async fn revoke_admin_flips_member_row_and_emits_audit() {
     m.status_list_index = Some(7); // pre-allocated for re-mint
     store_member(&fix.members_ks, &m).await.unwrap();
 
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/members/{MEMBER_DID}/personhood"))
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, v) = body_value(resp).await;
+    let (status, v) = revoke(&fix, &fix.admin, &fix.person.did).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["personhood"], false);
     assert!(v["vmc"].is_object());
 
     // Member row flipped + timestamp cleared.
-    let m2 = get_member(&fix.members_ks, MEMBER_DID)
+    let m2 = get_member(&fix.members_ks, &fix.person.did)
         .await
         .unwrap()
         .unwrap();
@@ -466,7 +375,7 @@ async fn revoke_admin_flips_member_row_and_emits_audit() {
 #[tokio::test]
 async fn revoke_self_emits_audit_reason_self() {
     let fix = build_fixture().await;
-    let mut m = get_member(&fix.members_ks, MEMBER_DID)
+    let mut m = get_member(&fix.members_ks, &fix.person.did)
         .await
         .unwrap()
         .unwrap();
@@ -475,15 +384,8 @@ async fn revoke_self_emits_audit_reason_self() {
     m.status_list_index = Some(8);
     store_member(&fix.members_ks, &m).await.unwrap();
 
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/members/{MEMBER_DID}/personhood"))
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, v) = revoke(&fix, &fix.person, &fix.person.did).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
 
     let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
     let mut saw_self = false;
@@ -502,7 +404,7 @@ async fn revoke_self_emits_audit_reason_self() {
 #[tokio::test]
 async fn revoke_unauthorized_when_member_revokes_someone_else() {
     let fix = build_fixture().await;
-    // Mark other_member as asserted; member tries to revoke
+    // Mark other_member as asserted; person tries to revoke
     // on their behalf — must 403.
     let mut m = get_member(&fix.members_ks, OTHER_MEMBER_DID)
         .await
@@ -513,15 +415,8 @@ async fn revoke_unauthorized_when_member_revokes_someone_else() {
     m.status_list_index = Some(9);
     store_member(&fix.members_ks, &m).await.unwrap();
 
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/members/{OTHER_MEMBER_DID}/personhood"))
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (status, v) = revoke(&fix, &fix.person, OTHER_MEMBER_DID).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{v}");
 }
 
 #[tokio::test]
@@ -529,16 +424,8 @@ async fn revoke_already_false_is_idempotent_noop() {
     let fix = build_fixture().await;
     // Member.personhood already false (default). Revoke
     // returns 200 + no VMC re-mint + no audit envelope.
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/members/{MEMBER_DID}/personhood"))
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, v) = body_value(resp).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, v) = revoke(&fix, &fix.person, &fix.person.did).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["personhood"], false);
     assert!(
         v.get("vmc").is_none_or(|x| x.is_null()),
@@ -559,20 +446,11 @@ async fn revoke_already_false_is_idempotent_noop() {
 }
 
 #[tokio::test]
-async fn revoke_returns_404_for_unknown_member() {
+async fn revoke_returns_the_declared_not_found_for_unknown_member() {
     let fix = build_fixture().await;
-    let req = Request::builder()
-        .method("DELETE")
-        .uri("/v1/members/did:key:zStranger/personhood")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    // Silence unused warning on other_member_token in this
-    // test (used in revoke_unauthorized_*).
-    let _ = &fix.other_member_token;
+    let (status, v) = revoke(&fix, &fix.admin, "did:key:zStranger").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(rest_error_code(&v), REVOKE_ERR_NOT_FOUND, "{v}");
 }
 
 // ─── #1600: the codes the personhood tasks declare ─────────
@@ -589,40 +467,9 @@ const ASSERT_ERR_PRESENTATION_INVALID: &str =
     personhood_spec::assert::v0_1::error_codes::PRESENTATION_INVALID.code;
 const REVOKE_ERR_NOT_FOUND: &str = personhood_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
 
-/// The extended error code carried by a REST error body (`{"error", "code"}`).
+/// The extended error code carried by a refusal's payload.
 fn rest_error_code(body: &Value) -> &str {
     body["code"].as_str().unwrap_or_default()
-}
-
-/// Send `method uri` as `token` under `task`, returning `(status, body)`.
-async fn call(
-    fix: &Fixture,
-    method: &str,
-    uri: &str,
-    task: &str,
-    token: &str,
-    body: Option<Value>,
-) -> (StatusCode, Value) {
-    let mut req = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
-        .header("trust-task", task);
-    let body = match body {
-        Some(b) => {
-            req = req.header("content-type", "application/json");
-            Body::from(b.to_string())
-        }
-        None => Body::empty(),
-    };
-    body_value(
-        fix.router
-            .clone()
-            .oneshot(req.body(body).unwrap())
-            .await
-            .unwrap(),
-    )
-    .await
 }
 
 #[tokio::test]
@@ -638,16 +485,8 @@ async fn personhood_challenge_and_revoke_for_a_non_member_are_the_declared_not_f
     assert!(status.is_client_error(), "{body}");
     assert_eq!(rest_error_code(&body), CHALLENGE_ERR_NOT_FOUND, "{body}");
 
-    let (status, body) = call(
-        &fix,
-        "DELETE",
-        "/v1/members/did:key:zStranger/personhood",
-        REVOKE_TASK,
-        &fix.admin_token,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = revoke(&fix, &fix.admin, "did:key:zStranger").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), REVOKE_ERR_NOT_FOUND, "{body}");
 }
 

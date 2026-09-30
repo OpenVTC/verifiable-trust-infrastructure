@@ -542,17 +542,31 @@ The rules:
 
 ### Signed reads
 
-The administrator's view, the namespace and repository listings and the
-break-glass list are signed Trust Tasks, served on the document dispatcher the
-same way over TSP, DIDComm and `POST /v1/trust-tasks`
-(`vtc-service/src/git_ns/admin_reads.rs`). They answer a namespace's
-administrators only — the community-administrator capability (every
-namespace) or a live, explicitly recorded `git.ns.admin` on it, held by a
-current member — and never a bearer session, so a context-scoped
-administrator who holds no `git.ns.admin` sees nothing through them. A caller
+Every administrator read — the view, the namespace and repository listings,
+the break-glass list, the rights lists, the bridge job queue, the Trust
+Registry projection, the linked-account roster and the activity feed — is a
+signed Trust Task, served on the document dispatcher the same way over TSP,
+DIDComm and `POST /v1/trust-tasks` (`vtc-service/src/git_ns/admin_reads.rs`).
+None has a bearer door.
+
+Two authorization shapes. `namespace/list`, `repo/list`, `view`,
+`bridge/job/list` and `activity/list` answer a namespace's administrators —
+the community-administrator capability (every namespace) or a live,
+explicitly recorded `git.ns.admin` on it, held by a current member. A caller
 who administers nothing, or who names a namespace they do not administer or
 one that does not exist, is refused with the task's `notAdministrator`, the
-same way in each case. An unsigned document is refused `proofRequired`.
+same way in each case. `right/list`, `right/issued-by-departed`,
+`projection/show` and `account/list` answer the community-administrator
+capability alone — each spans every namespace, and for the rights reads every
+granter's reason — so holding `git.ns.admin` on some namespace is not enough;
+a caller who lacks the capability is refused with the task's
+`notCommunityAdministrator`. An unsigned document is refused `proofRequired`
+either way.
+
+Every listing among the six added in trustoverip/dtgwg-trust-tasks-tf#686
+clamps `limit` to 1..=500 (default 100) and pages with an opaque `cursor`
+bound to the request's own filters — a request that changes a filter mid-page
+is refused `malformedRequest` rather than silently reinterpreted.
 
 | Task | Answer | `cnm` |
 |---|---|---|
@@ -560,31 +574,18 @@ same way in each case. An unsigned document is refused `proofRequired`.
 | `git-ns/repo/list/0.1` (`namespace?`) | repositories in them with owners, right counts, bootstrap, sync, guard in force, step outcomes, last check, effective role map, `roleMapStale`; for a community administrator also those an unbound namespace left | `cnm git repos [--namespace <id>]` |
 | `git-ns/view/0.5` (`scope: administrator`) | every record and reason in the administered namespaces (0.4's response shape) | `cnm git view --admin` |
 | `git-ns/view/0.5` (`breakGlass: true`) | only break-glass records, ratified ones included, and the namespaces holding them | `cnm git break-glass-list` |
+| `git-ns/right/list/0.1` (`resource?`, `subject?`) | every right the VTC knows of, recorded and role-derived, across every namespace, with `subjectMember` / `granterDeparted` | — |
+| `git-ns/right/issued-by-departed/0.1` | recorded rights whose granter has since left, grouped by granter, plus `cascadeOnDeparture` | — |
+| `git-ns/bridge/job/list/0.1` (`namespace?`, `state?`) | bridge jobs in the administered namespaces, with kind, queue state, attempts and last error | — |
+| `git-ns/projection/show/0.1` (`resource?`) | what is published to the Trust Registry, `registryConfigured` and `pendingChanges` | — |
+| `git-ns/account/list/0.1` (`member?`, `forge?`) | every member's linked forge account, community-wide, each with `memberCurrent` | — |
+| `git-ns/activity/list/0.1` (`namespace?`) | rights changes, drift and bridge jobs in the administered namespaces, newest first | — |
 
-These specifications (trustoverip/dtgwg-trust-tasks-tf#659) are the generated
-`trust_tasks_rs::specs::git_ns::{view::v0_5, namespace::list::v0_1,
-repo::list::v0_1}` (trust-tasks-rs 0.23.4), which declare the proof REQUIRED;
-the dispatch spine refuses an unsigned document before a handler runs.
-
-### Console projections
-
-Read-only, admin session. `rights`, `rights/issued-by-departed`,
-`projection`, `accounts` and `drift` show every member's rights, grant
-reasons and forge identities — and, in drift, the forge accounts of people
-outside the community — so they need a community-wide administrator (an admin
-session not narrowed to a context); `activity` is for any session and shows
-only the namespaces the caller administers. They are console projections no
-specification defines, and carry no Trust-Task URL.
-
-| Route | Body |
-|---|---|
-| `GET /v1/git-ns/rights?resource=&subject=` | recorded and role-derived rights |
-| `GET /v1/git-ns/rights/issued-by-departed` | grants whose granter left |
-| `GET /v1/git-ns/drift` | repositories with outstanding drift |
-| `GET /v1/git-ns/jobs` | bridge jobs |
-| `GET /v1/git-ns/projection` | what is published, and how many changes are pending |
-| `GET /v1/git-ns/accounts` | members' linked forge accounts, each with `memberCurrent` |
-| `GET /v1/git-ns/activity?namespace=&limit=` | rights changes, drift and jobs in the namespaces the caller administers (any session) |
+`view/0.5`, `namespace/list/0.1` and `repo/list/0.1` (trustoverip/dtgwg-trust-tasks-tf#659,
+trust-tasks-rs 0.23.4) and the other six (trustoverip/dtgwg-trust-tasks-tf#686,
+trust-tasks-rs 0.24.7) are all generated `trust_tasks_rs::specs::git_ns::*`
+modules, which declare the proof REQUIRED; the dispatch spine refuses an
+unsigned document before a handler runs.
 
 One forge account links to one member. Link completion checks and records it
 in one step under the member-row lock, inside the git-ns store lock that

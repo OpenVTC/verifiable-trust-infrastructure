@@ -14,12 +14,69 @@
 
 use std::time::Duration;
 
-use affinidi_messaging_test_mediator::TestMediator;
+use affinidi_messaging_test_mediator::{TestMediator, acl};
 use vta_service::messaging::handshake::{HandshakeOptions, HandshakeStage};
 
 mod common;
 
 use common::test_vta::TestVta;
+
+fn closed_for_forwarded() -> affinidi_messaging_test_mediator::MediatorACLSet {
+    let mut acls = acl::allow_all();
+    acls.set_receive_forwarded(false, true, true)
+        .expect("admin=true may always set this bit");
+    acls
+}
+
+#[tokio::test]
+async fn transient_handshake_provisions_acl_before_self_ping() {
+    common::init_tracing();
+
+    let vta = TestVta::spawn().await.expect("spawn test VTA");
+    let mediator = TestMediator::builder()
+        .global_acl_default(closed_for_forwarded())
+        .local_did(vta.did.clone())
+        .spawn()
+        .await
+        .expect("spawn closed-ACL mediator");
+    mediator
+        .set_acl(&vta.did, closed_for_forwarded())
+        .await
+        .expect("close the pre-registered local account");
+
+    let before = mediator
+        .get_acl(&vta.did)
+        .await
+        .expect("read initial ACL")
+        .expect("local account exists");
+    assert!(
+        !before.get_receive_forwarded().0,
+        "fixture must start closed so the test can observe ACL provisioning"
+    );
+
+    vta.run_transient_handshake(
+        mediator.did(),
+        HandshakeOptions {
+            timeout: Duration::from_secs(10),
+            setup_acl: true,
+            channel: "test".to_string(),
+            force: false,
+        },
+    )
+    .await
+    .expect("setup ACL before the self-ping makes the handshake succeed");
+
+    let after = mediator
+        .get_acl(&vta.did)
+        .await
+        .expect("read updated ACL")
+        .expect("account remains registered");
+    assert!(after.get_receive_forwarded().0);
+    assert!(after.get_receive_messages().0);
+
+    mediator.shutdown();
+    mediator.join().await.expect("mediator joins cleanly");
+}
 
 // The mediator's WebSocket handler refuses upgrades unless the
 // authenticated session has the LOCAL ACL bit, so we register the
@@ -38,8 +95,10 @@ async fn transient_handshake_against_live_mediator_succeeds() {
         .await
         .expect("spawn test mediator");
 
-    let opts = HandshakeOptions {
+    let opts: HandshakeOptions = HandshakeOptions {
         timeout: Duration::from_secs(10),
+        setup_acl: false,
+        channel: "test".to_string(),
         force: false,
     };
 
@@ -101,6 +160,8 @@ async fn transient_handshake_leaves_no_socket_behind() {
 
     let opts = HandshakeOptions {
         timeout: Duration::from_secs(10),
+        setup_acl: false,
+        channel: "test".to_string(),
         force: false,
     };
 
@@ -136,6 +197,8 @@ async fn transient_handshake_unresolvable_did_fails_at_resolve_stage() {
     let bogus_did = "did:peer:2.unresolvable";
     let opts = HandshakeOptions {
         timeout: Duration::from_secs(2),
+        setup_acl: false,
+        channel: "test".to_string(),
         force: false,
     };
 

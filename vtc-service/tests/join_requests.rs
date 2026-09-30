@@ -515,8 +515,8 @@ async fn submit_pending(fix: &Fixture) -> Uuid {
 async fn list_returns_pending_by_default() {
     let fix = build_fixture().await;
     let id = submit_pending(&fix).await;
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "GET",
         "/v1/join-requests",
         LIST_TASK,
@@ -563,8 +563,8 @@ async fn approve_writes_acl_and_member_atomically() {
     let (_, body) = post_tt(&fix.router, doc).await;
     let id = body["payload"]["requestId"].as_str().unwrap();
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -654,8 +654,8 @@ async fn approve_409_when_duplicate_acl_exists() {
     .await
     .unwrap();
 
-    let (status, _) = send(
-        &fix.router,
+    let (status, _) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -674,8 +674,8 @@ async fn reject_leaves_no_acl_or_member_rows() {
     let (_, body) = post_tt(&fix.router, doc).await;
     let id = body["payload"]["requestId"].as_str().unwrap();
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -704,8 +704,8 @@ async fn reject_leaves_no_acl_or_member_rows() {
 async fn approve_404_for_unknown_id() {
     let fix = build_fixture().await;
     let id = Uuid::new_v4();
-    let (status, _) = send(
-        &fix.router,
+    let (status, _) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -724,8 +724,8 @@ async fn approve_409_when_request_already_decided() {
     let id = body["payload"]["requestId"].as_str().unwrap();
 
     // First approve — succeeds.
-    let _ = send(
-        &fix.router,
+    let _ = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -734,8 +734,8 @@ async fn approve_409_when_request_already_decided() {
     )
     .await;
     // Second approve — 409.
-    let (status, _) = send(
-        &fix.router,
+    let (status, _) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -752,8 +752,8 @@ async fn reject_rejects_overlong_reason() {
     let id = submit_pending(&fix).await;
 
     let huge = "x".repeat(1025);
-    let (status, _) = send(
-        &fix.router,
+    let (status, _) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -775,8 +775,8 @@ async fn reject_rejects_overlong_reason() {
 /// Upload + activate a join policy. The active pointer is flipped
 /// server-side; subsequent submits see the new policy's semantics.
 async fn activate_join_policy(fix: &Fixture, source: &str) {
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        fix,
         "POST",
         "/v1/policies",
         POLICY_UPLOAD_TASK,
@@ -792,8 +792,8 @@ async fn activate_join_policy(fix: &Fixture, source: &str) {
         "upload failed ({status}): {body}"
     );
     let id = body["policy"]["id"].as_str().unwrap();
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        fix,
         "POST",
         &format!("/v1/policies/{id}/activate"),
         POLICY_ACTIVATE_TASK,
@@ -934,8 +934,8 @@ async fn manual_approve_emits_membership_issuance_audit() {
     let (_, body) = post_tt(&fix.router, doc).await;
     let id = body["payload"]["requestId"].as_str().unwrap();
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -1064,8 +1064,8 @@ async fn policy_rejected_row_cannot_be_approved() {
     assert_eq!(verdict_effect(&body), "deny");
     let id = body["payload"]["requestId"].as_str().unwrap();
 
-    let (status, _body) = send(
-        &fix.router,
+    let (status, _body) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -1083,15 +1083,7 @@ async fn policy_rejected_row_cannot_be_approved() {
 #[tokio::test]
 async fn list_requires_authentication() {
     let fix = build_fixture().await;
-    let (status, _) = send(
-        &fix.router,
-        "GET",
-        "/v1/join-requests",
-        LIST_TASK,
-        None,
-        None,
-    )
-    .await;
+    let (status, _) = send_as_admin(&fix, "GET", "/v1/join-requests", LIST_TASK, None, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -1589,6 +1581,7 @@ async fn admin_query_send_prepares_a_dcql_query_and_issues_a_challenge() {
         }),
         description: Some("present a MembershipCredential to join".into()),
         vetting: None,
+        hidden_vetting: None,
         created_at: chrono::Utc::now(),
         created_by_did: ADMIN_DID.into(),
     };
@@ -1675,8 +1668,8 @@ async fn admit_member(fix: &Fixture) -> (SigningKey, String, Uuid, String) {
     let (_, body) = post_tt(&fix.router, doc).await;
     let id = Uuid::parse_str(body["payload"]["requestId"].as_str().unwrap()).unwrap();
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -1892,6 +1885,7 @@ async fn store_join_criterion(fix: &Fixture) {
         }),
         description: Some("present a MembershipCredential to join".into()),
         vetting: None,
+        hidden_vetting: None,
         created_at: chrono::Utc::now(),
         created_by_did: ADMIN_DID.into(),
     };
@@ -1948,6 +1942,7 @@ async fn manifest_0_2_advertises_vetting_requirements_and_their_digest() {
             }]
         }),
         description: Some("Two vetters, one in person".into()),
+        hidden_vetting: None,
         vetting: Some(
             serde_json::from_value(json!({
                 "version": "0.1",
@@ -2009,8 +2004,8 @@ const ENDORSEMENT_REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorseme
 
 /// Name `did` a vetter through `POST /v1/vetting/vetters`, as the admin.
 async fn grant_vetter(fix: &Fixture, did: &str) -> (StatusCode, Value) {
-    send(
-        &fix.router,
+    send_as_admin(
+        fix,
         "POST",
         "/v1/vetting/vetters",
         VETTER_GRANT_TASK,
@@ -2083,6 +2078,7 @@ async fn store_vetting_criterion(fix: &Fixture) {
                 }]
             }),
             description: Some("Two vetters".into()),
+            hidden_vetting: None,
             vetting: Some(
                 serde_json::from_value(json!({
                     "version": "0.1",
@@ -2329,8 +2325,8 @@ async fn a_revoked_vetter_grant_stops_a_statement_counting() {
     let from_dave = vetting_statement(&dave_key, &applicant, 2).await;
 
     // Withdrawn after Dave signed: revocation is read as it stands at submit.
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "DELETE",
         &format!("/v1/credentials/endorsements/{daves_grant}"),
         ENDORSEMENT_REVOKE_TASK,
@@ -2607,10 +2603,9 @@ async fn withdrawal_doc(seed: [u8; 32], statement: &Value) -> Value {
 use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_0_2_TYPE;
 use vta_sdk::protocols::vetting::{
     VETTING_VETTER_LIST_TYPE, VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE, VETTING_VETTER_PROFILE_TYPE,
-    VETTING_VETTER_RESEND_ERR_NOT_GRANTED, VETTING_VETTER_RESEND_TYPE,
+    VETTING_VETTER_RESEND_0_2_TYPE, VETTING_VETTER_RESEND_ERR_NOT_GRANTED,
+    VETTING_VETTER_RESEND_TYPE,
 };
-
-const RESEND_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1";
 
 /// An admin REST call to a route with no Trust Task binding: no `Trust-Task`
 /// header at all.
@@ -2881,8 +2876,8 @@ async fn unlisting_hides_a_profile_and_revoking_the_grant_deletes_it() {
     publish_profile(&fix, [0x11; 32], carols_profile(true)).await;
     assert_eq!(listed_dids(&list_vetters(&fix, json!({})).await).len(), 1);
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "DELETE",
         &format!("/v1/credentials/endorsements/{grant}"),
         ENDORSEMENT_REVOKE_TASK,
@@ -2968,27 +2963,26 @@ async fn a_vetter_asks_for_the_grant_credential_again() {
         "a resend names nobody: {body}"
     );
 
-    // The admin route answers the same way.
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        &format!("/v1/vetting/vetters/{carol}/resend"),
-        RESEND_TASK,
-        Some(&fix.admin_token),
-        None,
+    // An administrator, naming the vetter in `memberDid`, answers the same
+    // way (`vtc/vetting/vetters/resend/0.2` — what replaced the admin-only
+    // REST route, tt-tf#689).
+    let (status, doc) = common::signed::call(
+        &fix._vtc,
+        &fix.signer,
+        VETTING_VETTER_RESEND_0_2_TYPE,
+        json!({ "memberDid": carol }),
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        &format!("/v1/vetting/vetters/{erin}/resend"),
-        RESEND_TASK,
-        Some(&fix.admin_token),
-        None,
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{doc}");
+    let (status, doc) = common::signed::call(
+        &fix._vtc,
+        &fix.signer,
+        VETTING_VETTER_RESEND_0_2_TYPE,
+        json!({ "memberDid": erin }),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{doc}");
+    assert_eq!(tt_error_code(&doc), VETTING_VETTER_RESEND_ERR_NOT_GRANTED);
 }
 
 #[tokio::test]
@@ -3432,8 +3426,8 @@ async fn status_rejected_by_admin_returns_the_operator_reason() {
     let fix = build_fixture().await;
     let id = submit_pending(&fix).await;
 
-    let (status, _body) = send(
-        &fix.router,
+    let (status, _body) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -3471,8 +3465,8 @@ async fn status_rejected_by_admin_without_a_reason_omits_the_field() {
     let fix = build_fixture().await;
     let id = submit_pending(&fix).await;
 
-    let (status, _body) = send(
-        &fix.router,
+    let (status, _body) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -3504,8 +3498,8 @@ async fn status_decided_at_is_the_decision_time_not_the_document_time() {
     let fix = build_fixture().await;
     let id = submit_pending(&fix).await;
 
-    let (status, _body) = send(
-        &fix.router,
+    let (status, _body) = send_as_admin(
+        &fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -3607,15 +3601,8 @@ async fn trust_tasks_post_is_rate_limited() {
 async fn admin_list_get_is_not_rate_limited() {
     let fix = build_fixture().await;
     for _ in 0..40 {
-        let (status, _) = send(
-            &fix.router,
-            "GET",
-            "/v1/join-requests",
-            LIST_TASK,
-            None,
-            None,
-        )
-        .await;
+        let (status, _) =
+            send_as_admin(&fix, "GET", "/v1/join-requests", LIST_TASK, None, None).await;
         assert_ne!(
             status,
             StatusCode::TOO_MANY_REQUESTS,
@@ -4263,8 +4250,8 @@ async fn requested_attributes_are_published_enforced_and_kept_with_the_request()
     );
 
     // Neither refusal stored anything.
-    let (_, body) = send(
-        &fix.router,
+    let (_, body) = send_as_admin(
+        &fix,
         "GET",
         "/v1/join-requests",
         LIST_TASK,
@@ -4342,8 +4329,8 @@ fn rest_error_code(body: &Value) -> &str {
 
 /// POST a `decide` for `id` as the admin.
 async fn decide(fix: &Fixture, id: Uuid, decision: &str) -> (StatusCode, Value) {
-    send(
-        &fix.router,
+    send_as_admin(
+        fix,
         "POST",
         &format!("/v1/join-requests/{id}/decide"),
         DECIDE_TASK,
@@ -4453,8 +4440,8 @@ async fn a_submitted_presentation_held_by_someone_else_is_presentation_invalid()
         "{body}"
     );
 
-    let (status, list) = send(
-        &fix.router,
+    let (status, list) = send_as_admin(
+        &fix,
         "GET",
         "/v1/join-requests",
         LIST_TASK,
@@ -4645,8 +4632,8 @@ async fn an_approved_referral_carries_registry_consent_onto_the_member() {
         assert_eq!(status, StatusCode::OK, "{body}");
         let id = tt_payload(&body)["requestId"].as_str().unwrap().to_string();
 
-        let (status, body) = send(
-            &f.router,
+        let (status, body) = send_as_admin(
+            &f,
             "POST",
             &format!("/v1/join-requests/{id}/decide"),
             DECIDE_TASK,

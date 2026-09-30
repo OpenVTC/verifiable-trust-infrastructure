@@ -9,8 +9,6 @@
 //! - revoke: admin / non-admin-non-issuer / idempotent
 //! - show / list pagination
 
-use std::sync::Arc;
-
 use affinidi_status_list::StatusPurpose;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -20,8 +18,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 use vti_common::audit::{AuditEnvelope, AuditEvent};
-use vti_common::auth::jwt::JwtKeys;
-use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
+use vti_common::auth::session::now_epoch;
 
 use vti_rooms_dtg::test_support::Party;
 
@@ -47,12 +44,11 @@ const SUBJECT_DID: &str = "did:key:zEndSubject";
 
 struct Fixture {
     router: axum::Router,
-    /// The endorsement-type writes are signed documents only; these sign them.
+    /// Every endorsement-type write, and every endorsement verb, is a signed
+    /// document only; these sign them.
     admin: Party,
     member: Party,
-    admin_token: String,
-    issuer_token: String,
-    member_token: String,
+    issuer: Party,
     audit_ks: vti_common::store::KeyspaceHandle,
     endorsements_ks: vti_common::store::KeyspaceHandle,
     // Owns the temp data dir + serves `router`'s state; must outlive them.
@@ -108,66 +104,14 @@ async fn build() -> Fixture {
             .unwrap();
     }
 
-    async fn mint(
-        sessions: &vti_common::store::KeyspaceHandle,
-        jwt_keys: &Arc<JwtKeys>,
-        did: &str,
-        role: &str,
-        now: u64,
-    ) -> String {
-        let session_id = format!("sess-{}", Uuid::new_v4());
-        store_session(
-            sessions,
-            &Session {
-                session_id: session_id.clone(),
-                did: did.into(),
-                challenge: "test".into(),
-                state: SessionState::Authenticated,
-                created_at: now,
-                last_seen: now,
-                refresh_token: None,
-                refresh_expires_at: None,
-                tee_attested: false,
-                amr: Vec::new(),
-                acr: String::new(),
-                acr_expires_at: None,
-                token_id: None,
-                session_pubkey_b58btc: None,
-            },
-        )
-        .await
-        .unwrap();
-        let claims = jwt_keys.new_claims(did.into(), session_id, role.into(), vec![], 3600, true);
-        jwt_keys.encode(&claims).unwrap()
-    }
-    let admin_token = mint(
-        &vtc.state.sessions_ks,
-        &vtc.jwt_keys,
-        ADMIN_DID,
-        "admin",
-        now,
-    )
-    .await;
-    let issuer_token = mint(
-        &vtc.state.sessions_ks,
-        &vtc.jwt_keys,
-        ISSUER_DID,
-        "reader",
-        now,
-    )
-    .await;
-    let member_token = mint(
-        &vtc.state.sessions_ks,
-        &vtc.jwt_keys,
-        MEMBER_DID,
-        "reader",
-        now,
-    )
-    .await;
-
     let admin = Party::new();
     let member = Party::new();
-    for (who, role) in [(&admin, VtcRole::Admin), (&member, VtcRole::Member)] {
+    let issuer = Party::new();
+    for (who, role) in [
+        (&admin, VtcRole::Admin),
+        (&member, VtcRole::Member),
+        (&issuer, VtcRole::Issuer),
+    ] {
         store_acl_entry(
             &vtc.state.acl_ks,
             &VtcAclEntry {
@@ -194,9 +138,7 @@ async fn build() -> Fixture {
         router,
         admin,
         member,
-        admin_token,
-        issuer_token,
-        member_token,
+        issuer,
         audit_ks,
         endorsements_ks,
         _vtc: vtc,
@@ -316,23 +258,11 @@ async fn register_type(fix: &Fixture, uri: &str) {
 #[tokio::test]
 async fn issue_rejects_unregistered_type() {
     let fix = build().await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/credentials/endorsements")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", ISSUE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "subjectDid": SUBJECT_DID,
-                "typeUri": "https://unregistered.example/t",
-                "claim": { "x": 1 }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // `typeNotRegistered` is a declared code, so it rides the framework's
+    // flat 422 bucket for extended codes over the signed door (not the REST
+    // route's old 400).
+    let (status, body) = issue(&fix, "https://unregistered.example/t", json!({ "x": 1 })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(
         rest_error_code(&body),
         ISSUE_ERR_TYPE_NOT_REGISTERED,
@@ -344,23 +274,18 @@ async fn issue_rejects_unregistered_type() {
 async fn issue_rejects_non_issuer_non_admin() {
     let fix = build().await;
     register_type(&fix, "https://example.com/v1/skills/rust").await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/credentials/endorsements")
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", ISSUE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "subjectDid": SUBJECT_DID,
-                "typeUri": "https://example.com/v1/skills/rust",
-                "claim": { "level": "expert" }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (status, body) = signed_task(
+        &fix,
+        &fix.member,
+        ISSUE_TASK,
+        json!({
+            "subjectDid": SUBJECT_DID,
+            "typeUri": "https://example.com/v1/skills/rust",
+            "claim": { "level": "expert" }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }
 
 #[tokio::test]
@@ -368,24 +293,10 @@ async fn issue_happy_path_issuer_mints_credential() {
     let fix = build().await;
     let uri = "https://example.com/v1/skills/rust";
     register_type(&fix, uri).await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/credentials/endorsements")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", ISSUE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "subjectDid": SUBJECT_DID,
-                "typeUri": uri,
-                "claim": { "level": "expert", "since": "2020" }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    let (status, v) = body_value(resp).await;
-    assert_eq!(status, StatusCode::CREATED, "{v}");
+    let (status, v) = issue(&fix, uri, json!({ "level": "expert", "since": "2020" })).await;
+    // Every success over the signed door answers 200, not the REST route's
+    // old 201.
+    assert_eq!(status, StatusCode::OK, "{v}");
     assert!(v["endorsement"]["endorsementId"].is_string());
     // The row carries a *reference* — identifier and lifetime — and the
     // credential itself is a sibling that only this call returns. #1098 put
@@ -428,23 +339,18 @@ async fn issue_rejects_unknown_subject() {
     let fix = build().await;
     let uri = "https://example.com/v1/t";
     register_type(&fix, uri).await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/credentials/endorsements")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", ISSUE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "subjectDid": "did:key:zStranger",
-                "typeUri": uri,
-                "claim": { "x": 1 }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let (status, body) = signed_task(
+        &fix,
+        &fix.issuer,
+        ISSUE_TASK,
+        json!({
+            "subjectDid": "did:key:zStranger",
+            "typeUri": uri,
+            "claim": { "x": 1 }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
 #[tokio::test]
@@ -453,25 +359,10 @@ async fn delete_type_refused_while_live_endorsement_exists() {
     let uri = "https://example.com/v1/skills/rust";
     register_type(&fix, uri).await;
     // Issue an endorsement of that type.
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/credentials/endorsements")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", ISSUE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "subjectDid": SUBJECT_DID,
-                "typeUri": uri,
-                "claim": { "level": "expert" }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    let (status, v) = issue(&fix, uri, json!({ "level": "expert" })).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
 
-    // Try to delete the type — must 409 `inUse`.
+    // Try to delete the type — must be refused `inUse`.
     let (status, body) = delete_type(&fix, uri).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), DELETE_ERR_IN_USE, "{body}");
@@ -686,31 +577,20 @@ async fn revoke_issuer_can_retract() {
     let fix = build().await;
     let uri = "https://example.com/v1/t";
     register_type(&fix, uri).await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/credentials/endorsements")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", ISSUE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "subjectDid": SUBJECT_DID, "typeUri": uri, "claim": { "x": 1 } }).to_string(),
-        ))
-        .unwrap();
-    let (_, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let (_, v) = issue(&fix, uri, json!({ "x": 1 })).await;
     let id = v["endorsement"]["endorsementId"]
         .as_str()
         .unwrap()
         .to_string();
 
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/credentials/endorsements/{id}"))
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, body) = signed_task(
+        &fix,
+        &fix.issuer,
+        REVOKE_TASK,
+        json!({ "endorsementId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // Audit: CustomEndorsementRevoked + StatusListFlipped.
     let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
@@ -738,32 +618,21 @@ async fn re_revoking_is_the_declared_already_revoked() {
     let fix = build().await;
     let uri = "https://example.com/v1/t";
     register_type(&fix, uri).await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/credentials/endorsements")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", ISSUE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "subjectDid": SUBJECT_DID, "typeUri": uri, "claim": { "x": 1 } }).to_string(),
-        ))
-        .unwrap();
-    let (_, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let (_, v) = issue(&fix, uri, json!({ "x": 1 })).await;
     let id = v["endorsement"]["endorsementId"]
         .as_str()
         .unwrap()
         .to_string();
 
     let revoke = || {
-        Request::builder()
-            .method("DELETE")
-            .uri(format!("/v1/credentials/endorsements/{id}"))
-            .header("authorization", format!("Bearer {}", fix.admin_token))
-            .header("trust-task", REVOKE_TASK)
-            .body(Body::empty())
-            .unwrap()
+        signed_task(
+            &fix,
+            &fix.admin,
+            REVOKE_TASK,
+            json!({ "endorsementId": id }),
+        )
     };
-    let (status, body) = body_value(fix.router.clone().oneshot(revoke()).await.unwrap()).await;
+    let (status, body) = revoke().await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let audit_rows = fix
         .audit_ks
@@ -772,8 +641,10 @@ async fn re_revoking_is_the_declared_already_revoked() {
         .unwrap()
         .len();
 
-    let (status, body) = body_value(fix.router.clone().oneshot(revoke()).await.unwrap()).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    // Declared codes ride the signed door's flat 422 bucket, not the REST
+    // route's old 409.
+    let (status, body) = revoke().await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), REVOKE_ERR_ALREADY_REVOKED, "{body}");
     assert_eq!(
         fix.audit_ks
@@ -791,31 +662,20 @@ async fn revoke_non_admin_non_issuer_forbidden() {
     let fix = build().await;
     let uri = "https://example.com/v1/t";
     register_type(&fix, uri).await;
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/credentials/endorsements")
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", ISSUE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "subjectDid": SUBJECT_DID, "typeUri": uri, "claim": { "x": 1 } }).to_string(),
-        ))
-        .unwrap();
-    let (_, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let (_, v) = issue(&fix, uri, json!({ "x": 1 })).await;
     let id = v["endorsement"]["endorsementId"]
         .as_str()
         .unwrap()
         .to_string();
 
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/v1/credentials/endorsements/{id}"))
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let (status, body) = signed_task(
+        &fix,
+        &fix.member,
+        REVOKE_TASK,
+        json!({ "endorsementId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 }
 
 /// `GET /credentials/endorsements/{id}` had **no test at all** before #1093,
@@ -828,33 +688,12 @@ async fn show_wraps_the_row_in_an_endorsement_envelope() {
     let uri = "https://example.com/v1/skills/rust";
     register_type(&fix, uri).await;
 
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/credentials/endorsements")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", ISSUE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({
-                "subjectDid": SUBJECT_DID,
-                "typeUri": uri,
-                "claim": { "level": "expert" }
-            })
-            .to_string(),
-        ))
-        .unwrap();
-    let (status, issued) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(status, StatusCode::CREATED, "{issued}");
+    let (status, issued) = issue(&fix, uri, json!({ "level": "expert" })).await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
     let id = issued["endorsement"]["endorsementId"].as_str().unwrap();
 
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/v1/credentials/endorsements/{id}"))
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", SHOW_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let (status, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let (status, v) =
+        signed_task(&fix, &fix.issuer, SHOW_TASK, json!({ "endorsementId": id })).await;
     assert_eq!(status, StatusCode::OK, "{v}");
 
     // The envelope, not the bare row: `v["id"]` must be absent precisely
@@ -901,34 +740,15 @@ async fn register(fix: &Fixture, body: Value) -> (StatusCode, Value) {
     signed_task(fix, &fix.admin, REGISTER_TASK, body).await
 }
 
+/// `vtc/endorsements/issue/0.1`, signed by the fixture's issuer.
 async fn issue(fix: &Fixture, type_uri: &str, claim: Value) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/credentials/endorsements")
-        .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", ISSUE_TASK)
-        .header("content-type", "application/json")
-        .body(Body::from(
-            json!({ "subjectDid": SUBJECT_DID, "typeUri": type_uri, "claim": claim }).to_string(),
-        ))
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
-}
-
-async fn admin_get_or_delete(
-    fix: &Fixture,
-    method: &str,
-    uri: &str,
-    task: &str,
-) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("authorization", format!("Bearer {}", fix.admin_token))
-        .header("trust-task", task)
-        .body(Body::empty())
-        .unwrap();
-    body_value(fix.router.clone().oneshot(req).await.unwrap()).await
+    signed_task(
+        fix,
+        &fix.issuer,
+        ISSUE_TASK,
+        json!({ "subjectDid": SUBJECT_DID, "typeUri": type_uri, "claim": claim }),
+    )
+    .await
 }
 
 /// An empty (or all-whitespace) `typeUri`, or one over 512 bytes, is
@@ -961,7 +781,10 @@ async fn a_claim_over_the_cap_is_the_declared_claim_too_large() {
     let uri = "https://example.com/v1/skills/large";
     register_type(&fix, uri).await;
     let (status, body) = issue(&fix, uri, json!({ "blob": "x".repeat(8 * 1024) })).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // `claimTooLarge` is a declared code, so it rides the framework's flat
+    // 422 bucket for extended codes over the signed door (not the REST
+    // route's old 400).
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), ISSUE_ERR_CLAIM_TOO_LARGE, "{body}");
 }
 
@@ -988,7 +811,10 @@ async fn a_claim_failing_the_type_claim_schema_is_the_declared_violation() {
 
     for bad in [json!({ "level": "wizard" }), json!({ "other": 1 })] {
         let (status, body) = issue(&fix, uri, bad.clone()).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+        // `claimSchemaViolation` is a declared code, so it rides the flat 422
+        // bucket for extended codes over the signed door (not the REST
+        // route's old 400).
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {body}");
         assert_eq!(
             rest_error_code(&body),
             ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
@@ -1005,7 +831,7 @@ async fn a_claim_failing_the_type_claim_schema_is_the_declared_violation() {
     );
 
     let (status, body) = issue(&fix, uri, json!({ "level": "expert" })).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// A `claimSchema` that is not itself valid JSON Schema is refused at
@@ -1099,15 +925,19 @@ async fn a_type_with_a_corrupt_stored_claim_schema_names_the_type_not_the_claim(
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
     assert_eq!(
         rest_error_code(&body),
-        "",
+        "internalError",
         "a broken type is not one of issue/0.1's declared claim faults: {body}"
     );
-    let message = body["error"].as_str().unwrap_or_default();
+    // The framework's `internalError` never repeats the cause to the caller —
+    // "no message may reveal consumer-internal state"
+    // (`trust_tasks::helpers::app_error_to_reject`) — so the detail naming the
+    // type and telling an operator to re-register it goes to the service log,
+    // not this reply, unlike the old REST route's raw `AppError::Internal`
+    // body.
+    let message = body["message"].as_str().unwrap_or_default();
     assert!(
-        message.contains(uri)
-            && message.contains("invalid stored claimSchema")
-            && message.contains("re-register"),
-        "the answer must name the type and say the type must be re-registered: {body}"
+        !message.contains(uri) && !message.contains("invalid stored claimSchema"),
+        "an internalError reply must not leak the cause: {body}"
     );
     assert!(
         fix.endorsements_ks
@@ -1129,11 +959,12 @@ async fn a_type_with_a_corrupt_stored_claim_schema_names_the_type_not_the_claim(
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = issue(&fix, uri, json!({ "level": "expert" })).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
-/// With every revocation slot handed out, issuing is `statusListExhausted`
-/// (retryable). The status stays the 500 it always was.
+/// With every revocation slot handed out, issuing is `statusListExhausted` —
+/// a declared code, so it rides the framework's flat 422 bucket for extended
+/// codes over the signed door (not the REST route's old 500).
 #[tokio::test]
 async fn a_full_revocation_list_is_the_declared_status_list_exhausted() {
     let fix = build().await;
@@ -1151,7 +982,7 @@ async fn a_full_revocation_list_is_the_declared_status_list_exhausted() {
     .unwrap();
 
     let (status, body) = issue(&fix, uri, json!({ "x": 1 })).await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(
         rest_error_code(&body),
         ISSUE_ERR_STATUS_LIST_EXHAUSTED,
@@ -1159,45 +990,54 @@ async fn a_full_revocation_list_is_the_declared_status_list_exhausted() {
     );
 }
 
-/// A cursor this community did not sign is `invalidCursor` (400, unchanged).
+/// A cursor this community did not sign is `invalidCursor` — a declared code,
+/// so it rides the signed door's flat 422 bucket (not the REST route's old
+/// 400).
 #[tokio::test]
 async fn a_forged_cursor_is_the_declared_invalid_cursor() {
     let fix = build().await;
-    let (status, body) = admin_get_or_delete(
+    let (status, body) = signed_task(
         &fix,
-        "GET",
-        "/v1/credentials/endorsements?cursor=bm90LWEtY3Vyc29y",
+        &fix.admin,
         LIST_TASK,
+        json!({ "cursor": "bm90LWEtY3Vyc29y" }),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), LIST_ERR_INVALID_CURSOR, "{body}");
 }
 
-/// An unknown endorsement id is `notFound` to show and to revoke (404,
-/// unchanged). Revoke now checks the caller's capability first, so a member
-/// who may not revoke gets 403 whether or not the id exists.
+/// An unknown endorsement id is `notFound` to show and to revoke — a
+/// declared code (422, not the REST route's old 404). Revoke now checks the
+/// caller's capability first, so a member who may not revoke gets
+/// `permissionDenied` (403) whether or not the id exists.
 #[tokio::test]
 async fn an_unknown_endorsement_is_the_declared_not_found() {
     let fix = build().await;
-    let path = format!("/v1/credentials/endorsements/{}", Uuid::new_v4());
+    let id = Uuid::new_v4().to_string();
 
-    let (status, body) = admin_get_or_delete(&fix, "GET", &path, SHOW_TASK).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) =
+        signed_task(&fix, &fix.admin, SHOW_TASK, json!({ "endorsementId": id })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), SHOW_ERR_NOT_FOUND, "{body}");
 
-    let (status, body) = admin_get_or_delete(&fix, "DELETE", &path, REVOKE_TASK).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = signed_task(
+        &fix,
+        &fix.admin,
+        REVOKE_TASK,
+        json!({ "endorsementId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(rest_error_code(&body), REVOKE_ERR_NOT_FOUND, "{body}");
 
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(&path)
-        .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", REVOKE_TASK)
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    let (status, body) = signed_task(
+        &fix,
+        &fix.member,
+        REVOKE_TASK,
+        json!({ "endorsementId": id }),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::FORBIDDEN,
