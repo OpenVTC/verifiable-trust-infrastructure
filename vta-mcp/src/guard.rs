@@ -108,6 +108,9 @@ const SLUG_OVERRIDES: &[(&str, Risk)] = &[
     // The root seed, sealed to the caller: the export of every key this VTA
     // holds, so it is classified with `keys/export-secret`.
     ("vta/attestation/mnemonic-export", Risk::Sensitive),
+    // Whether a mnemonic export window is open, and until when. Reads state
+    // only and returns no secret, but its verb is not a read verb.
+    ("vta/attestation/mnemonic-status", Risk::ReadOnly),
     // Returns the private keys of a context's DID. The verb rule would read
     // `secrets` as an ordinary mutation, and the task's own `sideEffects` are
     // `none` — it reads and changes nothing — so neither the verb nor the side
