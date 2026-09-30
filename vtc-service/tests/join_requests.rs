@@ -1211,7 +1211,7 @@ fn build_membership_vp_token(
     )
 }
 
-/// A `WitnessCredential` presentation, optionally carrying the `taskContext`
+/// A `witnessed/1` statement presentation, optionally carrying the `taskContext`
 /// DTG Credentials marks REQUIRED on that type.
 fn build_witness_vp_token(
     holder_seed: u8,
@@ -1959,7 +1959,7 @@ async fn manifest_0_2_advertises_vetting_requirements_and_their_digest() {
             "credentials": [{
                 "id": "vetting",
                 "format": "ldp_vc",
-                "meta": { "type_values": ["EndorsementCredential"] }
+                "meta": { "type_values": ["StatementCredential"] }
             }]
         }),
         description: Some("Two vetters, one in person".into()),
