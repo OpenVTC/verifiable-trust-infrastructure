@@ -106,15 +106,14 @@ describe("VettersPanel", () => {
     expect(within(table).getByText("No grant matches these filters")).toBeTruthy();
   });
 
+  const ENDORSEMENT_REVOKE_TASK =
+    "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
+  const VETTER_RESEND_0_2_TASK =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2";
+
   it("revokes only after a confirmation that says the statements stop counting", async () => {
     const requests = mockFetch(
-      routes([
-        {
-          method: "DELETE",
-          path: "/v1/credentials/endorsements/grant-carol",
-          body: { revoked: true },
-        },
-      ]),
+      routes([taskRoute(ENDORSEMENT_REVOKE_TASK, { revoked: true })]),
     );
     renderWithProviders(<VettersPanel />);
 
@@ -125,28 +124,25 @@ describe("VettersPanel", () => {
     expect(dialog.textContent).toMatch(
       /stops counting toward join requests decided from now on/,
     );
-    expect(requests.some((r) => r.method === "DELETE")).toBe(false);
+    expect(sentPayloads(requests, ENDORSEMENT_REVOKE_TASK)).toHaveLength(0);
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Revoke vetter role" }));
     await waitFor(() =>
-      expect(requests.some((r) => r.method === "DELETE")).toBe(true),
+      expect(sentPayloads(requests, ENDORSEMENT_REVOKE_TASK)).toHaveLength(1),
     );
-    const revoke = requests.find((r) => r.method === "DELETE")!;
-    expect(revoke.url).toBe("/v1/credentials/endorsements/grant-carol");
-    expect(revoke.headers.get("Trust-Task")).toBe(
-      "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
-    );
+    expect(sentPayloads(requests, ENDORSEMENT_REVOKE_TASK)[0]).toEqual({
+      endorsementId: "grant-carol",
+    });
   });
 
   it("explains a resend the daemon cannot deliver", async () => {
     mockFetch(
       routes([
-        {
-          method: "POST",
-          path: `/v1/vetting/vetters/${encodeURIComponent(CAROL)}/resend`,
-          status: 404,
-          body: { error: "no live vetter grant" },
-        },
+        taskRoute(
+          VETTER_RESEND_0_2_TASK,
+          { code: "vtc/vetting/vetters/resend:notGranted", message: "no live vetter grant" },
+          404,
+        ),
       ]),
     );
     renderWithProviders(<VettersPanel />);

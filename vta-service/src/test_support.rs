@@ -3396,6 +3396,24 @@ mod transport_harness_tests {
                 .as_millis() as u64
         };
 
+        // The peer's own invite reaches the VTA asynchronously, and recording
+        // it stamps the relationship's activity. Let that land first, or it
+        // can overwrite the aged stamp below and the relationship reads as
+        // freshly heard from.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while store
+            .get(&our, peer.did())
+            .await
+            .expect("read the relationship")
+            == RelationshipState::None
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the VTA never recorded the peer's invite"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
         // Established, but last heard from two hours ago.
         store
             .set(&our, peer.did(), RelationshipState::Bidirectional)

@@ -173,6 +173,27 @@ fn translate(
             json!({ "id": decode(id) }),
             ok,
         ),
+        ("DELETE", ["relationships", id]) => (
+            "https://trusttasks.org/spec/vtc/relationships/revoke/0.2".into(),
+            with(body.clone(), "id", json!(decode(id))),
+            ok,
+        ),
+        ("GET", ["credentials", "endorsements"]) => (t("endorsements/list/0.1"), page(), ok),
+        ("GET", ["credentials", "endorsements", id]) => (
+            t("endorsements/show/0.1"),
+            json!({ "endorsementId": decode(id) }),
+            ok,
+        ),
+        ("DELETE", ["credentials", "endorsements", id]) => (
+            t("endorsements/revoke/0.1"),
+            json!({ "endorsementId": decode(id) }),
+            ok,
+        ),
+        ("POST", ["vetting", "vetters", member_did, "resend"]) => (
+            "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2".into(),
+            json!({ "memberDid": decode(member_did) }),
+            ok,
+        ),
         _ => return None,
     })
 }

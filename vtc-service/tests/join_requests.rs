@@ -2325,8 +2325,8 @@ async fn a_revoked_vetter_grant_stops_a_statement_counting() {
     let from_dave = vetting_statement(&dave_key, &applicant, 2).await;
 
     // Withdrawn after Dave signed: revocation is read as it stands at submit.
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "DELETE",
         &format!("/v1/credentials/endorsements/{daves_grant}"),
         ENDORSEMENT_REVOKE_TASK,
@@ -2603,10 +2603,9 @@ async fn withdrawal_doc(seed: [u8; 32], statement: &Value) -> Value {
 use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_0_2_TYPE;
 use vta_sdk::protocols::vetting::{
     VETTING_VETTER_LIST_TYPE, VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE, VETTING_VETTER_PROFILE_TYPE,
-    VETTING_VETTER_RESEND_ERR_NOT_GRANTED, VETTING_VETTER_RESEND_TYPE,
+    VETTING_VETTER_RESEND_0_2_TYPE, VETTING_VETTER_RESEND_ERR_NOT_GRANTED,
+    VETTING_VETTER_RESEND_TYPE,
 };
-
-const RESEND_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1";
 
 /// An admin REST call to a route with no Trust Task binding: no `Trust-Task`
 /// header at all.
@@ -2877,8 +2876,8 @@ async fn unlisting_hides_a_profile_and_revoking_the_grant_deletes_it() {
     publish_profile(&fix, [0x11; 32], carols_profile(true)).await;
     assert_eq!(listed_dids(&list_vetters(&fix, json!({})).await).len(), 1);
 
-    let (status, body) = send(
-        &fix.router,
+    let (status, body) = send_as_admin(
+        &fix,
         "DELETE",
         &format!("/v1/credentials/endorsements/{grant}"),
         ENDORSEMENT_REVOKE_TASK,
@@ -2964,27 +2963,26 @@ async fn a_vetter_asks_for_the_grant_credential_again() {
         "a resend names nobody: {body}"
     );
 
-    // The admin route answers the same way.
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        &format!("/v1/vetting/vetters/{carol}/resend"),
-        RESEND_TASK,
-        Some(&fix.admin_token),
-        None,
+    // An administrator, naming the vetter in `memberDid`, answers the same
+    // way (`vtc/vetting/vetters/resend/0.2` — what replaced the admin-only
+    // REST route, tt-tf#689).
+    let (status, doc) = common::signed::call(
+        &fix._vtc,
+        &fix.signer,
+        VETTING_VETTER_RESEND_0_2_TYPE,
+        json!({ "memberDid": carol }),
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        &format!("/v1/vetting/vetters/{erin}/resend"),
-        RESEND_TASK,
-        Some(&fix.admin_token),
-        None,
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{doc}");
+    let (status, doc) = common::signed::call(
+        &fix._vtc,
+        &fix.signer,
+        VETTING_VETTER_RESEND_0_2_TYPE,
+        json!({ "memberDid": erin }),
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{doc}");
+    assert_eq!(tt_error_code(&doc), VETTING_VETTER_RESEND_ERR_NOT_GRANTED);
 }
 
 #[tokio::test]

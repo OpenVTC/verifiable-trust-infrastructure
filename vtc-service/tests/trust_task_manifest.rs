@@ -819,6 +819,13 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1",
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1",
     "https://trusttasks.org/spec/vtc/rooms/list/0.1",
+    // Custom-endorsement reads/revoke and the admin's vetter resend: their
+    // bearer REST routes had no caller once the spine dispatched them
+    // (tt-tf#689) — `member_tasks`'s endorsement handlers, and `mod.rs`'s
+    // `handle_vetter_resend_v0_2`.
+    "https://trusttasks.org/spec/vtc/endorsements/list/0.1",
+    "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2",
 ];
 
 #[test]

@@ -460,11 +460,21 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # `projection/show/0.1`, `account/list/0.1` and `activity/list/0.1` — which
 # `vtc-service/src/git_ns/admin_reads.rs` serves in place of the REST routes
 # `routes/git_ns.rs` once carried for them.
-trust-tasks-rs = { version = "0.24.7", default-features = false, features = [
+#
+# 0.24.8 raises it again: it is the first release carrying
+# `vtc/relationships/revoke/0.2` and `vtc/vetting/vetters/resend/0.2`
+# (trustoverip/dtgwg-trust-tasks-tf#689) — the last two member-facing VTC
+# verbs that kept a bearer-only REST door because no signed document could
+# reach the capacity it authorized: a pairwise relationship-DID revoke, and an
+# administrator resending another member's vetter grant. Both REST routes are
+# retired once these are on the spine (`vtc-service/src/trust_tasks/
+# member_tasks.rs`'s `handle_relationships_revoke_v0_2`, `mod.rs`'s
+# `handle_vetter_resend_v0_2`).
+trust-tasks-rs = { version = "0.24.8", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.24.7"
+trust-tasks-capability-client = "0.24.8"
 trust-tasks-https = { version = "0.24", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
