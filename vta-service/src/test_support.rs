@@ -155,7 +155,6 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         app_state: Default::default(),
         policy: Default::default(),
         secrets: Default::default(),
-        #[cfg(feature = "tee")]
         tee: Default::default(),
         hardened: Default::default(),
         config_path: PathBuf::new(),
