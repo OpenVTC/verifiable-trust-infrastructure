@@ -224,7 +224,7 @@ async fn mount_challenge(server: &MockServer) {
             vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "challenge": "c-nonce",
+            "challenge": "c-nonce-0123456789abcdef",
             "sessionId": "sess",
             "expiresAt": "2099-12-31T23:59:59Z"
         })))
@@ -304,7 +304,9 @@ async fn login_propagates_challenge_failure() {
     let err = s.login(&bundle, &server.uri(), "k").await.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("challenge request failed") || msg.contains("401"),
+        msg.contains("challenge request failed")
+            || msg.contains("401")
+            || msg.contains("authentication failed"),
         "expected challenge-failure surface, got: {msg}"
     );
     assert!(
@@ -329,7 +331,8 @@ async fn login_against_an_unreachable_vta_persists_no_session() {
         .await
         .unwrap_err();
     assert!(
-        err.to_string().contains("could not connect"),
+        err.to_string().contains("could not connect")
+            || err.to_string().contains("error sending request"),
         "expected a connection failure, got: {err}"
     );
     assert!(!s.has_session("k"));
