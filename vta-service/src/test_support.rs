@@ -155,7 +155,6 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         app_state: Default::default(),
         policy: Default::default(),
         secrets: Default::default(),
-        #[cfg(feature = "tee")]
         tee: Default::default(),
         hardened: Default::default(),
         config_path: PathBuf::new(),
@@ -3796,6 +3795,78 @@ impl SoftAuthenticator {
             authenticator_data: B64URL.encode(&auth_data),
         }
     }
+
+    /// Complete a WebAuthn **assertion** (`webauthn.get`) over `challenge_b64`
+    /// for a credential this authenticator already holds — the login/step-up
+    /// counterpart to [`Self::register`]'s registration ceremony. Full
+    /// signature verification, exactly as `vti_webauthn::verify_assertion`
+    /// runs it: `authenticatorData ‖ SHA-256(clientDataJSON)`, ECDSA P-256,
+    /// ASN.1 DER.
+    ///
+    /// `challenge_b64` is already base64url-encoded, exactly as the WebAuthn
+    /// `clientData.challenge` member carries it — callers deriving it from a
+    /// server-issued opaque nonce string base64url-encode that string's raw
+    /// bytes first (matching `verify_webauthn_gate`, which passes
+    /// `challenge.as_bytes()` as the expected-challenge bytes).
+    ///
+    /// No `attestedCredentialData`: an assertion's `authenticatorData` never
+    /// carries one (WebAuthn L3 §6.1), unlike [`Self::register`]'s.
+    pub fn assert(
+        &self,
+        rp_id: &str,
+        origin: &str,
+        challenge_b64: &str,
+        user_verified: bool,
+    ) -> SoftAssertion {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+        use p256::ecdsa::Signature;
+        use p256::ecdsa::signature::Signer as _;
+        use sha2::{Digest, Sha256};
+
+        // authData = rpIdHash | flags | signCount (37 bytes; no
+        // attestedCredentialData/extensions trailer).
+        let mut auth_data = Vec::with_capacity(37);
+        auth_data.extend_from_slice(&Sha256::digest(rp_id.as_bytes()));
+        let mut flags = 0x01u8; // UP — always required for an assertion.
+        if user_verified {
+            flags |= 0x04; // UV
+        }
+        auth_data.push(flags);
+        auth_data.extend_from_slice(&1u32.to_be_bytes()); // signCount
+
+        let client_data = serde_json::json!({
+            "type": "webauthn.get",
+            "challenge": challenge_b64,
+            "origin": origin,
+            "crossOrigin": false,
+        });
+        let client_data_json = serde_json::to_vec(&client_data).expect("client data serialises");
+
+        let mut message = Vec::with_capacity(auth_data.len() + 32);
+        message.extend_from_slice(&auth_data);
+        message.extend_from_slice(&Sha256::digest(&client_data_json));
+
+        let signature: Signature = self.signing_key.sign(&message);
+        let der_signature = signature.to_der();
+
+        SoftAssertion {
+            credential_id: B64URL.encode(&self.credential_id),
+            authenticator_data: B64URL.encode(&auth_data),
+            client_data_json: B64URL.encode(&client_data_json),
+            signature: B64URL.encode(der_signature.as_bytes()),
+        }
+    }
+}
+
+/// The members a WebAuthn assertion ceremony produces, in the shapes
+/// `auth/step-up/approve-response`'s `evidence.assertion` (and
+/// `passkey-login/finish`) take.
+pub struct SoftAssertion {
+    pub credential_id: String,
+    pub authenticator_data: String,
+    pub client_data_json: String,
+    pub signature: String,
 }
 
 // ── Held credentials ─────────────────────────────────────────────────────────

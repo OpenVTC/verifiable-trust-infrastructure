@@ -263,10 +263,12 @@ async fn audit(state: &AppState, actor: &str, data: StepUpPasskeyData) -> Result
 
 // ── reading ─────────────────────────────────────────────────────────────────
 
-/// The member's step-up passkeys — what [`crate::acl::bound_step_up`] offers,
-/// beside their session passkeys, for an operation-bound step-up issued to
-/// them. Never read by login or session step-up. Empty for a DID that is no
-/// longer a current member: a credential outlives nothing it was bound for.
+/// The member's step-up passkeys — what [`crate::acl::bound_step_up`] offers
+/// for an operation-bound step-up issued to them, in place of their session
+/// passkeys once at least one exists (security decision 2026-09-30; see
+/// [`crate::acl::bound_step_up::redeem_or_request_with_evidence`]). Never
+/// read by login or session step-up. Empty for a DID that is no longer a
+/// current member: a credential outlives nothing it was bound for.
 pub async fn credentials_of(state: &AppState, did: &str) -> Result<Vec<Passkey>, AppError> {
     if !crate::git_ns::ops::standing(state, did).await?.member {
         return Ok(Vec::new());
@@ -291,6 +293,43 @@ pub async fn record_use(
     if let Some(mut meta) = ks.get::<CredentialMeta>(meta_key(&hex_id)).await? {
         meta.last_used_at = Some(Utc::now());
         ks.insert(meta_key(&hex_id), &meta).await?;
+    }
+    Ok(())
+}
+
+/// Revoke `subject`'s live step-up elevation, on every session it holds one.
+///
+/// Called when a step-up passkey is enrolled for them: a session stepped up
+/// before that moment used the only route this VTC could offer, and that
+/// route stops counting for them the instant a step-up passkey exists (see
+/// [`credentials_of`]). Clearing `acr_expires_at` — never `acr` — mirrors
+/// [`vti_common::auth::session::Session::downgrade_lapsed_elevation`]'s REST
+/// reasoning: `acr` keeps reporting the level the session's own login
+/// honestly reached, and
+/// [`vti_common::auth::extractor::StepUpAuth`] reads the deadline, not the
+/// level, for freshness. A session that was never stepped up (no deadline
+/// set) is untouched — there is nothing on it to revoke.
+///
+/// A full scan of the sessions keyspace: sessions are keyed by session id,
+/// not by subject, and this fires once per enrolment rather than on a hot
+/// path, the same trade-off [`crate::routes::members::rotate`] and
+/// `crate::emergency` make revoking a DID's sessions.
+async fn revoke_session_elevation(
+    sessions: &KeyspaceHandle,
+    subject: &str,
+) -> Result<(), AppError> {
+    use vti_common::auth::session::{list_sessions, update_session};
+
+    for mut session in list_sessions(sessions).await? {
+        if session.did == subject && session.acr_expires_at.is_some() {
+            session.acr_expires_at = None;
+            update_session(sessions, &session).await?;
+            info!(
+                subject = %subject,
+                session_id = %session.session_id,
+                "step-up passkey enrolled: existing session elevation revoked"
+            );
+        }
     }
     Ok(())
 }
@@ -891,6 +930,15 @@ pub async fn redeem_finish(
         },
     )
     .await?;
+    // A session elevated before this passkey existed was stepped up through
+    // whatever route this subject had at the time — their own session
+    // passkey, the only one this VTC could ever offer them. Now that a
+    // dedicated step-up passkey exists, that route stops counting for them
+    // (security decision 2026-09-30), and an elevation already granted
+    // through it must not survive past the moment that becomes true: revoked
+    // immediately, the stronger of "expire" and "revoke", rather than left to
+    // lapse on its own bounded window.
+    revoke_session_elevation(&state.sessions_ks, &c.subject).await?;
     info!(subject = %c.subject, credential_id = %hex_id, "step-up passkey registered");
     let mut response = json!({
         "credentialId": hex_id,

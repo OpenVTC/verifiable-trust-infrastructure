@@ -35,7 +35,7 @@ rand = { workspace = true }
 vta-sdk = { path = "../vta-sdk", version = "0.57" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.4" }
 vta-keys = { path = "../vta-keys", version = "0.8" }
-vta-config = { path = "../vta-config", version = "0.8" }
+vta-config = { path = "../vta-config", version = "0.8", features = ["tee"] }
 vta-support = { path = "../vta-support", version = "0.5" }
 tokio = { workspace = true }
 serde = { workspace = true }
