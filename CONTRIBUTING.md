@@ -77,6 +77,11 @@ cargo test --package vta-service --lib encrypt_decrypt
 
 # Run with output
 cargo test -- --nocapture
+
+# Skip vtc-service's admin-ui npm build for a Rust-only test/check/clippy run
+# (set it once in your shell; a test that actually needs the real bundle,
+# e.g. routing_modes.rs, still builds it when the var is unset)
+VTC_SKIP_ADMIN_UI_BUILD=1 cargo test
 ```
 
 ### Lint
