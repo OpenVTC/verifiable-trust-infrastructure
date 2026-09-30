@@ -438,12 +438,16 @@ mod tests {
     /// used — and a refusal of it prints the ACL fix.
     #[tokio::test]
     async fn the_authenticate_document_is_addressed_to_the_vtc_did() {
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::{body_string_contains, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
+        // Both steps post to the same `/v1/trust-tasks` door now (#1858) — a
+        // document's own `type` distinguishes challenge from authenticate,
+        // not the URL.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/auth/challenge"))
+            .and(path("/v1/trust-tasks"))
+            .and(body_string_contains("auth/challenge"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "challenge": "c2VjcmV0LWNoYWxsZW5nZQ",
                 "sessionId": "s-1",
@@ -452,7 +456,8 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/v1/auth/"))
+            .and(path("/v1/trust-tasks"))
+            .and(body_string_contains("auth/authenticate"))
             .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
             .mount(&server)
             .await;
@@ -483,7 +488,10 @@ mod tests {
         let requests = server.received_requests().await.unwrap();
         let auth = requests
             .iter()
-            .find(|r| r.url.path() == "/v1/auth/")
+            .find(|r| {
+                r.url.path() == "/v1/trust-tasks"
+                    && String::from_utf8_lossy(&r.body).contains("auth/authenticate")
+            })
             .expect("an authenticate request was sent");
         let doc: serde_json::Value = serde_json::from_slice(&auth.body).unwrap();
         assert_eq!(doc["recipient"], "did:webvh:QmVtc:vtc.example.com");

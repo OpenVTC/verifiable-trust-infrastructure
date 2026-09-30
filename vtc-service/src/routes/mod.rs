@@ -182,6 +182,21 @@ use crate::server::AppState;
         website::generations::GenerationsResponse,
         website::generations::GenerationRow,
         website::generations::RollbackResponse,
+        // The vetting admin reads the console signs
+        // (`vtc/vetting/vetters/grants/list/0.1`, `vtc/vetting/auto-grant/
+        // {show,update}/0.1`, `vtc/vetting/revocations/list/0.1`,
+        // `trust_tasks::surface_tasks`) — their admin-only bearer REST routes
+        // had no caller left once `vtc-client` and the admin console signed
+        // them instead, so nothing else forces these shapes into the spec any
+        // more; the admin-ui's generated wire types still need them.
+        vta_sdk::protocols::vetting::VetterGrantRow,
+        vta_sdk::protocols::vetting::VetterProfileSummary,
+        vta_sdk::protocols::vetting::GrantOrigin,
+        vta_sdk::protocols::vetting::AutoGrantStatus,
+        vta_sdk::protocols::vetting::AutoGrantConfig,
+        vta_sdk::protocols::vetting::AutoGrantSweep,
+        crate::routes::vetting::VettingRevocationRow,
+        crate::routes::vetting::RevocationReviewState,
     )),
 )]
 pub struct ApiDoc;
@@ -509,19 +524,13 @@ fn build_api_chain(
         // The community DID as a QR code, for a wallet to scan off the landing
         // page. Public for the same reason as the profile: it is the same DID.
         .routes(routes!(community::did_qr::get_did_qr))
-        // Community branding, published on `join-requests/manifest/0.2`. Admin
-        // REST with no Trust Task of its own.
-        .routes(routes!(
-            community::branding::get_branding,
-            community::branding::put_branding
-        ))
-        // What the community asks an applicant to tell it about themselves,
-        // published on `join-requests/manifest/0.2` as `requestedAttributes`.
-        // Admin REST with no Trust Task of its own, like the branding.
-        .routes(routes!(
-            community::requested_attributes::get_requested_attributes,
-            community::requested_attributes::put_requested_attributes
-        ))
+        // Community branding (`vtc/community/branding/{show,update}/0.1`) and
+        // what the community asks an applicant to tell it about themselves
+        // (`vtc/community/requested-attributes/{show,update}/0.1`), both
+        // published on `join-requests/manifest/0.2`, are signed documents
+        // only now (`trust_tasks::surface_tasks`) — their admin-only bearer
+        // REST mounts had no caller left once `vtc-client` and the admin
+        // console signed them instead.
         // Whether the join manifest answers a caller this community cannot
         // identify. Admin REST with no Trust Task of its own — and not a
         // member of the profile, whose `show` response is a published schema
@@ -677,17 +686,17 @@ fn build_api_chain(
         // `0.1` enforces the task a vetter sends for themselves, `0.2` adds
         // the `memberDid` an administrator names to resend on a vetter's
         // behalf (tt-tf#689) — what let the admin-only REST resend route
-        // retire. The grant listing, the automatic-grant configuration and
-        // the withdrawal notices are admin REST with no Trust Task of their
-        // own, so — like the schemas routes — they carry no binding rather
-        // than borrowing a URI that describes something else.
+        // retire. The grant listing (`vtc/vetting/vetters/grants/list/0.1`),
+        // the automatic-grant configuration
+        // (`vtc/vetting/auto-grant/{show,update}/0.1`) and the withdrawal
+        // notices (`vtc/vetting/revocations/list/0.1`) are signed documents
+        // only too now (`trust_tasks::surface_tasks`) — their admin-only
+        // bearer REST mounts had no caller left once `vtc-client` and the
+        // admin console signed them instead.
         // The public listing (`vtc/vetting/vetters/list/0.1`) has no route:
         // the console sends the same signed document an applicant does.
         // The by-DID lookup the listing cannot answer (`vetters/show/0.1`,
         // #1651) is a signed document only.
-        .routes(routes!(vetting::list_vetters))
-        .routes(routes!(vetting::get_auto_grant, vetting::put_auto_grant))
-        .routes(routes!(vetting::list_revocations))
         // Hidden-vetter admission (development branch `zkp-pcs`): derive this
         // community's PCS keys and publish them on a criterion. Admin REST with
         // no Trust Task of its own — turning the mode on is an act of
@@ -745,14 +754,14 @@ fn build_api_chain(
     api.merge(unauth)
 }
 
-/// Build the unauthenticated sub-router: 5 POST routes that drive
-/// expensive crypto against attacker-controlled bytes.
+/// Build the unauthenticated sub-router: POST routes that drive expensive
+/// crypto against attacker-controlled bytes, plus the single Trust Task
+/// document endpoint (`POST /trust-tasks`), which now also carries
+/// `auth/challenge`, `auth/authenticate` and pre-session install/recognise
+/// verbs that used to have dedicated mounts here.
 ///
-/// - `POST /auth/challenge`
-/// - `POST /auth/` (authenticate)
-/// - `POST /auth/refresh`
-/// - `POST /install/claim/start`
-/// - `POST /install/claim/finish`
+/// - `POST /auth/refresh` (also the admin console's cookie session renewal)
+/// - `POST /trust-tasks`
 ///
 /// Layers:
 /// - [`UNAUTH_BODY_SIZE`] body cap (tighter than the 1 MiB main
@@ -826,24 +835,14 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
             routes!(credential_exchange::request),
             <trust_tasks_rs::specs::credential_exchange::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
         ))
-        // `auth/challenge/0.1` and `auth/authenticate/0.1` keep their
-        // dedicated, `Trust-Task`-header-gated REST mounts: `vta_sdk::
-        // auth_light` (shared with the VTA client) and `cnm vetting`'s
-        // bearer-session login (`VtcClient::connect`, for the vetting admin
-        // verbs with no Trust Task served yet — see `trust_tasks::
-        // auth_tasks`'s module doc) both still depend on them, and neither is
-        // in this PR's scope to migrate. `auth/authenticate/0.2` and `0.3`
-        // (`trust_tasks::auth_tasks`) are signed documents only, dispatched
-        // alongside these on `POST /v1/trust-tasks`, for TSP/DIDComm/HTTPS
-        // callers that hold a key and no bearer session.
-        .routes(tt(
-            routes!(auth::challenge),
-            "https://trusttasks.org/spec/auth/challenge/0.1",
-        ))
-        .routes(tt(
-            routes!(auth::authenticate),
-            "https://trusttasks.org/spec/auth/authenticate/0.1",
-        ))
+        // `auth/challenge/0.1` and `auth/authenticate/0.1`'s dedicated,
+        // `Trust-Task`-header-gated REST mounts had no caller left once
+        // `vta_sdk::auth_light` (shared by the VTA client and `cnm
+        // vetting`'s bearer-session login, `VtcClient::connect`) switched to
+        // signing `auth/challenge/0.1` / `authenticate/0.2` documents against
+        // `POST /v1/trust-tasks` instead (#1858) — the same door
+        // `trust_tasks::auth_tasks` already dispatched `0.2`/`0.3` on. See
+        // that module's doc for the pre-session dispatch this family gets.
         // VTA-wallet login surface. The browser wallet extension drives
         // the SIOPv2 round-trip itself and posts to `<base>/auth/challenge`
         // + `<base>/auth/` with **no** `Trust-Task` header (the op `type`
@@ -1182,7 +1181,6 @@ mod openapi_tests {
         for p in [
             "/v1/auth/refresh",
             "/v1/admin/passkeys",
-            "/v1/vetting/vetters",
             "/v1/relationships/{id}/persona",
             "/v1/credential-exchange/request",
         ] {
@@ -1191,12 +1189,14 @@ mod openapi_tests {
         // A floor, not a count: it catches the spec losing whole groups, and
         // falls as REST routes move to signed-only Trust Tasks — most
         // recently pre-session auth, install claim + admin bootstrap,
-        // cross-community recognition, relationships publish and four
-        // website admin verbs (11 paths, `trust_tasks::{auth_tasks,
-        // install_tasks,recognise_tasks,website_tasks}` / `member_tasks`).
+        // cross-community recognition, relationships publish, four website
+        // admin verbs, `auth/challenge`+`authenticate`, and the vetter grant
+        // listing / auto-grant / withdrawal notices / community branding /
+        // requested attributes (`trust_tasks::{auth_tasks,install_tasks,
+        // recognise_tasks,website_tasks,surface_tasks}` / `member_tasks`).
         assert!(
-            paths.len() >= 20,
-            "expected the documented surface to be >= 20 paths, got {}",
+            paths.len() >= 15,
+            "expected the documented surface to be >= 15 paths, got {}",
             paths.len()
         );
     }
@@ -1289,11 +1289,14 @@ mod openapi_tests {
             // (`vtc/vetting/vetters/resend/0.2`'s `memberDid`) replaces the
             // admin-only REST route (tt-tf#689).
             "/v1/vetting/vetters/{memberDid}/resend",
-            // `auth/authenticate/{0.2,0.3}` (`trust_tasks::auth_tasks`) are
-            // signed documents only, dispatched alongside `auth/challenge/0.1`
-            // and `auth/authenticate/0.1`'s still-live REST mounts — see the
-            // comment on those `tt(...)` mounts (`vta_sdk::auth_light` /
-            // `cnm vetting`'s bearer-session login still depend on them).
+            // `auth/challenge/0.1` and `auth/authenticate/{0.1,0.2,0.3}`
+            // (`trust_tasks::auth_tasks`) are signed documents only now:
+            // `vta_sdk::auth_light` (shared by the VTA client and `cnm
+            // vetting`'s bearer-session login) switched to posting them
+            // against `/v1/trust-tasks` (#1858), so their dedicated,
+            // `Trust-Task`-header-gated REST mounts had no caller left.
+            "/v1/auth/challenge",
+            "/v1/auth/",
             //
             // First-admin onboarding (`trust_tasks::install_tasks`) and
             // cross-community recognition (`trust_tasks::recognise_tasks`).
@@ -1313,11 +1316,25 @@ mod openapi_tests {
             "/v1/website/files/{*path}",
             "/v1/website/generations",
             "/v1/website/rollback/{gen_num}",
+            // The vetter grant listing (`vtc/vetting/vetters/grants/list/0.1`),
+            // automatic-grant configuration
+            // (`vtc/vetting/auto-grant/{show,update}/0.1`), withdrawal notices
+            // (`vtc/vetting/revocations/list/0.1`), community branding
+            // (`vtc/community/branding/{show,update}/0.1`) and requested
+            // attributes (`vtc/community/requested-attributes/{show,update}/0.1`)
+            // are signed documents only (`trust_tasks::surface_tasks`) — their
+            // admin-only bearer REST mounts had no caller left once
+            // `vtc-client` and the admin console signed them instead. Naming a
+            // vetter (`vtc/vetting/vetters/grant/0.1`) was already spine-only,
+            // so this path never carried a `POST` either.
+            "/v1/vetting/vetters",
+            "/v1/vetting/auto-grant",
+            "/v1/vetting/revocations",
+            "/v1/community/branding",
+            "/v1/community/requested-attributes",
         ] {
             assert!(!paths.contains_key(p), "{p} is a signed document only");
         }
-        let item = |p: &str| paths.get(p).unwrap_or_else(|| panic!("{p} is documented"));
-        assert!(item("/v1/vetting/vetters").post.is_none());
     }
 
     // ── Route-posture backstop (P2.6) ──────────────────────────────────────
@@ -1341,17 +1358,16 @@ mod openapi_tests {
     /// (`build_unauth_routes`): tower-governor rate limit + [`UNAUTH_BODY_SIZE`]
     /// body cap. Attacker-driven crypto / IO belongs here.
     const GOVERNED_UNAUTH: &[(&str, &str)] = &[
-        // `auth/challenge/0.1`, `auth/authenticate/0.1` and `auth/refresh/0.1`
-        // keep their dedicated mounts: `vta_sdk::auth_light` and `cnm
-        // vetting`'s bearer-session login still depend on them (see the
-        // comments on those `tt(...)` mounts), and `auth/refresh/0.1`'s is
-        // also the admin console's cookie-bound session renewal. First-admin
+        // `auth/refresh/0.1` keeps its dedicated mount: it is also the admin
+        // console's cookie-bound session renewal, which has no
+        // signed-document equivalent. `auth/challenge/0.1` and
+        // `auth/authenticate/0.1` lost theirs — `vta_sdk::auth_light` (and
+        // `cnm vetting`'s bearer-session login through it) now signs
+        // `auth/challenge/0.1` / `authenticate/0.2` documents against the
+        // single Trust Task endpoint below instead (#1858). First-admin
         // onboarding (`install/claim/*`, `admin/bootstrap`) and
-        // cross-community recognition (`auth/recognise/*`) moved to the
-        // single Trust Task document endpoint below — neither has a
-        // dedicated REST mount any more.
-        ("POST", "/v1/auth/challenge"),
-        ("POST", "/v1/auth/"),
+        // cross-community recognition (`auth/recognise/*`) moved there too —
+        // neither has a dedicated REST mount any more.
         ("POST", "/v1/auth/refresh"),
         ("POST", "/v1/auth/admin-session"),
         ("POST", "/v1/auth/passkey-login/start"),

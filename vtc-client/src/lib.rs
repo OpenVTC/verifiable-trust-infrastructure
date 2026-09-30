@@ -151,6 +151,22 @@ pub mod task {
         <super::members_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI;
     pub const DID_REGISTER: &str =
         <super::did_register::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    pub const VETTING_VETTERS_GRANTS_LIST: &str =
+        "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1";
+    pub const VETTING_AUTO_GRANT_SHOW: &str =
+        "https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1";
+    pub const VETTING_AUTO_GRANT_UPDATE: &str =
+        "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1";
+    pub const VETTING_REVOCATIONS_LIST: &str =
+        "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1";
+    pub const COMMUNITY_BRANDING_SHOW: &str =
+        "https://trusttasks.org/spec/vtc/community/branding/show/0.1";
+    pub const COMMUNITY_BRANDING_UPDATE: &str =
+        "https://trusttasks.org/spec/vtc/community/branding/update/0.1";
+    pub const COMMUNITY_REQUESTED_ATTRIBUTES_SHOW: &str =
+        "https://trusttasks.org/spec/vtc/community/requested-attributes/show/0.1";
+    pub const COMMUNITY_REQUESTED_ATTRIBUTES_UPDATE: &str =
+        "https://trusttasks.org/spec/vtc/community/requested-attributes/update/0.1";
 }
 
 /// DID-document service `type` under which a VTC advertises its REST API base
@@ -662,9 +678,25 @@ pub struct VettingRevocation {
     pub affected_members: Vec<String>,
 }
 
+/// `vtc/vetting/auto-grant/{show,update}/0.1`'s response payload shape.
 #[derive(Deserialize)]
-struct VettingRevocationList {
-    revocations: Vec<VettingRevocation>,
+struct AutoGrantShowResponse {
+    #[serde(rename = "autoGrant")]
+    auto_grant: vetting::AutoGrantStatus,
+}
+
+/// `vtc/community/branding/{show,update}/0.1`'s response payload shape.
+#[derive(Deserialize)]
+struct BrandingResponse {
+    branding: join_requests::manifest::v0_2::CommunityBranding,
+}
+
+/// `vtc/community/requested-attributes/{show,update}/0.1`'s response payload
+/// shape.
+#[derive(Deserialize)]
+struct RequestedAttributesResponse {
+    #[serde(rename = "requestedAttributes")]
+    requested_attributes: Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>,
 }
 
 /// A client bound to one VTC: its API base, and a session or the operator's
@@ -1717,91 +1749,137 @@ impl VtcClient {
         decode_payload(reply, "endorsements/issue")
     }
 
+    /// Every vetter grant, newest first (`vtc/vetting/vetters/grants/list/0.1`).
+    /// Signed document; the console's own key or the operator's admin session
+    /// key, depending on what this client was built with.
+    pub async fn vetter_grants(&self) -> Result<Vec<vetting::VetterGrantRow>, VtcError> {
+        self.document_pages(
+            task::VETTING_VETTERS_GRANTS_LIST,
+            serde_json::json!({}),
+            "vetting/vetters/grants/list",
+        )
+        .await
+    }
+
     /// The automatic vetter-grant configuration and the last sweep
-    /// (`GET /vetting/auto-grant`). Admin token.
+    /// (`vtc/vetting/auto-grant/show/0.1`).
     pub async fn auto_grant(&self) -> Result<vetting::AutoGrantStatus, VtcError> {
-        let url = self.api_url(&["vetting", "auto-grant"])?;
-        let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
-        Ok(expect_success(resp).await?.json().await?)
+        let reply = self
+            .document(
+                task::VETTING_AUTO_GRANT_SHOW,
+                serde_json::json!({}),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload::<AutoGrantShowResponse>(reply, "vetting/auto-grant/show")
+            .map(|r| r.auto_grant)
     }
 
     /// Replace the automatic vetter-grant configuration
-    /// (`PUT /vetting/auto-grant`). Admin token. An absent member takes its
+    /// (`vtc/vetting/auto-grant/update/0.1`). An absent member takes its
     /// default, so read the current configuration first to change one value.
     pub async fn configure_auto_grant(
         &self,
         config: &vetting::AutoGrantConfig,
     ) -> Result<vetting::AutoGrantStatus, VtcError> {
-        let url = self.api_url(&["vetting", "auto-grant"])?;
-        let resp = self
-            .untasked(reqwest::Method::PUT, url)?
-            .json(config)
-            .send()
+        let payload = serde_json::to_value(config)
+            .map_err(|e| VtcError::Signing(format!("auto-grant config: {e}")))?;
+        let reply = self
+            .document(
+                task::VETTING_AUTO_GRANT_UPDATE,
+                payload,
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
             .await?;
-        Ok(expect_success(resp).await?.json().await?)
+        decode_payload::<AutoGrantShowResponse>(reply, "vetting/auto-grant/update")
+            .map(|r| r.auto_grant)
     }
 
     /// How the community presents itself to an applicant's client
-    /// (`GET /community/branding`) — the join manifest 0.2 `branding`. Admin
-    /// token.
+    /// (`vtc/community/branding/show/0.1`) — the join manifest 0.2 `branding`.
     pub async fn branding(
         &self,
     ) -> Result<join_requests::manifest::v0_2::CommunityBranding, VtcError> {
-        let url = self.api_url(&["community", "branding"])?;
-        let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
-        Ok(expect_success(resp).await?.json().await?)
+        let reply = self
+            .document(
+                task::COMMUNITY_BRANDING_SHOW,
+                serde_json::json!({}),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload::<BrandingResponse>(reply, "community/branding/show").map(|r| r.branding)
     }
 
-    /// Replace the community's branding (`PUT /community/branding`) and return
-    /// what was stored. Admin token. Every member is optional; an absent member
+    /// Replace the community's branding (`vtc/community/branding/update/0.1`)
+    /// and return what was stored. Every member is optional; an absent member
     /// is cleared.
     pub async fn set_branding(
         &self,
         branding: &join_requests::manifest::v0_2::CommunityBranding,
     ) -> Result<join_requests::manifest::v0_2::CommunityBranding, VtcError> {
-        let url = self.api_url(&["community", "branding"])?;
-        let resp = self
-            .untasked(reqwest::Method::PUT, url)?
-            .json(branding)
-            .send()
+        let reply = self
+            .document(
+                task::COMMUNITY_BRANDING_UPDATE,
+                serde_json::json!({ "branding": branding }),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
             .await?;
-        Ok(expect_success(resp).await?.json().await?)
+        decode_payload::<BrandingResponse>(reply, "community/branding/update").map(|r| r.branding)
     }
 
     /// What the community asks an applicant to tell it about themselves
-    /// (`GET /community/requested-attributes`) — the join manifest 0.2
-    /// `requestedAttributes`. Admin token.
+    /// (`vtc/community/requested-attributes/show/0.1`) — the join manifest 0.2
+    /// `requestedAttributes`.
     pub async fn requested_attributes(
         &self,
     ) -> Result<Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>, VtcError> {
-        let url = self.api_url(&["community", "requested-attributes"])?;
-        let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
-        Ok(expect_success(resp).await?.json().await?)
+        let reply = self
+            .document(
+                task::COMMUNITY_REQUESTED_ATTRIBUTES_SHOW,
+                serde_json::json!({}),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload::<RequestedAttributesResponse>(reply, "community/requested-attributes/show")
+            .map(|r| r.requested_attributes)
     }
 
     /// Replace what the community asks applicants to tell it
-    /// (`PUT /community/requested-attributes`). Admin token. An empty list asks
+    /// (`vtc/community/requested-attributes/update/0.1`). An empty list asks
     /// for nothing.
     pub async fn set_requested_attributes(
         &self,
         requested: &[join_requests::manifest::v0_2::ResponseRequestedAttributesItem],
     ) -> Result<Vec<join_requests::manifest::v0_2::ResponseRequestedAttributesItem>, VtcError> {
-        let url = self.api_url(&["community", "requested-attributes"])?;
-        let resp = self
-            .untasked(reqwest::Method::PUT, url)?
-            .json(requested)
-            .send()
+        let reply = self
+            .document(
+                task::COMMUNITY_REQUESTED_ATTRIBUTES_UPDATE,
+                serde_json::json!({ "requestedAttributes": requested }),
+                &[],
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
             .await?;
-        Ok(expect_success(resp).await?.json().await?)
+        decode_payload::<RequestedAttributesResponse>(
+            reply,
+            "community/requested-attributes/update",
+        )
+        .map(|r| r.requested_attributes)
     }
 
     /// Every vetting statement withdrawal notice, newest first, with the
-    /// admissions each touches (`GET /vetting/revocations`). Admin token.
+    /// admissions each touches (`vtc/vetting/revocations/list/0.1`).
     pub async fn vetting_revocations(&self) -> Result<Vec<VettingRevocation>, VtcError> {
-        let url = self.api_url(&["vetting", "revocations"])?;
-        let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
-        let list: VettingRevocationList = expect_success(resp).await?.json().await?;
-        Ok(list.revocations)
+        self.document_pages(
+            task::VETTING_REVOCATIONS_LIST,
+            serde_json::json!({}),
+            "vetting/revocations/list",
+        )
+        .await
     }
 
     // -----------------------------------------------------------------------
@@ -2216,21 +2294,19 @@ mod tests {
 
     #[test]
     fn a_withdrawal_row_deserializes_from_the_vtc_shape() {
-        let rows: VettingRevocationList = serde_json::from_value(serde_json::json!({
-            "revocations": [{
-                "issuer": "did:key:zCarol",
-                "statementId": "urn:uuid:s1",
-                "statementDigestMultibase": "zDigest",
-                "reason": "mistake",
-                "recordedAt": "2026-09-01T00:00:00Z",
-                "reviewState": "needsReview",
-                "affectedJoinRequests": ["3f1c9a52-8c1e-4f2b-9d7a-0b6e5c4d3a21"],
-                "affectedMembers": ["did:key:zAlice"]
-            }]
+        let row: VettingRevocation = serde_json::from_value(serde_json::json!({
+            "issuer": "did:key:zCarol",
+            "statementId": "urn:uuid:s1",
+            "statementDigestMultibase": "zDigest",
+            "reason": "mistake",
+            "recordedAt": "2026-09-01T00:00:00Z",
+            "reviewState": "needsReview",
+            "affectedJoinRequests": ["3f1c9a52-8c1e-4f2b-9d7a-0b6e5c4d3a21"],
+            "affectedMembers": ["did:key:zAlice"]
         }))
         .unwrap();
-        assert_eq!(rows.revocations[0].review_state, "needsReview");
-        assert_eq!(rows.revocations[0].affected_members, vec!["did:key:zAlice"]);
+        assert_eq!(row.review_state, "needsReview");
+        assert_eq!(row.affected_members, vec!["did:key:zAlice"]);
     }
 
     /// A holder on any DID method can name its verification method, which is

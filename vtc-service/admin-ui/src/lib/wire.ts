@@ -84,26 +84,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/auth/": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * `POST /v1/auth/` — verify a DIDComm/SIOP/Trust-Task authentication
-         *     document and issue access + refresh tokens. Unauthenticated.
-         */
-        post: operations["authenticate"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/auth/admin-session": {
         parameters: {
             query?: never;
@@ -114,26 +94,6 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["admin_session"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/auth/challenge": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Thin dispatcher — every substantive concern (ACL, rate
-         *     limit, session persistence) lives in the canonical handler.
-         */
-        post: operations["authChallenge"];
         delete?: never;
         options?: never;
         head?: never;
@@ -260,24 +220,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/community/branding": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** The community's branding; every member absent when none is set. */
-        get: operations["communityBrandingShow"];
-        /** Replace the community's branding. An empty body clears it. */
-        put: operations["communityBrandingUpdate"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/community/did-qr.svg": {
         parameters: {
             query?: never;
@@ -313,27 +255,6 @@ export interface paths {
          */
         get: operations["get_public_profile"];
         put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/community/requested-attributes": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** What the community asks applicants to tell it; an empty array when nothing. */
-        get: operations["communityRequestedAttributesShow"];
-        /**
-         * Replace what the community asks applicants to tell it. An empty array asks
-         *     for nothing.
-         */
-        put: operations["communityRequestedAttributesUpdate"];
         post?: never;
         delete?: never;
         options?: never;
@@ -474,64 +395,6 @@ export interface paths {
          *     verified signer's ACL entry, read when the document executes.
          */
         post: operations["dispatch"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/vetting/auto-grant": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** The automatic vetter-grant configuration and the last sweep. */
-        get: operations["vettingAutoGrantShow"];
-        /** Replace the automatic vetter-grant configuration. */
-        put: operations["vettingAutoGrantUpdate"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/vetting/revocations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Every vetting statement withdrawal notice, with the admissions it touches.
-         * @description A notice is matched to the join requests whose recorded vetting facts
-         *     counted a statement with the notice's issuer and id. Review is not yet a
-         *     workflow: `needsReview` says an admin should look, and nothing records that
-         *     one did.
-         */
-        get: operations["vettingRevocationList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/vetting/vetters": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Every vetter grant, newest first. */
-        get: operations["vettingVetterList"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -878,44 +741,6 @@ export interface components {
             pkg: string;
             purpose: string;
             wired: string;
-        };
-        /**
-         * @description Client sends to `POST /auth/challenge`.
-         *
-         *     Wire shape conforms to `spec/auth/challenge/0.1`: the `did` field
-         *     serialises as `subject` per the canonical payload schema. The Rust
-         *     identifier stays `did` for consistency with `AuthClaims.did` and
-         *     the rest of the codebase. `alias = "did"` keeps clients that still
-         *     send the legacy name working through one upgrade cycle.
-         */
-        ChallengeRequest: {
-            subject: string;
-        };
-        /**
-         * @description Server responds from `POST /auth/challenge`.
-         *
-         *     Canonical shape: `{ challenge, sessionId, expiresAt }`.
-         *     `teeAttestation` is a VTA-specific top-level field documented as
-         *     a vendor extension — Nitro-Enclave deployments populate it; non-
-         *     TEE deployments omit it.
-         */
-        ChallengeResponse: {
-            /** @description base64url-encoded one-time nonce. */
-            challenge: string;
-            /** @description ISO-8601 timestamp after which the challenge MUST NOT be honored. */
-            expiresAt: string;
-            /**
-             * @description Opaque session identifier the producer echoes into the matching
-             *     `authenticate` document.
-             */
-            sessionId: string;
-            /**
-             * @description VTA-specific (optional): TEE attestation evidence bound to the
-             *     challenge nonce. Present when the VTA is running inside a Nitro
-             *     Enclave; proves the challenge was generated within the trusted
-             *     boundary. Absent for non-TEE deployments.
-             */
-            teeAttestation?: unknown;
         };
         /**
          * @description The singleton record. Field names are wire contract — operators
@@ -3333,11 +3158,6 @@ export interface components {
             policy: components["schemas"]["PolicyModuleResponse"];
         };
         Value: unknown;
-        /** @description `GET /v1/vetting/vetters` response: every grant, newest first. */
-        VetterGrantListResponse: {
-            /** @description The grants. */
-            vetters: components["schemas"]["VetterGrantRow"][];
-        };
         /** @description One vetter grant, as `GET /v1/vetting/vetters` reports it. */
         VetterGrantRow: {
             /** @description The vetter role credential's `id`. */
@@ -3394,11 +3214,6 @@ export interface components {
              * @description When the profile was last published.
              */
             updatedAt: string;
-        };
-        /** @description `GET /v1/vetting/revocations` response: every notice, newest first. */
-        VettingRevocationListResponse: {
-            /** @description The notices. */
-            revocations: components["schemas"]["VettingRevocationRow"][];
         };
         /** @description One withdrawal notice, and the admissions it touches. */
         VettingRevocationRow: {
@@ -3519,14 +3334,6 @@ export interface components {
          *     A producer marks a namespace only where the document's meaning depends on it. Marking one that merely carries a hint or an annotation turns every consumer that has not implemented it into a failure where it would otherwise have interoperated. JSON Schema cannot check either of those rules: that an entry names a present namespace is checkable only against the sibling `ext`, and whether a namespace is load-bearing is not a schema question at all. Both are consumer-side checks.
          */
         VtcJoinRequestsManifestV0_2ExtCritical: string[];
-        VtcJoinRequestsManifestV0_2RequestedAttribute: {
-            /** @description Why the community asks, in words shown to the applicant before they disclose. */
-            purpose?: string;
-            /** @description False for an attribute the applicant may decline. A submission missing a required one is refused with vtc/join-requests/submit:attributesMissing. */
-            required?: boolean;
-            /** @description A claim-type token from the persona claim-type registry (persona/_shared/0.1/CLAIM-TYPES.md) — `name.display`, `address.country` — or an `x:` extension token. */
-            type: string;
-        };
         VtcJoinRequestsManifestV0_2Response: {
             branding?: components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
             communityDid: string;
@@ -4236,38 +4043,6 @@ export interface operations {
             };
         };
     };
-    authenticate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description DIDComm envelope, SIOP id_token envelope, or Trust-Task auth document */
-        requestBody: {
-            content: {
-                "text/plain": string;
-            };
-        };
-        responses: {
-            /** @description Access + refresh tokens */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthenticateResponse"];
-                };
-            };
-            /** @description Authentication failed (bad proof, challenge mismatch, or replay) */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     admin_session: {
         parameters: {
             query?: never;
@@ -4291,37 +4066,6 @@ export interface operations {
                 };
             };
             /** @description Invalid or expired access token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    authChallenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChallengeRequest"];
-            };
-        };
-        responses: {
-            /** @description DID-auth challenge nonce */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChallengeResponse"];
-                };
-            };
-            /** @description ACL gate rejected the subject DID */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4474,85 +4218,6 @@ export interface operations {
             };
         };
     };
-    communityBrandingShow: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The community's branding */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    communityBrandingUpdate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
-            };
-        };
-        responses: {
-            /** @description The stored branding */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
-                };
-            };
-            /** @description A member breaks its bounds */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Audit writer not configured — change refused */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     get_did_qr: {
         parameters: {
             query?: never;
@@ -4600,86 +4265,6 @@ export interface operations {
             };
             /** @description Community profile not initialised */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    communityRequestedAttributesShow: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The manifest's `requestedAttributes` */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2RequestedAttribute"][];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    communityRequestedAttributesUpdate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Replaces the whole list. `type` is a persona claim-type token such as `name.display`. */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2RequestedAttribute"][];
-            };
-        };
-        responses: {
-            /** @description What is now requested */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2RequestedAttribute"][];
-                };
-            };
-            /** @description An entry breaks its bounds, a type is requested twice, or more than 32 are given */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Audit writer not configured — change refused */
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4902,160 +4487,6 @@ export interface operations {
             };
             /** @description Task failed, e.g. duplicate request (trust-task-error) */
             422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingAutoGrantShow: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Configuration and last sweep */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AutoGrantStatus"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingAutoGrantUpdate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AutoGrantConfig"];
-            };
-        };
-        responses: {
-            /** @description The stored configuration and the last sweep */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AutoGrantStatus"];
-                };
-            };
-            /** @description A value is out of bounds */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Audit writer not configured — change refused */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingRevocationList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Every withdrawal notice, newest first */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VettingRevocationListResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingVetterList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Every vetter grant, newest first */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VetterGrantListResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
                 headers: {
                     [name: string]: unknown;
                 };

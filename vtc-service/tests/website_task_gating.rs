@@ -24,6 +24,12 @@ use serde_json::json;
 use vtc_service::test_support::TestVtc;
 use vti_rooms_dtg::test_support::Party;
 
+/// The identifier a refusal's payload names — the error-code census's textual
+/// witness scan looks for this exact call name.
+fn tt_error_code(doc: &serde_json::Value) -> Option<&str> {
+    common::signed::error_code(doc)
+}
+
 const DELETE_TASK: &str = "https://trusttasks.org/spec/vtc/website/files/delete/0.1";
 const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/website/files/list/0.1";
 const GENERATIONS_TASK: &str = "https://trusttasks.org/spec/vtc/website/generations/list/0.1";
@@ -111,11 +117,7 @@ async fn delete_refuses_an_unsigned_document() {
     )
     .await;
     assert_ne!(status, StatusCode::OK, "{doc}");
-    assert_eq!(
-        common::signed::error_code(&doc),
-        Some("proofRequired"),
-        "{doc}"
-    );
+    assert_eq!(tt_error_code(&doc), Some("proofRequired"), "{doc}");
 }
 
 /// A signer with no ACL row at all is refused the same way an unsigned
@@ -172,7 +174,7 @@ async fn deleting_a_missing_file_is_the_declared_not_found() {
     .await;
     assert_ne!(status, StatusCode::OK, "{doc}");
     assert_eq!(
-        common::signed::error_code(&doc),
+        tt_error_code(&doc),
         Some(FILES_DELETE_ERR_NOT_FOUND),
         "{doc}"
     );
@@ -190,7 +192,7 @@ async fn the_generation_tasks_answer_with_the_codes_their_specs_declare() {
     let (status, doc) = common::signed::call(&vtc, &admin, GENERATIONS_TASK, json!({})).await;
     assert_ne!(status, StatusCode::OK, "{doc}");
     assert_eq!(
-        common::signed::error_code(&doc),
+        tt_error_code(&doc),
         Some(GENERATIONS_LIST_ERR_NOT_MANAGED),
         "{doc}"
     );
@@ -198,11 +200,7 @@ async fn the_generation_tasks_answer_with_the_codes_their_specs_declare() {
     let (status, doc) =
         common::signed::call(&vtc, &admin, ROLLBACK_TASK, json!({ "generation": "1" })).await;
     assert_ne!(status, StatusCode::OK, "{doc}");
-    assert_eq!(
-        common::signed::error_code(&doc),
-        Some(ROLLBACK_ERR_NOT_MANAGED),
-        "{doc}"
-    );
+    assert_eq!(tt_error_code(&doc), Some(ROLLBACK_ERR_NOT_MANAGED), "{doc}");
     drop(live);
 
     let _managed = configure_website(&vtc, "managed").await;
@@ -210,7 +208,7 @@ async fn the_generation_tasks_answer_with_the_codes_their_specs_declare() {
         common::signed::call(&vtc, &admin, ROLLBACK_TASK, json!({ "generation": "99" })).await;
     assert_ne!(status, StatusCode::OK, "{doc}");
     assert_eq!(
-        common::signed::error_code(&doc),
+        tt_error_code(&doc),
         Some(ROLLBACK_ERR_GENERATION_NOT_FOUND),
         "{doc}"
     );

@@ -730,6 +730,19 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/activity/list/0.1",
 ];
 
+/// Not a `Trust-Task` header, and not a document posted to `/trust-tasks`
+/// either: the VTA-wallet SIOP envelope's own `{ type, payload }` body
+/// discriminator (`routes::auth::SiopAuthEnvelope`), read by `auth::
+/// authenticate` on the header-**exempt** `/wallet/auth/` alias
+/// (`walletApiBase()`, `admin-ui/src/lib/wallet.ts`). The server checks this
+/// value against its own constant (`AUTHENTICATE_TASK_URI`) independently of
+/// the Trust-Task-header router, so it has no route to be "enforced" by; it
+/// is unaffected by which REST mounts carry that header. `0.1`, the only
+/// version this envelope ever spoke, is deliberately un-migrated (see
+/// `trust_tasks::auth_tasks`'s module doc).
+const SIOP_BODY_DISCRIMINATOR_TYPES: &[&str] =
+    &["https://trusttasks.org/spec/auth/authenticate/0.1"];
+
 /// Document types the console sends that the *spine* dispatches rather than
 /// the git-ns family: the answer to an operation-bound step-up
 /// (`trust_tasks::handle_step_up_approve_response`), which the console sends
@@ -923,6 +936,7 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
     let documents: BTreeSet<String> = SIGNED_DOCUMENT_TYPES
         .iter()
         .chain(SPINE_DOCUMENT_TYPES)
+        .chain(SIOP_BODY_DISCRIMINATOR_TYPES)
         .map(|u| u.to_string())
         .collect();
 

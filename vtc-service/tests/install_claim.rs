@@ -473,7 +473,11 @@ async fn the_claim_start_task_answers_with_the_code_its_spec_declares() {
 
     let (status, payload) = start("not.a.real.jwt".into()).await;
     assert_eq!(status, REJECTED, "{payload}");
-    assert_eq!(payload["code"], START_ERR_INVALID_TOKEN, "{payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        Some(START_ERR_INVALID_TOKEN),
+        "{payload}"
+    );
 
     let unrecorded = mint_install_token(
         &fix.install_signer,
@@ -484,7 +488,11 @@ async fn the_claim_start_task_answers_with_the_code_its_spec_declares() {
     .unwrap();
     let (status, payload) = start(unrecorded.jwt).await;
     assert_eq!(status, REJECTED, "{payload}");
-    assert_eq!(payload["code"], START_ERR_INVALID_TOKEN, "{payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        Some(START_ERR_INVALID_TOKEN),
+        "{payload}"
+    );
 
     // Consumed: run the whole ceremony, then start again.
     let (token, _jti) = mint_token_and_record(&fix, 600).await;
@@ -506,7 +514,11 @@ async fn the_claim_start_task_answers_with_the_code_its_spec_declares() {
     assert_eq!(status, StatusCode::OK, "{payload}");
     let (status, payload) = start(token).await;
     assert_eq!(status, REJECTED, "{payload}");
-    assert_eq!(payload["code"], START_ERR_INVALID_TOKEN, "{payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        Some(START_ERR_INVALID_TOKEN),
+        "{payload}"
+    );
 
     // A concurrent-ceremony lock is not a token fault.
     let (token, _jti) = mint_token_and_record(&fix, 600).await;
@@ -586,5 +598,15 @@ async fn the_claim_finish_task_answers_with_the_codes_its_spec_declares() {
     )
     .await;
     assert_eq!(status, REJECTED, "{payload}");
-    assert_eq!(payload["code"], FINISH_ERR_BINDING_INVALID, "{payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        Some(FINISH_ERR_BINDING_INVALID),
+        "{payload}"
+    );
+}
+
+/// The identifier a refusal's payload names — the error-code census's textual
+/// witness scan looks for this exact call name.
+fn tt_error_code(payload: &Value) -> Option<&str> {
+    payload["code"].as_str()
 }

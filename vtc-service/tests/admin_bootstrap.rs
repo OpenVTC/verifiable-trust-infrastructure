@@ -164,6 +164,12 @@ async fn post_json(fix: &Fixture, type_uri: &str, payload: Value) -> (StatusCode
     (status, body["payload"].clone())
 }
 
+/// The identifier a refusal's payload names — the error-code census's textual
+/// witness scan looks for this exact call name.
+fn tt_error_code(payload: &Value) -> Option<&str> {
+    payload["code"].as_str()
+}
+
 /// Drive a full claim ceremony and return the setup-session JWT plus
 /// the candidate admin DID the server returned.
 async fn run_claim_ceremony(fix: &Fixture) -> (String, String) {
@@ -498,7 +504,11 @@ async fn the_bootstrap_task_answers_with_the_codes_its_spec_declares() {
     )
     .await;
     assert_eq!(status, REJECTED, "{payload}");
-    assert_eq!(payload["code"], BOOTSTRAP_ERR_INVALID_TOKEN, "{payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        Some(BOOTSTRAP_ERR_INVALID_TOKEN),
+        "{payload}"
+    );
 
     // The install token itself has the wrong audience for this route.
     let install_jwt = mint_token_and_record(&fix, 600).await;
@@ -509,7 +519,11 @@ async fn the_bootstrap_task_answers_with_the_codes_its_spec_declares() {
     )
     .await;
     assert_eq!(status, REJECTED, "{payload}");
-    assert_eq!(payload["code"], BOOTSTRAP_ERR_INVALID_TOKEN, "{payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        Some(BOOTSTRAP_ERR_INVALID_TOKEN),
+        "{payload}"
+    );
 
     let (session_jwt, _) = run_claim_ceremony(&fix).await;
     let (status, payload) = post_json(
