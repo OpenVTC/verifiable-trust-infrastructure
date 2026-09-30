@@ -188,13 +188,13 @@ vta-sweepers = { path = "../vta-sweepers", version = "0.3" }
 vta-backup = { path = "../vta-backup", version = "0.7" }
 # TEE bootstrap subsystem (attestation, KMS, anchor MAC, DID autogen),
 # extracted and re-exported as crate::tee behind this crate's `tee` feature.
-vta-tee = { path = "../vta-tee", version = "0.6", optional = true }
+vta-tee = { path = "../vta-tee", version = "0.7", optional = true }
 # Policy subsystem (regorus engine, default bundle, consent model), extracted
 # and re-exported as crate::policy.
 vta-policy = { path = "../vta-policy", version = "0.3" }
 # The local did:webvh store, extracted to its own crate and re-exported as
 # crate::webvh_store behind this crate's `webvh` feature.
-vta-webvh = { path = "../vta-webvh", version = "0.3", optional = true }
+vta-webvh = { path = "../vta-webvh", version = "0.4", optional = true }
 vta-sdk = { path = "../vta-sdk", version = "0.57", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.

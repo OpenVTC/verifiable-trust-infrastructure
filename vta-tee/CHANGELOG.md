@@ -2,7 +2,11 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
-## [0.6.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.6.0...vta-tee-v0.6.1) — 2026-09-30
+## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.6.0...vta-tee-v0.7.0) — 2026-09-30
+
+### Changed
+
+- Breaking bump: this release moves the internal `vta-sdk` / `vti-common` requirements to their new compatibility range, which a patch release must not do (a caret dependent would resolve a second copy of either).
 
 
 ## [0.6.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-tee-v0.5.1...vta-tee-v0.6.0) — 2026-09-27
