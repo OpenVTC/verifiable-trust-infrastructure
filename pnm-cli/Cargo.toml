@@ -35,7 +35,7 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 # `agent-names` powers the global `--resolve-agent-names` flag; without it
 # the flag parses but can never resolve anything.
-vta-cli-common = { path = "../vta-cli-common", version = "0.27", features = [
+vta-cli-common = { path = "../vta-cli-common", version = "0.28", features = [
   "agent-names",
 ] }
 affinidi-did-resolver-cache-sdk = { workspace = true }
