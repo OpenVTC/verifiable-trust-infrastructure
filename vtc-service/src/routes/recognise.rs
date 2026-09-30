@@ -45,10 +45,9 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::State;
 use chrono::Utc;
 use dtg_credentials::DTGCredentialType;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -72,20 +71,7 @@ use crate::server::AppState;
 use affinidi_vc::VerifiableCredential;
 use vta_sdk::protocols::members::{ENDORSEMENT_CREDENTIAL_TYPE, MEMBERSHIP_CREDENTIAL_TYPE};
 
-/// Request body for `POST /v1/auth/recognise`. The caller supplies a
-/// holder-signed W3C Verifiable Presentation that embeds the foreign VEC and
-/// VMC in `verifiableCredential` and binds the challenge `nonce` (top-level)
-/// plus this VTC's DID as the `domain`. The route verifies the holder proof,
-/// the embedded issuer proofs, the status list, and the registry recognition
-/// itself.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct RecogniseRequest {
-    /// A W3C Data-Integrity VP, holder-signed with
-    /// `proofPurpose: authentication`.
-    pub presentation: JsonValue,
-}
-
-/// Response body for `POST /v1/auth/recognise/challenge`.
+/// Response body for `vtc/auth/recognise/challenge/0.1`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
@@ -132,19 +118,14 @@ impl std::fmt::Debug for RecogniseData {
     }
 }
 
-/// `POST /v1/auth/recognise/challenge` — issue a single-use, TTL'd nonce the
+/// `vtc/auth/recognise/challenge/0.1` — issue a single-use, TTL'd nonce the
 /// holder binds into their recognise VP. Bound to this VTC's DID as the
 /// audience, so the resulting VP can't be replayed against a different VTC.
-#[utoipa::path(
-    post, path = "/auth/recognise/challenge", tag = "recognise",
-    responses(
-        (status = 200, description = "Single-use recognition nonce", body = RecogniseChallengeResponse),
-    ),
-)]
-pub async fn recognise_challenge(
-    State(state): State<AppState>,
-) -> Result<Json<RecogniseChallengeResponse>, AppError> {
-    let vtc_did = vtc_did(&state).await?;
+/// Called from `trust_tasks::recognise_tasks`; no REST route mounts it.
+pub(crate) async fn recognise_challenge(
+    state: &AppState,
+) -> Result<RecogniseChallengeResponse, AppError> {
+    let vtc_did = vtc_did(state).await?;
     let now = Utc::now();
     let nonce = challenge::issue(
         &state.join_requests_ks,
@@ -154,7 +135,7 @@ pub async fn recognise_challenge(
     )
     .await?;
     let expires_at = (now + challenge::DEFAULT_CHALLENGE_TTL).timestamp() as u64;
-    Ok(Json(RecogniseChallengeResponse { nonce, expires_at }))
+    Ok(RecogniseChallengeResponse { nonce, expires_at })
 }
 
 /// `vtc/auth/recognise:credentialInvalid` — the VEC or VMC failed proof
@@ -171,20 +152,13 @@ pub const RECOGNISE_ERR_ISSUER_NOT_RECOGNISED: &str =
 pub const RECOGNISE_ERR_ROLE_NOT_MAPPED: &str =
     trust_tasks_rs::specs::vtc::auth::recognise::v0_2::error_codes::ROLE_NOT_MAPPED.code;
 
-/// `POST /v1/auth/recognise` — cross-community session mint from a
-/// holder-signed VP embedding a foreign VEC + VMC.
-#[utoipa::path(
-    post, path = "/auth/recognise", tag = "recognise",
-    request_body = RecogniseRequest,
-    responses(
-        (status = 200, description = "Minted cross-community session", body = RecogniseResponse),
-        (status = 403, description = "Holder-binding, recognition gate, or role-mapping denied"),
-    ),
-)]
-pub async fn recognise(
-    State(state): State<AppState>,
-    Json(req): Json<RecogniseRequest>,
-) -> Result<Json<RecogniseResponse>, TaskError> {
+/// `vtc/auth/recognise/0.2` — cross-community session mint from a
+/// holder-signed VP embedding a foreign VEC + VMC. Called from
+/// `trust_tasks::recognise_tasks`; no REST route mounts it.
+pub(crate) async fn recognise(
+    state: &AppState,
+    presentation: JsonValue,
+) -> Result<RecogniseResponse, TaskError> {
     // Pre-flight: the route depends on optional state. Refuse cleanly when a
     // piece is missing rather than 500ing mid-handler. The `resolver` is
     // needed immediately (VP holder + issuer proof verification); the
@@ -209,8 +183,7 @@ pub async fn recognise(
     //    from the *unverified* VP purely to look it up; the holder signature
     //    over that same nonce is verified in step 2. Single-use + TTL: a
     //    replayed VP finds its nonce already consumed; a stale nonce is gone.
-    let nonce = req
-        .presentation
+    let nonce = presentation
         .get("nonce")
         .and_then(JsonValue::as_str)
         .ok_or_else(|| {
@@ -228,7 +201,7 @@ pub async fn recognise(
     //    `verify_vp_token` reads a DCQL `vp_token` (a map keyed by query id) or
     //    a bare SD-JWT-VC string; recognise carries a single W3C DI VP, so wrap
     //    it in a one-entry map before handing it over.
-    let vp_token = serde_json::json!({ "recognise": req.presentation });
+    let vp_token = serde_json::json!({ "recognise": presentation });
     let verified_vp = verify_vp_token(
         &vp_token,
         &consumed.aud,
@@ -241,7 +214,7 @@ pub async fn recognise(
 
     // 3. Pull the raw VEC + VMC back out of the (now holder-bound) VP so the
     //    recognition gate can run its status-list / registry / role checks.
-    let (vec, vmc) = extract_vec_vmc(&req.presentation)?;
+    let (vec, vmc) = extract_vec_vmc(&presentation)?;
 
     // 4. Holder-binding (the headline of P0.2 part 2). The proven VP holder
     //    MUST be the credential subject — otherwise a captured VEC + VMC,
@@ -257,7 +230,7 @@ pub async fn recognise(
         let err = RecognitionError::Malformed(format!(
             "VP holder `{holder_did}` is not the credential subject `{vec_subject}`"
         ));
-        emit_denied_audit(&state, &holder_did, None, "holder-binding", None, &err).await;
+        emit_denied_audit(state, &holder_did, None, "holder-binding", None, &err).await;
         return Err(AppError::Forbidden(
             "presentation holder is not the foreign credential subject".into(),
         )
@@ -287,12 +260,12 @@ pub async fn recognise(
     {
         Ok(v) => v,
         Err(e) => {
-            emit_denied_audit(&state, &holder_did, None, e.reason_code(), None, &e).await;
+            emit_denied_audit(state, &holder_did, None, e.reason_code(), None, &e).await;
             return Err(map_recognition_error(e));
         }
     };
 
-    mint_recognised_session(&state, verified).await
+    Ok(mint_recognised_session(state, verified).await?.0)
 }
 
 /// This VTC's own DID — the audience a recognise challenge is bound to and the

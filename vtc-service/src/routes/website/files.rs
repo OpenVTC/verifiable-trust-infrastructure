@@ -1,22 +1,19 @@
-//! `/v1/website/files` handlers (Phase 5 M5.5.1 + M5.5.2).
+//! `/v1/website/files` — the community website's staged content.
 //!
-//! - `GET /v1/website/files` — admin paginated listing.
-//! - `GET /v1/website/files/{*path}` — admin file read.
-//! - `PUT /v1/website/files/{*path}` — admin write with optional
-//!   `If-Match` optimistic concurrency.
-//! - `DELETE /v1/website/files/{*path}` — admin delete.
+//! `write_file` backs `vtc/website/upload/commit/0.1`'s file target
+//! (`trust_tasks::website_tasks`). The listing and delete verbs
+//! (`vtc/website/files/{list,delete}/0.1`) are signed documents only, served
+//! by the same spine module — see [`list`] and [`delete`] below, which are
+//! plain functions (no REST route mounts them; both used to be bearer
+//! `AdminAuth` REST endpoints before the spine took over admin verbs).
 
 use std::path::{Path, PathBuf};
 
-use axum::Json;
-use axum::extract::{Path as AxumPath, Query, State};
-use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use vti_common::audit::{AuditEvent, WebsiteFileDeletedData, WebsiteFileWrittenData};
-use vti_common::auth::AdminAuth;
 
 use crate::error::AppError;
 use crate::server::AppState;
@@ -24,15 +21,7 @@ use crate::website::paths::{PathError, canonical_within_root, canonical_within_r
 
 use super::{WebsiteWriteResponse, require_website_config};
 
-#[derive(Debug, Deserialize)]
-pub struct ListQuery {
-    #[serde(default)]
-    pub cursor: Option<String>,
-    #[serde(default)]
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FileEntry {
     pub path: String,
@@ -51,20 +40,21 @@ pub struct FileEntry {
     pub modified_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListResponse {
     pub items: Vec<FileEntry>,
     pub next_cursor: Option<String>,
 }
 
-/// `GET /v1/website/files`
-pub async fn list(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    Query(query): Query<ListQuery>,
-) -> Result<Json<ListResponse>, AppError> {
-    let cfg = require_website_config(&state)?;
+/// `vtc/website/files/list/0.1` — a paginated listing of the site's
+/// servable files, called from `trust_tasks::website_tasks`.
+pub(crate) async fn list(
+    state: &AppState,
+    cursor: Option<String>,
+    limit: Option<u32>,
+) -> Result<ListResponse, AppError> {
+    let cfg = require_website_config(state)?;
     let root_dir = cfg.website.root_dir.clone().expect("guarded above");
     let blocklist = cfg.website.executable_blocklist.clone();
     let deploy_mode = cfg.website.deploy_mode.clone();
@@ -75,8 +65,8 @@ pub async fn list(
         _ => root_dir,
     };
 
-    let limit = query.limit.unwrap_or(50).clamp(1, 200) as usize;
-    let cursor = query.cursor.unwrap_or_default();
+    let limit = limit.unwrap_or(50).clamp(1, 200) as usize;
+    let cursor = cursor.unwrap_or_default();
 
     // Walk the tree off the async runtime — O(number of files) stats, with NO
     // file reads or hashing. Hashing (a SHA-256 over each file's full contents)
@@ -110,7 +100,7 @@ pub async fn list(
         .await
         .map_err(|e| AppError::Internal(format!("website file hash task panicked: {e}")))?;
 
-    Ok(Json(ListResponse { items, next_cursor }))
+    Ok(ListResponse { items, next_cursor })
 }
 
 /// Per-file metadata gathered by the (blocking) tree walk — everything a listing
@@ -347,16 +337,18 @@ pub(crate) async fn write_file(
 pub const FILES_DELETE_ERR_NOT_FOUND: &str =
     trust_tasks_rs::specs::vtc::website::files::delete::v0_1::error_codes::NOT_FOUND.code;
 
-/// `DELETE /v1/website/files/{*path}`
-pub async fn delete(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    AxumPath(path): AxumPath<String>,
-) -> Result<Json<DeleteResponse>, crate::error::TaskError> {
+/// `vtc/website/files/delete/0.1` — called from `trust_tasks::website_tasks`
+/// with `actor` the verified signer's DID (the audit trail's actor, in place
+/// of the bearer route's hard-coded `"admin"`).
+pub(crate) async fn delete(
+    state: &AppState,
+    actor: &str,
+    path: String,
+) -> Result<DeleteResponse, crate::error::TaskError> {
     use crate::error::TaskError;
     // `vtc/website/files/delete:notFound` — nothing at that path. A hidden
     // path answers the same, as it does on every other website read.
-    let resolved = resolve_or_400(&state, &path).await.map_err(|e| match e {
+    let resolved = resolve_or_400(state, &path).await.map_err(|e| match e {
         e @ AppError::NotFound(_) => TaskError::declared(FILES_DELETE_ERR_NOT_FOUND, e),
         e => TaskError::App(e),
     })?;
@@ -367,16 +359,16 @@ pub async fn delete(
     if let Some(writer) = state.audit_writer.as_ref() {
         let _ = writer
             .write(
-                "admin",
+                actor,
                 None,
                 AuditEvent::WebsiteFileDeleted(WebsiteFileDeletedData { path: path.clone() }),
             )
             .await;
     }
-    Ok(Json(DeleteResponse {
+    Ok(DeleteResponse {
         path,
         deleted: true,
-    }))
+    })
 }
 
 /// `{ path, deleted }` — the shape `vtc/website/files/delete/0.1` publishes.
@@ -442,11 +434,6 @@ async fn resolve_or_400(state: &AppState, path: &str) -> Result<PathBuf, AppErro
         ))),
     }
 }
-
-// Suppress unused-import warning for IntoResponse — used through
-// `Json::into_response` implicitly via the `?` mapping.
-#[allow(dead_code)]
-fn _unused(_x: impl IntoResponse) {}
 
 #[cfg(test)]
 mod tests {

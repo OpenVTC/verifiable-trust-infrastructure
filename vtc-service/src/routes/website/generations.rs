@@ -1,18 +1,15 @@
-//! `GET /v1/website/generations` + `POST /v1/website/rollback/{gen}`
-//! (Phase 5 M5.5.4).
+//! `vtc/website/generations/list/0.1` + `vtc/website/rollback/0.1` — managed
+//! deploy mode's generation history and rollback, on the signed-document
+//! spine (`trust_tasks::website_tasks`; neither has a REST route).
 //!
-//! Both endpoints are managed-mode-only. Live-mode requests
-//! return 400 with `WebsiteNotManagedMode` (encoded as
-//! [`AppError::Validation`] for MVP — see the route-module
-//! comments).
+//! Both are managed-mode-only. Live-mode requests refuse with
+//! `notManaged` (encoded as [`AppError::Validation`] for MVP — see the
+//! module-level history).
 
-use axum::Json;
-use axum::extract::{Path, State};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use vti_common::audit::{AuditEvent, WebsiteGenerationRolledBackData};
-use vti_common::auth::AdminAuth;
 
 use crate::error::{AppError, TaskError};
 use crate::server::AppState;
@@ -30,10 +27,8 @@ pub const ROLLBACK_ERR_NOT_MANAGED: &str =
 pub const ROLLBACK_ERR_GENERATION_NOT_FOUND: &str =
     website_spec::rollback::v0_1::error_codes::GENERATION_NOT_FOUND.code;
 
-pub async fn list(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<GenerationsResponse>, TaskError> {
+/// `vtc/website/generations/list/0.1`, called from `trust_tasks::website_tasks`.
+pub(crate) async fn list(state: &AppState) -> Result<GenerationsResponse, TaskError> {
     let cfg = state.config.read().await;
     let root_dir = cfg
         .website
@@ -47,7 +42,7 @@ pub async fn list(
         return Err(TaskError::declared(
             GENERATIONS_LIST_ERR_NOT_MANAGED,
             AppError::Validation(
-                "GET /v1/website/generations is only available in managed deploy mode".into(),
+                "website/generations/list is only available in managed deploy mode".into(),
             ),
         ));
     }
@@ -56,7 +51,7 @@ pub async fn list(
         .into_iter()
         .map(GenerationRow::from)
         .collect();
-    Ok(Json(GenerationsResponse { generations }))
+    Ok(GenerationsResponse { generations })
 }
 
 /// `{ generations: [...] }` — the shape `vtc/website/generations/list/0.1`
@@ -103,11 +98,14 @@ impl From<GenerationEntry> for GenerationRow {
     }
 }
 
-pub async fn rollback(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(gen_num): Path<u32>,
-) -> Result<Json<RollbackResponse>, TaskError> {
+/// `vtc/website/rollback/0.1`, called from `trust_tasks::website_tasks` with
+/// `actor` the verified signer's DID (the audit trail's actor, in place of
+/// the bearer route's hard-coded `"admin"`).
+pub(crate) async fn rollback(
+    state: &AppState,
+    actor: &str,
+    gen_num: u32,
+) -> Result<RollbackResponse, TaskError> {
     let cfg = state.config.read().await;
     let root_dir = cfg
         .website
@@ -121,7 +119,7 @@ pub async fn rollback(
         return Err(TaskError::declared(
             ROLLBACK_ERR_NOT_MANAGED,
             AppError::Validation(
-                "POST /v1/website/rollback/{gen} is only available in managed deploy mode".into(),
+                "website/rollback is only available in managed deploy mode".into(),
             ),
         ));
     }
@@ -137,7 +135,7 @@ pub async fn rollback(
     {
         let _ = writer
             .write(
-                "admin",
+                actor,
                 None,
                 AuditEvent::WebsiteGenerationRolledBack(WebsiteGenerationRolledBackData {
                     from_generation: from,
@@ -149,11 +147,11 @@ pub async fn rollback(
     // `noop` is the same condition the audit guard above tests: rolling back
     // to the generation already current changes nothing. The handler computed
     // it and discarded it, while the spec has always asked for it.
-    Ok(Json(RollbackResponse {
+    Ok(RollbackResponse {
         generation: gen_num.to_string(),
         current: true,
         noop: from == gen_num,
-    }))
+    })
 }
 
 /// `{ generation, current, noop }` — the shape `vtc/website/rollback/0.1`

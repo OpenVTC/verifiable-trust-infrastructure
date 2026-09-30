@@ -64,6 +64,7 @@ struct Fixture {
     install_signer: Arc<InstallTokenSigner>,
     install_store: InstallTokenStore,
     jwt_keys: Arc<JwtKeys>,
+    recipient: String,
     // Owns the temp data dir + serves `router`'s state; must outlive them.
     _vtc: TestVtc,
 }
@@ -85,6 +86,14 @@ async fn build_fixture() -> Fixture {
     let router = vtc.router.clone();
     let install_store = vtc.state.install_store.clone();
     let jwt_keys = vtc.jwt_keys.clone();
+    let recipient = vtc
+        .state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .expect("the test VTC has a DID");
 
     Fixture {
         state,
@@ -92,8 +101,45 @@ async fn build_fixture() -> Fixture {
         install_signer,
         install_store,
         jwt_keys,
+        recipient,
         _vtc: vtc,
     }
+}
+
+/// Post `payload` as an unsigned `type_uri` document to the shared document
+/// endpoint (`trust_tasks::install_tasks` — install/claim/bootstrap carry no
+/// proof requirement), and return its status and the response document's
+/// `payload`.
+async fn post_document(fix: &Fixture, type_uri: &str, payload: Value) -> (StatusCode, Value) {
+    let doc = json!({
+        "id": format!("urn:uuid:{}", Uuid::new_v4()),
+        "type": type_uri,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "recipient": fix.recipient,
+        "issuer": "did:key:z6MkAnonymousInstallCaller",
+        "payload": payload,
+    });
+    let res = fix
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/trust-tasks")
+                .header("content-type", "application/json")
+                .body(Body::from(doc.to_string()))
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, body["payload"].clone())
 }
 
 /// Step 1 (continued): mint a fresh install token + record it in
@@ -217,13 +263,10 @@ async fn end_to_end_install_flow_phase_0_gate() {
     // ----------------------------------------------------------------
     // Step 2 — claim/start
     // ----------------------------------------------------------------
-    let (status, body) = request(
-        &fix.router,
-        "POST",
-        "/v1/install/claim/start",
+    let (status, body) = post_document(
+        &fix,
         CLAIM_START_TASK,
-        None,
-        Some(json!({ "installToken": install_token })),
+        json!({ "installToken": install_token }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "claim/start: {body}");
@@ -238,17 +281,14 @@ async fn end_to_end_install_flow_phase_0_gate() {
     let mut authenticator = SoftEd25519Authenticator::new();
     let (register_cred, _ed25519_pub) = authenticator.register(&ccr, RP_ORIGIN);
 
-    let (status, body) = request(
-        &fix.router,
-        "POST",
-        "/v1/install/claim/finish",
+    let (status, body) = post_document(
+        &fix,
         CLAIM_FINISH_TASK,
-        None,
-        Some(json!({
+        json!({
             "installToken": install_token,
             "registrationId": registration_id,
             "webauthnResponse": register_cred,
-        })),
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "claim/finish: {body}");
@@ -259,13 +299,10 @@ async fn end_to_end_install_flow_phase_0_gate() {
     // ----------------------------------------------------------------
     // Step 4 — admin/bootstrap
     // ----------------------------------------------------------------
-    let (status, body) = request(
-        &fix.router,
-        "POST",
-        "/v1/admin/bootstrap",
+    let (status, body) = post_document(
+        &fix,
         BOOTSTRAP_TASK,
-        None,
-        Some(json!({ "setupSessionToken": setup_session_token })),
+        json!({ "setupSessionToken": setup_session_token }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "bootstrap: {body}");
@@ -379,18 +416,15 @@ async fn end_to_end_install_flow_phase_0_gate() {
     //           The earlier carve-out global lockdown is gone — the
     //           per-row state machine is the only gate.
     // ----------------------------------------------------------------
-    let (status, body) = request(
-        &fix.router,
-        "POST",
-        "/v1/install/claim/start",
+    let (status, body) = post_document(
+        &fix,
         CLAIM_START_TASK,
-        None,
-        Some(json!({ "installToken": install_token })),
+        json!({ "installToken": install_token }),
     )
     .await;
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::UNPROCESSABLE_ENTITY,
         "second claim/start must be refused (token Consumed): {body}",
     );
 

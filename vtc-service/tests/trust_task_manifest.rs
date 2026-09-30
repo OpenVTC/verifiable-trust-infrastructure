@@ -830,6 +830,14 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/endorsements/list/0.1",
     "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
     "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2",
+    // First-admin onboarding (`trust_tasks::install_tasks`): the dedicated,
+    // `Trust-Task`-header-gated REST mounts at `POST /v1/install/claim/
+    // {start,finish}` and `POST /v1/admin/bootstrap` are gone; the console
+    // now signs these as documents pre-session (the install/setup-session
+    // token is the credential, not a proof).
+    "https://trusttasks.org/spec/vtc/install/claim/start/0.2",
+    "https://trusttasks.org/spec/vtc/install/claim/finish/0.2",
+    "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1",
 ];
 
 #[test]
@@ -863,8 +871,15 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
         "found only {} Trust-Task URIs in the admin UI — the scan path is wrong",
         sent.len()
     );
+    // The floor fell with this batch: pre-session auth, install claim +
+    // admin bootstrap, cross-community recognition, relationships publish
+    // and four website admin verbs moved their `tt`/`ttl` mounts onto the
+    // signed-document spine (`trust_tasks::{auth_tasks,install_tasks,
+    // recognise_tasks,website_tasks}` / `member_tasks`); `auth/challenge` and
+    // `auth/authenticate/0.1` keep theirs (see `routes/mod.rs`'s comment on
+    // those mounts).
     assert!(
-        enforced.len() >= 20,
+        enforced.len() >= 10,
         "found only {} Trust-Task URIs in routes/mod.rs — the scan path is wrong",
         enforced.len()
     );

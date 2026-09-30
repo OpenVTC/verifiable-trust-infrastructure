@@ -111,20 +111,18 @@ async fn unauth_governor_refusal_on_trust_tasks_carries_the_contract() {
     assert_unauth_contract(res).await;
 }
 
-/// The install claim — the brute-force surface the claim secret's entropy is
-/// sized against — is limited by the same governor, and says so.
-#[tokio::test]
-async fn unauth_governor_refusal_on_install_claim_carries_the_contract() {
-    let vtc = TestVtc::builder().build().await;
-    let res = flood_until_refused(
-        &vtc.router,
-        "/v1/install/claim/start",
-        "https://trusttasks.org/spec/vtc/install/claim/start/0.2",
-    )
-    .await;
-    assert_unauth_contract(res).await;
-}
-
+// The install claim (the brute-force surface the claim secret's entropy is
+// sized against) used to have its own dedicated, `Trust-Task`-header-gated
+// REST path, separately pinned here as its own regression check that the
+// route sat on the governed unauth chain. It is a signed document only now
+// (`trust_tasks::install_tasks`), dispatched through the one
+// `unauth_governor_refusal_on_trust_tasks_carries_the_contract` path above —
+// there is no second path left for it to quietly slip off of.
+//
+// `auth/challenge`'s dedicated REST mount stays (`vta_sdk::auth_light` /
+// `cnm vetting`'s bearer-session login still depends on it — see
+// `trust_tasks::auth_tasks`'s module doc), so its own governor regression
+// check stays too.
 #[tokio::test]
 async fn unauth_governor_refusal_on_auth_challenge_carries_the_contract() {
     let vtc = TestVtc::builder().build().await;

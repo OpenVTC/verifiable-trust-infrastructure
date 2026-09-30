@@ -4,8 +4,10 @@
 //!
 //! ## Four endpoints
 //!
-//! 1. `POST /v1/relationships` — publish a self-issued VRC.
-//!    The VTC verifies the credential's data-integrity proof
+//! 1. `vtc/relationships/publish/0.2` — publish a self-issued VRC. Signed
+//!    document only (`trust_tasks::member_tasks`); its bearer-less REST route
+//!    had no caller left once `vtc-client` signed the document instead
+//!    (#1845), and was removed. The VTC verifies the credential's data-integrity proof
 //!    against the key its `issuer` field names, then authorizes
 //!    the *publication* separately: either a publish
 //!    authorization proving the caller controls the issuing key
@@ -47,7 +49,7 @@
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 
 use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
-use crate::routing::rate_limit::{RELATIONSHIPS_LIMITER, RateLimited, RateLimitedBody};
+use crate::routing::rate_limit::{RELATIONSHIPS_LIMITER, RateLimited};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -147,68 +149,13 @@ pub struct PublishResponse {
     pub vrc_digest_multibase: String,
 }
 
-#[utoipa::path(
-    post, path = "/relationships", tag = "relationships",
-    security(("bearer_jwt" = [])),
-    request_body = PublishBody,
-    responses(
-        (status = 201, description = "Relationship (VRC) published", body = PublishResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not the VRC issuer or policy denied"),
-        (status = 429, description = "The signer has used their publish allowance for the current window, or the source address tripped the unauthenticated limiter. Carries `x-rate-limit-source: vtc` and `Retry-After`.", body = RateLimitedBody),
-    ),
-)]
-pub async fn publish(
-    State(state): State<AppState>,
-    Json(doc): Json<TrustTaskDoc<JsonValue>>,
-) -> Result<(StatusCode, Json<TrustTaskDoc<PublishResponse>>), PublishError> {
-    let now = Utc::now();
-    let vtc_did = crate::routes::recognise::vtc_did(&state).await?;
-
-    // 0. Framework validation, before anything task-specific:
-    //    expiry, audience binding, and the spec's own policy
-    //    (SPEC §7.2). A document that fails here is malformed as
-    //    a Trust Task, whatever its payload says.
-    doc.validate_basic(now, &vtc_did)
-        .map_err(|e| AppError::Validation(format!("malformed Trust Task document: {e}")))?;
-
-    // 0b. The document's proof authenticates this request. There is
-    //     no bearer token on this route.
-    //
-    //     A proof is the better answer to "who is calling": it is
-    //     transport-independent, and unlike a token it cannot be
-    //     used by whoever captured it. What a session gave that a
-    //     proof does not is *immediate revocation* — a signed-out
-    //     session stops working on the next request, where a proof
-    //     has no such handle. Publishing is therefore governed by
-    //     ACL membership rather than session state, which is the
-    //     deliberate consequence: a member who has signed out but
-    //     not been removed is still a member, and it is not obvious
-    //     they should be barred from publishing an edge they hold
-    //     the key for. Removing them from the community does stop
-    //     them immediately, because `is_current_member` reads the
-    //     ACL live.
-    let signer_did =
-        vti_common::auth::verify_trust_task_proof_with(&doc, &state.trust_task_vm_resolver())
-            .await
-            .map_err(|e| AppError::Forbidden(format!("document proof: {e}")))?;
-
-    let (status, response) = publish_inner(&state, &doc, &signer_did, now).await?;
-    // A response is itself a Trust Task document: `respond_with` swaps
-    // issuer and recipient, stamps the `#response` type, and carries the
-    // request's `threadId` (or its `id` when it had none) so the two
-    // halves of the exchange correlate — SPEC §4.4.1, §4.9.
-    Ok((
-        status,
-        Json(doc.respond_with(Uuid::new_v4().to_string(), response)),
-    ))
-}
-
-/// Publish the VRC `doc` carries, on behalf of `signer_did` — the operation
-/// behind both doors: the bearer-less REST route above, which verifies the
-/// document's proof itself, and the `vtc/relationships/publish/0.2` Trust Task
-/// on the spine, which has verified it already (`verified_signer`). Everything
-/// from the per-member rate limit onward is here, so the two cannot drift.
+/// Publish the VRC `doc` carries, on behalf of `signer_did` — called only
+/// from the `vtc/relationships/publish/0.2` Trust Task on the spine
+/// (`trust_tasks::member_tasks::handle_relationships_publish`), which has
+/// already verified the document's proof (`verified_signer`). No REST route
+/// calls this any more: the bearer-less REST route that used to verify the
+/// proof itself had no caller once `vtc-client` signed the document instead
+/// (#1845), and was removed.
 ///
 /// `doc` is the whole document rather than its payload because the publish
 /// authorization (`pop`) binds to the document's `id`. Returns `201` for a new
