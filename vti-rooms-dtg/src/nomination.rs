@@ -93,7 +93,7 @@ mod tests {
     use super::*;
     use affinidi_tdk::dids::{DID, KeyType};
     use chrono::{Duration, Utc};
-    use dtg_credentials::DTGCredential;
+    use dtg_credentials::{DTGCredential, IssuerScope};
 
     use crate::signed::DidKeyResolver;
 
@@ -131,6 +131,7 @@ mod tests {
     ) -> String {
         let mut vac = DTGCredential::new_vac(
             issuer.to_string(),
+            IssuerScope::Public,
             subject.to_string(),
             scope.to_string(),
             actions,

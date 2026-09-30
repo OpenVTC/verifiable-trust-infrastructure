@@ -206,14 +206,20 @@ impl MemberIdentity {
 
         let now = Utc::now();
         let expires = now + PRESENTATION_LIFETIME;
+        // `issuerScope: directed`: the member issues the leaf under the DID the room
+        // admitted — one identifier the room and its host recognise, neither
+        // per-counterparty nor a public identity. `None` takes the library's default
+        // attenuation bound under the room's (the parent's less one).
         let mut leaf = root
             .attenuate(
+                dtg_credentials::IssuerScope::Directed,
                 self.did.clone(),
                 vec![action.to_string()],
                 now,
                 // Required since 0.7, and rightly: a presentation that does not expire is a
                 // standing grant, which is the one thing a presentation exists not to be.
                 expires,
+                None,
             )
             .map_err(|e| {
                 format!("cannot narrow your authority for this room to `{action}`: {e}")
