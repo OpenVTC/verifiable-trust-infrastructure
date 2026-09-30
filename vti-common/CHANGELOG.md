@@ -2,6 +2,97 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.30.0...vti-common-v0.31.0) — 2026-09-30
+
+
+### Added
+
+- DTG Credentials v1 — role VACs, vetted/1 and witnessed/1 statements, IDVCs, issuerScope ([#1859](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1859))
+
+* feat(vta-sdk)!: vetting statements are vetted/1 VSCs; role credentials are VACs
+
+  Conform the SDK's vetting artifacts to the DTG Credentials Core
+  Specification (v1 context, `issuerScope`) and the DTG VSC predicate
+  registry, following the regenerated vetting specifications
+  (dtgwg-trust-tasks-tf feat/dtg-vsc-conformance).
+
+  Vetting Statement (vetting/session/0.1): no longer an
+  EndorsementCredential. `sign_statement` builds a StatementCredential with
+  `new_vetted_vsc` under `https://registry.trustoverip.org/dtg/vsc/vetted/1`;
+  the body is `credentialSubject.object.value`, with no `type` member.
+  `taskContext` and `taskDigestMultibase` are both read from the
+  `vetting/session` document, which `StatementDraft::session` now carries
+  in place of `task_context`, and `StatementDraft::issuer_scope` is
+  `directed` or `public` (pairwise is refused by the profile).
+  `verify_statement` parses through `dtg-credentials`, so the v1 context,
+  the one-subtype rule and the profile are checked by the code that issues
+  them; `VerifiedVettingStatement::check_against_session` binds a statement
+  to the session document by id and task digest.
+
+  - `IdentityVettingEndorsement` -> `VettedObjectValue` (no `type`; digests
+    and commitment must be base58btc, as the registry schema requires).
+  - `IDENTITY_VETTING_ENDORSEMENT_TYPE` -> `VETTED_PREDICATE`.
+  - `VerifiedVettingStatement::endorsement()` -> `value()`; new
+    `issuer_scope()`, `task_digest_multibase()`.
+
+  Vetter role credential (vtc/vetting/vetters/grant/0.1, vetting/request/0.1):
+  a community-issued VAC, `issuerScope` public, `authority` { scope:
+  <community DID>, actions: ["role:vetter"], maxAttenuation: 0 }.
+  `eligibility::community_role` -> `community_roles`, returning every
+  `role:<name>` of a VAC the community issued in its own scope with no
+  parent; `verify_eligibility_vp` parses the VAC strictly and refuses a
+  non-public scope or an attenuation.
+
+  - `COMMUNITY_ROLE_ENDORSEMENT_TYPE` removed; new `ROLE_ACTION_PREFIX`,
+    `VETTER_ROLE_ACTION`, `role_action`, `role_of_action`.
+  - `protocols::members::ENDORSEMENT_CREDENTIAL_TYPE` removed; new
+    `AUTHORITY_CREDENTIAL_TYPE` and `STATEMENT_CREDENTIAL_TYPE`.
+  - `VerdictWith::role_vec` -> `role_vac` (wire `roleVac`).
+
+- **vtc-service**: Website content moves as signed Trust Tasks ([#1839](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1839))
+
+* feat(vtc-service)!: the policy log and the community's DID log are signed Trust Tasks
+
+  policy/{list,get,active,upsert,activate}, vtc/policies/test and
+  did-management/did/register are served by the spine
+  (trust_tasks::policy_tasks) on every transport, with the signer's ACL row
+  as authority: Admin for the policy verbs, an unrestricted Admin for the
+  DID log, as the bearer routes' AdminAuth and SuperAdminAuth asked.
+  policy/activate refuses a purpose the revision does not decide. The
+  console signs every policy call.
+
+  Per-type document limits come from the specifications: size.rs reads the
+  codegen'd maxDocumentBytes (schema_index::max_document_bytes_for) and keeps
+  an interim entry only for policy/upsert and did/register, whose specs
+  declare none yet. A raised limit applies to a served type only, and only
+  when the claimed issuer holds a live ACL entry (or is a signing key
+  delegated by one), looked up before verification. The HTTPS cap is the
+  largest served limit; a refusal does not echo an oversized type.
+
+
+
+### Fixed
+
+- **vta-service**: Passkey-only step-up once a subject has enrolled one ([#1854](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1854))
+
+A subject with an enrolled passkey verification method must complete
+  step-up with a WebAuthn assertion only: mint no longer offers the
+  did-signed gate for such an approver, and handle_approve_response
+  refuses a did-signed (or evidence-absent) approve-response for one
+  with noGate, even if a stale client sends it anyway. A subject with no
+  passkey keeps the original did-signed-or-webauthn offer.
+
+  Passkey enrolment also clears any elevation the subject reached
+  without a passkey, so a stepped-up session from before enrolment can't
+  outlive the switch to passkey-only.
+
+  Along the way, wires the webauthn step-up gate's credential-id lookup
+  to the enrolled DID's local WebVH document instead of the
+  still-stubbed generic resolver enumeration, which otherwise made every
+  webauthn step-up approve-response fail closed.
+
+
+
 ## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.29.1...vti-common-v0.30.0) — 2026-09-30
 
 

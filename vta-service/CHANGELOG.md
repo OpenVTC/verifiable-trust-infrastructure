@@ -2,6 +2,87 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.47.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.46.0...vta-service-v0.47.0) — 2026-09-30
+
+
+### Added
+
+- DTG Credentials v1 — role VACs, vetted/1 and witnessed/1 statements, IDVCs, issuerScope ([#1859](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1859))
+
+* feat(vta-sdk)!: vetting statements are vetted/1 VSCs; role credentials are VACs
+
+  Conform the SDK's vetting artifacts to the DTG Credentials Core
+  Specification (v1 context, `issuerScope`) and the DTG VSC predicate
+  registry, following the regenerated vetting specifications
+  (dtgwg-trust-tasks-tf feat/dtg-vsc-conformance).
+
+  Vetting Statement (vetting/session/0.1): no longer an
+  EndorsementCredential. `sign_statement` builds a StatementCredential with
+  `new_vetted_vsc` under `https://registry.trustoverip.org/dtg/vsc/vetted/1`;
+  the body is `credentialSubject.object.value`, with no `type` member.
+  `taskContext` and `taskDigestMultibase` are both read from the
+  `vetting/session` document, which `StatementDraft::session` now carries
+  in place of `task_context`, and `StatementDraft::issuer_scope` is
+  `directed` or `public` (pairwise is refused by the profile).
+  `verify_statement` parses through `dtg-credentials`, so the v1 context,
+  the one-subtype rule and the profile are checked by the code that issues
+  them; `VerifiedVettingStatement::check_against_session` binds a statement
+  to the session document by id and task digest.
+
+  - `IdentityVettingEndorsement` -> `VettedObjectValue` (no `type`; digests
+    and commitment must be base58btc, as the registry schema requires).
+  - `IDENTITY_VETTING_ENDORSEMENT_TYPE` -> `VETTED_PREDICATE`.
+  - `VerifiedVettingStatement::endorsement()` -> `value()`; new
+    `issuer_scope()`, `task_digest_multibase()`.
+
+  Vetter role credential (vtc/vetting/vetters/grant/0.1, vetting/request/0.1):
+  a community-issued VAC, `issuerScope` public, `authority` { scope:
+  <community DID>, actions: ["role:vetter"], maxAttenuation: 0 }.
+  `eligibility::community_role` -> `community_roles`, returning every
+  `role:<name>` of a VAC the community issued in its own scope with no
+  parent; `verify_eligibility_vp` parses the VAC strictly and refuses a
+  non-public scope or an attenuation.
+
+  - `COMMUNITY_ROLE_ENDORSEMENT_TYPE` removed; new `ROLE_ACTION_PREFIX`,
+    `VETTER_ROLE_ACTION`, `role_action`, `role_of_action`.
+  - `protocols::members::ENDORSEMENT_CREDENTIAL_TYPE` removed; new
+    `AUTHORITY_CREDENTIAL_TYPE` and `STATEMENT_CREDENTIAL_TYPE`.
+  - `VerdictWith::role_vec` -> `role_vac` (wire `roleVac`).
+
+
+
+### Fixed
+
+- **vta-service**: Passkey-only step-up once a subject has enrolled one ([#1854](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1854))
+
+A subject with an enrolled passkey verification method must complete
+  step-up with a WebAuthn assertion only: mint no longer offers the
+  did-signed gate for such an approver, and handle_approve_response
+  refuses a did-signed (or evidence-absent) approve-response for one
+  with noGate, even if a stale client sends it anyway. A subject with no
+  passkey keeps the original did-signed-or-webauthn offer.
+
+  Passkey enrolment also clears any elevation the subject reached
+  without a passkey, so a stepped-up session from before enrolment can't
+  outlive the switch to passkey-only.
+
+  Along the way, wires the webauthn step-up gate's credential-id lookup
+  to the enrolled DID's local WebVH document instead of the
+  still-stubbed generic resolver enumeration, which otherwise made every
+  webauthn step-up approve-response fail closed.
+
+- **vta-service, vta-backup**: Build when vta-config's tee feature is unified in ([#1853](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1853))
+
+AppConfig.tee exists whenever vta-config/tee is on, which vta-tee turns
+  on. vta-service and vta-backup gated their AppConfig literals on their
+  own tee feature, so any build that unified vta-tee with a non-tee
+  vta-service or vta-backup failed with a missing field. Always enable
+  vta-config/tee in both (it only adds the field and its types) and set
+  the field unconditionally; TEE behaviour stays behind each crate's own
+  tee feature.
+
+
+
 ## [0.46.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.45.1...vta-service-v0.46.0) — 2026-09-30
 
 
