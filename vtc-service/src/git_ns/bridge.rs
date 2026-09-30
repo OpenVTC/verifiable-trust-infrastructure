@@ -1134,13 +1134,24 @@ fn digest(roles: &[Value]) -> String {
 /// renamed repository all reach the forge the same way: the next set simply
 /// does not contain them.
 pub async fn project_roles(state: &AppState, force: bool) -> Result<(), AppError> {
+    // The projector ticks every few seconds on every VTC, and most bind no
+    // namespace. `linked_accounts` lists and decodes every member record, so
+    // run it only when some namespace could consume it (VTI-47: an idle
+    // community spent ~7% CPU on this scan). A namespace bound between this
+    // check and the locked load below is projected on the next tick.
+    if !Snapshot::load(&state.git_ns.ks)
+        .await?
+        .namespaces
+        .iter()
+        .any(projects_roles)
+    {
+        return Ok(());
+    }
     let accounts = linked_accounts(state).await?;
     let t = now();
     let _guard = store::write_lock().await;
     let snap = Snapshot::load(&state.git_ns.ks).await?;
-    for ns in snap.namespaces.iter().filter(|n| {
-        n.mode == Mode::Bridge && n.state == NamespaceState::Bound && !n.installation_removed
-    }) {
+    for ns in snap.namespaces.iter().filter(|n| projects_roles(n)) {
         let ns_scope = Scope::Namespace(ns.id.clone());
         let ns_res = ns.resource();
 
@@ -1187,6 +1198,12 @@ pub async fn project_roles(state: &AppState, force: bool) -> Result<(), AppError
         }
     }
     Ok(())
+}
+
+/// Whether role projection runs for `ns`: a bridge-mode namespace that is
+/// bound and whose forge installation is still present.
+fn projects_roles(ns: &Namespace) -> bool {
+    ns.mode == Mode::Bridge && ns.state == NamespaceState::Bound && !ns.installation_removed
 }
 
 // ── git-ns/bridge/result/0.1 ────────────────────────────────────────────────
