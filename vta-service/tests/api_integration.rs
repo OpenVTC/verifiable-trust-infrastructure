@@ -1204,7 +1204,7 @@ async fn webvh_dids_update_invalid_document_is_refused() {
 async fn unauth_endpoint_rate_limit_returns_429_after_burst() {
     let (app, _ctx) = TestApp::new().await;
 
-    // `/auth/challenge` is the canonical unauth route the limiter
+    // An anonymous `auth/challenge` document at `/trust-tasks` is the unauth path the limiter
     // protects (CLAUDE.md flags this as a load-bearing surface). Send
     // requests serially — the limiter is per-IP, so even concurrent
     // calls would all hash to the same bucket; serial is simpler.
@@ -1226,7 +1226,7 @@ async fn unauth_endpoint_rate_limit_returns_429_after_burst() {
         }
     }
     let resp = rejection.expect(
-        "expected at least one 429 within 20 sequential POST /auth/challenge calls; \
+        "expected at least one 429 within 20 sequential anonymous auth/challenge documents at /trust-tasks; \
          the auth rate limiter (10 burst) appears to be missing",
     );
     assert_eq!(resp.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vta");
@@ -1237,11 +1237,20 @@ async fn unauth_endpoint_rate_limit_returns_429_after_burst() {
 fn auth_challenge_request(ip: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
-        .uri("/auth/challenge")
+        .uri("/trust-tasks")
         .header("content-type", "application/json")
         .header("x-forwarded-for", ip)
         .body(Body::from(
-            json!({"client_did": "did:key:zTest"}).to_string(),
+            // An anonymous `auth/challenge` document: the pre-session sign-in
+            // step, which the anonymous `/trust-tasks` limiter meters.
+            json!({
+                "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+                "type": vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+                "issuer": "did:key:zTest",
+                "issuedAt": "2026-09-30T00:00:00Z",
+                "payload": { "subject": "did:key:zTest" }
+            })
+            .to_string(),
         ))
         .unwrap()
 }
