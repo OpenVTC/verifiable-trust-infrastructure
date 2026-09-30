@@ -679,8 +679,8 @@ pub(crate) enum BootstrapCommands {
     /// the admin `CredentialBundle` as JSON for services that read one
     /// from a file (e.g. the trust registry's `TR_VTA_CREDENTIAL`).
     ///
-    /// Opening consumes the single-use bootstrap secret, so a bundle can
-    /// only be opened once — decide up front whether you need `--out`.
+    /// Only a successful `--out` write consumes the single-use bootstrap
+    /// secret. Inspecting keeps it, so the bundle can still be installed.
     Open {
         /// Path to the armored bundle file.
         #[arg(long)]

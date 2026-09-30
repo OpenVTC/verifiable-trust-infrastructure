@@ -200,8 +200,14 @@ pub fn open_armored_bundle(
 }
 
 /// [`open_armored_bundle`] without the secret cleanup. Returns the secret's
-/// path so the caller can remove it once it has accepted the bundle.
-fn open_armored_bundle_keeping_secret(
+/// path so the caller can remove it ([`consume_request_secret`]) once it has
+/// installed what the bundle carries.
+///
+/// A command that only *shows* a bundle must use this, not
+/// [`open_armored_bundle`]: the seed is the only key that opens the bundle,
+/// so consuming it when nothing was written destroys the payload — for a
+/// template bundle, the integration's keys (VTI-53).
+pub fn open_armored_bundle_keeping_secret(
     bundle_path: &Path,
     config_dir: &Path,
     expect_digest: Option<&str>,
@@ -275,6 +281,13 @@ fn open_armored_bundle_keeping_secret(
 /// because the bundle id is single-use anyway and a retry needs a fresh
 /// request. Overwrite-then-unlink so the old bytes aren't left sitting on
 /// disk after unlink (see `zero_overwrite_and_remove`).
+///
+/// Call it only once the bundle's contents are installed somewhere: after
+/// this, nothing can open the bundle again.
+pub fn consume_request_secret(path: &Path) {
+    consume_secret(path);
+}
+
 fn consume_secret(path: &Path) {
     if let Err(e) = zero_overwrite_and_remove(path) {
         eprintln!(
@@ -649,6 +662,46 @@ mod tests {
 
         // Secret file is removed after successful open.
         assert!(!created.secret_path.exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// VTI-53: inspecting a bundle must not destroy the only key that opens
+    /// it. Opening with the seed kept leaves it in place, the bundle opens a
+    /// second time, and only `consume_request_secret` removes the seed.
+    #[tokio::test]
+    async fn vti_53_inspecting_a_bundle_keeps_its_seed() {
+        let tmp = std::env::temp_dir().join(format!("vta-test-{}", rand::random::<u32>()));
+        let created = create_bootstrap_request(&tmp, None).unwrap();
+        let recipient =
+            SealedRecipient::from_json_str(&serde_json::to_string(&created.request).unwrap())
+                .unwrap();
+        let payload = SealedPayloadV1::AdminCredential(Box::new(
+            vta_sdk::credentials::CredentialBundle::new(
+                "did:key:z6Mk123",
+                "z1234567890",
+                "did:key:z6MkVTA",
+            ),
+        ));
+        let sealed = seal_for_recipient(&recipient, &payload).await.unwrap();
+        let bundle_path = tmp.join("bundle.armor");
+        fs::write(&bundle_path, sealed.armored.as_bytes()).unwrap();
+
+        for _ in 0..2 {
+            let (_, secret) =
+                open_armored_bundle_keeping_secret(&bundle_path, &tmp, Some(&sealed.digest), false)
+                    .unwrap();
+            assert_eq!(secret, created.secret_path);
+            assert!(secret.exists(), "inspection must keep the seed");
+        }
+
+        consume_request_secret(&created.secret_path);
+        assert!(!created.secret_path.exists());
+        assert!(
+            open_armored_bundle_keeping_secret(&bundle_path, &tmp, Some(&sealed.digest), false)
+                .is_err(),
+            "a consumed seed opens nothing"
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }

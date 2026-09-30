@@ -139,7 +139,10 @@ pub async fn run_open(
     expect_vta_did: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = config::config_dir()?;
-    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+    // The request seed is consumed only once something is written (`--out`).
+    // Opening to look is not installing, and the seed is the only key that
+    // opens the bundle again (VTI-53).
+    let (opened, secret) = vta_cli_common::sealed_consumer::open_armored_bundle_keeping_secret(
         &bundle_path,
         &config_dir,
         expect_digest.as_deref(),
@@ -320,17 +323,23 @@ pub async fn run_open(
         // the bundle must be anchored first: the out-of-band digest, or a
         // signature by `--expect-vta-did` (see `verify_admin_bundle`). This
         // also rejects any payload variant that isn't an admin identity, with
-        // a per-variant message. The bundle is already spent by this point,
-        // so failing here still costs the operator a fresh request cycle —
-        // hence the up-front warning in the `--out` help text.
+        // a per-variant message. The seed survives a refusal here, so a
+        // rejected bundle does not cost the operator a fresh request cycle.
         let bundle = vta_cli_common::sealed_consumer::verify_admin_bundle(
             opened,
             expect_digest.as_deref(),
             expect_vta_did.as_deref(),
         )?;
         write_credential_bundle(&path, &bundle)?;
+        vta_cli_common::sealed_consumer::consume_request_secret(&secret);
         println!();
         println!("Credential written to {} (0600).", path.display());
+    } else {
+        println!();
+        println!(
+            "The request seed was kept at {} so the bundle can still be installed.",
+            secret.display()
+        );
     }
 
     Ok(())

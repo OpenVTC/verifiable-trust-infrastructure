@@ -251,7 +251,9 @@ pub async fn run_open(
     }
 
     let seed_dir = resolve_seed_dir(seed_dir)?;
-    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+    // `open` shows the bundle and installs nothing, so the request seed stays
+    // for whatever does install it (VTI-53).
+    let (opened, secret) = vta_cli_common::sealed_consumer::open_armored_bundle_keeping_secret(
         &bundle_path,
         &seed_dir,
         expect_digest.as_deref(),
@@ -259,6 +261,11 @@ pub async fn run_open(
     )?;
 
     print_opened(&opened, expect_vta_did.as_deref())?;
+    println!();
+    println!(
+        "The request seed was kept at {} so the bundle can still be installed.",
+        secret.display()
+    );
     Ok(())
 }
 
