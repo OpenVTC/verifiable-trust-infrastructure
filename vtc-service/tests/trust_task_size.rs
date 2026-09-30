@@ -104,13 +104,19 @@ async fn a_document_within_the_default_is_not_refused_for_its_size() {
 
 /// The document endpoint's raised cap is its own: the other unauthenticated
 /// routes keep theirs.
+///
+/// `/v1/auth/challenge`'s dedicated REST mount is gone since #1858
+/// (`vta_sdk::auth_light` signs `auth/challenge/0.1` against
+/// `POST /v1/trust-tasks` instead); `/v1/auth/refresh` stays — it also renews
+/// the admin console's cookie session — and sits on the same `Trust-Task`-
+/// gated, governed unauth chain with the same body cap.
 #[tokio::test]
 async fn the_rest_of_the_unauthenticated_chain_keeps_its_cap() {
     let vtc = TestVtc::builder().build().await;
     let (status, _) = post_with(
         &vtc,
-        "/v1/auth/challenge",
-        Some("https://trusttasks.org/spec/auth/challenge/0.1"),
+        "/v1/auth/refresh",
+        Some("https://trusttasks.org/spec/auth/refresh/0.1"),
         document_of(MEMBERS_UPDATE, 64 * KIB + 1),
     )
     .await;

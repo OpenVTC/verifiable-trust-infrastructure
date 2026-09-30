@@ -69,18 +69,8 @@ use crate::recognition::{
 };
 use crate::server::AppState;
 use affinidi_vc::VerifiableCredential;
+use trust_tasks_rs::specs::vtc::auth::recognise::challenge::v0_1::Response as RecogniseChallengeResponse;
 use vta_sdk::protocols::members::{ENDORSEMENT_CREDENTIAL_TYPE, MEMBERSHIP_CREDENTIAL_TYPE};
-
-/// Response body for `vtc/auth/recognise/challenge/0.1`.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct RecogniseChallengeResponse {
-    /// Single-use nonce the holder must bind into the VP's top-level `nonce`.
-    pub nonce: String,
-    /// Unix-epoch seconds at which the challenge expires.
-    pub expires_at: u64,
-}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -135,7 +125,11 @@ pub(crate) async fn recognise_challenge(
     )
     .await?;
     let expires_at = (now + challenge::DEFAULT_CHALLENGE_TTL).timestamp() as u64;
-    Ok(RecogniseChallengeResponse { nonce, expires_at })
+    RecogniseChallengeResponse::builder()
+        .nonce(nonce)
+        .expires_at(expires_at)
+        .try_into()
+        .map_err(|e| AppError::Internal(format!("build recognise-challenge response: {e}")))
 }
 
 /// `vtc/auth/recognise:credentialInvalid` — the VEC or VMC failed proof

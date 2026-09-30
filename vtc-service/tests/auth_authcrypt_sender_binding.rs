@@ -1,10 +1,22 @@
-//! VTC `POST /v1/auth/` and `POST /v1/wallet/auth/` over a DIDComm authcrypt
-//! envelope bind the sender to the key the key agreement actually used.
+//! VTC `POST /v1/wallet/auth/` over a DIDComm authcrypt envelope binds the
+//! sender to the key the key agreement actually used.
 //!
 //! The VTA twin of this file (`vta-service/tests/auth_authcrypt_sender_binding.rs`)
 //! explains the envelope shapes. The ATM is offline: it holds the VTC's
 //! key-agreement secret so it can decrypt, and resolves `did:key` senders
 //! locally.
+//!
+//! # Transport
+//!
+//! `POST /v1/auth/{challenge,,refresh}`'s dedicated, `Trust-Task`-header-gated
+//! REST mounts had no caller left once `vta_sdk::auth_light` switched to
+//! signing DI Trust Tasks against `POST /v1/trust-tasks` (#1858); a DIDComm
+//! authcrypt envelope now only reaches this handler through the header-exempt
+//! `/v1/wallet/auth/*` aliases the VTA-wallet browser extension posts to
+//! (`routes::auth::{challenge,authenticate}`, unchanged). `POST
+//! /v1/auth/refresh` stays — it also renews the admin console's own cookie
+//! session, which has no signed-document equivalent — so the refresh case
+//! still covers both paths.
 
 use reqwest::StatusCode;
 use serde_json::{Value, json};
@@ -155,7 +167,7 @@ async fn assert_refused(
     );
 }
 
-const PREFIXES: [&str; 2] = ["/v1/auth", "/v1/wallet/auth"];
+const PREFIXES: [&str; 1] = ["/v1/wallet/auth"];
 
 /// The forged-sender envelope (attacker key in `skid`, victim in `apu` and
 /// `from`) is refused on both login routes.

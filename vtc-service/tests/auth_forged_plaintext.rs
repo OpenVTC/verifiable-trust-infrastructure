@@ -1,12 +1,16 @@
 //! Regression pin for the forged-sender auth bypass, VTC side.
 //!
-//! The VTC's `POST /v1/auth/` handler shares the vulnerable pattern the VTA
-//! had: it unpacks an incoming DIDComm envelope via `atm.unpack` and derives
-//! the signer from `msg.from`. `atm.unpack` happily parses a **plaintext**
-//! DIDComm message (a JSON with a `type` field but no JWE/JWS layer),
-//! returning an attacker-controlled `from` with `authenticated: false`. If the
-//! handler trusts that `from`, a remote unauthenticated caller can echo the
-//! public challenge with `from: <admin DID>` and be minted an admin token.
+//! The VTC's `POST /v1/wallet/auth/` handler (`routes::auth::authenticate`,
+//! also mounted header-exempt for the VTA-wallet browser extension — see
+//! `auth_authcrypt_sender_binding.rs`'s module doc for why the Trust-Task-
+//! header-gated `/v1/auth/` mount is gone since #1858) shares the vulnerable
+//! pattern the VTA had: it unpacks an incoming DIDComm envelope via
+//! `atm.unpack` and derives the signer from `msg.from`. `atm.unpack` happily
+//! parses a **plaintext** DIDComm message (a JSON with a `type` field but no
+//! JWE/JWS layer), returning an attacker-controlled `from` with
+//! `authenticated: false`. If the handler trusts that `from`, a remote
+//! unauthenticated caller can echo the public challenge with `from: <admin
+//! DID>` and be minted an admin token.
 //!
 //! The fix rejects any envelope that isn't authenticated + encrypted
 //! (legitimate clients authcrypt via `pack_encrypted`). This test wires a real
@@ -51,12 +55,12 @@ async fn plaintext_didcomm_with_forged_sender_is_rejected() {
     // Step 1 — obtain the public challenge + session_id for the target admin
     // DID (no secret involved; the endpoint is pre-auth, ACL-gated).
     let resp = client
-        .post(format!("{base}/v1/auth/challenge"))
+        .post(format!("{base}/v1/wallet/auth/challenge"))
         .header("Trust-Task", CHALLENGE_TASK)
         .json(&json!({ "did": admin_did }))
         .send()
         .await
-        .expect("POST /v1/auth/challenge");
+        .expect("POST /v1/wallet/auth/challenge");
     assert_eq!(
         resp.status(),
         StatusCode::OK,
@@ -83,13 +87,13 @@ async fn plaintext_didcomm_with_forged_sender_is_rejected() {
     });
 
     let resp = client
-        .post(format!("{base}/v1/auth/"))
+        .post(format!("{base}/v1/wallet/auth/"))
         .header("Trust-Task", AUTHENTICATE_TASK)
         .header("content-type", "text/plain")
         .body(forged.to_string())
         .send()
         .await
-        .expect("POST /v1/auth/");
+        .expect("POST /v1/wallet/auth/");
 
     let status = resp.status();
     let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));

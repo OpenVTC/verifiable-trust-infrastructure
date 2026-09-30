@@ -134,7 +134,7 @@ async fn challenge_endpoint_429_from_the_vta_is_rate_limited_and_attributed() {
             assert_eq!(limited_by, vta_sdk::rate_limit::RateLimitSource::Vta);
             assert!(retry_after.is_some(), "Retry-After must survive");
             assert_eq!(limiter.as_deref(), Some("auth"));
-            assert_eq!(url, Some(format!("{}/auth/challenge", server.uri())));
+            assert_eq!(url, Some(format!("{}/trust-tasks", server.uri())));
         }
         other => panic!("expected RateLimited, got {other:?}"),
     }

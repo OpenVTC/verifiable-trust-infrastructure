@@ -248,6 +248,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Discovery ───────────────────────────────────────────────────────
     (trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1, ReadOnly),
     (trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3, ReadOnly),
+    // ── Metrics ─────────────────────────────────────────────────────────
+    // A snapshot read: no durable effect, nothing to dedup.
+    (trust_tasks::TASK_METRICS_SHOW_0_1, ReadOnly),
     // ── Password vault ──────────────────────────────────────────────────
     (trust_tasks::TASK_VAULT_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_VAULT_LIST_0_2, ReadOnly),
@@ -452,6 +455,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
         KeyedSecret,
     ),
+    // A status read over the export window: no durable effect, no secret in
+    // the reply.
+    (trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_1, ReadOnly),
     // ── Consent (DTTE) ──────────────────────────────────────────────────
     // A consent request is addressed by the payload digest it binds, so a
     // repeat lands on the same pending request.

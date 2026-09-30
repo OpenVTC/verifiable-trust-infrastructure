@@ -1440,15 +1440,18 @@ impl VtcClient {
     // Peer identity vetting — the community-admin surface
     // -----------------------------------------------------------------------
 
-    /// Every vetter grant, newest first (`GET /vetting/vetters`). Admin token.
+    /// Every vetter grant, newest first (`vtc/vetting/vetters/grants/list/0.1`).
     ///
     /// Each row carries the member, validity, revocation, whether it is live,
     /// whether an admin or the automatic sweep issued it, and the vetter's
-    /// profile summary.
+    /// profile summary. `GET /v1/vetting/vetters`'s dedicated, admin-bearer
+    /// REST mount had no caller left once `vtc-client` and the admin console
+    /// signed this document instead (tt-tf#689) — see [`Self::vetter_grants`],
+    /// which this wraps for callers still expecting the old response shape.
     pub async fn list_vetter_grants(&self) -> Result<vetting::VetterGrantListResponse, VtcError> {
-        let url = self.api_url(&["vetting", "vetters"])?;
-        let resp = self.untasked(reqwest::Method::GET, url)?.send().await?;
-        Ok(expect_success(resp).await?.json().await?)
+        Ok(vetting::VetterGrantListResponse {
+            vetters: self.vetter_grants().await?,
+        })
     }
 
     /// Install a delivered log for the community's own self-hosted DID
@@ -2096,61 +2099,6 @@ impl VtcClient {
                 .into(),
         ))
     }
-
-    /// `{base}/<segments…>`, each segment percent-encoded.
-    ///
-    /// A DID or an id interpolated into a path with `format!` is a path the
-    /// caller controls: a `/` or `?` in it would address a different route.
-    /// Pushing segments encodes them, so what is sent is what was meant.
-    fn api_url(&self, segments: &[&str]) -> Result<reqwest::Url, VtcError> {
-        if self.base_url.is_empty() {
-            return Err(VtcError::NoRestTransport("this verb"));
-        }
-        let mut url =
-            reqwest::Url::parse(&self.base_url).map_err(|e| VtcError::Url(e.to_string()))?;
-        url.path_segments_mut()
-            .map_err(|()| VtcError::Url(format!("{} cannot be a base URL", self.base_url)))?
-            .pop_if_empty()
-            .extend(segments);
-        Ok(url)
-    }
-
-    /// Start a bearer-authenticated request to an admin route that has **no**
-    /// Trust Task of its own.
-    ///
-    /// The VTC mounts a few admin REST routes without a `Trust-Task` binding
-    /// (the vetter listing, automatic grants, withdrawals, branding) rather
-    /// than borrow a URI that describes something else. Those are the only
-    /// callers of this; every route that does carry a task goes through
-    /// [`tt`](Self::tt).
-    fn untasked(
-        &self,
-        method: reqwest::Method,
-        url: reqwest::Url,
-    ) -> Result<reqwest::RequestBuilder, VtcError> {
-        if self.base_url.is_empty() {
-            return Err(VtcError::NoRestTransport("this verb"));
-        }
-        let token = self.token()?;
-        Ok(self.http.request(method, url).bearer_auth(token))
-    }
-
-    /// Bearer token or [`VtcError::NotAuthenticated`].
-    fn token(&self) -> Result<&str, VtcError> {
-        self.token.as_deref().ok_or(VtcError::NotAuthenticated)
-    }
-}
-
-/// The response when its status is a success, else [`VtcError::Http`] carrying
-/// the status and the body — the body is where the VTC says what was wrong, so
-/// a caller that turns this into operator guidance needs both.
-async fn expect_success(resp: reqwest::Response) -> Result<reqwest::Response, VtcError> {
-    if resp.status().is_success() {
-        return Ok(resp);
-    }
-    let status = resp.status().as_u16();
-    let body = resp.text().await.unwrap_or_default();
-    Err(VtcError::Http { status, body })
 }
 
 /// Read a `#response` document's payload as the verb's result type.
@@ -2243,19 +2191,6 @@ mod tests {
         });
         assert_eq!(api_base_from_did_document(&vta_only), None);
         assert_eq!(api_base_from_did_document(&serde_json::json!({})), None);
-    }
-
-    /// A DID or id placed in a path is one segment, whatever it contains.
-    #[test]
-    fn path_segments_are_encoded_not_interpolated() {
-        let client = VtcClient::anonymous("https://vtc.example.com/v1/", "did:web:vtc");
-        let url = client
-            .api_url(&["vetting", "did:webvh:Qm:x.example/../admin?x", "x"])
-            .unwrap();
-        assert_eq!(
-            url.as_str(),
-            "https://vtc.example.com/v1/vetting/did:webvh:Qm:x.example%2F..%2Fadmin%3Fx/x"
-        );
     }
 
     #[tokio::test]

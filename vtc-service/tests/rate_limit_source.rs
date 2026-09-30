@@ -119,17 +119,20 @@ async fn unauth_governor_refusal_on_trust_tasks_carries_the_contract() {
 // `unauth_governor_refusal_on_trust_tasks_carries_the_contract` path above —
 // there is no second path left for it to quietly slip off of.
 //
-// `auth/challenge`'s dedicated REST mount stays (`vta_sdk::auth_light` /
-// `cnm vetting`'s bearer-session login still depends on it — see
-// `trust_tasks::auth_tasks`'s module doc), so its own governor regression
-// check stays too.
+// `auth/challenge`'s dedicated REST mount is gone since #1858
+// (`vta_sdk::auth_light` signs `auth/challenge/0.1` against
+// `POST /v1/trust-tasks` instead, dispatched through the
+// `unauth_governor_refusal_on_trust_tasks_carries_the_contract` path above).
+// `auth/refresh/0.1`'s mount stays — it also renews the admin console's
+// cookie session, which has no signed-document equivalent — so its own
+// governor regression check moves here instead.
 #[tokio::test]
 async fn unauth_governor_refusal_on_auth_challenge_carries_the_contract() {
     let vtc = TestVtc::builder().build().await;
     let res = flood_until_refused(
         &vtc.router,
-        "/v1/auth/challenge",
-        "https://trusttasks.org/spec/auth/challenge/0.1",
+        "/v1/auth/refresh",
+        "https://trusttasks.org/spec/auth/refresh/0.1",
     )
     .await;
     assert_unauth_contract(res).await;
