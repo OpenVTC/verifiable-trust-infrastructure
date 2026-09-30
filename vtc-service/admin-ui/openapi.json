@@ -14,39 +14,6 @@
     "version": "0.11.58"
   },
   "paths": {
-    "/v1/admin/bootstrap": {
-      "post": {
-        "tags": [
-          "admin"
-        ],
-        "operationId": "bootstrap",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminBootstrapRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "First admin bootstrapped; community installed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BootstrapResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "An admin already exists"
-          }
-        }
-      }
-    },
     "/v1/admin/passkeys": {
       "get": {
         "tags": [
@@ -244,41 +211,6 @@
         ]
       }
     },
-    "/v1/auth/": {
-      "post": {
-        "tags": [
-          "auth"
-        ],
-        "summary": "`POST /v1/auth/` — verify a DIDComm/SIOP/Trust-Task authentication\ndocument and issue access + refresh tokens. Unauthenticated.",
-        "operationId": "authenticate",
-        "requestBody": {
-          "description": "DIDComm envelope, SIOP id_token envelope, or Trust-Task auth document",
-          "content": {
-            "text/plain": {
-              "schema": {
-                "type": "string"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Access + refresh tokens",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AuthenticateResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication failed (bad proof, challenge mismatch, or replay)"
-          }
-        }
-      }
-    },
     "/v1/auth/admin-session": {
       "post": {
         "tags": [
@@ -308,40 +240,6 @@
           },
           "401": {
             "description": "Invalid or expired access token"
-          }
-        }
-      }
-    },
-    "/v1/auth/challenge": {
-      "post": {
-        "tags": [
-          "auth"
-        ],
-        "summary": "Thin dispatcher — every substantive concern (ACL, rate\nlimit, session persistence) lives in the canonical handler.",
-        "operationId": "authChallenge",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChallengeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "DID-auth challenge nonce",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ChallengeResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "ACL gate rejected the subject DID"
           }
         }
       }
@@ -409,61 +307,6 @@
           },
           "401": {
             "description": "WebAuthn not configured, no passkeys registered, or step-up requested without a session"
-          }
-        }
-      }
-    },
-    "/v1/auth/recognise": {
-      "post": {
-        "tags": [
-          "recognise"
-        ],
-        "summary": "`POST /v1/auth/recognise` — cross-community session mint from a\nholder-signed VP embedding a foreign VAC + VMC.",
-        "operationId": "recognise",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RecogniseRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Minted cross-community session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecogniseResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Holder-binding, recognition gate, or role-mapping denied"
-          }
-        }
-      }
-    },
-    "/v1/auth/recognise/challenge": {
-      "post": {
-        "tags": [
-          "recognise"
-        ],
-        "summary": "`POST /v1/auth/recognise/challenge` — issue a single-use, TTL'd nonce the\nholder binds into their recognise VP. Bound to this VTC's DID as the\naudience, so the resulting VP can't be replayed against a different VTC.",
-        "operationId": "recognise_challenge",
-        "responses": {
-          "200": {
-            "description": "Single-use recognition nonce",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecogniseChallengeResponse"
-                }
-              }
-            }
           }
         }
       }
@@ -555,81 +398,6 @@
         ]
       }
     },
-    "/v1/community/branding": {
-      "get": {
-        "tags": [
-          "community"
-        ],
-        "summary": "The community's branding; every member absent when none is set.",
-        "operationId": "communityBrandingShow",
-        "responses": {
-          "200": {
-            "description": "The community's branding",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2CommunityBranding"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "put": {
-        "tags": [
-          "community"
-        ],
-        "summary": "Replace the community's branding. An empty body clears it.",
-        "operationId": "communityBrandingUpdate",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2CommunityBranding"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "The stored branding",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2CommunityBranding"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "A member breaks its bounds"
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "503": {
-            "description": "Audit writer not configured — change refused"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/community/did-qr.svg": {
       "get": {
         "tags": [
@@ -678,91 +446,6 @@
         }
       }
     },
-    "/v1/community/requested-attributes": {
-      "get": {
-        "tags": [
-          "community"
-        ],
-        "summary": "What the community asks applicants to tell it; an empty array when nothing.",
-        "operationId": "communityRequestedAttributesShow",
-        "responses": {
-          "200": {
-            "description": "The manifest's `requestedAttributes`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2RequestedAttribute"
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "put": {
-        "tags": [
-          "community"
-        ],
-        "summary": "Replace what the community asks applicants to tell it. An empty array asks\nfor nothing.",
-        "operationId": "communityRequestedAttributesUpdate",
-        "requestBody": {
-          "description": "Replaces the whole list. `type` is a persona claim-type token such as `name.display`.",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2RequestedAttribute"
-                }
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "What is now requested",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/VtcJoinRequestsManifestV0_2RequestedAttribute"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "An entry breaks its bounds, a type is requested twice, or more than 32 are given"
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "503": {
-            "description": "Audit writer not configured — change refused"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
     "/v1/credential-exchange/request": {
       "post": {
         "tags": [
@@ -800,125 +483,6 @@
             "description": "No live offer for this code"
           }
         }
-      }
-    },
-    "/v1/install/claim/finish": {
-      "post": {
-        "tags": [
-          "install"
-        ],
-        "summary": "`POST /v1/install/claim/finish` — complete the WebAuthn install\nceremony, mint the admin DID + setup-session token. Unauthenticated.",
-        "operationId": "claim_finish",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ClaimFinishRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Admin DID + setup-session token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClaimFinishResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Invalid install token or registration state"
-          }
-        }
-      }
-    },
-    "/v1/install/claim/start": {
-      "post": {
-        "tags": [
-          "install"
-        ],
-        "summary": "`POST /v1/install/claim/start` — begin the WebAuthn install\nceremony for the first admin. Unauthenticated.",
-        "operationId": "claim_start",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ClaimStartRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "WebAuthn creation challenge",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ClaimStartResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Invalid install token or claim secret"
-          }
-        }
-      }
-    },
-    "/v1/relationships": {
-      "post": {
-        "tags": [
-          "relationships"
-        ],
-        "operationId": "publish",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PublishBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Relationship (VRC) published",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PublishResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not the VRC issuer or policy denied"
-          },
-          "429": {
-            "description": "The signer has used their publish allowance for the current window, or the source address tripped the unauthenticated limiter. Carries `x-rate-limit-source: vtc` and `Retry-After`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RateLimitedBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
       }
     },
     "/v1/relationships/{id}/persona": {
@@ -1101,149 +665,6 @@
           }
         }
       }
-    },
-    "/v1/vetting/auto-grant": {
-      "get": {
-        "tags": [
-          "vetting"
-        ],
-        "summary": "The automatic vetter-grant configuration and the last sweep.",
-        "operationId": "vettingAutoGrantShow",
-        "responses": {
-          "200": {
-            "description": "Configuration and last sweep",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AutoGrantStatus"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      },
-      "put": {
-        "tags": [
-          "vetting"
-        ],
-        "summary": "Replace the automatic vetter-grant configuration.",
-        "operationId": "vettingAutoGrantUpdate",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AutoGrantConfig"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "The stored configuration and the last sweep",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AutoGrantStatus"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "A value is out of bounds"
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          },
-          "503": {
-            "description": "Audit writer not configured — change refused"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/vetting/revocations": {
-      "get": {
-        "tags": [
-          "vetting"
-        ],
-        "summary": "Every vetting statement withdrawal notice, with the admissions it touches.",
-        "description": "A notice is matched to the join requests whose recorded vetting facts\ncounted a statement with the notice's issuer and id. Review is not yet a\nworkflow: `needsReview` says an admin should look, and nothing records that\none did.",
-        "operationId": "vettingRevocationList",
-        "responses": {
-          "200": {
-            "description": "Every withdrawal notice, newest first",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VettingRevocationListResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
-    },
-    "/v1/vetting/vetters": {
-      "get": {
-        "tags": [
-          "vetting"
-        ],
-        "summary": "Every vetter grant, newest first.",
-        "operationId": "vettingVetterList",
-        "responses": {
-          "200": {
-            "description": "Every vetter grant, newest first",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VetterGrantListResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
-          },
-          "403": {
-            "description": "Caller is not an admin"
-          }
-        },
-        "security": [
-          {
-            "bearer_jwt": []
-          }
-        ]
-      }
     }
   },
   "components": {
@@ -1389,17 +810,6 @@
           "truncated": {
             "type": "boolean",
             "description": "True when more entries match beyond this page; `cursor` is then\npresent. Required by canonical `acl/list`."
-          }
-        }
-      },
-      "AdminBootstrapRequest": {
-        "type": "object",
-        "required": [
-          "setupSessionToken"
-        ],
-        "properties": {
-          "setupSessionToken": {
-            "type": "string"
           }
         }
       },
@@ -1722,23 +1132,6 @@
           }
         }
       },
-      "BootstrapResponse": {
-        "type": "object",
-        "required": [
-          "adminDid",
-          "eventId"
-        ],
-        "properties": {
-          "adminDid": {
-            "type": "string"
-          },
-          "eventId": {
-            "type": "string",
-            "format": "uuid",
-            "description": "`event_id` of the persisted `CommunityInstalled` audit\nenvelope. The caller can echo this in operator-facing UI so\nthe install URL → bootstrap → audit-row chain is traceable."
-          }
-        }
-      },
       "CeremonyListResponse": {
         "type": "object",
         "description": "`{ ceremonies: […] }` — the shape `vtc/ceremonies/list/0.1` publishes. The\nhandler sent a top-level array until #1094. An array cannot grow a sibling\nmember later without breaking every reader; the envelope is why the spec\nasks for one.",
@@ -1794,113 +1187,6 @@
           },
           "wired": {
             "type": "string"
-          }
-        }
-      },
-      "ChallengeRequest": {
-        "type": "object",
-        "description": "Client sends to `POST /auth/challenge`.\n\nWire shape conforms to `spec/auth/challenge/0.1`: the `did` field\nserialises as `subject` per the canonical payload schema. The Rust\nidentifier stays `did` for consistency with `AuthClaims.did` and\nthe rest of the codebase. `alias = \"did\"` keeps clients that still\nsend the legacy name working through one upgrade cycle.",
-        "required": [
-          "subject"
-        ],
-        "properties": {
-          "subject": {
-            "type": "string"
-          }
-        }
-      },
-      "ChallengeResponse": {
-        "type": "object",
-        "description": "Server responds from `POST /auth/challenge`.\n\nCanonical shape: `{ challenge, sessionId, expiresAt }`.\n`teeAttestation` is a VTA-specific top-level field documented as\na vendor extension — Nitro-Enclave deployments populate it; non-\nTEE deployments omit it.",
-        "required": [
-          "challenge",
-          "sessionId",
-          "expiresAt"
-        ],
-        "properties": {
-          "challenge": {
-            "type": "string",
-            "description": "base64url-encoded one-time nonce."
-          },
-          "expiresAt": {
-            "type": "string",
-            "description": "ISO-8601 timestamp after which the challenge MUST NOT be honored."
-          },
-          "sessionId": {
-            "type": "string",
-            "description": "Opaque session identifier the producer echoes into the matching\n`authenticate` document."
-          },
-          "teeAttestation": {
-            "description": "VTA-specific (optional): TEE attestation evidence bound to the\nchallenge nonce. Present when the VTA is running inside a Nitro\nEnclave; proves the challenge was generated within the trusted\nboundary. Absent for non-TEE deployments."
-          }
-        }
-      },
-      "ClaimFinishRequest": {
-        "type": "object",
-        "required": [
-          "installToken",
-          "registrationId",
-          "webauthnResponse"
-        ],
-        "properties": {
-          "installToken": {
-            "type": "string"
-          },
-          "registrationId": {
-            "type": "string"
-          },
-          "webauthnResponse": {
-            "type": "object"
-          }
-        }
-      },
-      "ClaimFinishResponse": {
-        "type": "object",
-        "required": [
-          "adminDid",
-          "setupSessionToken"
-        ],
-        "properties": {
-          "adminDid": {
-            "type": "string"
-          },
-          "setupSessionToken": {
-            "type": "string"
-          }
-        }
-      },
-      "ClaimStartRequest": {
-        "type": "object",
-        "required": [
-          "installToken"
-        ],
-        "properties": {
-          "claimSecret": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Out-of-band claim code the operator received alongside the\ninstall URL. Required when the persisted token row has a\n`claim_secret_hash`; ignored otherwise so legacy tokens\n(and tests) keep working. The route handler verifies the\ncode against the hash before issuing the WebAuthn challenge\n— a wrong or missing code returns 401 with discriminated\nerror codes (`claim_secret_required` / `claim_secret_invalid`)."
-          },
-          "installToken": {
-            "type": "string"
-          }
-        }
-      },
-      "ClaimStartResponse": {
-        "type": "object",
-        "required": [
-          "registrationId",
-          "options"
-        ],
-        "properties": {
-          "options": {
-            "type": "object",
-            "description": "The WebAuthn `PublicKeyCredentialCreationOptions` payload —\nthe operator's UA passes this to `navigator.credentials.create()`."
-          },
-          "registrationId": {
-            "type": "string",
-            "description": "Echoes the install token's `jti`. Consumer must pass this\nback to `claim/finish` so the server can index the stored\nregistration state."
           }
         }
       },
@@ -2714,6 +2000,35 @@
           }
         }
       },
+      "FileEntry": {
+        "type": "object",
+        "required": [
+          "path",
+          "size",
+          "etag",
+          "modifiedAt"
+        ],
+        "properties": {
+          "etag": {
+            "type": "string",
+            "description": "A SHA-256 over the file's contents. Unspecced upstream and the item is\n`additionalProperties: false`, so this is the half of the entry that\nstill diverges — it is real, useful data (the same hash the `show`\nhandler sends as an `ETag` header, letting a client detect a change\nwithout downloading), so it goes upstream rather than in the bin."
+          },
+          "modifiedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "`format: date-time`, not unix seconds. This was a `u64` until #1095 —\na type mismatch, not merely a format one: the schema says `string`."
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`size`, not `sizeBytes` — the name the item schema requires. It was\n`sizeBytes` until #1095, so the one member a listing exists to report\nwas absent under the name a conforming consumer looks for.",
+            "minimum": 0
+          }
+        }
+      },
       "Finding": {
         "type": "object",
         "description": "One observation about the document-versus-binary relationship.\n\nCarries both a one-line [`summary`](Finding::summary) and the full\n[`message`](Finding::message) because the two consumers need different\nlengths and must not be allowed to drift into different claims: `vtc\nstatus` and the daemon log print the message, the admin console renders the\nsummary as a headline with the message beneath it. Both are written in\n[`findings_against`], once.",
@@ -2757,6 +2072,50 @@
           "noDidcommFallback",
           "servedNotAdvertised"
         ]
+      },
+      "GenerationRow": {
+        "type": "object",
+        "description": "One row of the listing, as the item schema names it.\n\nA wire type distinct from the stored [`GenerationEntry`] because the two\ndisagree on purpose: a generation is a `u32` in storage, where arithmetic\nand ordering want a number, and a string on the wire, where the schema\ntypes it as one. `rollback` has always drawn that line the same way\n(`gen_num.to_string()`); this listing sent the raw `u32` and named\n`current` as `isCurrent` until #1095.",
+        "required": [
+          "generation",
+          "current",
+          "deployedAt",
+          "sizeBytes"
+        ],
+        "properties": {
+          "current": {
+            "type": "boolean"
+          },
+          "deployedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Both went upstream in trustoverip/dtgwg-trust-tasks-tf#262 — a\nrollback target is not much use without knowing when it was deployed\nor how big it is."
+          },
+          "generation": {
+            "type": "string",
+            "description": "Decimal, matching `rollback` — not `gen-N`, which is the directory\nname rather than the label the API has ever used."
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "GenerationsResponse": {
+        "type": "object",
+        "description": "`{ generations: [...] }` — the shape `vtc/website/generations/list/0.1`\npublishes. The handler returned a top-level array until #1059's witness\ncompared it with its schema; the rows always conformed.",
+        "required": [
+          "generations"
+        ],
+        "properties": {
+          "generations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GenerationRow"
+            }
+          }
+        }
       },
       "GitNsAccountList": {
         "type": "object",
@@ -4700,6 +4059,26 @@
           }
         }
       },
+      "ListResponse": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileEntry"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "MemberEnvelope": {
         "type": "object",
         "description": "`{ member: … }` — the shape `vtc/members/show/0.1` publishes. The row was\nreturned bare until #1093; the row itself always conformed.",
@@ -5457,159 +4836,6 @@
               "$ref": "#/components/schemas/TransportStatus"
             },
             "description": "How to reach this community, and whether each route currently works.\n\nEvery protocol is listed, each carrying `advertised` (the DID document\noffers it) and `serviceable` (this VTC can answer on it right now).\nReachable means both.\n\n**The DID document remains authoritative.** This is a *view* of it,\nresolved at request time, published so a visitor or a monitor can\nvalidate connectivity without resolving the DID themselves — never an\nindependent declaration. A client choosing a transport must still match\non the document's service `type`; if the two ever disagree, the document\nwins and this field is the thing that is wrong.\n\nEmpty when the community's own DID could not be resolved — reported as\nunknown rather than as \"advertises nothing\", which would be a lie a\ncaller might act on."
-          }
-        }
-      },
-      "PublishBody": {
-        "type": "object",
-        "required": [
-          "vrc"
-        ],
-        "properties": {
-          "pop": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/Value",
-                "description": "Proof that the caller controls the key behind the VRC's\n`issuer`, when that is not the caller's session DID —\ni.e. whenever the credential is issued under a pairwise\nrelationship DID rather than the member's membership DID.\n\nSee [`verify_publish_authorization`]. Required unless\n`issuer` equals the session DID (the deprecated form)."
-              }
-            ]
-          },
-          "vrc": {
-            "$ref": "#/components/schemas/Value",
-            "description": "The self-issued VRC, in the DTG Credentials wire form:\n`@context` carrying the W3C v2 and DTG contexts, `type`\n`[\"VerifiableCredential\", \"DTGCredential\",\n\"RelationshipCredential\"]`, an `issuer`,\n`credentialSubject.id` naming the subject, and a\ndata-integrity proof. Built by\n`dtg_credentials::DTGCredential::new_vrc`."
-          }
-        }
-      },
-      "PublishResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "issuerDid",
-          "subjectDid",
-          "vrcDigestMultibase"
-        ],
-        "properties": {
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "issuerDid": {
-            "type": "string"
-          },
-          "subjectDid": {
-            "type": "string"
-          },
-          "vrcDigestMultibase": {
-            "type": "string"
-          }
-        }
-      },
-      "RateLimitedBody": {
-        "type": "object",
-        "description": "The JSON body of a rate-limit refusal.",
-        "required": [
-          "error",
-          "limiter",
-          "message",
-          "retryAfterSecs"
-        ],
-        "properties": {
-          "error": {
-            "type": "string",
-            "description": "Always `rate_limited`."
-          },
-          "limiter": {
-            "type": "string",
-            "description": "Which of this service's limiters refused the request."
-          },
-          "message": {
-            "type": "string",
-            "description": "Operator-readable explanation."
-          },
-          "retryAfterSecs": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Seconds to wait before retrying; the same value as `Retry-After`.",
-            "minimum": 0
-          }
-        }
-      },
-      "RecogniseChallengeResponse": {
-        "type": "object",
-        "description": "Response body for `POST /v1/auth/recognise/challenge`.",
-        "required": [
-          "nonce",
-          "expiresAt"
-        ],
-        "properties": {
-          "expiresAt": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Unix-epoch seconds at which the challenge expires.",
-            "minimum": 0
-          },
-          "nonce": {
-            "type": "string",
-            "description": "Single-use nonce the holder must bind into the VP's top-level `nonce`."
-          }
-        }
-      },
-      "RecogniseData": {
-        "type": "object",
-        "required": [
-          "accessToken",
-          "accessExpiresAt",
-          "foreignIssuerDid",
-          "mappedRole"
-        ],
-        "properties": {
-          "accessExpiresAt": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "accessToken": {
-            "type": "string",
-            "description": "Minted JWT. Carries the *mapped local* role, not the\nforeign one."
-          },
-          "foreignIssuerDid": {
-            "type": "string",
-            "description": "Foreign issuer DID, surfaced so the caller can correlate\nthe response with their request (the route doesn't echo\nthe credentials)."
-          },
-          "mappedRole": {
-            "type": "string",
-            "description": "Local role the foreign role mapped to."
-          }
-        }
-      },
-      "RecogniseRequest": {
-        "type": "object",
-        "description": "Request body for `POST /v1/auth/recognise`. The caller supplies a\nholder-signed W3C Verifiable Presentation that embeds the foreign VAC and\nVMC in `verifiableCredential` and binds the challenge `nonce` (top-level)\nplus this VTC's DID as the `domain`. The route verifies the holder proof,\nthe embedded issuer proofs, the status list, and the registry recognition\nitself.",
-        "required": [
-          "presentation"
-        ],
-        "properties": {
-          "presentation": {
-            "$ref": "#/components/schemas/Value",
-            "description": "A W3C Data-Integrity VP, holder-signed with\n`proofPurpose: authentication`."
-          }
-        }
-      },
-      "RecogniseResponse": {
-        "type": "object",
-        "required": [
-          "sessionId",
-          "data"
-        ],
-        "properties": {
-          "data": {
-            "$ref": "#/components/schemas/RecogniseData"
-          },
-          "sessionId": {
-            "type": "string"
           }
         }
       },
@@ -6376,22 +5602,6 @@
         }
       },
       "Value": {},
-      "VetterGrantListResponse": {
-        "type": "object",
-        "description": "`GET /v1/vetting/vetters` response: every grant, newest first.",
-        "required": [
-          "vetters"
-        ],
-        "properties": {
-          "vetters": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/VetterGrantRow"
-            },
-            "description": "The grants."
-          }
-        }
-      },
       "VetterGrantRow": {
         "type": "object",
         "description": "One vetter grant, as `GET /v1/vetting/vetters` reports it.",
@@ -6514,22 +5724,6 @@
             "type": "string",
             "format": "date-time",
             "description": "When the profile was last published."
-          }
-        }
-      },
-      "VettingRevocationListResponse": {
-        "type": "object",
-        "description": "`GET /v1/vetting/revocations` response: every notice, newest first.",
-        "required": [
-          "revocations"
-        ],
-        "properties": {
-          "revocations": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/VettingRevocationRow"
-            },
-            "description": "The notices."
           }
         }
       },
@@ -6776,31 +5970,6 @@
         "description": "Names the `ext` namespaces a consumer MUST understand or refuse, per SPEC.md §4.5.1.\n\nEvery entry MUST be an immediate key of the sibling `ext` object at the same level; an entry naming an absent namespace is non-conforming and the consumer rejects the document with `malformedRequest`. A consumer that does not recognize a namespace named here MUST NOT process the document as though the namespace were absent, and rejects it with `unsupportedExtension` — the exception to the rule that unrecognized namespaces are ignored.\n\nA producer marks a namespace only where the document's meaning depends on it. Marking one that merely carries a hint or an annotation turns every consumer that has not implemented it into a failure where it would otherwise have interoperated. JSON Schema cannot check either of those rules: that an entry names a present namespace is checkable only against the sibling `ext`, and whether a namespace is load-bearing is not a schema question at all. Both are consumer-side checks.",
         "minItems": 1,
         "uniqueItems": true
-      },
-      "VtcJoinRequestsManifestV0_2RequestedAttribute": {
-        "type": "object",
-        "required": [
-          "type"
-        ],
-        "properties": {
-          "purpose": {
-            "type": "string",
-            "description": "Why the community asks, in words shown to the applicant before they disclose.",
-            "maxLength": 256
-          },
-          "required": {
-            "type": "boolean",
-            "description": "False for an attribute the applicant may decline. A submission missing a required one is refused with vtc/join-requests/submit:attributesMissing."
-          },
-          "type": {
-            "type": "string",
-            "description": "A claim-type token from the persona claim-type registry (persona/_shared/0.1/CLAIM-TYPES.md) — `name.display`, `address.country` — or an `x:` extension token.",
-            "maxLength": 128,
-            "minLength": 1,
-            "pattern": "^(x:)?[a-z][A-Za-z0-9]*(\\.[a-z][A-Za-z0-9]*)*$"
-          }
-        },
-        "additionalProperties": false
       },
       "VtcJoinRequestsManifestV0_2Response": {
         "type": "object",
@@ -7887,6 +7056,45 @@
           }
         },
         "additionalProperties": false
+      },
+      "WebsiteFileDeleteResponse": {
+        "type": "object",
+        "description": "`{ path, deleted }` — the shape `vtc/website/files/delete/0.1` publishes.\nThe handler returned 200 with zero bytes until #1059, discarding both\nvalues it had in hand. `deleted` is always true here: the remove is\npropagated as an error above if it fails.",
+        "required": [
+          "path",
+          "deleted"
+        ],
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "WebsiteRollbackResponse": {
+        "type": "object",
+        "description": "`{ generation, current, noop }` — the shape `vtc/website/rollback/0.1`\npublishes. The handler returned 200 with zero bytes until #1059.",
+        "required": [
+          "generation",
+          "current",
+          "noop"
+        ],
+        "properties": {
+          "current": {
+            "type": "boolean",
+            "description": "Whether this generation is current after the swap. The spec types it\nas a boolean, not as a generation number — it answers \"did the\nrollback take\", not \"which one is live\". Always true on success; the\nsymlink swap propagates as an error otherwise."
+          },
+          "generation": {
+            "type": "string",
+            "description": "A string, as the spec types it — the same way the path segment is\ntyped there, while this handler takes it as a `u32`. Rendering it back\nas a string keeps the response conforming; reconciling the two typings\nis a separate question for the spec."
+          },
+          "noop": {
+            "type": "boolean",
+            "description": "True when the target was already current, so nothing moved."
+          }
+        }
       },
       "WhoamiResponse": {
         "type": "object",

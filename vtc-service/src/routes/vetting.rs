@@ -5,102 +5,33 @@
 //!   dispatched as a Trust Task document for an admin on DIDComm or TSP; both
 //!   go through [`crate::vetting::vetters::grant`]. A grant is withdrawn with
 //!   `DELETE /v1/credentials/endorsements/{endorsementId}`.
-//! - `GET /v1/vetting/vetters` — every vetter grant, with its member, validity,
-//!   revocation, origin (automatic or manual) and the vetter's profile summary.
 //! - Resend (`vtc/vetting/vetters/resend/{0.1,0.2}`) is a signed document
 //!   only: `0.1` for a vetter's own grant, `0.2` adding the `memberDid` an
 //!   administrator names to resend on a vetter's behalf. The admin-only REST
 //!   route had no caller once the spine dispatched `0.2` (tt-tf#689) and was
 //!   removed.
-//! - `GET`/`PUT /v1/vetting/auto-grant` — automatic vetter grants: the
-//!   configuration and the last sweep.
-//! - `GET /v1/vetting/revocations` — vetting statement withdrawal notices, with
-//!   the admissions each one touches.
+//! - The grant listing (`vtc/vetting/vetters/grants/list/0.1`), automatic
+//!   vetter grants (`vtc/vetting/auto-grant/{show,update}/0.1`) and vetting
+//!   statement withdrawal notices (`vtc/vetting/revocations/list/0.1`) are
+//!   signed documents only too (`trust_tasks::surface_tasks`) — their
+//!   admin-only bearer REST mounts had no caller left once `vtc-client` and
+//!   the admin console signed them instead.
 //! - `POST /v1/vetting/vetters/list` — the public vetter listing
 //!   (`vtc/vetting/vetters/list/0.1`) for an admin session, so the console can
 //!   show what applicants see. Over `POST /v1/trust-tasks` the listing names its
 //!   caller by the document proof, which a browser session cannot sign.
-//!
-//! The grant listing, auto-grant and revocations routes are admin REST with no
-//! Trust Task of their own, so they are mounted without a binding.
 
 use std::collections::{BTreeSet, HashMap};
 
-use axum::Json;
-use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
-use vta_sdk::protocols::vetting::{AutoGrantConfig, AutoGrantStatus, VetterGrantListResponse};
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use crate::join::{JoinStatus, get_vetting_facts, list_join_requests};
 use crate::members::storage::get_member;
 use crate::server::AppState;
-use crate::vetting::{auto_grant, revocation, vetters};
-
-/// Every vetter grant, newest first.
-#[utoipa::path(
-    get, path = "/vetting/vetters",
-    operation_id = "vettingVetterList", tag = "vetting",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Every vetter grant, newest first", body = VetterGrantListResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_vetters(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<VetterGrantListResponse>, AppError> {
-    Ok(Json(VetterGrantListResponse {
-        vetters: vetters::grant_rows(&state).await?,
-    }))
-}
-
-/// The automatic vetter-grant configuration and the last sweep.
-#[utoipa::path(
-    get, path = "/vetting/auto-grant",
-    operation_id = "vettingAutoGrantShow", tag = "vetting",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Configuration and last sweep", body = AutoGrantStatus),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn get_auto_grant(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<AutoGrantStatus>, AppError> {
-    Ok(Json(auto_grant::status(&state).await?))
-}
-
-/// Replace the automatic vetter-grant configuration.
-#[utoipa::path(
-    put, path = "/vetting/auto-grant",
-    operation_id = "vettingAutoGrantUpdate", tag = "vetting",
-    security(("bearer_jwt" = [])),
-    request_body = AutoGrantConfig,
-    responses(
-        (status = 200, description = "The stored configuration and the last sweep", body = AutoGrantStatus),
-        (status = 400, description = "A value is out of bounds"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 503, description = "Audit writer not configured — change refused"),
-    ),
-)]
-pub async fn put_auto_grant(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<AutoGrantConfig>,
-) -> Result<Json<AutoGrantStatus>, AppError> {
-    Ok(Json(
-        auto_grant::configure(&state, &admin.0.did, &body).await?,
-    ))
-}
+use crate::vetting::revocation;
 
 /// Whether a withdrawn statement touches a standing membership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -135,39 +66,6 @@ pub struct VettingRevocationRow {
     pub affected_join_requests: Vec<Uuid>,
     /// Of their applicants, those who are current members.
     pub affected_members: Vec<String>,
-}
-
-/// `GET /v1/vetting/revocations` response: every notice, newest first.
-#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct VettingRevocationListResponse {
-    /// The notices.
-    pub revocations: Vec<VettingRevocationRow>,
-}
-
-/// Every vetting statement withdrawal notice, with the admissions it touches.
-///
-/// A notice is matched to the join requests whose recorded vetting facts
-/// counted a statement with the notice's issuer and id. Review is not yet a
-/// workflow: `needsReview` says an admin should look, and nothing records that
-/// one did.
-#[utoipa::path(
-    get, path = "/vetting/revocations",
-    operation_id = "vettingRevocationList", tag = "vetting",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Every withdrawal notice, newest first", body = VettingRevocationListResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-    ),
-)]
-pub async fn list_revocations(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<VettingRevocationListResponse>, AppError> {
-    Ok(Json(VettingRevocationListResponse {
-        revocations: revocation_rows(&state).await?,
-    }))
 }
 
 /// Every withdrawal notice, newest first, with the join requests and standing

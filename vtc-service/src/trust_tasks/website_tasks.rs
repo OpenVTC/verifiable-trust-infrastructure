@@ -36,7 +36,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use trust_tasks_rs::specs::vtc::website::{
     deploy::v0_1 as deploy,
-    files::show::v0_1 as files_show,
+    files::{delete::v0_1 as files_delete, list::v0_1 as files_list, show::v0_1 as files_show},
+    generations::list::v0_1 as generations_list,
+    rollback::v0_1 as rollback,
     upload::{
         abort::v0_1 as upload_abort, begin::v0_1 as upload_begin, chunk::v0_1 as upload_chunk,
         commit::v0_1 as upload_commit,
@@ -62,6 +64,10 @@ pub(crate) const COMMIT_TYPE: &str = <upload_commit::Payload as Payload>::TYPE_U
 pub(crate) const ABORT_TYPE: &str = <upload_abort::Payload as Payload>::TYPE_URI;
 pub(crate) const DEPLOY_TYPE: &str = <deploy::Payload as Payload>::TYPE_URI;
 pub(crate) const FILES_SHOW_TYPE: &str = <files_show::Payload as Payload>::TYPE_URI;
+pub(crate) const FILES_LIST_TYPE: &str = <files_list::Payload as Payload>::TYPE_URI;
+pub(crate) const FILES_DELETE_TYPE: &str = <files_delete::Payload as Payload>::TYPE_URI;
+pub(crate) const GENERATIONS_LIST_TYPE: &str = <generations_list::Payload as Payload>::TYPE_URI;
+pub(crate) const ROLLBACK_TYPE: &str = <rollback::Payload as Payload>::TYPE_URI;
 
 /// Exactly what [`dispatch`] routes.
 pub(crate) const URIS: &[&str] = &[
@@ -71,6 +77,10 @@ pub(crate) const URIS: &[&str] = &[
     ABORT_TYPE,
     DEPLOY_TYPE,
     FILES_SHOW_TYPE,
+    FILES_LIST_TYPE,
+    FILES_DELETE_TYPE,
+    GENERATIONS_LIST_TYPE,
+    ROLLBACK_TYPE,
 ];
 
 /// The largest chunk an upload may use, and the largest range a read returns.
@@ -106,6 +116,11 @@ pub(crate) const SHOW_ERR_PATH_REFUSED: &str = files_show::error_codes::PATH_REF
 pub(crate) const SHOW_ERR_CHANGED: &str = files_show::error_codes::CHANGED.code;
 pub(crate) const SHOW_ERR_RANGE_OUT_OF_BOUNDS: &str =
     files_show::error_codes::RANGE_OUT_OF_BOUNDS.code;
+// `files/delete`'s, `generations/list`'s and `rollback`'s declared codes are
+// used where they are raised — inside `routes::website::{files::delete,
+// generations::{list,rollback}}` — and not read again here, so they stay
+// `pub const` there rather than growing a second binding this module never
+// reads.
 
 pub(super) async fn dispatch(
     state: &AppState,
@@ -124,6 +139,10 @@ pub(super) async fn dispatch(
         ABORT_TYPE => handle_abort(state, &actor, doc).await,
         DEPLOY_TYPE => handle_deploy(state, &actor, doc).await,
         FILES_SHOW_TYPE => handle_files_show(state, doc).await,
+        FILES_LIST_TYPE => handle_files_list(state, doc).await,
+        FILES_DELETE_TYPE => handle_files_delete(state, &actor, doc).await,
+        GENERATIONS_LIST_TYPE => handle_generations_list(state, doc).await,
+        ROLLBACK_TYPE => handle_rollback(state, &actor, doc).await,
         _ => return None,
     })
 }
@@ -773,4 +792,77 @@ async fn handle_files_show(state: &AppState, doc: TrustTask<Value>) -> TrustTask
             "complete": end == size,
         }),
     )
+}
+
+// ─── files/list, files/delete, generations/list, rollback ───────────────
+
+/// `vtc/website/files/list/0.1` — the paginated listing
+/// `GET /v1/website/files` used to serve.
+async fn handle_files_list(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    let payload: files_list::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let cursor = payload.cursor.map(|c| c.to_string());
+    let limit = payload.limit.map(|n| n.get() as u32);
+    match crate::routes::website::files::list(state, cursor, limit).await {
+        Ok(resp) => success_response(&doc, resp),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/website/files/delete/0.1` — the delete `DELETE /v1/website/files/
+/// {*path}` used to serve.
+async fn handle_files_delete(
+    state: &AppState,
+    actor: &str,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let payload: files_delete::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let path = payload.path.to_string();
+    match crate::routes::website::files::delete(state, actor, path).await {
+        Ok(resp) => success_response(&doc, resp),
+        Err(e) => super::helpers::task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/website/generations/list/0.1` — the managed-mode generation history
+/// `GET /v1/website/generations` used to serve.
+async fn handle_generations_list(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    if let Err(reject) = parse_spec_payload::<generations_list::Payload>(&doc) {
+        return reject;
+    }
+    match crate::routes::website::generations::list(state).await {
+        Ok(resp) => success_response(&doc, resp),
+        Err(e) => super::helpers::task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/website/rollback/0.1` — the managed-mode rollback
+/// `POST /v1/website/rollback/{gen_num}` used to serve. `generation` is a
+/// decimal string, matching the wire convention `routes::website::
+/// generations` already established (not `gen-N`, the directory name).
+async fn handle_rollback(state: &AppState, actor: &str, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    let payload: rollback::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let Ok(gen_num) = payload.generation.parse::<u32>() else {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: format!(
+                    "`{}` is not a generation number",
+                    payload.generation.as_str()
+                ),
+            },
+        );
+    };
+    match crate::routes::website::generations::rollback(state, actor, gen_num).await {
+        Ok(resp) => success_response(&doc, resp),
+        Err(e) => super::helpers::task_error_to_reject(&doc, &e),
+    }
 }

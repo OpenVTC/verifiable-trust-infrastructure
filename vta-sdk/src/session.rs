@@ -4,14 +4,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 #[cfg(feature = "tsp")]
 use affinidi_messaging_sdk::protocols::tsp::InboundTsp;
-use affinidi_tdk::didcomm::Message;
-use affinidi_tdk::secrets_resolver::SecretsResolver;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use tracing::{debug, warn};
 
 use crate::credentials::CredentialBundle;
-use crate::protocols::auth::{AuthenticateResponse, ChallengeRequest, ChallengeResponse};
 
 /// Test-support types (public `SessionBackend` mock for consumers'
 /// integration tests). Compiled for unit tests and whenever the
@@ -1675,176 +1672,37 @@ fn url_origin(base_url: &str) -> Option<String> {
 
 // ── Challenge-response auth ─────────────────────────────────────────
 
-/// Perform DIDComm challenge-response authentication against a VTA.
+/// Perform challenge-response authentication against a VTA.
+///
+/// Every step (`auth/challenge`, the DI-signed `auth/authenticate/0.2`) is a
+/// Trust-Task document POSTed to `/trust-tasks` — see
+/// `crate::auth_light::challenge_response_light`, which this delegates to.
+///
+/// This used to pack an authcrypt DIDComm envelope and POST the packed bytes
+/// to the now-retired `/auth/` REST route, whose server-side handler unpacked
+/// it and took the authcrypt sender as the authenticated identity. The
+/// pre-session auth family's document's own Data-Integrity proof is the
+/// authentication now, on every transport alike, so that packing step no
+/// longer has anywhere to land — `crate::did_key::secrets_from_did_key`
+/// already required `client_did` to be a `did:key`, exactly what
+/// `challenge_response_light` requires, so nothing here narrowed further.
 pub async fn challenge_response(
     base_url: &str,
     client_did: &str,
     private_key_multibase: &str,
     vta_did: &str,
 ) -> Result<TokenResult, Box<dyn std::error::Error>> {
-    debug!(
+    let result = crate::auth_light::challenge_response_light(
+        &crate::http::rest_client(),
         base_url,
-        client_did, vta_did, "starting challenge-response auth"
-    );
-    let http = crate::http::rest_client();
-
-    // Step 1: Request challenge
-    let challenge_url = format!("{base_url}/auth/challenge");
-    debug!(url = %challenge_url, did = client_did, "requesting challenge");
-    let challenge_resp = http
-        .post(&challenge_url)
-        // Trust-Task URL header, the same one the `auth_light` / `auth_rest`
-        // REST paths send. A VTC gates every route on it (400 without); the
-        // VTA ignores it. This function addresses a VTA, though — a VTC cannot
-        // open an envelope encrypted to the VTA's DID, which is why `cnm`'s VTC
-        // commands no longer come through here.
-        .header("Trust-Task", crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1)
-        .json(&ChallengeRequest {
-            did: client_did.to_string(),
-        })
-        .send()
-        .await
-        .map_err(|e| format!("could not connect to VTA at {challenge_url}: {e}"))?;
-
-    if !challenge_resp.status().is_success() {
-        let status = challenge_resp.status();
-        let headers = challenge_resp.headers().clone();
-        let body = challenge_resp.text().await.unwrap_or_default();
-        // A rate limit stays typed: as a string it reads as an auth failure.
-        if let Some(e) =
-            crate::error::VtaError::rate_limited_from_http(status, &headers, &body, &challenge_url)
-        {
-            return Err(e.into());
-        }
-        return Err(format!("challenge request failed ({status}): {body}").into());
-    }
-
-    let challenge_text = challenge_resp
-        .text()
-        .await
-        .map_err(|e| format!("failed to read challenge response from VTA: {e}"))?;
-    let challenge: ChallengeResponse = serde_json::from_str(&challenge_text).map_err(|e| {
-        format!("unexpected response from VTA at {challenge_url} (is this a VTA server?): {e}")
-    })?;
-    debug!(
-        session_id = %challenge.session_id,
-        challenge = %challenge.challenge,
-        "challenge received"
-    );
-
-    // Step 2: Build DIDComm message
-    debug!("initializing DID resolver and ATM for message packing");
-
-    use affinidi_tdk::common::TDKSharedState;
-    use affinidi_tdk::messaging::ATM;
-    use affinidi_tdk::messaging::config::ATMConfig;
-    use std::sync::Arc;
-
-    // On the crate's shared resolver: the TDK's own default is `PublicOnly`
-    // with no opt-in, which refused a VTA DID on a loopback host even with
-    // `VTA_ALLOW_PRIVATE_ENDPOINTS` set. Sharing also lets the VTA DID that
-    // `resolve_vta_endpoint` fetched a moment ago answer from cache.
-    let tdk = TDKSharedState::new(crate::session_hub::shared_tdk_config().await?)
-        .await
-        .map_err(|e| format!("TDK init failed: {e}"))?;
-
-    // Build DIDComm secrets from the private key
-    let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
-    let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
-    debug!(signing_id = %secrets.signing.id, ka_id = %secrets.key_agreement.id, "inserting DIDComm secrets");
-    tdk.secrets_resolver().insert(secrets.signing).await;
-    tdk.secrets_resolver().insert(secrets.key_agreement).await;
-
-    let atm = ATM::new(
-        ATMConfig::builder()
-            .build()
-            .map_err(|e| format!("ATM config build failed: {e}"))?,
-        Arc::new(tdk),
+        client_did,
+        private_key_multibase,
+        vta_did,
     )
-    .await
-    .map_err(|e| format!("ATM init failed: {e}"))?;
-
-    // Build the authenticate message
-    debug!(
-        from = client_did,
-        to = vta_did,
-        "building DIDComm authenticate message"
-    );
-    let msg = Message::build(
-        uuid::Uuid::new_v4().to_string(),
-        crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1.to_string(),
-        serde_json::json!({
-            "challenge": challenge.challenge,
-            "session_id": challenge.session_id,
-        }),
-    )
-    .from(client_did.to_string())
-    .to(vta_did.to_string())
-    .finalize();
-
-    // Pack the message (encrypted), then shut the ATM down. It is used only to
-    // pack — there is no profile and no socket — but `ATM::new` still starts a
-    // deletion-handler task, and this function is called on every login and
-    // every re-authentication. Returning early through `?` used to leak one of
-    // those tasks per call. Stringify first: the boxed error is not `Send` and
-    // must not be held across the shutdown await.
-    //
-    // A REST-only consumer should prefer `auth_light::challenge_response_light`,
-    // which needs no ATM at all.
-    let packed = atm
-        .pack_encrypted(&msg, vta_did, Some(client_did), None)
-        .await
-        .map(|(packed, _metadata)| packed)
-        .map_err(|e| format!("DIDComm pack failed: {e}"));
-    atm.graceful_shutdown().await;
-    let packed = packed?;
-
-    debug!(packed_len = packed.len(), "message packed");
-
-    // Step 3: Authenticate
-    let auth_url = format!("{base_url}/auth/");
-    debug!(url = %auth_url, "sending packed message");
-    let auth_resp = http
-        .post(&auth_url)
-        .header("content-type", "text/plain")
-        .header("Trust-Task", crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1)
-        .body(packed)
-        .send()
-        .await
-        .map_err(|e| format!("could not connect to VTA at {auth_url}: {e}"))?;
-
-    let status = auth_resp.status();
-    debug!(status = %status, "auth response received");
-
-    if !status.is_success() {
-        let headers = auth_resp.headers().clone();
-        let body = auth_resp.text().await.unwrap_or_default();
-        if let Some(e) =
-            crate::error::VtaError::rate_limited_from_http(status, &headers, &body, &auth_url)
-        {
-            return Err(e.into());
-        }
-        return Err(format!("authentication failed ({status}): {body}").into());
-    }
-
-    let auth_text = auth_resp
-        .text()
-        .await
-        .map_err(|e| format!("failed to read auth response from VTA: {e}"))?;
-    let auth_data: AuthenticateResponse = serde_json::from_str(&auth_text).map_err(|e| {
-        format!("unexpected response from VTA at {auth_url} (is this a VTA server?): {e}")
-    })?;
-    let access_expires_at = auth_data.access_expires_at_epoch().ok_or_else(|| {
-        format!(
-            "VTA returned unparseable session.issuedAt: '{}'",
-            auth_data.session.issued_at
-        )
-    })?;
-    debug!(expires_at = access_expires_at, "authentication successful");
-
+    .await?;
     Ok(TokenResult {
-        access_token: auth_data.tokens.access_token,
-        access_expires_at,
+        access_token: result.access_token,
+        access_expires_at: result.access_expires_at,
     })
 }
 

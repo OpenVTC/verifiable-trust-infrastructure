@@ -543,9 +543,13 @@ async fn member_credentials_round_trips_and_types_not_found() {
 /// signed binding as documents signed by that key — not over its bearer
 /// session (#1641).
 ///
-/// Proved by ending every session after connecting: a bearer-only verb is then
-/// refused, and the signed verbs still work, because the VTC authorizes them
-/// from the signer's ACL entry and never reads a token.
+/// Proved by ending every session after connecting and driving a signed verb
+/// anyway: it still works, because the VTC authorizes it from the signer's
+/// ACL entry and never reads a token. `list_vetter_grants` used to be the last
+/// verb this client sent over the bearer session; #1858 retired its REST
+/// mount (`GET /v1/vetting/vetters`) in favour of the signed
+/// `vtc/vetting/vetters/grants/list/0.1` document, so there is no bearer-only
+/// verb left in this client to contrast it against.
 #[tokio::test]
 async fn signed_admin_verbs_do_not_ride_the_bearer_session() {
     let mock = audited_vtc().await;
@@ -596,14 +600,14 @@ async fn signed_admin_verbs_do_not_ride_the_bearer_session() {
         state.sessions_ks.remove(key).await.expect("end session");
     }
 
-    // `list_members` is itself a signed document now (#1835), so it cannot
-    // stand in for "a bearer-only verb" any more; `list_vetter_grants` still
-    // rides the bearer session (no Trust Task serves it yet).
-    assert!(
-        client.list_vetter_grants().await.is_err(),
-        "a bearer-only verb must be refused once the session is gone, or this \
-         test proves nothing about the signed ones"
-    );
+    // Both `list_members` (#1835) and `list_vetter_grants` (#1858) are signed
+    // documents now, so a call that would have failed on a bearer-only verb
+    // instead confirms the property this test is about: it still succeeds
+    // with every session gone.
+    client
+        .list_vetter_grants()
+        .await
+        .expect("a signed verb must not depend on the bearer session");
 
     client
         .update_member_extensions(&member_did, serde_json::json!({ "fleet_index": 3 }))

@@ -101,12 +101,13 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     (trust_tasks::TASK_AUTH_CHALLENGE_0_1, RetrySafe),
     // Consumes the challenge, mints a session. A repeat fails deterministically
     // (challenge spent) or leaves a spare expiring session.
-    (trust_tasks::TASK_AUTH_AUTHENTICATE_0_1, RetrySafe),
+    (trust_tasks::TASK_AUTH_AUTHENTICATE_0_2, RetrySafe),
+    (trust_tasks::TASK_AUTH_AUTHENTICATE_0_3, RetrySafe),
     // Refresh-token *rotation*: the old token is consumed as the new one is
     // issued, so a lost reply leaves the caller holding a spent token and no
     // replacement — locked out until re-auth. The one auth task that genuinely
     // needs the key.
-    (trust_tasks::TASK_AUTH_REFRESH_0_1, Keyed),
+    (trust_tasks::TASK_AUTH_REFRESH_0_2, Keyed),
     // Converges: a repeat finds the sessions already gone and answers
     // `revokedCount: 0`, which the spec makes a success.
     (trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2, RetrySafe),
@@ -247,6 +248,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // ── Discovery ───────────────────────────────────────────────────────
     (trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_1, ReadOnly),
     (trust_tasks::TASK_TRUST_TASK_DISCOVERY_0_3, ReadOnly),
+    // ── Metrics ─────────────────────────────────────────────────────────
+    // A snapshot read: no durable effect, nothing to dedup.
+    (trust_tasks::TASK_METRICS_SHOW_0_1, ReadOnly),
     // ── Password vault ──────────────────────────────────────────────────
     (trust_tasks::TASK_VAULT_LIST_0_1, ReadOnly),
     (trust_tasks::TASK_VAULT_LIST_0_2, ReadOnly),
@@ -451,6 +455,9 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
         trust_tasks::TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
         KeyedSecret,
     ),
+    // A status read over the export window: no durable effect, no secret in
+    // the reply.
+    (trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_1, ReadOnly),
     // ── Consent (DTTE) ──────────────────────────────────────────────────
     // A consent request is addressed by the payload digest it binds, so a
     // repeat lands on the same pending request.

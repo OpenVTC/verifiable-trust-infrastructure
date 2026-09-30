@@ -1,4 +1,4 @@
-//! Integration test for **refresh via an `auth/refresh/0.1` Trust Task over
+//! Integration test for **refresh via an `auth/refresh/0.2` Trust Task over
 //! REST** — the transport-agnostic refresh path that completes the mobile REST
 //! auth loop (login lands in `authenticate_trust_task.rs`).
 //!
@@ -61,7 +61,7 @@ async fn seed_authenticated_session(
 fn refresh_doc(refresh_token: &str) -> Vec<u8> {
     json!({
         "id": "urn:uuid:refresh-itest-1",
-        "type": "https://trusttasks.org/spec/auth/refresh/0.1",
+        "type": "https://trusttasks.org/spec/auth/refresh/0.2",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": "did:key:z6MkRefresher",
         "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
@@ -98,7 +98,7 @@ async fn trust_task_refresh_rotates_tokens() {
     seed_admin_acl(&ctx, did).await;
     seed_authenticated_session(&ctx, did, old_token).await;
 
-    let (status, body) = send(&router, post("/auth/refresh", refresh_doc(old_token))).await;
+    let (status, body) = send(&router, post("/trust-tasks", refresh_doc(old_token))).await;
 
     assert_eq!(
         status,
@@ -109,7 +109,7 @@ async fn trust_task_refresh_rotates_tokens() {
     assert!(
         body["type"]
             .as_str()
-            .is_some_and(|t| t.ends_with("/auth/refresh/0.1#response")),
+            .is_some_and(|t| t.ends_with("/auth/refresh/0.2#response")),
         "response is a TT #response doc: {body}"
     );
     assert_eq!(body["payload"]["session"]["subject"], did, "{body}");
@@ -135,7 +135,7 @@ async fn trust_task_refresh_rotates_tokens() {
     // chain has moved on, is reuse — see
     // `refresh_token_reuse_is_detected_and_revokes_the_whole_session`.
     let (replay_status, replay_body) =
-        send(&router, post("/auth/refresh", refresh_doc(old_token))).await;
+        send(&router, post("/trust-tasks", refresh_doc(old_token))).await;
     assert_eq!(
         replay_status,
         StatusCode::OK,
@@ -155,12 +155,16 @@ async fn trust_task_refresh_rejects_unknown_token() {
     let (router, _ctx) = build_test_app().await;
     let (status, _) = send(
         &router,
-        post("/auth/refresh", refresh_doc("refresh-tok-never-issued")),
+        post("/trust-tasks", refresh_doc("refresh-tok-never-issued")),
     )
     .await;
+    // The trust-task transport maps every authentication/authorization
+    // refusal to `permissionDenied` (HTTP 403) rather than 401 — deliberately,
+    // so an unauthenticated prober gets no 401-vs-403 oracle (see
+    // `trust-tasks-https::status_for_code`).
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
         "an unknown refresh token must be rejected"
     );
 }
@@ -196,27 +200,27 @@ async fn refresh_token_reuse_is_detected_and_revokes_the_whole_session() {
     seed_authenticated_session(&ctx, did, stolen).await;
 
     // The victim refreshes twice, so the chain moves past the stolen token.
-    let (s1, b1) = send(&router, post("/auth/refresh", refresh_doc(stolen))).await;
+    let (s1, b1) = send(&router, post("/trust-tasks", refresh_doc(stolen))).await;
     assert_eq!(s1, StatusCode::OK, "{b1}");
     let second = rotated_token(&b1);
 
-    let (s2, b2) = send(&router, post("/auth/refresh", refresh_doc(&second))).await;
+    let (s2, b2) = send(&router, post("/trust-tasks", refresh_doc(&second))).await;
     assert_eq!(s2, StatusCode::OK, "{b2}");
     let live = rotated_token(&b2);
 
     // The attacker replays the token they stole earlier.
-    let (replay, _) = send(&router, post("/auth/refresh", refresh_doc(stolen))).await;
+    let (replay, _) = send(&router, post("/trust-tasks", refresh_doc(stolen))).await;
     assert_eq!(
         replay,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
         "a replayed refresh token must be refused",
     );
 
     // …and that must have taken the session down with it.
-    let (after, _) = send(&router, post("/auth/refresh", refresh_doc(&live))).await;
+    let (after, _) = send(&router, post("/trust-tasks", refresh_doc(&live))).await;
     assert_eq!(
         after,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
         "detection must revoke the session, killing the still-live token too",
     );
 }
@@ -235,11 +239,11 @@ async fn an_immediate_refresh_retry_replays_the_same_tokens_and_keeps_the_sessio
     seed_authenticated_session(&ctx, did, token).await;
 
     // The response to this one is "lost in flight".
-    let (s1, lost) = send(&router, post("/auth/refresh", refresh_doc(token))).await;
+    let (s1, lost) = send(&router, post("/trust-tasks", refresh_doc(token))).await;
     assert_eq!(s1, StatusCode::OK, "{lost}");
 
     // The client retries with the same (only) token it holds.
-    let (s2, retried) = send(&router, post("/auth/refresh", refresh_doc(token))).await;
+    let (s2, retried) = send(&router, post("/trust-tasks", refresh_doc(token))).await;
     assert_eq!(
         s2,
         StatusCode::OK,
@@ -254,7 +258,7 @@ async fn an_immediate_refresh_retry_replays_the_same_tokens_and_keeps_the_sessio
     // The session is intact and the replayed token still works.
     let (s3, b3) = send(
         &router,
-        post("/auth/refresh", refresh_doc(&rotated_token(&retried))),
+        post("/trust-tasks", refresh_doc(&rotated_token(&retried))),
     )
     .await;
     assert_eq!(s3, StatusCode::OK, "the client stays signed in: {b3}");
@@ -272,12 +276,12 @@ async fn an_unknown_token_does_not_revoke_a_live_session() {
 
     let (status, _) = send(
         &router,
-        post("/auth/refresh", refresh_doc("refresh-tok-never-issued")),
+        post("/trust-tasks", refresh_doc("refresh-tok-never-issued")),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::FORBIDDEN);
 
-    let (after, body) = send(&router, post("/auth/refresh", refresh_doc(token))).await;
+    let (after, body) = send(&router, post("/trust-tasks", refresh_doc(token))).await;
     assert_eq!(
         after,
         StatusCode::OK,

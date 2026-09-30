@@ -3134,6 +3134,34 @@ fn table() -> Vec<(&'static str, Conformance)> {
         ));
     }
 
+    t.push((
+        uris::TASK_METRICS_SHOW_0_1,
+        checked!(
+            specs::vta::metrics::show::v0_1::Payload,
+            specs::vta::metrics::show::v0_1::Response,
+            json!({}),
+            json!({
+                "snapshot": {
+                    "takenAt": "2026-09-30T12:00:00Z",
+                    "counters": [],
+                    "gauges": [],
+                    "histograms": []
+                }
+            })
+        ),
+    ));
+    // Dispatched only with `tee`, like the export it reports on.
+    #[cfg(feature = "tee")]
+    t.push((
+        uris::TASK_ATTESTATION_MNEMONIC_STATUS_0_1,
+        checked!(
+            specs::vta::attestation::mnemonic_status::v0_1::Payload,
+            specs::vta::attestation::mnemonic_status::v0_1::Response,
+            json!({}),
+            json!({ "windowActive": false, "windowRemainingSecs": 0, "alreadyExported": false, "entropyAvailable": true })
+        ),
+    ));
+
     // ─── vta/attestation/{status,report,config-report} (public, tee-gated) ─
     //
     // The handlers build each response through the generated type; these pin

@@ -1,28 +1,18 @@
-//! How this service retires things, in two halves.
+//! How this service retires things.
 //!
-//! **Legacy REST routes** that a canonical `/api/trust-tasks` Trust-Task now
-//! supersedes. These routes keep working — the deprecation is advisory. We add
-//! response headers so clients can detect the deprecation and migrate, and
-//! increment a hit counter (`deprecated_route_requests_total`, labelled by
-//! route) so that removal can be gated on **observed usage dropping to zero**
-//! rather than a guessed calendar date. (No `Sunset` date is emitted for that
-//! reason.) The canonical replacement for every route marked here is the same
-//! operation dispatched as a Trust-Task via `POST /api/trust-tasks` (reachable
-//! over REST, DIDComm, and TSP through the shared `dispatch_trust_task_core`
-//! spine).
+//! **Superseded Trust Task URIs** — [`SUPERSEDED_TASKS`] below. A Trust Task
+//! URI a client still sends after a successor exists gets
+//! `deprecated_trust_task_requests_total` (labelled by URI) incremented and a
+//! successor named in the response, so a client can act rather than guess;
+//! removal is gated on the counter reaching an observed zero. Added in #1045,
+//! because until then a task could be retired only by deleting it and the
+//! only evidence available was a source audit — grep the repos we can see and
+//! reason about the rest.
 //!
-//! **Superseded Trust Task URIs**, further down. Same rule, same evidence:
-//! `deprecated_trust_task_requests_total` labelled by URI, a successor named
-//! in the response so a client can act rather than guess, and removal on an
-//! observed zero. Added in #1045, because until then a task could be retired
-//! only by deleting it and the only evidence available was a source audit —
-//! grep the repos we can see and reason about the rest.
-//!
-//! Both tables are pinned to the thing they describe by a test, because a row
-//! that outlives its route or its handler reads zero forever and **that is the
-//! same reading as "safe to delete"**. See
-//! `every_superseded_row_names_a_live_route` (`tests/api_integration.rs`) and
-//! `superseded_tasks_are_dispatched` (`crate::trust_tasks`).
+//! The table is pinned to what it describes by a test, because a row that
+//! outlives its handler reads zero forever and **that is the same reading as
+//! "safe to delete"**. See `superseded_tasks_are_dispatched`
+//! (`crate::trust_tasks`).
 //!
 //! One consequence worth naming: a URI can now leave
 //! `UNSPECCED_DISPATCHED_URIS` (or `vtc-service`'s `UNPUBLISHED_CANONICAL_OK`)
@@ -30,398 +20,26 @@
 //! monotonically by test, so that departure looks identical to progress in the
 //! count alone. A row here, and its removal, is the explicit record of which
 //! one happened.
+//!
+//! **REST exceptions** — [`REST_EXCEPTIONS`] further down: the routes that
+//! stay REST on purpose, because the protocol they serve is not one a Trust
+//! Task can carry, tabulated with the reason beside each one.
+//!
+//! This module used to carry a third thing: a `SUPERSEDED` table of ~56
+//! legacy REST *routes* a canonical Trust Task had superseded (advisory
+//! `Deprecation`/`Link` headers plus a `deprecated_route_requests_total` hit
+//! counter, gating removal on an observed zero the same way the task table
+//! above does), covering acl, audit, config, contexts, did_templates, keys,
+//! did_webvh servers/dids, `/vta/restart` and the `/api/trust-tasks`
+//! spelling. This is a test deployment with no migration window and no
+//! compat shims to keep working while a counter drains, so all of it was
+//! deleted outright in one pass rather than marked and waited out — the
+//! REST routes themselves are gone (see `routes::mod` and the deleted
+//! `routes::{acl,audit,config,contexts,did_templates,keys}`), and the
+//! machinery that would have tracked their usage went with them.
 
-use axum::extract::{MatchedPath, Request};
-use axum::http::{HeaderMap, HeaderValue};
-use axum::middleware::Next;
-use axum::response::Response;
 use metrics::counter;
 use vta_sdk::trust_tasks;
-
-/// Build the deprecation response headers for a legacy `route`, pointing at the
-/// successor Trust-Task URI, and record a hit for that route.
-///
-/// Emits `Deprecation: true` and `Link: <successor>; rel="successor-version"`
-/// (RFC 8288). Attach the returned [`HeaderMap`] to the handler's response.
-pub fn superseded(route: &'static str, successor: &'static str) -> HeaderMap {
-    counter!("deprecated_route_requests_total", "route" => route).increment(1);
-
-    let mut headers = HeaderMap::new();
-    headers.insert("deprecation", HeaderValue::from_static("true"));
-    if let Ok(link) = HeaderValue::from_str(&format!("<{successor}>; rel=\"successor-version\"")) {
-        headers.insert("link", link);
-    }
-    headers
-}
-
-// ─── The superseded-route table ────────────────────────────────────────────
-//
-// `(method, matched-path, metric label, successor Trust-Task URI)`.
-//
-// Recovered from the `build_rest` closures the SDK carried before #1000
-// deleted them: each paired a Trust-Task constant with the exact REST route it
-// fell back to, so this mapping is what the client itself used rather than a
-// guess from matching names. Two entries look wrong at a glance and are not —
-// `GET /webvh/dids/{scid}/log` points at `dids/get`, because the dedicated
-// get-log task folded into it behind `includeLog`; and
-// `PATCH /webvh/servers/{id}` points at `servers/register`, because #850
-// folded add and update into that one task.
-//
-// A route absent from this table is absent on purpose: `/auth`, `/bootstrap`,
-// `/backup` blob streaming, `/metrics` and `/.well-known` are genuinely REST
-// and are not going anywhere. So are the passkey-VM enrolment routes, which are
-// the WebAuthn exception and carry a row in `REST_EXCEPTIONS` below rather
-// than here. (`/keys/import/wrapping-key` was listed here as
-// REST too; it is the `keys/import-wrapping-key/0.1` Trust Task now, and the
-// route is removed rather than superseded.) `/services/*` was the last block
-// here; its routes are removed, and service management is the `vta/services/*`
-// Trust Tasks only.
-/// The table, for tests that need to assert on its contents.
-pub fn superseded_table() -> &'static [(&'static str, &'static str, &'static str, &'static str)] {
-    SUPERSEDED
-}
-
-const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
-    ("GET", "/acl", "GET /acl", trust_tasks::TASK_ACL_LIST_0_1),
-    ("POST", "/acl", "POST /acl", trust_tasks::TASK_ACL_GRANT_0_1),
-    (
-        "DELETE",
-        "/acl/{did}",
-        "DELETE /acl/{did}",
-        trust_tasks::TASK_ACL_REVOKE_0_1,
-    ),
-    (
-        "GET",
-        "/acl/{did}",
-        "GET /acl/{did}",
-        trust_tasks::TASK_ACL_SHOW_0_1,
-    ),
-    (
-        "PATCH",
-        "/acl/{did}",
-        "PATCH /acl/{did}",
-        trust_tasks::TASK_ACL_UPDATE_0_1,
-    ),
-    (
-        "POST",
-        "/acl/{did}/change-role",
-        "POST /acl/{did}/change-role",
-        trust_tasks::TASK_ACL_CHANGE_ROLE_0_1,
-    ),
-    (
-        "GET",
-        "/audit/logs",
-        "GET /audit/logs",
-        trust_tasks::TASK_AUDIT_LIST_0_1,
-    ),
-    (
-        "GET",
-        "/audit/retention",
-        "GET /audit/retention",
-        trust_tasks::TASK_AUDIT_GET_RETENTION_1_0,
-    ),
-    (
-        "PATCH",
-        "/audit/retention",
-        "PATCH /audit/retention",
-        trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0,
-    ),
-    (
-        "GET",
-        "/config",
-        "GET /config",
-        trust_tasks::TASK_CONFIG_SHOW_0_1,
-    ),
-    (
-        "PATCH",
-        "/config",
-        "PATCH /config",
-        trust_tasks::TASK_CONFIG_PATCH_0_1,
-    ),
-    (
-        "GET",
-        "/contexts",
-        "GET /contexts",
-        trust_tasks::TASK_CONTEXTS_LIST_1_0,
-    ),
-    (
-        "POST",
-        "/contexts",
-        "POST /contexts",
-        trust_tasks::TASK_CONTEXTS_CREATE_1_0,
-    ),
-    (
-        "DELETE",
-        "/contexts/{id}",
-        "DELETE /contexts/{id}",
-        trust_tasks::TASK_CONTEXTS_DELETE_1_0,
-    ),
-    (
-        "GET",
-        "/contexts/{id}",
-        "GET /contexts/{id}",
-        trust_tasks::TASK_CONTEXTS_GET_1_0,
-    ),
-    (
-        "PATCH",
-        "/contexts/{id}",
-        "PATCH /contexts/{id}",
-        trust_tasks::TASK_CONTEXTS_UPDATE_1_0,
-    ),
-    (
-        "GET",
-        "/contexts/{id}/delete-preview",
-        "GET /contexts/{id}/delete-preview",
-        trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
-    ),
-    (
-        "PUT",
-        "/contexts/{id}/did",
-        "PUT /contexts/{id}/did",
-        trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_1,
-    ),
-    (
-        "GET",
-        "/contexts/{id}/did-templates",
-        "GET /contexts/{id}/did-templates",
-        trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
-    ),
-    (
-        "POST",
-        "/contexts/{id}/did-templates",
-        "POST /contexts/{id}/did-templates",
-        trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
-    ),
-    (
-        "DELETE",
-        "/contexts/{id}/did-templates/{name}",
-        "DELETE /contexts/{id}/did-templates/{name}",
-        trust_tasks::TASK_DID_TEMPLATES_DELETE_2_0,
-    ),
-    (
-        "GET",
-        "/contexts/{id}/did-templates/{name}",
-        "GET /contexts/{id}/did-templates/{name}",
-        trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
-    ),
-    (
-        "PUT",
-        "/contexts/{id}/did-templates/{name}",
-        "PUT /contexts/{id}/did-templates/{name}",
-        trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0,
-    ),
-    (
-        "POST",
-        "/contexts/{id}/did-templates/{name}/render",
-        "POST /contexts/{id}/did-templates/{name}/render",
-        trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0,
-    ),
-    (
-        "GET",
-        "/did-templates",
-        "GET /did-templates",
-        trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
-    ),
-    (
-        "POST",
-        "/did-templates",
-        "POST /did-templates",
-        trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
-    ),
-    (
-        "DELETE",
-        "/did-templates/{name}",
-        "DELETE /did-templates/{name}",
-        trust_tasks::TASK_DID_TEMPLATES_DELETE_2_0,
-    ),
-    (
-        "GET",
-        "/did-templates/{name}",
-        "GET /did-templates/{name}",
-        trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
-    ),
-    (
-        "PUT",
-        "/did-templates/{name}",
-        "PUT /did-templates/{name}",
-        trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0,
-    ),
-    (
-        "POST",
-        "/did-templates/{name}/render",
-        "POST /did-templates/{name}/render",
-        trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0,
-    ),
-    ("GET", "/keys", "GET /keys", trust_tasks::TASK_KEYS_LIST_0_1),
-    (
-        "POST",
-        "/keys",
-        "POST /keys",
-        trust_tasks::TASK_KEYS_CREATE_0_1,
-    ),
-    (
-        "POST",
-        "/keys/derive-and-sign",
-        "POST /keys/derive-and-sign",
-        trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_0_1,
-    ),
-    (
-        "POST",
-        "/keys/derive-and-sign-document",
-        "POST /keys/derive-and-sign-document",
-        trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_0_1,
-    ),
-    (
-        "POST",
-        "/keys/import",
-        "POST /keys/import",
-        trust_tasks::TASK_KEYS_IMPORT_0_1,
-    ),
-    (
-        "GET",
-        "/keys/seeds",
-        "GET /keys/seeds",
-        trust_tasks::TASK_SEEDS_LIST_1_0,
-    ),
-    (
-        "POST",
-        "/keys/seeds/rotate",
-        "POST /keys/seeds/rotate",
-        trust_tasks::TASK_SEEDS_ROTATE_1_0,
-    ),
-    (
-        "DELETE",
-        "/keys/{key_id}",
-        "DELETE /keys/{key_id}",
-        trust_tasks::TASK_KEYS_REVOKE_0_1,
-    ),
-    (
-        "GET",
-        "/keys/{key_id}",
-        "GET /keys/{key_id}",
-        trust_tasks::TASK_KEYS_SHOW_0_1,
-    ),
-    (
-        "PATCH",
-        "/keys/{key_id}",
-        "PATCH /keys/{key_id}",
-        trust_tasks::TASK_KEYS_RENAME_0_1,
-    ),
-    (
-        "GET",
-        "/keys/{key_id}/secret",
-        "GET /keys/{key_id}/secret",
-        trust_tasks::TASK_KEYS_EXPORT_SECRET_0_1,
-    ),
-    (
-        "POST",
-        "/keys/{key_id}/sign",
-        "POST /keys/{key_id}/sign",
-        trust_tasks::TASK_KEYS_SIGN_0_1,
-    ),
-    (
-        "POST",
-        "/vta/restart",
-        "POST /vta/restart",
-        trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
-    ),
-    (
-        "GET",
-        "/webvh/dids",
-        "GET /webvh/dids",
-        trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
-    ),
-    (
-        "POST",
-        "/webvh/dids",
-        "POST /webvh/dids",
-        trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-    ),
-    (
-        "DELETE",
-        "/webvh/dids/{did}",
-        "DELETE /webvh/dids/{did}",
-        trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
-    ),
-    (
-        "GET",
-        "/webvh/dids/{did}",
-        "GET /webvh/dids/{did}",
-        trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
-    ),
-    (
-        "GET",
-        "/webvh/dids/{did}/log",
-        "GET /webvh/dids/{did}/log",
-        trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
-    ),
-    (
-        "POST",
-        "/webvh/dids/{did}/register-server",
-        "POST /webvh/dids/{did}/register-server",
-        trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
-    ),
-    (
-        "GET",
-        "/webvh/servers",
-        "GET /webvh/servers",
-        trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
-    ),
-    (
-        "POST",
-        "/webvh/servers",
-        "POST /webvh/servers",
-        trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
-    ),
-    (
-        "DELETE",
-        "/webvh/servers/{id}",
-        "DELETE /webvh/servers/{id}",
-        trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0,
-    ),
-    (
-        "PATCH",
-        "/webvh/servers/{id}",
-        "PATCH /webvh/servers/{id}",
-        trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
-    ),
-    (
-        "GET",
-        "/webvh/servers/{id}/domains",
-        "GET /webvh/servers/{id}/domains",
-        trust_tasks::TASK_WEBVH_SERVERS_DOMAINS_0_1,
-    ),
-    (
-        "GET",
-        "/webvh/servers/{id}/reconcile",
-        "GET /webvh/servers/{id}/reconcile",
-        trust_tasks::TASK_WEBVH_SERVERS_RECONCILE_0_1,
-    ),
-    // ─── the Trust-Task endpoint itself ─────────────────────────────────
-    //
-    // `/api/trust-tasks` is not superseded by a *task* — it IS the task
-    // endpoint. What supersedes it is the conformant spelling served beside
-    // it, `POST /trust-tasks`, which is what the published HTTPS binding asks
-    // for. The successor URI below is the envelope type rather than an
-    // operation, because there is no operation: the successor is the same
-    // dispatcher at the path the binding actually uses.
-    //
-    // The successor is a PATH, not a task URI — every other row here names the
-    // task that replaced an operation, and this one names the endpoint that
-    // replaced a spelling. `Link: rel="successor-version"` takes a URI either
-    // way, so the header stays meaningful; the row is simply the one place in
-    // this table where the successor is not a `trusttasks.org` URI.
-    //
-    // Marked so the existing metric governs its retirement like everything
-    // else. It cannot go until deployed clients stop asking for it, and those
-    // clients are our own SDK until it takes the change beside this one.
-    (
-        "POST",
-        "/api/trust-tasks",
-        "POST /api/trust-tasks",
-        "/trust-tasks",
-    ),
-];
 
 // ─── REST routes kept on purpose ───────────────────────────────────────────
 
@@ -456,13 +74,8 @@ const PASSKEY_VM_REASON: &str = "passkey enrolment is a WebAuthn ceremony driven
 
 /// The REST exceptions.
 ///
-/// Pinned two ways: `every_rest_exception_names_a_live_route`
-/// (`tests/api_integration.rs`) fails when a row outlives its route, and
-/// `no_route_is_both_an_exception_and_superseded` below fails when a route is
-/// declared both REST-by-design and on its way out.
-///
-/// Only the WebAuthn exception is tabulated so far; the other genuinely-REST
-/// families are named in prose above the superseded-route table.
+/// Pinned by `every_rest_exception_names_a_live_route` (`tests/
+/// api_integration.rs`), which fails when a row outlives its route.
 const REST_EXCEPTIONS: &[RestException] = &[
     RestException {
         method: "POST",
@@ -492,46 +105,43 @@ const REST_EXCEPTIONS: &[RestException] = &[
         twin: Some(trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1),
         reason: PASSKEY_VM_REASON,
     },
+    RestException {
+        method: "POST",
+        path: "/bootstrap/request",
+        protocol: "pre-identity bootstrap",
+        twin: None,
+        reason: "the TEE's first boot, before any identity exists yet for it to sign a Trust \
+                 Task with",
+    },
+    RestException {
+        method: "GET",
+        path: "/backup/blob/{bundle_id}",
+        protocol: "bulk byte transfer",
+        twin: None,
+        reason: "a one-shot bearer-token-gated blob fetch; the control step (authorizing the \
+                 backup/restore) is itself a Trust Task, this is just the bytes",
+    },
+    RestException {
+        method: "POST",
+        path: "/backup/blob/{bundle_id}",
+        protocol: "bulk byte transfer",
+        twin: None,
+        reason: "a one-shot bearer-token-gated blob upload; the control step (authorizing the \
+                 backup/restore) is itself a Trust Task, this is just the bytes",
+    },
+    RestException {
+        method: "GET",
+        path: "/openapi.json",
+        protocol: "tooling/discovery",
+        twin: None,
+        reason: "describes the API shape, not a secret; unauthenticated by design so black-box \
+                 conformance/fuzz tooling can fetch it before it holds a token",
+    },
 ];
 
 /// The REST-exception table, for tests that assert on its contents.
 pub fn rest_exceptions_table() -> &'static [RestException] {
     REST_EXCEPTIONS
-}
-
-/// Middleware: tag any response served by a superseded REST route.
-///
-/// A layer rather than a call inside each of the 56 handlers, because the
-/// per-handler form has to thread a `HeaderMap` back through the return type —
-/// and a handler with several `Ok(...)` arms only has to miss one for its route
-/// to go quiet and read as "nobody calls this any more". Since the whole point
-/// is to delete routes on the strength of a zero reading, a signal that can be
-/// half-applied is worse than none. Matching on [`MatchedPath`] cannot be.
-pub async fn mark_superseded(req: Request, next: Next) -> Response {
-    let hit = req
-        .extensions()
-        .get::<MatchedPath>()
-        .map(MatchedPath::as_str)
-        .and_then(|path| {
-            let method = req.method().as_str();
-            SUPERSEDED
-                .iter()
-                .find(|(m, p, _, _)| *m == method && *p == path)
-        })
-        .copied();
-
-    let mut resp = next.run(req).await;
-
-    if let Some((_, _, label, successor)) = hit {
-        // Only a response the route actually produced counts as usage. A 404,
-        // or a request rejected before it reached the handler, says nothing
-        // about a client depending on this route — counting those would hold
-        // the metric off zero forever and the route could never be retired.
-        if resp.status().is_success() {
-            resp.headers_mut().extend(superseded(label, successor));
-        }
-    }
-    resp
 }
 
 // ─── The superseded-task table ─────────────────────────────────────────────
@@ -923,23 +533,6 @@ mod superseded_task_tests {
 #[cfg(test)]
 mod rest_exception_tests {
     use super::*;
-
-    #[test]
-    fn no_route_is_both_an_exception_and_superseded() {
-        // A row in both tables would say "REST by design" and "migrate away"
-        // about the same route, and `mark_superseded` would stamp a
-        // `Deprecation` header on a route that is not going anywhere.
-        for e in REST_EXCEPTIONS {
-            assert!(
-                !SUPERSEDED
-                    .iter()
-                    .any(|(m, p, _, _)| *m == e.method && *p == e.path),
-                "`{} {}` is listed as a REST exception and as superseded",
-                e.method,
-                e.path
-            );
-        }
-    }
 
     #[test]
     fn every_exception_says_why() {

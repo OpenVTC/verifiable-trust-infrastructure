@@ -410,6 +410,7 @@ pub(crate) fn descriptor_transport_gate(surface: SurfaceTransport) -> Result<(),
     }
 }
 
+#[cfg(any(feature = "session", feature = "tsp"))]
 fn no_rest_leg(transport: &str, direction: &str) -> String {
     format!(
         "{transport} transport has no REST client for the backup blob {direction}; \

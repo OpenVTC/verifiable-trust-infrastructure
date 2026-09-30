@@ -1,12 +1,13 @@
 //! `cnm vetting …` — the community-admin side of peer identity vetting.
 //!
 //! Every command drives the VTC's vetting admin surface through
-//! [`vtc_client::VtcClient`]: naming a vetter and revoking a grant are signed
-//! Trust Tasks (`vtc/vetting/vetters/grant/0.1`, `vtc/endorsements/revoke/0.1`
-//! — a grant is withdrawn like any endorsement); the automatic-grant
-//! configuration (`/v1/vetting/auto-grant`), the community's branding
-//! (`/v1/community/branding`) and the statement withdrawal notices
-//! (`/v1/vetting/revocations`) are admin REST with no Trust Task of their own.
+//! [`vtc_client::VtcClient`] as signed Trust Tasks: naming a vetter and
+//! revoking a grant (`vtc/vetting/vetters/grant/0.1`,
+//! `vtc/endorsements/revoke/0.1` — a grant is withdrawn like any endorsement),
+//! the automatic-grant configuration
+//! (`vtc/vetting/auto-grant/{show,update}/0.1`), the community's branding
+//! (`vtc/community/branding/{show,update}/0.1`) and the statement withdrawal
+//! notices (`vtc/vetting/revocations/list/0.1`).
 //!
 //! `bootstrap-pgp` seeds the first vetters from an existing OpenPGP web of
 //! trust; its graph and link logic is the pure [`wot`] and [`plan`] pair.
@@ -916,16 +917,18 @@ enum Op<'a> {
 }
 
 impl Op<'_> {
-    /// The route, for a 404 that means the VTC does not serve it at all.
+    /// The verb, for a refusal that means the VTC does not serve it at all
+    /// (a `404` on the rare bearer route still mounted, or the spine's
+    /// `unsupportedType`/`unsupportedVersion` for a signed document).
     fn route(&self) -> &'static str {
         match self {
-            Self::VettersList | Self::Grant { .. } => "/v1/vetting/vetters",
-            Self::Revoke { .. } => "/v1/credentials/endorsements/{id}",
-            Self::AutoGrantShow | Self::AutoGrantSet => "/v1/vetting/auto-grant",
-            Self::BrandingShow | Self::BrandingSet => "/v1/community/branding",
-            Self::AskShow | Self::AskSet => "/v1/community/requested-attributes",
-            Self::Revocations => "/v1/vetting/revocations",
-            Self::Members => "/v1/members",
+            Self::VettersList | Self::Grant { .. } => "vtc/vetting/vetters/grant",
+            Self::Revoke { .. } => "vtc/endorsements/revoke",
+            Self::AutoGrantShow | Self::AutoGrantSet => "vtc/vetting/auto-grant",
+            Self::BrandingShow | Self::BrandingSet => "vtc/community/branding",
+            Self::AskShow | Self::AskSet => "vtc/community/requested-attributes",
+            Self::Revocations => "vtc/vetting/revocations/list",
+            Self::Members => "vtc/members/list",
         }
     }
 }
@@ -1232,7 +1235,7 @@ mod tests {
             Op::AutoGrantShow,
         )
         .to_string();
-        assert!(old_vtc.contains("/v1/vetting/auto-grant") && old_vtc.contains("Upgrade"));
+        assert!(old_vtc.contains("vtc/vetting/auto-grant") && old_vtc.contains("Upgrade"));
     }
 
     #[test]

@@ -730,6 +730,19 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/activity/list/0.1",
 ];
 
+/// Not a `Trust-Task` header, and not a document posted to `/trust-tasks`
+/// either: the VTA-wallet SIOP envelope's own `{ type, payload }` body
+/// discriminator (`routes::auth::SiopAuthEnvelope`), read by `auth::
+/// authenticate` on the header-**exempt** `/wallet/auth/` alias
+/// (`walletApiBase()`, `admin-ui/src/lib/wallet.ts`). The server checks this
+/// value against its own constant (`AUTHENTICATE_TASK_URI`) independently of
+/// the Trust-Task-header router, so it has no route to be "enforced" by; it
+/// is unaffected by which REST mounts carry that header. `0.1`, the only
+/// version this envelope ever spoke, is deliberately un-migrated (see
+/// `trust_tasks::auth_tasks`'s module doc).
+const SIOP_BODY_DISCRIMINATOR_TYPES: &[&str] =
+    &["https://trusttasks.org/spec/auth/authenticate/0.1"];
+
 /// Document types the console sends that the *spine* dispatches rather than
 /// the git-ns family: the answer to an operation-bound step-up
 /// (`trust_tasks::handle_step_up_approve_response`), which the console sends
@@ -830,6 +843,14 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/endorsements/list/0.1",
     "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
     "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2",
+    // First-admin onboarding (`trust_tasks::install_tasks`): the dedicated,
+    // `Trust-Task`-header-gated REST mounts at `POST /v1/install/claim/
+    // {start,finish}` and `POST /v1/admin/bootstrap` are gone; the console
+    // now signs these as documents pre-session (the install/setup-session
+    // token is the credential, not a proof).
+    "https://trusttasks.org/spec/vtc/install/claim/start/0.2",
+    "https://trusttasks.org/spec/vtc/install/claim/finish/0.2",
+    "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1",
 ];
 
 #[test]
@@ -863,8 +884,15 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
         "found only {} Trust-Task URIs in the admin UI — the scan path is wrong",
         sent.len()
     );
+    // The floor fell with this batch: pre-session auth, install claim +
+    // admin bootstrap, cross-community recognition, relationships publish
+    // and four website admin verbs moved their `tt`/`ttl` mounts onto the
+    // signed-document spine (`trust_tasks::{auth_tasks,install_tasks,
+    // recognise_tasks,website_tasks}` / `member_tasks`); `auth/challenge` and
+    // `auth/authenticate/0.1` keep theirs (see `routes/mod.rs`'s comment on
+    // those mounts).
     assert!(
-        enforced.len() >= 20,
+        enforced.len() >= 10,
         "found only {} Trust-Task URIs in routes/mod.rs — the scan path is wrong",
         enforced.len()
     );
@@ -908,6 +936,7 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
     let documents: BTreeSet<String> = SIGNED_DOCUMENT_TYPES
         .iter()
         .chain(SPINE_DOCUMENT_TYPES)
+        .chain(SIOP_BODY_DISCRIMINATOR_TYPES)
         .map(|u| u.to_string())
         .collect();
 

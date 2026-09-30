@@ -21,7 +21,7 @@ use vta_sdk::client::VtaClient;
 use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::error::VtaError;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ── Test fixtures ───────────────────────────────────────────────────
@@ -80,7 +80,11 @@ fn now_secs() -> u64 {
 
 async fn mount_challenge(server: &MockServer) {
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "challenge": CHALLENGE,
             "sessionId": "sess-test",
@@ -101,7 +105,11 @@ async fn mount_challenge(server: &MockServer) {
 async fn challenge_endpoint_429_from_the_vta_is_rate_limited_and_attributed() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(
             ResponseTemplate::new(429)
                 .insert_header("x-rate-limit-source", "vta")
@@ -126,7 +134,7 @@ async fn challenge_endpoint_429_from_the_vta_is_rate_limited_and_attributed() {
             assert_eq!(limited_by, vta_sdk::rate_limit::RateLimitSource::Vta);
             assert!(retry_after.is_some(), "Retry-After must survive");
             assert_eq!(limiter.as_deref(), Some("auth"));
-            assert_eq!(url, Some(format!("{}/auth/challenge", server.uri())));
+            assert_eq!(url, Some(format!("{}/trust-tasks", server.uri())));
         }
         other => panic!("expected RateLimited, got {other:?}"),
     }
@@ -137,7 +145,11 @@ async fn authenticate_endpoint_429_without_a_source_header_is_upstream() {
     let server = MockServer::start().await;
     mount_challenge(&server).await;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(
             ResponseTemplate::new(429)
                 .insert_header("x-ratelimit-after", "4")
@@ -172,7 +184,11 @@ async fn authenticate_endpoint_429_without_a_source_header_is_upstream() {
 async fn session_challenge_response_keeps_a_429_typed() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(ResponseTemplate::new(429).insert_header("x-rate-limit-source", "vta"))
         .mount(&server)
         .await;
@@ -243,7 +259,11 @@ async fn idempotent_surfaces_a_rate_limit_longer_than_the_cap_at_once() {
 /// trivially without parsing nuance.
 async fn mount_authenticate(server: &MockServer, expires_at: u64) {
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess-test",
@@ -292,7 +312,11 @@ async fn challenge_response_success_returns_tokens() {
 async fn challenge_endpoint_401_maps_to_auth() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(ResponseTemplate::new(401).set_body_string("not authorized"))
         .mount(&server)
         .await;
@@ -309,7 +333,11 @@ async fn challenge_endpoint_401_maps_to_auth() {
 async fn challenge_endpoint_500_maps_to_server() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
         .mount(&server)
         .await;
@@ -330,7 +358,11 @@ async fn authenticate_endpoint_401_maps_to_auth() {
     let server = MockServer::start().await;
     mount_challenge(&server).await;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(401).set_body_string("bad challenge"))
         .mount(&server)
         .await;
@@ -388,7 +420,7 @@ async fn non_key_vta_did_still_authenticates() {
     assert_eq!(result.access_token, "access-jwt");
 }
 
-/// The request body must be a DI-signed `auth/authenticate/0.1` Trust Task —
+/// The request body must be a DI-signed `auth/authenticate/0.2` Trust Task —
 /// **not** an anoncrypt DIDComm envelope, which the VTA rejects outright since
 /// it began requiring an authenticated sender (VTI #771).
 #[tokio::test]
@@ -409,12 +441,17 @@ async fn authenticate_body_is_a_signed_trust_task() {
         .await
         .unwrap()
         .into_iter()
-        .find(|r| r.url.path() == "/auth/")
-        .expect("an /auth/ request was made");
+        .find(|r| {
+            r.url.path() == "/trust-tasks" && {
+                let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap_or_default();
+                body["type"] == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2
+            }
+        })
+        .expect("an authenticate /trust-tasks request was made");
     let body: serde_json::Value = serde_json::from_slice(&req.body).expect("body is JSON");
 
     assert_eq!(
-        body["type"], "https://trusttasks.org/spec/auth/authenticate/0.1",
+        body["type"], "https://trusttasks.org/spec/auth/authenticate/0.2",
         "body must be an authenticate Trust Task"
     );
     assert_eq!(body["payload"]["challenge"], CHALLENGE);
@@ -431,10 +468,14 @@ async fn trust_task_wrapped_response_is_unwrapped() {
     let server = MockServer::start().await;
     mount_challenge(&server).await;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id": "urn:uuid:resp-1",
-            "type": "https://trusttasks.org/spec/auth/authenticate/0.1#response",
+            "type": "https://trusttasks.org/spec/auth/authenticate/0.2#response",
             "threadId": "urn:uuid:req-1",
             "payload": {
                 "session": {
@@ -474,7 +515,11 @@ async fn trust_task_wrapped_response_is_unwrapped() {
 async fn refresh_token_success_rotates_tokens() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/auth/refresh"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess-test",
@@ -509,7 +554,11 @@ async fn refresh_token_success_rotates_tokens() {
 async fn refresh_token_401_maps_to_auth() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/auth/refresh"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2,
+        ))
         .respond_with(ResponseTemplate::new(401).set_body_string("refresh token not found"))
         .mount(&server)
         .await;
@@ -522,14 +571,18 @@ async fn refresh_token_401_maps_to_auth() {
     assert!(matches!(err, VtaError::Auth(_)));
 }
 
-/// Refresh posts an **unsigned** `auth/refresh/0.1` Trust Task: the opaque
+/// Refresh posts an **unsigned** `auth/refresh/0.2` Trust Task: the opaque
 /// token is the credential (RFC 6749 §10.4), so the VTA verifies the token
 /// rather than a signer — and neither DID is resolved.
 #[tokio::test]
 async fn refresh_body_is_an_unsigned_trust_task() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/auth/refresh"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess-test",
@@ -566,10 +619,10 @@ async fn refresh_body_is_an_unsigned_trust_task() {
         .await
         .unwrap()
         .into_iter()
-        .find(|r| r.url.path() == "/auth/refresh")
+        .find(|r| r.url.path() == "/trust-tasks")
         .expect("a refresh request was made");
     let body: serde_json::Value = serde_json::from_slice(&req.body).expect("body is JSON");
-    assert_eq!(body["type"], "https://trusttasks.org/spec/auth/refresh/0.1");
+    assert_eq!(body["type"], "https://trusttasks.org/spec/auth/refresh/0.2");
     assert_eq!(body["payload"]["refreshToken"], "old-refresh");
     assert!(body.get("proof").is_none(), "refresh must not be signed");
 }
@@ -669,7 +722,11 @@ async fn ensure_token_valid_refreshes_expired_access_token() {
     // `issuedAt: 1970-01-01T00:00:00Z` makes expiresIn = absolute epoch.
     let future = now_secs() + 3600;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -693,7 +750,11 @@ async fn ensure_token_valid_refreshes_expired_access_token() {
 
     // Refresh: returns a fresh access token (future expiry).
     Mock::given(method("POST"))
-        .and(path("/auth/refresh"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -754,7 +815,11 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
 
     // Two sequential challenge calls expected (initial + re-auth).
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "challenge": CHALLENGE,
             "sessionId": "sess",
@@ -769,7 +834,11 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
     // `up_to_n_times` budget is exhausted. So the first /auth/ call
     // hits the "stale tokens" mock; the second hits the "reauth" mock.
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -792,7 +861,11 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
         .mount(&server)
         .await;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -846,7 +919,11 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
     let (vta_did, vta_priv) = did_key_from_seed(0x22);
 
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "challenge": CHALLENGE,
             "sessionId": "sess",
@@ -858,7 +935,11 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
 
     let future = now_secs() + 3600;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -881,7 +962,11 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
         .mount(&server)
         .await;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -905,7 +990,11 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
 
     // Refresh returns 401: invalid → should be tolerated, full re-auth runs.
     Mock::given(method("POST"))
-        .and(path("/auth/refresh"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2,
+        ))
         .respond_with(ResponseTemplate::new(401).set_body_string("token reuse detected"))
         .expect(1)
         .mount(&server)

@@ -1,5 +1,5 @@
 //! P0.16 — a non-admin `VtcRole` ACL row must not 500 the unauthenticated
-//! `POST /v1/auth/challenge` or leak serde internals.
+//! `auth/challenge/0.1` Trust Task or leak serde internals.
 //!
 //! Before the original fix, `check_acl` routed through
 //! `vti_common::acl::check_acl_full`, which deserializes the `acl:<did>` row
@@ -21,9 +21,18 @@
 //! authenticate, which requires the subject's private key. These tests assert
 //! that: the answer is the same for a non-admin row and for a DID this VTC has
 //! never seen, and it still carries none of what the original bug leaked.
+//!
+//! # Transport
+//!
+//! `POST /v1/auth/challenge`'s dedicated, `Trust-Task`-header-gated REST mount
+//! had no caller left once `vta_sdk::auth_light` switched to signing
+//! `auth/challenge/0.1` documents against `POST /v1/trust-tasks` (#1858), so
+//! these tests now post the same unsigned Trust Task the SDK builds — a
+//! challenge names no identity to authorize, so it needs no proof (see
+//! `trust_tasks::auth_tasks`'s module doc).
 
 use reqwest::StatusCode;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::MockVtc;
@@ -42,19 +51,29 @@ fn entry(did: &str, role: VtcRole) -> VtcAclEntry {
     }
 }
 
-/// The canonical `/v1/auth/challenge` route is Trust-Task-gated (only the
-/// `/wallet/auth/challenge` alias is exempt), so the flat-JSON client must
-/// send the challenge task header.
-const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/auth/challenge/0.1";
+async fn vtc_did(mock: &MockVtc) -> String {
+    mock.vtc
+        .state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .expect("the mock VTC has a DID")
+}
 
-async fn challenge(base_url: &str, did: &str) -> (StatusCode, String) {
+/// Post the unsigned `auth/challenge/0.1` document the SDK itself builds for
+/// `subject`, to the shared `/v1/trust-tasks` door.
+async fn challenge(base_url: &str, vta_did: &str, subject: &str) -> (StatusCode, String) {
+    let doc = vta_sdk::auth_di::build_challenge_doc(subject, vta_did, subject)
+        .expect("build challenge doc");
     let resp = reqwest::Client::new()
-        .post(format!("{base_url}/v1/auth/challenge"))
-        .header("Trust-Task", CHALLENGE_TASK)
-        .json(&json!({ "did": did }))
+        .post(format!("{base_url}/v1/trust-tasks"))
+        .header("content-type", "application/json")
+        .body(doc)
         .send()
         .await
-        .expect("POST /v1/auth/challenge");
+        .expect("POST /v1/trust-tasks");
     let status = resp.status();
     let body = resp.text().await.expect("read body");
     (status, body)
@@ -68,7 +87,8 @@ async fn moderator_row_does_not_leak_at_challenge() {
         .await
         .expect("seed moderator acl row");
 
-    let (status, body) = challenge(mock.base_url(), did).await;
+    let vta_did = vtc_did(&mock).await;
+    let (status, body) = challenge(mock.base_url(), &vta_did, did).await;
 
     assert_eq!(
         status,
@@ -95,9 +115,10 @@ async fn a_non_admin_row_is_indistinguishable_from_an_unknown_subject() {
         .await
         .expect("seed moderator acl row");
 
-    let (known_status, known_body) = challenge(mock.base_url(), known).await;
+    let vta_did = vtc_did(&mock).await;
+    let (known_status, known_body) = challenge(mock.base_url(), &vta_did, known).await;
     let (stranger_status, stranger_body) =
-        challenge(mock.base_url(), "did:key:z6MkNeverSeenBefore").await;
+        challenge(mock.base_url(), &vta_did, "did:key:z6MkNeverSeenBefore").await;
 
     assert_eq!(known_status, stranger_status);
 
@@ -133,7 +154,8 @@ async fn no_vtc_role_leaks_at_challenge() {
         store_acl_entry(&mock.vtc.state.acl_ks, &entry(did, role.clone()))
             .await
             .expect("seed acl row");
-        let (status, body) = challenge(mock.base_url(), did).await;
+        let vta_did = vtc_did(&mock).await;
+        let (status, body) = challenge(mock.base_url(), &vta_did, did).await;
         assert_eq!(
             status,
             StatusCode::OK,

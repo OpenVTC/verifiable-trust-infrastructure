@@ -63,11 +63,15 @@ use vta_sdk::vetting::statement::{IssuerScope, StatementDraft, sign_statement, v
 use vta_sdk::vetting::status::{StatusCheck, check_credential_status};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::{MockVtcDidcomm, TestJoinClient, TestVtc};
-use vti_common::auth::session::{Session, SessionState, store_session};
 
 const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
 const JOIN_VETTING_SHOW_TASK: &str =
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1";
+const AUTO_GRANT_UPDATE_TASK: &str =
+    "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1";
+const VETTER_GRANTS_LIST_TASK: &str =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1";
+const REVOCATIONS_LIST_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1";
 const RP_ORIGIN: &str = "https://kernel-vtc.example";
 const ADMIN_DID: &str = "did:key:zKernelAdmin";
 
@@ -183,11 +187,9 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     // sweep is off until an admin turns it on.
     c.activate_vetter_policy(TENURED_MEMBERS_VET).await;
     let (status, body) = c
-        .admin(
-            "PUT",
-            "/v1/vetting/auto-grant",
-            None,
-            Some(json!({ "enabled": true, "sweepMinutes": 60, "validitySeconds": 180 * 86_400 })),
+        .admin_document(
+            AUTO_GRANT_UPDATE_TASK,
+            json!({ "enabled": true, "sweepMinutes": 60, "validitySeconds": 180 * 86_400 }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "auto-grant: {body}");
@@ -201,9 +203,9 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
         "Dave is granted; Carol already holds a grant; Erin is too new"
     );
 
-    let (_, grants) = c.admin("GET", "/v1/vetting/vetters", None, None).await;
+    let (_, grants) = c.admin_document(VETTER_GRANTS_LIST_TASK, json!({})).await;
     let grant_of = |did: &str| {
-        grants["vetters"]
+        grants["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -408,9 +410,9 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     assert_eq!(status, StatusCode::OK, "withdraw: {body}");
 
     // The admin sees it touches a standing membership.
-    let (status, revocations) = c.admin("GET", "/v1/vetting/revocations", None, None).await;
+    let (status, revocations) = c.admin_document(REVOCATIONS_LIST_TASK, json!({})).await;
     assert_eq!(status, StatusCode::OK, "{revocations}");
-    let notice = &revocations["revocations"][0];
+    let notice = &revocations["items"][0];
     assert_eq!(notice["issuer"], carol.did.as_str());
     assert_eq!(notice["reviewState"], "needsReview");
     assert_eq!(notice["affectedMembers"], json!([alice.did]));
@@ -641,12 +643,11 @@ impl Applicant {
     }
 }
 
-/// The community under test, with an admin session.
+/// The community under test.
 struct Community {
     router: axum::Router,
     state: vtc_service::server::AppState,
     did: String,
-    admin_token: String,
     _vtc: TestVtc,
 }
 
@@ -681,7 +682,6 @@ async fn kernel_community() -> Community {
         .await
         .expect("status list");
     }
-    let admin_token = admin_token(&vtc).await;
     let now = vtc_service::auth::session::now_epoch();
     store_acl_entry(
         &vtc.state.acl_ks,
@@ -703,24 +703,11 @@ async fn kernel_community() -> Community {
         router: vtc.router.clone(),
         state: vtc.state.clone(),
         did,
-        admin_token,
         _vtc: vtc,
     }
 }
 
 impl Community {
-    /// An admin REST call. `task` is the route's `Trust-Task`, for the routes
-    /// that carry one.
-    async fn admin(
-        &self,
-        method: &str,
-        uri: &str,
-        task: Option<&str>,
-        body: Option<Value>,
-    ) -> (StatusCode, Value) {
-        rest(&self.router, &self.admin_token, method, uri, task, body).await
-    }
-
     /// An admin verb that is a signed document only: signed by the admin's
     /// key; the reply's status and payload.
     async fn admin_document(&self, typ: &str, payload: Value) -> (StatusCode, Value) {
@@ -1002,58 +989,6 @@ fn day(offset: i64) -> String {
         .to_string()
 }
 
-/// An admin ACL row, a session, and a bearer token for it.
-async fn admin_token(vtc: &TestVtc) -> String {
-    let now = vtc_service::auth::session::now_epoch();
-    store_acl_entry(
-        &vtc.state.acl_ks,
-        &VtcAclEntry {
-            did: ADMIN_DID.into(),
-            role: VtcRole::Admin,
-            label: Some("kernel community admin".into()),
-            allowed_contexts: vec![],
-            created_at: now,
-            created_by: "did:key:vtc-install".into(),
-            updated_at: None,
-            updated_by: None,
-            expires_at: None,
-        },
-    )
-    .await
-    .unwrap();
-    let session_id = "vetting-journey-admin";
-    store_session(
-        &vtc.state.sessions_ks,
-        &Session {
-            session_id: session_id.into(),
-            did: ADMIN_DID.into(),
-            challenge: "test".into(),
-            state: SessionState::Authenticated,
-            created_at: now,
-            last_seen: now,
-            refresh_token: None,
-            refresh_expires_at: None,
-            tee_attested: false,
-            amr: Vec::new(),
-            acr: String::new(),
-            acr_expires_at: None,
-            token_id: None,
-            session_pubkey_b58btc: None,
-        },
-    )
-    .await
-    .unwrap();
-    let claims = vtc.jwt_keys.new_claims(
-        ADMIN_DID.into(),
-        session_id.into(),
-        "admin".into(),
-        vec![],
-        3600,
-        true,
-    );
-    vtc.jwt_keys.encode(&claims).unwrap()
-}
-
 /// A member row and ACL entry for `did`, admitted `days_ago`.
 async fn seed_member_row(vtc: &TestVtc, did: &str, days_ago: i64) {
     let mut member = vtc_service::members::Member::fresh(did);
@@ -1077,28 +1012,6 @@ async fn seed_member_row(vtc: &TestVtc, did: &str, days_ago: i64) {
     )
     .await
     .expect("store acl");
-}
-
-async fn rest(
-    router: &axum::Router,
-    token: &str,
-    method: &str,
-    uri: &str,
-    task: Option<&str>,
-    body: Option<Value>,
-) -> (StatusCode, Value) {
-    let mut req = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json")
-        .header("Authorization", format!("Bearer {token}"));
-    if let Some(task) = task {
-        req = req.header("Trust-Task", task);
-    }
-    let req = req
-        .body(body.map_or_else(Body::empty, |v| Body::from(v.to_string())))
-        .unwrap();
-    read(router.clone().oneshot(req).await.expect("oneshot")).await
 }
 
 /// Sign `typ`/`payload` as `admin_did` (from `seed`) and post it to

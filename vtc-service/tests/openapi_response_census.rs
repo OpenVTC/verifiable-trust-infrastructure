@@ -48,17 +48,10 @@ use std::path::{Path, PathBuf};
 /// *type*, not about the effort of fixing it. "The annotation is out of date" is
 /// never a reason to add a line here — that is the defect this census exists to
 /// catch, and the fix is one word in the annotation.
-const UNTYPED_OK: &[(&str, &str)] = &[(
-    "relationships.rs::publish",
-    "returns `trust_tasks_rs::TrustTask<PublishResponse>`. The Trust Task \
-         envelope is an external type with no `ToSchema`, so the document names the \
-         payload it wraps. Typing it properly means declaring a local mirror of the \
-         envelope — a hand-maintained copy of someone else's wire type, which is \
-         the failure mode this census exists to prevent, not a fix for it.",
-)];
+const UNTYPED_OK: &[(&str, &str)] = &[];
 
 /// The size of [`UNTYPED_OK`], asserted so the list cannot grow quietly.
-const UNTYPED_OK_COUNT: usize = 1;
+const UNTYPED_OK_COUNT: usize = 0;
 
 #[test]
 fn every_documented_response_names_the_type_its_handler_returns() {

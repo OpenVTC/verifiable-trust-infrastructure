@@ -16,12 +16,9 @@
 //! mint if what it derives is not what was published: a community whose signer changed under it
 //! would otherwise hand out credentials nobody can verify.
 
-use axum::Json;
-use axum::extract::State;
 use chrono::{Datelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
 use crate::schemas::accepts::{get_accepts, store_accepts};
@@ -91,23 +88,18 @@ fn this_month() -> String {
 /// Idempotent in the way that matters: calling it again with the same body derives the same keys
 /// (they are a function of the master secret) and writes the same parameters. Calling it with
 /// different labels rotates them, which is a real change and moves the digest.
-#[utoipa::path(
-    post, path = "/vetting/hidden",
-    operation_id = "vettingHiddenPublish", tag = "vetting",
-    security(("bearer_jwt" = [])),
-    request_body = PublishHiddenVettingBody,
-    responses(
-        (status = 200, description = "Hidden vetting is published for this criterion", body = PublishHiddenVettingResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "No such criterion"),
-    ),
-)]
-pub async fn publish_hidden_vetting(
-    _admin: AdminAuth,
-    State(state): State<AppState>,
-    Json(body): Json<PublishHiddenVettingBody>,
-) -> Result<Json<PublishHiddenVettingResponse>, AppError> {
+///
+/// Shared by the REST route below and `vtc/vetting/hidden/publish/0.1`
+/// (`crate::trust_tasks::handle_hidden_publish`) — one implementation, so the
+/// two doors cannot drift.
+pub(crate) async fn publish_hidden_vetting_core(
+    state: &AppState,
+    criterion_id: String,
+    live_periods: Option<Vec<String>>,
+    live_token_labels: Option<Vec<String>>,
+    drip_per_tick: Option<usize>,
+    events: Option<Value>,
+) -> Result<PublishHiddenVettingResponse, AppError> {
     let community_did = state
         .config
         .read()
@@ -117,31 +109,28 @@ pub async fn publish_hidden_vetting(
         .filter(|d| !d.is_empty())
         .ok_or_else(|| AppError::Internal("VTC DID not configured".into()))?;
 
-    let mut criterion = get_accepts(&state.schemas_ks, &body.criterion_id)
+    let mut criterion = get_accepts(&state.schemas_ks, &criterion_id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("no criterion `{}`", body.criterion_id)))?;
+        .ok_or_else(|| AppError::NotFound(format!("no criterion `{criterion_id}`")))?;
     if criterion.vetting.is_none() {
         return Err(AppError::Validation(format!(
-            "criterion `{}` asks for no vetting, so there is nothing for hidden-vetting \
-             parameters to qualify — give it `vetting` requirements first",
-            body.criterion_id
+            "criterion `{criterion_id}` asks for no vetting, so there is nothing for \
+             hidden-vetting parameters to qualify — give it `vetting` requirements first",
         )));
     }
 
     let period = this_month();
-    let live_periods = body.live_periods.unwrap_or_else(|| vec![period.clone()]);
-    let live_token_labels = body
-        .live_token_labels
-        .unwrap_or_else(|| vec![format!("token/{period}")]);
+    let live_periods = live_periods.unwrap_or_else(|| vec![period.clone()]);
+    let live_token_labels = live_token_labels.unwrap_or_else(|| vec![format!("token/{period}")]);
 
     let mut config: HiddenVettingConfig = crate::vetting::pcs_issue::publish(
-        &state,
+        state,
         &community_did,
         live_periods,
         live_token_labels,
-        body.drip_per_tick.unwrap_or(3),
+        drip_per_tick.unwrap_or(3),
     )?;
-    if let Some(events) = body.events {
+    if let Some(events) = events {
         config.events = serde_json::from_value::<Vec<HiddenVettingEvent>>(events)
             .map_err(|e| AppError::Validation(format!("events: {e}")))?;
     }
@@ -156,8 +145,8 @@ pub async fn publish_hidden_vetting(
     // disagree, and this one is what an applicant's proof binds to.
     let served = crate::routes::join_requests::manifest::manifest_criterion(criterion)?;
 
-    Ok(Json(PublishHiddenVettingResponse {
-        criterion_id: body.criterion_id,
+    Ok(PublishHiddenVettingResponse {
+        criterion_id,
         stored,
         published: config.published(),
         requirements_digest: served
@@ -165,5 +154,11 @@ pub async fn publish_hidden_vetting(
             .get("requirementsDigest")
             .and_then(Value::as_str)
             .map(str::to_string),
-    }))
+    })
 }
+
+// `POST /vetting/hidden` was a REST route here — always admin-only, and its
+// derivation is `publish_hidden_vetting_core` above. It is
+// `vtc/vetting/hidden/publish/0.1` now, served on the spine
+// (`crate::trust_tasks::handle_hidden_publish`), behind the same
+// `vetting-pcs` feature this whole module is gated on.

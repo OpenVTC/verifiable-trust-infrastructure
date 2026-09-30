@@ -411,14 +411,29 @@ mod holder_binding {
         vp
     }
 
-    async fn post_recognise(router: &axum::Router, vp: &Value) -> (StatusCode, String) {
-        let body = json!({ "presentation": vp });
+    /// Post `payload` as an unsigned `type_uri` document — neither
+    /// `auth/recognise/challenge/0.1` nor `auth/recognise/0.2` requires a
+    /// proof on the outer document; the holder-signed VP inside `recognise`'s
+    /// payload is the authority — to the shared document endpoint
+    /// (`trust_tasks::recognise_tasks`).
+    async fn post_document(
+        router: &axum::Router,
+        type_uri: &str,
+        payload: Value,
+    ) -> (StatusCode, String) {
+        let doc = json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": type_uri,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "recipient": VTC_DID,
+            "issuer": "did:key:z6MkAnonymousRecogniseCaller",
+            "payload": payload,
+        });
         let req = Request::builder()
             .method("POST")
-            .uri("/v1/auth/recognise")
-            .header("Trust-Task", RECOGNISE_TASK)
+            .uri("/v1/trust-tasks")
             .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .body(Body::from(doc.to_string()))
             .unwrap();
         let resp = router.clone().oneshot(req).await.expect("request");
         let status = resp.status();
@@ -426,23 +441,23 @@ mod holder_binding {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// Fetch a fresh challenge nonce through the real `/challenge` endpoint.
+    async fn post_recognise(router: &axum::Router, vp: &Value) -> (StatusCode, String) {
+        post_document(router, RECOGNISE_TASK, json!({ "presentation": vp })).await
+    }
+
+    /// Fetch a fresh challenge nonce through the real document endpoint.
     async fn fetch_nonce(router: &axum::Router) -> String {
-        let req = Request::builder()
-            .method("POST")
-            .uri("/v1/auth/recognise/challenge")
-            .header("Trust-Task", CHALLENGE_TASK)
-            .body(Body::empty())
-            .unwrap();
-        let resp = router
-            .clone()
-            .oneshot(req)
-            .await
-            .expect("challenge request");
-        assert_eq!(resp.status(), StatusCode::OK, "challenge endpoint must 200");
-        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
-        v["nonce"].as_str().expect("nonce in response").to_string()
+        let (status, body) = post_document(router, CHALLENGE_TASK, json!({})).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "challenge endpoint must 200: {body}"
+        );
+        let v: Value = serde_json::from_str(&body).unwrap();
+        v["payload"]["nonce"]
+            .as_str()
+            .expect("nonce in response")
+            .to_string()
     }
 
     #[tokio::test]

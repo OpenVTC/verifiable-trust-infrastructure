@@ -46,6 +46,21 @@ const STATUS_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/status/
 const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/show/0.1";
 const DECIDE_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/decide/0.1";
+// The vetting admin reads and the community branding + requested-attributes
+// reads/writes are signed documents only since #1858 — their admin-bearer
+// REST mounts (`GET/PUT /v1/vetting/{vetters,auto-grant,revocations}`,
+// `GET/PUT /v1/community/{branding,requested-attributes}`) had no caller left
+// once `vtc-client` and the admin console signed them instead.
+const VETTER_GRANTS_LIST_TASK: &str =
+    "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1";
+const AUTO_GRANT_SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/auto-grant/show/0.1";
+const AUTO_GRANT_UPDATE_TASK: &str =
+    "https://trusttasks.org/spec/vtc/vetting/auto-grant/update/0.1";
+const REVOCATIONS_LIST_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1";
+const BRANDING_SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/community/branding/show/0.1";
+const BRANDING_UPDATE_TASK: &str = "https://trusttasks.org/spec/vtc/community/branding/update/0.1";
+const REQUESTED_ATTRIBUTES_UPDATE_TASK: &str =
+    "https://trusttasks.org/spec/vtc/community/requested-attributes/update/0.1";
 /// The VTC DID the fixture configures — the issuer of every VMC and the
 /// community a reciprocal VC must acknowledge.
 const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
@@ -2639,35 +2654,13 @@ use vta_sdk::protocols::vetting::{
     VETTING_VETTER_RESEND_TYPE,
 };
 
-/// An admin REST call to a route with no Trust Task binding: no `Trust-Task`
-/// header at all.
-async fn admin_rest(
-    fix: &Fixture,
-    method: &str,
-    uri: &str,
-    body: Option<Value>,
-) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json")
-        .header("Authorization", format!("Bearer {}", fix.admin_token));
-    let res = fix
-        .router
-        .clone()
-        .oneshot(
-            req.body(
-                body.map(|v| Body::from(v.to_string()))
-                    .unwrap_or(Body::empty()),
-            )
-            .unwrap(),
-        )
-        .await
-        .expect("oneshot");
-    let status = res.status();
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, json)
+/// An admin verb that is a signed document only (the vetting admin reads and
+/// the community branding + requested-attributes reads/writes, all moved off
+/// their admin-bearer REST mounts by #1858): signed by `fix.signer`, the
+/// reply's status and its `#response` payload.
+async fn admin_document(fix: &Fixture, typ: &str, payload: Value) -> (StatusCode, Value) {
+    let (status, doc) = common::signed::call(&fix._vtc, &fix.signer, typ, payload).await;
+    (status, doc["payload"].clone())
 }
 
 fn day(offset: i64) -> String {
@@ -2774,9 +2767,9 @@ async fn a_vetter_publishes_a_profile_that_applicants_find_by_filter() {
     }
 
     // The admin view carries the profile summary.
-    let (status, body) = admin_rest(&fix, "GET", "/v1/vetting/vetters", None).await;
+    let (status, body) = admin_document(&fix, VETTER_GRANTS_LIST_TASK, json!({})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let row = &body["vetters"][0];
+    let row = &body["items"][0];
     assert_eq!(row["memberDid"], carol);
     assert_eq!(row["origin"], "manual");
     assert_eq!(row["live"], true);
@@ -3020,19 +3013,21 @@ async fn a_vetter_asks_for_the_grant_credential_again() {
 #[tokio::test]
 async fn branding_is_published_on_manifest_0_2_only() {
     let fix = build_fixture().await;
-    let (status, body) = admin_rest(&fix, "GET", "/v1/community/branding", None).await;
+    let (status, body) = admin_document(&fix, BRANDING_SHOW_TASK, json!({})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body, json!({}));
+    assert_eq!(body["branding"], json!({}));
 
-    let (status, body) = admin_rest(
+    let (status, body) = admin_document(
         &fix,
-        "PUT",
-        "/v1/community/branding",
-        Some(json!({ "displayName": "Kernel", "accentColor": "#1A2B3C" })),
+        BRANDING_UPDATE_TASK,
+        json!({ "branding": { "displayName": "Kernel", "accentColor": "#1A2B3C" } }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["accentColor"], "#1a2b3c", "stored in lower case");
+    assert_eq!(
+        body["branding"]["accentColor"], "#1a2b3c",
+        "stored in lower case"
+    );
 
     // `logoUrl` is `format: uri`: an absolute https URI, which the schema
     // validator does not assert and the community checks by hand.
@@ -3041,11 +3036,10 @@ async fn branding_is_published_on_manifest_0_2_only() {
         "https://kernel.example/my logo.svg",
         "https://kernel.example/logo\u{7}.svg",
     ] {
-        let (status, body) = admin_rest(
+        let (status, body) = admin_document(
             &fix,
-            "PUT",
-            "/v1/community/branding",
-            Some(json!({ "logoUrl": logo })),
+            BRANDING_UPDATE_TASK,
+            json!({ "branding": { "logoUrl": logo } }),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{logo:?}: {body}");
@@ -3108,23 +3102,21 @@ async fn the_sweep_grants_by_policy_and_revokes_only_its_own_grants() {
     seed_member(&fix, &founder).await;
     seed_vetter(&fix, &dave).await;
 
-    let (status, body) = admin_rest(
+    let (status, body) = admin_document(
         &fix,
-        "PUT",
-        "/v1/vetting/auto-grant",
-        Some(json!({ "enabled": true, "sweepMinutes": 5 })),
+        AUTO_GRANT_UPDATE_TASK,
+        json!({ "enabled": true, "sweepMinutes": 5 }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["enabled"], true);
-    assert_eq!(body["sweepMinutes"], 5);
-    assert_eq!(body["validitySeconds"], 31_536_000);
-    assert!(body.get("lastSweep").is_none());
-    let (status, _) = admin_rest(
+    assert_eq!(body["autoGrant"]["enabled"], true);
+    assert_eq!(body["autoGrant"]["sweepMinutes"], 5);
+    assert_eq!(body["autoGrant"]["validitySeconds"], 31_536_000);
+    assert!(body["autoGrant"].get("lastSweep").is_none());
+    let (status, _) = admin_document(
         &fix,
-        "PUT",
-        "/v1/vetting/auto-grant",
-        Some(json!({ "enabled": true, "sweepMinutes": 1 })),
+        AUTO_GRANT_UPDATE_TASK,
+        json!({ "enabled": true, "sweepMinutes": 1 }),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -3139,9 +3131,9 @@ async fn the_sweep_grants_by_policy_and_revokes_only_its_own_grants() {
         grants[0].credential.is_some(),
         "the credential is kept for resend"
     );
-    let (_, body) = admin_rest(&fix, "GET", "/v1/vetting/vetters", None).await;
+    let (_, body) = admin_document(&fix, VETTER_GRANTS_LIST_TASK, json!({})).await;
     let origin_of = |did: &str| {
-        body["vetters"]
+        body["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -3164,9 +3156,9 @@ async fn the_sweep_grants_by_policy_and_revokes_only_its_own_grants() {
         "the sweep never revokes an admin's grant"
     );
 
-    let (_, body) = admin_rest(&fix, "GET", "/v1/vetting/auto-grant", None).await;
-    assert_eq!(body["lastSweep"]["revoked"], 1, "{body}");
-    assert!(body["lastSweep"]["ranAt"].is_string());
+    let (_, body) = admin_document(&fix, AUTO_GRANT_SHOW_TASK, json!({})).await;
+    assert_eq!(body["autoGrant"]["lastSweep"]["revoked"], 1, "{body}");
+    assert!(body["autoGrant"]["lastSweep"]["ranAt"].is_string());
 }
 
 #[tokio::test]
@@ -3241,9 +3233,9 @@ async fn admins_see_the_vetting_facts_and_the_withdrawals_that_touch_a_membershi
     let (status, body) = post_tt(&fix.router, withdrawal_doc([0x11; 32], &from_carol).await).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let (status, body) = admin_rest(&fix, "GET", "/v1/vetting/revocations", None).await;
+    let (status, body) = admin_document(&fix, REVOCATIONS_LIST_TASK, json!({})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let notice = &body["revocations"][0];
+    let notice = &body["items"][0];
     assert_eq!(notice["issuer"], carol);
     assert_eq!(notice["reviewState"], "needsReview");
     assert_eq!(notice["affectedMembers"], json!([applicant.clone()]));
@@ -4206,14 +4198,13 @@ async fn requested_attributes_are_published_enforced_and_kept_with_the_request()
     };
 
     let fix = build_fixture().await;
-    let (status, body) = admin_rest(
+    let (status, body) = admin_document(
         &fix,
-        "PUT",
-        "/v1/community/requested-attributes",
-        Some(json!([
+        REQUESTED_ATTRIBUTES_UPDATE_TASK,
+        json!({ "requestedAttributes": [
             { "type": "name.display", "purpose": "So other members know what to call you" },
             { "type": "address.country", "required": false },
-        ])),
+        ] }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "PUT requested attributes: {body}");

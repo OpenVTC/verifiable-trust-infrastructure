@@ -1,4 +1,4 @@
-//! Keyring VTI-09 and VTI-23 over the HTTPS binding (`POST /api/trust-tasks`)
+//! Keyring VTI-09 and VTI-23 over the HTTPS binding (`POST /trust-tasks`)
 //! and the legacy `POST /keys` route.
 //!
 //! The DIDComm and TSP halves live beside the bindings they test
@@ -61,7 +61,7 @@ async fn vti_09_a_bare_payload_over_https_is_refused_as_malformed() {
 
     let (status, body) = post(
         &router,
-        "/api/trust-tasks",
+        "/trust-tasks",
         &token,
         &json!({ "keyType": "ed25519", "contextId": "ctx1" }),
     )
@@ -94,13 +94,7 @@ async fn vti_23_keys_create_over_https_needs_key_mint_not_admin() {
     let token = ctx
         .mint_token(&manager, "initiator", vec!["ctx1".into()])
         .await;
-    let (status, body) = post(
-        &router,
-        "/api/trust-tasks",
-        &token,
-        &keys_create(&ctx, 0x52),
-    )
-    .await;
+    let (status, body) = post(&router, "/trust-tasks", &token, &keys_create(&ctx, 0x52)).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -116,13 +110,7 @@ async fn vti_23_keys_create_over_https_needs_key_mint_not_admin() {
 
     let (reader, _) = did_for_seed(0x53);
     let token = ctx.mint_token(&reader, "reader", vec!["ctx1".into()]).await;
-    let (status, body) = post(
-        &router,
-        "/api/trust-tasks",
-        &token,
-        &keys_create(&ctx, 0x53),
-    )
-    .await;
+    let (status, body) = post(&router, "/trust-tasks", &token, &keys_create(&ctx, 0x53)).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["payload"]["code"], "permissionDenied", "{body}");
     assert!(
@@ -133,8 +121,12 @@ async fn vti_23_keys_create_over_https_needs_key_mint_not_admin() {
     );
 }
 
-/// VTI-23 on the legacy route: `POST /keys` is gated by the same operation, so
-/// it no longer demands the admin role from a caller that holds `key-mint`.
+/// VTI-23 on the legacy route: `POST /keys` was deleted outright (see the
+/// `deprecation` module docs — the REST routes over `acl`/`audit`/`config`/
+/// `contexts`/`did_templates`/`keys` went in one pass, no shim, no counter).
+/// The only root-level fallback left is the did:webvh wildcard GET route
+/// (`setup` → `webvh`, on by default), so a POST here 405s rather than
+/// 404ing, and never reaches a handler. Assert the route stays gone.
 #[tokio::test]
 async fn vti_23_post_keys_needs_key_mint_not_admin() {
     let (router, ctx) = build_test_app().await;
@@ -145,10 +137,9 @@ async fn vti_23_post_keys_needs_key_mint_not_admin() {
         .mint_token(&manager, "initiator", vec!["ctx1".into()])
         .await;
     let (status, body) = post(&router, "/keys", &token, &request).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-
-    let (reader, _) = did_for_seed(0x55);
-    let token = ctx.mint_token(&reader, "reader", vec!["ctx1".into()]).await;
-    let (status, body) = post(&router, "/keys", &token, &request).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(
+        status,
+        StatusCode::METHOD_NOT_ALLOWED,
+        "the retired /keys REST route must stay gone: {body}"
+    );
 }

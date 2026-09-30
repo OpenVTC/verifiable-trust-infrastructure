@@ -86,9 +86,19 @@ pub(crate) mod policy_tasks;
 pub(crate) mod surface_tasks;
 // `auth/signing-key/*`: the console's signing keys, as delegations.
 pub(crate) mod signing_key_tasks;
-// The website's content: chunked upload, deploy, ranged reads.
+// The website's content: chunked upload, deploy, ranged reads, the listing,
+// delete, generation history and rollback.
 #[cfg(feature = "website")]
 pub(crate) mod website_tasks;
+
+// Pre-session auth: `auth/{challenge,authenticate/{0.2,0.3},refresh/0.2}`.
+mod auth_tasks;
+// First-admin onboarding: `vtc/install/claim/{start,finish}/0.2`,
+// `vtc/admin/bootstrap/0.1`. Pre-session, like `auth_tasks`.
+mod install_tasks;
+// Cross-community recognition: `vtc/auth/recognise/{challenge/0.1,0.2}`.
+// Pre-session, like `auth_tasks`.
+mod recognise_tasks;
 
 // The member-facing verbs that were HTTPS REST only: renewal, DID rotation,
 // personhood revocation, the relationship graph's member verbs and the
@@ -950,6 +960,12 @@ async fn dispatch_typed(
         crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE => {
             handle_pcs_challenge(state, ctx, doc).await
         }
+        // The community's own act of turning hidden vetting on for a criterion. Admin REST with
+        // no Trust Task of its own until now; was `POST /vetting/hidden`.
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE => {
+            handle_hidden_publish(state, ctx, doc).await
+        }
         // The rooms family. Note what these still do not take: no `ctx`, and no auth
         // claims. A room operation is authorized by the authority chain the room itself
         // issued, never by this service's ACL, roster, or the caller's session —
@@ -1000,6 +1016,29 @@ async fn dispatch_typed(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("admin_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
+        uri if auth_tasks::URIS.contains(&uri) => {
+            match auth_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("auth_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
+        uri if install_tasks::URIS.contains(&uri) => {
+            match install_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("install_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
+        uri if recognise_tasks::URIS.contains(&uri) => {
+            match recognise_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("recognise_tasks::URIS names {uri}, which it does not route")
+                }
             }
         }
         #[cfg(feature = "website")]
@@ -1612,12 +1651,12 @@ mod spine_proof_tests {
             })
             .collect();
 
-        // Hidden vetting's four tasks (`zkp-pcs`) declare a proof since their specifications
-        // were published (trust-tasks-rs 0.22); they are bound only with `vetting-pcs`.
-        let hidden_vetting = if cfg!(feature = "vetting-pcs") { 4 } else { 0 };
+        // Hidden vetting's five tasks (`zkp-pcs`, and `vetting/hidden/publish`
+        // since #1858) declare a proof; they are bound only with `vetting-pcs`.
+        let hidden_vetting = if cfg!(feature = "vetting-pcs") { 5 } else { 0 };
         assert_eq!(
             required.len(),
-            96 + hidden_vetting,
+            100 + hidden_vetting,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1664,7 +1703,13 @@ mod spine_proof_tests {
              `auth/signing-key/{{enroll,list,revoke}}` tasks + the 5 website content \
              verbs (`vtc/website/upload/{{begin,chunk,commit,abort}}`, `vtc/website/deploy`; \
              `files/show` declares none and its handler refuses an unsigned one \
-             regardless) + the 4 hidden-vetting tasks under `vetting-pcs`; got {required:?}"
+             regardless) + the 2 website admin verbs that declare one \
+             (`vtc/website/files/delete`, `vtc/website/rollback`; `files/list` and \
+             `generations/list` declare none and `admin_signer` refuses an unsigned \
+             one regardless) + `auth/authenticate/{{0.2,0.3}}` (`auth/challenge` and \
+             `auth/refresh/0.2` declare none — the challenge names no identity to \
+             authorize, and the refresh token itself is the credential) + the 4 \
+             hidden-vetting tasks under `vetting-pcs`; got {required:?}"
         );
     }
 
@@ -1999,6 +2044,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     crate::vetting::pcs_tasks::EVENT_MODE_TYPE,
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
+    // The admin publish that turns hidden vetting on. Was `POST /vetting/hidden`.
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // The admin-facing member verbs (#1641 phase 2): the binding that holds the
@@ -2093,6 +2141,23 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     admin_tasks::INVITES_REVOKE_TYPE,
     admin_tasks::SESSIONS_LIST_TYPE,
     admin_tasks::REVOKE_SESSION_TYPE,
+    // Pre-session auth — replaced the dedicated, header-gated REST mounts at
+    // `POST /v1/auth/{challenge,,refresh}`. The bare `/auth/` path served
+    // `authenticate`; `refresh`'s cookie-bound REST route stays for the admin
+    // console's own session renewal (see `auth_tasks`'s module doc).
+    auth_tasks::CHALLENGE_TYPE,
+    auth_tasks::AUTHENTICATE_V0_2_TYPE,
+    auth_tasks::AUTHENTICATE_V0_3_TYPE,
+    auth_tasks::REFRESH_V0_2_TYPE,
+    // First-admin onboarding — replaced the bearer REST routes at
+    // `POST /v1/install/claim/{start,finish}` and `POST /v1/admin/bootstrap`.
+    install_tasks::CLAIM_START_TYPE,
+    install_tasks::CLAIM_FINISH_TYPE,
+    install_tasks::BOOTSTRAP_TYPE,
+    // Cross-community recognition — replaced the bearer REST routes at
+    // `POST /v1/auth/recognise/challenge` and `POST /v1/auth/recognise`.
+    recognise_tasks::CHALLENGE_TYPE,
+    recognise_tasks::RECOGNISE_TYPE,
     // The administrator's community verbs, which had only bearer REST. None
     // has a REST route now.
     community_tasks::PROFILE_SHOW_TYPE,
@@ -2162,6 +2227,17 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     website_tasks::DEPLOY_TYPE,
     #[cfg(feature = "website")]
     website_tasks::FILES_SHOW_TYPE,
+    // The website's listing, delete, generation history and rollback —
+    // replaced `GET /v1/website/files`, `DELETE /v1/website/files/{*path}`,
+    // `GET /v1/website/generations`, `POST /v1/website/rollback/{gen_num}`.
+    #[cfg(feature = "website")]
+    website_tasks::FILES_LIST_TYPE,
+    #[cfg(feature = "website")]
+    website_tasks::FILES_DELETE_TYPE,
+    #[cfg(feature = "website")]
+    website_tasks::GENERATIONS_LIST_TYPE,
+    #[cfg(feature = "website")]
+    website_tasks::ROLLBACK_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -2586,6 +2662,75 @@ async fn handle_pcs_challenge(
     match crate::vetting::pcs_tasks::handle_pcs_challenge(state, &applicant_did, &doc).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/hidden/publish/0.1` — turn on (or rotate) hidden-vetter admission for a
+/// criterion. Admin only, read from the signer's ACL entry — the same `VtcRole::Admin` the REST
+/// route's `AdminAuth` demanded, and the only gate that route applied. Was `POST /vetting/hidden`;
+/// the derivation itself is
+/// [`crate::routes::vetting_hidden::publish_hidden_vetting_core`], shared with that route.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_hidden_publish(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    if let Err(e) = actor.require_admin() {
+        return app_error_to_reject(&doc, &e);
+    }
+    let payload: trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload =
+        match parse_spec_payload(&doc) {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
+    let live_periods = payload
+        .live_periods
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>();
+    let live_token_labels = payload
+        .live_token_labels
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>();
+    let events = if payload.events.is_empty() {
+        None
+    } else {
+        match serde_json::to_value(&payload.events) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                return app_error_to_reject(
+                    &doc,
+                    &AppError::Internal(format!("encode events: {e}")),
+                );
+            }
+        }
+    };
+    match crate::routes::vetting_hidden::publish_hidden_vetting_core(
+        state,
+        payload.criterion_id.to_string(),
+        if live_periods.is_empty() {
+            None
+        } else {
+            Some(live_periods)
+        },
+        if live_token_labels.is_empty() {
+            None
+        } else {
+            Some(live_token_labels)
+        },
+        payload.drip_per_tick.map(|n| n.get() as usize),
+        events,
+    )
+    .await
+    {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => app_error_to_reject(&doc, &e),
     }
 }
 
@@ -4569,6 +4714,15 @@ mod tests {
             <trust_tasks_rs::specs::vtc::admin::invites::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::auth::sessions::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::auth::revoke_session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            auth_tasks::CHALLENGE_TYPE,
+            auth_tasks::AUTHENTICATE_V0_2_TYPE,
+            auth_tasks::AUTHENTICATE_V0_3_TYPE,
+            auth_tasks::REFRESH_V0_2_TYPE,
+            install_tasks::CLAIM_START_TYPE,
+            install_tasks::CLAIM_FINISH_TYPE,
+            install_tasks::BOOTSTRAP_TYPE,
+            recognise_tasks::CHALLENGE_TYPE,
+            recognise_tasks::RECOGNISE_TYPE,
             community_tasks::PROFILE_SHOW_TYPE,
             community_tasks::CEREMONIES_LIST_TYPE,
             community_tasks::DIRECTORY_QUERY_TYPE,
@@ -4630,6 +4784,14 @@ mod tests {
             website_tasks::DEPLOY_TYPE,
             #[cfg(feature = "website")]
             website_tasks::FILES_SHOW_TYPE,
+            #[cfg(feature = "website")]
+            website_tasks::FILES_LIST_TYPE,
+            #[cfg(feature = "website")]
+            website_tasks::FILES_DELETE_TYPE,
+            #[cfg(feature = "website")]
+            website_tasks::GENERATIONS_LIST_TYPE,
+            #[cfg(feature = "website")]
+            website_tasks::ROLLBACK_TYPE,
             // Hidden vetting. These four name a string constant rather than a generated
             // `TYPE_URI` because the pinned `trust-tasks-rs` does not carry their modules yet.
             // The specifications are merged (#618, #620) and the bindings generate as 0.22;
@@ -4645,6 +4807,8 @@ mod tests {
             crate::vetting::pcs_tasks::EVENT_MODE_TYPE,
             #[cfg(feature = "vetting-pcs")]
             crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
+            #[cfg(feature = "vetting-pcs")]
+            crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.

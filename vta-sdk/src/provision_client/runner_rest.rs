@@ -549,7 +549,10 @@ mod tests {
     async fn admin_only_returns_connected_on_successful_auth() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/challenge"))
+            .and(path("/trust-tasks"))
+            .and(body_partial_json(
+                json!({"type": crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "challenge": TEST_CHALLENGE,
                 "sessionId": "test-session",
@@ -559,7 +562,10 @@ mod tests {
             .await;
         // Canonical authenticate response shape: { session, tokens }.
         Mock::given(method("POST"))
-            .and(path("/auth/"))
+            .and(path("/trust-tasks"))
+            .and(body_partial_json(
+                json!({"type": crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "session": {
                     "id": "test-session",
@@ -626,7 +632,10 @@ mod tests {
     async fn admin_only_returns_pre_auth_failure_on_401() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/challenge"))
+            .and(path("/trust-tasks"))
+            .and(body_partial_json(
+                json!({"type": crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1}),
+            ))
             .respond_with(ResponseTemplate::new(401).set_body_string("ACL not found"))
             .mount(&server)
             .await;
@@ -675,7 +684,10 @@ mod tests {
     async fn full_setup_returns_pre_auth_failure_on_auth_401() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/challenge"))
+            .and(path("/trust-tasks"))
+            .and(body_partial_json(
+                json!({"type": crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1}),
+            ))
             .respond_with(ResponseTemplate::new(401).set_body_string("ACL not found"))
             .mount(&server)
             .await;
@@ -722,7 +734,10 @@ mod tests {
     /// Mount the two-step auth ceremony every post-auth test needs.
     async fn mount_auth(server: &MockServer) {
         Mock::given(method("POST"))
-            .and(path("/auth/challenge"))
+            .and(path("/trust-tasks"))
+            .and(body_partial_json(
+                json!({"type": crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "challenge": TEST_CHALLENGE,
                 "sessionId": "test-session",
@@ -731,7 +746,10 @@ mod tests {
             .mount(server)
             .await;
         Mock::given(method("POST"))
-            .and(path("/auth/"))
+            .and(path("/trust-tasks"))
+            .and(body_partial_json(
+                json!({"type": crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "session": {
                     "id": "test-session",
@@ -952,7 +970,10 @@ mod tests {
     async fn full_setup_returns_post_auth_failure_on_provision_400() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/auth/challenge"))
+            .and(path("/trust-tasks"))
+            .and(body_partial_json(
+                json!({"type": crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "challenge": TEST_CHALLENGE,
                 "sessionId": "test-session",
@@ -962,7 +983,10 @@ mod tests {
             .await;
         // Canonical authenticate response shape: { session, tokens }.
         Mock::given(method("POST"))
-            .and(path("/auth/"))
+            .and(path("/trust-tasks"))
+            .and(body_partial_json(
+                json!({"type": crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "session": {
                     "id": "test-session",

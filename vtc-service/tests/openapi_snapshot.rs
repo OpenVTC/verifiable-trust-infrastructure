@@ -36,6 +36,14 @@ fn rendered() -> String {
 
 /// The paths and schemas the `vetting-pcs` feature adds to the document.
 ///
+/// Empty now: `POST /vetting/hidden` was the feature's one REST route, and it
+/// is `vtc/vetting/hidden/publish/0.1` on the spine now, dispatched like every
+/// other trust task rather than mounted here — the same as the other three
+/// hidden-vetting tasks (`pcs-root`, `pcs-tokens`, `event-mode`,
+/// `pcs-challenge`), none of which ever added a path either. Kept (rather
+/// than deleted outright) as the seam a future feature-gated REST route would
+/// use.
+///
 /// The checked-in snapshot describes the **default** build, because that is the build the
 /// console is generated from and shipped against. A build with hidden-vetter admission compiled
 /// in legitimately serves one route more, and regenerating the snapshot under the feature would
@@ -46,11 +54,11 @@ fn rendered() -> String {
 /// exactly this*, and nothing else has moved. A second feature-gated route that forgot to come
 /// here fails with its own name in the message.
 #[cfg(feature = "vetting-pcs")]
-const VETTING_PCS_PATHS: &[&str] = &["/v1/vetting/hidden"];
+const VETTING_PCS_PATHS: &[&str] = &[];
 
 /// Likewise for the component schemas those paths pull in.
 #[cfg(feature = "vetting-pcs")]
-const VETTING_PCS_SCHEMAS: &[&str] = &["PublishHiddenVettingBody", "PublishHiddenVettingResponse"];
+const VETTING_PCS_SCHEMAS: &[&str] = &[];
 
 /// Take the feature's additions back out, so what remains is comparable with the shipped
 /// document. Fails loudly if an addition it does not know about is present, or if one it expects

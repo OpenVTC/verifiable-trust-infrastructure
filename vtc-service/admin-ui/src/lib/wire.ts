@@ -4,22 +4,6 @@
  */
 
 export interface paths {
-    "/v1/admin/bootstrap": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["bootstrap"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/admin/passkeys": {
         parameters: {
             query?: never;
@@ -100,26 +84,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/auth/": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * `POST /v1/auth/` — verify a DIDComm/SIOP/Trust-Task authentication
-         *     document and issue access + refresh tokens. Unauthenticated.
-         */
-        post: operations["authenticate"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/auth/admin-session": {
         parameters: {
             query?: never;
@@ -130,26 +94,6 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["admin_session"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/auth/challenge": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Thin dispatcher — every substantive concern (ACL, rate
-         *     limit, session persistence) lives in the canonical handler.
-         */
-        post: operations["authChallenge"];
         delete?: never;
         options?: never;
         head?: never;
@@ -193,47 +137,6 @@ export interface paths {
          *     `purpose: stepUp`.
          */
         post: operations["passkey_login_start"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/auth/recognise": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * `POST /v1/auth/recognise` — cross-community session mint from a
-         *     holder-signed VP embedding a foreign VAC + VMC.
-         */
-        post: operations["recognise"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/auth/recognise/challenge": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * `POST /v1/auth/recognise/challenge` — issue a single-use, TTL'd nonce the
-         *     holder binds into their recognise VP. Bound to this VTC's DID as the
-         *     audience, so the resulting VP can't be replayed against a different VTC.
-         */
-        post: operations["recognise_challenge"];
         delete?: never;
         options?: never;
         head?: never;
@@ -317,24 +220,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/community/branding": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** The community's branding; every member absent when none is set. */
-        get: operations["communityBrandingShow"];
-        /** Replace the community's branding. An empty body clears it. */
-        put: operations["communityBrandingUpdate"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/community/did-qr.svg": {
         parameters: {
             query?: never;
@@ -377,27 +262,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/community/requested-attributes": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** What the community asks applicants to tell it; an empty array when nothing. */
-        get: operations["communityRequestedAttributesShow"];
-        /**
-         * Replace what the community asks applicants to tell it. An empty array asks
-         *     for nothing.
-         */
-        put: operations["communityRequestedAttributesUpdate"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/credential-exchange/request": {
         parameters: {
             query?: never;
@@ -408,62 +272,6 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["credentialRequest"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/install/claim/finish": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * `POST /v1/install/claim/finish` — complete the WebAuthn install
-         *     ceremony, mint the admin DID + setup-session token. Unauthenticated.
-         */
-        post: operations["claim_finish"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/install/claim/start": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * `POST /v1/install/claim/start` — begin the WebAuthn install
-         *     ceremony for the first admin. Unauthenticated.
-         */
-        post: operations["claim_start"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/relationships": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["publish"];
         delete?: never;
         options?: never;
         head?: never;
@@ -593,64 +401,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/vetting/auto-grant": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** The automatic vetter-grant configuration and the last sweep. */
-        get: operations["vettingAutoGrantShow"];
-        /** Replace the automatic vetter-grant configuration. */
-        put: operations["vettingAutoGrantUpdate"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/vetting/revocations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Every vetting statement withdrawal notice, with the admissions it touches.
-         * @description A notice is matched to the join requests whose recorded vetting facts
-         *     counted a statement with the notice's issuer and id. Review is not yet a
-         *     workflow: `needsReview` says an admin should look, and nothing records that
-         *     one did.
-         */
-        get: operations["vettingRevocationList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/vetting/vetters": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Every vetter grant, newest first. */
-        get: operations["vettingVetterList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -732,9 +482,6 @@ export interface components {
              *     present. Required by canonical `acl/list`.
              */
             truncated: boolean;
-        };
-        AdminBootstrapRequest: {
-            setupSessionToken: string;
         };
         /**
          * @description `POST /v1/auth/passkey-login/finish`.
@@ -972,16 +719,6 @@ export interface components {
              */
             revoked: number;
         };
-        BootstrapResponse: {
-            adminDid: string;
-            /**
-             * Format: uuid
-             * @description `event_id` of the persisted `CommunityInstalled` audit
-             *     envelope. The caller can echo this in operator-facing UI so
-             *     the install URL → bootstrap → audit-row chain is traceable.
-             */
-            eventId: string;
-        };
         /**
          * @description `{ ceremonies: […] }` — the shape `vtc/ceremonies/list/0.1` publishes. The
          *     handler sent a top-level array until #1094. An array cannot grow a sibling
@@ -1004,79 +741,6 @@ export interface components {
             pkg: string;
             purpose: string;
             wired: string;
-        };
-        /**
-         * @description Client sends to `POST /auth/challenge`.
-         *
-         *     Wire shape conforms to `spec/auth/challenge/0.1`: the `did` field
-         *     serialises as `subject` per the canonical payload schema. The Rust
-         *     identifier stays `did` for consistency with `AuthClaims.did` and
-         *     the rest of the codebase. `alias = "did"` keeps clients that still
-         *     send the legacy name working through one upgrade cycle.
-         */
-        ChallengeRequest: {
-            subject: string;
-        };
-        /**
-         * @description Server responds from `POST /auth/challenge`.
-         *
-         *     Canonical shape: `{ challenge, sessionId, expiresAt }`.
-         *     `teeAttestation` is a VTA-specific top-level field documented as
-         *     a vendor extension — Nitro-Enclave deployments populate it; non-
-         *     TEE deployments omit it.
-         */
-        ChallengeResponse: {
-            /** @description base64url-encoded one-time nonce. */
-            challenge: string;
-            /** @description ISO-8601 timestamp after which the challenge MUST NOT be honored. */
-            expiresAt: string;
-            /**
-             * @description Opaque session identifier the producer echoes into the matching
-             *     `authenticate` document.
-             */
-            sessionId: string;
-            /**
-             * @description VTA-specific (optional): TEE attestation evidence bound to the
-             *     challenge nonce. Present when the VTA is running inside a Nitro
-             *     Enclave; proves the challenge was generated within the trusted
-             *     boundary. Absent for non-TEE deployments.
-             */
-            teeAttestation?: unknown;
-        };
-        ClaimFinishRequest: {
-            installToken: string;
-            registrationId: string;
-            webauthnResponse: Record<string, never>;
-        };
-        ClaimFinishResponse: {
-            adminDid: string;
-            setupSessionToken: string;
-        };
-        ClaimStartRequest: {
-            /**
-             * @description Out-of-band claim code the operator received alongside the
-             *     install URL. Required when the persisted token row has a
-             *     `claim_secret_hash`; ignored otherwise so legacy tokens
-             *     (and tests) keep working. The route handler verifies the
-             *     code against the hash before issuing the WebAuthn challenge
-             *     — a wrong or missing code returns 401 with discriminated
-             *     error codes (`claim_secret_required` / `claim_secret_invalid`).
-             */
-            claimSecret?: string | null;
-            installToken: string;
-        };
-        ClaimStartResponse: {
-            /**
-             * @description The WebAuthn `PublicKeyCredentialCreationOptions` payload —
-             *     the operator's UA passes this to `navigator.credentials.create()`.
-             */
-            options: Record<string, never>;
-            /**
-             * @description Echoes the install token's `jti`. Consumer must pass this
-             *     back to `claim/finish` so the server can index the stored
-             *     registration state.
-             */
-            registrationId: string;
         };
         /**
          * @description The singleton record. Field names are wire contract — operators
@@ -1589,6 +1253,30 @@ export interface components {
             label: string;
             value: string;
         };
+        FileEntry: {
+            /**
+             * @description A SHA-256 over the file's contents. Unspecced upstream and the item is
+             *     `additionalProperties: false`, so this is the half of the entry that
+             *     still diverges — it is real, useful data (the same hash the `show`
+             *     handler sends as an `ETag` header, letting a client detect a change
+             *     without downloading), so it goes upstream rather than in the bin.
+             */
+            etag: string;
+            /**
+             * Format: date-time
+             * @description `format: date-time`, not unix seconds. This was a `u64` until #1095 —
+             *     a type mismatch, not merely a format one: the schema says `string`.
+             */
+            modifiedAt: string;
+            path: string;
+            /**
+             * Format: int64
+             * @description `size`, not `sizeBytes` — the name the item schema requires. It was
+             *     `sizeBytes` until #1095, so the one member a listing exists to report
+             *     was absent under the name a conforming consumer looks for.
+             */
+            size: number;
+        };
         /**
          * @description One observation about the document-versus-binary relationship.
          *
@@ -1628,6 +1316,41 @@ export interface components {
          * @enum {string}
          */
         FindingCode: "advertisedNotServable" | "noMessagingAdvertised" | "noDidcommFallback" | "servedNotAdvertised";
+        /**
+         * @description One row of the listing, as the item schema names it.
+         *
+         *     A wire type distinct from the stored [`GenerationEntry`] because the two
+         *     disagree on purpose: a generation is a `u32` in storage, where arithmetic
+         *     and ordering want a number, and a string on the wire, where the schema
+         *     types it as one. `rollback` has always drawn that line the same way
+         *     (`gen_num.to_string()`); this listing sent the raw `u32` and named
+         *     `current` as `isCurrent` until #1095.
+         */
+        GenerationRow: {
+            current: boolean;
+            /**
+             * Format: date-time
+             * @description Both went upstream in trustoverip/dtgwg-trust-tasks-tf#262 — a
+             *     rollback target is not much use without knowing when it was deployed
+             *     or how big it is.
+             */
+            deployedAt: string;
+            /**
+             * @description Decimal, matching `rollback` — not `gen-N`, which is the directory
+             *     name rather than the label the API has ever used.
+             */
+            generation: string;
+            /** Format: int64 */
+            sizeBytes: number;
+        };
+        /**
+         * @description `{ generations: [...] }` — the shape `vtc/website/generations/list/0.1`
+         *     publishes. The handler returned a top-level array until #1059's witness
+         *     compared it with its schema; the rows always conformed.
+         */
+        GenerationsResponse: {
+            generations: components["schemas"]["GenerationRow"][];
+        };
         GitNsAccountList: {
             accounts: components["schemas"]["GitNsAccountRow"][];
             nextCursor?: string | null;
@@ -2441,6 +2164,10 @@ export interface components {
         ListInvitesResponse: {
             invites: components["schemas"]["InviteSummary"][];
         };
+        ListResponse: {
+            items: components["schemas"]["FileEntry"][];
+            nextCursor?: string | null;
+        };
         /**
          * @description `{ member: … }` — the shape `vtc/members/show/0.1` publishes. The row was
          *     returned bare until #1093; the row itself always conformed.
@@ -3003,86 +2730,6 @@ export interface components {
              */
             transports: components["schemas"]["TransportStatus"][];
         };
-        PublishBody: {
-            pop?: null | components["schemas"]["Value"];
-            /**
-             * @description The self-issued VRC, in the DTG Credentials wire form:
-             *     `@context` carrying the W3C v2 and DTG contexts, `type`
-             *     `["VerifiableCredential", "DTGCredential",
-             *     "RelationshipCredential"]`, an `issuer`,
-             *     `credentialSubject.id` naming the subject, and a
-             *     data-integrity proof. Built by
-             *     `dtg_credentials::DTGCredential::new_vrc`.
-             */
-            vrc: components["schemas"]["Value"];
-        };
-        PublishResponse: {
-            /** Format: uuid */
-            id: string;
-            issuerDid: string;
-            subjectDid: string;
-            vrcDigestMultibase: string;
-        };
-        /** @description The JSON body of a rate-limit refusal. */
-        RateLimitedBody: {
-            /** @description Always `rate_limited`. */
-            error: string;
-            /** @description Which of this service's limiters refused the request. */
-            limiter: string;
-            /** @description Operator-readable explanation. */
-            message: string;
-            /**
-             * Format: int64
-             * @description Seconds to wait before retrying; the same value as `Retry-After`.
-             */
-            retryAfterSecs: number;
-        };
-        /** @description Response body for `POST /v1/auth/recognise/challenge`. */
-        RecogniseChallengeResponse: {
-            /**
-             * Format: int64
-             * @description Unix-epoch seconds at which the challenge expires.
-             */
-            expiresAt: number;
-            /** @description Single-use nonce the holder must bind into the VP's top-level `nonce`. */
-            nonce: string;
-        };
-        RecogniseData: {
-            /** Format: int64 */
-            accessExpiresAt: number;
-            /**
-             * @description Minted JWT. Carries the *mapped local* role, not the
-             *     foreign one.
-             */
-            accessToken: string;
-            /**
-             * @description Foreign issuer DID, surfaced so the caller can correlate
-             *     the response with their request (the route doesn't echo
-             *     the credentials).
-             */
-            foreignIssuerDid: string;
-            /** @description Local role the foreign role mapped to. */
-            mappedRole: string;
-        };
-        /**
-         * @description Request body for `POST /v1/auth/recognise`. The caller supplies a
-         *     holder-signed W3C Verifiable Presentation that embeds the foreign VAC and
-         *     VMC in `verifiableCredential` and binds the challenge `nonce` (top-level)
-         *     plus this VTC's DID as the `domain`. The route verifies the holder proof,
-         *     the embedded issuer proofs, the status list, and the registry recognition
-         *     itself.
-         */
-        RecogniseRequest: {
-            /**
-             * @description A W3C Data-Integrity VP, holder-signed with
-             *     `proofPurpose: authentication`.
-             */
-            presentation: components["schemas"]["Value"];
-        };
-        RecogniseResponse: {
-            data: components["schemas"]["RecogniseData"];
-            sessionId: string;
-        };
         RecognitionCheck: {
             /** @description Echo of the queried DID. */
             did: string;
@@ -3512,11 +3159,6 @@ export interface components {
             policy: components["schemas"]["PolicyModuleResponse"];
         };
         Value: unknown;
-        /** @description `GET /v1/vetting/vetters` response: every grant, newest first. */
-        VetterGrantListResponse: {
-            /** @description The grants. */
-            vetters: components["schemas"]["VetterGrantRow"][];
-        };
         /** @description One vetter grant, as `GET /v1/vetting/vetters` reports it. */
         VetterGrantRow: {
             /** @description The vetter role credential's `id`. */
@@ -3573,11 +3215,6 @@ export interface components {
              * @description When the profile was last published.
              */
             updatedAt: string;
-        };
-        /** @description `GET /v1/vetting/revocations` response: every notice, newest first. */
-        VettingRevocationListResponse: {
-            /** @description The notices. */
-            revocations: components["schemas"]["VettingRevocationRow"][];
         };
         /** @description One withdrawal notice, and the admissions it touches. */
         VettingRevocationRow: {
@@ -3698,14 +3335,6 @@ export interface components {
          *     A producer marks a namespace only where the document's meaning depends on it. Marking one that merely carries a hint or an annotation turns every consumer that has not implemented it into a failure where it would otherwise have interoperated. JSON Schema cannot check either of those rules: that an entry names a present namespace is checkable only against the sibling `ext`, and whether a namespace is load-bearing is not a schema question at all. Both are consumer-side checks.
          */
         VtcJoinRequestsManifestV0_2ExtCritical: string[];
-        VtcJoinRequestsManifestV0_2RequestedAttribute: {
-            /** @description Why the community asks, in words shown to the applicant before they disclose. */
-            purpose?: string;
-            /** @description False for an attribute the applicant may decline. A submission missing a required one is refused with vtc/join-requests/submit:attributesMissing. */
-            required?: boolean;
-            /** @description A claim-type token from the persona claim-type registry (persona/_shared/0.1/CLAIM-TYPES.md) — `name.display`, `address.country` — or an `x:` extension token. */
-            type: string;
-        };
         VtcJoinRequestsManifestV0_2Response: {
             branding?: components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
             communityDid: string;
@@ -4137,6 +3766,38 @@ export interface components {
             validUntil: string;
         };
         /**
+         * @description `{ path, deleted }` — the shape `vtc/website/files/delete/0.1` publishes.
+         *     The handler returned 200 with zero bytes until #1059, discarding both
+         *     values it had in hand. `deleted` is always true here: the remove is
+         *     propagated as an error above if it fails.
+         */
+        WebsiteFileDeleteResponse: {
+            deleted: boolean;
+            path: string;
+        };
+        /**
+         * @description `{ generation, current, noop }` — the shape `vtc/website/rollback/0.1`
+         *     publishes. The handler returned 200 with zero bytes until #1059.
+         */
+        WebsiteRollbackResponse: {
+            /**
+             * @description Whether this generation is current after the swap. The spec types it
+             *     as a boolean, not as a generation number — it answers "did the
+             *     rollback take", not "which one is live". Always true on success; the
+             *     symlink swap propagates as an error otherwise.
+             */
+            current: boolean;
+            /**
+             * @description A string, as the spec types it — the same way the path segment is
+             *     typed there, while this handler takes it as a `u32`. Rendering it back
+             *     as a string keeps the response conforming; reconciling the two typings
+             *     is a separate question for the spec.
+             */
+            generation: string;
+            /** @description True when the target was already current, so nothing moved. */
+            noop: boolean;
+        };
+        /**
          * @description Wire shape returned by `whoami`. Minimal: enough for the admin
          *     SPA's nav header to show "Signed in as …" with a role badge,
          *     without needing to decode the JWT client-side (the session
@@ -4173,37 +3834,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    bootstrap: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AdminBootstrapRequest"];
-            };
-        };
-        responses: {
-            /** @description First admin bootstrapped; community installed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BootstrapResponse"];
-                };
-            };
-            /** @description An admin already exists */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     adminPasskeyList: {
         parameters: {
             query?: never;
@@ -4414,38 +4044,6 @@ export interface operations {
             };
         };
     };
-    authenticate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description DIDComm envelope, SIOP id_token envelope, or Trust-Task auth document */
-        requestBody: {
-            content: {
-                "text/plain": string;
-            };
-        };
-        responses: {
-            /** @description Access + refresh tokens */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuthenticateResponse"];
-                };
-            };
-            /** @description Authentication failed (bad proof, challenge mismatch, or replay) */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     admin_session: {
         parameters: {
             query?: never;
@@ -4469,37 +4067,6 @@ export interface operations {
                 };
             };
             /** @description Invalid or expired access token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    authChallenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChallengeRequest"];
-            };
-        };
-        responses: {
-            /** @description DID-auth challenge nonce */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ChallengeResponse"];
-                };
-            };
-            /** @description ACL gate rejected the subject DID */
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -4565,57 +4132,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    recognise: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecogniseRequest"];
-            };
-        };
-        responses: {
-            /** @description Minted cross-community session */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecogniseResponse"];
-                };
-            };
-            /** @description Holder-binding, recognition gate, or role-mapping denied */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    recognise_challenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Single-use recognition nonce */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RecogniseChallengeResponse"];
-                };
             };
         };
     };
@@ -4703,85 +4219,6 @@ export interface operations {
             };
         };
     };
-    communityBrandingShow: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The community's branding */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    communityBrandingUpdate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
-            };
-        };
-        responses: {
-            /** @description The stored branding */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2CommunityBranding"];
-                };
-            };
-            /** @description A member breaks its bounds */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Audit writer not configured — change refused */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     get_did_qr: {
         parameters: {
             query?: never;
@@ -4836,86 +4273,6 @@ export interface operations {
             };
         };
     };
-    communityRequestedAttributesShow: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The manifest's `requestedAttributes` */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2RequestedAttribute"][];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    communityRequestedAttributesUpdate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Replaces the whole list. `type` is a persona claim-type token such as `name.display`. */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2RequestedAttribute"][];
-            };
-        };
-        responses: {
-            /** @description What is now requested */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcJoinRequestsManifestV0_2RequestedAttribute"][];
-                };
-            };
-            /** @description An entry breaks its bounds, a type is requested twice, or more than 32 are given */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Audit writer not configured — change refused */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     credentialRequest: {
         parameters: {
             query?: never;
@@ -4958,115 +4315,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-        };
-    };
-    claim_finish: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ClaimFinishRequest"];
-            };
-        };
-        responses: {
-            /** @description Admin DID + setup-session token */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ClaimFinishResponse"];
-                };
-            };
-            /** @description Invalid install token or registration state */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    claim_start: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ClaimStartRequest"];
-            };
-        };
-        responses: {
-            /** @description WebAuthn creation challenge */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ClaimStartResponse"];
-                };
-            };
-            /** @description Invalid install token or claim secret */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    publish: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PublishBody"];
-            };
-        };
-        responses: {
-            /** @description Relationship (VRC) published */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PublishResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not the VRC issuer or policy denied */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The signer has used their publish allowance for the current window, or the source address tripped the unauthenticated limiter. Carries `x-rate-limit-source: vtc` and `Retry-After`. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RateLimitedBody"];
-                };
             };
         };
     };
@@ -5240,160 +4488,6 @@ export interface operations {
             };
             /** @description Task failed, e.g. duplicate request (trust-task-error) */
             422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingAutoGrantShow: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Configuration and last sweep */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AutoGrantStatus"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingAutoGrantUpdate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AutoGrantConfig"];
-            };
-        };
-        responses: {
-            /** @description The stored configuration and the last sweep */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AutoGrantStatus"];
-                };
-            };
-            /** @description A value is out of bounds */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Audit writer not configured — change refused */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingRevocationList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Every withdrawal notice, newest first */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VettingRevocationListResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingVetterList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Every vetter grant, newest first */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VetterGrantListResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
                 headers: {
                     [name: string]: unknown;
                 };

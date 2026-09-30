@@ -1,11 +1,8 @@
-use axum::Json;
 use axum::extract::State;
 use axum::response::Response;
 
-use crate::auth::SuperAdminAuth;
-use crate::error::{AppError, tee_attestation_error};
+use crate::error::AppError;
 use crate::server::AppState;
-use crate::tee::mnemonic_guard::MnemonicExportStatus;
 
 // The public attestation reads (`status`, a fresh or cached `report`,
 // `config-report`) were REST routes here. They are the
@@ -53,106 +50,9 @@ pub async fn did_log(
     Ok(super::self_hosted_did::did_log_response(&headers, log))
 }
 
-/// GET /attestation/mnemonic — Check mnemonic export window status (super admin only).
-#[utoipa::path(
-    get, path = "/attestation/mnemonic", tag = "attestation",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 200, description = "Mnemonic export window status", body = MnemonicExportStatus),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not a super-admin"),
-        (status = 503, description = "Mnemonic export not available"),
-    ),
-)]
-pub async fn mnemonic_status(
-    _auth: SuperAdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<MnemonicExportStatus>, AppError> {
-    let guard = state
-        .tee
-        .as_ref()
-        .and_then(|tc| tc.mnemonic_guard.as_ref())
-        .ok_or_else(|| {
-            tee_attestation_error(
-                "mnemonic export not available (TEE mode not active or no KMS bootstrap)",
-            )
-        })?;
-
-    Ok(Json(guard.status()))
-}
-
-/// POST /attestation/mnemonic — **refused**: the mnemonic export is served only
-/// as the Trust Task, over an end-to-end channel or signed by the caller.
-///
-/// Use `spec/vta/attestation/mnemonic-export/1.0` over DIDComm or TSP, or at
-/// first boot over Trust Tasks on HTTPS, signed by the caller with `clientDid`
-/// set to the caller's own DID. A bearer token alone never releases it. The
-/// mnemonic is the VTA's root derivation material (VTI-VTA-001, VTI-KEY-033);
-/// even sealed to the requester, a REST exchange carries the request and its
-/// answer in the clear wherever TLS terminates — for a TEE deployment, outside
-/// the enclave by definition. Checked after entitlement, like the backup export
-/// (`vta/backup/*` channel requirement), so a caller without the authority
-/// learns nothing about the channel rule.
-#[utoipa::path(
-    post, path = "/attestation/mnemonic", tag = "attestation",
-    security(("bearer_jwt" = [])),
-    responses(
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Always: the caller is not a super admin with key-export, or \
-            the export was asked for over REST, which is hop-by-hop. Send \
-            spec/vta/attestation/mnemonic-export/1.0 over DIDComm or TSP, or \
-            at first boot as a Trust Task signed by the caller with clientDid \
-            set to the caller's own DID"),
-    ),
-)]
-pub async fn mnemonic_export(
-    SuperAdminAuth(auth): SuperAdminAuth,
-    State(state): State<AppState>,
-) -> Result<Json<()>, AppError> {
-    crate::operations::keys::ensure_may_export(&state.acl_ks, &auth, "attestation/mnemonic")
-        .await?;
-    Err(AppError::Forbidden(
-        "the mnemonic export is refused over REST: a bearer token alone never releases it. \
-         Send spec/vta/attestation/mnemonic-export/1.0 over DIDComm or TSP, or at first boot \
-         as a Trust Task signed by the caller with clientDid set to the caller's own DID"
-            .into(),
-    ))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-
-    /// REST is hop-by-hop, so the mnemonic export is refused there even for a
-    /// super admin holding `key-export`, and the guard is left untouched.
-    #[tokio::test]
-    async fn the_rest_mnemonic_export_is_refused() {
-        let (mut state, _dir) = crate::test_support::build_signing_test_app_state().await;
-        let guard = Arc::new(crate::tee::mnemonic_guard::MnemonicExportGuard::new(
-            [0x42; 32], 60,
-        ));
-        let tee = crate::tee::init_tee(&crate::config::TeeConfig {
-            mode: crate::config::TeeMode::Simulated,
-            ..Default::default()
-        })
-        .unwrap()
-        .unwrap();
-        state.tee = Some(crate::server::TeeContext {
-            state: tee,
-            mnemonic_guard: Some(guard.clone()),
-        });
-        let err = mnemonic_export(
-            SuperAdminAuth(crate::test_support::super_admin_claims()),
-            State(state),
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            matches!(&err, AppError::Forbidden(m) if m.contains("DIDComm or TSP")),
-            "{err:?}"
-        );
-        assert!(!guard.status().already_exported);
-    }
-}
+// `GET /attestation/mnemonic` (status check) and `POST /attestation/mnemonic`
+// (always refused, 403) were REST routes here. They are
+// `vta/attestation/mnemonic-status/0.1` (super-admin only) and
+// `vta/attestation/mnemonic-export/1.0` (end-to-end only, or signed at first
+// boot) now, both served on `/trust-tasks`
+// (`crate::trust_tasks::attestation`).

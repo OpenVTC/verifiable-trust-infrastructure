@@ -327,14 +327,11 @@ async fn the_moved_bearer_routes_are_gone_and_the_client_routes_stay() {
         ("POST", "/v1/schemas/accepts"),
         ("GET", "/v1/rooms"),
         ("POST", "/v1/join-requests/query"),
-    ] {
-        assert!(
-            !bearer_route_served(&vtc, method, path).await,
-            "{method} {path} is still served"
-        );
-    }
-    // `vtc-client` still calls these.
-    for (method, path) in [
+        // `vtc-client` used to call these; #1858 moved the vetting admin
+        // reads (grants list, auto-grant, revocations) and the community
+        // branding + requested-attributes reads to signed-only Trust Tasks
+        // (`trust_tasks::surface_tasks`), so `vtc-client` signs them instead
+        // and their admin-bearer REST mounts have no caller left either.
         ("GET", "/v1/community/branding"),
         ("GET", "/v1/community/requested-attributes"),
         ("GET", "/v1/vetting/vetters"),
@@ -342,8 +339,8 @@ async fn the_moved_bearer_routes_are_gone_and_the_client_routes_stay() {
         ("GET", "/v1/vetting/revocations"),
     ] {
         assert!(
-            bearer_route_served(&vtc, method, path).await,
-            "{method} {path} is gone"
+            !bearer_route_served(&vtc, method, path).await,
+            "{method} {path} is still served"
         );
     }
 }

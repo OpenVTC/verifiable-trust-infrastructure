@@ -80,22 +80,38 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     };
     let payload = document.as_slice();
 
-    // The document and the VID we proved, and no decision of our own. Whether
-    // this is a request to authorize, a response to deliver, or an error to stop
-    // at is a fact about the document, so the spine reads it —
-    // `accept_from_proven_sender` explains why that is not the transport's call
-    // to make, and what it cost when it was. TSP seals to the recipient VID,
-    // same guarantee as authcrypt.
-    let outcome = crate::trust_tasks::transport::with_binding(
-        "tsp",
-        crate::trust_tasks::accept_from_proven_sender(
-            app_state,
-            sender_vid,
-            payload,
-            crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
-        ),
-    )
-    .await;
+    // Pre-session auth family (`auth/challenge`, `auth/authenticate/{0.2,0.3}`,
+    // `auth/refresh/0.2`): checked and dispatched before `sender_vid` is put to
+    // any use — none of this family's identity comes from the transport, so
+    // there is no ACL pre-filter to apply here. See
+    // `trust_tasks::auth::owns`/`dispatch_pre_session`.
+    let outcome = if crate::trust_tasks::ceremony::peek_type_uri(payload)
+        .as_deref()
+        .is_some_and(crate::trust_tasks::auth::owns)
+    {
+        crate::trust_tasks::transport::with_binding(
+            "tsp",
+            crate::trust_tasks::dispatch_auth_family(app_state, payload),
+        )
+        .await
+    } else {
+        // The document and the VID we proved, and no decision of our own.
+        // Whether this is a request to authorize, a response to deliver, or an
+        // error to stop at is a fact about the document, so the spine reads it —
+        // `accept_from_proven_sender` explains why that is not the transport's
+        // call to make, and what it cost when it was. TSP seals to the
+        // recipient VID, same guarantee as authcrypt.
+        crate::trust_tasks::transport::with_binding(
+            "tsp",
+            crate::trust_tasks::accept_from_proven_sender(
+                app_state,
+                sender_vid,
+                payload,
+                crate::trust_tasks::transport::TransportConfidentiality::EndToEnd,
+            ),
+        )
+        .await
+    };
     info!(
         sender = %sender_vid,
         status = %outcome.status,

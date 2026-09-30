@@ -80,7 +80,6 @@ export type VetterGrantResponse = Schemas["VtcVettingVettersGrantV0_1Response"];
 // The Trust Task bodies below are the published specifications' own: their
 // schemas are named `<slug><version><definition>` and rendered from the schema
 // each generated type embeds, not described by hand.
-export type VetterGrantList = Schemas["VetterGrantListResponse"];
 export type VetterGrantRow = Schemas["VetterGrantRow"];
 export type VetterProfileSummary = Schemas["VetterProfileSummary"];
 export type VetterGrantOrigin = Schemas["GrantOrigin"];
@@ -88,7 +87,6 @@ export type VetterResendResponse = Schemas["VtcVettingVettersResendV0_1Response"
 export type AutoGrantStatus = Schemas["AutoGrantStatus"];
 export type AutoGrantConfig = Schemas["AutoGrantConfig"];
 export type AutoGrantSweep = Schemas["AutoGrantSweep"];
-export type VettingRevocationList = Schemas["VettingRevocationListResponse"];
 export type VettingRevocationRow = Schemas["VettingRevocationRow"];
 export type RevocationReviewState = Schemas["RevocationReviewState"];
 /** The vetting vocabulary, as `vtc/join-requests/manifest/0.2` defines it. */

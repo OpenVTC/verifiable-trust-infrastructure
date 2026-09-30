@@ -65,15 +65,35 @@
 // guard keeps it that way.
 
 /// `spec/auth/challenge/0.1` — request a one-time nonce for a subject DID.
+/// Pre-session: no prior session or ACL standing is required to ask for one.
+/// Served on `/trust-tasks` by a family-owned dispatch
+/// (`vta-service::trust_tasks::auth`), not the generic ACL-gated pipeline —
+/// see [`REST_ROUTED_URIS`].
 pub const TASK_AUTH_CHALLENGE_0_1: &str = "https://trusttasks.org/spec/auth/challenge/0.1";
 
-/// `spec/auth/authenticate/0.1` — present the signed challenge inside a
-/// proof-bearing Trust Task document; the proof IS the authentication.
-pub const TASK_AUTH_AUTHENTICATE_0_1: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
+/// `spec/auth/authenticate/0.2` — present the signed challenge inside a
+/// proof-bearing Trust Task document; the proof IS the authentication. 0.2
+/// adds an optional `sessionKey` a producer may ask the VTA to bind (not yet
+/// honoured — refused as `sessionKeyUnsupported`). Supersedes 0.1, which this
+/// VTA no longer serves. Pre-session; see [`TASK_AUTH_CHALLENGE_0_1`].
+pub const TASK_AUTH_AUTHENTICATE_0_2: &str =
+    <trust_tasks_rs::specs::auth::authenticate::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `spec/auth/refresh/0.1` — exchange a refresh token for a fresh access
-/// token. Scope-monotonic.
-pub const TASK_AUTH_REFRESH_0_1: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+/// `spec/auth/authenticate/0.3` — adds an optional `principal` +
+/// `delegationEvidence` for a proxied login (a delegate authenticating on a
+/// principal's behalf). This VTA recognizes no delegation-evidence kind yet —
+/// a `principal` unequal to the document's own signer is refused as
+/// `delegationNotRecognized`; the ordinary (non-delegated) case behaves like
+/// 0.2. Pre-session; see [`TASK_AUTH_CHALLENGE_0_1`].
+pub const TASK_AUTH_AUTHENTICATE_0_3: &str =
+    <trust_tasks_rs::specs::auth::authenticate::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `spec/auth/refresh/0.2` — exchange a refresh token for a fresh access
+/// token. Scope-monotonic. Supersedes 0.1, which this VTA no longer serves.
+/// Carries no proof — the opaque refresh token is the credential.
+/// Pre-session; see [`TASK_AUTH_CHALLENGE_0_1`].
+pub const TASK_AUTH_REFRESH_0_2: &str =
+    <trust_tasks_rs::specs::auth::refresh::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `spec/auth/revoke-session/0.2` — end one named session, every session of
 /// the caller (`all: true`), or every session of a `subject` the caller may
@@ -1449,6 +1469,16 @@ pub const TASK_CONFIG_PATCH_0_1: &str = "https://trusttasks.org/spec/config/patc
 pub const TASK_MANAGEMENT_RELOAD_SERVICES_1_0: &str =
     "https://trusttasks.org/spec/vta/management/reload-services/1.0";
 
+// ─── Metrics slice (spec/vta/metrics/*) ──────────────────────────────────
+
+/// `spec/vta/metrics/show/0.1` — this agent's current metrics snapshot,
+/// reusing `did-management`'s shared `MetricsSnapshot` shape. Admin only:
+/// operational counters, not a public read. Was `GET /metrics`, a documented
+/// `REST_EXCEPTIONS` keep (a Prometheus scrape target) until this spec
+/// landed.
+pub const TASK_METRICS_SHOW_0_1: &str =
+    <trust_tasks_rs::specs::vta::metrics::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Passkey-VMs slice (spec/vta/passkey-vms/*) ──────────────────────────
 //
 // Feature-gated: handlers require BOTH `webvh` (DID-doc mutation +
@@ -1948,6 +1978,14 @@ pub const TASK_ATTESTATION_REPORT_0_1: &str =
 pub const TASK_ATTESTATION_CONFIG_REPORT_0_1: &str =
     <trust_tasks_rs::specs::vta::attestation::config_report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `spec/vta/attestation/mnemonic-status/0.1` — the export window's current
+/// state: active?, already exported?, entropy still held?, seconds
+/// remaining. Super-admin only, same as the export it watches over; carries
+/// no secret. TEE-feature-gated. Was `GET /attestation/mnemonic`, a
+/// documented `REST_EXCEPTIONS` keep until this spec landed.
+pub const TASK_ATTESTATION_MNEMONIC_STATUS_0_1: &str =
+    <trust_tasks_rs::specs::vta::attestation::mnemonic_status::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Health + restore slice (spec/vta/{health,restore}/*) ──────────────
 //
 // Two tasks with fixed disclosure policies rather than one whose answer varies
@@ -2101,8 +2139,9 @@ pub const TASK_MESSAGING_PING_0_1: &str = "https://trusttasks.org/spec/messaging
 pub const ALL_URIS: &[&str] = &[
     // Auth slice
     TASK_AUTH_CHALLENGE_0_1,
-    TASK_AUTH_AUTHENTICATE_0_1,
-    TASK_AUTH_REFRESH_0_1,
+    TASK_AUTH_AUTHENTICATE_0_2,
+    TASK_AUTH_AUTHENTICATE_0_3,
+    TASK_AUTH_REFRESH_0_2,
     TASK_AUTH_REVOKE_SESSION_0_2,
     TASK_AUTH_WHOAMI_0_1,
     TASK_AUTH_SESSIONS_LIST_0_1,
@@ -2232,6 +2271,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONFIG_PATCH_0_1,
     // Management slice
     TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
+    // Metrics slice
+    TASK_METRICS_SHOW_0_1,
     // Passkey-VMs slice (feature-gated: webvh + didcomm). Dual-accept
     // canonical 0.1 + retained pre-spec 1.0.
     TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
@@ -2297,6 +2338,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ATTESTATION_CONFIG_REPORT_0_1,
     // … and the authenticated, end-to-end-only mnemonic export
     TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+    // … and its super-admin-only status read
+    TASK_ATTESTATION_MNEMONIC_STATUS_0_1,
     // Consent slice
     TASK_CONSENT_REQUEST_1_0,
     TASK_CONSENT_DECISION_1_0,
@@ -2384,23 +2427,37 @@ pub const ALL_URIS: &[&str] = &[
     TASK_POLICY_DELETE_0_1,
 ];
 
-/// The subset of [`ALL_URIS`] served by **dedicated REST routes** rather than
-/// the `/trust-tasks` dispatcher: pre-login auth (challenge / authenticate /
-/// refresh) and passkey-login.
+/// The subset of [`ALL_URIS`] **not reachable through the session-gated
+/// `/trust-tasks` dispatch pipeline**: pre-login auth (challenge /
+/// authenticate / refresh) and passkey-login.
 ///
-/// These are **not** reachable through the generic dispatcher
-/// ([`crate::client::VtaClient::dispatch_trust_task`]) — pre-login auth has no
-/// session to carry. A generic
-/// "invoke any operation" surface (e.g. an MCP `vta_call` gateway) should
-/// exclude them; use [`dispatch_routed_uris`].
+/// Two different reasons land a URI here, and both predate any session:
+///
+/// - **passkey-login** is served by dedicated unauth REST routes
+///   (`/auth/passkey-login/{start,finish}`) with their own flat JSON wire
+///   shape — a WebAuthn ceremony, not a Trust-Task envelope.
+/// - **pre-login auth** (challenge / authenticate / refresh) IS a Trust-Task
+///   envelope, POSTed to `/trust-tasks` like everything else, but dispatched
+///   by a family-owned bypass (`vta-service::trust_tasks::auth::owns` /
+///   `dispatch_pre_session`) that runs *before* the ACL-gated pipeline —
+///   there is no session yet to carry `AuthClaims` through the generic
+///   dispatcher, and the document's own proof (present on authenticate,
+///   absent on challenge and refresh) is the whole of the authority it
+///   carries.
+///
+/// Neither is reachable through the generic dispatcher
+/// ([`crate::client::VtaClient::dispatch_trust_task`]), which assumes an
+/// established session. A generic "invoke any operation" surface (e.g. an MCP
+/// `vta_call` gateway) should exclude them; use [`dispatch_routed_uris`].
 ///
 /// Canonical list: `vta-service`'s dispatcher consumes this as its `REST_ROUTED`
 /// allowlist, so the two can't drift.
 #[allow(deprecated)] // intentionally names the deprecated passkey-login 0.1 URIs
 pub const REST_ROUTED_URIS: &[&str] = &[
     TASK_AUTH_CHALLENGE_0_1,
-    TASK_AUTH_AUTHENTICATE_0_1,
-    TASK_AUTH_REFRESH_0_1,
+    TASK_AUTH_AUTHENTICATE_0_2,
+    TASK_AUTH_AUTHENTICATE_0_3,
+    TASK_AUTH_REFRESH_0_2,
     TASK_AUTH_PASSKEY_LOGIN_START_0_1,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_2,

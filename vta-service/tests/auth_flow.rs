@@ -2,27 +2,56 @@
 //!
 //! Pre-consolidation, this file held three "tests" that were actually
 //! JSON serde round-trips and a `did.split('#')` tautology — none of
-//! them touched the `/auth/challenge` / `/auth/` / `/auth/refresh`
-//! route layer. They were deleted in the same commit that consolidated
-//! the integration-test scaffolding into `vta_service::test_support`,
-//! and replaced with the real route-level tests below.
+//! them touched the route layer. They were deleted in the same commit
+//! that consolidated the integration-test scaffolding into
+//! `vta_service::test_support`, and replaced with the real route-level
+//! tests below.
+//!
+//! The pre-session auth family (`auth/challenge/0.1`,
+//! `auth/authenticate/{0.2,0.3}`, `auth/refresh/0.2`) is Trust Tasks only
+//! now, dispatched on `POST /trust-tasks` by a family-owned dispatch that
+//! runs ahead of the ACL gate (see `trust_tasks::auth`) — the old
+//! `/auth/challenge`, `/auth/` and `/auth/refresh` REST routes are gone.
 //!
 //! What's covered:
-//! - `POST /auth/challenge` issues a session_id + challenge for an
+//! - `auth/challenge/0.1` issues a session_id + challenge for an
 //!   ACL-permitted DID; the session is persisted under the returned
 //!   session_id with the same challenge bytes.
-//! - `POST /auth/refresh` rejects malformed and unknown refresh
-//!   tokens with 401 (regression-pin against silent 500s).
+//! - `auth/refresh/0.2` rejects malformed and unknown refresh
+//!   tokens with 403 (`permissionDenied` — see `trust-tasks-https::
+//!   status_for_code`; regression-pin against silent 500s).
 //! - `TestAppContext` exposes the keyspaces auth tests need —
 //!   surface check so future contributors don't have to grep.
 //!
 //! - The full challenge → DI-signed Trust Task → tokens round trip over
-//!   plain REST, driven by the *SDK's own* document builder. `did:key`
+//!   plain HTTPS, driven by the *SDK's own* document builder. `did:key`
 //!   resolution is local, so no network resolver is needed.
 //!
 //! What's NOT covered (intentional — needs real DID resolver):
 //! - The same round trip over a DIDComm envelope, which needs a real
 //!   mediator-backed ATM. That lives in the e2e suite.
+//!
+//! **The plaintext/forged-sender DIDComm envelope tests that used to live
+//! here are gone, not merely moved.** They drove the old `/auth/` and
+//! `/auth/refresh` REST handlers' own inline `atm.unpack` +
+//! `bind_authcrypt_sender` guard directly with a crafted envelope — a
+//! synchronous, offline-testable entry point. `POST /trust-tasks` has no
+//! equivalent: it only ever reads a plain JSON Trust-Task envelope
+//! (`ceremony::peek_type_uri`), never calls `atm.unpack`, and DIDComm-
+//! transported Trust Tasks (including this auth family) now run through
+//! the generic mediator-relay inbound pipeline
+//! (`messaging::service::{inbound_gate, handle_didcomm}`), which is
+//! inherently asynchronous and has no offline/in-process entry point here.
+//! The security property itself is not untested: `inbound_gate` refuses
+//! any frame that is not encrypted + transport-verified, for every Trust
+//! Task alike (unit-tested in `messaging::service`, plus
+//! `keyring_vti_27_gate`), the skid/apu sender-binding guard
+//! (`vti_common::auth::bind_authcrypt_sender`) keeps its own unit tests and
+//! its one remaining direct-unpack caller (vault unseal) is pinned by
+//! `vault_unseal_authcrypt.rs` / `auth_authcrypt_sender_binding.rs`, and a
+//! live-mediator authcrypt round trip lives in the e2e suite. What is gone
+//! is the ability to drive *this specific* forged-sender battery
+//! synchronously against the auth family from this test binary.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -66,11 +95,37 @@ fn post_raw(uri: &str, body: String) -> Request<Body> {
         .unwrap()
 }
 
-/// `POST /auth/challenge` returns a session_id + challenge nonce and
-/// persists the challenge so the matching `POST /auth/` can look it up.
-/// Requires an ACL entry — the challenge endpoint is gated on caller
-/// being in the ACL (otherwise an attacker could enumerate session
-/// state by spamming challenge requests for arbitrary DIDs).
+/// A signed-nothing `auth/challenge/0.1` Trust Task for `subject`, addressed
+/// to a recipient the VTA under test does not have to be.
+fn challenge_doc(subject: &str) -> Value {
+    json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/auth/challenge/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issuer": subject,
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        "payload": { "subject": subject },
+    })
+}
+
+/// A signed-nothing `auth/refresh/0.2` Trust Task carrying `refresh_token` —
+/// unsigned by design, the opaque token is the sole credential.
+fn refresh_doc(refresh_token: &str) -> Value {
+    json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/auth/refresh/0.2",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issuer": "did:key:z6MkRefresher",
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        "payload": { "refreshToken": refresh_token },
+    })
+}
+
+/// `auth/challenge/0.1` (over `POST /trust-tasks`) returns a session_id +
+/// challenge nonce and persists the challenge so the matching authenticate
+/// document can look it up. Requires an ACL entry — the challenge endpoint is
+/// gated on caller being in the ACL (otherwise an attacker could enumerate
+/// session state by spamming challenge requests for arbitrary DIDs).
 #[tokio::test]
 async fn challenge_endpoint_issues_session_and_persists_it() {
     let (router, ctx) = build_test_app().await;
@@ -83,26 +138,31 @@ async fn challenge_endpoint_issues_session_and_persists_it() {
         .await
         .expect("seed admin ACL");
 
-    let (status, body) = request(&router, post_json("/auth/challenge", json!({"did": did}))).await;
+    let (status, body) = request(&router, post_json("/trust-tasks", challenge_doc(did))).await;
     assert_eq!(
         status,
         StatusCode::OK,
         "challenge issuance must succeed for an ACL-permitted DID; got body: {body}"
     );
 
-    // Canonical wire shape: { challenge, sessionId, expiresAt } per
-    // spec/auth/challenge/0.1#response — no `data` envelope.
-    let session_id = body["sessionId"].as_str().expect("sessionId in response");
-    let challenge = body["challenge"].as_str().expect("challenge in response");
+    // Canonical wire shape: a TT `#response` document whose `payload` is
+    // `{ challenge, sessionId, expiresAt }` per spec/auth/challenge/0.1#response.
+    let payload = &body["payload"];
+    let session_id = payload["sessionId"]
+        .as_str()
+        .expect("sessionId in response");
+    let challenge = payload["challenge"]
+        .as_str()
+        .expect("challenge in response");
     assert!(
-        body["expiresAt"].as_str().is_some(),
+        payload["expiresAt"].as_str().is_some(),
         "canonical shape includes expiresAt: {body}"
     );
     assert!(!session_id.is_empty(), "session_id must be non-empty");
     assert!(!challenge.is_empty(), "challenge must be non-empty");
 
-    // The session row must be persisted so the matching `POST /auth/`
-    // can later look it up. Read it back directly via the test
+    // The session row must be persisted so the matching authenticate
+    // document can later look it up. Read it back directly via the test
     // context; this is exactly what the auth handler does internally.
     let session_row = vti_common::auth::session::get_session(&ctx.sessions_ks, session_id)
         .await
@@ -114,7 +174,7 @@ async fn challenge_endpoint_issues_session_and_persists_it() {
     );
     assert_eq!(
         session.challenge, challenge,
-        "persisted challenge must match the one returned to the client (so `/auth/` can verify the signature against the same nonce the client signed)"
+        "persisted challenge must match the one returned to the client (so authenticate can verify the signature against the same nonce the client signed)"
     );
 }
 
@@ -133,17 +193,18 @@ fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     (did, multibase::encode(multibase::Base::Base58Btc, &buf))
 }
 
-/// The canonical REST login, end to end: `/auth/challenge` → a Trust Task
-/// signed by the SDK's own builder → tokens. No mediator, no ATM.
+/// The canonical HTTPS login, end to end: `auth/challenge/0.1` → a Trust Task
+/// signed by the SDK's own builder → tokens, both over `POST /trust-tasks`.
+/// No mediator, no ATM.
 ///
 /// This is the pin for the regression that broke every REST client: the SDK's
-/// `auth_light` tier packed an **anoncrypt** DIDComm envelope, and once
-/// `/auth/` began requiring an authenticated sender (VTI #771) the server
-/// answered "authenticate message must be an authenticated (authcrypt) DIDComm
-/// envelope" to every one of them. Driving the server with the *client's* own
-/// document — rather than a hand-rolled fixture — is what makes this test able
-/// to catch that class: a builder that drifts out of what the route accepts
-/// fails here.
+/// `auth_light` tier packed an **anoncrypt** DIDComm envelope, and once the
+/// authenticate route began requiring an authenticated sender (VTI #771) the
+/// server answered "authenticate message must be an authenticated (authcrypt)
+/// DIDComm envelope" to every one of them. Driving the server with the
+/// *client's* own document — rather than a hand-rolled fixture — is what makes
+/// this test able to catch that class: a builder that drifts out of what the
+/// route accepts fails here.
 #[tokio::test]
 async fn di_signed_trust_task_authenticates_over_rest() {
     let (router, ctx) = build_test_app().await;
@@ -156,13 +217,13 @@ async fn di_signed_trust_task_authenticates_over_rest() {
         .expect("seed admin ACL");
 
     let (status, challenge_body) =
-        request(&router, post_json("/auth/challenge", json!({"did": did}))).await;
+        request(&router, post_json("/trust-tasks", challenge_doc(&did))).await;
     assert_eq!(status, StatusCode::OK, "challenge: {challenge_body}");
-    let challenge = challenge_body["challenge"].as_str().unwrap();
-    let session_id = challenge_body["sessionId"].as_str().unwrap();
+    let challenge = challenge_body["payload"]["challenge"].as_str().unwrap();
+    let session_id = challenge_body["payload"]["sessionId"].as_str().unwrap();
 
-    // The exact bytes `vta_sdk::auth_light::challenge_response_light` puts on
-    // the wire.
+    // The exact bytes `vta_sdk::auth_di::sign_authenticate_doc` puts on the
+    // wire (an `auth/authenticate/0.2` Trust Task).
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
         &private_key_multibase,
@@ -175,7 +236,7 @@ async fn di_signed_trust_task_authenticates_over_rest() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/auth/")
+        .uri("/trust-tasks")
         .header("content-type", "application/json")
         .header("x-forwarded-for", "203.0.113.1")
         .body(Body::from(doc))
@@ -185,7 +246,7 @@ async fn di_signed_trust_task_authenticates_over_rest() {
     assert_eq!(
         status,
         StatusCode::OK,
-        "a DI-signed Trust Task must authenticate over plain REST; got: {body}"
+        "a DI-signed Trust Task must authenticate over plain HTTPS; got: {body}"
     );
     // The response is a Trust-Task `#response` document wrapping the tokens —
     // the shape the SDK unwraps in `auth_di::parse_auth_response`.
@@ -204,7 +265,7 @@ async fn di_signed_trust_task_authenticates_over_rest() {
 
 /// The proof is not decoration: the same document with a challenge the holder
 /// never signed is rejected. Guards against a future "parse the payload, skip
-/// the proof" shortcut on the REST path.
+/// the proof" shortcut on the HTTPS path.
 #[tokio::test]
 async fn di_signed_trust_task_with_tampered_challenge_is_rejected() {
     let (router, ctx) = build_test_app().await;
@@ -217,8 +278,8 @@ async fn di_signed_trust_task_with_tampered_challenge_is_rejected() {
         .expect("seed admin ACL");
 
     let (_, challenge_body) =
-        request(&router, post_json("/auth/challenge", json!({"did": did}))).await;
-    let session_id = challenge_body["sessionId"].as_str().unwrap();
+        request(&router, post_json("/trust-tasks", challenge_doc(&did))).await;
+    let session_id = challenge_body["payload"]["sessionId"].as_str().unwrap();
 
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
@@ -231,20 +292,22 @@ async fn di_signed_trust_task_with_tampered_challenge_is_rejected() {
     .expect("sign");
     // Swap the challenge *after* signing — the proof no longer covers it.
     let mut tampered: Value = serde_json::from_str(&doc).unwrap();
-    tampered["payload"]["challenge"] = json!(challenge_body["challenge"].as_str().unwrap());
+    tampered["payload"]["challenge"] =
+        json!(challenge_body["payload"]["challenge"].as_str().unwrap());
 
     let req = Request::builder()
         .method("POST")
-        .uri("/auth/")
+        .uri("/trust-tasks")
         .header("content-type", "application/json")
         .header("x-forwarded-for", "203.0.113.1")
         .body(Body::from(tampered.to_string()))
         .unwrap();
     let (status, body) = request(&router, req).await;
 
+    // `ProofInvalid` maps to 422, not 401 (`trust-tasks-https::status_for_code`).
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::UNPROCESSABLE_ENTITY,
         "a post-signature edit must not authenticate; got: {body}"
     );
 }
@@ -253,132 +316,73 @@ async fn di_signed_trust_task_with_tampered_challenge_is_rejected() {
 /// attacker must not be able to obtain an admin JWT by POSTing a
 /// **plaintext** DIDComm message with a forged `from` field.
 ///
-/// The attack: the challenge + session_id handed out by
-/// `/auth/challenge` are public, and `atm.unpack` parses a plaintext
-/// DIDComm envelope (a JSON with a `type` field but no JWE/JWS layer),
-/// returning an attacker-controlled `from` with `authenticated: false`.
-/// The `/auth/` handler previously discarded that metadata and trusted
-/// `msg.from` as the proven signer, so `from: <admin DID>` echoing the
-/// public challenge minted an admin token.
+/// This used to drive the exploit straight at the retired `/auth/` REST
+/// handler, which called `atm.unpack` inline and — pre-fix — trusted
+/// `msg.from` as the proven signer. That handler, and the entry point that let
+/// a test post a raw DIDComm envelope and get a synchronous answer, are both
+/// gone: `POST /trust-tasks` only ever reads a plain JSON Trust-Task envelope
+/// (`ceremony::peek_type_uri`) and never calls `atm.unpack`; a DIDComm-carried
+/// Trust Task (the auth family included) now arrives only through the
+/// mediator-relay inbound pipeline, which has no offline/in-process entry
+/// point here (see the module doc above).
 ///
-/// The fix rejects any envelope that isn't authenticated + encrypted
-/// (legitimate clients authcrypt via `pack_encrypted`). This test wires
-/// a real (offline) ATM so the request reaches `atm.unpack` and the new
-/// guard — *not* the "ATM not configured" short-circuit — then drives
-/// the exact exploit and asserts a 401 attributable to the guard.
+/// So this pins that the old path is gone rather than re-proving the guard: a
+/// plaintext DIDComm envelope posted to the literal retired `/auth/` path hits
+/// nothing but the did:webvh wildcard GET route (`setup` → `webvh`, on by
+/// default) and 405s. The forged-sender property itself still holds — see the
+/// module doc for where it is pinned now.
 #[tokio::test]
 async fn plaintext_didcomm_with_forged_sender_is_rejected() {
-    use vta_service::test_support::{TestAppOptions, build_offline_atm, build_test_app_with};
-
-    let (router, ctx) = build_test_app_with(TestAppOptions {
-        atm: Some(build_offline_atm().await),
-        ..Default::default()
-    })
-    .await;
+    let (router, _ctx) = build_test_app().await;
 
     let admin_did = "did:key:z6MkForgedAdminTarget";
-    let entry = vti_common::acl::AclEntry::new(admin_did, vti_common::acl::Role::Admin, "test")
-        .with_created_at(1);
-    vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
-        .await
-        .expect("seed admin ACL");
-
-    // Step 1 — obtain the public challenge + session_id for the target
-    // admin DID (no secret involved; the endpoint is pre-auth).
-    let (status, body) = request(
-        &router,
-        post_json("/auth/challenge", json!({"did": admin_did})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "challenge issuance: {body}");
-    let session_id = body["sessionId"].as_str().expect("sessionId");
-    let challenge = body["challenge"].as_str().expect("challenge");
-
-    // Step 2 — craft a plaintext DIDComm message forging `from` = admin
-    // DID. No encryption, no signature; `body` (not `payload`) means it
-    // is a DIDComm envelope, not a Trust Task, so it reaches `atm.unpack`.
     let forged = json!({
         "id": "attacker-supplied-id",
         "typ": "application/didcomm-plain+json",
         "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
         "from": admin_did,
         "to": ["did:key:z6MkVtaServiceUnderTest"],
-        "body": { "challenge": challenge, "session_id": session_id },
+        "body": { "challenge": "whatever", "session_id": "whatever" },
     });
 
     let (status, body) = request(&router, post_raw("/auth/", forged.to_string())).await;
 
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
-        "a plaintext DIDComm message with a forged sender must be rejected, not issued an admin JWT; got body: {body}"
-    );
-    // The 401 must come from an envelope/authcrypt check, not the
-    // ATM-not-configured short-circuit — otherwise the test would pass without
-    // exercising the fix.
-    //
-    // Two layers can legitimately produce it, and which one fires depends on the
-    // messaging library rather than on us. `bind_authcrypt_sender` is ours;
-    // affinidi-messaging-didcomm 0.15.8 also refuses a Plaintext envelope during
-    // `unpack`, before ours is reached. That is the rejection moving *earlier*,
-    // which is strictly better — our guard stays as defence in depth for
-    // envelopes the library does accept (anoncrypt) — so accept either
-    // attribution and keep excluding the short-circuit.
-    let err = body["error"].as_str().unwrap_or_default();
-    assert!(
-        err.contains("authenticated (authcrypt) DIDComm envelope")
-            || err.contains("envelope wrapping Plaintext is not in the accepted set"),
-        "401 must be attributable to the plaintext/authcrypt guard, got: {body}"
-    );
-    assert!(
-        !err.contains("ATM not configured"),
-        "401 came from the ATM-not-configured short-circuit, so the guard was never \
-         exercised: {body}"
-    );
-    assert!(
-        body.get("tokens").is_none() && body.get("access_token").is_none(),
-        "no token may be issued for a forged plaintext message: {body}"
-    );
-
-    // The challenge session must remain unconsumed (still in
-    // ChallengeSent), so the forged attempt didn't advance auth state.
-    let session = vti_common::auth::session::get_session(&ctx.sessions_ks, session_id)
-        .await
-        .expect("session lookup")
-        .expect("challenge session still present");
-    assert_eq!(
-        session.state,
-        vti_common::auth::session::SessionState::ChallengeSent,
-        "forged authenticate attempt must not transition the session to Authenticated"
+        StatusCode::METHOD_NOT_ALLOWED,
+        "the retired /auth/ REST route must stay gone: {body}"
     );
 }
 
 /// `POST /auth/refresh` with a malformed refresh token returns 401, not
 /// 500. Pre-fix-bundle, a parse-failure on the refresh token bubbled
-/// up as an internal error; this test pins the user-facing 401 so a
+/// up as an internal error; this used to pin the user-facing 401 so a
 /// future refactor doesn't regress error mapping.
+///
+/// That REST route is gone; `auth/refresh/0.2` is now dispatched on
+/// `POST /trust-tasks`, which folds every authentication/authorization
+/// refusal into `permissionDenied` (HTTP 403 — see `trust-tasks-https::
+/// status_for_code`), so this pins 403 rather than 401 now, but the same
+/// underlying property: a parse failure surfaces as a clean client refusal,
+/// never a 500.
 #[tokio::test]
 async fn refresh_endpoint_rejects_malformed_token_with_401() {
     let (router, _ctx) = build_test_app().await;
 
     let (status, _body) = request(
         &router,
-        post_json(
-            "/auth/refresh",
-            json!({"refresh_token": "not-a-real-refresh-token"}),
-        ),
+        post_json("/trust-tasks", refresh_doc("not-a-real-refresh-token")),
     )
     .await;
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
-        "malformed refresh token must surface as 401, not 500"
+        StatusCode::FORBIDDEN,
+        "malformed refresh token must surface as 403, not 500"
     );
 }
 
-/// `POST /auth/refresh` with an unknown but well-shaped token also
-/// returns 401. Confirms the lookup-miss path doesn't leak distinct
-/// error info.
+/// `auth/refresh/0.2` with an unknown but well-shaped token also returns 403.
+/// Confirms the lookup-miss path doesn't leak distinct error info.
 #[tokio::test]
 async fn refresh_endpoint_rejects_unknown_token_with_401() {
     let (router, _ctx) = build_test_app().await;
@@ -388,37 +392,28 @@ async fn refresh_endpoint_rejects_unknown_token_with_401() {
     let (status, _body) = request(
         &router,
         post_json(
-            "/auth/refresh",
-            json!({"refresh_token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}),
+            "/trust-tasks",
+            refresh_doc("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
         ),
     )
     .await;
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
-        "unknown refresh token must surface as 401"
+        StatusCode::FORBIDDEN,
+        "unknown refresh token must surface as 403"
     );
 }
 
-/// Regression pin for the forged-sender auth bypass on the refresh path: a plaintext
-/// DIDComm `auth/refresh/0.1` envelope must be rejected by the same
-/// authcrypt guard as `/auth/`. The opaque refresh token is the primary
-/// credential, but the DIDComm path binds `msg.from` to the session DID
-/// inside `handle_refresh`; accepting a plaintext (forgeable) sender
-/// would defeat that binding, so the envelope must be authcrypt.
+/// Regression pin for the forged-sender auth bypass on the refresh path: a
+/// plaintext DIDComm `auth/refresh` envelope must be rejected, not trusted.
 ///
-/// A DIDComm envelope carries `body` (not `payload`), so it falls past
-/// `try_refresh_trust_task` to `atm.unpack` and hits the guard. No valid
-/// refresh token is needed — the guard runs before the token is read.
+/// As with `plaintext_didcomm_with_forged_sender_is_rejected` (see the module
+/// doc), the entry point this drove — `/auth/refresh` accepting a raw DIDComm
+/// envelope and answering synchronously — is gone, with no offline
+/// replacement here. Pin that the retired path stays gone.
 #[tokio::test]
 async fn plaintext_didcomm_refresh_is_rejected() {
-    use vta_service::test_support::{TestAppOptions, build_offline_atm, build_test_app_with};
-
-    let (router, _ctx) = build_test_app_with(TestAppOptions {
-        atm: Some(build_offline_atm().await),
-        ..Default::default()
-    })
-    .await;
+    let (router, _ctx) = build_test_app().await;
 
     let forged = json!({
         "id": "attacker-supplied-id",
@@ -433,25 +428,8 @@ async fn plaintext_didcomm_refresh_is_rejected() {
 
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
-        "a plaintext DIDComm refresh must be rejected by the authcrypt guard; got: {body}"
-    );
-    // Either layer may reject it — see the note in
-    // `plaintext_didcomm_with_forged_sender_is_rejected`.
-    let err = body["error"].as_str().unwrap_or_default();
-    assert!(
-        err.contains("authenticated (authcrypt) DIDComm envelope")
-            || err.contains("envelope wrapping Plaintext is not in the accepted set"),
-        "401 must be attributable to the refresh authcrypt guard, got: {body}"
-    );
-    assert!(
-        !err.contains("ATM not configured"),
-        "401 came from the ATM-not-configured short-circuit, so the guard was never \
-         exercised: {body}"
-    );
-    assert!(
-        body.get("tokens").is_none(),
-        "no token may be issued for a forged plaintext refresh: {body}"
+        StatusCode::METHOD_NOT_ALLOWED,
+        "the retired /auth/refresh REST route must stay gone: {body}"
     );
 }
 
@@ -474,7 +452,7 @@ async fn test_app_context_exposes_required_keyspaces() {
 fn post_doc(doc: String) -> Request<Body> {
     Request::builder()
         .method("POST")
-        .uri("/auth/")
+        .uri("/trust-tasks")
         .header("content-type", "application/json")
         .header("x-forwarded-for", "203.0.113.1")
         .body(Body::from(doc))
@@ -493,10 +471,10 @@ async fn a_document_addressed_to_another_service_is_refused() {
     vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
         .await
         .unwrap();
-    let (_, ch) = request(&router, post_json("/auth/challenge", json!({"did": did}))).await;
+    let (_, ch) = request(&router, post_json("/trust-tasks", challenge_doc(&did))).await;
     let (challenge, session_id) = (
-        ch["challenge"].as_str().unwrap(),
-        ch["sessionId"].as_str().unwrap(),
+        ch["payload"]["challenge"].as_str().unwrap(),
+        ch["payload"]["sessionId"].as_str().unwrap(),
     );
 
     let relayed = vta_sdk::auth_di::sign_authenticate_doc(
@@ -509,7 +487,11 @@ async fn a_document_addressed_to_another_service_is_refused() {
     .await
     .unwrap();
     let (status, body) = request(&router, post_doc(relayed)).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    // The audience check surfaces as `AppError::Authentication`, which
+    // `app_error_to_reject` folds into `permissionDenied` (HTTP 403 — see
+    // `trust-tasks-https::status_for_code`), with `wrongRecipient` named in
+    // the message rather than carried as its own standard code.
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(body.to_string().contains("wrongRecipient"), "{body}");
     assert!(body["payload"].get("tokens").is_none(), "{body}");
 
@@ -536,11 +518,11 @@ async fn a_document_with_no_recipient_is_malformed() {
     vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
         .await
         .unwrap();
-    let (_, ch) = request(&router, post_json("/auth/challenge", json!({"did": did}))).await;
+    let (_, ch) = request(&router, post_json("/trust-tasks", challenge_doc(&did))).await;
 
     let mut doc = vta_sdk::trust_task_sign::build_unsigned(
-        "https://trusttasks.org/spec/auth/authenticate/0.1",
-        json!({ "challenge": ch["challenge"], "sessionId": ch["sessionId"], "scope": [] }),
+        "https://trusttasks.org/spec/auth/authenticate/0.2",
+        json!({ "challenge": ch["payload"]["challenge"], "sessionId": ch["payload"]["sessionId"], "scope": [] }),
         &did,
         "unused",
     )

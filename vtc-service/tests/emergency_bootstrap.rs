@@ -587,9 +587,20 @@ async fn fresh_install_url_works_for_claim_start_after_emergency_bootstrap() {
     // invites), so the operator types both URL and code at claim
     // time. Without the code the daemon returns 401
     // `claim_secret_required`.
-    let body = json!({
-        "installToken": token,
-        "claimSecret": outcome.claim_code,
+    // `vtc/install/claim/start/0.2` is a signed document only now
+    // (`trust_tasks::install_tasks`) — carries no proof requirement (the
+    // install token is the credential), posted to the shared document
+    // endpoint.
+    let doc = json!({
+        "id": "urn:uuid:emergency-claim-start-test",
+        "type": CLAIM_START_TASK,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "recipient": "did:webvh:vtc.example.com:abc",
+        "issuer": "did:key:z6MkAnonymousInstallCaller",
+        "payload": {
+            "installToken": token,
+            "claimSecret": outcome.claim_code,
+        },
     });
     let res = fix
         .router
@@ -597,10 +608,9 @@ async fn fresh_install_url_works_for_claim_start_after_emergency_bootstrap() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/v1/install/claim/start")
+                .uri("/v1/trust-tasks")
                 .header("content-type", "application/json")
-                .header("Trust-Task", CLAIM_START_TASK)
-                .body(Body::from(body.to_string()))
+                .body(Body::from(doc.to_string()))
                 .unwrap(),
         )
         .await
@@ -612,6 +622,7 @@ async fn fresh_install_url_works_for_claim_start_after_emergency_bootstrap() {
     );
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let v: Value = serde_json::from_slice(&bytes).unwrap();
+    let v = v["payload"].clone();
     // The response embeds a CreationChallengeResponse under
     // "options". Smoke check by deserialising.
     let opts = v.get("options").expect("options field present");

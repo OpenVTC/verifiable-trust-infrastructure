@@ -1,15 +1,18 @@
-//! Integration test for **authenticate via a DI-signed Trust Task over REST** —
-//! the transport-agnostic `auth/authenticate/0.1` path.
+//! Integration test for **authenticate via a DI-signed Trust Task over HTTPS**
+//! — the transport-agnostic `auth/authenticate/0.2` path.
 //!
-//! The holder posts a plain JSON `auth/authenticate/0.1` Trust Task whose
-//! `eddsa-jcs-2022` Data-Integrity proof *is* the authentication — no DIDComm
-//! packing / mediator required. Exercises the real route → DI-proof verify
-//! (local `did:key` resolution) → canonical `handle_authenticate` →
-//! session-state transition → token mint, end to end.
+//! The holder posts a plain JSON `auth/authenticate/0.2` Trust Task to
+//! `POST /trust-tasks` (the pre-session auth family's one conformant path;
+//! the old dedicated `/auth/challenge` / `/auth/` / `/auth/refresh` REST
+//! routes are gone — see `trust_tasks::auth`). Its `eddsa-jcs-2022`
+//! Data-Integrity proof *is* the authentication — no DIDComm packing /
+//! mediator required. Exercises the real route → DI-proof verify (local
+//! `did:key` resolution) → canonical `handle_authenticate` → session-state
+//! transition → token mint, end to end.
 //!
-//! Unlike the DIDComm `POST /auth/` round-trip (which needs a network DID
-//! resolver and lives in the e2e suite), this path resolves `did:key` locally,
-//! so the full sign-then-verify runs in-process here.
+//! Unlike the DIDComm round trip (which needs a network DID resolver and
+//! lives in the e2e suite), this path resolves `did:key` locally, so the full
+//! sign-then-verify runs in-process here.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -34,7 +37,7 @@ fn did_key(sk: &SigningKey) -> (String, String) {
     (format!("did:key:{mb}"), mb)
 }
 
-/// Grant `did` admin access so it clears the `/auth/challenge` ACL gate and the
+/// Grant `did` admin access so it clears the `auth/challenge` ACL gate and the
 /// authenticate role re-lookup.
 async fn seed_admin_acl(ctx: &TestAppContext, did: &str) {
     let entry = vti_common::acl::AclEntry::new(did, vti_common::acl::Role::Admin, "test")
@@ -65,7 +68,7 @@ async fn send(router: &axum::Router, req: Request<Body>) -> (StatusCode, Value) 
     (status, v)
 }
 
-/// Build a holder-signed `auth/authenticate/0.1` Trust Task document for the
+/// Build a holder-signed `auth/authenticate/0.2` Trust Task document for the
 /// given challenge + session, signed with `sk` (eddsa-jcs-2022).
 fn signed_authenticate_doc(
     sk: &SigningKey,
@@ -76,7 +79,7 @@ fn signed_authenticate_doc(
 ) -> TrustTask<Value> {
     let doc_json = json!({
         "id": "urn:uuid:authn-itest-1",
-        "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+        "type": "https://trusttasks.org/spec/auth/authenticate/0.2",
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
         "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
@@ -102,20 +105,27 @@ fn signed_authenticate_doc(
     doc
 }
 
-/// Run a real `/auth/challenge` for `did` and return `(session_id, challenge)`.
+/// Run a real `auth/challenge/0.1` Trust Task (over `/trust-tasks`, the pre-
+/// session family's one conformant path now) for `did` and return
+/// `(session_id, challenge)`.
 async fn obtain_challenge(router: &axum::Router, did: &str) -> (String, String) {
+    let doc = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/auth/challenge/0.1",
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "issuer": did,
+        "recipient": "did:key:z6MkfMo6gxqdBhaHMNnmfhgZFBjpCDTkmJMJLoypsBZS9PwD",
+        "payload": { "subject": did },
+    });
     let (status, body) = send(
         router,
-        post(
-            "/auth/challenge",
-            json!({ "did": did }).to_string().into_bytes(),
-        ),
+        post("/trust-tasks", serde_json::to_vec(&doc).unwrap()),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "challenge must issue: {body}");
     (
-        body["sessionId"].as_str().unwrap().to_string(),
-        body["challenge"].as_str().unwrap().to_string(),
+        body["payload"]["sessionId"].as_str().unwrap().to_string(),
+        body["payload"]["challenge"].as_str().unwrap().to_string(),
     )
 }
 
@@ -130,7 +140,11 @@ async fn di_signed_authenticate_issues_tokens() {
     let (session_id, challenge) = obtain_challenge(&router, &did).await;
     let doc = signed_authenticate_doc(&sk, &did, &vm, &challenge, &session_id);
 
-    let (status, body) = send(&router, post("/auth/", serde_json::to_vec(&doc).unwrap())).await;
+    let (status, body) = send(
+        &router,
+        post("/trust-tasks", serde_json::to_vec(&doc).unwrap()),
+    )
+    .await;
 
     assert_eq!(
         status,
@@ -142,7 +156,7 @@ async fn di_signed_authenticate_issues_tokens() {
     assert!(
         body["type"]
             .as_str()
-            .is_some_and(|t| t.ends_with("/auth/authenticate/0.1#response")),
+            .is_some_and(|t| t.ends_with("/auth/authenticate/0.2#response")),
         "response is a TT #response doc: {body}"
     );
     assert_eq!(body["payload"]["session"]["subject"], did, "{body}");
@@ -180,7 +194,11 @@ async fn di_signed_authenticate_issues_tokens() {
     assert_eq!(stored.session_id, did, "session is keyed on the DID");
 
     // Replay the exact same document: the session is no longer ChallengeSent.
-    let (replay_status, _) = send(&router, post("/auth/", serde_json::to_vec(&doc).unwrap())).await;
+    let (replay_status, _) = send(
+        &router,
+        post("/trust-tasks", serde_json::to_vec(&doc).unwrap()),
+    )
+    .await;
     assert_ne!(
         replay_status,
         StatusCode::OK,
@@ -202,7 +220,11 @@ async fn second_login_for_same_did_coalesces_into_one_session() {
     // First login.
     let (sid1, ch1) = obtain_challenge(&router, &did).await;
     let doc1 = signed_authenticate_doc(&sk, &did, &vm, &ch1, &sid1);
-    let (s1, b1) = send(&router, post("/auth/", serde_json::to_vec(&doc1).unwrap())).await;
+    let (s1, b1) = send(
+        &router,
+        post("/trust-tasks", serde_json::to_vec(&doc1).unwrap()),
+    )
+    .await;
     assert_eq!(s1, StatusCode::OK, "first login: {b1}");
     let rt1 = b1["payload"]["tokens"]["refreshToken"]
         .as_str()
@@ -212,7 +234,11 @@ async fn second_login_for_same_did_coalesces_into_one_session() {
     // Second login for the same DID.
     let (sid2, ch2) = obtain_challenge(&router, &did).await;
     let doc2 = signed_authenticate_doc(&sk, &did, &vm, &ch2, &sid2);
-    let (s2, b2) = send(&router, post("/auth/", serde_json::to_vec(&doc2).unwrap())).await;
+    let (s2, b2) = send(
+        &router,
+        post("/trust-tasks", serde_json::to_vec(&doc2).unwrap()),
+    )
+    .await;
     assert_eq!(s2, StatusCode::OK, "second login: {b2}");
     let rt2 = b2["payload"]["tokens"]["refreshToken"]
         .as_str()
@@ -254,10 +280,16 @@ async fn di_signed_authenticate_rejects_tampered_proof() {
     proof["proofValue"] = Value::String(chars.into_iter().collect());
     doc.proof = Some(serde_json::from_value(proof).unwrap());
 
-    let (status, body) = send(&router, post("/auth/", serde_json::to_vec(&doc).unwrap())).await;
+    let (status, body) = send(
+        &router,
+        post("/trust-tasks", serde_json::to_vec(&doc).unwrap()),
+    )
+    .await;
+    // `ProofInvalid` maps to 422, not 401 (`trust-tasks-https::status_for_code`)
+    // — the trust-task transport's own standard code for a bad proof.
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::UNPROCESSABLE_ENTITY,
         "a tampered proof must be rejected: {body}"
     );
 
@@ -293,7 +325,7 @@ async fn tt_challenge_returns_tt_response_doc() {
     });
     let (status, body) = send(
         &router,
-        post("/auth/challenge", serde_json::to_vec(&doc).unwrap()),
+        post("/trust-tasks", serde_json::to_vec(&doc).unwrap()),
     )
     .await;
 

@@ -1,8 +1,7 @@
 //! The pre-dispatch Policy Decision Point gate — the single approvals authority.
 //!
-//! Every dispatched Trust Task routes through [`policy_gate`] before its handler
-//! runs, and the same decision is reachable from the REST handlers via
-//! [`rest_gate`]. One trigger feeds it: the **policy rules**. When
+//! Every dispatched Trust Task routes through [`policy_gate`] before its
+//! handler runs. One trigger feeds it: the **policy rules**. When
 //! `config.policy.enforcement` is on, a policy may return `requireStepUp`
 //! (self-approve), `deny`, `requireConsent`, or `allow`. The session's assurance
 //! (`acr`/`amr`) is fed into `PolicyInput.consumer`, so a policy can gate on
@@ -97,72 +96,6 @@ impl GateReject {
             GateReject::Reason(r) => reject_with(doc, r),
             GateReject::Error(e) => app_error_to_reject(doc, e),
         }
-    }
-
-    /// Shape for a REST handler.
-    ///
-    /// `TaskFailed` carrying an `auth:*` reason is the gate asking for an
-    /// approval, so it becomes [`AppError::ApprovalRequired`] with the details
-    /// intact — the `approveRequest` or the consent challenge reaches a REST
-    /// caller exactly as it reaches a trust-task one.
-    fn into_app_error(self) -> AppError {
-        match self {
-            GateReject::Error(e) => e,
-            GateReject::Reason(RejectReason::TaskFailed { reason, details }) => {
-                match approval_code(&reason) {
-                    Some(code) => AppError::ApprovalRequired {
-                        code,
-                        details: details.unwrap_or_else(|| json!({})),
-                    },
-                    None => AppError::Forbidden(reason),
-                }
-            }
-            GateReject::Reason(RejectReason::PermissionDenied { reason }) => {
-                AppError::Forbidden(reason)
-            }
-            GateReject::Reason(RejectReason::MalformedRequest { reason }) => {
-                AppError::Validation(reason)
-            }
-            GateReject::Reason(RejectReason::InternalError { reason }) => {
-                AppError::Internal(reason)
-            }
-            // The gate returns no other variant today; map conservatively
-            // rather than silently turning a refusal into a 500.
-            GateReject::Reason(other) => AppError::Forbidden(format!("{other:?}")),
-        }
-    }
-}
-
-/// The stable `auth:*` codes the gate uses to say "this needs an approval".
-///
-/// Matched as whole strings rather than by prefix so a future `auth:` reason
-/// that is *not* an approval request cannot be silently rendered as one.
-fn approval_code(reason: &str) -> Option<&'static str> {
-    match reason {
-        "auth:step_up_required" => Some("auth:step_up_required"),
-        "auth:consent_required" => Some("auth:consent_required"),
-        "auth:consent_stale" => Some("auth:consent_stale"),
-        _ => None,
-    }
-}
-
-/// Evaluate the gate for a REST handler, after its body has been parsed.
-///
-/// Must be called in-handler rather than from an extractor: the consent digest
-/// and the planner both need the payload, which an extractor cannot see.
-///
-/// Returns the contexts a consumed delegated grant confers on this execution —
-/// empty for every outcome except a consent grant that carried a delegation.
-pub(crate) async fn rest_gate(
-    state: &AppState,
-    auth: &AuthClaims,
-    type_uri: &str,
-    payload: &Value,
-) -> Result<Vec<String>, AppError> {
-    let mut delegated = Vec::new();
-    match decide(state, auth, type_uri, payload, &mut delegated).await {
-        Some(reject) => Err(reject.into_app_error()),
-        None => Ok(delegated),
     }
 }
 

@@ -1,6 +1,6 @@
 //! Integration tests for `auth/step-up/approve-response/0.1` **and** `/0.2` —
 //! the full HTTP round-trip: an AAL1 session holder POSTs a did-signed
-//! approve-response to `/api/trust-tasks` and the VTA elevates their session
+//! approve-response to `/trust-tasks` and the VTA elevates their session
 //! to AAL2. The request leg is minted as `/0.2`; both response minors are
 //! accepted (mixed-version deployments during the transition).
 //!
@@ -156,7 +156,7 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
     // 5. POST it.
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
@@ -199,7 +199,7 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
     // the elevation happened exactly once.
     let req2 = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
@@ -317,7 +317,7 @@ async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
@@ -415,7 +415,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
     let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
@@ -535,7 +535,7 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
     let gated = serde_json::to_value(&gated_doc).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&gated).unwrap()))
@@ -601,7 +601,7 @@ async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
@@ -744,7 +744,7 @@ async fn delegated_approve_response_elevates_the_subjects_session() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {approver_token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
@@ -887,7 +887,7 @@ async fn unauthorized_approver_cannot_elevate() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {rogue_token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))

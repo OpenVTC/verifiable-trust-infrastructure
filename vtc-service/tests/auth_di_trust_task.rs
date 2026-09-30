@@ -1,12 +1,19 @@
-//! The VTC's canonical REST login: a DI-signed `auth/authenticate/0.1` Trust
-//! Task, driven by the *client's own* builder (`vta_sdk::auth_di`).
+//! The VTC's canonical login: a DI-signed `auth/authenticate/0.2` Trust Task,
+//! driven by the *client's own* builder (`vta_sdk::auth_di`), dispatched on
+//! the shared `POST /v1/trust-tasks` door alongside every other verb.
 //!
 //! **Why this exists.** The VTC accepted two login shapes — a VTA-wallet SIOP
 //! envelope, and an authcrypt DIDComm envelope. A REST client holding a plain
 //! `did:key` (no wallet to self-issue an `id_token`, no mediator to authcrypt
 //! through) could satisfy neither, so `vtc-client::connect` could not log in at
-//! all. `/auth/refresh` had already grown the Trust-Task path; login had not,
+//! all. `auth/refresh` had already grown the Trust-Task path; login had not,
 //! which left a client able to *rotate* a token it had no way to obtain.
+//! `auth/challenge`, `auth/authenticate/{0.2,0.3}` and `auth/refresh/0.2` are
+//! now dispatched pre-session on `/v1/trust-tasks`
+//! (`trust_tasks::auth_tasks`) — the dedicated, `Trust-Task`-header-gated
+//! REST mounts at `/v1/auth/{challenge,,refresh}` had no caller left once
+//! `vta_sdk::auth_light` (the client both the VTA and the VTC-facing tooling
+//! share) switched to it (#1858).
 //!
 //! Every test here posts bytes produced by the real SDK builder rather than a
 //! hand-written fixture, so a client/server drift — the defect class that made
@@ -32,9 +39,7 @@ async fn vtc_did(mock: &MockVtc) -> String {
         .expect("the mock VTC has a DID")
 }
 
-const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/auth/challenge/0.1";
-const AUTHENTICATE_TASK: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
-const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+const AUTHENTICATE_TASK: &str = "https://trusttasks.org/spec/auth/authenticate/0.2";
 
 fn admin_entry(did: &str) -> VtcAclEntry {
     VtcAclEntry {
@@ -65,21 +70,41 @@ fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     (did, multibase::encode(multibase::Base::Base58Btc, &buf))
 }
 
-/// Fetch a challenge for `did` from a running VTC.
-async fn get_challenge(client: &reqwest::Client, base: &str, did: &str) -> (String, String) {
+/// Post `doc` (already a JSON string) to `POST /v1/trust-tasks`.
+async fn post_trust_task(client: &reqwest::Client, base: &str, doc: String) -> (StatusCode, Value) {
     let resp = client
-        .post(format!("{base}/v1/auth/challenge"))
-        .header("Trust-Task", CHALLENGE_TASK)
-        .json(&json!({ "did": did }))
+        .post(format!("{base}/v1/trust-tasks"))
+        .header("content-type", "application/json")
+        .body(doc)
         .send()
         .await
-        .expect("POST /v1/auth/challenge");
-    assert_eq!(resp.status(), StatusCode::OK, "challenge issuance");
-    let body: Value = resp.json().await.expect("challenge json");
-    (
-        body["challenge"].as_str().expect("challenge").to_string(),
-        body["sessionId"].as_str().expect("sessionId").to_string(),
-    )
+        .expect("POST /v1/trust-tasks");
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+    (status, body)
+}
+
+/// The declared error code inside a `trust-task-error` response payload, if
+/// any — the spine's error shape, not the flat REST body the old handlers
+/// answered with.
+fn error_code(body: &Value) -> Option<&str> {
+    body["payload"]["code"].as_str()
+}
+
+/// Fetch a challenge for `did` from a running VTC, over `/v1/trust-tasks`.
+async fn get_challenge(
+    client: &reqwest::Client,
+    base: &str,
+    vta_did: &str,
+    did: &str,
+) -> (String, String) {
+    let doc =
+        vta_sdk::auth_di::build_challenge_doc(did, vta_did, did).expect("build challenge doc");
+    let (status, body) = post_trust_task(client, base, doc).await;
+    assert_eq!(status, StatusCode::OK, "challenge issuance: {body}");
+    let parsed =
+        vta_sdk::auth_di::parse_challenge_response(&body.to_string()).expect("challenge response");
+    (parsed.challenge, parsed.session_id)
 }
 
 /// The whole login: challenge → SDK-signed Trust Task → tokens. No mediator,
@@ -95,43 +120,34 @@ async fn di_signed_trust_task_authenticates_over_rest() {
         .await
         .expect("seed admin acl row");
 
-    let (challenge, session_id) = get_challenge(&client, &base, &did).await;
+    let vta_did = vtc_did(&mock).await;
+    let (challenge, session_id) = get_challenge(&client, &base, &vta_did, &did).await;
 
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
         &private_key_multibase,
-        &vtc_did(&mock).await,
+        &vta_did,
         &challenge,
         &session_id,
     )
     .await
     .expect("sign authenticate document");
 
-    let resp = client
-        .post(format!("{base}/v1/auth/"))
-        .header("Trust-Task", AUTHENTICATE_TASK)
-        .header("content-type", "application/json")
-        .body(doc)
-        .send()
-        .await
-        .expect("POST /v1/auth/");
-
-    let status = resp.status();
-    let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+    let (status, body) = post_trust_task(&client, &base, doc).await;
     assert_eq!(
         status,
         StatusCode::OK,
         "a DI-signed Trust Task must authenticate against the VTC; got: {body}"
     );
+    let parsed =
+        vta_sdk::auth_di::parse_auth_response(&body.to_string()).expect("authenticate response");
     assert!(
-        body["tokens"]["accessToken"]
-            .as_str()
-            .is_some_and(|t| !t.is_empty()),
-        "response must carry an access token: {body}"
+        !parsed.tokens.access_token.is_empty(),
+        "response must carry an access token"
     );
     assert_eq!(
-        body["session"]["subject"], did,
-        "the session must be bound to the proven signer: {body}"
+        parsed.session.subject, did,
+        "the session must be bound to the proven signer"
     );
 
     mock.shutdown().await;
@@ -151,57 +167,40 @@ async fn di_login_then_trust_task_refresh_round_trips() {
         .await
         .expect("seed admin acl row");
 
-    let (challenge, session_id) = get_challenge(&client, &base, &did).await;
+    let vta_did = vtc_did(&mock).await;
+    let (challenge, session_id) = get_challenge(&client, &base, &vta_did, &did).await;
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
         &private_key_multibase,
-        &vtc_did(&mock).await,
+        &vta_did,
         &challenge,
         &session_id,
     )
     .await
     .expect("sign");
-    let body: Value = client
-        .post(format!("{base}/v1/auth/"))
-        .header("Trust-Task", AUTHENTICATE_TASK)
-        .header("content-type", "application/json")
-        .body(doc)
-        .send()
-        .await
-        .expect("login")
-        .json()
-        .await
-        .expect("login json");
+    let (status, body) = post_trust_task(&client, &base, doc).await;
+    assert_eq!(status, StatusCode::OK, "login: {body}");
+    let login = vta_sdk::auth_di::parse_auth_response(&body.to_string()).expect("login response");
 
-    let refresh_token = body["tokens"]["refreshToken"]
-        .as_str()
-        .expect("login must issue a refresh token")
-        .to_string();
+    let refresh_token = login
+        .tokens
+        .refresh_token
+        .clone()
+        .expect("login must issue a refresh token");
 
-    let refresh_doc =
-        vta_sdk::auth_di::build_refresh_doc(&did, &vtc_did(&mock).await, &refresh_token)
-            .expect("build refresh document");
-    let resp = client
-        .post(format!("{base}/v1/auth/refresh"))
-        .header("Trust-Task", REFRESH_TASK)
-        .header("content-type", "application/json")
-        .body(refresh_doc)
-        .send()
-        .await
-        .expect("POST /v1/auth/refresh");
-
-    let status = resp.status();
-    let refreshed: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+    let refresh_doc = vta_sdk::auth_di::build_refresh_doc(&did, &vta_did, &refresh_token)
+        .expect("build refresh document");
+    let (status, refreshed) = post_trust_task(&client, &base, refresh_doc).await;
     assert_eq!(
         status,
         StatusCode::OK,
         "the refresh token from a DI login must rotate: {refreshed}"
     );
+    let refreshed =
+        vta_sdk::auth_di::parse_auth_response(&refreshed.to_string()).expect("refresh response");
     assert!(
-        refreshed["tokens"]["accessToken"]
-            .as_str()
-            .is_some_and(|t| !t.is_empty()),
-        "rotation must return a fresh access token: {refreshed}"
+        !refreshed.tokens.access_token.is_empty(),
+        "rotation must return a fresh access token"
     );
 
     mock.shutdown().await;
@@ -209,7 +208,7 @@ async fn di_login_then_trust_task_refresh_round_trips() {
 
 /// The proof is load-bearing: editing the challenge after signing must not
 /// authenticate. Guards against a future "parse the payload, skip the proof"
-/// shortcut on the VTC's REST path.
+/// shortcut on the VTC's dispatch path.
 #[tokio::test]
 async fn tampered_challenge_is_rejected() {
     let mock = MockVtc::start().await;
@@ -221,11 +220,12 @@ async fn tampered_challenge_is_rejected() {
         .await
         .expect("seed admin acl row");
 
-    let (challenge, session_id) = get_challenge(&client, &base, &did).await;
+    let vta_did = vtc_did(&mock).await;
+    let (challenge, session_id) = get_challenge(&client, &base, &vta_did, &did).await;
     let doc = vta_sdk::auth_di::sign_authenticate_doc(
         &did,
         &private_key_multibase,
-        &vtc_did(&mock).await,
+        &vta_did,
         // Sign over a *different* challenge, then swap the real one in.
         "0000000000000000000000000000000000000000",
         &session_id,
@@ -235,38 +235,26 @@ async fn tampered_challenge_is_rejected() {
     let mut tampered: Value = serde_json::from_str(&doc).expect("signed doc is JSON");
     tampered["payload"]["challenge"] = json!(challenge);
 
-    let resp = client
-        .post(format!("{base}/v1/auth/"))
-        .header("Trust-Task", AUTHENTICATE_TASK)
-        .header("content-type", "application/json")
-        .body(tampered.to_string())
-        .send()
-        .await
-        .expect("POST /v1/auth/");
-
-    let status = resp.status();
-    let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+    let (status, body) = post_trust_task(&client, &base, tampered.to_string()).await;
+    // The proof no longer matches the (now-edited) payload — the spine's
+    // generic proof-verification step refuses it before any handler runs, as
+    // the standard `permissionDenied` code (403), not the extended
+    // `proofInvalid` (422): a failed cryptographic check is a standard-code
+    // refusal, not this family's declared error.
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
         "a post-signature edit must not authenticate: {body}"
     );
-    assert!(
-        body.get("tokens").is_none(),
-        "no token may be issued for a tampered document: {body}"
-    );
+    assert_eq!(error_code(&body), Some("permissionDenied"), "{body}");
 
     mock.shutdown().await;
 }
 
-/// An **unsigned** authenticate document must not be claimed by the DI path.
-///
-/// This is the discrimination rule that keeps the new path from shadowing the
-/// SIOP envelope, which shares the Type URI: a body is only claimed when it
-/// carries a `proof`. Without the rule, a SIOP login that happened to parse as
-/// a Trust Task would be claimed here and rejected for a missing proof instead
-/// of being verified as a SIOP token. An unsigned document therefore falls
-/// through — and, finding no other path that accepts it, is refused.
+/// An **unsigned** `authenticate/0.2` document is refused before it is ever
+/// routed to a handler — the spec declares a proof required, and the spine
+/// enforces that generically (`dispatch_trust_task_core`), the same gate
+/// every other proof-bearing verb gets.
 #[tokio::test]
 async fn unsigned_authenticate_document_is_not_claimed_by_the_di_path() {
     let mock = MockVtc::start().await;
@@ -278,56 +266,26 @@ async fn unsigned_authenticate_document_is_not_claimed_by_the_di_path() {
         .await
         .expect("seed admin acl row");
 
-    let (challenge, session_id) = get_challenge(&client, &base, &did).await;
+    let vta_did = vtc_did(&mock).await;
+    let (challenge, session_id) = get_challenge(&client, &base, &vta_did, &did).await;
     let unsigned = json!({
         "id": "urn:uuid:unsigned-1",
         "type": AUTHENTICATE_TASK,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "issuer": did,
+        "recipient": vta_did,
         "payload": { "challenge": challenge, "sessionId": session_id },
     });
 
-    let resp = client
-        .post(format!("{base}/v1/auth/"))
-        .header("Trust-Task", AUTHENTICATE_TASK)
-        .header("content-type", "application/json")
-        .body(unsigned.to_string())
-        .send()
-        .await
-        .expect("POST /v1/auth/");
-
-    let status = resp.status();
-    let body: Value = resp.json().await.unwrap_or_else(|_| json!({}));
+    let (status, body) = post_trust_task(&client, &base, unsigned.to_string()).await;
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::UNPROCESSABLE_ENTITY,
         "an unsigned document must not mint tokens: {body}"
     );
-    // Specifically NOT a DI-proof error — the DI path declined to claim it.
-    let err = body["error"].as_str().unwrap_or_default();
-    assert!(
-        !err.contains("proof verification failed"),
-        "the unsigned body must fall through, not be claimed and proof-rejected: {body}"
-    );
+    assert_eq!(error_code(&body), Some("proofRequired"), "{body}");
 
     mock.shutdown().await;
-}
-
-async fn post_authenticate(
-    client: &reqwest::Client,
-    base: &str,
-    doc: String,
-) -> (StatusCode, Value) {
-    let resp = client
-        .post(format!("{base}/v1/auth/"))
-        .header("Trust-Task", AUTHENTICATE_TASK)
-        .header("content-type", "application/json")
-        .body(doc)
-        .send()
-        .await
-        .expect("POST /v1/auth/");
-    let status = resp.status();
-    (status, resp.json().await.unwrap_or_else(|_| json!({})))
 }
 
 /// #1638, the relay: a signed authenticate document addressed to another
@@ -343,7 +301,8 @@ async fn a_document_addressed_to_another_service_is_refused() {
     store_acl_entry(&mock.vtc.state.acl_ks, &admin_entry(&did))
         .await
         .unwrap();
-    let (challenge, session_id) = get_challenge(&client, &base, &did).await;
+    let vta_did = vtc_did(&mock).await;
+    let (challenge, session_id) = get_challenge(&client, &base, &vta_did, &did).await;
 
     // Signed for a different service — what a relaying service would hold.
     let relayed = vta_sdk::auth_di::sign_authenticate_doc(
@@ -355,22 +314,17 @@ async fn a_document_addressed_to_another_service_is_refused() {
     )
     .await
     .unwrap();
-    let (status, body) = post_authenticate(&client, &base, relayed).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
-    assert!(body.to_string().contains("wrongRecipient"), "{body}");
+    let (status, body) = post_trust_task(&client, &base, relayed).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(error_code(&body), Some("wrongRecipient"), "{body}");
     assert!(body.get("tokens").is_none(), "{body}");
 
     // The session was not consumed by the refusal.
-    let addressed = vta_sdk::auth_di::sign_authenticate_doc(
-        &did,
-        &key,
-        &vtc_did(&mock).await,
-        &challenge,
-        &session_id,
-    )
-    .await
-    .unwrap();
-    let (status, body) = post_authenticate(&client, &base, addressed).await;
+    let addressed =
+        vta_sdk::auth_di::sign_authenticate_doc(&did, &key, &vta_did, &challenge, &session_id)
+            .await
+            .unwrap();
+    let (status, body) = post_trust_task(&client, &base, addressed).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     mock.shutdown().await;
@@ -387,7 +341,8 @@ async fn a_document_with_no_recipient_is_malformed() {
     store_acl_entry(&mock.vtc.state.acl_ks, &admin_entry(&did))
         .await
         .unwrap();
-    let (challenge, session_id) = get_challenge(&client, &base, &did).await;
+    let vta_did = vtc_did(&mock).await;
+    let (challenge, session_id) = get_challenge(&client, &base, &vta_did, &did).await;
 
     let mut doc = vta_sdk::trust_task_sign::build_unsigned(
         AUTHENTICATE_TASK,
@@ -402,9 +357,9 @@ async fn a_document_with_no_recipient_is_malformed() {
         .unwrap();
 
     let (status, body) =
-        post_authenticate(&client, &base, serde_json::to_string(&doc).unwrap()).await;
+        post_trust_task(&client, &base, serde_json::to_string(&doc).unwrap()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(body.to_string().contains("malformedRequest"), "{body}");
+    assert_eq!(error_code(&body), Some("malformedRequest"), "{body}");
     assert!(body.get("tokens").is_none(), "{body}");
 
     mock.shutdown().await;

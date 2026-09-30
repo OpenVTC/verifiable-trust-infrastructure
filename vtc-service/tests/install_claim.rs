@@ -1,9 +1,21 @@
-//! End-to-end coverage for `POST /v1/install/claim/{start,finish}`.
+//! End-to-end coverage for `vtc/install/claim/{start,finish}/0.2`.
 //!
-//! Drives the full install ceremony through `Router::oneshot`,
-//! using the soft EdDSA authenticator harness (`tests/common`) to
-//! produce real WebAuthn responses and the install module's own
-//! signer/store to mint and consume install tokens.
+//! Drives the full install ceremony through `Router::oneshot`, posting signed
+//! -- unsigned, rather: install/claim carries no proof requirement, the
+//! install token itself is the credential -- documents to the shared
+//! `POST /v1/trust-tasks` door (`trust_tasks::install_tasks`), using the soft
+//! EdDSA authenticator harness (`tests/common`) to produce real WebAuthn
+//! responses and the install module's own signer/store to mint and consume
+//! install tokens.
+//!
+//! Every refusal here is a framework `trust-task-error` document. A
+//! **declared** code (`vtc/install/claim/{start,finish}:*`) is an *extended*
+//! code and so always answers `422` (`trust-tasks-https::status_for_code`);
+//! an **undeclared** one falls through `app_error_to_reject`'s generic
+//! taxonomy, which also lands on `422` for a `Conflict`/`NotFound` (mapped to
+//! the standard `taskFailed` code, discriminated by `payload.details.reason`)
+//! and `500` for anything else (including the old bespoke `503`s this ported
+//! from — `AppError::ServiceError` has no dedicated arm in that taxonomy).
 
 mod common;
 
@@ -27,10 +39,16 @@ const RP_ORIGIN: &str = "https://vtc.example.com";
 const START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.2";
 const FINISH_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/finish/0.2";
 
+/// Every declared code, and the app-level `Conflict`/`NotFound` taxonomy fall
+/// through to, is an extended or standard code the HTTPS binding buckets at
+/// `422 Unprocessable Entity` — see the module doc.
+const REJECTED: StatusCode = StatusCode::UNPROCESSABLE_ENTITY;
+
 struct Fixture {
     router: axum::Router,
     install_signer: Arc<InstallTokenSigner>,
     install_store: InstallTokenStore,
+    recipient: String,
     // Owns the temp data dir + serves `router`'s state; must outlive them.
     _vtc: TestVtc,
 }
@@ -57,15 +75,25 @@ async fn build_fixture(public_url: Option<&str>, with_install_signer: bool) -> F
     let vtc = builder.build().await;
 
     let install_store = vtc.state.install_store.clone();
+    let recipient = vtc
+        .state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .expect("the test VTC has a DID");
 
     Fixture {
         router: vtc.router.clone(),
-        // When the AppState signer is absent (testing the 503 path), the
-        // fixture still needs *a* signer to mint tokens with — a throwaway.
+        // When the AppState signer is absent (testing the missing-signer
+        // path), the fixture still needs *a* signer to mint tokens with — a
+        // throwaway.
         install_signer: install_signer.unwrap_or_else(|| {
             Arc::new(InstallTokenSigner::from_master_seed(&[0xCD; 64]).unwrap())
         }),
         install_store,
+        recipient,
         _vtc: vtc,
     }
 }
@@ -101,37 +129,44 @@ async fn mint_token_and_record_with_secret(
     (minted.jwt, minted.jti)
 }
 
-async fn post_json(
-    router: &axum::Router,
-    path: &str,
-    trust_task: &str,
-    body: Value,
-) -> (StatusCode, Value) {
-    let res = router
+/// Post `payload` as an unsigned `type_uri` document (install/claim carries no
+/// proof requirement — the install token itself is the credential) to the
+/// shared document endpoint, and return its status and the response
+/// document's `payload`.
+async fn post_json(fix: &Fixture, type_uri: &str, payload: Value) -> (StatusCode, Value) {
+    let doc = json!({
+        "id": format!("urn:uuid:{}", Uuid::new_v4()),
+        "type": type_uri,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "recipient": fix.recipient,
+        "issuer": "did:key:z6MkAnonymousInstallCaller",
+        "payload": payload,
+    });
+    let res = fix
+        .router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(path)
+                .uri("/v1/trust-tasks")
                 .header("content-type", "application/json")
-                .header("Trust-Task", trust_task)
-                .body(Body::from(body.to_string()))
+                .body(Body::from(doc.to_string()))
                 .unwrap(),
         )
         .await
         .expect("oneshot");
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = if bytes.is_empty() {
+    let body: Value = if bytes.is_empty() {
         Value::Null
     } else {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
-    (status, json)
+    (status, body["payload"].clone())
 }
 
-fn parse_ccr(body: &Value) -> CreationChallengeResponse {
-    serde_json::from_value(body.get("options").cloned().expect("options field"))
+fn parse_ccr(payload: &Value) -> CreationChallengeResponse {
+    serde_json::from_value(payload.get("options").cloned().expect("options field"))
         .expect("CreationChallengeResponse parses")
 }
 
@@ -145,26 +180,19 @@ async fn full_ceremony_completes_end_to_end() {
     let (token, _jti) = mint_token_and_record(&fix, 600).await;
 
     // -- start ---------------------------------------------------------
-    let (status, body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        START_TASK,
-        json!({ "installToken": token }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "start: {body}");
+    let (status, payload) = post_json(&fix, START_TASK, json!({ "installToken": token })).await;
+    assert_eq!(status, StatusCode::OK, "start: {payload}");
 
-    let registration_id = body["registrationId"].as_str().unwrap().to_string();
-    let ccr = parse_ccr(&body);
+    let registration_id = payload["registrationId"].as_str().unwrap().to_string();
+    let ccr = parse_ccr(&payload);
 
     // -- harness produces the registration response --------------------
     let mut authenticator = SoftEd25519Authenticator::new();
     let (register_cred, _ed25519_pub) = authenticator.register(&ccr, RP_ORIGIN);
 
     // -- finish --------------------------------------------------------
-    let (status, body) = post_json(
-        &fix.router,
-        "/v1/install/claim/finish",
+    let (status, payload) = post_json(
+        &fix,
         FINISH_TASK,
         json!({
             "installToken": token,
@@ -173,19 +201,18 @@ async fn full_ceremony_completes_end_to_end() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "finish: {body}");
-    let admin_did = body["adminDid"].as_str().unwrap().to_string();
+    assert_eq!(status, StatusCode::OK, "finish: {payload}");
+    let admin_did = payload["adminDid"].as_str().unwrap().to_string();
     assert!(admin_did.starts_with("did:key:z"));
-    assert!(!body["setupSessionToken"].as_str().unwrap().is_empty());
+    assert!(!payload["setupSessionToken"].as_str().unwrap().is_empty());
 
     // -- replay finish: idempotent (P3.12) -----------------------------
     // A dropped response / crash between consume-and-return must not
     // strand the operator. Replaying the same finish against the now-
     // `Consumed` token re-issues a usable setup-session token for the
     // same admin DID rather than hard-rejecting.
-    let (status, body) = post_json(
-        &fix.router,
-        "/v1/install/claim/finish",
+    let (status, payload) = post_json(
+        &fix,
         FINISH_TASK,
         json!({
             "installToken": token,
@@ -194,20 +221,14 @@ async fn full_ceremony_completes_end_to_end() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "idempotent replay: {body}");
-    assert_eq!(body["adminDid"].as_str().unwrap(), admin_did);
-    assert!(!body["setupSessionToken"].as_str().unwrap().is_empty());
+    assert_eq!(status, StatusCode::OK, "idempotent replay: {payload}");
+    assert_eq!(payload["adminDid"].as_str().unwrap(), admin_did);
+    assert!(!payload["setupSessionToken"].as_str().unwrap().is_empty());
 
     // -- start after finish: still rejected ----------------------------
     // Idempotent finish must not reopen the ceremony: a fresh `start`
     // against the consumed token requires `Issued` and is refused.
-    let (status, _body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        START_TASK,
-        json!({ "installToken": token }),
-    )
-    .await;
+    let (status, _payload) = post_json(&fix, START_TASK, json!({ "installToken": token })).await;
     assert_ne!(
         status,
         StatusCode::OK,
@@ -226,15 +247,18 @@ async fn claim_secret_happy_path_completes_ceremony() {
     let hash = vtc_service::install::claim_secret::hash(secret).unwrap();
     let (token, _jti) = mint_token_and_record_with_secret(&fix, 600, Some(hash)).await;
 
-    let (status, body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
+    let (status, payload) = post_json(
+        &fix,
         START_TASK,
         json!({ "installToken": token, "claimSecret": secret }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "start with correct secret: {body}");
-    assert!(body["registrationId"].as_str().is_some());
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "start with correct secret: {payload}"
+    );
+    assert!(payload["registrationId"].as_str().is_some());
 }
 
 #[tokio::test]
@@ -243,18 +267,14 @@ async fn claim_secret_missing_returns_required_code() {
     let hash = vtc_service::install::claim_secret::hash("WHATEVER12").unwrap();
     let (token, _) = mint_token_and_record_with_secret(&fix, 600, Some(hash)).await;
 
-    let (status, body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        START_TASK,
-        json!({ "installToken": token }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
-    assert_eq!(
-        body["error"].as_str(),
-        Some("claim_secret_required"),
-        "discriminated error code; got {body}"
+    let (status, payload) = post_json(&fix, START_TASK, json!({ "installToken": token })).await;
+    assert_eq!(status, REJECTED, "payload: {payload}");
+    assert_eq!(payload["code"], START_ERR_INVALID_TOKEN, "{payload}");
+    assert!(
+        payload["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("claim_secret_required")),
+        "discriminating message prefix; got {payload}"
     );
 }
 
@@ -264,50 +284,39 @@ async fn claim_secret_wrong_returns_invalid_code() {
     let hash = vtc_service::install::claim_secret::hash("CORRECT123").unwrap();
     let (token, _) = mint_token_and_record_with_secret(&fix, 600, Some(hash)).await;
 
-    let (status, body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
+    let (status, payload) = post_json(
+        &fix,
         START_TASK,
         json!({ "installToken": token, "claimSecret": "WRONGWRONG" }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
-    assert_eq!(
-        body["error"].as_str(),
-        Some("claim_secret_invalid"),
-        "discriminated error code; got {body}"
+    assert_eq!(status, REJECTED, "payload: {payload}");
+    assert_eq!(payload["code"], START_ERR_INVALID_TOKEN, "{payload}");
+    assert!(
+        payload["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("claim_secret_invalid")),
+        "discriminating message prefix; got {payload}"
     );
 }
 
 // ---------------------------------------------------------------------------
-// 503 paths
+// Unavailable paths (missing signer / WebAuthn config)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn start_returns_503_when_install_signer_missing() {
+async fn start_is_refused_when_install_signer_missing() {
     let fix = build_fixture(Some(RP_ORIGIN), false).await;
-    let (status, _body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        START_TASK,
-        json!({ "installToken": "bogus" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let (status, _payload) = post_json(&fix, START_TASK, json!({ "installToken": "bogus" })).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
-async fn start_returns_503_when_webauthn_missing() {
+async fn start_is_refused_when_webauthn_missing() {
     let fix = build_fixture(None, true).await;
     let (token, _jti) = mint_token_and_record(&fix, 600).await;
-    let (status, _body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        START_TASK,
-        json!({ "installToken": token }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let (status, _payload) = post_json(&fix, START_TASK, json!({ "installToken": token })).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 // ---------------------------------------------------------------------------
@@ -317,14 +326,14 @@ async fn start_returns_503_when_webauthn_missing() {
 #[tokio::test]
 async fn start_rejects_unsigned_token() {
     let fix = build_fixture(Some(RP_ORIGIN), true).await;
-    let (status, _body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
+    let (status, payload) = post_json(
+        &fix,
         START_TASK,
         json!({ "installToken": "not.a.real.jwt" }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, REJECTED, "{payload}");
+    assert_eq!(payload["code"], START_ERR_INVALID_TOKEN, "{payload}");
 }
 
 #[tokio::test]
@@ -339,14 +348,9 @@ async fn start_rejects_unknown_jti() {
         600,
     )
     .unwrap();
-    let (status, _body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        START_TASK,
-        json!({ "installToken": minted.jwt }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, payload) =
+        post_json(&fix, START_TASK, json!({ "installToken": minted.jwt })).await;
+    assert_eq!(status, REJECTED, "{payload}");
 }
 
 #[tokio::test]
@@ -354,23 +358,12 @@ async fn second_concurrent_start_within_window_is_conflict() {
     let fix = build_fixture(Some(RP_ORIGIN), true).await;
     let (token, _jti) = mint_token_and_record(&fix, 600).await;
 
-    let (status1, _) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        START_TASK,
-        json!({ "installToken": &token }),
-    )
-    .await;
+    let (status1, _) = post_json(&fix, START_TASK, json!({ "installToken": &token })).await;
     assert_eq!(status1, StatusCode::OK);
 
-    let (status2, _) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        START_TASK,
-        json!({ "installToken": &token }),
-    )
-    .await;
-    assert_eq!(status2, StatusCode::CONFLICT);
+    let (status2, payload) = post_json(&fix, START_TASK, json!({ "installToken": &token })).await;
+    assert_eq!(status2, REJECTED, "{payload}");
+    assert_eq!(payload["details"]["reason"], "conflict", "{payload}");
 }
 
 #[tokio::test]
@@ -378,20 +371,13 @@ async fn finish_rejects_mismatched_registration_id() {
     let fix = build_fixture(Some(RP_ORIGIN), true).await;
     let (token, _jti) = mint_token_and_record(&fix, 600).await;
 
-    let (_status, body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        START_TASK,
-        json!({ "installToken": token }),
-    )
-    .await;
-    let ccr = parse_ccr(&body);
+    let (_status, payload) = post_json(&fix, START_TASK, json!({ "installToken": token })).await;
+    let ccr = parse_ccr(&payload);
     let mut authenticator = SoftEd25519Authenticator::new();
     let (register_cred, _pub) = authenticator.register(&ccr, RP_ORIGIN);
 
-    let (status, _body) = post_json(
-        &fix.router,
-        "/v1/install/claim/finish",
+    let (status, payload) = post_json(
+        &fix,
         FINISH_TASK,
         json!({
             "installToken": token,
@@ -400,7 +386,11 @@ async fn finish_rejects_mismatched_registration_id() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, REJECTED, "{payload}");
+    assert_eq!(
+        payload["code"], FINISH_ERR_REGISTRATION_MISMATCH,
+        "{payload}"
+    );
 }
 
 #[tokio::test]
@@ -421,9 +411,8 @@ async fn finish_without_start_fails() {
         "type": "public-key"
     });
 
-    let (status, _body) = post_json(
-        &fix.router,
-        "/v1/install/claim/finish",
+    let (status, payload) = post_json(
+        &fix,
         FINISH_TASK,
         json!({
             "installToken": token,
@@ -432,43 +421,28 @@ async fn finish_without_start_fails() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, REJECTED, "{payload}");
 }
 
 // ---------------------------------------------------------------------------
-// Trust-Task gate
+// Unknown document type
 // ---------------------------------------------------------------------------
 
+/// A document naming a type this spine does not serve is `unsupportedType` —
+/// the property the retired REST mount's `Trust-Task` header gate (missing →
+/// 400, mismatched → 415) used to enforce is now the framework's generic
+/// dispatch gate, shared by every verb on this door.
 #[tokio::test]
-async fn missing_trust_task_header_returns_400() {
+async fn an_unknown_document_type_is_unsupported() {
     let fix = build_fixture(Some(RP_ORIGIN), true).await;
-    let res = fix
-        .router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v1/install/claim/start")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"installToken":"x"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn wrong_trust_task_header_returns_415() {
-    let fix = build_fixture(Some(RP_ORIGIN), true).await;
-    let (status, _body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        FINISH_TASK, // start endpoint with finish task
+    let (status, payload) = post_json(
+        &fix,
+        "https://trusttasks.org/spec/vtc/install/claim/nope/0.1",
         json!({ "installToken": "x" }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(status, REJECTED, "{payload}");
+    assert_eq!(payload["code"], "unsupportedType", "{payload}");
 }
 
 // ---------------------------------------------------------------------------
@@ -485,34 +459,25 @@ const FINISH_ERR_REGISTRATION_MISMATCH: &str =
 const FINISH_ERR_BINDING_INVALID: &str =
     claim_spec::finish::v0_2::error_codes::BINDING_INVALID.code;
 
-/// The extended error code carried by a REST error body (`{"error", "code"}`).
-fn rest_error_code(body: &Value) -> &str {
-    body["code"].as_str().unwrap_or_default()
-}
-
 /// A token that is not ours, one we never recorded, and one already consumed
-/// are each `invalidToken` (401, unchanged). A missing claim secret is not a
-/// token fault and keeps its own undeclared `claim_secret_required`, and a
-/// second concurrent start stays the undeclared 409.
+/// are each `invalidToken` (unchanged code, now a `422` status). A missing
+/// claim secret keeps the same declared code with a discriminating message
+/// prefix, and a second concurrent start stays the undeclared conflict.
 #[tokio::test]
 async fn the_claim_start_task_answers_with_the_code_its_spec_declares() {
     let fix = build_fixture(Some(RP_ORIGIN), true).await;
     let start = |token: String| {
-        let router = fix.router.clone();
-        async move {
-            post_json(
-                &router,
-                "/v1/install/claim/start",
-                START_TASK,
-                json!({ "installToken": token }),
-            )
-            .await
-        }
+        let fix = &fix;
+        async move { post_json(fix, START_TASK, json!({ "installToken": token })).await }
     };
 
-    let (status, body) = start("not.a.real.jwt".into()).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
-    assert_eq!(rest_error_code(&body), START_ERR_INVALID_TOKEN, "{body}");
+    let (status, payload) = start("not.a.real.jwt".into()).await;
+    assert_eq!(status, REJECTED, "{payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        Some(START_ERR_INVALID_TOKEN),
+        "{payload}"
+    );
 
     let unrecorded = mint_install_token(
         &fix.install_signer,
@@ -521,20 +486,23 @@ async fn the_claim_start_task_answers_with_the_code_its_spec_declares() {
         600,
     )
     .unwrap();
-    let (status, body) = start(unrecorded.jwt).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
-    assert_eq!(rest_error_code(&body), START_ERR_INVALID_TOKEN, "{body}");
+    let (status, payload) = start(unrecorded.jwt).await;
+    assert_eq!(status, REJECTED, "{payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        Some(START_ERR_INVALID_TOKEN),
+        "{payload}"
+    );
 
     // Consumed: run the whole ceremony, then start again.
     let (token, _jti) = mint_token_and_record(&fix, 600).await;
-    let (status, body) = start(token.clone()).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let registration_id = body["registrationId"].as_str().unwrap().to_string();
+    let (status, payload) = start(token.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    let registration_id = payload["registrationId"].as_str().unwrap().to_string();
     let mut authenticator = SoftEd25519Authenticator::new();
-    let (register_cred, _pub) = authenticator.register(&parse_ccr(&body), RP_ORIGIN);
-    let (status, body) = post_json(
-        &fix.router,
-        "/v1/install/claim/finish",
+    let (register_cred, _pub) = authenticator.register(&parse_ccr(&payload), RP_ORIGIN);
+    let (status, payload) = post_json(
+        &fix,
         FINISH_TASK,
         json!({
             "installToken": token,
@@ -543,23 +511,26 @@ async fn the_claim_start_task_answers_with_the_code_its_spec_declares() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = start(token).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
-    assert_eq!(rest_error_code(&body), START_ERR_INVALID_TOKEN, "{body}");
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    let (status, payload) = start(token).await;
+    assert_eq!(status, REJECTED, "{payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        Some(START_ERR_INVALID_TOKEN),
+        "{payload}"
+    );
 
     // A concurrent-ceremony lock is not a token fault.
     let (token, _jti) = mint_token_and_record(&fix, 600).await;
     let (status, _) = start(token.clone()).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, body) = start(token).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(rest_error_code(&body), "", "{body}");
+    let (status, payload) = start(token).await;
+    assert_eq!(status, REJECTED, "{payload}");
+    assert_eq!(payload["details"]["reason"], "conflict", "{payload}");
 }
 
 /// Finish distinguishes the token (`invalidToken`), the enrolment it names
 /// (`registrationMismatch`) and the WebAuthn attestation (`bindingInvalid`).
-/// Every status is the 401 it was.
 #[tokio::test]
 async fn the_claim_finish_task_answers_with_the_codes_its_spec_declares() {
     let fix = build_fixture(Some(RP_ORIGIN), true).await;
@@ -570,11 +541,10 @@ async fn the_claim_finish_task_answers_with_the_codes_its_spec_declares() {
         "type": "public-key"
     });
     let finish = |token: String, registration_id: String, cred: Value| {
-        let router = fix.router.clone();
+        let fix = &fix;
         async move {
             post_json(
-                &router,
-                "/v1/install/claim/finish",
+                fix,
                 FINISH_TASK,
                 json!({
                     "installToken": token,
@@ -587,54 +557,56 @@ async fn the_claim_finish_task_answers_with_the_codes_its_spec_declares() {
     };
 
     // invalidToken: not a token this community signed.
-    let (status, body) = finish(
+    let (status, payload) = finish(
         "not.a.real.jwt".into(),
         Uuid::new_v4().to_string(),
         dummy_cred.clone(),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
-    assert_eq!(rest_error_code(&body), FINISH_ERR_INVALID_TOKEN, "{body}");
+    assert_eq!(status, REJECTED, "{payload}");
+    assert_eq!(payload["code"], FINISH_ERR_INVALID_TOKEN, "{payload}");
 
     // registrationMismatch: no enrolment was ever opened for this token.
     let (token, jti) = mint_token_and_record(&fix, 600).await;
-    let (status, body) = finish(token.clone(), jti.to_string(), dummy_cred.clone()).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let (status, payload) = finish(token.clone(), jti.to_string(), dummy_cred.clone()).await;
+    assert_eq!(status, REJECTED, "{payload}");
     assert_eq!(
-        rest_error_code(&body),
-        FINISH_ERR_REGISTRATION_MISMATCH,
-        "{body}"
+        payload["code"], FINISH_ERR_REGISTRATION_MISMATCH,
+        "{payload}"
     );
 
     // Open the enrolment, then name a different one, and one that is not an id.
-    let (status, body) = post_json(
-        &fix.router,
-        "/v1/install/claim/start",
-        START_TASK,
-        json!({ "installToken": token }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let ccr = parse_ccr(&body);
+    let (status, payload) = post_json(&fix, START_TASK, json!({ "installToken": token })).await;
+    assert_eq!(status, StatusCode::OK, "{payload}");
+    let ccr = parse_ccr(&payload);
     for other in [Uuid::new_v4().to_string(), "not-a-registration".to_string()] {
-        let (status, body) = finish(token.clone(), other.clone(), dummy_cred.clone()).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{other}: {body}");
+        let (status, payload) = finish(token.clone(), other.clone(), dummy_cred.clone()).await;
+        assert_eq!(status, REJECTED, "{other}: {payload}");
         assert_eq!(
-            rest_error_code(&body),
-            FINISH_ERR_REGISTRATION_MISMATCH,
-            "{other}: {body}"
+            payload["code"], FINISH_ERR_REGISTRATION_MISMATCH,
+            "{other}: {payload}"
         );
     }
 
     // bindingInvalid: an attestation made for another origin.
     let mut authenticator = SoftEd25519Authenticator::new();
     let (wrong_origin, _pub) = authenticator.register(&ccr, "https://evil.example.com");
-    let (status, body) = finish(
+    let (status, payload) = finish(
         token,
         jti.to_string(),
         serde_json::to_value(&wrong_origin).unwrap(),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
-    assert_eq!(rest_error_code(&body), FINISH_ERR_BINDING_INVALID, "{body}");
+    assert_eq!(status, REJECTED, "{payload}");
+    assert_eq!(
+        tt_error_code(&payload),
+        Some(FINISH_ERR_BINDING_INVALID),
+        "{payload}"
+    );
+}
+
+/// The identifier a refusal's payload names — the error-code census's textual
+/// witness scan looks for this exact call name.
+fn tt_error_code(payload: &Value) -> Option<&str> {
+    payload["code"].as_str()
 }

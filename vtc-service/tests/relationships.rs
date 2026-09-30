@@ -900,7 +900,10 @@ mod pairwise {
         let doc_id = Uuid::new_v4().to_string();
         let pop = sign(issuer_seed, authorization(&doc_id, &vrc_digest(&v))).await;
         let (status, body) = body_value(post_with(fix, &v, Some(pop), &doc_id).await).await;
-        assert_eq!(status, StatusCode::CREATED, "seed publish failed: {body}");
+        // The spine's document response answers `200` either way (#1845): a
+        // Trust Task response is success or failure, not graded HTTP
+        // semantics distinguishing a new edge from a republished one.
+        assert_eq!(status, StatusCode::OK, "seed publish failed: {body}");
         // The response is a `#response` document now, so the task's own
         // members live under `payload`.
         Uuid::parse_str(body["payload"]["id"].as_str().unwrap()).unwrap()
@@ -973,16 +976,14 @@ mod pairwise {
         fix.router.clone().oneshot(req).await.unwrap()
     }
 
+    /// `vtc/relationships/publish/0.2`'s bearer-less REST route (`POST
+    /// /v1/relationships`) had no caller left once `vtc-client` signed the
+    /// document instead (#1845) and was removed — publish is dispatched from
+    /// `POST /v1/trust-tasks` like every other verb with no dedicated
+    /// bearer-less mount. `document()` already signs with the document's own
+    /// proof, which is the authority here, not `fix.token`.
     async fn post_doc(fix: &Pw, doc: Value) -> axum::response::Response {
-        let req = Request::builder()
-            .method("POST")
-            .uri("/v1/relationships")
-            .header("authorization", format!("Bearer {}", fix.token))
-            .header("trust-task", PUBLISH_TASK)
-            .header("content-type", "application/json")
-            .body(Body::from(doc.to_string()))
-            .unwrap();
-        fix.router.clone().oneshot(req).await.unwrap()
+        post_trust_task(fix, doc).await
     }
 
     /// Publish `vrc`, minting the document id first so an authorization can
@@ -1019,7 +1020,7 @@ mod pairwise {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
         let (status, body) = body_value(post(&fix, &v, true).await).await;
-        assert_eq!(status, StatusCode::CREATED, "body: {body}");
+        assert_eq!(status, StatusCode::OK, "body: {body}");
         // The response is a `#response` Trust Task document, so the task's
         // own members are under `payload`.
         assert_eq!(body["payload"]["issuerDid"], did_for(RDID));
@@ -1047,14 +1048,16 @@ mod pairwise {
         );
     }
 
-    /// A member over their publish allowance gets the ecosystem rate-limit
-    /// contract, not a bare 400: status 429, `x-rate-limit-source: vtc`, a
-    /// `Retry-After`, and a JSON body naming the `relationships` limiter —
-    /// so an operator can tell which service, and which of its limiters,
-    /// refused. Nothing is stored.
+    /// A member over their publish allowance is refused the framework's
+    /// `unavailable` (retryable): `member_tasks::handle_relationships_publish`
+    /// maps [`PublishError::RateLimited`] to
+    /// `TrustTaskCode::Standard(StandardCode::Unavailable)` (`503`), carrying
+    /// the limiter name and retry hint in the framework's own shape rather
+    /// than the bespoke ecosystem 429 contract the REST-only door (removed,
+    /// #1845 left no caller) used to answer with. Nothing is stored.
     #[tokio::test]
     async fn a_member_over_the_publish_allowance_gets_the_rate_limit_contract() {
-        use vtc_service::relationships::rate_limit::{MAX_PER_WINDOW, WINDOW_SECS};
+        use vtc_service::relationships::rate_limit::MAX_PER_WINDOW;
 
         let fix = fixture().await;
         let now = chrono::Utc::now();
@@ -1066,44 +1069,15 @@ mod pairwise {
         }
 
         let v = vrc(RDID, PEER_RDID).await;
-        let res = post(&fix, &v, true).await;
-        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(res.headers()[vta_sdk::rate_limit::SOURCE_HEADER], "vtc");
-        assert_eq!(res.headers()["content-type"], "application/json");
-        let retry_after: u64 = res.headers()["retry-after"]
-            .to_str()
-            .unwrap()
-            .parse()
-            .expect("Retry-After is whole seconds");
-        assert!((1..=WINDOW_SECS as u64).contains(&retry_after));
-
-        let headers = res.headers().clone();
-        let (status, body) = body_value(res).await;
-        assert_eq!(body["error"], "rate_limited");
-        assert_eq!(body["limiter"], "relationships");
-
-        // The SDK's parser — the client half of the contract — attributes it
-        // to the VTC and recovers the limiter name.
-        match vta_sdk::error::VtaError::rate_limited_from_http(
-            status,
-            &headers,
-            &body.to_string(),
-            "https://vtc.example.com/v1/relationships",
-        ) {
-            Some(vta_sdk::error::VtaError::RateLimited {
-                limited_by,
-                limiter,
-                retry_after,
-                ..
-            }) => {
-                assert_eq!(limited_by, vta_sdk::rate_limit::RateLimitSource::Vtc);
-                assert_eq!(limiter.as_deref(), Some("relationships"));
-                assert!(retry_after.is_some());
-            }
-            other => panic!("the SDK must read this as a VTC rate limit: {other:?}"),
-        }
-        assert_eq!(body["retryAfterSecs"], retry_after);
-        assert!(body["message"].is_string());
+        let (status, body) = body_value(post(&fix, &v, true).await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["payload"]["code"], "unavailable", "{body}");
+        assert!(
+            body["payload"]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("relationships")),
+            "the limiter name must be in the message: {body}"
+        );
 
         let rows = vtc_service::relationships::list_all(&fix.relationships_ks)
             .await
@@ -1118,7 +1092,7 @@ mod pairwise {
     async fn authorization_is_never_persisted_to_the_audit_trail() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        assert_eq!(post(&fix, &v, true).await.status(), StatusCode::CREATED);
+        assert_eq!(post(&fix, &v, true).await.status(), StatusCode::OK);
 
         let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
         let mut saw_publish = false;
@@ -1148,7 +1122,7 @@ mod pairwise {
     async fn audit_attributes_the_publication_to_the_member_not_the_relationship_did() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        assert_eq!(post(&fix, &v, true).await.status(), StatusCode::CREATED);
+        assert_eq!(post(&fix, &v, true).await.status(), StatusCode::OK);
 
         let pairs = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
         let mut saw = false;
@@ -1179,7 +1153,7 @@ mod pairwise {
         let fix = fixture().await;
         let v = vrc(RDID, OTHER).await;
         let (status, body) = body_value(post(&fix, &v, true).await).await;
-        assert_eq!(status, StatusCode::CREATED, "body: {body}");
+        assert_eq!(status, StatusCode::OK, "body: {body}");
     }
 
     #[tokio::test]
@@ -1192,7 +1166,10 @@ mod pairwise {
         // differing.
         let (s1, b1) = body_value(post(&fix, &v, true).await).await;
         let (s2, b2) = body_value(post(&fix, &v, true).await).await;
-        assert_eq!(s1, StatusCode::CREATED);
+        // The spine's document response answers `200` either way (#1845): a
+        // Trust Task response is success or failure, not graded HTTP
+        // semantics distinguishing a new edge from a republished one.
+        assert_eq!(s1, StatusCode::OK);
         assert_eq!(s2, StatusCode::OK);
         assert_eq!(b1["payload"]["id"], b2["payload"]["id"]);
     }
@@ -1203,7 +1180,10 @@ mod pairwise {
     async fn rejects_missing_authorization() {
         let fix = fixture().await;
         let v = vrc(RDID, PEER_RDID).await;
-        assert_eq!(post(&fix, &v, false).await.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            post(&fix, &v, false).await.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 
     /// Holding the credential is not controlling the key behind it. This is
@@ -1217,7 +1197,7 @@ mod pairwise {
         let pop = sign(OTHER, authorization(&doc_id, &vrc_digest(&v))).await;
         assert_eq!(
             post_with(&fix, &v, Some(pop), &doc_id).await.status(),
-            StatusCode::FORBIDDEN
+            StatusCode::UNPROCESSABLE_ENTITY
         );
     }
 
@@ -1230,7 +1210,7 @@ mod pairwise {
         let pop = sign(RDID, authorization(&doc_id, &vrc_digest(&decoy))).await;
         assert_eq!(
             post_with(&fix, &target, Some(pop), &doc_id).await.status(),
-            StatusCode::FORBIDDEN
+            StatusCode::UNPROCESSABLE_ENTITY
         );
     }
 
@@ -1253,7 +1233,7 @@ mod pairwise {
         assert_ne!(minted_for, sent_in);
         assert_eq!(
             post_with(&fix, &v, Some(pop), &sent_in).await.status(),
-            StatusCode::FORBIDDEN
+            StatusCode::UNPROCESSABLE_ENTITY
         );
     }
 
@@ -1285,7 +1265,7 @@ mod pairwise {
         })
         .await;
         let (status, body) = body_value(post_doc(&fix, doc).await).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "body: {body}");
     }
 
     /// Replaces `rejects_stale_authorization`.
@@ -1333,7 +1313,10 @@ mod pairwise {
         )
         .await;
         doc.as_object_mut().unwrap().remove("proof");
-        assert_eq!(post_doc(&fix, doc).await.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            post_doc(&fix, doc).await.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
     }
 
     /// A document signed by someone who is not a member of this community is
@@ -1369,7 +1352,7 @@ mod pairwise {
         let fix = fixture().await;
 
         let first = vrc(RDID, PEER_RDID).await;
-        assert_eq!(post(&fix, &first, true).await.status(), StatusCode::CREATED);
+        assert_eq!(post(&fix, &first, true).await.status(), StatusCode::OK);
 
         // Same relationship DID, different counterparty.
         let second = vrc(RDID, OTHER).await;
@@ -1384,7 +1367,7 @@ mod pairwise {
         let fix = fixture().await;
 
         let first = vrc(RDID, PEER_RDID).await;
-        assert_eq!(post(&fix, &first, true).await.status(), StatusCode::CREATED);
+        assert_eq!(post(&fix, &first, true).await.status(), StatusCode::OK);
 
         // Same parties, different credential body — a distinct VRC, so the
         // idempotency hash differs and this is a genuine second publish.
@@ -1402,7 +1385,7 @@ mod pairwise {
         body["validUntil"] = json!("2999-01-01T00:00:00Z");
         let second = sign(RDID, body).await;
         let (status, b) = body_value(post(&fix, &second, true).await).await;
-        assert_eq!(status, StatusCode::CREATED, "body: {b}");
+        assert_eq!(status, StatusCode::OK, "body: {b}");
     }
 
     /// …and the earlier credential is *displaced* by the later one (#1079).
@@ -1437,7 +1420,7 @@ mod pairwise {
         body["validUntil"] = json!("2999-01-01T00:00:00Z");
         let second = sign(RDID, body).await;
         let (status, second_body) = body_value(post(&fix, &second, true).await).await;
-        assert_eq!(status, StatusCode::CREATED, "body: {second_body}");
+        assert_eq!(status, StatusCode::OK, "body: {second_body}");
         let replacement_digest = second_body["payload"]["vrcDigestMultibase"]
             .as_str()
             .expect("publish response carries the digest")
@@ -1620,7 +1603,7 @@ mod pairwise {
         let pop = sign(RDID, a).await;
         assert_eq!(
             post_with(&fix, &v, Some(pop), &doc_id).await.status(),
-            StatusCode::FORBIDDEN
+            StatusCode::BAD_REQUEST
         );
     }
 
@@ -2215,8 +2198,11 @@ mod pairwise {
 
     /// `vrcInvalid` covers a VRC whose proof does not verify, and an issuer the
     /// signer neither is nor has proven control of. `subjectNotMember` is the
-    /// attributed form naming a subject who is not a member. Statuses are
-    /// unchanged (400 / 403 / 400).
+    /// attributed form naming a subject who is not a member. Every declared
+    /// code is an extended code, so the HTTPS binding's flat bucket answers
+    /// `422` regardless of the wrapped `AppError` (`app_error_to_reject`'s
+    /// generic taxonomy, which the REST-only door — removed, #1845 left no
+    /// caller — used to answer with, is not consulted for a declared code).
     #[tokio::test]
     async fn the_publish_task_answers_with_the_codes_its_spec_declares() {
         let fix = fixture().await;
@@ -2224,15 +2210,23 @@ mod pairwise {
         // An issuer that is not the signer, with no authorization.
         let v = vrc(RDID, PEER_RDID).await;
         let (status, body) = body_value(post(&fix, &v, false).await).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert_eq!(rest_error_code(&body), PUBLISH_ERR_VRC_INVALID, "{body}");
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(
+            tt_error_code(&body),
+            Some(PUBLISH_ERR_VRC_INVALID),
+            "{body}"
+        );
 
         // A VRC whose proof no longer covers it.
         let mut tampered = vrc(RDID, PEER_RDID).await;
         tampered["validFrom"] = json!("2021-01-01T00:00:00Z");
         let (status, body) = body_value(post(&fix, &tampered, true).await).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert_eq!(rest_error_code(&body), PUBLISH_ERR_VRC_INVALID, "{body}");
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(
+            tt_error_code(&body),
+            Some(PUBLISH_ERR_VRC_INVALID),
+            "{body}"
+        );
 
         // Attributed — issued under the member's own DID — to a non-member.
         let attributed = sign(
@@ -2251,10 +2245,10 @@ mod pairwise {
         )
         .await;
         let (status, body) = body_value(post(&fix, &attributed, false).await).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         assert_eq!(
-            rest_error_code(&body),
-            PUBLISH_ERR_SUBJECT_NOT_MEMBER,
+            tt_error_code(&body),
+            Some(PUBLISH_ERR_SUBJECT_NOT_MEMBER),
             "{body}"
         );
 
@@ -2278,7 +2272,11 @@ mod pairwise {
         .await;
         let (status, body) = body_value(post(&fix, &mispaired, false).await).await;
         assert!(status.is_client_error(), "{body}");
-        assert_eq!(rest_error_code(&body), PUBLISH_ERR_VRC_INVALID, "{body}");
+        assert_eq!(
+            tt_error_code(&body),
+            Some(PUBLISH_ERR_VRC_INVALID),
+            "{body}"
+        );
 
         // And an edge that declares no `issuerScope` is not a DTG credential.
         let mut unscoped = vrc(RDID, PEER_RDID).await;

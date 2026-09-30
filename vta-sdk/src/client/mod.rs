@@ -1881,6 +1881,11 @@ impl VtaClient {
         // real error arrived — every time, on every attempt, so the operator
         // saw a bare timeout and no diagnosis. Every other webvh verb carried
         // the same latent inversion at 30s or 60s.
+        // Read only by the TSP and DIDComm arms below.
+        #[cfg_attr(
+            not(any(feature = "tsp", feature = "session")),
+            allow(unused_variables)
+        )]
         let timeout = crate::budget::client_budget_secs(type_uri, timeout);
 
         let doc = self.signed_task_document(type_uri, payload).await?;

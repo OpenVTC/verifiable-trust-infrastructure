@@ -1,9 +1,9 @@
-//! `POST /v1/admin/bootstrap` — finalises the install flow by
+//! `vtc/admin/bootstrap/0.1` — finalises the install flow by
 //! writing the first admin ACL entry and emitting
 //! `CommunityInstalled`.
 //!
 //! Implements **M0.6.2** of the VTC MVP Phase 0 plan. Consumes the
-//! setup-session JWT minted by `POST /v1/install/claim/finish`
+//! setup-session JWT minted by `vtc/install/claim/finish/0.2`
 //! (M0.5.2). The token carries:
 //!
 //! - `sub` — the candidate admin `did:key`
@@ -15,12 +15,13 @@
 //! to slam the install surface shut afterwards. The
 //! `claim_finish` ceremony already consumed this row's token; this
 //! handler's job is just the first-admin ACL grant + audit event.
+//!
+//! Pre-session, like `claim_start`/`claim_finish`: called from
+//! `trust_tasks::install_tasks`, no REST route mounts it.
 
 use std::sync::Arc;
 
 use crate::acl::{VtcAclEntry, VtcRole, list_acl_entries, store_acl_entry};
-use axum::Json;
-use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -72,20 +73,15 @@ pub const BOOTSTRAP_ERR_INVALID_TOKEN: &str =
 pub const BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED: &str =
     trust_tasks_rs::specs::vtc::admin::bootstrap::v0_1::error_codes::ALREADY_BOOTSTRAPPED.code;
 
-#[utoipa::path(
-    post, path = "/admin/bootstrap", tag = "admin",
-    request_body = BootstrapRequest,
-    responses(
-        (status = 200, description = "First admin bootstrapped; community installed", body = BootstrapResponse),
-        (status = 409, description = "An admin already exists"),
-    ),
-)]
-pub async fn bootstrap(
-    State(state): State<AppState>,
-    Json(req): Json<BootstrapRequest>,
-) -> Result<(StatusCode, Json<BootstrapResponse>), TaskError> {
-    let signer = require_install_signer(&state)?;
-    let audit_writer = require_audit_writer(&state)?;
+/// `vtc/admin/bootstrap/0.1` — finalises the install flow. Pre-session: the
+/// setup-session token is the credential. Called from
+/// `trust_tasks::install_tasks`; no REST route mounts it.
+pub(crate) async fn bootstrap(
+    state: &AppState,
+    req: BootstrapRequest,
+) -> Result<BootstrapResponse, TaskError> {
+    let signer = require_install_signer(state)?;
+    let audit_writer = require_audit_writer(state)?;
 
     // `decode_session` answers `Unauthorized` for every failure — bad
     // signature, wrong audience, expired — which is `invalidToken`.
@@ -253,13 +249,10 @@ pub async fn bootstrap(
         info!(co_admin = %entry.did, "co-admin installed beside the first admin");
     }
 
-    Ok((
-        StatusCode::OK,
-        Json(BootstrapResponse {
-            admin_did,
-            event_id: envelope.event_id,
-        }),
-    ))
+    Ok(BootstrapResponse {
+        admin_did,
+        event_id: envelope.event_id,
+    })
 }
 
 // ---------------------------------------------------------------------------

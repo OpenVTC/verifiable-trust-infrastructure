@@ -1,15 +1,17 @@
 // Vetting admin API — what the vetting panels, the join-request detail and the
 // dashboard read and write.
 //
-// Naming a vetter, the vetter listing, the join manifest, resending a grant
-// and the endorsement-type writes are all signed documents, sent from this
-// browser's console key — resend on `0.2`, which adds the `memberDid` an
-// administrator names to resend on a vetter's behalf (`0.1` alone, the
-// vetter's own request, names no one else). The rest are admin REST the
-// daemon mounts with no binding, because no published task describes them —
-// the grant listing, automatic grants, withdrawal notices, a join request's
-// vetting facts and community branding — so they go through the `*Exempt`
-// helpers instead of borrowing a task URI that names something else.
+// Every read and write here is a signed document, sent from this browser's
+// console key: naming a vetter, the vetter listing, the join manifest,
+// resending a grant (`0.2`, which adds the `memberDid` an administrator names
+// to resend on a vetter's behalf — `0.1` alone, the vetter's own request,
+// names no one else), the endorsement-type writes, the grant listing
+// (`vtc/vetting/vetters/grants/list/0.1`), automatic grants
+// (`vtc/vetting/auto-grant/{show,update}/0.1`), withdrawal notices
+// (`vtc/vetting/revocations/list/0.1`) and community branding
+// (`vtc/community/branding/{show,update}/0.1`). A join request's vetting facts
+// (`vtc/join-requests/vetting/show/0.1`) are the one read still worth calling
+// out below, since nothing else on this page names its task.
 
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import type {

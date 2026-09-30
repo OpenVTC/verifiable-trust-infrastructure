@@ -118,7 +118,7 @@ async fn sessions_list_returns_only_callers_active_sessions() {
     let doc = serde_json::to_value(&typed).expect("envelope serialises");
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
@@ -177,7 +177,7 @@ async fn sessions_list_without_bearer_is_unauthorized() {
     });
     let req = Request::builder()
         .method("POST")
-        .uri("/api/trust-tasks")
+        .uri("/trust-tasks")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
         .unwrap();

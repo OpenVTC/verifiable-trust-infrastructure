@@ -49,8 +49,6 @@
 
 use std::sync::Arc;
 
-use axum::Json;
-use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -190,22 +188,15 @@ fn token_error(code: &'static str) -> impl FnOnce(AppError) -> TaskError {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// `POST /v1/install/claim/start` — begin the WebAuthn install
-/// ceremony for the first admin. Unauthenticated.
-#[utoipa::path(
-    post, path = "/install/claim/start", tag = "install",
-    request_body = ClaimStartRequest,
-    responses(
-        (status = 201, description = "WebAuthn creation challenge", body = ClaimStartResponse),
-        (status = 401, description = "Invalid install token or claim secret"),
-    ),
-)]
-pub async fn claim_start(
-    State(state): State<AppState>,
-    Json(req): Json<ClaimStartRequest>,
-) -> Result<(StatusCode, Json<ClaimStartResponse>), TaskError> {
-    let signer = require_install_signer(&state)?;
-    let webauthn = require_webauthn(&state)?;
+/// `vtc/install/claim/start/0.2` — begin the WebAuthn install ceremony for
+/// the first admin. Pre-session: the install token is the credential. Called
+/// from `trust_tasks::install_tasks`; no REST route mounts it.
+pub(crate) async fn claim_start(
+    state: &AppState,
+    req: ClaimStartRequest,
+) -> Result<ClaimStartResponse, TaskError> {
+    let signer = require_install_signer(state)?;
+    let webauthn = require_webauthn(state)?;
     let store = &state.install_store;
 
     let claims = parse_install_token(signer, &req.install_token)
@@ -225,11 +216,13 @@ pub async fn claim_start(
     // stay in `start_claim` below.
     if let Some(stored_hash) = store.peek_secret_hash(&jti).await? {
         let Some(supplied) = req.claim_secret.as_deref() else {
-            return Err(AppError::ServiceError {
-                status: StatusCode::UNAUTHORIZED,
-                message: "claim_secret_required".into(),
-            }
-            .into());
+            return Err(TaskError::declared(
+                START_ERR_INVALID_TOKEN,
+                AppError::Unauthorized(
+                    "claim_secret_required: this install URL needs the out-of-band claim code"
+                        .into(),
+                ),
+            ));
         };
         // Argon2id verification is CPU-bound (~50–200 ms); run it on the
         // blocking pool so it doesn't stall the async REST runtime — this is
@@ -243,11 +236,12 @@ pub async fn claim_start(
                     AppError::Internal(format!("claim-secret verify task failed: {e}"))
                 })??;
         if !verified {
-            return Err(AppError::ServiceError {
-                status: StatusCode::UNAUTHORIZED,
-                message: "claim_secret_invalid".into(),
-            }
-            .into());
+            return Err(TaskError::declared(
+                START_ERR_INVALID_TOKEN,
+                AppError::Unauthorized(
+                    "claim_secret_invalid: the supplied claim code does not match".into(),
+                ),
+            ));
         }
     }
 
@@ -286,31 +280,21 @@ pub async fn claim_start(
 
     info!(jti = %jti, "install claim ceremony started");
 
-    Ok((
-        StatusCode::OK,
-        Json(ClaimStartResponse {
-            registration_id: jti.to_string(),
-            options: ccr,
-        }),
-    ))
+    Ok(ClaimStartResponse {
+        registration_id: jti.to_string(),
+        options: ccr,
+    })
 }
 
-/// `POST /v1/install/claim/finish` — complete the WebAuthn install
-/// ceremony, mint the admin DID + setup-session token. Unauthenticated.
-#[utoipa::path(
-    post, path = "/install/claim/finish", tag = "install",
-    request_body = ClaimFinishRequest,
-    responses(
-        (status = 200, description = "Admin DID + setup-session token", body = ClaimFinishResponse),
-        (status = 401, description = "Invalid install token or registration state"),
-    ),
-)]
-pub async fn claim_finish(
-    State(state): State<AppState>,
-    Json(req): Json<ClaimFinishRequest>,
-) -> Result<(StatusCode, Json<ClaimFinishResponse>), TaskError> {
-    let signer = require_install_signer(&state)?;
-    let webauthn = require_webauthn(&state)?;
+/// `vtc/install/claim/finish/0.2` — complete the WebAuthn install ceremony,
+/// mint the admin DID + setup-session token. Pre-session. Called from
+/// `trust_tasks::install_tasks`; no REST route mounts it.
+pub(crate) async fn claim_finish(
+    state: &AppState,
+    req: ClaimFinishRequest,
+) -> Result<ClaimFinishResponse, TaskError> {
+    let signer = require_install_signer(state)?;
+    let webauthn = require_webauthn(state)?;
     let store = &state.install_store;
 
     let claims = parse_install_token(signer, &req.install_token)
@@ -350,7 +334,7 @@ pub async fn claim_finish(
             .is_some()
         {
             info!(jti = %jti, %admin_did, "install claim finish replayed; re-issuing setup token");
-            return Ok(issue_setup_session(&state, signer, admin_did, &jti).await?);
+            return Ok(issue_setup_session(state, signer, admin_did, &jti).await?);
         }
         return Err(TaskError::declared(
             FINISH_ERR_INVALID_TOKEN,
@@ -466,7 +450,7 @@ pub async fn claim_finish(
 
     info!(jti = %jti, %admin_did, "install claim ceremony completed");
 
-    Ok(issue_setup_session(&state, signer, admin_did, &jti).await?)
+    Ok(issue_setup_session(state, signer, admin_did, &jti).await?)
 }
 
 /// Mint the `setup_session_token` for `admin_did` + build the
@@ -477,7 +461,7 @@ async fn issue_setup_session(
     signer: &InstallTokenSigner,
     admin_did: String,
     jti: &Uuid,
-) -> Result<(StatusCode, Json<ClaimFinishResponse>), AppError> {
+) -> Result<ClaimFinishResponse, AppError> {
     let issuer_did = state
         .config
         .read()
@@ -494,13 +478,10 @@ async fn issue_setup_session(
         INSTALL_SESSION_DEFAULT_TTL_SECS,
     )?;
 
-    Ok((
-        StatusCode::OK,
-        Json(ClaimFinishResponse {
-            admin_did,
-            setup_session_token,
-        }),
-    ))
+    Ok(ClaimFinishResponse {
+        admin_did,
+        setup_session_token,
+    })
 }
 
 // ---------------------------------------------------------------------------
