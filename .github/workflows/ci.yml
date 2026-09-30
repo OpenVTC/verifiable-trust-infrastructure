@@ -256,7 +256,10 @@ jobs:
     # that left ~2x headroom over a typical run. Freeing is now conditional
     # and the guard costs seconds, so a typical run is ~11-13 min and 40
     # leaves room for a runner at 3x. A real hang still ends here.
-    timeout-minutes: 40
+    # The suite has since grown: from 09-29 to 09-30, every successful run on
+    # main and on PRs took 30-33 min, so 40 left ~1.3x headroom and a slow runner
+    # hit it on the Release PR (#1856). 60 restores ~2x over a typical run.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -794,7 +797,10 @@ jobs:
     name: release bump is large enough
     if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-plz-')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 90, not 45: semver-checks over every bumped crate. A Release PR that moves
+    # vta-sdk and vti-common to breaking versions bumps most of the workspace, and
+    # hit 45 on #1856.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
