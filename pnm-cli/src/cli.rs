@@ -2073,8 +2073,9 @@ pub(crate) enum ContextCommands {
     /// it — useful when the DID was minted on a fresh `pnm setup` and you
     /// want an automatic safety window.
     Create {
-        /// Context slug (lowercase alphanumeric + hyphens). When `--parent` is
-        /// set this is the leaf segment; the full id becomes `<parent>/<id>`.
+        /// Context path: a slug (lowercase alphanumeric + hyphens), or slugs
+        /// joined by `/` to nest (e.g. `acme/eng`). Nesting requires admin of
+        /// the parent; a top-level context is super-admin only.
         #[arg(long)]
         id: String,
         /// Human-readable name
@@ -2083,11 +2084,6 @@ pub(crate) enum ContextCommands {
         /// Optional description
         #[arg(long)]
         description: Option<String>,
-        /// Parent context path to nest under (e.g. `acme/eng`). Creates a
-        /// sub-context — requires admin of the parent. Omit for a top-level
-        /// context (super-admin only).
-        #[arg(long)]
-        parent: Option<String>,
         /// DID to grant admin access to (must start with `did:`). When set,
         /// creates an ACL entry with role=admin scoped to this context.
         #[arg(long)]
@@ -2173,7 +2169,7 @@ pub(crate) enum ContextCommands {
     /// `POST /acl`; the VTA never sees the private key. The minted credential
     /// is sealed to the `--recipient` and printed as an armored bundle.
     Bootstrap {
-        /// Context slug (lowercase alphanumeric + hyphens)
+        /// Context path (e.g. `acme` or `acme/eng`)
         #[arg(long)]
         id: String,
         /// Human-readable name
@@ -2205,7 +2201,7 @@ pub(crate) enum ContextCommands {
     /// `BootstrapRequest` JSON (produced by `pnm bootstrap request --out`) or
     /// `--recipient-pubkey` + `--recipient-nonce` inline.
     Provision {
-        /// Context slug (lowercase alphanumeric + hyphens)
+        /// Context path (e.g. `acme` or `acme/eng`)
         #[arg(long)]
         id: String,
         /// Human-readable name

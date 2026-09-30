@@ -27,6 +27,24 @@ pub struct ProvisionDidOptions {
     pub pre_rotation_count: u32,
 }
 
+/// Build the create request for a context **path** (`acme` or `acme/eng`).
+///
+/// The wire request carries the leaf as `id` and the rest as `parent`, so the
+/// path is split at its last separator after validating the whole of it.
+fn create_request_for_path(
+    path: &str,
+    name: &str,
+    description: Option<String>,
+) -> Result<CreateContextRequest, Box<dyn std::error::Error>> {
+    vta_sdk::context_path::validate_context_path(path)?;
+    let mut req = match path.rsplit_once(vta_sdk::context_path::SEPARATOR) {
+        Some((parent, leaf)) => CreateContextRequest::new(leaf, name).parent(parent),
+        None => CreateContextRequest::new(path, name),
+    };
+    req.description = description;
+    Ok(req)
+}
+
 pub async fn cmd_context_bootstrap(
     client: &VtaClient,
     id: &str,
@@ -35,10 +53,7 @@ pub async fn cmd_context_bootstrap(
     admin_label: Option<String>,
     recipient: SealedRecipient,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut ctx_req = CreateContextRequest::new(id, name);
-    if let Some(desc) = description {
-        ctx_req = ctx_req.description(desc);
-    }
+    let ctx_req = create_request_for_path(id, name, description)?;
     let ctx = client.create_context(ctx_req).await?;
     println!("Context created:");
     println!("  ID:        {}", ctx.id);
@@ -255,23 +270,13 @@ pub async fn cmd_context_create(
     id: &str,
     name: &str,
     description: Option<String>,
-    parent: Option<String>,
     admin: AdminAclOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::render::{RESET, YELLOW};
     use vta_sdk::error::VtaError;
 
-    // The full context path the server will assign (`<parent>/<id>` when nested)
-    // — used for the conflict hint before `resp` exists.
-    let effective_id = parent
-        .as_ref()
-        .map_or_else(|| id.to_string(), |p| format!("{p}/{id}"));
-    let req = CreateContextRequest {
-        id: id.to_string(),
-        name: name.to_string(),
-        description,
-        parent,
-    };
+    let effective_id = id;
+    let req = create_request_for_path(id, name, description)?;
     let resp = match client.create_context(req).await {
         Ok(r) => r,
         // Friendly path when the operator's real intent was "grant this DID
@@ -604,10 +609,7 @@ pub async fn cmd_context_provision(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Create the context
     eprintln!("Creating context '{id}'...");
-    let mut ctx_req = CreateContextRequest::new(id, name);
-    if let Some(desc) = description {
-        ctx_req = ctx_req.description(desc);
-    }
+    let ctx_req = create_request_for_path(id, name, description)?;
     client.create_context(ctx_req).await?;
 
     // 2. Fetch VTA config for URL/DID (needed to build the admin credential).
@@ -861,4 +863,33 @@ pub async fn cmd_context_reprovision(
 
     // 7. Seal and emit via the shared helper
     crate::sealed_producer::emit_context_provision_bundle(bundle, &recipient, None).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_request_for_path;
+
+    #[test]
+    fn a_path_splits_into_parent_and_leaf() {
+        let r = create_request_for_path("vtc/trust-registry", "n", None).unwrap();
+        assert_eq!(
+            (r.id.as_str(), r.parent.as_deref()),
+            ("trust-registry", Some("vtc"))
+        );
+        let r = create_request_for_path("a/b/c", "n", None).unwrap();
+        assert_eq!((r.id.as_str(), r.parent.as_deref()), ("c", Some("a/b")));
+    }
+
+    #[test]
+    fn a_bare_slug_is_top_level() {
+        let r = create_request_for_path("acme", "n", None).unwrap();
+        assert_eq!((r.id.as_str(), r.parent), ("acme", None));
+    }
+
+    #[test]
+    fn a_malformed_path_is_refused() {
+        for bad in ["", "/a", "a/", "a//b"] {
+            assert!(create_request_for_path(bad, "n", None).is_err(), "{bad:?}");
+        }
+    }
 }
