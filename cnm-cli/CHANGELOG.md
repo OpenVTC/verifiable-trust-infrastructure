@@ -2,6 +2,86 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.21.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.20.0...cnm-cli-v0.21.0) — 2026-09-30
+
+
+### Added
+
+- **vta-service**: Retire superseded REST routes; pre-session auth moves to Trust Tasks ([#1858](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1858))
+
+* feat(vta-service)!: retire superseded REST routes; auth family moves to Trust Tasks
+
+  Deletes the ~56 REST routes `deprecation::SUPERSEDED` marked as superseded
+  by a Trust Task (acl, audit, config, contexts, did_templates, keys, webvh
+  servers/dids, POST /vta/restart, the /api/trust-tasks alt spelling) and the
+  always-403 POST /attestation/mnemonic stub. The REST-route half of
+  `deprecation.rs` (the SUPERSEDED table, mark_superseded middleware) is
+  removed now that it's empty; the unrelated SUPERSEDED_TASKS (Trust-Task URI
+  supersession) table is untouched.
+
+  Pre-session auth (auth/challenge/0.1, auth/authenticate/{0.2,0.3},
+  auth/refresh/0.2) moves onto `/trust-tasks`, dispatched by a new
+  family-owned bypass (`trust_tasks::auth::owns`/`dispatch_pre_session`) that
+  runs ahead of the ACL-gated pipeline on all three transports (REST,
+  DIDComm, TSP) — mirroring affinidi-webvh-service's `trust_tasks_auth`
+  pattern. The document's own proof (required on authenticate, absent on
+  challenge/refresh) is the whole of the authority these four carry, so
+  there is no session and no ACL pre-filter to apply. authenticate/refresh
+  0.1 are retired outright (this is a test deployment); 0.2/0.3 add
+  sessionKey and delegation fields this VTA declines with a typed refusal
+  rather than silently ignoring.
+
+  Kept as tested REST_EXCEPTIONS: POST /bootstrap/request, GET+POST
+  /backup/blob/{bundle_id}, GET /openapi.json, GET /attestation/mnemonic,
+  GET /metrics.
+
+  Client-side (vta-sdk, vta-mobile-core) callers move onto the Trust-Task
+  form; cnm-cli/pnm-cli/vta-mcp needed no changes (already Trust-Task only).
+
+- DTG Credentials v1 — role VACs, vetted/1 and witnessed/1 statements, IDVCs, issuerScope ([#1859](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1859))
+
+* feat(vta-sdk)!: vetting statements are vetted/1 VSCs; role credentials are VACs
+
+  Conform the SDK's vetting artifacts to the DTG Credentials Core
+  Specification (v1 context, `issuerScope`) and the DTG VSC predicate
+  registry, following the regenerated vetting specifications
+  (dtgwg-trust-tasks-tf feat/dtg-vsc-conformance).
+
+  Vetting Statement (vetting/session/0.1): no longer an
+  EndorsementCredential. `sign_statement` builds a StatementCredential with
+  `new_vetted_vsc` under `https://registry.trustoverip.org/dtg/vsc/vetted/1`;
+  the body is `credentialSubject.object.value`, with no `type` member.
+  `taskContext` and `taskDigestMultibase` are both read from the
+  `vetting/session` document, which `StatementDraft::session` now carries
+  in place of `task_context`, and `StatementDraft::issuer_scope` is
+  `directed` or `public` (pairwise is refused by the profile).
+  `verify_statement` parses through `dtg-credentials`, so the v1 context,
+  the one-subtype rule and the profile are checked by the code that issues
+  them; `VerifiedVettingStatement::check_against_session` binds a statement
+  to the session document by id and task digest.
+
+  - `IdentityVettingEndorsement` -> `VettedObjectValue` (no `type`; digests
+    and commitment must be base58btc, as the registry schema requires).
+  - `IDENTITY_VETTING_ENDORSEMENT_TYPE` -> `VETTED_PREDICATE`.
+  - `VerifiedVettingStatement::endorsement()` -> `value()`; new
+    `issuer_scope()`, `task_digest_multibase()`.
+
+  Vetter role credential (vtc/vetting/vetters/grant/0.1, vetting/request/0.1):
+  a community-issued VAC, `issuerScope` public, `authority` { scope:
+  <community DID>, actions: ["role:vetter"], maxAttenuation: 0 }.
+  `eligibility::community_role` -> `community_roles`, returning every
+  `role:<name>` of a VAC the community issued in its own scope with no
+  parent; `verify_eligibility_vp` parses the VAC strictly and refuses a
+  non-public scope or an attenuation.
+
+  - `COMMUNITY_ROLE_ENDORSEMENT_TYPE` removed; new `ROLE_ACTION_PREFIX`,
+    `VETTER_ROLE_ACTION`, `role_action`, `role_of_action`.
+  - `protocols::members::ENDORSEMENT_CREDENTIAL_TYPE` removed; new
+    `AUTHORITY_CREDENTIAL_TYPE` and `STATEMENT_CREDENTIAL_TYPE`.
+  - `VerdictWith::role_vec` -> `role_vac` (wire `roleVac`).
+
+
+
 ## [0.20.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.19.3...cnm-cli-v0.20.0) — 2026-09-30
 
 

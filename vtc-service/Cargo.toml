@@ -129,9 +129,9 @@ path = "src/main.rs"
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
-vti-rooms = { path = "../vti-rooms", version = "0.2" }
+vti-rooms = { path = "../vti-rooms", version = "0.3" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
-vti-common = { path = "../vti-common", version = "0.30", features = [
+vti-common = { path = "../vti-common", version = "0.31", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -148,8 +148,8 @@ vti-common = { path = "../vti-common", version = "0.30", features = [
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.4" }
-vta-sdk = { path = "../vta-sdk", version = "0.57", features = [
+vti-secrets = { path = "../vti-secrets", version = "0.5" }
+vta-sdk = { path = "../vta-sdk", version = "0.58", features = [
   "didcomm",
   "session",
   "config-session",

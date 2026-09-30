@@ -2,6 +2,23 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.8.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.7.1...vta-backup-v0.8.0) — 2026-09-30
+
+
+### Fixed
+
+- **vta-service, vta-backup**: Build when vta-config's tee feature is unified in ([#1853](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1853))
+
+AppConfig.tee exists whenever vta-config/tee is on, which vta-tee turns
+  on. vta-service and vta-backup gated their AppConfig literals on their
+  own tee feature, so any build that unified vta-tee with a non-tee
+  vta-service or vta-backup failed with a missing field. Always enable
+  vta-config/tee in both (it only adds the field and its types) and set
+  the field unconditionally; TEE behaviour stays behind each crate's own
+  tee feature.
+
+
+
 ## [0.7.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-backup-v0.7.0...vta-backup-v0.7.1) — 2026-09-30
 
 
