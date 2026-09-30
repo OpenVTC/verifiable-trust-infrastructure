@@ -1,13 +1,24 @@
+//! Passkey-login REST routes.
+//!
+//! `POST /auth/challenge`, `POST /auth/` (authenticate) and
+//! `POST /auth/refresh` used to live here. They are pre-session Trust-Task
+//! operations now — `auth/challenge/0.1`, `auth/authenticate/{0.2,0.3}` and
+//! `auth/refresh/0.2` — served on `/trust-tasks` by a family-owned dispatch
+//! (`trust_tasks::auth::owns` / `dispatch_pre_session`) that runs ahead of the
+//! ACL-gated pipeline, exactly like every other Trust Task and over every
+//! transport (REST, DIDComm, TSP), rather than on a dedicated unauth REST
+//! route reachable only over HTTPS.
+//!
+//! Passkey login stays REST: it is a WebAuthn ceremony driven from a browser
+//! that holds only the bearer token `passkey-login` issues and no DID key
+//! with which to sign a Trust Task — the same reason the passkey-VM
+//! enrolment routes are the WebAuthn exception in `deprecation::REST_EXCEPTIONS`.
+
 use axum::Json;
 use axum::extract::State;
-use axum::response::{IntoResponse, Response};
-use serde_json::{Value, json};
-use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
-use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
 use uuid::Uuid;
 
-use vta_sdk::protocols::auth::{AuthenticateResponse, ChallengeRequest};
+use vta_sdk::protocols::auth::AuthenticateResponse;
 
 use crate::acl::check_acl;
 use crate::audit::audit;
@@ -15,423 +26,6 @@ use crate::auth::session::{Session, SessionState, get_session, now_epoch, store_
 use crate::error::AppError;
 use crate::server::AppState;
 use tracing::{info, warn};
-
-// ---------- POST /auth/challenge ----------
-
-/// POST /auth/challenge — issue a DID-auth challenge nonce for a session. Auth: unauthenticated.
-///
-/// Thin dispatcher: builds [`vti_common::auth::ChallengeInput`]
-/// from the JSON request, builds a [`VtaAuthBackend`] from
-/// state, and calls [`vti_common::auth::handlers::handle_challenge`].
-/// Everything substantive — ACL gate, per-DID rate limit, TEE
-/// attestation hook, session persistence — lives in the
-/// canonical handler. The route-layer concerns kept here are
-/// just JSON deserialisation and the audit-macro emission
-/// (vti-common's default `audit` hook uses `tracing::info!`
-/// without VTA's HMAC-actor-hash audit envelope).
-#[utoipa::path(
-    post, path = "/auth/challenge", tag = "auth",
-    request_body(content = String, description = "Flat-JSON or Trust-Task auth document"),
-    responses(
-        (status = 200, description = "Challenge nonce (flat JSON or Trust-Task document)"),
-        (status = 401, description = "ACL gate rejected the subject DID"),
-    ),
-)]
-pub async fn challenge(State(state): State<AppState>, body: String) -> Result<Response, AppError> {
-    // Canonical path: an `auth/challenge/0.1` Trust Task → a TT `#response`
-    // document (what `vta-mobile-core::build_auth_challenge` /
-    // `parse_auth_challenge_response` speak). Falls through to the flat
-    // `{ did }` request used by the SDK / CLI REST clients.
-    if let Some(resp) = try_challenge_trust_task(&state, &body).await? {
-        return Ok(resp);
-    }
-
-    let req: ChallengeRequest = serde_json::from_str(&body)
-        .map_err(|e| AppError::Validation(format!("challenge request body: {e}")))?;
-    let backend = crate::auth::VtaAuthBackend::from_state(&state).await?;
-    let did_for_audit = req.did.clone();
-    let resp = vti_common::auth::handlers::handle_challenge(
-        &backend,
-        vti_common::auth::ChallengeInput {
-            did: req.did,
-            session_pubkey_b58btc: None,
-        },
-    )
-    .await?;
-    audit!(
-        "auth.challenge",
-        actor = &did_for_audit,
-        resource = &resp.session_id,
-        outcome = "success"
-    );
-    Ok(Json(resp).into_response())
-}
-
-/// Try to issue a challenge from an `auth/challenge/0.1` Trust Task document,
-/// returning a TT `#response` document so the canonical (engine) client can
-/// `parse_auth_challenge_response` it. `Ok(None)` ⇒ not such a document, fall
-/// through to the flat `{ did }` request.
-async fn try_challenge_trust_task(
-    state: &AppState,
-    body: &str,
-) -> Result<Option<Response>, AppError> {
-    let doc: TrustTask<Value> = match serde_json::from_str(body) {
-        Ok(doc) => doc,
-        Err(_) => return Ok(None),
-    };
-    if doc.type_uri.to_string() != vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1 {
-        return Ok(None);
-    }
-    // Challenge carries no proof; the subject is the document's stated holder.
-    // (Same trust model as the flat `{ did }` request — challenge issuance is
-    // pre-auth and ACL-gated.)
-    let subject = doc
-        .payload
-        .get("subject")
-        .and_then(Value::as_str)
-        .ok_or_else(|| AppError::Validation("auth/challenge payload missing `subject`".into()))?
-        .to_string();
-
-    let backend = crate::auth::VtaAuthBackend::from_state(state).await?;
-    let resp = vti_common::auth::handlers::handle_challenge(
-        &backend,
-        vti_common::auth::ChallengeInput {
-            did: subject.clone(),
-            session_pubkey_b58btc: None,
-        },
-    )
-    .await?;
-    audit!(
-        "auth.challenge",
-        actor = &subject,
-        resource = &resp.session_id,
-        outcome = "success"
-    );
-    // The `challenge/0.1#response` payload — exactly the fields the engine
-    // parses (no `teeAttestation`; the generated Response denies unknowns).
-    let payload = json!({
-        "challenge": resp.challenge,
-        "sessionId": resp.session_id,
-        "expiresAt": resp.expires_at,
-    });
-    let response_doc = doc.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
-    Ok(Some(Json(response_doc).into_response()))
-}
-
-// ---------- POST /auth/ ----------
-
-/// Wrap a flat `AuthenticateResponse` as a Trust Task `#response` document
-/// addressed back to the requester. Used for callers that sent a TT request
-/// doc (authenticate + refresh share the `{ tokens, session }` response
-/// payload); `vta-mobile-core::parse_{authenticate,refresh}_response` parse it.
-fn tokens_response_doc(request: &TrustTask<Value>, resp: &AuthenticateResponse) -> Response {
-    let payload = json!({ "tokens": resp.tokens, "session": resp.session });
-    let response_doc = request.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
-    Json(response_doc).into_response()
-}
-
-/// POST /auth/ — verify a signed DIDComm challenge and issue access+refresh tokens. Auth: unauthenticated.
-///
-/// Dispatcher: unpack the DIDComm envelope (ATM verifies the
-/// sender's signature; the resulting `msg.from` is the proven
-/// signer DID), extract the challenge + session_id from the
-/// message body, hand off to the canonical handler.
-#[utoipa::path(
-    post, path = "/auth/", tag = "auth",
-    request_body(content = String, description = "Flat-JSON or Trust-Task auth document"),
-    responses(
-        (status = 200, description = "Tokens (flat JSON or Trust-Task document)"),
-        (status = 401, description = "Authentication failed (bad proof, challenge mismatch, or replay)"),
-    ),
-)]
-pub async fn authenticate(
-    State(state): State<AppState>,
-    body: String,
-) -> Result<Response, AppError> {
-    // Canonical REST path: a DI-signed `auth/authenticate/0.1` Trust Task
-    // document, where the holder's Data-Integrity proof *is* the
-    // authentication (no DIDComm packing / mediator required). Tried first so
-    // a VTA with no DIDComm transport configured can still authenticate over
-    // plain REST. Falls through to the DIDComm envelope path for any body that
-    // isn't such a document.
-    if let Some(resp) = try_authenticate_trust_task(&state, &body).await? {
-        return Ok(resp);
-    }
-
-    let atm = state
-        .atm
-        .as_ref()
-        .ok_or_else(|| AppError::Authentication("ATM not configured".into()))?;
-
-    // A sender that rotated its key-agreement key since its document was
-    // cached is re-resolved once before the message is refused (VTI-KEY-134).
-    let (msg, metadata) =
-        vta_sdk::did_refresh::unpack_refreshing_sender(atm, state.did_resolver.as_ref(), &body)
-            .await
-            .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
-
-    let sender_base = vti_common::auth::bind_authcrypt_sender(&body, &msg, &metadata)
-        .map_err(|e| AppError::Authentication(e.message("authenticate message")))?;
-
-    // Canonical Trust-Task URI only. The legacy
-    // `affinidi.com/atm/1.0/authenticate` alias was removed once the SDK's
-    // DIDComm auth path switched to emitting `auth/authenticate/0.1`.
-    if msg.typ.as_str() != "https://trusttasks.org/spec/auth/authenticate/0.1" {
-        return Err(AppError::Authentication(format!(
-            "unexpected message type: {}",
-            msg.typ
-        )));
-    }
-
-    let challenge = msg.body["challenge"]
-        .as_str()
-        .ok_or_else(|| AppError::Authentication("missing challenge in message body".into()))?
-        .to_string();
-    let session_id = msg.body["session_id"]
-        .as_str()
-        .ok_or_else(|| AppError::Authentication("missing session_id in message body".into()))?
-        .to_string();
-
-    let backend = crate::auth::VtaAuthBackend::from_state(&state).await?;
-    let resp = vti_common::auth::handlers::handle_authenticate(
-        &backend,
-        vti_common::auth::AuthenticateInput {
-            session_id: session_id.clone(),
-            challenge,
-            signer_did: sender_base.clone(),
-            // DIDComm v2 envelopes carry `created_time` on the
-            // ATM-unpacked Message; the canonical handler
-            // enforces a 60s freshness window against the
-            // session's `created_at`. Closes M3 from the May
-            // 2026 security review.
-            created_time: msg.created_time,
-            session_pubkey_b58btc: None,
-            audience: vti_common::auth::AudienceBinding::Transport,
-        },
-    )
-    .await?;
-    audit!(
-        "auth.authenticate",
-        actor = &sender_base,
-        resource = &session_id,
-        outcome = "success"
-    );
-    Ok(Json(resp).into_response())
-}
-
-/// Try to authenticate from a DI-signed `auth/authenticate/0.1` Trust Task
-/// document (the canonical REST transport).
-///
-/// Returns:
-/// - `Ok(Some(response_doc))` — the body was such a document, its proof
-///   verified, and we issued tokens wrapped in a TT `#response` document.
-/// - `Ok(None)` — the body is *not* an `auth/authenticate/0.1` Trust Task, so
-///   the caller should fall through to the DIDComm-envelope path.
-/// - `Err(_)` — the body *was* an authenticate document but is invalid (bad
-///   proof, malformed payload, challenge mismatch, …). We don't fall through:
-///   the caller's intent was unambiguous, so surface the real failure.
-///
-/// A DIDComm packed envelope is a JWE/JWS with none of a Trust Task's
-/// `id`/`type`/`payload` fields, so it fails the `TrustTask` parse and yields
-/// `None` — the two transports are unambiguous on the wire.
-async fn try_authenticate_trust_task(
-    state: &AppState,
-    body: &str,
-) -> Result<Option<Response>, AppError> {
-    let doc: TrustTask<Value> = match serde_json::from_str(body) {
-        Ok(doc) => doc,
-        Err(_) => return Ok(None), // not a Trust Task document → DIDComm path
-    };
-    if doc.type_uri.to_string() != vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1 {
-        return Ok(None);
-    }
-
-    // From here the caller's intent is unambiguous; failures are real.
-    let signer_did = verify_authenticate_proof(state, &doc).await?;
-    let payload: authenticate::Payload = serde_json::from_value(doc.payload.clone())
-        .map_err(|e| AppError::Authentication(format!("invalid authenticate payload: {e}")))?;
-    let session_id = payload.session_id.to_string();
-    let challenge = payload.challenge.to_string();
-
-    let backend = crate::auth::VtaAuthBackend::from_state(state).await?;
-    let resp = vti_common::auth::handlers::handle_authenticate(
-        &backend,
-        vti_common::auth::AuthenticateInput {
-            session_id: session_id.clone(),
-            challenge,
-            signer_did: signer_did.clone(),
-            // No DIDComm `created_time`; the single-use, TTL'd challenge bound to
-            // the session is the freshness/replay anchor (the canonical handler
-            // treats `None` as a no-op freshness check, same as REST SIOPv2).
-            created_time: None,
-            session_pubkey_b58btc: None,
-            // Proof-signed over plain REST: nothing binds the document to this
-            // service except its `recipient` (SPEC §7.2 item 5, #1638).
-            audience: vti_common::auth::AudienceBinding::Recipient {
-                recipient: doc.recipient.clone(),
-                own_did: state.config.read().await.vta_did.clone(),
-            },
-        },
-    )
-    .await?;
-    audit!(
-        "auth.authenticate",
-        actor = &signer_did,
-        resource = &session_id,
-        outcome = "success"
-    );
-    Ok(Some(tokens_response_doc(&doc, &resp)))
-}
-
-/// Verify the holder's `eddsa-jcs-2022` Data-Integrity proof on an
-/// `auth/authenticate/0.1` document and return the cryptographically-proven
-/// signer DID (the base DID of the proof's `verificationMethod`).
-///
-/// Mirrors the server-side did-signed gate verification in
-/// `routes/trust_tasks/step_up.rs::verify_did_signed_gate` (PR #177), but here
-/// the subject is *unknown a priori* — it's derived from the proof rather than
-/// checked against an expected value. The signer↔session binding is enforced
-/// downstream by the canonical handler (`signer_did == session.did`).
-/// Verified against the state's resolver, so a `did:webvh` holder — which is
-/// what every provisioned integration has — can authenticate. `did:key` still
-/// resolves locally, so the mobile holder's login costs no I/O.
-async fn verify_authenticate_proof(
-    state: &AppState,
-    doc: &TrustTask<Value>,
-) -> Result<String, AppError> {
-    crate::auth::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
-        .await
-        .map_err(|e| AppError::Authentication(e.to_string()))
-}
-
-// ---------- POST /auth/refresh ----------
-
-/// POST /auth/refresh — exchange a refresh token for a new access token
-/// AND a freshly-rotated refresh token. Auth: unauthenticated.
-///
-/// Implements RFC 6749 §10.4 refresh-token rotation: every successful
-/// refresh mints a new refresh token, deletes the old reverse index,
-/// and returns the new pair to the caller. The presented token works
-/// exactly once. A leaked-then-replayed token surfaces as "refresh
-/// token not found" — same shape as a token that was revoked.
-///
-/// Response shape is the same `AuthenticateResponse` returned by
-/// `POST /auth/`, so callers handle login and refresh with one
-/// deserialization path.
-#[utoipa::path(
-    post, path = "/auth/refresh", tag = "auth",
-    request_body(content = String, description = "Flat-JSON or Trust-Task auth document"),
-    responses(
-        (status = 200, description = "Rotated tokens (flat JSON or Trust-Task document)"),
-        (status = 401, description = "Refresh token not found, revoked, or already used"),
-    ),
-)]
-pub async fn refresh(State(state): State<AppState>, body: String) -> Result<Response, AppError> {
-    // Canonical REST path: an `auth/refresh/0.1` Trust Task. Refresh carries no
-    // proof — the opaque refresh token in the payload *is* the credential
-    // (OAuth2 §10.4 semantics), verified server-side by the rotating
-    // reverse-index. Tried first so a VTA with no DIDComm transport configured
-    // can still refresh over plain REST. Falls through to the DIDComm-envelope
-    // path for any body that isn't such a document.
-    if let Some(resp) = try_refresh_trust_task(&state, &body).await? {
-        return Ok(resp);
-    }
-
-    let atm = state
-        .atm
-        .as_ref()
-        .ok_or_else(|| AppError::Authentication("ATM not configured".into()))?;
-
-    // A sender that rotated its key-agreement key since its document was
-    // cached is re-resolved once before the message is refused (VTI-KEY-134).
-    let (msg, metadata) =
-        vta_sdk::did_refresh::unpack_refreshing_sender(atm, state.did_resolver.as_ref(), &body)
-            .await
-            .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
-
-    // The opaque refresh token is the credential, but `handle_refresh` still
-    // binds `msg.from` to the session DID — so require the same authcrypt gate.
-    let sender_base = vti_common::auth::bind_authcrypt_sender(&body, &msg, &metadata)
-        .map_err(|e| AppError::Authentication(e.message("refresh message")))?;
-
-    // Canonical Trust-Task URI only; the legacy
-    // `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.
-    if msg.typ.as_str() != "https://trusttasks.org/spec/auth/refresh/0.1" {
-        return Err(AppError::Authentication(format!(
-            "unexpected message type: {}",
-            msg.typ
-        )));
-    }
-
-    let refresh_token = msg.body["refresh_token"]
-        .as_str()
-        .ok_or_else(|| AppError::Authentication("missing refresh_token in message body".into()))?
-        .to_string();
-
-    let backend = crate::auth::VtaAuthBackend::from_state(&state).await?;
-    let resp = vti_common::auth::handlers::handle_refresh(
-        &backend,
-        vti_common::auth::RefreshInput {
-            refresh_token,
-            signer_did: Some(sender_base),
-        },
-    )
-    .await?;
-    audit!(
-        "auth.refresh",
-        actor = &resp.session.subject,
-        resource = &resp.session.id,
-        outcome = "success"
-    );
-    Ok(Json(resp).into_response())
-}
-
-/// Try to refresh from an `auth/refresh/0.1` Trust Task document (the canonical
-/// REST transport).
-///
-/// Mirrors [`try_authenticate_trust_task`], but refresh carries **no proof**:
-/// the opaque refresh token in the payload is the bearer credential, verified
-/// by the canonical handler's rotating reverse-index. `signer_did` is therefore
-/// `None` — there's no proven signer to bind, and the handler treats `None` as
-/// "skip the optional signer-DID check" (the token is sufficient).
-///
-/// Returns `Ok(None)` when the body isn't an `auth/refresh/0.1` Trust Task (→
-/// fall through to the DIDComm path); `Err` when it *is* one but is invalid.
-async fn try_refresh_trust_task(
-    state: &AppState,
-    body: &str,
-) -> Result<Option<Response>, AppError> {
-    let doc: TrustTask<Value> = match serde_json::from_str(body) {
-        Ok(doc) => doc,
-        Err(_) => return Ok(None), // not a Trust Task document → DIDComm path
-    };
-    if doc.type_uri.to_string() != vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_1 {
-        return Ok(None);
-    }
-
-    let payload: refresh::Payload = serde_json::from_value(doc.payload.clone())
-        .map_err(|e| AppError::Authentication(format!("invalid refresh payload: {e}")))?;
-    let refresh_token = payload.refresh_token.to_string();
-
-    let backend = crate::auth::VtaAuthBackend::from_state(state).await?;
-    let resp = vti_common::auth::handlers::handle_refresh(
-        &backend,
-        vti_common::auth::RefreshInput {
-            refresh_token,
-            signer_did: None,
-        },
-    )
-    .await?;
-    audit!(
-        "auth.refresh",
-        actor = &resp.session.subject,
-        resource = &resp.session.id,
-        outcome = "success"
-    );
-    Ok(Some(tokens_response_doc(&doc, &resp)))
-}
-
-// ---------- POST /auth/credentials ----------
 
 // The session routes that sat here — `GET /auth/sessions`,
 // `DELETE /auth/sessions/{session_id}` and `DELETE /auth/sessions?did=` — are
@@ -446,10 +40,9 @@ async fn try_refresh_trust_task(
 //   - vta/auth/passkey-login-start/1.0
 //   - vta/auth/passkey-login-finish/1.0
 //
-// They are UNAUTHENTICATED (the user has no session yet) — mounted on
-// the same router section as `POST /auth/challenge` and `POST /auth/`.
-// The trust-task envelope dispatcher at /api/trust-tasks handles only
-// authenticated operations.
+// They are UNAUTHENTICATED (the user has no session yet) — mounted on the
+// same unauth router branch as the pre-session auth family. WebAuthn ceremony,
+// not a Trust-Task envelope: see the module doc.
 
 use base64::Engine as _;
 use base64::engine::general_purpose;
@@ -484,7 +77,7 @@ pub async fn passkey_login_start(
         ));
     }
 
-    // ACL gate — same as /auth/challenge.
+    // ACL gate — same as pre-session auth.
     check_acl(&state.acl_ks, &req.did).await?;
 
     // Mint challenge.
@@ -672,67 +265,4 @@ pub async fn passkey_login_finish(
     );
 
     Ok(Json(resp))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `POST /auth/` is unauthenticated — the caller has no session yet — so
-    /// this is one of the ~12 inbound routes a resolver failure must never
-    /// read differently from a bad signature (FTL-29595 fix direction 3):
-    /// distinguishing them here would let an anonymous caller learn whether a
-    /// DID resolves at all.
-    #[tokio::test]
-    async fn a_resolver_failure_and_a_bad_signature_render_identically() {
-        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
-
-        // Resolver failure: a `did:webvh` verification method, and this test
-        // state's resolver is unconfigured (did:key only) — refused before
-        // any signature check runs.
-        let resolver_fail_doc: TrustTask<Value> = serde_json::from_value(json!({
-            "id": "urn:uuid:00000000-0000-4000-8000-000000000010",
-            "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
-            "issuer": "did:webvh:QmScid:example.com:glenn",
-            "recipient": "did:web:vta.example",
-            "payload": {},
-            "proof": {
-                "type": "DataIntegrityProof",
-                "cryptosuite": "eddsa-jcs-2022",
-                "proofPurpose": "assertionMethod",
-                "verificationMethod": "did:webvh:QmScid:example.com:glenn#key-0",
-                "created": "2026-01-01T00:00:00Z",
-                "proofValue": "z2aBcD"
-            }
-        }))
-        .expect("well-formed document");
-
-        // Bad signature: a real did:key, signed, then corrupted.
-        let (signer_did, _vm) = crate::test_support::did_for_seed(21);
-        let mut bad_sig_doc: TrustTask<Value> = serde_json::from_value(json!({
-            "id": "urn:uuid:00000000-0000-4000-8000-000000000011",
-            "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
-            "issuer": signer_did,
-            "recipient": "did:web:vta.example",
-            "payload": {}
-        }))
-        .expect("well-formed document");
-        crate::test_support::sign_as(21, &mut bad_sig_doc);
-        let proof = bad_sig_doc.proof.as_mut().expect("document is signed");
-        let last = proof.proof_value.pop().expect("non-empty proofValue");
-        proof.proof_value.push(if last == '1' { '2' } else { '1' });
-
-        let resolver_failure = verify_authenticate_proof(&state, &resolver_fail_doc).await;
-        let bad_signature = verify_authenticate_proof(&state, &bad_sig_doc).await;
-
-        match (resolver_failure, bad_signature) {
-            (Err(AppError::Authentication(a)), Err(AppError::Authentication(b))) => {
-                assert_eq!(
-                    a, b,
-                    "a resolver failure must render exactly as a bad signature does"
-                );
-            }
-            other => panic!("expected both to be Authentication errors, got {other:?}"),
-        }
-    }
 }

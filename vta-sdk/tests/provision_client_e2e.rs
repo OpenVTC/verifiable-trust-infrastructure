@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 
 use ed25519_dalek::SigningKey;
 use serde_json::json;
-use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use vta_sdk::did_key::decode_private_key_multibase;
@@ -288,7 +288,11 @@ const TEST_CHALLENGE: &str = "test-challenge-0123456789abcdef";
 
 async fn mount_auth_mocks(server: &MockServer) {
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "challenge": TEST_CHALLENGE,
             "sessionId": "test-session",
@@ -297,7 +301,11 @@ async fn mount_auth_mocks(server: &MockServer) {
         .mount(server)
         .await;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "test-session",

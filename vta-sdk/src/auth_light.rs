@@ -1,19 +1,20 @@
 //! Lightweight challenge-response authentication for VTA REST clients.
 //!
 //! Same challenge-response flow as `session::challenge_response()`, but with no
-//! ATM/TDK runtime and no mediator: the request is a DI-signed
-//! `auth/authenticate/0.1` Trust Task (see [`crate::auth_di`]), the canonical
-//! REST transport the VTA tries before its DIDComm-envelope path.
+//! ATM/TDK runtime and no mediator: every step is a Trust-Task document
+//! POSTed to `/trust-tasks` (see [`crate::auth_di`]), and the authenticate
+//! step's DI-signed `auth/authenticate/0.2` document *is* the authentication —
+//! the canonical transport the VTA tries before its DIDComm-envelope path.
 //!
 //! **This module used to pack an anoncrypt DIDComm envelope** via
 //! `didcomm_light` and throw the caller's private key away — the sender was
-//! merely *asserted* in a plaintext `from` header. VTI #771 hardened `/auth/*`
-//! to require an authenticated (authcrypt) envelope, which rejected every
-//! anoncrypt message outright ("authenticate message must be an authenticated
-//! (authcrypt) DIDComm envelope") and broke this whole tier: the VTC setup
-//! wizard's did-hosting picker, `VtaClient`'s REST re-auth and refresh, and
-//! `vtc-client`. Signing with the holder key both fixes that and is what the
-//! server actually prefers.
+//! merely *asserted* in a plaintext `from` header. VTI #771 hardened the
+//! auth family to require an authenticated (authcrypt) envelope, which
+//! rejected every anoncrypt message outright ("authenticate message must be
+//! an authenticated (authcrypt) DIDComm envelope") and broke this whole tier:
+//! the VTC setup wizard's did-hosting picker, `VtaClient`'s REST re-auth and
+//! refresh, and `vtc-client`. Signing with the holder key both fixes that and
+//! is what the server actually prefers.
 //!
 //! Consequence of the switch: the VTA verifies the proof with a `did:key`-only
 //! resolver, so [`challenge_response_light`] requires a `did:key` holder and
@@ -26,7 +27,6 @@
 use crate::auth_di;
 use crate::credentials::CredentialBundle;
 use crate::error::VtaError;
-use crate::protocols::auth::{ChallengeRequest, ChallengeResponse};
 use reqwest::Client;
 
 /// The per-request Trust-Task URL header.
@@ -68,9 +68,10 @@ impl std::fmt::Debug for AuthResult {
 
 /// Perform challenge-response authentication without ATM/TDK runtime.
 ///
-/// The lightweight equivalent of `session::challenge_response()`: the
-/// challenge is answered with a DI-signed `auth/authenticate/0.1` Trust Task,
-/// so the holder key proves the sender and no mediator is involved.
+/// The lightweight equivalent of `session::challenge_response()`: every step
+/// is a Trust-Task document POSTed to `/trust-tasks`, and the authenticate
+/// step is a DI-signed `auth/authenticate/0.2` document, so the holder key
+/// proves the sender and no mediator is involved.
 ///
 /// `client_did` must be a `did:key` — see the module docs.
 pub async fn challenge_response_light(
@@ -80,17 +81,21 @@ pub async fn challenge_response_light(
     private_key_multibase: &str,
     vta_did: &str,
 ) -> Result<AuthResult, crate::error::VtaError> {
-    // Step 1: Request challenge
-    let challenge_url = format!("{base_url}/auth/challenge");
+    // Step 1: Request challenge — a Trust-Task document, not the flat
+    // `{ did }` shape the retired `/auth/challenge` route once accepted: the
+    // pre-session family-owned dispatch on `/trust-tasks` only recognizes a
+    // document by its `type`.
+    let trust_tasks_url = format!("{base_url}/trust-tasks");
+    let challenge_body = auth_di::build_challenge_doc(client_did, vta_did, client_did)
+        .map_err(|e| VtaError::Validation(e.to_string()))?;
     let challenge_resp = http
-        .post(&challenge_url)
+        .post(&trust_tasks_url)
+        .header("content-type", "application/json")
         .header(
             TRUST_TASK_HEADER,
             crate::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
         )
-        .json(&ChallengeRequest {
-            did: client_did.to_string(),
-        })
+        .body(challenge_body)
         .send()
         .await?;
 
@@ -98,7 +103,8 @@ pub async fn challenge_response_light(
         return Err(VtaError::from_response(challenge_resp).await);
     }
 
-    let challenge: ChallengeResponse = challenge_resp.json().await?;
+    let challenge = auth_di::parse_challenge_response(&challenge_resp.text().await?)
+        .map_err(|e| VtaError::Validation(e.to_string()))?;
 
     // Step 2: Build + sign the authenticate Trust Task. Signing is local
     // (no DID resolution, no I/O): the holder's key is right here, and the
@@ -114,13 +120,12 @@ pub async fn challenge_response_light(
     .map_err(|e| VtaError::Validation(e.to_string()))?;
 
     // Step 3: Send the signed document
-    let auth_url = format!("{base_url}/auth/");
     let auth_resp = http
-        .post(&auth_url)
+        .post(&trust_tasks_url)
         .header("content-type", "application/json")
         .header(
             TRUST_TASK_HEADER,
-            crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1,
+            crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
         )
         .body(body)
         .send()
@@ -173,11 +178,11 @@ pub async fn refresh_token_light(
     let body = auth_di::build_refresh_doc(client_did, vta_did, refresh_token)
         .map_err(|e| VtaError::Validation(e.to_string()))?;
 
-    let refresh_url = format!("{base_url}/auth/refresh");
+    let refresh_url = format!("{base_url}/trust-tasks");
     let resp = http
         .post(&refresh_url)
         .header("content-type", "application/json")
-        .header(TRUST_TASK_HEADER, crate::trust_tasks::TASK_AUTH_REFRESH_0_1)
+        .header(TRUST_TASK_HEADER, crate::trust_tasks::TASK_AUTH_REFRESH_0_2)
         .body(body)
         .send()
         .await?;

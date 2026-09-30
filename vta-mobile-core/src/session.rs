@@ -46,7 +46,7 @@
 
 use chrono::DateTime;
 use trust_tasks_rs::specs::auth::{
-    authenticate::v0_1 as authenticate, challenge::v0_1 as challenge, refresh::v0_1 as refresh,
+    authenticate::v0_2 as authenticate, challenge::v0_1 as challenge, refresh::v0_2 as refresh,
     revoke_session::v0_2 as revoke_session, whoami::v0_1 as whoami,
 };
 use trust_tasks_rs::specs::messaging::ping::v0_1 as ping;
@@ -173,7 +173,7 @@ pub fn parse_auth_challenge_response(json: String) -> Result<AuthChallenge, FfiE
     })
 }
 
-/// Build a signed `auth/authenticate/0.1`. The framework Data Integrity proof —
+/// Build a signed `auth/authenticate/0.2`. The framework Data Integrity proof —
 /// signed by the holder via `signer` — IS the authentication; `challenge` and
 /// `session_id` are echoed from the challenge response.
 #[uniffi::export]
@@ -201,7 +201,7 @@ pub fn build_authenticate(
     serialize(&doc)
 }
 
-/// Parse an `auth/authenticate/0.1#response` — the issued tokens + session.
+/// Parse an `auth/authenticate/0.2#response` — the issued tokens + session.
 #[uniffi::export]
 pub fn parse_authenticate_response(json: String) -> Result<AuthTokens, FfiError> {
     let doc: TrustTask<authenticate::Response> = serde_json::from_str(&json).map_err(decode)?;
@@ -218,7 +218,7 @@ pub fn parse_authenticate_response(json: String) -> Result<AuthTokens, FfiError>
     })
 }
 
-/// Build an `auth/refresh/0.1` request: exchange a previously-issued refresh
+/// Build an `auth/refresh/0.2` request: exchange a previously-issued refresh
 /// token for a new access token. **No proof** — `auth/refresh` is
 /// `IS_PROOF_REQUIRED == false`; the opaque refresh token is the credential and
 /// is verified server-side. `scope` MAY narrow (never widen) the issued scope;
@@ -243,7 +243,7 @@ pub fn build_refresh(
     serialize(&envelope_doc(&env, payload)?)
 }
 
-/// Parse an `auth/refresh/0.1#response` — the rotated tokens. Unlike
+/// Parse an `auth/refresh/0.2#response` — the rotated tokens. Unlike
 /// authenticate, the session snapshot is **optional**: when the response omits
 /// it, `acr` is `None` and `amr` is empty (the caller keeps its prior session
 /// state). A consumer that doesn't rotate refresh tokens may also omit
@@ -511,7 +511,7 @@ mod tests {
     fn parses_authenticate_response_tokens() {
         let json = r#"{
           "id": "r-1",
-          "type": "https://trusttasks.org/spec/auth/authenticate/0.1#response",
+          "type": "https://trusttasks.org/spec/auth/authenticate/0.2#response",
           "issuer": "did:web:vta.example",
           "recipient": "did:key:zHolder",
           "payload": {
@@ -547,7 +547,7 @@ mod tests {
         let json =
             build_refresh(env(), "rt_abc".to_string(), vec!["acl:read".to_string()]).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["type"], "https://trusttasks.org/spec/auth/refresh/0.1");
+        assert_eq!(v["type"], "https://trusttasks.org/spec/auth/refresh/0.2");
         assert_eq!(v["issuer"], "did:key:zHolder");
         assert_eq!(v["recipient"], "did:web:vta.example");
         assert_eq!(v["payload"]["refreshToken"], "rt_abc");
@@ -568,7 +568,7 @@ mod tests {
     fn parses_refresh_response_with_rotated_token_and_session_bump() {
         let json = r#"{
           "id": "r-2",
-          "type": "https://trusttasks.org/spec/auth/refresh/0.1#response",
+          "type": "https://trusttasks.org/spec/auth/refresh/0.2#response",
           "issuer": "did:web:vta.example",
           "recipient": "did:key:zHolder",
           "payload": {
@@ -602,7 +602,7 @@ mod tests {
         // Non-rotating consumer: no session snapshot, no new refresh token.
         let json = r#"{
           "id": "r-3",
-          "type": "https://trusttasks.org/spec/auth/refresh/0.1#response",
+          "type": "https://trusttasks.org/spec/auth/refresh/0.2#response",
           "issuer": "did:web:vta.example",
           "recipient": "did:key:zHolder",
           "payload": {

@@ -44,7 +44,7 @@ use vta_sdk::session::{
     resolve_vta_endpoint_with_resolver, resolve_vta_endpoint_with_resolver_and_policy,
     resolve_vta_url,
 };
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ── Test fixtures ───────────────────────────────────────────────────
@@ -218,7 +218,11 @@ fn load_on_missing_dir_returns_none() {
 
 async fn mount_challenge(server: &MockServer) {
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "challenge": "c-nonce",
             "sessionId": "sess",
@@ -233,7 +237,11 @@ async fn mount_challenge(server: &MockServer) {
 /// assertions on `access_expires_at` see exactly `expires_at`.
 async fn mount_authenticate(server: &MockServer, expires_at: u64) {
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -280,7 +288,11 @@ async fn login_authenticates_and_persists_token() {
 async fn login_propagates_challenge_failure() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(ResponseTemplate::new(401).set_body_string("nope"))
         .mount(&server)
         .await;
@@ -388,7 +400,11 @@ async fn ensure_authenticated_does_not_reuse_a_token_for_another_origin() {
     // contacting it; re-authenticating reaches it and fails.
     let other = MockServer::start().await;
     Mock::given(method("POST"))
-        .and(path("/auth/challenge"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
+        ))
         .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
         .expect(1)
         .mount(&other)
@@ -409,7 +425,11 @@ async fn ensure_authenticated_re_authenticates_when_token_expired() {
     // gives a fresh one. wiremock matches in registration order with
     // up_to_n_times.
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -430,7 +450,11 @@ async fn ensure_authenticated_re_authenticates_when_token_expired() {
         .await;
     let future = now_secs() + 3600;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -509,7 +533,11 @@ async fn ensure_authenticated_runs_full_rotation_flow() {
 
     let future = now_secs() + 3600;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -529,7 +557,11 @@ async fn ensure_authenticated_runs_full_rotation_flow() {
         .mount(&server)
         .await;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
@@ -674,7 +706,11 @@ async fn connect_with_url_override_uses_rest_and_attaches_token() {
     mount_challenge(&server).await;
     let future = now_secs() + 3600;
     Mock::given(method("POST"))
-        .and(path("/auth/"))
+        .and(path("/trust-tasks"))
+        .and(header(
+            "Trust-Task",
+            vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "session": {
                 "id": "sess",
