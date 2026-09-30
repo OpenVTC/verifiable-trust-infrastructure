@@ -417,13 +417,13 @@ const CEREMONIES = {
     effects:['allow','request_more','refer','deny'],
     conds:{
       has_valid_invitation:{label:'Valid invitation (VIC)', short:'has_valid_invitation', rego:'has_valid_invitation', cred:null},
-      witness:{label:'Trusted WitnessCredential',           short:'holds_trusted("WitnessCredential")', rego:'cred_trusted("WitnessCredential")', cred:'WitnessCredential'},
+      witness:{label:'Trusted witness statement',           short:'holds_trusted_statement(witnessed/1)', rego:'statement_trusted("https://registry.trustoverip.org/dtg/vsc/witnessed/1")', cred:'StatementCredential'},
       coc:{label:'Agrees to code of conduct',               short:'agreed("code-of-conduct")', rego:'agreed("code-of-conduct")', cred:null},
-      endorse2:{label:'≥2 member endorsements',             short:'endorsement_count >= 2', rego:'endorsement_count >= 2', cred:'EndorsementCredential'},
+      endorse2:{label:'≥2 member endorsements',             short:'endorsement_count >= 2', rego:'endorsement_count >= 2', cred:'StatementCredential'},
       always:{label:'Any applicant',                        short:'true', rego:'true', cred:null},
     },
     outcomes:{
-      allow:'issue VMC + role VEC · reciprocal edge · write ACL',
+      allow:'issue VMC + role VAC · reciprocal edge · write ACL',
       refer:'queue for a moderator — human-in-the-loop review',
       request_more:'return a Presentation Definition for what’s missing',
       deny:'no matching route — structural default-deny',
@@ -431,7 +431,7 @@ const CEREMONIES = {
     helpers:[
       'cred_trusted(t) <span class="k">if</span> { <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == t; c.issuer_trusted; c.status == <span class="s">"valid"</span> }',
       'has_valid_invitation <span class="k">if</span> { input.evidence.invitation.verified; <span class="k">not</span> input.evidence.invitation.consumed }',
-      'endorsement_count := <span class="n">count</span>([c | <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == <span class="s">"EndorsementCredential"</span>])',
+      'endorsement_count := <span class="n">count</span>([c | <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == <span class="s">"StatementCredential"</span>; c.predicate == <span class="s">"https://registry.trustoverip.org/dtg/vsc/endorses/1"</span>])',
       'agreed(tag) <span class="k">if</span> { input.evidence.request.agreements[tag] == <span class="k">true</span> }',
     ],
     usesIn:true,
@@ -439,10 +439,10 @@ const CEREMONIES = {
       init:()=>({inv:false, witnessPresent:false, witnessTrusted:true, coc:false, endorsements:0}),
       fields:[
         {id:'inv',            label:'Valid invitation (VIC)', sub:'DTG InvitationCredential, issuer authorized', type:'tog'},
-        {id:'witnessPresent', label:'WitnessCredential',      sub:'holds a WitnessCredential',                   type:'tog'},
+        {id:'witnessPresent', label:'Witness statement',      sub:'holds a witnessed/1 statement',                   type:'tog'},
         {id:'witnessTrusted', label:'…issuer recognized',     sub:'resolved via trust registry (TRQP)',          type:'tog', dimWhen:'witnessPresent'},
         {id:'coc',            label:'Agrees to code of conduct', sub:'evidence.request.agreements["code-of-conduct"]', type:'tog'},
-        {id:'endorsements',   label:'Member endorsements',    sub:'EndorsementCredentials from members',          type:'step'},
+        {id:'endorsements',   label:'Member endorsements',    sub:'endorses/1 statements from members',          type:'step'},
       ],
       presets:[
         {n:'Unknown DID',     w:{inv:false,witnessPresent:false,witnessTrusted:true,coc:false,endorsements:0}},
@@ -567,7 +567,7 @@ const CEREMONIES = {
 
   'role-change': {
     label:'Role-change', simLabel:'role-change scenario', pkg:'vtc.role_change', regoFile:'role-change.rego', family:'role-changes',
-    allowLabel:'re-issue role', flowEffects:'re-issue VEC', genPD:false,
+    allowLabel:'re-issue role', flowEffects:'re-issue role VAC', genPD:false,
     manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/role-changes/  ·  actor ≠ subject · escalation',
     v1note:'Initial role-change policy — standard roles direct, admin promotion via step-up',
     allowPayload:{key:'role', kind:'select', opts:['$target','member','moderator','admin'], def:'$target'},
@@ -579,7 +579,7 @@ const CEREMONIES = {
       always:{label:'Anyone',                                            short:'true',                 rego:'true', cred:null},
     },
     outcomes:{
-      allow:'re-issue the role VEC · update the ACL role',
+      allow:'re-issue the role VAC · update the ACL role',
       refer:'step-up reauth (or M-of-N) required before admin promotion',
       request_more:'require additional evidence before the change',
       deny:'policy refuses — no matching route',

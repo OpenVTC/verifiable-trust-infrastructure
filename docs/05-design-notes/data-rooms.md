@@ -223,7 +223,7 @@ VAC)** — with the room DID in the issuer's chair.
 | Enter the first time | **VIC** issued by the room DID | existing type; a new variant by issuer/subject rules, exactly how the spec already distinguishes its VTC and VTN variants |
 | Re-enter after joining | **VMC** pair, member ↔ room | existing type |
 | What you may do | **VAC** | the one new type (§4.2) |
-| In-room endorsements | VEC | existing; available, not required |
+| In-room endorsements | VSC (a VEC under `endorses/1`) | existing; available, not required |
 | Attesting formation | VWC | existing; available, not required |
 
 ### 4.1 Joining is consent
@@ -267,13 +267,12 @@ literature ([UCAN](https://github.com/ucan-wg/spec),
 - **Audience-bound.** An attenuated VAC names what may wield it, so a leaked
   agent capability is not a leaked member capability.
 
-**The latent conflation this fixes.** The VTC expresses community role grants
-as a VEC with `endorsement = { type: "CommunityRole", … }`. An endorsement
-asserts something *about* someone; a role grant confers authority. That is
-precisely the *delegation is not authority* line the VAC name was reserved
-for, so rooms introduce the VAC properly and open the path to migrating the
-community case onto it later — a reason to design it well rather than
-minimally.
+**The conflation this fixed.** The VTC once expressed community role grants
+as endorsement credentials. An endorsement asserts something *about* someone;
+a role grant confers authority. That is precisely the *delegation is not
+authority* line the VAC name was reserved for. Rooms introduced the VAC
+properly, and community roles have since moved onto it: a role is a
+community-issued VAC conferring `role:<name>` at the community's DID.
 
 ### 4.3 The VMC and VAC must be provably about the same subject (R2‑2)
 

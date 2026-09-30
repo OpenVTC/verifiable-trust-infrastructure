@@ -49,7 +49,7 @@ planning-review D2 (VP-only assert).
 6. Write `Member.personhood = true`,
    `personhood_asserted_at = now`. **Evidence is not
    persisted** (D2 review — VPs are verify-then-discard).
-7. Re-mint VMC + role VEC with `personhood: true`. Reuses the
+7. Re-mint VMC + role VAC with `personhood: true`. Reuses the
    member's existing status-list slot.
 8. Emit `PersonhoodAsserted { vmcId, assertedAt }`.
 
@@ -64,7 +64,7 @@ planning-review D2 (VP-only assert).
 
 ## Outputs
 
-`200 OK` with the new VMC + role VEC. `403` on policy denial
+`200 OK` with the new VMC + role VAC. `403` on policy denial
 or proof failure. `422` on challenge / shape errors. `500`
 when the DID resolver is unwired (daemon misconfigured).
 

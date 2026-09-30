@@ -13,8 +13,10 @@ applies_to:
 # VTC — Cross-Community Session Mint
 
 Mints a session JWT for a holder presenting a foreign
-community's `VerifiableEndorsementCredential` + `Verifiable
-MembershipCredential` pair. Phase 3 M3.10; spec §8.4.
+community's role credential — a DTG `AuthorityCredential` (VAC) conferring
+`role:<name>` at that community's DID — + `MembershipCredential` (VMC) pair.
+(The 1.0 body member `vec` predates roles becoming VACs; its successors carry
+the pair in a holder-signed VP.) Phase 3 M3.10; spec §8.4.
 
 ## Semantics
 
@@ -24,7 +26,7 @@ MembershipCredential` pair. Phase 3 M3.10; spec §8.4.
   flows.
 - **Fail-closed.** Four hardening checks run in order, each
   short-circuiting on failure:
-  1. Both VEC + VMC proofs verify against the foreign issuer's
+  1. Both VAC + VMC proofs verify against the foreign issuer's
      `#key-0`.
   2. Each credential's `credentialStatus.statusListCredential`
      fetches; the bit at `statusListIndex` must be `0`.
@@ -36,7 +38,7 @@ MembershipCredential` pair. Phase 3 M3.10; spec §8.4.
   mapping; operators must upload an allowlist before any
   foreign role confers local access.
 - **TTL clamp.** Session expires at
-  `now + min(jwt_default, earliest(vec.validUntil,
+  `now + min(jwt_default, earliest(vac.validUntil,
   vmc.validUntil) - now)`. Per spec §8.4.
 - **No refresh.** Cross-community sessions never refresh. The
   standard `POST /v1/auth/refresh` route would re-issue

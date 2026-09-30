@@ -34,7 +34,7 @@ The old flat URIs (`…/openvtc/vtc/join-requests/submit/1.0`, no `/spec/`) are 
 { "requestId": "<uuid>", "verdict": { "effect": "allow|refer|requestMore|deny", "with": { … } } }
 ```
 Branch on `verdict.effect`:
-- `allow` — auto-admitted. `with.role`, and (over REST) `with.vmc` / `with.roleVec`. Over DIDComm the credentials arrive in a follow-up message.
+- `allow` — auto-admitted. `with.role`, and (over REST) `with.vmc` / `with.roleVac` (the role VAC). Over DIDComm the credentials arrive in a follow-up message.
 - `refer` — queued for an admin decision. `with.queue`, `with.reason`. Poll `status` (or await an admin push).
 - `requestMore` — present more evidence. `with.needs`, `with.presentationDefinition`.
 - `deny` — the policy refused a *verified* request. `with.code`, `with.reason`.

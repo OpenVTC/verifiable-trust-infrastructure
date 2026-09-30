@@ -18,12 +18,12 @@ applies_to:
 - **Body**: `{ subjectDid, type, claim, validitySeconds? }`.
 - **Type registry consultation**: refuses unknown types with `400 endorsement-type-not-registered`.
 - **Claim cap**: 8 KiB JSON object.
-- Allocates a slot on the shared `Revocation` status list (D8 review), builds + signs the VEC, persists the row.
+- Allocates a slot on the shared `Revocation` status list (D8 review), builds + signs a Verifiable Statement Credential (`StatementCredential`, predicate = `typeUri`, claim as `object.value`), persists the row.
 - Emits both `CustomEndorsementIssued { endorsementId, endorsementType, statusListIndex }` and `VecIssued { credentialId, ... }` so credential-issuance accounting stays uniform.
 
 ## Outputs
 
-`201 Created` with the signed VEC body + the row id.
+`201 Created` with the signed statement credential + the row id.
 
 ## Status
 

@@ -19,7 +19,7 @@ Rust workspace for **Verifiable Trust Communities (VTC)**. A VTC manages a commu
 
 ## Key Differences from VTA
 
-- **VTC isn't the key authority.** The VTA mints the integration DID + signing keys; the VTC stores the bundle in `secrets` and signs locally for VMC / VEC / status-list issuance (cached-locally pattern). No BIP-32 here.
+- **VTC isn't the key authority.** The VTA mints the integration DID + signing keys; the VTC stores the bundle in `secrets` and signs locally for VMC / VAC / status-list issuance (cached-locally pattern). No BIP-32 here.
 - **Audience-isolated JWTs.** `aud = "VTC"`; cross-audience tokens are rejected.
 - **Default port** 8200 (VTA uses 8100).
 - **Twenty-odd keyspaces**, not the original two: `acl`, `sessions`, `members`, `community`, `policies`, `active_policies`, `audit`, `audit_key`, `install`, `passkey`, `status_lists`, `relationships`, `relationships_by_did`, `endorsement_types`, `endorsements`, `join_requests`, `sync_queue`, `sync_cursor`, `registry_records`, `config`, plus the website filesystem. The full live list is the keyspace fields on `AppState` in `src/server.rs`.
@@ -36,18 +36,18 @@ src/
 │                       `assemble` (one Facts builder for every purpose) +
 │                       `orchestrate` (role-change + leave spines, out of routes)
 ├── community/          CommunityProfile storage
-├── credentials/        LocalSigner + VMC/VEC/status-list builders; `exchange/`
+├── credentials/        LocalSigner + VMC/VAC/status-list builders; `exchange/`
 │                       (OID4VCI issuer + OID4VP/SD-JWT/DI/bbs verifier, split into
 │                       issue/verify/pending/jwt) + `vm_resolver` (the single shared
 │                       DID-VM → key resolver + `check_issuer_binding`)
 ├── endorsement_types/  Operator-registered endorsement-type registry
-├── endorsements/       Custom VEC + status-list flip
+├── endorsements/       Community statement (VSC), vetter-grant and IDVC rows + status-list flip
 ├── install/            Install-token state machine + claim secret
 ├── join/               Join-request lifecycle + `orchestrate` (submit spine:
 │                       holder-binding → decide → auto-admit → admit audit)
 ├── members/            Member storage + lifecycle helpers
 ├── policy/             regorus engine, default policy bundle, evaluators
-├── recognition/        Foreign-VEC verification (Phase 3 cross-community)
+├── recognition/        Foreign role-VAC verification (Phase 3 cross-community)
 ├── registry/           Trust-registry client + syncer + audit-log tail
 ├── relationships/      VRC publish/revoke
 ├── routes/             Every HTTP route handler, sub-mounted by feature

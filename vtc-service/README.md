@@ -30,7 +30,7 @@ for the VTC-specific chapter see
 | Setup against a VTA via the `vtc-host` template | [`docs/03-vtc/getting-started.md`](../docs/03-vtc/getting-started.md) |
 | Member CRUD + join requests + removal dispositions | [`docs/03-vtc/community-lifecycle.md`](../docs/03-vtc/community-lifecycle.md) |
 | Embedded `regorus` policy engine (`join.rego`, `removal.rego`, `personhood.rego`, `relationships.rego`, `registry.rego`, `cross_community_roles.rego`) | [`docs/03-vtc/community-lifecycle.md`](../docs/03-vtc/community-lifecycle.md) |
-| VMC / VEC / VRC / custom endorsement issuance | [`docs/03-vtc/credentials.md`](../docs/03-vtc/credentials.md) |
+| VMC / role VAC / statement (VSC) / IDVC issuance | [`docs/03-vtc/credentials.md`](../docs/03-vtc/credentials.md) |
 | BitstringStatusList revocation | [`docs/03-vtc/credentials.md`](../docs/03-vtc/credentials.md) |
 | Trust-registry sync + cross-community recognition | [`docs/03-vtc/trust-registry.md`](../docs/03-vtc/trust-registry.md) |
 | Personhood ceremony + VRC trust graph | [`docs/03-vtc/personhood-and-graph.md`](../docs/03-vtc/personhood-and-graph.md) |
@@ -113,7 +113,7 @@ for the routing / website / admin-UI knobs.
 | `admin_ui/` | `include_dir!`-baked admin SPA serve handler |
 | `auth/` | JWT + cookie + bearer extractors |
 | `community/` | Profile CRUD |
-| `credentials/` | VMC / VEC / VRC builders + `LocalSigner` |
+| `credentials/` | VMC / VAC / VRC builders + `LocalSigner` |
 | `endorsement_types/` | Operator-uploaded type registry |
 | `endorsements/` | Custom endorsement issuance + revocation |
 | `install/` | Install token + WebAuthn ceremony |

@@ -51,7 +51,7 @@ sequenceDiagram
     VTC->>VTC: 1) Load Member row (404 if missing)
     VTC->>VTC: 2) Consume challenge<br/>(400 on missing/expired/wrong-DID)
     VTC->>VTC: 3) Verify VP.holder == path-DID
-    VTC->>VTC: 4) Evaluate personhood.rego<br/>(default: a digest-bound WitnessCredential, or this<br/>community's own IdentityVerification)
+    VTC->>VTC: 4) Evaluate personhood.rego<br/>(default: a digest-bound witnessed/1 statement, or this<br/>community's own IdentityVerificationCredential)
     alt policy allows
         VTC->>VTC: Set personhood=true<br/>Set asserted_at=now
         VTC->>VTC: Re-mint VMC with new flag
@@ -70,18 +70,25 @@ request log.
 
 ### Witness credentials
 
-A Verifiable Witness Credential (VWC) names the edge it witnessed only
-by digest: `credentialSubject.digestMultibase`, a `sha2-256` multihash
-over the witnessed relationship credential's JCS canonical form with
-its top-level `proof` removed (DTG Credentials §Digest Encoding). Before
-policy runs, the VTC recomputes that digest against every relationship
-credential it holds — comparing decoded digest bytes, never encoded
-strings — and writes its verdict onto each `WitnessCredential` entry in
-`input.vp_claims.credentials` as `witness_binding`:
+A Verifiable Witness Credential (VWC) is a DTG Verifiable Statement
+Credential (`StatementCredential`) under the predicate
+`https://registry.trustoverip.org/dtg/vsc/witnessed/1`; the VTC recognises it
+by that predicate, never by a type string. It names the edge it witnessed
+only by digest: `credentialSubject.object.digestMultibase`, a `sha2-256`
+multihash over the witnessed relationship credential's JCS canonical form with
+its top-level `proof` removed (DTG Credentials §Digest Encoding), and its
+`credentialSubject.id` must be the **issuer** of that credential (the profile's
+subject–object rule). Before policy runs, the VTC refuses any statement under a
+predicate the community does not accept (the fail-closed accept list), then
+recomputes the digest against every relationship credential it holds —
+comparing decoded digest bytes, never encoded strings — and writes its verdict
+onto each `witnessed/1` entry in `input.vp_claims.credentials` as
+`witness_binding`:
 
 | `witness_binding.state` | Meaning |
 |---|---|
-| `bound` | The digest names an edge this community holds; `relationship_id` says which. |
+| `bound` | The digest names an edge this community holds, issued by the statement's subject; `relationship_id` says which. |
+| `subjectMismatch` | The digest names an edge held here, but someone other than the statement's subject issued it. Never evidence; `relationship_id` names the edge. |
 | `unresolved` | A well-formed digest naming no edge held here. Not forgery — the edge may live on another community. |
 | `absent` | The VWC carries no digest, so it witnesses nothing in particular. |
 | `malformed` | The digest is not a `sha2-256` multihash. |
@@ -96,58 +103,82 @@ witnesses of edges held elsewhere can accept `unresolved` in its own
 ```rego
 allow if {
 	some cred in input.vp_claims.credentials
-	"WitnessCredential" in cred.type
+	"StatementCredential" in cred.type
+	cred.credentialSubject.predicate == "https://registry.trustoverip.org/dtg/vsc/witnessed/1"
 	cred.witness_binding.state in {"bound", "unresolved"}
 }
 ```
 
-A VTC whose personhood policy is still the default an earlier release
-installed — which accepted any `WitnessCredential` with a non-empty
-issuer — has it replaced by the current default at boot. A personhood
+A VTC whose personhood policy is still a default an earlier release
+installed — one that accepted any witness with a non-empty issuer, or one
+written for the credential shapes before the DTG v1 context, which recognises
+no current witness statement — has it replaced by the current default at boot
+(`policy::default::upgrade_stale_personhood_default`, decided by evaluating
+the stored policy, not by its bytes). A personhood
 policy an operator uploaded is never replaced.
 
 ### In-person vetting
 
 The default policy accepts a second evidence shape: an
-`IdentityVerification` endorsement **this community issued to this
+**Identity Verification Credential** (IDVC) **this community issued to this
 member**. That is the in-person ceremony — an administrator meets the
 person, satisfies themselves that the DID they present is theirs, and
 issues the record to that DID. The member later presents it over a
 single-use challenge, and the community's own signature is the evidence.
 
-It needs no new Trust Task and no new credential type. DTG Credentials
-§Identity Verification Credentials defines an IDVC as *"any W3C VC
-satisfying a VTC/VTN's identity-proofing requirements"* and explicitly
-**not** a `DTGCredential` subtype, so a community acting as its own
-identity-verification provider is the simplest case of that. Issuing it
-through the endorsement surface means it is revocable through the
-community's existing status list, like every other endorsement.
+DTG Credentials §Identity Verification Credentials defines an IDVC as *"any
+W3C VC satisfying a VTC/VTN's identity-proofing requirements"* and explicitly
+**not** a `DTGCredential` subtype, so the VTC issues it as a plain W3C VC — the
+credentials v2 context alone, no `DTGCredential`, no `issuerScope`:
 
-**One-time setup** — register the type:
-
-```bash
-# vtc/endorsement-types/register/0.1
-POST /v1/endorsement-types  { "typeUri": "IdentityVerification" }
-```
-
-**Per member** — after meeting them:
-
-```bash
-# vtc/endorsements/issue/0.1
-POST /v1/credentials/endorsements
+```json
 {
-  "subjectDid": "did:key:zMember...",
-  "type": "IdentityVerification",
-  "claim": { "method": "in-person-id", "verifiedBy": "did:key:zAdmin..." }
+  "@context": ["https://www.w3.org/ns/credentials/v2"],
+  "id": "urn:uuid:…",
+  "type": ["VerifiableCredential", "IdentityVerificationCredential"],
+  "issuer": "did:…community",
+  "validFrom": "…", "validUntil": "…",
+  "credentialSubject": { "id": "did:key:zMember…", "method": "inPerson",
+                         "verifiedBy": "did:key:zAdmin…" },
+  "credentialStatus": { "type": "BitstringStatusListEntry", "statusPurpose": "revocation", "…": "…" }
 }
 ```
 
-The `claim` body is free-form and opaque to the policy — the default
-rule reads only the endorsement's `type`, its issuer and its subject, so
-what an operator records about *how* they verified is theirs to decide.
-Issuance is admin-or-issuer gated and consumes a revocation status-list
-slot, so withdrawing a vetting later is a `DELETE` on the endorsement
-rather than anything personhood-specific.
+**No setup.** `IdentityVerificationCredential` is not a predicate and is never
+registered as an endorsement type — it is reserved, and registering it is
+refused with `reserved`.
+
+**Per member** — after meeting them, a signed `vtc/endorsements/issue/0.1`
+document with the reserved `typeUri`:
+
+```json
+{
+  "type": "https://trusttasks.org/spec/vtc/endorsements/issue/0.1",
+  "payload": {
+    "subjectDid": "did:key:zMember...",
+    "typeUri": "IdentityVerificationCredential",
+    "claim": { "method": "inPerson", "verifiedBy": "did:key:zAdmin..." }
+  }
+}
+```
+
+The `claim` members are copied into `credentialSubject` beside `id` (a claim
+naming `id` is refused), and are opaque to the policy — the default rule reads
+only the credential's `type`, its issuer and its subject, so what an operator
+records about *how* they verified is theirs to decide. Issuance is
+admin-or-issuer gated, consumes a slot on the community's revocation status
+list and is recorded as an endorsement row, so withdrawing a vetting later is
+`vtc/endorsements/revoke/0.1` rather than anything personhood-specific
+(`vtc-service/src/credentials/idvc.rs`).
+
+> **Recorded divergence.** `vtc/endorsements/issue/0.1` says the task mints a
+> Verifiable Statement Credential under the registered predicate `typeUri`.
+> For the one reserved `typeUri` `IdentityVerificationCredential` this VTC
+> mints an IDVC instead — a plain W3C VC, not a statement. It is the only
+> administrator issuance path that keeps the community's revocation machinery
+> and needs no unspecified Trust Task. The intended resolution is a dedicated
+> identity-verification issuance task in dtgwg-trust-tasks-tf; until it lands,
+> this reuse is the divergence.
 
 The member then runs the normal challenge + assert flow, presenting that
 credential. Three bindings have to hold, and each is enforced by the
@@ -155,9 +186,9 @@ default policy:
 
 | Binding | Why it is there |
 |---|---|
-| `issuer` == this community's DID | An endorsement type is a *name*, not an authority. Without this, any issuer anywhere could mint `IdentityVerification` and unlock personhood here. |
+| `issuer` == this community's DID | A type is a *name*, not an authority. Without this, any issuer anywhere could mint an `IdentityVerificationCredential` and unlock personhood here. |
 | `credentialSubject.id` == the asserting member | The route's holder-match binds the *presenter*; this binds the *credential*, so a member cannot present a vetting record about someone else. |
-| `endorsement.type` == `IdentityVerification` | A role VEC is also community-issued and also names the member. Without the type check, every member holding a role credential would satisfy the policy — which is every member. |
+| `type` includes `IdentityVerificationCredential`, and not `DTGCredential` | A role VAC and a VMC are also community-issued and also name the member. Without the type check, every member holding one would satisfy the policy — which is every member. |
 
 #### The spoken match code
 
@@ -251,13 +282,10 @@ one. This is the rate-limiting-identifier construction from [Personhood
 Credentials (Adler et al. 2024)](https://arxiv.org/abs/2408.07892), which
 the spec's PHC definition cites.
 
-The daemon reads it from either shape, and **only from an issuer in
-`acceptedIdvps`**:
-
-| Shape | Where |
-|---|---|
-| A plain IDVC | `credentialSubject.pseudonym` |
-| This community's own endorsement | `credentialSubject.endorsement.claim.pseudonym` |
+The daemon reads it from `credentialSubject.pseudonym`, and **only from an
+issuer in `acceptedIdvps`** — a foreign IDVP's IDVC, or this community's own
+`IdentityVerificationCredential`, whose `claim` members (a `pseudonym` among
+them) are copied into `credentialSubject`.
 
 An assertion carrying no accepted pseudonym is refused with
 `personhood-pseudonym-missing`; one whose pseudonym another member already
@@ -351,6 +379,28 @@ sequenceDiagram
 
 The secondary index makes the per-DID lookup O(matched rows)
 rather than scanning the entire VRC table.
+
+### `issuerScope` and the identifier form
+
+Every VRC (and VPC) must declare the DTG `issuerScope` of its issuer's
+identifier; the VTC refuses one without it. The publish path reads the
+**identifier form** the `relationships.rego` policy sees as
+`input.identifier_form` from that declaration, and passes the raw value too, as
+`input.issuer_scope`:
+
+| VRC `issuerScope` | `identifier_form` | Meaning |
+|---|---|---|
+| `pairwise` | `pairwise` | A relationship DID for this one counterparty — the same claim. Must carry a publish authorization (`pop`), and is refused if the DID already has an edge to anyone else. |
+| `directed` | `attributed` | A persona recognised by a set of counterparties. |
+| `public` | `attributed` | An identifier anyone can recognise, such as the member's membership DID. |
+
+`attributed` has no `issuerScope` of its own: it means "not
+per-counterparty", which `directed` and `public` both are — a policy that
+needs to tell them apart reads `issuer_scope`. A VRC issued under the
+caller's **membership DID** cannot truthfully declare `pairwise` (the whole
+community recognises it) and is refused with `publish:vrcInvalid`. Whether a
+`pop` is needed is unchanged: it is required whenever the VRC's issuer is not
+the document signer.
 
 ### Listing + filtering
 
@@ -474,23 +524,26 @@ The precedence rule is stated once, in
 resolves through it rather than re-deriving dates at the call
 site.
 
-## Custom endorsements
+## Community statements
 
-Phase 4 also adds operator-defined custom endorsements via an
-in-process type registry. See [`credentials.md`](credentials.md)
+Phase 4 also adds community-issued statements under an in-process
+predicate registry. See [`credentials.md`](credentials.md#statements-and-the-predicate-accept-list)
 for the issuance + revocation flow. Three pieces compose:
 
-1. **Type registry** — admin uploads endorsement types
-   (`POST /v1/endorsement-types`) with optional JSON schema for
-   claim validation.
-2. **Issuance** — Issuer role (or admin) calls
-   `POST /v1/credentials/endorsements` with type + subject +
-   claim.
-3. **Revocation** — `DELETE /v1/credentials/endorsements/{id}`
-   flips the shared status-list slot.
+1. **Predicate accept list** — the registered endorsement types
+   (`vtc/endorsement-types/register/0.1`) are predicate IRIs, each with an
+   optional JSON Schema for the statement's `object.value`. Seeded once with
+   the DTG VSC registry's core predicates; fail-closed for presented
+   statements.
+2. **Issuance** — Issuer role (or admin) sends
+   `vtc/endorsements/issue/0.1` with predicate (`typeUri`) + subject +
+   claim; the VTC mints a `StatementCredential` (a VEC under `endorses/1`).
+3. **Revocation** — `vtc/endorsements/revoke/0.1` flips the shared
+   status-list slot.
 
-Reserved type URIs (`CommunityRole`) are blocked from operator
-registration to keep the workspace's role taxonomy stable.
+Reserved type URIs (`role:vetter`, `IdentityVerificationCredential`) are
+blocked from registration: they are the workspace's own row kinds, and roles
+are VACs, never endorsement types.
 
 ## Audit events
 

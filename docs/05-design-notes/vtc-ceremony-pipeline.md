@@ -130,7 +130,7 @@ identical across ceremonies. This is why one pipeline suffices.
 ## 5. Effects & host-enforced invariants
 
 **Effects** are a per-purpose handler keyed by the verdict — the only stage that writes state. Examples:
-join-`allow` issues + writes ACL; leave-`allow` revokes + applies disposition; role-`allow` re-issues a VEC +
+join-`allow` issues + writes ACL; leave-`allow` revokes + applies disposition; role-`allow` re-issues a role VAC +
 updates ACL; directory-`allow` returns a field projection (no write).
 
 **Invariants** are hard guards the host enforces *around* the policy — a policy can never override them. They

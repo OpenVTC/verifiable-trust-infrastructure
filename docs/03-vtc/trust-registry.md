@@ -56,7 +56,7 @@ interaction rides that transport as a canonical Trust Task:
 | Health probe | `registry/record/query/0.1` (limit 1) | none |
 
 Writes are signed with the VTC's assertion key (`{vtc_did}#key-0`)
-— the same identity that mints VMC/VEC — and the registry must
+— the same identity that mints VMC/VAC — and the registry must
 carry that DID in its admin list, or every write is
 `permissionDenied`.
 
@@ -204,8 +204,12 @@ batched purges that haven't yet flushed).
 ## Cross-community recognition
 
 A peer community's member asks our VTC for a session by **presenting**
-their `(VEC, VMC)` pair inside a holder-signed Verifiable Presentation.
-A VEC + VMC are bearer artifacts: anyone who captures the pair (a relayed
+their `(VAC, VMC)` pair — the peer community's role credential (a DTG
+`AuthorityCredential` conferring `role:<name>` at its own DID, issued directly
+with no `authority.parent`) and membership credential — inside a holder-signed
+Verifiable Presentation. The foreign role is the `<name>` of its first `role:`
+action, and reaches `cross_community_roles.rego` as `input.foreign_vac.role`.
+A VAC + VMC are bearer artifacts: anyone who captures the pair (a relayed
 join, an audit log, a compromised member device) would otherwise hold a
 replayable impersonation token for that subject. So recognition is a
 **two-step, proof-of-possession-bound** flow (P0.2, PRs #351 + #354) —
@@ -224,10 +228,10 @@ sequenceDiagram
 
     M->>US: POST /v1/auth/recognise/challenge
     US-->>M: { nonce, expires_at }<br/>(single-use, TTL'd, bound to our DID)
-    M->>US: POST /v1/auth/recognise<br/>(VP: holder proof over nonce + our DID,<br/>embeds VEC + VMC)
+    M->>US: POST /v1/auth/recognise<br/>(VP: holder proof over nonce + our DID,<br/>embeds VAC + VMC)
     US->>US: Consume nonce (single-use)
     US->>US: Verify holder proof + each embedded issuer proof
-    US->>US: Require VP holder == VEC subject == VMC subject
+    US->>US: Require VP holder == VAC subject == VMC subject
     alt holder proof / subject mismatch
         US-->>M: 401 / 403
     else proofs valid
@@ -243,7 +247,7 @@ sequenceDiagram
                 US-->>M: 403 IssuerNotRecognised
             else recognised
                 US->>US: Evaluate cross_community_roles.rego
-                US->>US: Mint session<br/>TTL = min(JWT-default, VEC.validUntil, VMC.validUntil)
+                US->>US: Mint session<br/>TTL = min(JWT-default, VAC.validUntil, VMC.validUntil)
                 US-->>M: { access_token, refresh_token }
             end
         end
@@ -255,19 +259,19 @@ sequenceDiagram
 - **Holder proof-of-possession.** The VP's `eddsa-jcs-2022` holder proof
   (`proofPurpose: authentication`) must verify and commit to the
   single-use challenge `nonce` (freshness/replay) plus this VTC's DID as
-  `domain` (audience). A captured VEC + VMC is inert without the
+  `domain` (audience). A captured VAC + VMC is inert without the
   subject's private key, and a replayed VP finds its nonce already
   consumed.
-- **Subject binding.** The verified VP holder DID must equal the VEC
-  `credentialSubject.id`, and the VMC subject must equal the VEC subject.
+- **Subject binding.** The verified VP holder DID must equal the VAC
+  `credentialSubject.id`, and the VMC subject must equal the VAC subject.
   The VMC only attests "live, non-revoked member"; without the
-  `vmc.subject == vec.subject` check, member A's role VEC paired with any
+  `vmc.subject == vac.subject` check, member A's role VAC paired with any
   *other* current member B's VMC (same issuer) would pass the gate.
-- Foreign VEC + VMC must pass a **live** status-list revocation check.
+- Foreign VAC + VMC must pass a **live** status-list revocation check.
 - Foreign issuer must be in the trust-registry recognition graph
   **at mint time**.
 - Minted session TTL = `min(JWT-audience-default,
-  foreign-VEC.validUntil, foreign-VMC.validUntil)`.
+  foreign-VAC.validUntil, foreign-VMC.validUntil)`.
 - **No caching, no refresh** — every mint re-runs holder/issuer proof +
   policy + status-list + registry checks. Cross-community sessions
   (`xc-`-prefixed) never refresh; a peer community removed mid-session

@@ -158,7 +158,7 @@ How to operate and integrate against a VTC.
   keyspaces, dependency on the VTA.
 - **[Community lifecycle](03-vtc/community-lifecycle.md)** —
   member CRUD, join requests, removal dispositions, policies.
-- **[Credentials](03-vtc/credentials.md)** — VMC, VEC, status
+- **[Credentials](03-vtc/credentials.md)** — VMC, role VAC, statements (VSC), status
   lists, renewal, DID rotation, custom endorsements.
 - **[Credential delivery](03-vtc/credential-delivery.md)** — how an
   admitted member receives its credentials, and the Eucalyptus
