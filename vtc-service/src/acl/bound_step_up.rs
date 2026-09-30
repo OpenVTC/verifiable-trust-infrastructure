@@ -266,17 +266,29 @@ pub async fn redeem_or_request_with_evidence(
     })?;
     // Only the actor's own credentials. A signed document names one actor;
     // any other principal's passkey answering for them would be exactly the
-    // substitution the gate exists to stop. Their session passkeys, and their
-    // step-up passkeys (`crate::step_up_passkey`) — a member who is no console
-    // user holds only the latter, and this is the one place they count. Either
-    // way the answer must also carry the actor's own signature
+    // substitution the gate exists to stop. Either way the answer must also
+    // carry the actor's own signature
     // (`trust_tasks::handle_step_up_approve_response`): the passkey is beside
     // the proof, never instead of it.
-    let mut passkeys = get_passkey_user_by_did(&state.passkey_ks, admin_did)
-        .await?
-        .map(|u| u.credentials)
-        .unwrap_or_default();
-    passkeys.extend(crate::step_up_passkey::credentials_of(state, admin_did).await?);
+    //
+    // Once `admin_did` holds a dedicated step-up passkey
+    // (`crate::step_up_passkey`), it is the **only** passkey this gesture may
+    // come from — their ordinary session/console passkey stops counting for
+    // them (security decision 2026-09-30): a step-up passkey exists precisely
+    // so a subject's second factor cannot be satisfied by whatever else they
+    // happen to hold. A subject with no step-up passkey keeps today's route —
+    // any of their registered (session) passkeys — so enrolling nobody else's
+    // is never a lockout. A member who is no console user holds only a
+    // step-up passkey, and this is the one place it counts at all.
+    let step_up_passkeys = crate::step_up_passkey::credentials_of(state, admin_did).await?;
+    let passkeys = if step_up_passkeys.is_empty() {
+        get_passkey_user_by_did(&state.passkey_ks, admin_did)
+            .await?
+            .map(|u| u.credentials)
+            .unwrap_or_default()
+    } else {
+        step_up_passkeys
+    };
     if passkeys.is_empty() {
         return Err(AppError::StepUpRequired(format!(
             "this operation needs a passkey gesture from {admin_did}, who has no passkey \
@@ -517,6 +529,24 @@ pub async fn approve(
             admin = %pending.admin_did,
             asserted = %user.did,
             "operation-bound step-up refused: another subject's passkey answered"
+        );
+        return Err(ApproveError::AssertionInvalid("notSubjectPasskey"));
+    }
+    // Belt and suspenders on the priority `redeem_or_request_with_evidence`
+    // already enforces by never offering a session passkey once a step-up
+    // passkey exists (so webauthn-rs itself would refuse an assertion over
+    // one): if the subject now holds a step-up passkey, only one may have
+    // answered. Unreachable through this door alone, but the record is this
+    // service's own and worth trusting rather than assuming.
+    if !step_up
+        && !crate::step_up_passkey::credentials_of(state, &pending.admin_did)
+            .await?
+            .is_empty()
+    {
+        warn!(
+            admin = %pending.admin_did,
+            "operation-bound step-up refused: a session passkey answered for a subject who \
+             holds a step-up passkey"
         );
         return Err(ApproveError::AssertionInvalid("notSubjectPasskey"));
     }
