@@ -1221,7 +1221,6 @@ pub async fn apply_inputs(
         app_state: Default::default(),
         policy: Default::default(),
         secrets: secrets_config,
-        #[cfg(feature = "tee")]
         tee: Default::default(),
         hardened: inputs.hardened.clone(),
         resolver_url: inputs.resolver_url.clone(),
@@ -1797,7 +1796,6 @@ fn scratch_config_for_seed_store(
         app_state: Default::default(),
         policy: Default::default(),
         secrets,
-        #[cfg(feature = "tee")]
         tee: Default::default(),
         hardened: Default::default(),
         resolver_url: None,
