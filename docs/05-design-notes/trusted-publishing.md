@@ -56,7 +56,16 @@ others still publish.
 exchanges the OIDC token for a short-lived crates.io token exported as
 `CARGO_REGISTRY_TOKEN`. The token is valid only for the crates whose
 Trusted Publisher config matches this repo + workflow, and it expires
-shortly after the run.
+30 minutes after it is minted.
+
+That lifetime is shorter than a large release. release-plz publishes the
+whole workspace in one pass, packaging and verify-building each crate, so a
+release of 30+ crates can outlive its token: the #1821 release published 29
+crates and then got `403 Forbidden: Invalid authentication token` on the
+30th. The release job therefore runs up to three passes, each on a freshly
+minted token. A pass skips every crate already on crates.io, so a retry
+resumes where the previous token ran out. A failure that is not the token
+fails every pass the same way and fails the job.
 
 ## Optional hardening: a GitHub Environment
 
