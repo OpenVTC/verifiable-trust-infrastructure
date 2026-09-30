@@ -149,6 +149,29 @@ impl Session {
             _ => false,
         }
     }
+
+    /// Drop a step-up elevation this session reached **without** a passkey
+    /// factor, reporting whether anything changed.
+    ///
+    /// Called when a passkey verification method is registered for this
+    /// session's subject: from that moment `auth/step-up/approve-response`'s
+    /// handler requires a passkey assertion for the subject and no longer
+    /// accepts the did-signed gate, so a live elevation obtained via
+    /// did-signed no longer reflects an assurance level the subject can still
+    /// re-prove on demand. A live elevation is `acr_expires_at.is_some()` (see
+    /// its doc); one already carrying `"passkey"` in `amr` is left alone — it
+    /// was obtained the way the subject must now always use.
+    ///
+    /// Same un-elevated baseline as [`Self::downgrade_lapsed_elevation`].
+    pub fn clear_non_passkey_elevation(&mut self) -> bool {
+        if self.acr_expires_at.is_none() || self.amr.iter().any(|m| m == "passkey") {
+            return false;
+        }
+        self.acr = "aal1".to_string();
+        self.acr_expires_at = None;
+        self.amr = vec!["did".to_string()];
+        true
+    }
 }
 
 impl std::fmt::Debug for Session {
@@ -926,6 +949,53 @@ mod tests {
 
         // Idempotent: a second call has nothing left to downgrade.
         assert!(!s.downgrade_lapsed_elevation(now + 1800));
+    }
+
+    // ── Passkey-only step-up: clearing a non-passkey elevation ──────
+
+    #[test]
+    fn clear_non_passkey_elevation_downgrades_a_live_did_signed_elevation() {
+        let now = now_epoch();
+        let mut s = sample_session("sess-1", "did:key:zA", SessionState::Authenticated);
+        s.acr = "aal2".into();
+        s.amr = vec!["did".into()]; // did-signed gate, no passkey factor
+        s.acr_expires_at = Some(now + 900); // still well inside the window
+
+        assert!(s.clear_non_passkey_elevation());
+        assert_eq!(s.acr, "aal1");
+        assert_eq!(s.acr_expires_at, None);
+        assert_eq!(s.amr, vec!["did".to_string()]);
+
+        // Idempotent: nothing left to clear.
+        assert!(!s.clear_non_passkey_elevation());
+    }
+
+    #[test]
+    fn clear_non_passkey_elevation_leaves_a_passkey_backed_one_alone() {
+        let now = now_epoch();
+        let mut s = sample_session("sess-1", "did:key:zA", SessionState::Authenticated);
+        s.acr = "aal2".into();
+        s.amr = vec!["did".into(), "passkey".into()];
+        s.acr_expires_at = Some(now + 900);
+
+        assert!(
+            !s.clear_non_passkey_elevation(),
+            "an elevation the subject reached WITH a passkey must not be cleared"
+        );
+        assert_eq!(s.acr, "aal2");
+        assert_eq!(s.acr_expires_at, Some(now + 900));
+    }
+
+    #[test]
+    fn clear_non_passkey_elevation_leaves_an_unelevated_session_alone() {
+        // No `acr_expires_at` at all — never stepped up (or a passkey *login*,
+        // which is aal2 from first request with no window). Nothing to clear.
+        let mut s = sample_session("sess-1", "did:key:zA", SessionState::Authenticated);
+        s.acr = "aal2".into();
+        s.amr = vec!["did".into(), "passkey".into()];
+
+        assert!(!s.clear_non_passkey_elevation());
+        assert_eq!(s.acr, "aal2");
     }
 
     // ── Session key helpers ─────────────────────────────────────────
