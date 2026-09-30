@@ -1573,7 +1573,7 @@ mod spine_proof_tests {
         let hidden_vetting = if cfg!(feature = "vetting-pcs") { 4 } else { 0 };
         assert_eq!(
             required.len(),
-            86 + hidden_vetting,
+            88 + hidden_vetting,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1597,7 +1597,8 @@ mod spine_proof_tests {
              assertionMethod proof) + the 8 member-facing verbs `member_tasks` \
              moved that declare one (`members/{{renew,rotate-challenge,rotate}}`, \
              `members/personhood/revoke`, `relationships/{{publish,revoke}}`, \
-             `endorsements/{{issue,revoke}}`; `relationships/list` and \
+             `endorsements/{{issue,revoke}}`, and the 0.2 versions of \
+             `relationships/revoke` and `vetting/vetters/resend`; `relationships/list` and \
              `endorsements/{{list,show}}` declare none, and their handlers refuse \
              an unsigned one regardless) + the 10 operational verbs `admin_tasks` \
              moved that declare one (`vtc/registry/sync-jobs/{{retry,discard}}`, \
@@ -4431,6 +4432,7 @@ mod tests {
             vetting_wire::VETTING_VETTER_LIST_TYPE,
             vetting_wire::VETTING_VETTER_SHOW_TYPE,
             vetting_wire::VETTING_VETTER_RESEND_TYPE,
+            <vetting_wire::vetters::resend::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <member_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI,
@@ -4472,6 +4474,7 @@ mod tests {
             <trust_tasks_rs::specs::vtc::relationships::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::relationships::publish::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::relationships::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::relationships::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::issue::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
