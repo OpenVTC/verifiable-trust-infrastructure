@@ -209,6 +209,26 @@ pub(crate) async fn issue_inner(
 
     let identity_verification = body.endorsement_type == IDENTITY_VERIFICATION_CREDENTIAL_TYPE;
 
+    // The IDVC's claim sits beside `credentialSubject.id`, so it must not name
+    // `id` itself. The spec declares that refusal as `claimSchemaViolation`, the
+    // same code a registered claimSchema raises. (The payload schema already
+    // requires an object; the first arm is defence in depth.)
+    if identity_verification {
+        let problem = match body.claim.as_object() {
+            None => Some("an identity-verification claim must be a JSON object"),
+            Some(c) if c.contains_key("id") => {
+                Some("an identity-verification claim cannot name `id`: the subject is `subjectDid`")
+            }
+            Some(_) => None,
+        };
+        if let Some(msg) = problem {
+            return Err(TaskError::declared(
+                ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
+                AppError::Validation(msg.into()),
+            ));
+        }
+    }
+
     // 2. Predicate registry consultation (D4 review). The IDVC type is
     //    reserved — never registrable, since it is not a predicate — and is
     //    dispatched before the lookup.

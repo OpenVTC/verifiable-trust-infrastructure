@@ -885,6 +885,24 @@ async fn the_reserved_idvc_type_mints_an_identity_verification_credential() {
     assert_eq!(rest_error_code(&body), REGISTER_ERR_RESERVED, "{body}");
 }
 
+/// An IDVC claim that names `id` is the declared `claimSchemaViolation`: the
+/// subject is `subjectDid`, never the claim. (A claim that is not an object
+/// never reaches the handler; the payload schema refuses it as malformedRequest.)
+#[tokio::test]
+async fn an_idvc_claim_naming_id_is_the_declared_claim_schema_violation() {
+    let fix = build().await;
+    {
+        let claim = json!({ "id": "did:example:other", "method": "inPerson" });
+        let (status, body) = issue(&fix, "IdentityVerificationCredential", claim).await;
+        assert!(status.is_client_error(), "{body}");
+        assert_eq!(
+            rest_error_code(&body),
+            ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
+            "{body}"
+        );
+    }
+}
+
 /// A claim over 8 KiB is `claimTooLarge` (400, unchanged).
 #[tokio::test]
 async fn a_claim_over_the_cap_is_the_declared_claim_too_large() {
