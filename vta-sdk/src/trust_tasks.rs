@@ -1469,6 +1469,16 @@ pub const TASK_CONFIG_PATCH_0_1: &str = "https://trusttasks.org/spec/config/patc
 pub const TASK_MANAGEMENT_RELOAD_SERVICES_1_0: &str =
     "https://trusttasks.org/spec/vta/management/reload-services/1.0";
 
+// ─── Metrics slice (spec/vta/metrics/*) ──────────────────────────────────
+
+/// `spec/vta/metrics/show/0.1` — this agent's current metrics snapshot,
+/// reusing `did-management`'s shared `MetricsSnapshot` shape. Admin only:
+/// operational counters, not a public read. Was `GET /metrics`, a documented
+/// `REST_EXCEPTIONS` keep (a Prometheus scrape target) until this spec
+/// landed.
+pub const TASK_METRICS_SHOW_0_1: &str =
+    <trust_tasks_rs::specs::vta::metrics::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Passkey-VMs slice (spec/vta/passkey-vms/*) ──────────────────────────
 //
 // Feature-gated: handlers require BOTH `webvh` (DID-doc mutation +
@@ -1968,6 +1978,14 @@ pub const TASK_ATTESTATION_REPORT_0_1: &str =
 pub const TASK_ATTESTATION_CONFIG_REPORT_0_1: &str =
     <trust_tasks_rs::specs::vta::attestation::config_report::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// `spec/vta/attestation/mnemonic-status/0.1` — the export window's current
+/// state: active?, already exported?, entropy still held?, seconds
+/// remaining. Super-admin only, same as the export it watches over; carries
+/// no secret. TEE-feature-gated. Was `GET /attestation/mnemonic`, a
+/// documented `REST_EXCEPTIONS` keep until this spec landed.
+pub const TASK_ATTESTATION_MNEMONIC_STATUS_0_1: &str =
+    <trust_tasks_rs::specs::vta::attestation::mnemonic_status::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 // ─── Health + restore slice (spec/vta/{health,restore}/*) ──────────────
 //
 // Two tasks with fixed disclosure policies rather than one whose answer varies
@@ -2253,6 +2271,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONFIG_PATCH_0_1,
     // Management slice
     TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
+    // Metrics slice
+    TASK_METRICS_SHOW_0_1,
     // Passkey-VMs slice (feature-gated: webvh + didcomm). Dual-accept
     // canonical 0.1 + retained pre-spec 1.0.
     TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
@@ -2318,6 +2338,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ATTESTATION_CONFIG_REPORT_0_1,
     // … and the authenticated, end-to-end-only mnemonic export
     TASK_ATTESTATION_MNEMONIC_EXPORT_1_0,
+    // … and its super-admin-only status read
+    TASK_ATTESTATION_MNEMONIC_STATUS_0_1,
     // Consent slice
     TASK_CONSENT_REQUEST_1_0,
     TASK_CONSENT_DECISION_1_0,

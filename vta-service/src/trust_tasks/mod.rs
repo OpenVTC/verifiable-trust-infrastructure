@@ -78,6 +78,7 @@ mod keys;
 mod management;
 mod memory;
 mod messaging;
+mod metrics;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
 pub mod pending_replies;
@@ -184,6 +185,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_0_1,
     vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_0_1,
     vta_sdk::trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1,
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_1,
     // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
@@ -2352,6 +2354,17 @@ dispatch_table! {
         [ None Metadata false ],
     #[cfg(feature = "tee")]
     vta_sdk::trust_tasks::TASK_ATTESTATION_CONFIG_REPORT_0_1 => attestation::handle_config_report
+        [ None Metadata false ],
+    // Super-admin only, same as the export it watches over; carries no
+    // secret itself.
+    #[cfg(feature = "tee")]
+    vta_sdk::trust_tasks::TASK_ATTESTATION_MNEMONIC_STATUS_0_1 => attestation::handle_mnemonic_status
+        [ None Metadata false ],
+    // ─── Metrics slice ────────────────────────────────────────────
+    // Admin only: operational counters, not a public read. Was
+    // `GET /metrics`, a documented `REST_EXCEPTIONS` keep, until this spec
+    // landed.
+    vta_sdk::trust_tasks::TASK_METRICS_SHOW_0_1 => metrics::handle_show
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_0_1 => keys::handle_sign
         [ None None true ],

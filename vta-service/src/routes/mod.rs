@@ -12,7 +12,6 @@ mod passkey_vms;
 pub mod rate_limit;
 #[cfg(feature = "webvh")]
 mod self_hosted_did;
-mod vta;
 
 use std::time::Duration;
 
@@ -344,14 +343,12 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
 
     // TEE attestation routes (feature-gated). The unauthenticated ones
     // (`status`, `report`, `did-log`) live on the rate-limited `unauth`
-    // branch above. `GET /attestation/mnemonic` (status-check read) is a
-    // documented `REST_EXCEPTIONS` keep, off the rate limiter like every
-    // other authed route (JWT is its gate) until its Trust-Task spec lands.
-    // The `POST /attestation/mnemonic` stub — always 403 over REST — is gone;
-    // the export is `vta/attestation/mnemonic-export/1.0` over DIDComm/TSP,
-    // or at first boot as a Trust Task over HTTPS.
-    #[cfg(feature = "tee")]
-    let router = router.routes(routes!(attestation::mnemonic_status));
+    // branch above. `GET /attestation/mnemonic` (status-check read) and
+    // `POST /attestation/mnemonic` (always 403 over REST) are both gone: the
+    // status check is `vta/attestation/mnemonic-status/0.1` now, and the
+    // export is `vta/attestation/mnemonic-export/1.0` over DIDComm/TSP, or at
+    // first boot as a Trust Task over HTTPS — both dispatched on
+    // `/trust-tasks` (merged above).
     // `GET /attestation/admin-credential` retired in Phase 3 —
     // sealed-bootstrap Mode B replaces it via `POST /bootstrap/request`.
 
@@ -385,10 +382,9 @@ fn build_api_router(trust_xff_cidrs: &[IpNetwork], quotas: QuotaSource) -> OpenA
         ))
         .routes(routes!(passkey_vms::revoke_passkey_handler));
 
-    // VTA management: `POST /vta/restart` is gone — it's the
-    // `vta/management/reload-services/1.0` Trust Task now. `GET /metrics` is
-    // a documented `REST_EXCEPTIONS` keep, until its Trust-Task spec lands.
-    let router = router.routes(routes!(vta::metrics));
+    // VTA management: `POST /vta/restart` and `GET /metrics` are gone —
+    // they're `vta/management/reload-services/1.0` and `vta/metrics/show/0.1`
+    // Trust Tasks now, both dispatched on `/trust-tasks` (merged above).
 
     // Backup-descriptor blob endpoints. NOT JWT-gated — the
     // `X-Backup-Token` header IS the credential (one-shot for

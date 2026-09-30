@@ -137,21 +137,6 @@ const REST_EXCEPTIONS: &[RestException] = &[
         reason: "describes the API shape, not a secret; unauthenticated by design so black-box \
                  conformance/fuzz tooling can fetch it before it holds a token",
     },
-    RestException {
-        method: "GET",
-        path: "/attestation/mnemonic",
-        protocol: "operational read",
-        twin: None,
-        reason: "the mnemonic export's status check, kept as REST until its own Trust-Task spec \
-                 lands (the export itself is already Trust-Task-only)",
-    },
-    RestException {
-        method: "GET",
-        path: "/metrics",
-        protocol: "operational read",
-        twin: None,
-        reason: "Prometheus scrape target, kept as REST until its Trust-Task spec lands",
-    },
 ];
 
 /// The REST-exception table, for tests that assert on its contents.
