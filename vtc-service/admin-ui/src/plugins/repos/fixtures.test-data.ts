@@ -10,9 +10,19 @@ import type {
   GitNsRightRow,
 } from "@/lib/wire-types";
 import { ACL_LIST_TASK } from "@/lib/acl";
-import { MEMBERS_LIST_TASK, type MockRoute } from "@/test/render";
+import { MEMBERS_LIST_TASK, taskRoute, type MockRoute } from "@/test/render";
 
-import { TASK_NAMESPACE_LIST, TASK_REPO_LIST, TASK_VIEW } from "./api";
+import {
+  TASK_ACCOUNT_LIST,
+  TASK_ACTIVITY_LIST,
+  TASK_BRIDGE_JOB_LIST,
+  TASK_NAMESPACE_LIST,
+  TASK_PROJECTION_SHOW,
+  TASK_REPO_LIST,
+  TASK_RIGHT_ISSUED_BY_DEPARTED,
+  TASK_RIGHT_LIST,
+  TASK_VIEW,
+} from "./api";
 import type { GitNsBreakGlassItem } from "./model";
 
 /** `policy/active/0.1`, the one policy read the Repos plugin makes. */
@@ -189,9 +199,9 @@ export const MEMBERS = [
 ];
 
 export const ACCOUNTS: GitNsAccountRow[] = [
-  { member: ALICE, forge: "github.com", id: "1001", login: "alicew", memberCurrent: true },
-  { member: BOB, forge: "github.com", id: "1002", login: "bobm", memberCurrent: true },
-  { member: HANA, forge: "github.com", id: "1003", login: "hsato", memberCurrent: true },
+  { member: ALICE, account: { forge: "github.com", id: "1001", login: "alicew" }, memberCurrent: true },
+  { member: BOB, account: { forge: "github.com", id: "1002", login: "bobm" }, memberCurrent: true },
+  { member: HANA, account: { forge: "github.com", id: "1003", login: "hsato" }, memberCurrent: true },
 ];
 
 export const ACTIVITY: GitNsActivityItem[] = [
@@ -258,6 +268,44 @@ export function gitNsRoutes(
   const namespaces = over.namespaces ?? [ACME, PERSONAL];
   return [
     ...(over.extra ?? []),
+    // The six community-administrator and administrator reads
+    // (trustoverip/dtgwg-trust-tasks-tf#686): specific `taskRoute`s, checked
+    // before the catch-all `signedReads` below so their own answers win.
+    taskRoute(TASK_RIGHT_LIST, { rights: over.rights ?? RIGHTS }),
+    taskRoute(TASK_RIGHT_ISSUED_BY_DEPARTED, {
+      cascadeOnDeparture: false,
+      granters: [{ granter: GUS, rights: RIGHTS.filter((r) => r.granterDeparted) }],
+    }),
+    taskRoute(TASK_BRIDGE_JOB_LIST, { jobs: [] }),
+    taskRoute(TASK_ACCOUNT_LIST, { accounts: over.accounts ?? ACCOUNTS }),
+    taskRoute(
+      TASK_ACTIVITY_LIST,
+      over.activityStatus === 403
+        ? refusal("git-ns/activity/list:notAdministrator", "you administer no namespace here")
+            .payload
+        : { items: ACTIVITY },
+      over.activityStatus === 403 ? 422 : over.activityStatus,
+    ),
+    taskRoute(TASK_PROJECTION_SHOW, {
+      registryConfigured: true,
+      pendingChanges: 1,
+      published: [
+        {
+          entity: ALICE,
+          action: "git.repo.own",
+          resource: "github.com/acme/widgets",
+          context: { framework: TASK_RIGHT_LIST },
+          publishedAt: "2026-08-02T00:00:00Z",
+        },
+        {
+          entity: ALICE,
+          action: "git.commit.sign",
+          resource: "github.com/acme/widgets",
+          context: { framework: TASK_RIGHT_LIST, impliedBy: "git.repo.own" },
+          publishedAt: "2026-08-02T00:00:00Z",
+        },
+      ],
+    }),
     signedReads({
       namespaces,
       repos: over.repos ?? [DOCS, LEGACY, SANDBOX, WIDGETS],
@@ -266,47 +314,6 @@ export function gitNsRoutes(
       namespacesStatus: over.namespacesStatus,
       reposStatus: over.reposStatus,
     }),
-    { path: "/v1/git-ns/rights", body: { rights: over.rights ?? RIGHTS } },
-    {
-      path: "/v1/git-ns/rights/issued-by-departed",
-      body: {
-        cascadeOnDeparture: false,
-        granters: [{ granter: GUS, rights: RIGHTS.filter((r) => r.granterDeparted) }],
-      },
-    },
-    { path: "/v1/git-ns/jobs", body: { jobs: [] } },
-    { path: "/v1/git-ns/accounts", body: { accounts: over.accounts ?? ACCOUNTS } },
-    {
-      path: "/v1/git-ns/activity",
-      status: over.activityStatus,
-      body:
-        over.activityStatus === 403
-          ? { error: "you administer no namespace here" }
-          : { items: ACTIVITY },
-    },
-    {
-      path: "/v1/git-ns/projection",
-      body: {
-        registryConfigured: true,
-        pendingChanges: 1,
-        published: [
-          {
-            entity: ALICE,
-            action: "git.repo.own",
-            resource: "github.com/acme/widgets",
-            context: {},
-            publishedAt: "2026-08-02T00:00:00Z",
-          },
-          {
-            entity: ALICE,
-            action: "git.commit.sign",
-            resource: "github.com/acme/widgets",
-            context: { impliedBy: "git.repo.own" },
-            publishedAt: "2026-08-02T00:00:00Z",
-          },
-        ],
-      },
-    },
   ];
 }
 
@@ -520,6 +527,12 @@ export function isSignedRead(r: { url: string; body: unknown }): boolean {
       TASK_NAMESPACE_LIST,
       TASK_REPO_LIST,
       TASK_VIEW,
+      TASK_RIGHT_LIST,
+      TASK_RIGHT_ISSUED_BY_DEPARTED,
+      TASK_BRIDGE_JOB_LIST,
+      TASK_PROJECTION_SHOW,
+      TASK_ACCOUNT_LIST,
+      TASK_ACTIVITY_LIST,
       ACL_LIST_TASK,
       MEMBERS_LIST_TASK,
       POLICY_ACTIVE_TASK,

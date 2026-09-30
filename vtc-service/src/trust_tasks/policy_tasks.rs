@@ -19,9 +19,7 @@
 //! default (a Rego module, a DID's whole log), so the spine admits them at the
 //! limits [`super::size`] sets, for a signer with standing only.
 //!
-//! The bearer routes of `policy/{list,get,upsert,activate}` and `did/register`
-//! stay while `vtc-client` calls them; `policy/active` and `vtc/policies/test`
-//! have none.
+//! None of them has a REST route.
 //!
 //! `policy/list/0.2` has no purpose filter. The console asks for one purpose's
 //! revisions, so an `ext` member `org.openvtc.purpose` narrows the listing to

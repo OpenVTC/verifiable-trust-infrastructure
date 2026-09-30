@@ -51,6 +51,7 @@ use crate::store::KeyspaceHandle;
 #[derive(Debug, Clone)]
 pub struct EnableDidcommParams {
     pub mediator_did: String,
+    pub setup_acl: bool,
     pub force: bool,
     pub handshake_timeout: Duration,
 }
@@ -69,6 +70,10 @@ pub struct EnableDidcommResult {
 
 #[derive(Debug, Error)]
 pub enum EnableDidcommError {
+    #[error(
+        "`setup_acl` cannot be combined with `force` because ACL provisioning requires a live mediator connection"
+    )]
+    SetupAclWithForce,
     #[error(
         "DIDComm is already enabled. Use `pnm services didcomm update --mediator-did <did>` to change the active mediator."
     )]
@@ -129,6 +134,10 @@ pub async fn enable_didcomm(
     auth.require_super_admin()
         .map_err(|e| EnableDidcommError::Auth(e.to_string()))?;
 
+    if params.setup_acl && params.force {
+        return Err(EnableDidcommError::SetupAclWithForce);
+    }
+
     let _guard = PROTOCOL_LOCK.lock().await;
 
     // Pre-flight: must currently be disabled, VTA DID must exist,
@@ -146,6 +155,8 @@ pub async fn enable_didcomm(
         &vta_did,
         HandshakeOptions {
             timeout: params.handshake_timeout,
+            setup_acl: params.setup_acl,
+            channel: channel.to_string(),
             force: params.force,
         },
     )
@@ -194,7 +205,13 @@ pub async fn enable_didcomm(
     crate::operations::protocol::runtime_state::set_didcomm_enabled(deps.service_state_ks, true)
         .await
         .map_err(|e| EnableDidcommError::ConfigPersistence(format!("runtime state: {e}")))?;
-    persist_didcomm_enabled(deps.config, &resolved.mediator_did, &resolved.endpoint).await?;
+    persist_didcomm_enabled(
+        deps.config,
+        &resolved.mediator_did,
+        &resolved.endpoint,
+        params.setup_acl,
+    )
+    .await?;
 
     // Register the mediator as active. The caller (the route layer)
     // is responsible for opening the upstream listener if it isn't
@@ -254,6 +271,7 @@ async fn persist_didcomm_enabled(
     config: &Arc<RwLock<AppConfig>>,
     mediator_did: &str,
     mediator_endpoint: &str,
+    setup_acl: bool,
 ) -> Result<(), EnableDidcommError> {
     let (contents, path) = {
         let mut cfg = config.write().await;
@@ -262,9 +280,7 @@ async fn persist_didcomm_enabled(
             mediator_url: mediator_endpoint.to_string(),
             mediator_did: mediator_did.to_string(),
             mediator_host: None,
-            // Preserve the existing setup_acl setting if the config already has
-            // a messaging section; otherwise default to false.
-            setup_acl: cfg.messaging.as_ref().is_some_and(|m| m.setup_acl),
+            setup_acl: setup_acl || cfg.messaging.as_ref().is_some_and(|m| m.setup_acl),
             drain_inbox_on_start: cfg
                 .messaging
                 .as_ref()
@@ -337,6 +353,74 @@ mod tests {
         // For refusal-path tests that bail before seed access,
         // a placeholder seed store with no actual seed is fine.
         Arc::new(PlaintextSeedStore::new(dir))
+    }
+
+    #[tokio::test]
+    async fn persistence_enables_setup_acl_when_requested() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = fresh_config(dir.path());
+
+        persist_didcomm_enabled(
+            &config,
+            "did:web:mediator.example",
+            "wss://mediator.example/ws",
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(config.read().await.messaging.as_ref().unwrap().setup_acl);
+        let persisted = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(persisted.contains("setup_acl = true"));
+    }
+
+    #[tokio::test]
+    async fn persistence_does_not_disable_existing_setup_acl() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = fresh_config(dir.path());
+        config.write().await.messaging = Some(MessagingConfig {
+            mediator_url: "wss://old.example/ws".into(),
+            mediator_did: "did:web:old.example".into(),
+            mediator_host: None,
+            setup_acl: true,
+            drain_inbox_on_start: false,
+        });
+
+        persist_didcomm_enabled(
+            &config,
+            "did:web:new.example",
+            "wss://new.example/ws",
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(config.read().await.messaging.as_ref().unwrap().setup_acl);
+    }
+
+    #[tokio::test]
+    async fn setup_acl_with_force_is_rejected_before_handshake() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = fresh_config(dir.path());
+        let env = TestEnv::new(dir.path(), config).await;
+        let prover = AlwaysOkProver;
+        let err = enable_didcomm(
+            &env.deps(),
+            &prover,
+            &super_admin(),
+            EnableDidcommParams {
+                mediator_did: "did:peer:2.candidate".into(),
+                setup_acl: true,
+                force: true,
+                handshake_timeout: Duration::from_secs(1),
+            },
+            OpContext::Direct,
+            "test",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, EnableDidcommError::SetupAclWithForce));
     }
 
     /// Owns every keyspace (each from its own fjall store, as the refusal-path
@@ -440,6 +524,7 @@ mod tests {
             &super_admin(),
             EnableDidcommParams {
                 mediator_did: "did:m:A".into(),
+                setup_acl: false,
                 force: false,
                 handshake_timeout: Duration::from_secs(1),
             },
@@ -468,6 +553,7 @@ mod tests {
             &super_admin(),
             EnableDidcommParams {
                 mediator_did: "did:m:A".into(),
+                setup_acl: false,
                 force: false,
                 handshake_timeout: Duration::from_secs(1),
             },
@@ -496,6 +582,7 @@ mod tests {
             &super_admin(),
             EnableDidcommParams {
                 mediator_did: "did:m:A".into(),
+                setup_acl: false,
                 force: false,
                 handshake_timeout: Duration::from_secs(1),
             },
@@ -534,6 +621,7 @@ mod tests {
             &super_admin(),
             EnableDidcommParams {
                 mediator_did: "did:m:A".into(),
+                setup_acl: false,
                 force: false,
                 handshake_timeout: Duration::from_secs(1),
             },

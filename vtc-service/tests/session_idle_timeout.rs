@@ -38,8 +38,8 @@ use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
 const ADMIN_DID: &str = "did:key:z6MkAdminIdle";
-/// A protected route that stays a bearer route: `audit/verify`, which `vtc-client` calls.
-const PROTECTED_TASK: &str = "https://trusttasks.org/spec/audit/verify/0.1";
+/// A protected route that stays a bearer route: `auth/whoami`, which reads the session.
+const PROTECTED_TASK: &str = "https://trusttasks.org/spec/auth/whoami/0.1";
 const REFRESH_TASK: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
 
 struct Fixture {
@@ -150,7 +150,7 @@ async fn a_cookie_request_records_activity() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/audit/verify")
+        .uri("/v1/auth/whoami")
         .header("cookie", format!("{ADMIN_SESSION_COOKIE}={access}"))
         .header("trust-task", PROTECTED_TASK)
         .body(Body::empty())
@@ -187,7 +187,7 @@ async fn a_bearer_request_does_not_record_activity() {
 
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/audit/verify")
+        .uri("/v1/auth/whoami")
         .header("authorization", format!("Bearer {access}"))
         .header("trust-task", PROTECTED_TASK)
         .body(Body::empty())

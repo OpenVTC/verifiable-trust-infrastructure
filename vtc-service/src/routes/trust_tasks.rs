@@ -78,7 +78,8 @@ pub async fn dispatch(
         Err(limited) => return limited.into_response(),
     };
     let outcome =
-        dispatch_trust_task_core_admitted(&state, &JoinAuthCtx::rest(), &body, &admission).await;
+        dispatch_trust_task_core_admitted(&state, &JoinAuthCtx::rest(), &body, &admission, address)
+            .await;
     match admission.finish() {
         Ok(()) => outcome.into_response(),
         Err(limited) => limited.into_response(),

@@ -83,6 +83,19 @@ pub const TSP_RELATIONSHIPS: &str = "tsp_relationships";
 /// one row per (issuer, statement id, statement digest), written when a vetter
 /// withdraws a statement and read whenever presented statements are counted.
 pub const VETTING_REVOCATIONS: &str = "vetting_revocations";
+/// Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the spent
+/// attestation tokens, one row per `(token label, serial)`, written when a
+/// hidden submission is counted and read on every later one. A serial that
+/// un-spends is a double spend, so this is backed up for the same reason
+/// `VETTING_REVOCATIONS` is.
+pub const VETTING_PCS_SPENT: &str = "vetting_pcs_spent";
+/// Hidden-vetter admission (ZKP, development branch `zkp-pcs`): what the
+/// community minted — one enrolment row per vetter (the class labels they
+/// hold a credential under, and the PCS identifier they are bound to) and one
+/// row per served drip tick. Backed up: losing an enrolment row lets a member
+/// enrol twice under one label and count twice in one proof, which is the
+/// invariant the whole counting rule rests on.
+pub const VETTING_PCS_ISSUE: &str = "vetting_pcs_issue";
 /// Vetter profiles (`vtc/vetting/vetters/profile/0.1`): one row per vetter DID,
 /// written by the vetter, deleted when they no longer hold a live grant, and
 /// read by the vetter listing.
@@ -178,6 +191,8 @@ pub const ALL: &[&str] = &[
     INVITATIONS,
     OUTBOX,
     VETTING_REVOCATIONS,
+    VETTING_PCS_SPENT,
+    VETTING_PCS_ISSUE,
     VETTER_PROFILES,
     ACCEPTED_IDS,
     CONSOLE_KEYS,
@@ -231,6 +246,11 @@ pub const BACKED_UP: &[&str] = &[
     INVITATIONS,
     // A withdrawn vetting statement must stay withdrawn across a restore, or a
     // restored community would count a statement its vetter took back.
+    VETTING_PCS_SPENT,
+    // What a vetter was issued has to survive a restore for the same reason:
+    // a community that forgot an enrolment would issue a second credential
+    // under the same label.
+    VETTING_PCS_ISSUE,
     VETTING_REVOCATIONS,
     // A vetter's published profile is theirs to replace, not the community's to
     // reconstruct: a restore without it would silently unlist every vetter.
@@ -318,8 +338,10 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 38 top-level `*_ks` fields plus the three `AppState::git_ns` carries.
-        assert_eq!(ALL.len(), 41, "ALL must list every AppState keyspace");
+        // 38 top-level `*_ks` fields plus the three `AppState::git_ns` carries,
+        // plus the 2 hidden-vetting keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`)
+        // from the `zkp-pcs` development branch.
+        assert_eq!(ALL.len(), 43, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

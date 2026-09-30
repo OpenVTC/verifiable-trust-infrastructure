@@ -79,14 +79,22 @@ async fn run_didcomm(
     match command {
         DidcommCommands::Enable {
             mediator_did,
+            setup_acl,
             force,
             handshake_timeout,
         } => {
-            services::cmd_services_didcomm_enable(client, mediator_did, force, handshake_timeout)
-                .await
+            services::cmd_services_didcomm_enable(
+                client,
+                mediator_did,
+                setup_acl,
+                force,
+                handshake_timeout,
+            )
+            .await
         }
         DidcommCommands::Update {
             new_mediator_did,
+            setup_acl,
             drain_ttl,
             force,
             handshake_timeout,
@@ -95,6 +103,7 @@ async fn run_didcomm(
                 client,
                 new_mediator_did,
                 drain_ttl,
+                setup_acl,
                 force,
                 handshake_timeout,
             )

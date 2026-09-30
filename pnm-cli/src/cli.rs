@@ -1984,6 +1984,9 @@ pub(crate) enum DidcommCommands {
     Enable {
         #[arg(long)]
         mediator_did: String,
+        /// Provision this VTA's ACL on the target mediator before the handshake.
+        #[arg(long, conflicts_with = "force")]
+        setup_acl: bool,
         /// Skip handshake steps 2-5 (DID resolution always runs).
         #[arg(long)]
         force: bool,
@@ -1998,6 +2001,9 @@ pub(crate) enum DidcommCommands {
     Update {
         #[arg(long = "mediator-did", visible_alias = "to")]
         new_mediator_did: String,
+        /// Provision this VTA's ACL on the target mediator before the handshake.
+        #[arg(long, conflicts_with = "force")]
+        setup_acl: bool,
         /// Drain window for the prior mediator (seconds).
         /// Default: 24h per spec §3.6.
         #[arg(long, default_value_t = 86_400)]
@@ -2067,8 +2073,9 @@ pub(crate) enum ContextCommands {
     /// it — useful when the DID was minted on a fresh `pnm setup` and you
     /// want an automatic safety window.
     Create {
-        /// Context slug (lowercase alphanumeric + hyphens). When `--parent` is
-        /// set this is the leaf segment; the full id becomes `<parent>/<id>`.
+        /// Context path: a slug (lowercase alphanumeric + hyphens), or slugs
+        /// joined by `/` to nest (e.g. `acme/eng`). Nesting requires admin of
+        /// the parent; a top-level context is super-admin only.
         #[arg(long)]
         id: String,
         /// Human-readable name
@@ -2077,11 +2084,6 @@ pub(crate) enum ContextCommands {
         /// Optional description
         #[arg(long)]
         description: Option<String>,
-        /// Parent context path to nest under (e.g. `acme/eng`). Creates a
-        /// sub-context — requires admin of the parent. Omit for a top-level
-        /// context (super-admin only).
-        #[arg(long)]
-        parent: Option<String>,
         /// DID to grant admin access to (must start with `did:`). When set,
         /// creates an ACL entry with role=admin scoped to this context.
         #[arg(long)]
@@ -2167,7 +2169,7 @@ pub(crate) enum ContextCommands {
     /// `POST /acl`; the VTA never sees the private key. The minted credential
     /// is sealed to the `--recipient` and printed as an armored bundle.
     Bootstrap {
-        /// Context slug (lowercase alphanumeric + hyphens)
+        /// Context path (e.g. `acme` or `acme/eng`)
         #[arg(long)]
         id: String,
         /// Human-readable name
@@ -2199,7 +2201,7 @@ pub(crate) enum ContextCommands {
     /// `BootstrapRequest` JSON (produced by `pnm bootstrap request --out`) or
     /// `--recipient-pubkey` + `--recipient-nonce` inline.
     Provision {
-        /// Context slug (lowercase alphanumeric + hyphens)
+        /// Context path (e.g. `acme` or `acme/eng`)
         #[arg(long)]
         id: String,
         /// Human-readable name
@@ -3358,6 +3360,64 @@ mod bootstrap_connect_flag_tests {
         .err()
         .unwrap();
         assert_eq!(conflicting.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn didcomm_enable_accepts_setup_acl_but_not_with_force() {
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "services",
+                "didcomm",
+                "enable",
+                "--mediator-did",
+                "did:web:mediator.example",
+                "--setup-acl",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "services",
+                "didcomm",
+                "enable",
+                "--mediator-did",
+                "did:web:mediator.example",
+                "--setup-acl",
+                "--force",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn didcomm_update_accepts_setup_acl_but_not_with_force() {
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "services",
+                "didcomm",
+                "update",
+                "--mediator-did",
+                "did:web:mediator.example",
+                "--setup-acl",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "pnm",
+                "services",
+                "didcomm",
+                "update",
+                "--mediator-did",
+                "did:web:mediator.example",
+                "--setup-acl",
+                "--force",
+            ])
+            .is_err()
+        );
     }
 }
 

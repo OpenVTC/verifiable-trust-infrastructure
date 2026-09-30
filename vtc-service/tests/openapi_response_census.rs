@@ -51,10 +51,10 @@ use std::path::{Path, PathBuf};
 const UNTYPED_OK: &[(&str, &str)] = &[(
     "relationships.rs::publish",
     "returns `trust_tasks_rs::TrustTask<PublishResponse>`. The Trust Task \
-     envelope is an external type with no `ToSchema`, so the document names the \
-     payload it wraps. Typing it properly means declaring a local mirror of the \
-     envelope — a hand-maintained copy of someone else's wire type, which is \
-     the failure mode this census exists to prevent, not a fix for it.",
+         envelope is an external type with no `ToSchema`, so the document names the \
+         payload it wraps. Typing it properly means declaring a local mirror of the \
+         envelope — a hand-maintained copy of someone else's wire type, which is \
+         the failure mode this census exists to prevent, not a fix for it.",
 )];
 
 /// The size of [`UNTYPED_OK`], asserted so the list cannot grow quietly.

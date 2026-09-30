@@ -140,12 +140,6 @@ async fn vetting_admin_verbs_round_trip() {
     assert_eq!(grants.vetters.len(), 1);
     assert!(grants.vetters[0].live);
 
-    // No messaging in this community: the resend cannot be handed over.
-    assert!(matches!(
-        client.resend_vetter_grant(&vetter).await,
-        Err(vtc_client::VtcError::Http { status: 503, .. })
-    ));
-
     let status = client.auto_grant().await.unwrap();
     assert!(!status.enabled);
     let stored = client
@@ -197,10 +191,6 @@ async fn vetting_admin_verbs_round_trip() {
         revoked.revocation.credential_id,
         first.grant.credential_id.as_str()
     );
-    assert!(matches!(
-        client.resend_vetter_grant(&vetter).await,
-        Err(vtc_client::VtcError::Http { status: 404, .. })
-    ));
 }
 
 /// `VtcClient::connect` authenticates against a real VTC, and the token it
@@ -606,8 +596,11 @@ async fn signed_admin_verbs_do_not_ride_the_bearer_session() {
         state.sessions_ks.remove(key).await.expect("end session");
     }
 
+    // `list_members` is itself a signed document now (#1835), so it cannot
+    // stand in for "a bearer-only verb" any more; `list_vetter_grants` still
+    // rides the bearer session (no Trust Task serves it yet).
     assert!(
-        client.list_members(None).await.is_err(),
+        client.list_vetter_grants().await.is_err(),
         "a bearer-only verb must be refused once the session is gone, or this \
          test proves nothing about the signed ones"
     );

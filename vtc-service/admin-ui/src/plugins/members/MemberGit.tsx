@@ -2,11 +2,11 @@
 // (design §7.1: "Member detail gains a *Git rights* section and the linked
 // GitHub account").
 //
-// Read from the same two console projections the Repos plugin renders —
-// `GET /v1/git-ns/rights` and `GET /v1/git-ns/accounts` — under the same query
-// keys, so the two pages share one cache and one refresh. Both span every
-// namespace, so they need a community administrator; a scoped administrator
-// is told that rather than shown an empty column.
+// Read from the same two signed Trust Tasks the Repos plugin renders —
+// `git-ns/right/list/0.1` and `git-ns/account/list/0.1` — under the same
+// query keys, so the two pages share one cache and one refresh. Both span
+// every namespace and answer the community-administrator capability alone; a
+// scoped administrator is told that rather than shown an empty column.
 //
 // Only *recorded* rights (and role-derived v0.1 grants, marked as such) are
 // listed. Implied rights — an owner's commit right, a namespace admin's
@@ -62,7 +62,7 @@ export function indexMemberGit(
     byAccount.set(a.member, list);
   }
   for (const list of byAccount.values()) {
-    list.sort((a, b) => a.forge.localeCompare(b.forge));
+    list.sort((a, b) => a.account.forge.localeCompare(b.account.forge));
   }
   return { rights: byRight, accounts: byAccount };
 }
@@ -86,8 +86,8 @@ export function useMemberGit() {
  *  the login display only — logins are renamed and re-registered. */
 function AccountLabel({ account }: { account: GitNsAccountRow }) {
   return (
-    <span title={`${account.forge} id ${account.id}`}>
-      <strong>@{account.login}</strong>
+    <span title={`${account.account.forge} id ${account.account.id}`}>
+      <strong>@{account.account.login}</strong>
     </span>
   );
 }
@@ -114,8 +114,8 @@ export function MemberGitCell({ did, index }: { did: string; index: MemberGitInd
         ]
       : []),
     ...accounts.map((a) => (
-      <span key={a.forge} className="muted" title={`${a.forge} id ${a.id}`}>
-        @{a.login}
+      <span key={a.account.forge} className="muted" title={`${a.account.forge} id ${a.account.id}`}>
+        @{a.account.login}
       </span>
     )),
   ];
@@ -241,13 +241,13 @@ export function MemberGitCard({ did }: { did: string }) {
           ) : (
             <dl>
               {accounts.map((a) => (
-                <Fragment key={a.forge}>
-                  <dt>{a.forge}</dt>
+                <Fragment key={a.account.forge}>
+                  <dt>{a.account.forge}</dt>
                   <dd>
                     <AccountLabel account={a} />
                     <span className="muted">
                       {" "}
-                      · id <code>{a.id}</code>
+                      · id <code>{a.account.id}</code>
                       {a.linkedAt && <> · linked {formatDay(a.linkedAt)}</>}
                     </span>
                     {!a.memberCurrent && (

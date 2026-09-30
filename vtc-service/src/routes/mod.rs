@@ -12,7 +12,6 @@ pub(crate) mod did_log;
 pub(crate) mod directory;
 pub(crate) mod endorsement_types;
 pub(crate) mod endorsements;
-pub(crate) mod git_ns;
 pub(crate) mod health;
 pub(crate) mod install;
 pub(crate) mod invitations;
@@ -28,6 +27,9 @@ pub(crate) mod schemas;
 pub(crate) mod status_lists;
 pub mod trust_tasks;
 pub(crate) mod vetting;
+/// Hidden-vetter admission: the operator's publish route (development branch `zkp-pcs`).
+#[cfg(feature = "vetting-pcs")]
+pub mod vetting_hidden;
 #[cfg(feature = "website")]
 pub(crate) mod website;
 
@@ -82,12 +84,17 @@ use crate::server::AppState;
     // generated from, so no shape is written twice.
     //
     // Likewise the admin verbs with no route at all — signed documents only —
-    // whose shapes the console's signed calls are typed by: the ACL family,
-    // the vetter listing, and the endorsement-type writes.
+    // whose shapes the console's signed calls are typed by.
     components(schemas(
         policies::read::PolicyStatusFilter,
         crate::git_ns::admin_reads::GitNsNamespaceList,
         crate::git_ns::admin_reads::GitNsRepoList,
+        crate::git_ns::admin_reads::GitNsRightList,
+        crate::git_ns::admin_reads::GitNsDepartedGrants,
+        crate::git_ns::admin_reads::GitNsJobList,
+        crate::git_ns::admin_reads::GitNsProjection,
+        crate::git_ns::admin_reads::GitNsAccountList,
+        crate::git_ns::admin_reads::GitNsActivity,
         // A repository's drift, as `git-ns/view/0.5`'s `repos[].sync` carries it.
         vta_sdk::openapi::GitNsView01DriftItem,
         acl::AclListResponse,
@@ -132,6 +139,18 @@ use crate::server::AppState;
         invitations::RevokeResponse,
         vta_sdk::openapi::InvitationDeliver01Payload,
         vta_sdk::openapi::InvitationDeliver01Response,
+        // The verbs whose shapes are documented for codegen though every
+        // bearer route is gone: the roster and join queue, a member's
+        // credentials, the join decision, a vetter grant, and the policy log.
+        vti_common::pagination::Paginated<members::read::MemberResponse>,
+        vti_common::pagination::Paginated<crate::join::JoinRequest>,
+        vta_sdk::openapi::MemberCredentials01Response,
+        join_requests::decide::DecideResponse,
+        vta_sdk::openapi::VetterGrant01Response,
+        policies::read::PolicyListResponse,
+        policies::read::PolicyModuleResponse,
+        policies::admin::UploadResponse,
+        crate::policy::PolicyPurpose,
         // The administration surfaces the console signs (`trust_tasks::surface_tasks`).
         join_requests::read::JoinRequestVettingResponse,
         join_requests::read::JoinRequestVetting,
@@ -139,6 +158,20 @@ use crate::server::AppState;
         crate::schemas::AcceptsCriterion,
         schemas::RegisterAcceptsBody,
         rooms::HostedRoom,
+        // The custom-endorsement reads/revoke the console signs
+        // (`vtc/endorsements/{list,show,revoke}/0.1`) — bearer REST routes for
+        // all three had no caller once the spine dispatched them (tt-tf#689)
+        // and were removed.
+        endorsements::EndorsementRow,
+        vti_common::pagination::Paginated<endorsements::EndorsementRow>,
+        endorsements::EndorsementEnvelope,
+        endorsements::RevokeResponse,
+        // The admin resend-on-behalf the console signs
+        // (`vtc/vetting/vetters/resend/0.2`) — its admin-only bearer REST
+        // route had no caller once the spine dispatched it (tt-tf#689) and
+        // was removed. `0.1`'s response shape covers `0.2`'s too: neither
+        // adds a member.
+        vta_sdk::openapi::VetterResend01Response,
     )),
 )]
 pub struct ApiDoc;
@@ -423,30 +456,14 @@ fn build_api_chain(
     // the POST task on the shared mount.
 
     let api = OpenApiRouter::<AppState>::new()
-        // The administrator's read surface over the git namespaces — the
-        // admin console's Repos plugin. Mutations are not here: each is a
-        // signed `git-ns/*` Trust Task, authorized by the signer's git rights,
-        // on the document endpoint.
-        //
-        // These are console projections no specification defines; gating them
-        // on a `git-ns/*` URL would claim a response shape they do not have
-        // (the conformance layer refuses exactly that), and binding a URI the
-        // registry does not publish is what `trust_task_manifest` refuses.
-        // They stay behind the admin session (and, for `activity`, any
-        // session, narrowed to the namespaces the caller administers).
-        //
-        // The administrator's view, the namespace and repository listings,
-        // the break-glass list and each repository's drift have no route:
-        // they are the signed `git-ns/view/0.5` (`scope: administrator`, whose
-        // `repos[].sync` carries the drift), `git-ns/namespace/list/0.1` and
-        // `git-ns/repo/list/0.1`, answered to a namespace's administrators
-        // on the document endpoint (`git_ns::admin_reads`).
-        .routes(routes!(git_ns::rights_list))
-        .routes(routes!(git_ns::issued_by_departed))
-        .routes(routes!(git_ns::jobs_list))
-        .routes(routes!(git_ns::projection_show))
-        .routes(routes!(git_ns::accounts_list))
-        .routes(routes!(git_ns::activity))
+        // The git namespace family has no REST route at all: every mutation
+        // and every read — the administrator's view, the namespace and
+        // repository listings, the break-glass list, each repository's
+        // drift, the rights lists, the bridge job queue, the Trust Registry
+        // projection, the linked-account roster and the activity feed alike
+        // — is a signed `git-ns/*` Trust Task on the document endpoint
+        // (`git_ns::admin_reads`, `git_ns::tasks`), authorized by the
+        // signer's own git rights or ACL capability.
         // BitstringStatusList publication (M2.11). Trust-Task-
         // exempt — external verifiers don't carry our extension
         // header (same rationale as `did.jsonl`).
@@ -474,13 +491,8 @@ fn build_api_chain(
         // answers `204`. It carries no binding, and goes when the cookie
         // session does.
         .routes(routes!(auth::sign_out))
-        // Audit log (super-admin only). `audit/list` is a signed document
-        // only; `audit/verify` is served there too, and keeps this route while
-        // `vtc-client`'s `audit_verify` calls it.
-        .routes(tt(
-            routes!(audit::verify_audit_chain),
-            "https://trusttasks.org/spec/audit/verify/0.1",
-        ))
+        // Audit log (super-admin only): `audit/list` and `audit/verify` are
+        // signed documents only.
         // Config lives at `/v1/admin/config` on canonical `config/{show,patch}`.
         // The pre-MVP `GET, PATCH /v1/config` surface is gone (#710): every field
         // it carried has a canonical owner — `vtc_did` / `vtc_name` /
@@ -585,79 +597,55 @@ fn build_api_chain(
         // Admin invites (`vtc/admin/invites/{list,create,revoke}/0.1`) have no
         // route: each is a signed document served by the spine
         // (`trust_tasks::admin_tasks`) on every transport.
-        // A self-hosted community's own DID log (Keyring VTI-35). The task a
-        // DID owner sends a DID host, answered for the one DID this community
-        // hosts — see `admin::did_register`.
-        .routes(tt(
-            routes!(admin::did_register::register),
-            <trust_tasks_rs::specs::did_management::did::register::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-        ))
+        // A self-hosted community's own DID log (Keyring VTI-35) is the signed
+        // `did-management/did/register/0.1` document only — see
+        // `admin::did_register`.
         // Directory ceremony (read-only field projection via the
         // ceremony decision pipeline).
         // Ceremony registry — the admin-UI renders its flow + simulator
         // from these manifests (purpose / fields / facts template).
-        // Members (Phase 1 M1.4–M1.6).
-        .routes(tt(
-            routes!(members::read::list_members),
-            "https://trusttasks.org/spec/vtc/members/list/0.1",
-        ))
+        // Members (Phase 1 M1.4–M1.6). The roster (`vtc/members/list/0.1`) is a
+        // signed document only.
         // Departed (tombstoned/historical) members. The literal `/removed`
         // must precede the `/{did}` catchall so axum's path-trie doesn't route
         // "removed" as a DID. The purge (`vtc/members/purge/0.1`) and a
         // member's own departure (`vtc/members/self-remove/0.1`) have no
         // route: both are signed documents only.
-        // Renewal (M2.13). POST on its own mount so the
-        // Trust Task header check + per-method selectors are
-        // unambiguous.
-        .routes(tt(
-            routes!(members::renew::renew),
-            "https://trusttasks.org/spec/vtc/members/renew/0.1",
-        ))
-        // DID rotation (M2.15.1). Two-step ceremony — challenge
-        // mints a single-use rotation_id, the finish endpoint
-        // applies the co-signed swap atomically.
-        .routes(tt(
-            routes!(members::rotate::challenge),
-            "https://trusttasks.org/spec/vtc/members/rotate-challenge/0.1",
-        ))
-        .routes(tt(
-            routes!(members::rotate::rotate),
-            "https://trusttasks.org/spec/vtc/members/rotate/0.1",
-        ))
+        // Renewal (M2.13) is a signed document only
+        // (`vtc/members/renew/0.1`, `trust_tasks::member_tasks`); the bearer
+        // REST route it once also served had no caller once the spine
+        // dispatched it (#1809) and was removed.
+        //
+        // DID rotation (M2.15.1) is likewise a signed document only —
+        // `vtc/members/rotate-challenge/0.1` opens the two-step ceremony,
+        // `vtc/members/rotate/0.1` applies the co-signed swap atomically —
+        // for the same reason.
         // Reciprocal-VMC request — ask an active member to issue + send the
         // member → community half of the membership pair. The member replies
         // asynchronously over the `members/vmc/1.0` DIDComm surface.
-        // Phase 4 M4.3 + M4.4 — personhood lifecycle. The challenge and the
-        // assertion are signed documents only (`vtc/members/personhood/
-        // {challenge,assert}/0.1`); the revoke keeps its route, declared
-        // BEFORE `/v1/members/{did}` so axum's path-trie matches the literal
-        // segment first.
-        .routes(tt(
-            routes!(members::personhood::revoke),
-            "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1",
-        ))
-        // Phase 4 M4.6 — VRC trust-graph endpoints. The
-        // per-member list mounts under /v1/members/{did}/
-        // and must precede the catchall `/v1/members/{did}`
-        // (same path-trie precedence as personhood).
-        .routes(tt(
-            routes!(members::relationships::list),
-            "https://trusttasks.org/spec/vtc/relationships/list/0.2",
-        ))
-        // #1215 — the membership pair's bodies for one member. `members/show`
-        // carries the identifiers and its schema forbids the bodies, so this is
-        // its own task rather than a field on the shared `MemberResponse`.
-        // Under `/v1/members/{did}/` like the two above, so it too must precede
-        // the `/v1/members/{did}` catchall.
-        .routes(tt(
-            routes!(members::credentials::credentials),
-            "https://trusttasks.org/spec/vtc/members/credentials/0.1",
-        ))
+        // Phase 4 M4.3 + M4.4 — personhood lifecycle. The challenge, the
+        // assertion and the revoke are all signed documents only
+        // (`vtc/members/personhood/{challenge,assert,revoke}/0.1`); the
+        // revoke's bearer REST route had no caller once the spine dispatched
+        // it (#1809) and was removed.
+        // Phase 4 M4.6 — the VRC trust-graph member list
+        // (`vtc/relationships/list/0.2`) is a signed document only; its
+        // bearer REST route lost its last caller (the admin console) when
+        // that console moved onto the signed door and was removed.
+        // #1215 — the membership pair's bodies for one member
+        // (`vtc/members/credentials/0.1`) is a signed document only.
         // Admin connections-graph view — the member-relationship (VRC) graph.
-        .routes(tt(
-            routes!(relationships::revoke),
-            "https://trusttasks.org/spec/vtc/relationships/revoke/0.1",
-        ))
+        //
+        // Relationship revoke (`vtc/relationships/{revoke/0.1,revoke/0.2}`) is
+        // a signed document only. `0.1` kept a bearer REST route because it
+        // could reach only two of the three capacities the bearer route
+        // authorized — the edge's own issuer, or an administrator — and not
+        // the third: a `VrcRevokeAuthorization` proving control of a pairwise
+        // relationship DID. `0.2` (trustoverip/dtgwg-trust-tasks-tf#689) adds
+        // that as an optional `pop` bound to the document's own `id` rather
+        // than to a REST session, so the signed door now reaches all three
+        // and the REST route was removed (see `trust_tasks::member_tasks`'s
+        // `handle_relationships_revoke_v0_2`).
         // Suspend and restore (#1079) are `vtc/relationships/{suspend,restore}`
         // on the spine (`trust_tasks::surface_tasks`), and have no route.
         // #1067 — the VPC (persona annotation) on an existing
@@ -672,16 +660,11 @@ fn build_api_chain(
         // listing is REST; `register` and `delete` are signed documents only.
         // The community schema store (Issues + Accepts registry) is
         // `vtc/schemas/*` on the spine, and has no route.
-        // Phase 4 M4.8.2-4 — custom endorsement issuance +
-        // retrieval + revocation. Admin OR Issuer-role member.
-        .routes(tt(
-            routes!(endorsements::issue),
-            "https://trusttasks.org/spec/vtc/endorsements/issue/0.1",
-        ))
-        .routes(tt(
-            routes!(endorsements::list),
-            "https://trusttasks.org/spec/vtc/endorsements/list/0.1",
-        ))
+        // Phase 4 M4.8.2-4 — custom endorsement issuance, retrieval and
+        // revocation (`vtc/endorsements/{issue,list,show,revoke}/0.1`) are
+        // all signed documents only now: each bearer REST route had no
+        // caller once the spine dispatched it and was removed (issuance,
+        // #1809; retrieval and revocation, tt-tf#689).
         // Invitation Credential (VIC) issuance + listing — the operator side of
         // the VIC auto-join ceremony. Admin / Moderator / Issuer. POST + GET on
         // /invitations share the `issue/1.0` mount; the standalone `list/1.0`
@@ -693,104 +676,57 @@ fn build_api_chain(
         // Get an issued invitation to the DID it admits: push an offer to it,
         // or return the offer for a QR code (Keyring VTI-21 / VTI-32).
         // Recognition (trust-graph) lookup — admin window into TRQP recognise.
-        .routes(tt(
-            routes!(endorsements::show),
-            "https://trusttasks.org/spec/vtc/endorsements/show/0.1",
-        ))
-        .routes(tt(
-            routes!(endorsements::revoke),
-            "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
-        ))
-        // Naming vetters: an admin issues a revocable vetter role credential
-        // (OpenVTC vetting design §10), withdrawn through endorsements/revoke.
-        .routes(tt(
-            routes!(vetting::grant_vetter),
-            "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1",
-        ))
-        // The vetter registry's admin surface. Resend enforces the task a vetter
-        // also sends for themselves. The grant listing, the automatic-grant
-        // configuration and the withdrawal notices are admin REST with no Trust
-        // Task of their own, so — like the schemas routes — they carry no
-        // binding rather than borrowing a URI that describes something else.
-        .routes(tt(
-            routes!(vetting::resend_vetter),
-            "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1",
-        ))
+        // Naming vetters (`vtc/vetting/vetters/grant/0.1`, OpenVTC vetting
+        // design §10) is a signed document only, withdrawn through
+        // endorsements/revoke.
+        // The vetter registry's admin surface. Resend
+        // (`vtc/vetting/vetters/resend/{0.1,0.2}`) is a signed document only:
+        // `0.1` enforces the task a vetter sends for themselves, `0.2` adds
+        // the `memberDid` an administrator names to resend on a vetter's
+        // behalf (tt-tf#689) — what let the admin-only REST resend route
+        // retire. The grant listing, the automatic-grant configuration and
+        // the withdrawal notices are admin REST with no Trust Task of their
+        // own, so — like the schemas routes — they carry no binding rather
+        // than borrowing a URI that describes something else.
         // The public listing (`vtc/vetting/vetters/list/0.1`) has no route:
         // the console sends the same signed document an applicant does.
-        // The by-DID lookup the listing cannot answer: an unlisted vetter and a
-        // revoked one are both absent from a listing (#1651).
-        .routes(tt(
-            routes!(vetting::show_vetter),
-            "https://trusttasks.org/spec/vtc/vetting/vetters/show/0.1",
-        ))
+        // The by-DID lookup the listing cannot answer (`vetters/show/0.1`,
+        // #1651) is a signed document only.
         .routes(routes!(vetting::list_vetters))
         .routes(routes!(vetting::get_auto_grant, vetting::put_auto_grant))
         .routes(routes!(vetting::list_revocations))
-        // GET / PATCH / DELETE on `/members/{did}` each carry their own
-        // canonical task. They shared `members/show/1.0` while the
-        // router was believed to need per-method selectors; it does not
-        // (`task_routes` layers the method router, axum merges same-path
-        // routers per method), so the three tasks are now enforced
-        // independently instead of one standing in for all three.
-        .routes(tt(
-            routes!(members::update::update_member),
-            "https://trusttasks.org/spec/vtc/members/update/0.1",
-        ))
-        .routes(tt(
-            routes!(members::remove::admin_remove),
-            "https://trusttasks.org/spec/vtc/members/admin-remove/0.1",
-        ))
-        // Join requests (Phase 1 M1.7–M1.10). The unauth POST submit /
-        // status live on the governed branch (`build_unauth_routes`,
-        // P0.5). The admin GET list shares the `/join-requests` path with
-        // the governed-branch POST submit, but now carries its OWN task:
-        // axum merges same-path method routers per method, so each verb
-        // enforces its own URI (see `vti_common::trust_task::openapi`).
-        // It no longer has to borrow `submit`'s descriptor.
-        .routes(tt(
-            routes!(join_requests::read::list_join_requests),
-            "https://trusttasks.org/spec/vtc/join-requests/list/0.1",
-        ))
-        // The vetting facts a request was decided on — admin REST with no Trust
-        // Task of its own.
-        // The join manifest has no route: the console reads it as the signed
-        // `vtc/join-requests/manifest/0.2` document applicants send.
-        // One decision endpoint, one task: `decide/0.1` carries
-        // `{ decision: approved | rejected, reason? }`, superseding the
-        // retired `approve/0.1` + `reject/0.1` pair (clean cutover — the
-        // old URIs and `/approve` + `/reject` mounts are gone).
-        .routes(tt(
-            routes!(join_requests::decide::decide),
-            "https://trusttasks.org/spec/vtc/join-requests/decide/0.1",
-        ))
-        // (Manifest discovery moved to the single `POST /v1/trust-tasks`
-        // document endpoint — `join-requests/manifest/1.0` is now a Trust
-        // Task verb, no longer a bespoke GET.)
-        // The administrator's credential query (`vtc/join-requests/query`),
-        // a join request's vetting facts (`vtc/join-requests/vetting/show`) and
-        // the host's rooms (`vtc/rooms/list`) are served on the spine, and
-        // have no route.
-        // Policies. Every verb is served on the spine
-        // (`trust_tasks::policy_tasks`); these four bearer routes stay while
-        // `vtc-client` calls them. `policy/active` and `vtc/policies/test`
-        // have no route.
-        .routes(tt(
-            routes!(policies::read::list_policies),
-            "https://trusttasks.org/spec/policy/list/0.2",
-        ))
-        .routes(tt(
-            routes!(policies::admin::upload),
-            "https://trusttasks.org/spec/policy/upsert/0.2",
-        ))
-        .routes(tt(
-            routes!(policies::read::show_policy),
-            "https://trusttasks.org/spec/policy/get/0.1",
-        ))
-        .routes(tt(
-            routes!(policies::admin::activate),
-            "https://trusttasks.org/spec/policy/activate/0.1",
-        ));
+        // Hidden-vetter admission (development branch `zkp-pcs`): derive this
+        // community's PCS keys and publish them on a criterion. Admin REST with
+        // no Trust Task of its own — turning the mode on is an act of
+        // administration, not a task a member can ask for.
+        .merge({
+            #[cfg(feature = "vetting-pcs")]
+            {
+                OpenApiRouter::new().routes(routes!(vetting_hidden::publish_hidden_vetting))
+            }
+            #[cfg(not(feature = "vetting-pcs"))]
+            {
+                OpenApiRouter::new()
+            }
+        });
+    // A member's update and removal (`vtc/members/{update,admin-remove}/0.1`)
+    // are signed documents only.
+    // Join requests (Phase 1 M1.7–M1.10). The admin queue
+    // (`vtc/join-requests/list/0.1`) and its decision
+    // (`vtc/join-requests/decide/0.1`) are signed documents only.
+    // The vetting facts a request was decided on — admin REST with no Trust
+    // Task of its own.
+    // The join manifest has no route: the console reads it as the signed
+    // `vtc/join-requests/manifest/0.2` document applicants send.
+    // (Manifest discovery moved to the single `POST /v1/trust-tasks`
+    // document endpoint — `join-requests/manifest/1.0` is now a Trust
+    // Task verb, no longer a bespoke GET.)
+    // The administrator's credential query (`vtc/join-requests/query`),
+    // a join request's vetting facts (`vtc/join-requests/vetting/show`) and
+    // the host's rooms (`vtc/rooms/list`) are served on the spine, and
+    // have no route.
+    // Policies: every verb is a signed document only
+    // (`trust_tasks::policy_tasks`).
 
     // Phase 5 M5.5 — public-website management routes. Content moves as
     // signed Trust Tasks (`trust_tasks::website_tasks`: a chunked upload,
@@ -1290,22 +1226,19 @@ mod openapi_tests {
         let paths = &spec.paths.paths;
         // A representative path (all nested under /v1) from each major group.
         for p in [
-            "/v1/audit/verify",
             "/v1/auth/challenge",
             "/v1/admin/passkeys",
-            "/v1/members",
-            "/v1/members/{did}",
-            "/v1/join-requests",
-            "/v1/policies",
-            "/v1/credentials/endorsements",
+            "/v1/vetting/vetters",
             "/v1/relationships",
             "/v1/install/claim/start",
         ] {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
         }
+        // A floor, not a count: it catches the spec losing whole groups, and
+        // falls as REST routes move to signed-only Trust Tasks.
         assert!(
-            paths.len() >= 45,
-            "expected the documented surface to be >= 45 paths, got {}",
+            paths.len() >= 30,
+            "expected the documented surface to be >= 30 paths, got {}",
             paths.len()
         );
     }
@@ -1323,6 +1256,11 @@ mod openapi_tests {
             "/v1/members/me",
             "/v1/members/{did}/purge",
             "/v1/members/{did}/personhood/challenge",
+            "/v1/members/{did}/personhood",
+            "/v1/members/{did}/relationships",
+            "/v1/members/me/renew",
+            "/v1/members/me/rotate",
+            "/v1/members/me/rotate/challenge",
             "/v1/endorsement-types/{type_uri}",
             "/v1/vetting/vetters/list",
             "/v1/join-requests/manifest",
@@ -1341,6 +1279,12 @@ mod openapi_tests {
             "/v1/auth/sessions",
             "/v1/auth/sessions/{session_id}",
             "/v1/git-ns/drift",
+            "/v1/git-ns/rights",
+            "/v1/git-ns/rights/issued-by-departed",
+            "/v1/git-ns/jobs",
+            "/v1/git-ns/projection",
+            "/v1/git-ns/accounts",
+            "/v1/git-ns/activity",
             "/v1/community/profile",
             "/v1/ceremonies",
             "/v1/directory/{did}",
@@ -1353,6 +1297,17 @@ mod openapi_tests {
             "/v1/invitations/{id}",
             "/v1/invitations/deliver",
             "/v1/endorsement-types",
+            "/v1/members",
+            "/v1/members/{did}",
+            "/v1/members/{did}/credentials",
+            "/v1/join-requests",
+            "/v1/join-requests/{id}/decide",
+            "/v1/policies",
+            "/v1/policies/{id}",
+            "/v1/policies/{id}/activate",
+            "/v1/admin/did/register",
+            "/v1/audit/verify",
+            "/v1/vetting/vetters/show",
             "/v1/community/join-discovery",
             "/v1/join-requests/query",
             "/v1/join-requests/{id}/vetting",
@@ -1363,13 +1318,24 @@ mod openapi_tests {
             "/v1/schemas/accepts",
             "/v1/schemas/accepts/{id}",
             "/v1/schemas/{type_uri}",
+            // Relationship revoke (`vtc/relationships/revoke/{0.1,0.2}`) lost
+            // its last route: `0.2`'s pairwise `pop` reaches the capacity the
+            // bearer route existed for (tt-tf#689).
+            "/v1/relationships/{id}",
+            // Endorsement retrieval and revocation
+            // (`vtc/endorsements/{list,show,revoke}/0.1`) had no caller left
+            // once the spine dispatched them (tt-tf#689).
+            "/v1/credentials/endorsements",
+            "/v1/credentials/endorsements/{id}",
+            // Admin resend of another member's vetter grant
+            // (`vtc/vetting/vetters/resend/0.2`'s `memberDid`) replaces the
+            // admin-only REST route (tt-tf#689).
+            "/v1/vetting/vetters/{memberDid}/resend",
         ] {
             assert!(!paths.contains_key(p), "{p} is a signed document only");
         }
         let item = |p: &str| paths.get(p).unwrap_or_else(|| panic!("{p} is documented"));
-        assert!(item("/v1/members/{did}").get.is_none());
-        assert!(item("/v1/members/{did}/personhood").post.is_none());
-        assert!(item("/v1/join-requests").post.is_none());
+        assert!(item("/v1/vetting/vetters").post.is_none());
     }
 
     // ── Route-posture backstop (P2.6) ──────────────────────────────────────

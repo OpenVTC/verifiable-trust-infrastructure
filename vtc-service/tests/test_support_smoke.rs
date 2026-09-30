@@ -28,14 +28,14 @@ async fn build_test_vtc_serves_health() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-/// A minted admin token authenticates against an admin-gated route (here
+/// A minted admin token authenticates against a session-gated route (here
 /// the session row + JWT are both produced by `TestVtc::token`).
 #[tokio::test]
 async fn minted_admin_token_is_accepted() {
     let tv = TestVtc::builder().build().await;
     let token = tv.admin_token().await;
 
-    // `GET /v1/audit/verify` is super-admin gated. Without a token the gate
+    // `GET /v1/auth/whoami` is session gated. Without a token the gate
     // refuses — proof the route is there and gated, so the second request's
     // answer says something about the token. With the minted admin token it
     // must not 401/403 (any non-auth status is fine: only the gate is under
@@ -43,8 +43,8 @@ async fn minted_admin_token_is_accepted() {
     let verify = |bearer: Option<String>| {
         let mut req = Request::builder()
             .method("GET")
-            .uri("/v1/audit/verify")
-            .header("trust-task", "https://trusttasks.org/spec/audit/verify/0.1");
+            .uri("/v1/auth/whoami")
+            .header("trust-task", "https://trusttasks.org/spec/auth/whoami/0.1");
         if let Some(token) = bearer {
             req = req.header("authorization", format!("Bearer {token}"));
         }

@@ -14,9 +14,6 @@
 //! here are auth + duplicate-membership. Reject flips the status and
 //! records the operator's reason.
 
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -28,13 +25,10 @@ use vti_common::audit::{AuditEvent, JoinRequestData, JoinRequestRejectedData};
 use vti_common::error::AppError;
 
 use crate::acl::VtcRole;
-use crate::auth::AdminAuth;
 use crate::ceremony::execute;
 use crate::ceremony::{EffectOutcome, EffectPlan};
 use crate::error::TaskError;
-use crate::join::{
-    JoinDecision, JoinRequest, JoinStatus, JoinTransport, get_join_request, store_join_request,
-};
+use crate::join::{JoinDecision, JoinRequest, JoinStatus, get_join_request, store_join_request};
 use crate::server::AppState;
 
 const REJECT_REASON_MAX: usize = 1024;
@@ -89,10 +83,9 @@ pub struct DecideResponse {
 /// Decide a pending join request on behalf of `actor_did` — the whole of the
 /// operation, with no transport in it.
 ///
-/// Both doors call this: the bearer REST route below, and the signed-document
-/// arm in [`crate::trust_tasks`] (#1641 phase 2). Keeping the body here is what
-/// stops the two answering differently — the reason cap, the pending-state
-/// gate, the credential issuance and the audit trail are decided once.
+/// The signed-document arm in [`crate::trust_tasks`] (#1641 phase 2) calls
+/// this, on every transport: the reason cap, the pending-state gate, the
+/// credential issuance and the audit trail are decided here.
 ///
 /// `transport` is recorded on the `JoinRequestApproved` envelope, so the audit
 /// row says which door the decision came through rather than claiming `rest`
@@ -151,45 +144,6 @@ pub(crate) async fn decide_inner(
         Decision::Rejected => reject_pending(state, actor_did, id, req, reason).await?,
     };
     Ok(response)
-}
-
-/// POST /join-requests/{id}/decide — decide a pending join request.
-/// `approved` admits the applicant + issues the VMC; `rejected` refuses
-/// them with an optional reason. Auth: Admin.
-///
-/// **Transitional bearer-token path (#1641).**
-/// `vtc/join-requests/decide/0.1` declares `proof` REQUIRED, and the
-/// authoritative binding is the signed Trust Task document at
-/// `POST /v1/trust-tasks`, where the proof authenticates the administrator who
-/// made the decision, their authority is read from their ACL entry, and the
-/// document's `id` is claimed before the applicant is admitted so a redelivery
-/// cannot issue a second set of credentials. This route authenticates by
-/// bearer JWT, verifies no document proof, and has no document `id` to claim;
-/// it is kept only until the admin console can sign a Trust Task document, and
-/// is removed in the same change that gives it that.
-#[utoipa::path(
-    post, path = "/join-requests/{id}/decide", tag = "join-requests",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Join request id")),
-    request_body = DecideBody,
-    responses(
-        (status = 200, description = "Request decided; on approve the VMC + role VEC are returned inline", body = DecideResponse),
-        (status = 400, description = "Reject reason exceeds the length cap"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Join request not found"),
-        (status = 409, description = "Request is not Pending, or applicant is already a member"),
-    ),
-)]
-pub async fn decide(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(body): Json<DecideBody>,
-) -> Result<(StatusCode, Json<DecideResponse>), TaskError> {
-    let response =
-        decide_inner(&state, &admin.0.did, JoinTransport::Rest.as_str(), id, body).await?;
-    Ok((StatusCode::OK, Json(response)))
 }
 
 /// The approve arm: admit the applicant + issue credentials.

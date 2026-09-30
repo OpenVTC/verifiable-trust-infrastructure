@@ -20,7 +20,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/admin/did/register": {
+    "/v1/admin/console-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["adminConsoleKeyList"];
+        put?: never;
+        post: operations["adminConsoleKeyEnrol"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/console-keys/{console_did}": {
         parameters: {
             query?: never;
             header?: never;
@@ -29,13 +45,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * Install a delivered log for this community's own self-hosted DID.
-         * @description `utoipa::ToSchema` cannot be derived on a foreign type, so the body and the
-         *     response are the `vta_sdk::openapi` wrappers around the generated types.
-         */
-        post: operations["didRegister"];
-        delete?: never;
+        post?: never;
+        delete: operations["adminConsoleKeyRevoke"];
         options?: never;
         head?: never;
         patch?: never;
@@ -115,43 +126,6 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["revoke_start"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/audit/verify": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * GET /audit/verify — verify the audit hash chain. Auth: Super-admin.
-         * @description Walks the whole audit keyspace in ascending (chronological) key
-         *     order and folds it through [`ChainVerifier`], so memory stays
-         *     constant regardless of log size.
-         *
-         *     **What a `verified: true` does and does not mean.** The chain
-         *     links each envelope to its predecessor, so a reorder, drop, or
-         *     duplicate is detected. It is *not* a signature: `chain_digest` is
-         *     an unkeyed SHA-256, so an adversary with write access to the store
-         *     can forge a suffix and restamp every envelope after it, and a
-         *     truncation to a valid prefix is indistinguishable from a quiet
-         *     period.
-         *
-         *     That is what the `checkpoints` block closes (#708). Read it as the
-         *     load-bearing half of this response: `verified: true` with
-         *     `checkpoints.status: "truncated"` means the surviving log is internally
-         *     consistent *and* provably shorter than the community key attested to —
-         *     i.e. exactly the attack the chain alone cannot see. See
-         *     `docs/05-design-notes/vtc-audit-checkpoints.md`.
-         */
-        get: operations["verify_audit_chain"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -472,134 +446,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/credentials/endorsements": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["endorsementList"];
-        put?: never;
-        post: operations["endorsementIssue"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/credentials/endorsements/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["endorsementShow"];
-        put?: never;
-        post?: never;
-        delete: operations["endorsementRevoke"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/accounts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsAccountsList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/activity": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsActivity"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/jobs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsJobsList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/projection": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsProjection"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/rights": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsRightsList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/git-ns/rights/issued-by-departed": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["gitNsRightsIssuedByDeparted"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/install/claim/finish": {
         parameters: {
             query?: never;
@@ -640,291 +486,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/join-requests": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_join_requests"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/join-requests/{id}/decide": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * POST /join-requests/{id}/decide — decide a pending join request.
-         *     `approved` admits the applicant + issues the VMC; `rejected` refuses
-         *     them with an optional reason. Auth: Admin.
-         * @description **Transitional bearer-token path (#1641).**
-         *     `vtc/join-requests/decide/0.1` declares `proof` REQUIRED, and the
-         *     authoritative binding is the signed Trust Task document at
-         *     `POST /v1/trust-tasks`, where the proof authenticates the administrator who
-         *     made the decision, their authority is read from their ACL entry, and the
-         *     document's `id` is claimed before the applicant is admitted so a redelivery
-         *     cannot issue a second set of credentials. This route authenticates by
-         *     bearer JWT, verifies no document proof, and has no document `id` to claim;
-         *     it is kept only until the admin console can sign a Trust Task document, and
-         *     is removed in the same change that gives it that.
-         */
-        post: operations["decide"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_members"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/me/renew": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /members/me/renew — renew VMC + role VEC. Auth: any authenticated member. */
-        post: operations["renew"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/me/rotate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** POST /members/me/rotate — complete a DID rotation. Auth: old DID's session. */
-        post: operations["rotate"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/me/rotate/challenge": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * POST /members/me/rotate/challenge — mint a DID-rotation challenge.
-         *     Auth: any authenticated member.
-         */
-        post: operations["memberRotateChallenge"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/{did}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * DELETE /members/{did} — admin removes another member. Auth: Admin.
-         * @description **Transitional bearer-token path (#1641).** `vtc/members/admin-remove/0.1`
-         *     declares `proof` REQUIRED, and the authoritative binding is the signed
-         *     Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
-         *     the administrator and their authority is read from their ACL entry. This
-         *     route authenticates by bearer JWT and verifies no document proof; it is kept
-         *     only until the admin console can sign a Trust Task document, and is removed
-         *     in the same change that gives it that.
-         */
-        delete: operations["admin_remove"];
-        options?: never;
-        head?: never;
-        /**
-         * PATCH /members/{did} — update member role + profile fields. Auth: Admin.
-         * @description **Transitional bearer-token path (#1641).** `vtc/members/update/0.1`
-         *     declares `proof` REQUIRED, and the authoritative binding is the signed
-         *     Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
-         *     the administrator and their authority is read from their ACL entry. This
-         *     route authenticates by bearer JWT and verifies no document proof; it is kept
-         *     only until the admin console can sign a Trust Task document, and is removed
-         *     in the same change that gives it that.
-         */
-        patch: operations["update_member"];
-        trace?: never;
-    };
-    "/v1/members/{did}/credentials": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * GET /members/{did}/credentials — the membership pair's bodies. Auth: Admin.
-         * @description Unknown member → 404 carrying `vtc/members/credentials:notFound`. A member
-         *     who holds no credentials is **not** that: it is a 200 with every document
-         *     absent and `memberVmcBound: false`, which is the case the task exists to
-         *     make visible.
-         *
-         *     "Unknown" is judged exactly as `members/show` judges it — a member row
-         *     **and** its ACL row. A departed (tombstoned) member keeps a row but not an
-         *     ACL entry, and tombstoning clears every credential body anyway; answering
-         *     for one here while `show` says not-found would be two definitions of "is a
-         *     member" one route apart.
-         *
-         *     Every successful read is audited (`MemberCredentialsRead`): the
-         *     specification says a maintainer SHOULD record it, and a disclosure of
-         *     credential bodies that leaves no trace cannot be reviewed afterwards. The
-         *     audit write happens before the bodies are returned — a read that could not
-         *     be recorded is refused rather than disclosed silently.
-         *
-         *     **Transitional bearer-token path (#1641).** `vtc/members/credentials/0.1`
-         *     declares `proof` REQUIRED, and the authoritative binding is the signed
-         *     Trust Task document at `POST /v1/trust-tasks`, where the proof authenticates
-         *     the administrator and their authority is read from their ACL entry. This
-         *     route authenticates by bearer JWT and verifies no document proof; it is kept
-         *     only until the admin console can sign a Trust Task document, and is removed
-         *     in the same change that gives it that.
-         */
-        get: operations["memberCredentials"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/{did}/personhood": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** DELETE /members/{did}/personhood — revoke personhood. Auth: Admin or self. */
-        delete: operations["personhoodRevoke"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/members/{did}/relationships": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * GET /members/{did}/relationships — paginated VRC list for a member.
-         *     Auth: any authenticated session.
-         */
-        get: operations["memberRelationshipList"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/policies": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["list_policies"];
-        put?: never;
-        /**
-         * Compile + persist a new policy revision. Does NOT activate it —
-         *     `POST /v1/policies/{id}/activate` is a separate call.
-         */
-        post: operations["upload"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/policies/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: operations["show_policy"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/policies/{id}/activate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["activate"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/relationships": {
         parameters: {
             query?: never;
@@ -936,51 +497,6 @@ export interface paths {
         put?: never;
         post: operations["publish"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/relationships/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /**
-         * `DELETE /v1/relationships/{id}` — retract an edge.
-         * @description ## Why there is a body here at all
-         *
-         *     `revoke` kept the identity equality that `publish` replaced in #1054/#1061:
-         *     `auth.did == rel.issuer_did`. For an edge published under a pairwise
-         *     relationship DID that compares a membership DID against an R-DID and is
-         *     false by construction, so a member could lodge an edge and then never take
-         *     it back — only an admin could. The property the equality was standing in
-         *     for is *control of the issuing key*, and once the identifier stopped being
-         *     the member's own, only a proof can establish it.
-         *
-         *     Three routes to authorization, and the first two are exactly as before:
-         *
-         *     - **attributed** — `auth.did == rel.issuer_did`. Still correct, still
-         *       sufficient, no proof needed. The session already demonstrates control of
-         *       that key.
-         *     - **admin** — moderation, keyed on the row id and not on issuer identity.
-         *       Unchanged.
-         *     - **pairwise** — a `VrcRevokeAuthorization` signed by the row's
-         *       `issuerDid`, bound to this row, this community, this session and this
-         *       moment. New.
-         *
-         *     Like the publish authorization, **it is verified and discarded** — never
-         *     stored, logged or audited. It carries `sessionId`, which is attributable to
-         *     a membership DID, and this handler writes to the audit store, so it is the
-         *     one place on the pairwise path where that linkage could plausibly become
-         *     durable. See `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
-         */
-        delete: operations["relationshipRevoke"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1160,47 +676,7 @@ export interface paths {
         /** Every vetter grant, newest first. */
         get: operations["vettingVetterList"];
         put?: never;
-        post: operations["vettingVetterGrant"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/vetting/vetters/show": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * One vetter's grant status, as an applicant would be told it.
-         * @description The body and the answer are `vtc/vetting/vetters/show/0.1`'s, and both go
-         *     through [`crate::vetting::profiles::show`], so the console sees exactly what
-         *     `POST /v1/trust-tasks` returns — including `none` for a DID this community
-         *     holds no grant for, which is an answer and not an error.
-         */
-        post: operations["vettingVetterShow"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/vetting/vetters/{memberDid}/resend": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Deliver a vetter's live grant credential again. */
-        post: operations["vettingVetterResend"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1223,6 +699,18 @@ export interface components {
             createdByDid: string;
             /** @description Free-form description shown in admin UIs. */
             description?: string | null;
+            /**
+             * @description Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published
+             *     parameters an applicant proves against, and this VTC checks — `hvk`, `tvk`
+             *     and the live labels (`crate::vetting::pcs::HiddenVettingConfig`).
+             *
+             *     Held as raw JSON so the field costs nothing when the feature is off, and
+             *     so a criterion registered by a build that has it stays readable by one
+             *     that does not. It does NOT reach the 0.2 manifest: `Criterion` is a
+             *     generated `deny_unknown_fields` type, so a client gets these out of band
+             *     until the spec carries them.
+             */
+            hiddenVetting?: Record<string, never> | null;
             /** @description Criterion id (e.g. a ceremony purpose or a named manifest). Primary key. */
             id: string;
             /**
@@ -1276,21 +764,6 @@ export interface components {
              *     present. Required by canonical `acl/list`.
              */
             truncated: boolean;
-        };
-        ActivateResponse: {
-            /**
-             * Format: uuid
-             * @description Canonical name for the id of the policy now in force.
-             */
-            activated: string;
-            ext?: null | components["schemas"]["Value"];
-            /**
-             * Format: uuid
-             * @description Predecessor active policy id for this purpose. `null` for
-             *     the first activation under a given purpose.
-             */
-            previousPolicyId?: string | null;
-            purpose: components["schemas"]["PolicyPurpose"];
         };
         AdminBootstrapRequest: {
             setupSessionToken: string;
@@ -1565,34 +1038,6 @@ export interface components {
             wired: string;
         };
         /**
-         * @description A detected break, flattened for the wire.
-         *
-         *     `ChainBreak` itself is deliberately not `Serialize` in
-         *     `vti-common`, so this is the REST projection of it.
-         */
-        ChainBreakReport: {
-            /** @description `event_id` of the offending envelope. */
-            eventId: string;
-            /** @description Position in the ascending walk, counting skipped rows. */
-            index: number;
-            /**
-             * @description `tamperedEntry` — the envelope's content was altered after it
-             *     was written; or `brokenLink` — an entry was reordered,
-             *     dropped, or inserted.
-             */
-            kind: string;
-        };
-        /**
-         * @description Optional body for the challenge request.
-         *
-         *     Absent body, absent field, and `unspecified` all mean the same
-         *     thing — the member declined to say. The endpoint predates this
-         *     field, so clients that send no body at all stay valid.
-         */
-        ChallengeBody: {
-            reason?: null | components["schemas"]["DidRotationReason"];
-        };
-        /**
          * @description Client sends to `POST /auth/challenge`.
          *
          *     Wire shape conforms to `spec/auth/challenge/0.1`: the `did` field
@@ -1769,6 +1214,57 @@ export interface components {
          * @enum {string}
          */
         ConfigSource: "env" | "db" | "toml" | "default";
+        /**
+         * @description One delegation as the console sees it.
+         *
+         *     Separate from the stored [`ConsoleKeyDelegation`] for the same reason
+         *     `RegisteredCredential` is separate from `RegisteredPasskey`: that type is a
+         *     storage row whose member names are the on-disk format. This one can change
+         *     without orphaning anything.
+         */
+        ConsoleKey: {
+            /**
+             * @description Live right now: not revoked, not expired. Computed server-side so the
+             *     console does not re-implement the predicate the verifier uses — the two
+             *     disagreeing is how a page shows a key as working after it stopped.
+             */
+            active: boolean;
+            /**
+             * @description The admin DID this key acts as — always the listing caller, included so
+             *     a console need not infer it from the session.
+             */
+            adminDid: string;
+            consoleDid: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt?: string | null;
+            label?: string | null;
+            /** Format: date-time */
+            lastUsedAt?: string | null;
+            /** Format: date-time */
+            revokedAt?: string | null;
+        };
+        ConsoleKeyListResponse: {
+            /**
+             * @description The caller's own console keys, newest first, revoked ones included so
+             *     an operator can see that a browser was disowned rather than never
+             *     enrolled.
+             */
+            consoleKeys: components["schemas"]["ConsoleKey"][];
+        };
+        ConsoleKeyRevokeResponse: {
+            consoleDid: string;
+            /**
+             * @description How many of the owning admin's console keys are still active. Zero is a
+             *     legitimate state — unlike a passkey, whose last one is protected,
+             *     because losing every console key costs an operator the *signed* door
+             *     and not the door: the bearer routes and the passkey login are untouched.
+             */
+            remainingActive: number;
+            /** Format: date-time */
+            revokedAt: string;
+        };
         CreateInviteRequest: {
             /** @description Admin DID the install URL grants a passkey for. */
             did: string;
@@ -1853,14 +1349,6 @@ export interface components {
             /** Format: date-time */
             issuedAt?: string | null;
         };
-        DecideBody: {
-            decision: components["schemas"]["Decision"];
-            /**
-             * @description Optional operator rationale, recorded in the audit trail.
-             *     Chiefly useful with `rejected`.
-             */
-            reason?: string | null;
-        };
         DecideResponse: {
             /** Format: uuid */
             requestId: string;
@@ -1868,12 +1356,6 @@ export interface components {
             status: string;
             vmc?: null | components["schemas"]["Value"];
         };
-        /**
-         * @description The two ways a pending request can be decided
-         *     (`vtc/join-requests/decide/0.1`'s `decision` enum).
-         * @enum {string}
-         */
-        Decision: "approved" | "rejected";
         DetachPersonaBody: {
             pop?: null | components["schemas"]["Value"];
         };
@@ -1998,73 +1480,6 @@ export interface components {
              */
             vtaDid?: string | null;
         };
-        DidManagementDidRegisterV0_1DidRecord: {
-            /**
-             * Format: date-time
-             * @description RFC3339 timestamp of initial reservation.
-             */
-            createdAt: string;
-            /** @description Fully-qualified DID identifier resolved from the most recent log entry (e.g. `did:webvh:<scid>:host:path`). Absent when `versionCount === 0`. */
-            didId?: string;
-            /**
-             * Format: uri
-             * @description Resolvable URL of the DID's log document (e.g. `https://did.example.com/alice/did.jsonl`). Stable across the record's lifetime: present from the initial reservation (`versionCount === 0`), it tells the owner where to publish the signed log and where resolvers fetch it. Distinct from `didId`, which only exists once a log entry has been published.
-             */
-            didUrl?: string;
-            /** @description When `true`, the DID is administratively disabled — the host serves a deactivation marker but retains content for recovery within the host's retention policy. */
-            disabled?: boolean;
-            /** @description Hosting domain (hostname) under which the DID resolves. Matches the host segment of the embedded DID identifier. */
-            domain?: string;
-            ext?: components["schemas"]["DidManagementDidRegisterV0_1Ext"];
-            /** @description DID method this record was registered under (e.g. `webvh`, `web`). When omitted, consumers MAY treat the record as legacy; SHOULD default to `webvh` only if their host predates the multi-method era. */
-            method?: string;
-            /** @description Local path under which the DID is hosted (e.g. `alice`, `tenant/staff/alice`, `.well-known`). Compared by exact string equality (SPEC.md §4.8); producers SHOULD emit canonical form. */
-            mnemonic: string;
-            /** @description VID of the party that currently owns the record. Authorization to mutate the record is anchored on this field. */
-            owner: string;
-            /** @description Lifetime resolve counter, when the host exposes per-DID statistics. */
-            totalResolves?: number;
-            /**
-             * Format: date-time
-             * @description RFC3339 timestamp of the most recent record mutation.
-             */
-            updatedAt: string;
-            /** @description Number of log entries the host currently holds for the DID. `0` indicates a reservation with no published log yet. */
-            versionCount: number;
-        };
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        DidManagementDidRegisterV0_1Ext: {
-            [key: string]: unknown;
-        };
-        DidManagementDidRegisterV0_1Payload: {
-            /** @description Method-specific log content. For `webvh`, a JSONL string containing one or more signed log entries. For `web`, the DID document JSON. */
-            didData: string | Record<string, never>;
-            /** @description Optional explicit hosting domain. When omitted, the host resolves via caller ACL default → system default. */
-            domain?: string;
-            ext?: components["schemas"]["DidManagementDidRegisterV0_1Ext"];
-            /** @description Admin-takeover flag. When `true`, an existing slot owned by another party is replaced; requires administrative authority on the slot's hosting domain. Ignored when the slot is free or the caller is already the owner. */
-            force?: boolean;
-            /** @description DID method identifier (e.g. `webvh`, `web`). The shape of `didData` is method-specific. */
-            method: string;
-            /** @description Local path under which the DID is to be hosted (e.g. `alice`, `tenant/staff/alice`). `.well-known` reserves the root slot — restricted to admin callers. */
-            path: string;
-        };
-        /** @description The success response carries the canonical DidRecord the hosting service now holds for the slot. */
-        DidManagementDidRegisterV0_1Response: {
-            ext?: components["schemas"]["DidManagementDidRegisterV0_1Ext"];
-            record: components["schemas"]["DidManagementDidRegisterV0_1DidRecord"];
-        };
-        /**
-         * @description Why a member rotated their DID, as declared at challenge time.
-         *
-         *     Separate from [`crate::audit::RotationReason`], which describes
-         *     *audit-HMAC-key* rotation: that enum serializes PascalCase, is
-         *     already persisted in `audit_key:` rows (so it cannot be re-cased),
-         *     and its variants (`Initial`, `Routine` meaning "the background task
-         *     fired") carry no sensible reading in this domain.
-         * @enum {string}
-         */
-        DidRotationReason: "routine" | "compromise" | "deviceLoss" | "migration" | "unspecified";
         /** @description The projected subject record. */
         DirectoryResponse: {
             fields: {
@@ -2196,6 +1611,33 @@ export interface components {
             typeUri: string;
         };
         /**
+         * @description The enrolment request.
+         *
+         *     **There is no `adminDid` member, and that is the design.** The delegation is
+         *     always written against the authenticated caller, so "enrol a key that acts
+         *     as somebody else" is not a request this surface can express. See
+         *     [`enrol`]'s own comment for why self-targeting is the only valid case here
+         *     and why that is the *opposite* of the `acl/grant` rule.
+         */
+        EnrolRequest: {
+            /**
+             * @description The console key's `did:key` — Ed25519 multikey, as the browser derives
+             *     it from the public half of its non-extractable keypair.
+             */
+            consoleDid: string;
+            /**
+             * Format: date-time
+             * @description Optional finite lifetime. Omit — the expected case — and the delegation
+             *     lasts until it is revoked or the browser profile is cleared.
+             */
+            expiresAt?: string | null;
+            /**
+             * @description Operator-supplied, e.g. `"Work laptop — Chrome"`. Optional; an empty
+             *     string is treated as absent.
+             */
+            label?: string | null;
+        };
+        /**
          * @description One terminally-failed reconciliation job, as the operator needs to see it.
          *
          *     `member_did` is in the clear. It is already stored unhashed in the
@@ -2295,33 +1737,14 @@ export interface components {
          * @enum {string}
          */
         FindingCode: "advertisedNotServable" | "noMessagingAdvertised" | "noDidcommFallback" | "servedNotAdvertised";
-        FinishBody: {
-            newDid: string;
-            /** @description Hex-encoded Ed25519 signature by the new DID's key. */
-            newSignature: string;
-            oldDid: string;
-            /** @description Hex-encoded Ed25519 signature by the old DID's key. */
-            oldSignature: string;
-            /** Format: uuid */
-            rotationId: string;
-        };
-        FinishResponse: {
-            method: string;
-            newDid: string;
-            roleVec: components["schemas"]["Value"];
-            vmc: components["schemas"]["Value"];
-        };
         GitNsAccountList: {
             accounts: components["schemas"]["GitNsAccountRow"][];
+            nextCursor?: string | null;
         };
         /** @description One member's account on one forge, as linked through `git-ns/account/link`. */
         GitNsAccountRow: {
-            forge: string;
-            /** @description The forge's id for the account — authoritative. */
-            id: string;
+            account: components["schemas"]["GitNsForgeAccount"];
             linkedAt?: string | null;
-            /** @description The login — display only: logins are renamed and re-registered. */
-            login: string;
             member: string;
             /**
              * @description Whether the member is still a current member. One whose access lapsed
@@ -2332,6 +1755,7 @@ export interface components {
         };
         GitNsActivity: {
             items: components["schemas"]["GitNsActivityItem"][];
+            nextCursor?: string | null;
         };
         /** @description One thing that happened in a namespace. */
         GitNsActivityItem: {
@@ -2363,7 +1787,7 @@ export interface components {
             variables: boolean;
             workflow: boolean;
         };
-        /** @description A record's `breakGlass` (`git-ns/_shared/0.4` `BreakGlass`). */
+        /** @description A record's `breakGlass` (`git-ns/_shared/0.5` `BreakGlass`). */
         GitNsBreakGlassMark: {
             at: string;
             by: string;
@@ -2384,6 +1808,15 @@ export interface components {
              */
             cascadeOnDeparture: boolean;
             granters: components["schemas"]["GitNsDepartedGranter"][];
+            nextCursor?: string | null;
+        };
+        /** @description A member's account on one forge (the shared `ForgeAccount` shape). */
+        GitNsForgeAccount: {
+            forge: string;
+            /** @description The forge's id for the account — authoritative. */
+            id: string;
+            /** @description The login — display only: logins are renamed and re-registered. */
+            login: string;
         };
         /**
          * @description The bridge's report of its standing on a namespace's forge owner, carried
@@ -2410,8 +1843,9 @@ export interface components {
         };
         GitNsJobList: {
             jobs: components["schemas"]["GitNsJobRow"][];
+            nextCursor?: string | null;
         };
-        /** @description One bridge job. */
+        /** @description One bridge job, as the administrator's console shows it. */
         GitNsJobRow: {
             acceptedAt?: string | null;
             /** Format: int32 */
@@ -2497,9 +1931,11 @@ export interface components {
             state: string;
         };
         GitNsProjection: {
+            nextCursor?: string | null;
             /**
              * @description Records that should be published and are not yet, or that are
-             *     published and should not be — what the next pass will change.
+             *     published and should not be — what the next pass will change. Counted
+             *     across the whole VTC, regardless of `resource` or paging.
              */
             pendingChanges: number;
             published: components["schemas"]["GitNsPublishedRow"][];
@@ -2567,9 +2003,15 @@ export interface components {
             visibility: string;
         };
         GitNsRightList: {
+            nextCursor?: string | null;
             rights: components["schemas"]["GitNsRightRow"][];
         };
-        /** @description One git right, recorded or role-derived. */
+        /**
+         * @description One git right, recorded or role-derived — `AdminRightRow` of the shared
+         *     schema. Both tasks below produce it; only `git-ns/right/list` fills
+         *     `resource` outside a `DepartedGranter` grouping (the response schemas are
+         *     otherwise identical row for row).
+         */
         GitNsRightRow: {
             breakGlass?: null | components["schemas"]["GitNsBreakGlassMark"];
             expiresAt?: string | null;
@@ -2907,21 +2349,6 @@ export interface components {
              */
             targetDid?: string | null;
         };
-        IssueBody: {
-            claim: components["schemas"]["Value"];
-            subjectDid: string;
-            /**
-             * @description `typeUri`, the name the payload schema gives it. This carried an
-             *     explicit `#[serde(rename = "type")]` until #1096 — a deliberate
-             *     rename that simply disagreed with the spec.
-             */
-            typeUri: string;
-            /**
-             * Format: int64
-             * @description Optional override; defaults to 30d.
-             */
-            validitySeconds?: number | null;
-        };
         IssueInvitationBody: {
             /**
              * @description Optional role to grant the invitee on join (e.g. `member`, `moderator`,
@@ -2949,15 +2376,6 @@ export interface components {
              *     (copy / QR). The invitee presents it back in a join request.
              */
             vic: components["schemas"]["Value"];
-        };
-        IssueResponse: {
-            /**
-             * @description The signed credential just minted, which only this call can hand
-             *     back. A read carries `endorsement.issued` — the reference — instead,
-             *     so a page of fifty endorsements does not embed fifty credentials.
-             */
-            credential: components["schemas"]["Value"];
-            endorsement: components["schemas"]["EndorsementRow"];
         };
         /**
          * @description The refusal, in the form the applicant is owed it.
@@ -3129,54 +2547,6 @@ export interface components {
          * @enum {string}
          */
         JoinStatus: "pending" | "approved" | "rejected" | "withdrawn" | "deferred";
-        /**
-         * @description One entry in an artifact's lifecycle log: what happened, and when this
-         *     service recorded it.
-         */
-        LifecycleEvent: components["schemas"]["LifecycleEventKind"] & {
-            /**
-             * Format: date-time
-             * @description Transaction time: when this service recorded the event, **not** when
-             *     the underlying decision was taken. [`resolve`] ignores events recorded
-             *     after the instant being asked about, which is what makes "was this in
-             *     force at T" answerable at all.
-             */
-            recordedAt: string;
-        };
-        /**
-         * @description A lifecycle event recorded against an artifact after it was issued.
-         *
-         *     The variants are the vocabulary #1079 says is missing. They are separate
-         *     variants rather than a `status: String` because the transition rules in
-         *     [`LifecycleLog::record`] have to distinguish them, and a stringly-typed
-         *     state machine is one typo away from accepting a transition it rejects.
-         */
-        LifecycleEventKind: {
-            /** @enum {string} */
-            event: "suspended";
-            reason?: string | null;
-        } | {
-            /** @enum {string} */
-            event: "restored";
-            reason?: string | null;
-        } | {
-            by: string;
-            /** @enum {string} */
-            event: "superseded";
-        } | {
-            /** @enum {string} */
-            event: "withdrawn";
-            reason?: string | null;
-        };
-        /**
-         * @description The append-only lifecycle log of one artifact, oldest first.
-         *
-         *     Append-only and monotonic in `recorded_at`, both enforced by
-         *     [`Self::record`]. Order in the vector *is* the precedence order, so an
-         *     out-of-order insert would silently change the answer for every instant
-         *     after it.
-         */
-        LifecycleLog: components["schemas"]["LifecycleEvent"][];
         ListInvitesResponse: {
             invites: components["schemas"]["InviteSummary"][];
         };
@@ -3500,97 +2870,6 @@ export interface components {
             /** Format: int64 */
             totalEstimate?: number | null;
         };
-        /**
-         * @description Standard response wrapper for list endpoints. Carries the
-         *     requested page of items, the opaque cursor for the next page
-         *     (`None` when the caller has reached the end), and an optional
-         *     total-count estimate.
-         */
-        Paginated_Relationship: {
-            items: {
-                /** Format: date-time */
-                createdAt: string;
-                /**
-                 * Format: uuid
-                 * @description Server-allocated UUID. Surfaced as `urn:uuid:<id>` on
-                 *     the VRC's top-level `id` field at publish time when
-                 *     the caller didn't supply one.
-                 */
-                id: string;
-                /**
-                 * @description The asserting member. By the publish-time auth check,
-                 *     this equals the caller's session DID.
-                 */
-                issuerDid: string;
-                /**
-                 * @description Everything recorded against this edge since it was published:
-                 *     suspension, restoration, supersession, withdrawal.
-                 *
-                 *     Empty on every edge published before #1079 and on every edge that has
-                 *     had no lifecycle event, which is why it is `#[serde(default)]` and
-                 *     skipped when empty — existing rows decode unchanged and re-serialise
-                 *     byte-identically, the same treatment [`Relationship::persona`] got when
-                 *     it was added to an already-shipped row.
-                 *
-                 *     This is the *only* lifecycle handle a VRC has. Per planning-review D7 a
-                 *     VRC carries no `credentialStatus`, deliberately — a status-list host
-                 *     learns which verifier checked which credential and when, which is the
-                 *     correlation the pairwise work exists to remove. Without a status list
-                 *     the community's alternatives were a permanent edge or `DELETE
-                 *     /v1/relationships/{id}`, and a deletion cannot answer "was this edge in
-                 *     force last Tuesday" because it can only be observed as an absence.
-                 *
-                 *     Never resolved by hand. [`Relationship::in_force_at`] is the entry
-                 *     point, and the precedence rule lives in
-                 *     [`crate::credentials::lifecycle`].
-                 *
-                 *     **Known spec lag.** `Relationship` is both the stored row and the item
-                 *     shape of `spec/vtc/relationships/list/0.2`, whose response schema is
-                 *     `additionalProperties: false` and predates this member — as it predates
-                 *     [`Relationship::persona`], added the same way in #1067. A listed edge
-                 *     that has had a lifecycle event therefore carries a member the published
-                 *     task does not describe. The registry is upstream and the spec moves
-                 *     first, so this is recorded here rather than papered over by dropping
-                 *     the field on the way out: hiding the log from the one surface a member
-                 *     can read would leave them able to be suspended and unable to see it.
-                 */
-                lifecycle?: components["schemas"]["LifecycleLog"];
-                persona?: null | components["schemas"]["PersonaAnnotation"];
-                /**
-                 * @description The other party the VRC names. Need not be a current
-                 *     community member at *list* time (the list path strips
-                 *     Purge-removed rows per §12.3) but must be a current
-                 *     member at *publish* time (default `relationships.rego`).
-                 */
-                subjectDid: string;
-                /**
-                 * @description SHA-256 of `canonical_json(vrc_jsonld)`, hex-encoded.
-                 *     Used for idempotency: a second publish of an
-                 *     already-stored VRC returns the existing id (200)
-                 *     rather than creating a duplicate row.
-                 *     Digest over the RFC 8785 canonicalization of `vrc_jsonld`, as a
-                 *     base58btc multibase multihash — the form DTG Credentials and
-                 *     `relationships/publish/0.2` both specify.
-                 *
-                 *     Was a bare lowercase-hex SHA-256 over a recursive key sort. That form
-                 *     hard-coded one algorithm into the stored shape, named no base encoding,
-                 *     and — worse — named no canonicalization a second implementation could
-                 *     reproduce, so two conforming services could digest the same credential
-                 *     differently and neither be wrong.
-                 */
-                vrcDigestMultibase: string;
-                /**
-                 * @description The VRC body verbatim — JSON-LD, including the
-                 *     data-integrity proof. Stored as `JsonValue` rather
-                 *     than a typed `VerifiableCredential` so future VRC
-                 *     shape extensions don't require a storage migration.
-                 */
-                vrcJsonld: components["schemas"]["Value"];
-            }[];
-            nextCursor?: string | null;
-            /** Format: int64 */
-            totalEstimate?: number | null;
-        };
         PasskeyListResponse: {
             /**
              * @description `credentials`, the name `auth/passkey/list/0.1` publishes. It was
@@ -3607,36 +2886,6 @@ export interface components {
             applied: string[];
             pendingRestart: string[];
             rejected: components["schemas"]["ConfigRejectedKey"][];
-        };
-        /**
-         * @description A Verifiable Persona Credential (VPC) attached to one edge.
-         *
-         *     The VPC is issued by the *edge issuer* under a persona DID
-         *     (P-DID) and names the edge's counterparty as its subject. It
-         *     is the sanctioned mechanism for deliberate correlation: a
-         *     member who wants several of their pairwise edges to be
-         *     recognisable as one party asserts the same P-DID on each,
-         *     without ever putting their membership DID in a credential.
-         *
-         *     See `docs/05-design-notes/vpc-persona-annotation.md` for how
-         *     the annotation is bound to the edge, and for what upstream
-         *     (trustoverip/dtgwg-cred-spec#9) has not yet settled.
-         */
-        PersonaAnnotation: {
-            /** Format: date-time */
-            attachedAt: string;
-            /**
-             * @description The VPC's `issuer` — the P-DID. Denormalised out of
-             *     `vpc_jsonld` so the graph view can group edges by persona
-             *     without re-parsing every credential.
-             */
-            personaDid: string;
-            /**
-             * @description The VPC body verbatim, including its data-integrity
-             *     proof, so a consumer of the row can re-verify the
-             *     assertion rather than taking the VTC's word for it.
-             */
-            vpcJsonld: components["schemas"]["Value"];
         };
         PersonaResponse: {
             /** Format: uuid */
@@ -3720,16 +2969,6 @@ export interface components {
              *     two DIDs from two people. See `docs/03-vtc/personhood-and-graph.md`.
              */
             singleMembership?: boolean;
-        };
-        PersonhoodRevokeResponse: {
-            did: string;
-            personhood: boolean;
-            roleVec?: null | components["schemas"]["Value"];
-            vmc?: null | components["schemas"]["Value"];
-        };
-        /** @description Canonical `policy/get` response. */
-        PolicyGetResponse: {
-            policy: components["schemas"]["PolicyModuleResponse"];
         };
         /** @description Canonical `policy/list` response. */
         PolicyListResponse: {
@@ -3974,6 +3213,11 @@ export interface components {
         };
         RegisterAcceptsBody: {
             description?: string | null;
+            /**
+             * @description Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published
+             *     parameters, stored verbatim (`crate::vetting::pcs::HiddenVettingConfig`).
+             */
+            hiddenVetting?: Record<string, never> | null;
             id: string;
             query: components["schemas"]["Value"];
             vetting?: null | components["schemas"]["VtcJoinRequestsManifestV0_2VettingRequirements"];
@@ -4120,93 +3364,6 @@ export interface components {
             /** @description The registry's REST base URL, when one is configured. */
             url?: string | null;
         };
-        /**
-         * @description A stored, verified VRC. Field order matches the spec §5.4
-         *     surface (issuer/subject DIDs + the credential body).
-         */
-        Relationship: {
-            /** Format: date-time */
-            createdAt: string;
-            /**
-             * Format: uuid
-             * @description Server-allocated UUID. Surfaced as `urn:uuid:<id>` on
-             *     the VRC's top-level `id` field at publish time when
-             *     the caller didn't supply one.
-             */
-            id: string;
-            /**
-             * @description The asserting member. By the publish-time auth check,
-             *     this equals the caller's session DID.
-             */
-            issuerDid: string;
-            /**
-             * @description Everything recorded against this edge since it was published:
-             *     suspension, restoration, supersession, withdrawal.
-             *
-             *     Empty on every edge published before #1079 and on every edge that has
-             *     had no lifecycle event, which is why it is `#[serde(default)]` and
-             *     skipped when empty — existing rows decode unchanged and re-serialise
-             *     byte-identically, the same treatment [`Relationship::persona`] got when
-             *     it was added to an already-shipped row.
-             *
-             *     This is the *only* lifecycle handle a VRC has. Per planning-review D7 a
-             *     VRC carries no `credentialStatus`, deliberately — a status-list host
-             *     learns which verifier checked which credential and when, which is the
-             *     correlation the pairwise work exists to remove. Without a status list
-             *     the community's alternatives were a permanent edge or `DELETE
-             *     /v1/relationships/{id}`, and a deletion cannot answer "was this edge in
-             *     force last Tuesday" because it can only be observed as an absence.
-             *
-             *     Never resolved by hand. [`Relationship::in_force_at`] is the entry
-             *     point, and the precedence rule lives in
-             *     [`crate::credentials::lifecycle`].
-             *
-             *     **Known spec lag.** `Relationship` is both the stored row and the item
-             *     shape of `spec/vtc/relationships/list/0.2`, whose response schema is
-             *     `additionalProperties: false` and predates this member — as it predates
-             *     [`Relationship::persona`], added the same way in #1067. A listed edge
-             *     that has had a lifecycle event therefore carries a member the published
-             *     task does not describe. The registry is upstream and the spec moves
-             *     first, so this is recorded here rather than papered over by dropping
-             *     the field on the way out: hiding the log from the one surface a member
-             *     can read would leave them able to be suspended and unable to see it.
-             */
-            lifecycle?: components["schemas"]["LifecycleLog"];
-            persona?: null | components["schemas"]["PersonaAnnotation"];
-            /**
-             * @description The other party the VRC names. Need not be a current
-             *     community member at *list* time (the list path strips
-             *     Purge-removed rows per §12.3) but must be a current
-             *     member at *publish* time (default `relationships.rego`).
-             */
-            subjectDid: string;
-            /**
-             * @description SHA-256 of `canonical_json(vrc_jsonld)`, hex-encoded.
-             *     Used for idempotency: a second publish of an
-             *     already-stored VRC returns the existing id (200)
-             *     rather than creating a duplicate row.
-             *     Digest over the RFC 8785 canonicalization of `vrc_jsonld`, as a
-             *     base58btc multibase multihash — the form DTG Credentials and
-             *     `relationships/publish/0.2` both specify.
-             *
-             *     Was a bare lowercase-hex SHA-256 over a recursive key sort. That form
-             *     hard-coded one algorithm into the stored shape, named no base encoding,
-             *     and — worse — named no canonicalization a second implementation could
-             *     reproduce, so two conforming services could digest the same credential
-             *     differently and neither be wrong.
-             */
-            vrcDigestMultibase: string;
-            /**
-             * @description The VRC body verbatim — JSON-LD, including the
-             *     data-integrity proof. Stored as `JsonValue` rather
-             *     than a typed `VerifiableCredential` so future VRC
-             *     shape extensions don't require a storage migration.
-             */
-            vrcJsonld: components["schemas"]["Value"];
-        };
-        RelationshipRevokeResponse: {
-            id: string;
-        };
         RelationshipsGraph: {
             edges: components["schemas"]["GraphEdge"][];
             nodes: components["schemas"]["GraphNode"][];
@@ -4219,20 +3376,6 @@ export interface components {
          */
         ReloadResponse: {
             keysReloaded: string[];
-        };
-        RemoveBody: {
-            disposition?: null | components["schemas"]["Disposition"];
-            /**
-             * @description Optional admin-only reason. Self-remove ignores this (the
-             *     member doesn't need to justify their own departure). Capped
-             *     at 1024 chars at the route layer.
-             */
-            reason?: string | null;
-        };
-        RemoveResponse: {
-            did: string;
-            disposition: string;
-            removed: boolean;
         };
         /**
          * @description A departed member whose Member row was retained (Tombstone / Historical
@@ -4262,25 +3405,6 @@ export interface components {
          */
         RemovedMembersResponse: {
             removed: components["schemas"]["RemovedMember"][];
-        };
-        RenewResponse: {
-            did: string;
-            /**
-             * @description `personhood.rego` re-eval outcome for the new VMC.
-             *     Phase 2's deny-all default keeps this `false`; the
-             *     field exists from day one so Phase 4's
-             *     assert/revoke endpoints don't break the wire shape.
-             */
-            personhood: boolean;
-            /**
-             * @description `true` when the personhood flag flipped from the prior
-             *     VMC. Surfaced separately from `personhood` itself so
-             *     callers can light up a "your personhood status
-             *     changed" notification.
-             */
-            personhoodChanged: boolean;
-            roleVec: components["schemas"]["Value"];
-            vmc: components["schemas"]["Value"];
         };
         RequestVmcBody: {
             /** @description Optional operator note ("renewal", "audit", …) relayed to the member. */
@@ -4323,9 +3447,6 @@ export interface components {
          * @enum {string}
          */
         RevocationReviewState: "noAdmission" | "needsReview";
-        RevokeBody: {
-            pop?: null | components["schemas"]["Value"];
-        };
         RevokeFinishRequest: {
             revocation_id: string;
             uv_response: Record<string, never>;
@@ -4366,27 +3487,6 @@ export interface components {
              *     `navigator.credentials.get({ publicKey: … })`.
              */
             uvOptions: Record<string, never>;
-        };
-        RotationChallengeResponse: {
-            /**
-             * @description New-DID placeholder — the canonical payload includes
-             *     `newDid`, so the client computes the final payload by
-             *     substituting its chosen `new_did` into the JSON and
-             *     hashing the result. Callers that prefer to assemble
-             *     the payload themselves can ignore this field.
-             */
-            canonicalTemplate: components["schemas"]["Value"];
-            /** Format: date-time */
-            expiresAt: string;
-            /** Format: uuid */
-            rotationId: string;
-            /**
-             * @description Canonical payload bytes the signers must hash over,
-             *     hex-encoded. Server-supplied so the caller can't omit
-             *     the domain tag or get the canonical JSON encoding
-             *     wrong.
-             */
-            signingPayloadHex: string;
         };
         /**
          * @description Canonical `Session` from `spec/auth/_shared/0.1/session.schema.json`.
@@ -4511,60 +3611,6 @@ export interface components {
              */
             serviceable: boolean;
         };
-        /**
-         * @description Body of the PATCH request. Every field is optional; a request
-         *     with no fields is a no-op (200 with the current row).
-         */
-        UpdateMemberRequest: {
-            departurePreference?: null | components["schemas"]["Disposition"];
-            extensions?: null | components["schemas"]["Value"];
-            /**
-             * @description Human-readable name for this member, shown wherever their DID is
-             *     rendered (admin UI, `vtc acl list`).
-             *
-             *     The label lives on the ACL row, so until now it was writable only via
-             *     `acl/grant` — a whole re-grant to correct a typo in a display name.
-             *     An empty string clears it; omitting the field leaves it unchanged.
-             */
-            label?: string | null;
-            publishConsent?: boolean | null;
-            role?: null | components["schemas"]["VtcRole"];
-        };
-        UploadBody: {
-            appliesTo?: string[] | null;
-            description?: string | null;
-            enabled?: boolean | null;
-            /**
-             * Format: int32
-             * @description Optimistic-concurrency token. When present it MUST equal the
-             *     current highest revision for this purpose, else the caller is
-             *     writing over a revision it never saw.
-             */
-            expectedVersion?: number | null;
-            /**
-             * @description Ecosystem extension members. MUST carry
-             *     `org.openvtc.purpose` — see [`crate::routes::policies::read::PURPOSE_EXT_KEY`]
-             *     for why purpose is intrinsic here.
-             */
-            ext?: unknown;
-            /**
-             * Format: uuid
-             * @description Canonical members this maintainer does not implement. Present
-             *     so they are *refused* rather than silently dropped — a caller
-             *     that sets `enabled: false` must not have it ignored.
-             */
-            id?: string | null;
-            /**
-             * @description Full Rego source — canonical `module`. Bounded by
-             *     [`POLICY_SOURCE_MAX_BYTES`]; uploads above the cap are
-             *     rejected with 413.
-             */
-            module: string;
-            /** @description Human-readable module name (canonical-required). */
-            name: string;
-            /** Format: int64 */
-            priority?: number | null;
-        };
         UploadResponse: {
             /**
              * @description Canonical-required: true when this call created a new module
@@ -4575,50 +3621,6 @@ export interface components {
             policy: components["schemas"]["PolicyModuleResponse"];
         };
         Value: unknown;
-        /** @description Result of a chain verification pass. */
-        VerifyResponse: {
-            chainBreak?: null | components["schemas"]["ChainBreakReport"];
-            /** @description Envelopes examined, chainable or not. */
-            entriesExamined: number;
-            /** @description Envelopes that carried a chain link and verified. */
-            entriesVerified: number;
-            /**
-             * @description Signed-checkpoint verification (#708) — the half of this endpoint that
-             *     a store-level adversary cannot satisfy.
-             *
-             *     Carried under `ext` since #1110. The canonical response is
-             *     `additionalProperties: false` and defines no checkpoint member, so a
-             *     top-level one made every verify response non-conformant. This is
-             *     genuinely load-bearing evidence rather than a nicety, so it is not
-             *     dropped — `ext` is the framework's sanctioned slot for exactly this,
-             *     and the member is worth proposing upstream so it need not live in an
-             *     extension at all.
-             */
-            ext?: unknown;
-            /**
-             * @description Head of the verified chain, hex-encoded. `None` when nothing
-             *     chainable was found.
-             */
-            head?: string | null;
-            /**
-             * @description Pre-v2 envelopes skipped as unchainable.
-             *
-             *     **Non-zero is a finding on a store that should hold none.**
-             *     `verify_chain` skips these rows rather than verifying them, so
-             *     they are an insertion point: an envelope forged with
-             *     `schemaVersion: 1` passes untouched.
-             */
-            legacySkipped: number;
-            /**
-             * @description Rows that would not deserialize into an envelope at all. Also
-             *     skipped, and also a finding — reported separately from
-             *     `legacySkipped` because the cause differs (corruption or a
-             *     forward-version row, versus a pre-chain row).
-             */
-            unparseableSkipped: number;
-            /** @description Whether every chainable envelope verified. */
-            verified: boolean;
-        };
         /** @description `GET /v1/vetting/vetters` response: every grant, newest first. */
         VetterGrantListResponse: {
             /** @description The grants. */
@@ -5051,14 +4053,6 @@ export interface components {
         VtcVettingVettersGrantV0_1Ext: {
             [key: string]: unknown;
         };
-        /** @description A community administrator makes a member a vetter. The community issues the member a revocable `CommunityRole` endorsement credential for the `vetter` role, delivers it over credential-exchange/issue, and returns the identifiers and validity of the grant. A member who already holds a live grant gets that grant back unchanged. */
-        VtcVettingVettersGrantV0_1Payload: {
-            ext?: components["schemas"]["VtcVettingVettersGrantV0_1Ext"];
-            /** @description The member DID to grant the vetter role to — the subject of the role credential, and the DID the vetter signs statements with. */
-            memberDid: string;
-            /** @description OPTIONAL. How long the role credential is valid, from issuance: at least one day, at most two years. Absent: 31536000 (365 days). Ignored when the member already holds a live grant. */
-            validitySeconds?: number;
-        };
         /** @description The grant — newly issued, or the member's existing live grant. */
         VtcVettingVettersGrantV0_1Response: {
             /** @description The `id` of the role credential, a URI. */
@@ -5251,42 +4245,6 @@ export interface components {
              */
             validUntil: string;
         };
-        /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
-        VtcVettingVettersShowV0_1Ext: {
-            [key: string]: unknown;
-        };
-        /**
-         * @description The state of a vetter's grant in this community. The three refusing values are deliberately distinct: `revoked` says the community withdrew a grant it had made, `expired` says one ran out, and `none` says there is nothing to withdraw. An applicant reads those differently, and so does a vetter checking their own standing.
-         * @enum {string}
-         */
-        VtcVettingVettersShowV0_1GrantStatus: "live" | "revoked" | "expired" | "none";
-        /** @description An authenticated applicant or member asks a community about one vetter, by DID. The answer is the state of that vetter's grant — `live`, `revoked`, `expired` or `none` — which a list of vetters cannot express, because an absent vetter and a revoked one look identical in it. The outer document members (id, type, issuer, recipient, issuedAt, expiresAt, proof) are owned by the framework — SPEC §6.3. */
-        VtcVettingVettersShowV0_1Payload: {
-            ext?: components["schemas"]["VtcVettingVettersShowV0_1Ext"];
-            /** @description The DID of the vetter being asked about — the subject of the vetter role credential. The caller usually holds it from an earlier listing, or from a vetting exchange that has since gone quiet. */
-            vetterDid: string;
-        };
-        /** @description One vetter's grant status. Carries no profile: what a vetter published for a directory is answered by vtc/vetting/vetters/list, and this task answers a caller who already knows which vetter they mean. */
-        VtcVettingVettersShowV0_1Response: {
-            ext?: components["schemas"]["VtcVettingVettersShowV0_1Ext"];
-            /** @description The identifier of the grant this status is about. Present for `live`, `revoked` and `expired`; absent for `none`, which is the absence of a grant and so has nothing to identify. */
-            grantId?: string;
-            /** @description Whether this vetter has a profile stored with `listed: true`, and so would appear in vtc/vetting/vetters/list. Present only for `live`. It is what separates the two reasons a live vetter is missing from a listing: unlisted by choice, rather than not a vetter. */
-            listed?: boolean;
-            /**
-             * Format: date-time
-             * @description When the grant was revoked. Present only for `revoked`. The reason is deliberately not carried: it is the community's internal record, and an applicant needs to know the grant does not hold, not why.
-             */
-            revokedAt?: string;
-            status: components["schemas"]["VtcVettingVettersShowV0_1GrantStatus"];
-            /**
-             * Format: date-time
-             * @description The grant's `validUntil`. Present for `live` and `expired` — for `expired` it is when it ran out, which tells a caller whether it lapsed long ago or yesterday. Absent for `none`, and for `revoked`, where the revocation and not the expiry is what ended it.
-             */
-            validUntil?: string;
-            /** @description The DID asked about, echoed so a response is self-contained. */
-            vetterDid: string;
-        };
         /**
          * @description Wire shape returned by `whoami`. Minimal: enough for the admin
          *     SPA's nav header to show "Signed in as …" with a role badge,
@@ -5355,7 +4313,41 @@ export interface operations {
             };
         };
     };
-    didRegister: {
+    adminConsoleKeyList: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's console keys; empty when none are enrolled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsoleKeyListResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    adminConsoleKeyEnrol: {
         parameters: {
             query?: never;
             header?: never;
@@ -5364,20 +4356,20 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["DidManagementDidRegisterV0_1Payload"];
+                "application/json": components["schemas"]["EnrolRequest"];
             };
         };
         responses: {
-            /** @description Log verified and now served */
-            200: {
+            /** @description The console key may now act as the caller's admin DID */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DidManagementDidRegisterV0_1Response"];
+                    "application/json": components["schemas"]["ConsoleKey"];
                 };
             };
-            /** @description Log does not verify, is for another DID, or targets another slot */
+            /** @description consoleDid is not a did:key, or is the caller's own DID */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -5391,22 +4383,59 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Caller is not a super-admin */
+            /** @description Caller is not an admin, or has no live step-up */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description This community does not self-host its DID */
-            404: {
+            /** @description That DID already holds an ACL row, or is already enrolled */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Log does not keep every served entry unchanged */
-            409: {
+        };
+    };
+    adminConsoleKeyRevoke: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The console key's did:key */
+                console_did: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked; the next document signed by this key is refused */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConsoleKeyRevokeResponse"];
+                };
+            };
+            /** @description Missing or invalid bearer token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is neither the owning admin nor a super-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such console key */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5617,40 +4646,6 @@ export interface operations {
             };
             /** @description credential_id not registered for this admin */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    verify_audit_chain: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Chain verification result */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VerifyResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a super-admin */
-            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6205,397 +5200,6 @@ export interface operations {
             };
         };
     };
-    endorsementList: {
-        parameters: {
-            query?: {
-                cursor?: string | null;
-                limit?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated list of endorsements */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Paginated_EndorsementRow"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin or issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    endorsementIssue: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["IssueBody"];
-            };
-        };
-        responses: {
-            /** @description Endorsement issued */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IssueResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin or issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    endorsementShow: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Endorsement id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Endorsement */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EndorsementEnvelope"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin or issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Endorsement not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    endorsementRevoke: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Endorsement id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Endorsement revoked */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EndorsementRevokeResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin or issuer */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Endorsement not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Endorsement already revoked */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsAccountsList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Members' linked forge accounts */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsAccountList"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsActivity: {
-        parameters: {
-            query?: {
-                /** @description Only this namespace (its identifier). */
-                namespace?: string;
-                /** @description At most this many items, newest first. Default 100, at most 500. */
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Recent activity in the namespaces the caller administers */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsActivity"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The caller administers no namespace (or not the one named) */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsJobsList: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bridge jobs, oldest first */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsJobList"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsProjection: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description What is published to the Trust Registry */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsProjection"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsRightsList: {
-        parameters: {
-            query?: {
-                /** @description Only rights on this resource or inside it. */
-                resource?: string;
-                /** @description Only rights held by this DID. */
-                subject?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Recorded and role-derived git rights */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsRightList"];
-                };
-            };
-            /** @description The resource is not a forge-qualified resource */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    gitNsRightsIssuedByDeparted: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Grants whose granter has left the community */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GitNsDepartedGrants"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community administrator */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     claim_finish: {
         parameters: {
             query?: never;
@@ -6658,698 +5262,6 @@ export interface operations {
             };
         };
     };
-    list_join_requests: {
-        parameters: {
-            query?: {
-                /**
-                 * @description Filter by status. Default `pending` — the operator-facing
-                 *     surface usually wants the work queue.
-                 */
-                status?: null | components["schemas"]["JoinStatus"];
-                cursor?: string | null;
-                limit?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated join requests */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Paginated_JoinRequest"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    decide: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Join request id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DecideBody"];
-            };
-        };
-        responses: {
-            /** @description Request decided; on approve the VMC + role VEC are returned inline */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DecideResponse"];
-                };
-            };
-            /** @description Reject reason exceeds the length cap */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Join request not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Request is not Pending, or applicant is already a member */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    list_members: {
-        parameters: {
-            query?: {
-                /**
-                 * @description Filter by role, expressed in the same wire form
-                 *     [`VtcRole`] uses (`"admin"`, `"moderator"`,
-                 *     `"custom:editor"`, …). Server-side filter applied after
-                 *     pagination — sibling pages skip rows that don't match.
-                 *     Future improvement: index by role.
-                 */
-                role?: string | null;
-                /** @description Pagination cursor (returned by a previous call). */
-                cursor?: string | null;
-                /** @description Page size. Clamped to `1..=200`. */
-                limit?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated member list */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Paginated_MemberResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    renew: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Membership renewed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RenewResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a member */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    rotate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["FinishBody"];
-            };
-        };
-        responses: {
-            /** @description DID rotated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FinishResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Session DID does not match oldDid */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a member */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    memberRotateChallenge: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": null | components["schemas"]["ChallengeBody"];
-            };
-        };
-        responses: {
-            /** @description Rotation challenge issued */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RotationChallengeResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a member */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    admin_remove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Member DID */
-                did: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RemoveBody"];
-            };
-        };
-        responses: {
-            /** @description Member removed */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RemoveResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin / removal denied by policy */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Member not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    update_member: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Member DID */
-                did: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateMemberRequest"];
-            };
-        };
-        responses: {
-            /** @description Updated member record */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemberEnvelope"];
-                };
-            };
-            /** @description role was `admin` (adminRoleForbidden) — use acl/change-role */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin / role change denied by policy */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Member not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    memberCredentials: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Member DID */
-                did: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The credential documents the community holds for this member */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcMembersCredentialsV0_1Response"];
-                };
-            };
-            /** @description `did` is not a DID */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description No such member (`vtc/members/credentials:notFound`) */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    personhoodRevoke: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Member DID */
-                did: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Personhood revoked */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PersonhoodRevokeResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is neither admin nor the subject member */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Member not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    memberRelationshipList: {
-        parameters: {
-            query?: {
-                cursor?: string | null;
-                limit?: number | null;
-            };
-            header?: never;
-            path: {
-                /** @description Member DID */
-                did: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated relationship list */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Paginated_Relationship"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not authorised */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    list_policies: {
-        parameters: {
-            query?: {
-                /**
-                 * @description Filter by purpose (wire-form camelCase). A VTC extension —
-                 *     canonical has no purpose filter because purpose is not a
-                 *     property of a module there.
-                 */
-                purpose?: null | components["schemas"]["PolicyPurpose"];
-                /**
-                 * @description Canonical `policy/list` parameters this maintainer does not
-                 *     implement. Accepting them silently would tell a caller their
-                 *     query was narrowed when it was not, so they are refused.
-                 */
-                contextId?: string | null;
-                enabledOnly?: boolean | null;
-                /** @description Canonical page-size name. */
-                pageSize?: number | null;
-                /**
-                 * @description `"active"` — only the row pointed at by each
-                 *     `active_policies:<purpose>`. `"archived"` — every row that
-                 *     is *not* the current active pointer. Omitted → all rows.
-                 */
-                status?: null | components["schemas"]["PolicyStatusFilter"];
-                /** @description Pagination cursor (returned by a previous call). */
-                cursor?: string | null;
-                /** @description Page size. Clamped to `1..=200`. */
-                limit?: number | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated list of policies */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PolicyListResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    upload: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UploadBody"];
-            };
-        };
-        responses: {
-            /** @description Policy revision compiled + stored */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UploadResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    show_policy: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Policy id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Policy */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PolicyGetResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Policy not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    activate: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Policy revision id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Policy revision activated */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ActivateResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Policy not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     publish: {
         parameters: {
             query?: never;
@@ -7394,55 +5306,6 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["RateLimitedBody"];
                 };
-            };
-        };
-    };
-    relationshipRevoke: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Relationship (VRC) id */
-                id: string;
-            };
-            cookie?: never;
-        };
-        /** @description Optional. Required only for an edge issued under a pairwise relationship DID. */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RevokeBody"];
-            };
-        };
-        responses: {
-            /** @description Relationship (VRC) revoked */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RelationshipRevokeResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not the issuer or an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Relationship not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
@@ -7770,156 +5633,6 @@ export interface operations {
             };
             /** @description Caller is not an admin */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingVetterGrant: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VtcVettingVettersGrantV0_1Payload"];
-            };
-        };
-        responses: {
-            /** @description The member already holds a live vetter grant, which is returned */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcVettingVettersGrantV0_1Response"];
-                };
-            };
-            /** @description Vetter role granted */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcVettingVettersGrantV0_1Response"];
-                };
-            };
-            /** @description Malformed body, or the member is not a current member */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingVetterShow: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["VtcVettingVettersShowV0_1Payload"];
-            };
-        };
-        responses: {
-            /** @description The vetter's grant status */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcVettingVettersShowV0_1Response"];
-                };
-            };
-            /** @description The payload is not a valid show request */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not an admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    vettingVetterResend: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The vetter's member DID */
-                memberDid: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The credential was handed to the transport for delivery */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VtcVettingVettersResendV0_1Response"];
-                };
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Caller is not a community admin */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The member holds no live vetter grant whose credential the community kept */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The delivery could not be handed to the transport */
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };

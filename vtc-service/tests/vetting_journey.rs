@@ -83,7 +83,7 @@ const ADMIN_SEED: [u8; 32] = [0xAD; 32];
 
 const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.2";
 const GRANT_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
-const RESEND_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.1";
+const RESEND_0_2_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2";
 const ENDORSEMENT_REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 const ENDORSEMENT_TYPE_REGISTER_TASK: &str =
     "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
@@ -170,14 +170,9 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     // The admin names Carol a vetter. The community issues her a revocable
     // vetter role credential and answers with the grant.
     let (status, carol_grant) = c
-        .admin(
-            "POST",
-            "/v1/vetting/vetters",
-            Some(GRANT_TASK),
-            Some(json!({ "memberDid": carol.did })),
-        )
+        .admin_document(GRANT_TASK, json!({ "memberDid": carol.did }))
         .await;
-    assert_eq!(status, StatusCode::CREATED, "grant Carol: {carol_grant}");
+    assert_eq!(status, StatusCode::OK, "grant Carol: {carol_grant}");
 
     // The community's own policy names the rest: members of 30 days. The
     // sweep is off until an admin turns it on.
@@ -442,11 +437,9 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     // endorsement id.
     let dave_grant = dave_row["endorsementId"].as_str().unwrap();
     let (status, body) = c
-        .admin(
-            "DELETE",
-            &format!("/v1/credentials/endorsements/{dave_grant}"),
-            Some(ENDORSEMENT_REVOKE_TASK),
-            None,
+        .admin_document(
+            ENDORSEMENT_REVOKE_TASK,
+            json!({ "endorsementId": dave_grant }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "revoke Dave's grant: {body}");
@@ -525,28 +518,51 @@ async fn a_resend_delivers_the_live_grant_credential_again() {
     )
     .await
     .expect("status list");
-    let token = admin_token(&mock.vtc).await;
     seed_member_row(&mock.vtc, &vetter_did, 60).await;
+    // A signing-capable admin identity: the grant, the resend-on-behalf and
+    // the revoke are all signed documents only, which need a `did:key` a real
+    // secret backs.
+    store_acl_entry(
+        &mock.vtc.state.acl_ks,
+        &VtcAclEntry {
+            did: did_key(ADMIN_SEED).0,
+            role: VtcRole::Admin,
+            label: Some("signing admin".into()),
+            allowed_contexts: vec![],
+            created_at: vtc_service::auth::session::now_epoch(),
+            created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
     let router = &mock.vtc.router;
 
     // The admin names the peer a vetter; the grant credential is pushed to it.
-    let (status, grant) = rest(
+    let (status, grant) = admin_document(
         router,
-        &token,
-        "POST",
-        "/v1/vetting/vetters",
-        Some(GRANT_TASK),
-        Some(json!({ "memberDid": vetter_did })),
+        mock.vtc_did(),
+        ADMIN_SEED,
+        GRANT_TASK,
+        json!({ "memberDid": vetter_did }),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "grant: {grant}");
+    assert_eq!(status, StatusCode::OK, "grant: {grant}");
     let delivered = next_issued_credential(&vetter).await;
     assert_eq!(delivered["id"], grant["credentialId"]);
 
-    // Asked to resend, the community hands the same credential to the
-    // transport again.
-    let resend_uri = format!("/v1/vetting/vetters/{vetter_did}/resend");
-    let (status, resent) = rest(router, &token, "POST", &resend_uri, Some(RESEND_TASK), None).await;
+    // Asked to resend on the vetter's behalf (`memberDid`), the community
+    // hands the same credential to the transport again.
+    let (status, resent) = admin_document(
+        router,
+        mock.vtc_did(),
+        ADMIN_SEED,
+        RESEND_0_2_TASK,
+        json!({ "memberDid": vetter_did }),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "resend: {resent}");
     assert_eq!(resent["credentialId"], grant["credentialId"]);
     assert_eq!(resent["validUntil"], grant["validUntil"]);
@@ -554,21 +570,30 @@ async fn a_resend_delivers_the_live_grant_credential_again() {
     assert_eq!(again, delivered, "the same credential, not a new one");
 
     // Once the grant is revoked there is nothing to resend.
-    let (status, body) = rest(
+    let (status, body) = admin_document(
         router,
-        &token,
-        "DELETE",
-        &format!(
-            "/v1/credentials/endorsements/{}",
-            grant["endorsementId"].as_str().unwrap()
-        ),
-        Some(ENDORSEMENT_REVOKE_TASK),
-        None,
+        mock.vtc_did(),
+        ADMIN_SEED,
+        ENDORSEMENT_REVOKE_TASK,
+        json!({ "endorsementId": grant["endorsementId"].as_str().unwrap() }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "revoke: {body}");
-    let (status, body) = rest(router, &token, "POST", &resend_uri, Some(RESEND_TASK), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "resend after revoke: {body}");
+    // `notGranted` is a declared code, so it rides the signed door's flat 422
+    // bucket, not the old admin REST route's 404.
+    let (status, body) = admin_document(
+        router,
+        mock.vtc_did(),
+        ADMIN_SEED,
+        RESEND_0_2_TASK,
+        json!({ "memberDid": vetter_did }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "resend after revoke: {body}"
+    );
 
     vetter.shutdown().await;
     mock.shutdown().await;
@@ -743,25 +768,21 @@ impl Community {
     /// Upload `source` as the `vetterEligibility` policy and activate it.
     async fn activate_vetter_policy(&self, source: &str) {
         let (status, body) = self
-            .admin(
-                "POST",
-                "/v1/policies",
-                Some(POLICY_UPLOAD_TASK),
-                Some(json!({
+            .admin_document(
+                POLICY_UPLOAD_TASK,
+                json!({
                     "name": "tenured-members-vet",
                     "module": source,
                     "ext": { "org.openvtc.purpose": "vetterEligibility" }
-                })),
+                }),
             )
             .await;
         assert!(status.is_success(), "upload policy: {body}");
         let id = body["policy"]["id"].as_str().expect("policy id");
         let (status, body) = self
-            .admin(
-                "POST",
-                &format!("/v1/policies/{id}/activate"),
-                Some(POLICY_ACTIVATE_TASK),
-                Some(json!({})),
+            .admin_document(
+                POLICY_ACTIVATE_TASK,
+                json!({ "id": id, "purpose": "vetterEligibility" }),
             )
             .await;
         assert_eq!(status, StatusCode::OK, "activate policy: {body}");
@@ -1059,6 +1080,43 @@ async fn rest(
     read(router.clone().oneshot(req).await.expect("oneshot")).await
 }
 
+/// Sign `typ`/`payload` as `admin_did` (from `seed`) and post it to
+/// `vtc_did`'s single Trust Task document endpoint — the free-function twin of
+/// [`Community::post_document`] for a test that only has a bare `TestVtc`, not
+/// the `Community` fixture.
+async fn admin_document(
+    router: &axum::Router,
+    vtc_did: &str,
+    seed: [u8; 32],
+    typ: &str,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let (did, secret) = did_key(seed);
+    let now = Utc::now();
+    let stamp = |t: chrono::DateTime<Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let mut doc = json!({
+        "type": typ,
+        "id": format!("urn:uuid:{}", Uuid::new_v4()),
+        "issuer": did,
+        "recipient": vtc_did,
+        "issuedAt": stamp(now),
+        "expiresAt": stamp(now + Duration::hours(1)),
+        "payload": payload,
+    });
+    let proof = DataIntegrityProof::sign(&doc, &secret, SignOptions::new())
+        .await
+        .expect("sign document");
+    doc["proof"] = serde_json::to_value(proof).unwrap();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/trust-tasks")
+        .header("content-type", "application/json")
+        .body(Body::from(doc.to_string()))
+        .unwrap();
+    let (status, doc) = read(router.clone().oneshot(req).await.expect("oneshot")).await;
+    (status, doc["payload"].clone())
+}
+
 async fn read(res: axum::response::Response) -> (StatusCode, Value) {
     let status = res.status();
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
@@ -1100,12 +1158,7 @@ async fn a_by_did_lookup_tells_revoked_from_unlisted_from_never_a_vetter() {
 
     let show = async |did: &str| -> Value {
         let (status, body) = c
-            .admin(
-                "POST",
-                "/v1/vetting/vetters/show",
-                Some(SHOW_TASK),
-                Some(json!({ "vetterDid": did })),
-            )
+            .admin_document(SHOW_TASK, json!({ "vetterDid": did }))
             .await;
         assert_eq!(status, StatusCode::OK, "show {did}: {body}");
         body
@@ -1128,14 +1181,9 @@ async fn a_by_did_lookup_tells_revoked_from_unlisted_from_never_a_vetter() {
     // she has published no profile. That member is the one that separates
     // "chose not to be listed" from "not a vetter", which is the whole point.
     let (status, grant) = c
-        .admin(
-            "POST",
-            "/v1/vetting/vetters",
-            Some(GRANT_TASK),
-            Some(json!({ "memberDid": carol.did })),
-        )
+        .admin_document(GRANT_TASK, json!({ "memberDid": carol.did }))
         .await;
-    assert_eq!(status, StatusCode::CREATED, "grant Carol: {grant}");
+    assert_eq!(status, StatusCode::OK, "grant Carol: {grant}");
 
     let body = show(&carol.did).await;
     assert_eq!(body["status"], "live");
@@ -1169,11 +1217,9 @@ async fn a_by_did_lookup_tells_revoked_from_unlisted_from_never_a_vetter() {
         .unwrap()
         .to_owned();
     let (status, body) = c
-        .admin(
-            "DELETE",
-            &format!("/v1/credentials/endorsements/{grant_id}"),
-            Some(ENDORSEMENT_REVOKE_TASK),
-            None,
+        .admin_document(
+            ENDORSEMENT_REVOKE_TASK,
+            json!({ "endorsementId": grant_id }),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "revoke Carol's grant: {body}");
@@ -1241,12 +1287,7 @@ async fn a_lapsed_grant_reads_expired_and_a_withdrawn_one_still_reads_revoked() 
 
     let show = async |did: &str| -> Value {
         let (status, body) = c
-            .admin(
-                "POST",
-                "/v1/vetting/vetters/show",
-                Some(SHOW_TASK),
-                Some(json!({ "vetterDid": did })),
-            )
+            .admin_document(SHOW_TASK, json!({ "vetterDid": did }))
             .await;
         assert_eq!(status, StatusCode::OK, "show {did}: {body}");
         body

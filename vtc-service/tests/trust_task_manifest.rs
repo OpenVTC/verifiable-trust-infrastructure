@@ -437,6 +437,9 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // and served ahead of their release here, and went back to zero with
     // trust-tasks-rs 0.23, which generates both.
     //
+    // Hidden vetting's four tasks (`zkp-pcs`) were bound ahead of the 0.22 line reaching this
+    // graph, and went back to zero with it: trust-tasks-rs 0.22.2 serves all four.
+    //
     // Peer identity vetting (`vetting/*`, `vtc/vetting/*`) and join manifest
     // 0.2 were bound ahead of their specs here, and went back to zero with
     // trust-tasks-rs 0.20.4, which serves all nine and generates their wire
@@ -719,6 +722,12 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/git-ns/view/0.5",
     "https://trusttasks.org/spec/git-ns/namespace/list/0.1",
     "https://trusttasks.org/spec/git-ns/repo/list/0.1",
+    "https://trusttasks.org/spec/git-ns/right/list/0.1",
+    "https://trusttasks.org/spec/git-ns/right/issued-by-departed/0.1",
+    "https://trusttasks.org/spec/git-ns/bridge/job/list/0.1",
+    "https://trusttasks.org/spec/git-ns/projection/show/0.1",
+    "https://trusttasks.org/spec/git-ns/account/list/0.1",
+    "https://trusttasks.org/spec/git-ns/activity/list/0.1",
 ];
 
 /// Document types the console sends that the *spine* dispatches rather than
@@ -730,6 +739,16 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
 /// of a redemption the member's `cnm` started; and the admin verbs whose REST
 /// routes are gone.
 const SPINE_DOCUMENT_TYPES: &[&str] = &[
+    // Their bearer routes stayed for `vtc-client`; the console already signed
+    // them, and now nothing else binds them either.
+    "https://trusttasks.org/spec/vtc/join-requests/decide/0.1",
+    "https://trusttasks.org/spec/vtc/members/admin-remove/0.1",
+    "https://trusttasks.org/spec/vtc/members/credentials/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1",
+    // The member relationships list (a member's detail view): its bearer REST
+    // route had no other caller and was retired once the console moved onto
+    // the signed door.
+    "https://trusttasks.org/spec/vtc/relationships/list/0.2",
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
     "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2",
     "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1",
@@ -804,6 +823,13 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/auth/signing-key/enroll/0.1",
     "https://trusttasks.org/spec/auth/signing-key/list/0.1",
     "https://trusttasks.org/spec/auth/signing-key/revoke/0.1",
+    // Custom-endorsement reads/revoke and the admin's vetter resend: their
+    // bearer REST routes had no caller once the spine dispatched them
+    // (tt-tf#689) — `member_tasks`'s endorsement handlers, and `mod.rs`'s
+    // `handle_vetter_resend_v0_2`.
+    "https://trusttasks.org/spec/vtc/endorsements/list/0.1",
+    "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1",
+    "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2",
 ];
 
 #[test]

@@ -6,6 +6,7 @@ mod config;
 mod consent;
 mod did_log;
 mod git;
+mod member;
 mod setup;
 mod vetting;
 mod vtc;
@@ -211,6 +212,14 @@ enum Commands {
     Access {
         #[command(subcommand)]
         command: access::AccessCommands,
+    },
+
+    /// Member-facing verbs on your own membership and relationships: renew,
+    /// rotate, personhood revoke, relationships list/publish/revoke, and
+    /// issuing a custom endorsement (Admin or Issuer).
+    Member {
+        #[command(subcommand)]
+        command: member::MemberCommands,
     },
 
     /// Answer the community's consent requests: making or widening an
@@ -544,8 +553,9 @@ enum ContextCommands {
     },
     /// Create a new application context
     Create {
-        /// Context slug (lowercase alphanumeric + hyphens). When `--parent` is
-        /// set this is the leaf segment; the full id becomes `<parent>/<id>`.
+        /// Context path: a slug (lowercase alphanumeric + hyphens), or slugs
+        /// joined by `/` to nest (e.g. `acme/eng`). Nesting requires admin of
+        /// the parent; a top-level context is super-admin only.
         #[arg(long)]
         id: String,
         /// Human-readable name
@@ -554,11 +564,6 @@ enum ContextCommands {
         /// Optional description
         #[arg(long)]
         description: Option<String>,
-        /// Parent context path to nest under (e.g. `acme/eng`). Creates a
-        /// sub-context — requires admin of the parent. Omit for a top-level
-        /// context (super-admin only).
-        #[arg(long)]
-        parent: Option<String>,
         /// DID to grant admin access to (must start with `did:`). When set,
         /// creates an ACL entry with role=admin scoped to this context.
         #[arg(long)]
@@ -627,7 +632,7 @@ enum ContextCommands {
     /// the VTA never sees the private key. The minted credential is sealed to
     /// the `--recipient` and printed as an armored bundle.
     Bootstrap {
-        /// Context slug (lowercase alphanumeric + hyphens)
+        /// Context path (e.g. `acme` or `acme/eng`)
         #[arg(long)]
         id: String,
         /// Human-readable name
@@ -938,6 +943,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Git { .. }
             | Commands::Consent { .. }
             | Commands::Access { .. }
+            | Commands::Member { .. }
             | Commands::Audit { .. }
             | Commands::Backup { .. }
     )
@@ -1295,7 +1301,6 @@ async fn main() {
                 id,
                 name,
                 description,
-                parent,
                 admin_did,
                 admin_label,
                 admin_expires,
@@ -1322,7 +1327,7 @@ async fn main() {
                     holder: false,
                     handoff: admin_handoff,
                 };
-                contexts::cmd_context_create(&client, &id, &name, description, parent, admin).await
+                contexts::cmd_context_create(&client, &id, &name, description, admin).await
             }
             ContextCommands::Update {
                 id,
@@ -1491,14 +1496,18 @@ async fn main() {
         Commands::Audit { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => match command {
-                    AuditCommands::Verify => audit::cmd_verify(&key, &target).await,
+                    AuditCommands::Verify => {
+                        audit::cmd_verify(&key, &target, cli.transport.into()).await
+                    }
                 },
                 Err(e) => Err(e),
             }
         }
         Commands::Vetting { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
-                Ok((key, target)) => vetting::run(command, &key, &target).await,
+                Ok((key, target)) => {
+                    vetting::run(command, &key, &target, cli.transport.into()).await
+                }
                 Err(e) => Err(e),
             }
         }
@@ -1510,7 +1519,9 @@ async fn main() {
         }
         Commands::Consent { command } => {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
-                Ok((key, target)) => consent::run(command, &key, &target).await,
+                Ok((key, target)) => {
+                    consent::run(command, &key, &target, cli.transport.into()).await
+                }
                 Err(e) => Err(e),
             }
         }
@@ -1522,6 +1533,14 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
+        Commands::Member { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    member::run(command, &key, &target, cli.transport.into()).await
+                }
+                Err(e) => Err(e),
+            }
+        }
         Commands::DidLog { command } => {
             match resolve_community(cli.community.as_deref(), &cnm_config) {
                 Ok((slug, _)) => {
@@ -1529,6 +1548,7 @@ async fn main() {
                         command,
                         &community_keyring_key(&slug),
                         url_override.as_deref(),
+                        cli.transport.into(),
                     )
                     .await
                 }
@@ -2411,7 +2431,6 @@ mod tests {
                 "revoke",
                 "3f1c9a52-8c1e-4f2b-9d7a-0b6e5c4d3a21",
             ],
-            vec!["cnm", "vetting", "vetters", "resend", "did:key:z6Mk"],
             vec!["cnm", "vetting", "auto-grant", "show"],
             vec![
                 "cnm",

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use vta_cli_common::render::{BOLD, DIM, GREEN, RESET};
+use vta_sdk::session::TransportChoice;
 use vtc_client::did_register::v0_1 as register;
 
 use crate::vtc::{self, VtcTarget};
@@ -39,9 +40,14 @@ pub enum DidLogCommands {
     },
 }
 
-pub async fn run(command: DidLogCommands, keyring_key: &str, url: Option<&str>) -> CliResult {
+pub async fn run(
+    command: DidLogCommands,
+    keyring_key: &str,
+    url: Option<&str>,
+    transport: TransportChoice,
+) -> CliResult {
     match command {
-        DidLogCommands::Install { file } => cmd_install(keyring_key, url, &file).await,
+        DidLogCommands::Install { file } => cmd_install(keyring_key, url, &file, transport).await,
     }
 }
 
@@ -67,7 +73,12 @@ fn community_api(did: &str) -> Option<String> {
     }
 }
 
-async fn cmd_install(keyring_key: &str, url: Option<&str>, file: &Path) -> CliResult {
+async fn cmd_install(
+    keyring_key: &str,
+    url: Option<&str>,
+    file: &Path,
+    transport: TransportChoice,
+) -> CliResult {
     let log = std::fs::read_to_string(file).map_err(|e| format!("read {}: {e}", file.display()))?;
     let did = log_did(&log).ok_or_else(|| {
         format!(
@@ -95,16 +106,19 @@ async fn cmd_install(keyring_key: &str, url: Option<&str>, file: &Path) -> CliRe
         .try_into()
         .map_err(|e| format!("build the register request: {e}"))?;
 
-    // Not the profile's VTA session: that authenticates with the *VTA's* DID
-    // as the audience, which a VTC refuses. The same identity, authenticated
-    // to the community with the community's DID — the log's own — as the
-    // audience.
+    // Not the profile's VTA session: that is addressed to the *VTA*. The same
+    // identity signs a `did/register` Trust Task addressed to the community —
+    // the log's own DID — over the transport the community advertises.
     let target = VtcTarget {
         did: did.clone(),
         base,
     };
-    let vtc = vtc::connect(keyring_key, &target).await?.client;
-    let response = vtc.install_did_log(&payload).await.map_err(|e| {
+    let vtc = vtc::connect_for_tasks(keyring_key, &target, transport)
+        .await?
+        .client;
+    let outcome = vtc.install_did_log(&payload).await;
+    vtc.shutdown().await;
+    let response = outcome.map_err(|e| {
         format!(
             "{e}\n\nThe community refuses a log that does not verify, is for another DID, or \
              drops or rewrites an entry it serves. Fetch the current log with \

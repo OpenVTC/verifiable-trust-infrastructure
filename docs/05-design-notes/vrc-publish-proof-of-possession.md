@@ -256,12 +256,18 @@ unaffected" and stopping there is what let that pass review: the sentence
 answers the question nobody needed answered and is silent on the one that
 mattered.
 
-`DELETE /v1/relationships/{id}` now takes an optional `VrcRevokeAuthorization`
-in the request body — same construction as the publish authorization, bound to
-the row id rather than to a credential digest, since the request names a row and
-carries no credential. Verified and discarded, for the same `sessionId` reason.
-The attributed form (`auth.did == rel.issuer_did`) and admin moderation are
-unchanged and need no proof.
+`vtc/relationships/revoke/0.2` (trustoverip/dtgwg-trust-tasks-tf#689) now takes
+an optional `pop`, a `VrcRevokeAuthorization` — same construction as the
+publish authorization, bound to the enclosing document's own `id` and to the
+row id (`relationship`) rather than to a credential digest, since the request
+names a row and carries no credential. Verified and discarded; it carries no
+`sessionId` at all, unlike the publish authorization above, because a signed
+document has no session to bind to — `documentId` alone is the anti-replay
+property. The attributed form (the document's proof signer equals
+`rel.issuer_did`) and admin moderation are unchanged and need no proof.
+`revoke/0.1`'s bearer-less REST route, which carried the original,
+session-bound version of this authorization, is retired now that `0.2` reaches
+the same capacity over every transport.
 
 The general lesson, worth applying to anything added later: **replacing an
 identity equality is not done until every sibling operation on the same

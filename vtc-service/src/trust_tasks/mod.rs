@@ -60,7 +60,11 @@ pub(crate) mod helpers;
 pub(crate) mod accepted_ids;
 // The per-type document size limit, checked before the parse.
 mod credential_exchange;
-pub(crate) mod size;
+// `pub` (not `pub(crate)`) only so `AppState::large_document_budget`'s type
+// is nameable from the integration-test crates that build an `AppState`
+// literal directly (`tests/emergency_bootstrap.rs`, `tests/passkey_state.rs`)
+// — every other item the module exports stays `pub(crate)`.
+pub mod size;
 // `trust-task-discovery/0.3`: what this VTC serves and the acceptance window it
 // applies (VTI-TRN-047).
 mod discovery;
@@ -276,8 +280,26 @@ pub(crate) async fn dispatch_trust_task_core(
     // Every answer is signed, refusals included — the early returns below as
     // well as the dispatched result (which `dispatch_trust_task_validated`
     // signs before recording it for redelivery).
-    let outcome = dispatch_trust_task_validated(state, ctx, body, None).await;
+    let address = large_document_budget_address(ctx);
+    let outcome = dispatch_trust_task_validated(state, ctx, body, None, &address).await;
     sign_response(state, outcome).await
+}
+
+/// The address [`size::check_for_known_issuer`] charges a raised-limit
+/// document's budget to, for a caller that has no address of its own to pass
+/// (every non-HTTPS transport, and any direct test call). DIDComm and TSP
+/// already authenticate `ctx.sender_did` at the transport layer, before the
+/// document's own proof is read — the same "claim, not yet a verified issuer"
+/// standing [`size`]'s module docs describe — so that VID is this budget's
+/// address. A caller with no transport-authenticated sender (REST reached
+/// other than through [`dispatch_trust_task_core_admitted`], which passes the
+/// client IP explicitly) shares one placeholder address rather than being
+/// charged against nothing.
+fn large_document_budget_address(ctx: &JoinAuthCtx) -> String {
+    ctx.sender_did
+        .as_deref()
+        .map(|vid| format!("vid:{vid}"))
+        .unwrap_or_else(|| "ip:unknown".to_string())
 }
 
 /// A transport's say in whether a document whose proof has verified may go on
@@ -295,14 +317,20 @@ pub(crate) trait VerifiedAdmission: Sync {
 }
 
 /// [`dispatch_trust_task_core`], with `admit` consulted once the proof has
-/// verified (see [`VerifiedAdmission`]).
+/// verified (see [`VerifiedAdmission`]), and the raised-limit budget charged
+/// against `client_ip` rather than the sender-VID fallback
+/// [`large_document_budget_address`] uses — the real address a stranger
+/// cannot choose over HTTPS, resolved by the caller from the connection peer
+/// (or `X-Forwarded-For`, behind a configured trusted proxy).
 pub(crate) async fn dispatch_trust_task_core_admitted(
     state: &AppState,
     ctx: &JoinAuthCtx,
     body: &[u8],
     admit: &dyn VerifiedAdmission,
+    client_ip: std::net::IpAddr,
 ) -> TrustTaskOutcome {
-    let outcome = dispatch_trust_task_validated(state, ctx, body, Some(admit)).await;
+    let address = format!("ip:{client_ip}");
+    let outcome = dispatch_trust_task_validated(state, ctx, body, Some(admit), &address).await;
     sign_response(state, outcome).await
 }
 
@@ -311,12 +339,27 @@ async fn dispatch_trust_task_validated(
     ctx: &JoinAuthCtx,
     body: &[u8],
     admit: Option<&dyn VerifiedAdmission>,
+    budget_address: &str,
 ) -> TrustTaskOutcome {
     // 0. The size the document's type accepts — decided before anything in it
-    //    is parsed, on every transport (`size`).
-    if let Err(refused) = size::check(state, body).await {
-        return refused;
-    }
+    //    is parsed, on every transport (`size`). A document large enough to
+    //    need its claimed (not yet verified) issuer's ACL entry for the
+    //    raised limit is charged against `budget_address`'s large-document
+    //    budget first — see `size`'s module docs for why an unverified claim
+    //    alone would otherwise be a DoS amplifier. Settled below, once this
+    //    document's own proof verification concludes (or does not run at
+    //    all).
+    let large_doc_charge = match size::check_for_known_issuer(
+        state,
+        body,
+        budget_address,
+        crate::auth::session::now_epoch(),
+    )
+    .await
+    {
+        Ok(charge) => charge,
+        Err(refused) => return refused,
+    };
 
     // 1. Parse the envelope.
     let doc: TrustTask<Value> = match serde_json::from_slice(body) {
@@ -451,6 +494,17 @@ async fn dispatch_trust_task_validated(
                         %signer,
                         "proof verifies under a key the document's issuer does not control"
                     );
+                    // Settle before returning: a proof that verifies under a
+                    // different DID than the one this document claimed as
+                    // `issuer` is exactly the "verified issuer turns out to be
+                    // someone else" case `size`'s module docs describe, and
+                    // penalises the budget address the same as an outright
+                    // verification failure would.
+                    size::settle_large_document_charge(
+                        &state.large_document_budget,
+                        large_doc_charge.as_ref(),
+                        Some(signer.as_str()),
+                    );
                     return reject_with(
                         &doc,
                         RejectReason::ProofInvalid {
@@ -460,6 +514,11 @@ async fn dispatch_trust_task_validated(
                         },
                     );
                 }
+                size::settle_large_document_charge(
+                    &state.large_document_budget,
+                    large_doc_charge.as_ref(),
+                    Some(signer.as_str()),
+                );
                 // A delegated signing key is an operational credential, never
                 // an approver's attestation (auth/signing-key/enroll item 7):
                 // no approval is accepted under its proof, whatever its state.
@@ -485,10 +544,26 @@ async fn dispatch_trust_task_validated(
                 &ctx.with_verified_signer(Some(signer))
             }
             // A proof that is present and does not verify is always fatal,
-            // whatever the transport proved separately.
-            Err(e) => return app_error_to_reject(&doc, &e),
+            // whatever the transport proved separately. Settled as an
+            // unverified claim (`None`) before returning.
+            Err(e) => {
+                size::settle_large_document_charge(
+                    &state.large_document_budget,
+                    large_doc_charge.as_ref(),
+                    None,
+                );
+                return app_error_to_reject(&doc, &e);
+            }
         }
     } else {
+        // No proof at all: whatever this document claimed as `issuer` was
+        // never checked, so the charge settles exactly as an outright
+        // verification failure would.
+        size::settle_large_document_charge(
+            &state.large_document_budget,
+            large_doc_charge.as_ref(),
+            None,
+        );
         ctx
     };
 
@@ -857,6 +932,24 @@ async fn dispatch_typed(
         vetting_wire::VETTING_VETTER_LIST_TYPE => handle_vetter_list(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_SHOW_TYPE => handle_vetter_show(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_RESEND_TYPE => handle_vetter_resend(state, ctx, doc).await,
+        vetting_wire::VETTING_VETTER_RESEND_0_2_TYPE => {
+            handle_vetter_resend_v0_2(state, ctx, doc).await
+        }
+        // Hidden vetting's community half (development branch `zkp-pcs`). Four exchanges: a
+        // vetter enrolling, a vetter drawing its drip, a vetter asking to vet at an event, an
+        // applicant asking for the challenge its proof must bind. Feature-gated, because a build
+        // without the suite cannot serve them and answering "unsupported type" is the honest
+        // response.
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::PCS_ROOT_TYPE => handle_pcs_root(state, ctx, doc).await,
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::PCS_TOKENS_TYPE => handle_pcs_tokens(state, ctx, doc).await,
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::EVENT_MODE_TYPE => handle_event_mode(state, ctx, doc).await,
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE => {
+            handle_pcs_challenge(state, ctx, doc).await
+        }
         // The rooms family. Note what these still do not take: no `ctx`, and no auth
         // claims. A room operation is authorized by the authority chain the room itself
         // issued, never by this service's ACL, roster, or the caller's session —
@@ -1519,9 +1612,12 @@ mod spine_proof_tests {
             })
             .collect();
 
+        // Hidden vetting's four tasks (`zkp-pcs`) declare a proof since their specifications
+        // were published (trust-tasks-rs 0.22); they are bound only with `vetting-pcs`.
+        let hidden_vetting = if cfg!(feature = "vetting-pcs") { 4 } else { 0 };
         assert_eq!(
             required.len(),
-            94,
+            96 + hidden_vetting,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1545,7 +1641,8 @@ mod spine_proof_tests {
              assertionMethod proof) + the 8 member-facing verbs `member_tasks` \
              moved that declare one (`members/{{renew,rotate-challenge,rotate}}`, \
              `members/personhood/revoke`, `relationships/{{publish,revoke}}`, \
-             `endorsements/{{issue,revoke}}`; `relationships/list` and \
+             `endorsements/{{issue,revoke}}`, and the 0.2 versions of \
+             `relationships/revoke` and `vetting/vetters/resend`; `relationships/list` and \
              `endorsements/{{list,show}}` declare none, and their handlers refuse \
              an unsigned one regardless) + the 10 operational verbs `admin_tasks` \
              moved that declare one (`vtc/registry/sync-jobs/{{retry,discard}}`, \
@@ -1567,7 +1664,7 @@ mod spine_proof_tests {
              `auth/signing-key/{{enroll,list,revoke}}` tasks + the 5 website content \
              verbs (`vtc/website/upload/{{begin,chunk,commit,abort}}`, `vtc/website/deploy`; \
              `files/show` declares none and its handler refuses an unsigned one \
-             regardless); got {required:?}"
+             regardless) + the 4 hidden-vetting tasks under `vetting-pcs`; got {required:?}"
         );
     }
 
@@ -1882,30 +1979,37 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     vta_sdk::protocols::credential_exchange::PRESENT,
     // A vetter withdrawing a statement (OpenVTC vetting design §9.6).
     vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
-    // An admin naming a vetter. Its REST route `POST /v1/vetting/vetters`
-    // stays only until `vtc-client` sends it signed.
+    // An admin naming a vetter. It has no REST route.
     vetting_wire::VETTING_VETTER_GRANT_TYPE,
     // The vetter registry: a vetter publishing a profile, anyone identified
-    // finding vetters, and a vetter asking for their grant credential again
-    // (resend and show keep their admin REST routes only until `vtc-client`
-    // sends them signed; the listing has none).
+    // finding vetters, and a vetter asking for their grant credential again.
+    // `0.2` adds the administrator's route (`memberDid`), which is what let
+    // the admin-only REST resend route retire (tt-tf#689).
     vetting_wire::VETTING_VETTER_PROFILE_TYPE,
     vetting_wire::VETTING_VETTER_LIST_TYPE,
     vetting_wire::VETTING_VETTER_SHOW_TYPE,
     vetting_wire::VETTING_VETTER_RESEND_TYPE,
+    vetting_wire::VETTING_VETTER_RESEND_0_2_TYPE,
+    // Hidden vetting: enrolment, the drip, event mode, and the applicant's challenge.
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::PCS_TOKENS_TYPE,
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::EVENT_MODE_TYPE,
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // The admin-facing member verbs (#1641 phase 2): the binding that holds the
     // document requirements their specifications declare — proof, recipient,
-    // `issuedAt`, and the accepted-id record. `purge` has no REST route; the
-    // other three keep theirs only until `vtc-client` sends them signed.
+    // `issuedAt`, and the accepted-id record. None has a REST route.
     MEMBER_CREDENTIALS_TYPE,
     MEMBER_UPDATE_TYPE,
     MEMBER_ADMIN_REMOVE_TYPE,
     MEMBER_PURGE_TYPE,
     // Batch 2: the join decision and the community-profile edit, on the same
-    // terms. The profile edit has no REST route; `decide` keeps its route only
-    // until `vtc-client` sends it signed.
+    // terms. Neither has a REST route.
     JOIN_DECIDE_TYPE,
     COMMUNITY_PROFILE_UPDATE_TYPE,
     // Batch 3: the portable-configuration pair, on the same terms.
@@ -1952,11 +2056,12 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     backup_tasks::PUT_CHUNK_TYPE,
     backup_tasks::FINALIZE_IMPORT_TYPE,
     backup_tasks::ABORT_TYPE,
-    // The member-facing verbs, each also still mounted on its REST route:
-    // renewal and DID rotation (the member's own), personhood revocation (the
-    // subject or an admin), the relationship graph's list / publish / revoke,
-    // and the endorsement verbs an Admin or Issuer performs. Before these, a
-    // member on TSP or DIDComm could join and then do none of this.
+    // The member-facing verbs: renewal and DID rotation (the member's own),
+    // personhood revocation (the subject or an admin), the relationship
+    // graph's list / publish / revoke (`0.1` direct-issuer-or-admin, `0.2`
+    // adding the pairwise `pop` route), and the endorsement verbs an Admin or
+    // Issuer performs. None has a REST route any more. Before these, a member
+    // on TSP or DIDComm could join and then do none of this.
     member_tasks::RENEW_TYPE,
     member_tasks::ROTATE_CHALLENGE_TYPE,
     member_tasks::ROTATE_TYPE,
@@ -1964,14 +2069,14 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     member_tasks::RELATIONSHIPS_LIST_TYPE,
     member_tasks::RELATIONSHIPS_PUBLISH_TYPE,
     member_tasks::RELATIONSHIPS_REVOKE_TYPE,
+    member_tasks::RELATIONSHIPS_REVOKE_0_2_TYPE,
     member_tasks::ENDORSEMENTS_ISSUE_TYPE,
     member_tasks::ENDORSEMENTS_LIST_TYPE,
     member_tasks::ENDORSEMENTS_SHOW_TYPE,
     member_tasks::ENDORSEMENTS_REVOKE_TYPE,
     // The administrator's operational verbs, which had only bearer REST: the
     // registry reconciler, the audit log, the runtime configuration, admin
-    // invites, and the auth service's sessions. `audit/verify` keeps its route
-    // while `vtc-client` calls it; none of the others has one.
+    // invites, and the auth service's sessions. None has a REST route.
     admin_tasks::DIAGNOSTICS_TYPE,
     admin_tasks::SYNC_JOBS_LIST_TYPE,
     admin_tasks::SYNC_JOBS_RETRY_TYPE,
@@ -1988,9 +2093,8 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     admin_tasks::INVITES_REVOKE_TYPE,
     admin_tasks::SESSIONS_LIST_TYPE,
     admin_tasks::REVOKE_SESSION_TYPE,
-    // The administrator's community verbs, which had only bearer REST. The
-    // member and join-request listings keep their routes while `vtc-client`
-    // calls them; none of the others has one.
+    // The administrator's community verbs, which had only bearer REST. None
+    // has a REST route now.
     community_tasks::PROFILE_SHOW_TYPE,
     community_tasks::CEREMONIES_LIST_TYPE,
     community_tasks::DIRECTORY_QUERY_TYPE,
@@ -2007,9 +2111,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     community_tasks::INVITATIONS_LIST_TYPE,
     community_tasks::INVITATIONS_REVOKE_TYPE,
     community_tasks::INVITATIONS_DELIVER_TYPE,
-    // The policy log and the community's own DID log. `policy/{list,get,
-    // upsert,activate}` and `did/register` keep their routes while `vtc-client`
-    // calls them.
+    // The policy log and the community's own DID log. None has a REST route.
     policy_tasks::POLICY_LIST_TYPE,
     policy_tasks::POLICY_GET_TYPE,
     policy_tasks::POLICY_ACTIVE_TYPE,
@@ -2407,6 +2509,86 @@ async fn handle_vetter_grant(
     }
 }
 
+/// `vtc/vetting/vetters/pcs-root/0.1` — a vetter enrols for a class label.
+///
+/// The sender is the proven signer, and it is the member the community checks its records for:
+/// a live vetter grant, no credential under this label yet, and the identifier they were bound
+/// to. Every one of those is [`crate::vetting::pcs_issue::enrol`]'s, read from the store.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_pcs_root(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let member_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::pcs_tasks::handle_pcs_root(state, &member_did, &doc).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/pcs-tokens/0.1` — a vetter draws its tick of the drip.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_pcs_tokens(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let member_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::pcs_tasks::handle_pcs_tokens(state, &member_did, &doc).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/event-mode/0.1` — a vetter asks to vet at a named event.
+///
+/// The request is only ever a request. Approving it is an act by an admin of the community,
+/// through the criterion that publishes the event — deliberately not a Trust Task, because a task
+/// the vetter could send is a task a vetter could be made to send.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_event_mode(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let member_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::pcs_tasks::handle_event_mode(state, &member_did, &doc).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/pcs-challenge/0.1` — an applicant asks for the nonce its proof must bind.
+///
+/// Open to any party the community would take a submission from, which is the same entitlement
+/// that admits them to apply: the challenge confers no standing, it only makes one submission
+/// unrepeatable.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_pcs_challenge(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let applicant_did = match resolve_holder(state, ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    match crate::vetting::pcs_tasks::handle_pcs_challenge(state, &applicant_did, &doc).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
 /// Parse a published task's payload as received: the JSON is validated against
 /// the published schema before it is parsed — a generated constructor can
 /// normalise what it reads — and then the rules no schema can state are applied
@@ -2541,6 +2723,73 @@ async fn handle_vetter_resend(
             )
         }
         Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/resend/0.2` — a vetter asks for their grant credential
+/// again, or an administrator asks on a named vetter's behalf.
+///
+/// Absent `memberDid`, this is exactly `handle_vetter_resend`'s `0.1` behaviour:
+/// the sender identified by the document's own proof (`resolve_holder`),
+/// resending their own grant. Present, [`admin_signer`] establishes the
+/// sender holds the community-administrator capability — refusing with
+/// `permissionDenied` otherwise, per the specification's Conformance item 2 —
+/// and honours a console-key delegation exactly as the other admin verbs do;
+/// the resend then concerns `memberDid`'s grant, not the sender's own. Either
+/// way the actor recorded on the `VetterGrantResent` audit entry is the
+/// sender, never the subject, so an administrator's resend is attributable to
+/// the administrator who asked for it.
+async fn handle_vetter_resend_v0_2(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::{StandardCode, TrustTaskCode};
+
+    let body: vetting_wire::vetters::resend::v0_2::Payload = match parse_checked_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    let (actor_did, subject_did) = match body.member_did.as_ref() {
+        Some(member_did) => {
+            let admin = match admin_signer(state, ctx, &doc).await {
+                Ok(a) => a,
+                Err(reject) => return reject,
+            };
+            (admin.did, member_did.to_string())
+        }
+        None => {
+            let vetter_did = match resolve_holder(state, ctx, &doc).await {
+                Ok(did) => did,
+                Err(reject) => return reject,
+            };
+            (vetter_did.clone(), vetter_did)
+        }
+    };
+    match crate::vetting::vetters::resend(state, &actor_did, &subject_did).await {
+        // `notGranted` is a `NotFound` underneath, and its local part is not
+        // `notFound`, so #1602's client-side rule does not recover it — the
+        // marker is the only thing that does. `0.1` and `0.2` declare the
+        // identical code text, so `0.1`'s constant witnesses both.
+        Err(AppError::NotFound(reason)) => reject_with_code_because(
+            &doc,
+            extended_code(vetting_wire::VETTING_VETTER_RESEND_ERR_NOT_GRANTED),
+            reason,
+            None,
+            reasons::NOT_FOUND,
+        ),
+        Err(AppError::ServiceError { status, message })
+            if status == axum::http::StatusCode::SERVICE_UNAVAILABLE =>
+        {
+            reject_with_code(
+                &doc,
+                TrustTaskCode::Standard(StandardCode::Unavailable),
+                message,
+                None,
+            )
+        }
+        Err(e) => app_error_to_reject(&doc, &e),
+        Ok(response) => success_response(&doc, response),
     }
 }
 
@@ -4256,6 +4505,7 @@ mod tests {
             vetting_wire::VETTING_VETTER_LIST_TYPE,
             vetting_wire::VETTING_VETTER_SHOW_TYPE,
             vetting_wire::VETTING_VETTER_RESEND_TYPE,
+            <vetting_wire::vetters::resend::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <member_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI,
@@ -4297,6 +4547,7 @@ mod tests {
             <trust_tasks_rs::specs::vtc::relationships::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::relationships::publish::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::relationships::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::relationships::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::issue::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
@@ -4379,6 +4630,21 @@ mod tests {
             website_tasks::DEPLOY_TYPE,
             #[cfg(feature = "website")]
             website_tasks::FILES_SHOW_TYPE,
+            // Hidden vetting. These four name a string constant rather than a generated
+            // `TYPE_URI` because the pinned `trust-tasks-rs` does not carry their modules yet.
+            // The specifications are merged (#618, #620) and the bindings generate as 0.22;
+            // this graph resolves 0.21.17 because affinidi-messaging-sdk, the mediator and the
+            // four trust-tasks companions re-export trust-tasks-rs types from the 0.21 line.
+            // `pcs_tasks::tests` holds what the generated type would have held: that the
+            // payloads match the published schemas.
+            #[cfg(feature = "vetting-pcs")]
+            crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
+            #[cfg(feature = "vetting-pcs")]
+            crate::vetting::pcs_tasks::PCS_TOKENS_TYPE,
+            #[cfg(feature = "vetting-pcs")]
+            crate::vetting::pcs_tasks::EVENT_MODE_TYPE,
+            #[cfg(feature = "vetting-pcs")]
+            crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.
