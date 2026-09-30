@@ -140,7 +140,11 @@ async fn di_signed_authenticate_issues_tokens() {
     let (session_id, challenge) = obtain_challenge(&router, &did).await;
     let doc = signed_authenticate_doc(&sk, &did, &vm, &challenge, &session_id);
 
-    let (status, body) = send(&router, post("/trust-tasks", serde_json::to_vec(&doc).unwrap())).await;
+    let (status, body) = send(
+        &router,
+        post("/trust-tasks", serde_json::to_vec(&doc).unwrap()),
+    )
+    .await;
 
     assert_eq!(
         status,
@@ -190,7 +194,11 @@ async fn di_signed_authenticate_issues_tokens() {
     assert_eq!(stored.session_id, did, "session is keyed on the DID");
 
     // Replay the exact same document: the session is no longer ChallengeSent.
-    let (replay_status, _) = send(&router, post("/trust-tasks", serde_json::to_vec(&doc).unwrap())).await;
+    let (replay_status, _) = send(
+        &router,
+        post("/trust-tasks", serde_json::to_vec(&doc).unwrap()),
+    )
+    .await;
     assert_ne!(
         replay_status,
         StatusCode::OK,
@@ -212,7 +220,11 @@ async fn second_login_for_same_did_coalesces_into_one_session() {
     // First login.
     let (sid1, ch1) = obtain_challenge(&router, &did).await;
     let doc1 = signed_authenticate_doc(&sk, &did, &vm, &ch1, &sid1);
-    let (s1, b1) = send(&router, post("/trust-tasks", serde_json::to_vec(&doc1).unwrap())).await;
+    let (s1, b1) = send(
+        &router,
+        post("/trust-tasks", serde_json::to_vec(&doc1).unwrap()),
+    )
+    .await;
     assert_eq!(s1, StatusCode::OK, "first login: {b1}");
     let rt1 = b1["payload"]["tokens"]["refreshToken"]
         .as_str()
@@ -222,7 +234,11 @@ async fn second_login_for_same_did_coalesces_into_one_session() {
     // Second login for the same DID.
     let (sid2, ch2) = obtain_challenge(&router, &did).await;
     let doc2 = signed_authenticate_doc(&sk, &did, &vm, &ch2, &sid2);
-    let (s2, b2) = send(&router, post("/trust-tasks", serde_json::to_vec(&doc2).unwrap())).await;
+    let (s2, b2) = send(
+        &router,
+        post("/trust-tasks", serde_json::to_vec(&doc2).unwrap()),
+    )
+    .await;
     assert_eq!(s2, StatusCode::OK, "second login: {b2}");
     let rt2 = b2["payload"]["tokens"]["refreshToken"]
         .as_str()
@@ -264,7 +280,11 @@ async fn di_signed_authenticate_rejects_tampered_proof() {
     proof["proofValue"] = Value::String(chars.into_iter().collect());
     doc.proof = Some(serde_json::from_value(proof).unwrap());
 
-    let (status, body) = send(&router, post("/trust-tasks", serde_json::to_vec(&doc).unwrap())).await;
+    let (status, body) = send(
+        &router,
+        post("/trust-tasks", serde_json::to_vec(&doc).unwrap()),
+    )
+    .await;
     // `ProofInvalid` maps to 422, not 401 (`trust-tasks-https::status_for_code`)
     // — the trust-task transport's own standard code for a bad proof.
     assert_eq!(

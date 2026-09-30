@@ -138,11 +138,7 @@ async fn challenge_endpoint_issues_session_and_persists_it() {
         .await
         .expect("seed admin ACL");
 
-    let (status, body) = request(
-        &router,
-        post_json("/trust-tasks", challenge_doc(did)),
-    )
-    .await;
+    let (status, body) = request(&router, post_json("/trust-tasks", challenge_doc(did))).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -152,8 +148,12 @@ async fn challenge_endpoint_issues_session_and_persists_it() {
     // Canonical wire shape: a TT `#response` document whose `payload` is
     // `{ challenge, sessionId, expiresAt }` per spec/auth/challenge/0.1#response.
     let payload = &body["payload"];
-    let session_id = payload["sessionId"].as_str().expect("sessionId in response");
-    let challenge = payload["challenge"].as_str().expect("challenge in response");
+    let session_id = payload["sessionId"]
+        .as_str()
+        .expect("sessionId in response");
+    let challenge = payload["challenge"]
+        .as_str()
+        .expect("challenge in response");
     assert!(
         payload["expiresAt"].as_str().is_some(),
         "canonical shape includes expiresAt: {body}"

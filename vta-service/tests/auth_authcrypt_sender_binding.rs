@@ -45,7 +45,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use vta_service::test_support::build_test_app;
-use vti_common::auth::authcrypt_test_support::{DidKeyParty, forge_authcrypt, genuine_authcrypt, offline_atm_with};
+use vti_common::auth::authcrypt_test_support::{
+    DidKeyParty, forge_authcrypt, genuine_authcrypt, offline_atm_with,
+};
 
 async fn request(router: &axum::Router, req: Request<Body>) -> (StatusCode, Value) {
     let resp = router.clone().oneshot(req).await.expect("request failed");

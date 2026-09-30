@@ -94,13 +94,7 @@ async fn vti_23_keys_create_over_https_needs_key_mint_not_admin() {
     let token = ctx
         .mint_token(&manager, "initiator", vec!["ctx1".into()])
         .await;
-    let (status, body) = post(
-        &router,
-        "/trust-tasks",
-        &token,
-        &keys_create(&ctx, 0x52),
-    )
-    .await;
+    let (status, body) = post(&router, "/trust-tasks", &token, &keys_create(&ctx, 0x52)).await;
     assert_eq!(
         status,
         StatusCode::OK,
@@ -116,13 +110,7 @@ async fn vti_23_keys_create_over_https_needs_key_mint_not_admin() {
 
     let (reader, _) = did_for_seed(0x53);
     let token = ctx.mint_token(&reader, "reader", vec!["ctx1".into()]).await;
-    let (status, body) = post(
-        &router,
-        "/trust-tasks",
-        &token,
-        &keys_create(&ctx, 0x53),
-    )
-    .await;
+    let (status, body) = post(&router, "/trust-tasks", &token, &keys_create(&ctx, 0x53)).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["payload"]["code"], "permissionDenied", "{body}");
     assert!(
