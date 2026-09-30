@@ -187,6 +187,12 @@ pub(crate) fn digest(value: &Value) -> Result<String, VettingError> {
     dtg_credentials::digest_multibase_json(value).map_err(|e| VettingError::Digest(e.to_string()))
 }
 
+/// A catalog credential's wire form, for tests.
+#[cfg(test)]
+pub(crate) fn tests_support_json(dtg: &dtg_credentials::DTGCredential) -> Value {
+    serde_json::to_value(dtg).expect("catalog credential serialises")
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use affinidi_secrets_resolver::secrets::Secret;

@@ -52,48 +52,35 @@ const VC_CONTEXT_V2: &str = "https://www.w3.org/ns/credentials/v2";
 /// `(community DID, roles)` of a community role credential, or `None` when
 /// `credential` is not one.
 ///
-/// A community role credential is a VAC (`type` including
-/// `AuthorityCredential`) whose `issuer` is its own `authority.scope` — the
-/// community conferring authority in itself — carrying no `authority.parent`,
-/// with at least one `role:<name>` action. The roles are the `<name>`s, in
-/// action order.
+/// A community role credential is a DTG VAC — parsed strictly, as
+/// [`verify_eligibility_vp`] parses it: the v1 context, exactly one subtype
+/// (`AuthorityCredential`), a declared `issuerScope` — whose `issuer` is its own
+/// `authority.scope` (the community conferring authority in itself), carrying
+/// no `authority.parent`, with at least one `role:<name>` action. The roles are
+/// the `<name>`s, in action order.
 ///
-/// Reads the shape only — nothing here is verified. Use it to pick candidates
-/// out of a wallet before presenting them.
+/// Checks the shape only — no proof, window or scope declaration is verified.
+/// Use it to pick candidates out of a wallet before presenting them.
 #[must_use]
 pub fn community_roles(credential: &Value) -> Option<(String, Vec<String>)> {
-    let is_authority = match credential.get("type")? {
-        Value::String(t) => t == "AuthorityCredential",
-        Value::Array(types) => types
-            .iter()
-            .any(|t| t.as_str() == Some("AuthorityCredential")),
-        _ => false,
-    };
-    if !is_authority {
+    let vac = DTGCredential::try_from(credential.clone()).ok()?;
+    if vac.type_() != DTGCredentialType::Authority {
         return None;
     }
-    let issuer = match credential.get("issuer")? {
-        Value::String(id) => id.as_str(),
-        Value::Object(o) => o.get("id")?.as_str()?,
-        _ => return None,
-    };
-    let authority = credential.pointer("/credentialSubject/authority")?;
-    let scope = authority.get("scope")?.as_str()?;
-    if scope != issuer || authority.get("parent").is_some() {
+    let authority = vac.credential().authority()?;
+    if authority.scope != vac.issuer() || authority.parent.is_some() {
         return None;
     }
     let roles: Vec<String> = authority
-        .get("actions")?
-        .as_array()?
+        .actions
         .iter()
-        .filter_map(Value::as_str)
-        .filter_map(role_of_action)
+        .filter_map(|a| role_of_action(a))
         .map(str::to_string)
         .collect();
     if roles.is_empty() {
         return None;
     }
-    Some((scope.to_string(), roles))
+    Some((authority.scope.clone(), roles))
 }
 
 /// Present `credentials` to an applicant, bound to the request being answered.
@@ -667,44 +654,36 @@ mod tests {
 
     #[test]
     fn only_community_issued_role_vacs_are_role_credentials() {
-        let vac = |issuer: &str, authority: Value| {
-            json!({
-                "type": ["VerifiableCredential", "DTGCredential", "AuthorityCredential"],
-                "issuer": issuer,
-                "credentialSubject": { "id": "did:key:z", "authority": authority }
-            })
+        let now = Utc::now();
+        let vac = |issuer: &str, scope: &str, actions: &[&str]| {
+            let vac = DTGCredential::new_vac(
+                issuer.into(),
+                IssuerScope::Public,
+                "did:key:z".into(),
+                scope.into(),
+                actions.iter().map(|a| a.to_string()).collect(),
+                now,
+                now + Duration::days(1),
+            )
+            .unwrap();
+            crate::vetting::tests_support_json(&vac)
         };
         assert_eq!(
             community_roles(&vac(
                 "did:web:c",
-                json!({ "scope": "did:web:c", "actions": ["role:vetter", "read", "role:mod"] })
+                "did:web:c",
+                &["role:vetter", "read", "role:mod"]
             )),
             Some(("did:web:c".into(), vec!["vetter".into(), "mod".into()]))
         );
         // Not a role action.
-        assert!(
-            community_roles(&vac(
-                "did:web:c",
-                json!({ "scope": "did:web:c", "actions": ["vetter"] })
-            ))
-            .is_none()
-        );
+        assert!(community_roles(&vac("did:web:c", "did:web:c", &["vetter"])).is_none());
         // Scope other than the issuer's own.
-        assert!(
-            community_roles(&vac(
-                "did:web:c",
-                json!({ "scope": "did:web:d", "actions": ["role:vetter"] })
-            ))
-            .is_none()
-        );
-        // An attenuation.
-        assert!(
-            community_roles(&vac(
-                "did:web:c",
-                json!({ "scope": "did:web:c", "actions": ["role:vetter"], "parent": "zQm" })
-            ))
-            .is_none()
-        );
+        assert!(community_roles(&vac("did:web:c", "did:web:d", &["role:vetter"])).is_none());
+        // Not a DTG v1 credential: the parse is strict.
+        let mut legacy = vac("did:web:c", "did:web:c", &["role:vetter"]);
+        legacy["@context"] = json!(["https://www.w3.org/ns/credentials/v2"]);
+        assert!(community_roles(&legacy).is_none());
         // The retired role-endorsement shape.
         assert!(
             community_roles(&json!({
