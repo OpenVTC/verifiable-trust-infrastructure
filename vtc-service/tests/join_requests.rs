@@ -1220,10 +1220,24 @@ fn build_witness_vp_token(
     now_ts: i64,
     task_context: Option<&str>,
 ) -> (String, Value) {
-    let extra: Vec<(&str, Value)> = task_context
-        .map(|t| vec![("taskContext", json!(t))])
-        .unwrap_or_default();
-    build_vp_token(holder_seed, aud, nonce, now_ts, "WitnessCredential", &extra)
+    // A `witnessed/1` statement, classified by its predicate — the SD-JWT-VC
+    // projection keeps the subject's members at the top level.
+    let mut extra: Vec<(&str, Value)> = vec![
+        ("predicate", json!(dtg_credentials::WITNESSED_V1)),
+        ("object", json!({ "digestMultibase": "zQmNoEdgeHeldHere" })),
+    ];
+    if let Some(t) = task_context {
+        extra.push(("taskContext", json!(t)));
+        extra.push(("taskDigestMultibase", json!("zQmSessionDigest")));
+    }
+    build_vp_token(
+        holder_seed,
+        aud,
+        nonce,
+        now_ts,
+        "StatementCredential",
+        &extra,
+    )
 }
 
 const VTC_AUD: &str = "did:webvh:vtc.example.com:abc";
@@ -1694,8 +1708,12 @@ async fn build_member_vmc(member_did: &str, community_did: &str, id: &str) -> Va
         &MEMBER_SEED,
     );
     let mut vc = json!({
-        "@context": ["https://www.w3.org/ns/credentials/v2"],
-        "type": ["VerifiableCredential", "MembershipCredential"],
+        "@context": [
+            dtg_credentials::W3C_VC_V2_CONTEXT,
+            dtg_credentials::DTG_CONTEXT_V1
+        ],
+        "type": ["VerifiableCredential", "DTGCredential", "MembershipCredential"],
+        "issuerScope": "directed",
         "id": id,
         "issuer": member_did,
         "credentialSubject": { "id": community_did },
@@ -2500,9 +2518,12 @@ async fn the_vetter_role_credential_is_revocable_and_verifies_for_an_applicant()
         credential["credentialStatus"]["statusListIndex"].is_string(),
         "{credential}"
     );
+    // vtc/vetting/vetters/grant/0.1 step 4: a community VAC conferring
+    // `role:vetter`, unattenuable.
+    assert_eq!(credential["issuerScope"], "public");
     assert_eq!(
-        credential["credentialSubject"]["endorsement"],
-        json!({ "type": "CommunityRole", "role": "vetter", "communityDid": community })
+        credential["credentialSubject"]["authority"],
+        json!({ "scope": community, "actions": ["role:vetter"], "maxAttenuation": 0 })
     );
     assert_eq!(
         grant.response.valid_until - grant.response.valid_from,
@@ -4538,8 +4559,12 @@ async fn the_vmc_task_answers_with_the_codes_its_spec_declares() {
     let (stranger, _) = did_key_secret(seed);
     let signer = vtc_service::credentials::LocalSigner::from_ed25519_seed(stranger.clone(), &seed);
     let mut stranger_vc = json!({
-        "@context": ["https://www.w3.org/ns/credentials/v2"],
-        "type": ["VerifiableCredential", "MembershipCredential"],
+        "@context": [
+            dtg_credentials::W3C_VC_V2_CONTEXT,
+            dtg_credentials::DTG_CONTEXT_V1
+        ],
+        "type": ["VerifiableCredential", "DTGCredential", "MembershipCredential"],
+        "issuerScope": "directed",
         "id": "urn:uuid:stranger",
         "issuer": stranger,
         "credentialSubject": { "id": VTC_DID },
