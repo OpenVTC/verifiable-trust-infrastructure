@@ -64,7 +64,9 @@ jobs:
     # after the Release PR merges. An ordinary feature merge is a no-op.
     name: Release-plz release
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Three publishing passes of up to 30 minutes each (one per token), plus
+    # setup. See "Run release-plz" below.
+    timeout-minutes: 110
     permissions:
       contents: write
       pull-requests: read
@@ -159,11 +161,23 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           PACKAGE: ${{ inputs.package }}
 
+      # A crates.io Trusted Publishing token lives 30 minutes, and release-plz
+      # publishes the whole workspace in one pass on one token. A large release
+      # (30+ crates, each packaged and verify-built) outlives it: the #1821
+      # release published 29 crates and then failed on the 30th with
+      # `403 Forbidden: Invalid authentication token`, exactly 30 minutes after
+      # the exchange. So the pass is retried, each time on a freshly minted
+      # token. A retry is cheap and safe — release-plz skips every crate whose
+      # version is already on crates.io and resumes with the first that is not.
+      # A failure that is not the token (a broken ordering, a build error)
+      # fails the same way on each attempt, and the last step reports it.
       - name: Run release-plz
+        id: release1
         # Skipped when recovering a single crate — that run has already done
         # its one job, and letting release-plz follow would re-attempt the same
         # broken ordering in the same run.
         if: inputs.package == ''
+        continue-on-error: true
         # Pinned to a full version: release-plz/action does NOT publish a
         # moving major tag, so `@v0` resolves to nothing and the job fails at
         # "Set up job" before running a step. (actions/checkout@v6 works
@@ -174,6 +188,37 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Re-authenticate to crates.io (attempt 2)
+        if: inputs.package == '' && steps.release1.outcome == 'failure'
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth2
+
+      - name: Run release-plz (attempt 2)
+        id: release2
+        if: inputs.package == '' && steps.release1.outcome == 'failure'
+        continue-on-error: true
+        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth2.outputs.token }}
+
+      - name: Re-authenticate to crates.io (attempt 3)
+        if: inputs.package == '' && steps.release2.outcome == 'failure'
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth3
+
+      - name: Run release-plz (attempt 3)
+        id: release3
+        if: inputs.package == '' && steps.release2.outcome == 'failure'
+        uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth3.outputs.token }}
 
   release-plz-pr:
     name: Release-plz PR
