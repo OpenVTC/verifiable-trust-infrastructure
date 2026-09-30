@@ -983,7 +983,8 @@ fn pcs_witnesses() -> Vec<Witness> {
 /// compile error here, not a stale row.
 fn unwitnessed() -> Vec<DeclaredErrorCode> {
     use trust_tasks_rs::specs::vtc as s;
-    vec![
+    #[allow(unused_mut)]
+    let mut v = vec![
         // BASELINE-BEGIN — generated from this test's own failure output.
         s::admin::invites::revoke::v0_1::error_codes::ALREADY_CONSUMED,
         // Both remaining auth codes need infrastructure this workspace does not
@@ -1018,7 +1019,16 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
         // BASELINE-END
-    ]
+    ];
+    // `vetting/hidden/publish` is bound only with `vetting-pcs`, and moved from
+    // REST to the spine in #1858 without a signed-document test driving its two
+    // refusals yet.
+    #[cfg(feature = "vetting-pcs")]
+    v.extend([
+        s::vetting::hidden::publish::v0_1::error_codes::NO_SUCH_CRITERION,
+        s::vetting::hidden::publish::v0_1::error_codes::NO_VETTING,
+    ]);
+    v
 }
 
 /// The length of [`unwitnessed`], asserted. Lower it as witnesses land; raising

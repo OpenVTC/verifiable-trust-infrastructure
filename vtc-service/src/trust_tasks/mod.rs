@@ -1651,9 +1651,9 @@ mod spine_proof_tests {
             })
             .collect();
 
-        // Hidden vetting's four tasks (`zkp-pcs`) declare a proof since their specifications
-        // were published (trust-tasks-rs 0.22); they are bound only with `vetting-pcs`.
-        let hidden_vetting = if cfg!(feature = "vetting-pcs") { 4 } else { 0 };
+        // Hidden vetting's five tasks (`zkp-pcs`, and `vetting/hidden/publish`
+        // since #1858) declare a proof; they are bound only with `vetting-pcs`.
+        let hidden_vetting = if cfg!(feature = "vetting-pcs") { 5 } else { 0 };
         assert_eq!(
             required.len(),
             100 + hidden_vetting,
