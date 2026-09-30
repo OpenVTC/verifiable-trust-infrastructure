@@ -24,7 +24,11 @@
 //!    - drives `update_did_webvh` to publish the new document
 //!      (the WebVH key rotation that happens as a side-effect of
 //!      a doc-bearing update is intentional — passkey adds are
-//!      treated as full updates).
+//!      treated as full updates),
+//!    - clears any live step-up elevation the DID's sessions hold that
+//!      was **not** reached with a passkey — from this point
+//!      `trust_tasks::step_up::handle_approve_response` requires one for
+//!      this subject and no longer accepts the did-signed gate.
 //! 3. [`list_passkeys`] — reads the current DID document and
 //!    returns every verificationMethod whose fragment starts with
 //!    `passkey-`.
@@ -271,6 +275,7 @@ pub async fn start_enrollment(
 pub async fn finish_enrollment(
     deps: &crate::operations::did_webvh::WebvhDeps<'_>,
     passkey_vms_ks: &KeyspaceHandle,
+    sessions_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     body: EnrollPasskeySubmitBody,
     vta_did: Option<&str>,
@@ -362,10 +367,51 @@ pub async fn finish_enrollment(
     };
     let result = update_did_webvh(deps, auth, &record.scid, opts, vta_did, channel).await?;
 
+    // 7. This DID now has a passkey: `handle_approve_response` will refuse a
+    //    did-signed approve-response for it from here on (`noGate`), so a live
+    //    elevation it reached the did-signed way no longer reflects a factor
+    //    the subject can still re-prove. Clear it. Best-effort: the enrolment
+    //    itself already succeeded and published, and a stale elevation lapses
+    //    on its own inside `STEP_UP_ELEVATION_TTL_SECS` regardless, so a store
+    //    hiccup here does not warrant failing an otherwise-complete enrolment.
+    if let Err(e) = clear_non_passkey_elevation_for_did(sessions_ks, &record.did).await {
+        tracing::warn!(
+            did = %record.did, error = %e,
+            "passkey VM enrolled, but clearing any prior non-passkey step-up \
+             elevation failed; it will still lapse at its own TTL"
+        );
+    }
+
     Ok(EnrollPasskeySubmitResponse {
         verification_method: vm,
         webvh_version: result.new_version_id,
     })
+}
+
+/// Clear a live, non-passkey step-up elevation on every session `did` holds
+/// ([`crate::auth::session::Session::clear_non_passkey_elevation`]). Returns
+/// how many session rows were rewritten.
+async fn clear_non_passkey_elevation_for_did(
+    sessions_ks: &KeyspaceHandle,
+    did: &str,
+) -> Result<usize, PasskeyVmError> {
+    use crate::auth::session::{list_sessions, update_session};
+
+    let mut cleared = 0usize;
+    for mut session in list_sessions(sessions_ks)
+        .await
+        .map_err(|e| PasskeyVmError::Persistence(format!("list sessions: {e}")))?
+        .into_iter()
+        .filter(|s| s.did == did)
+    {
+        if session.clear_non_passkey_elevation() {
+            update_session(sessions_ks, &session)
+                .await
+                .map_err(|e| PasskeyVmError::Persistence(format!("update session: {e}")))?;
+            cleared += 1;
+        }
+    }
+    Ok(cleared)
 }
 
 fn build_register_public_key_credential(
@@ -441,6 +487,96 @@ pub async fn list_passkeys(
     Ok(ListPasskeyVmsResponse {
         verification_methods: vms,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Passkey-only step-up support (`trust_tasks::step_up`)
+// ---------------------------------------------------------------------------
+
+/// The passkey (fragment `passkey-*`) verification methods on `did`'s current
+/// WebVH document, unauthenticated (internal, policy-driving reads — not a
+/// caller-facing operation, so no admin/context gate like [`list_passkeys`]).
+/// Empty for a DID this VTA does not manage.
+///
+/// Reads the last log line directly
+/// ([`current_document_from_log`](crate::operations::protocol::document::current_document_from_log)),
+/// not the chain-validated [`extract_latest_document`] `list_passkeys` and
+/// the mutating operations use: this is a read-only, best-effort lookup that
+/// drives a security *gate* (passkey-only step-up), not a document mutation,
+/// and it should not fail closed on a chain-validation defect elsewhere in
+/// the log history that has nothing to do with whether a passkey VM is on
+/// the current document.
+async fn passkey_vms_of(
+    webvh_ks: &KeyspaceHandle,
+    did: &str,
+) -> Result<Vec<Value>, PasskeyVmError> {
+    use crate::operations::protocol::document::current_document_from_log;
+
+    let Some(did_log) = webvh_store::get_did_log(webvh_ks, did)
+        .await
+        .map_err(|e| PasskeyVmError::Persistence(format!("get_did_log: {e}")))?
+    else {
+        return Ok(Vec::new());
+    };
+    let doc = current_document_from_log(&did_log)
+        .map_err(|e| PasskeyVmError::Internal(format!("current_document_from_log: {e}")))?;
+    Ok(doc
+        .get("verificationMethod")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter(|vm| {
+                    vm.get("id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|id| id.split('#').nth(1))
+                        .is_some_and(|frag| frag.starts_with("passkey-"))
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// Whether `did` has at least one enrolled passkey verification method. See
+/// [`crate::trust_tasks::step_up`]'s passkey-only step-up: once true, a
+/// did-signed approve-response for `did` is refused (`noGate`).
+pub async fn has_passkey_vm(webvh_ks: &KeyspaceHandle, did: &str) -> Result<bool, PasskeyVmError> {
+    Ok(!passkey_vms_of(webvh_ks, did).await?.is_empty())
+}
+
+/// Resolve a submitted WebAuthn `credential.id` to the verification-method id
+/// of one of `did`'s enrolled passkeys, by comparing against each VM's stored
+/// `webauthnCredentialId`.
+///
+/// This is the credential-id → VM binding the step-up webauthn gate needs.
+/// Deliberately **not** routed through the generic DID resolver
+/// (`operations::passkey_login::enumerate_passkey_vms`, still a "Phase 3"
+/// stub there): `webauthnCredentialId` is a VTA-specific verification-method
+/// property that a generic resolver's typed round-trip does not preserve.
+/// Reading the local document — the same source [`list_passkeys`] reads —
+/// sidesteps that; the signature itself is still verified afterwards through
+/// the generic resolver, over the standard `publicKeyMultibase` field that
+/// gap does not touch.
+pub async fn find_passkey_vm_by_credential_id(
+    webvh_ks: &KeyspaceHandle,
+    did: &str,
+    credential_id: &[u8],
+) -> Result<Option<String>, PasskeyVmError> {
+    for vm in passkey_vms_of(webvh_ks, did).await? {
+        let Some(id) = vm.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(cred_b64) = vm.get("webauthnCredentialId").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Ok(cred_bytes) = b64u_decode(cred_b64) else {
+            continue;
+        };
+        if cred_bytes == credential_id {
+            return Ok(Some(id.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -581,6 +717,198 @@ fn remove_vm_from_document(current: &Value, vm_id: &str) -> Result<Value, Passke
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Store;
+    use vti_common::config::StoreConfig;
+
+    fn temp_webvh_ks() -> (Store, KeyspaceHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("store open");
+        let webvh_ks = store
+            .keyspace(crate::keyspaces::WEBVH)
+            .expect("webvh keyspace");
+        (store, webvh_ks, dir)
+    }
+
+    /// Write a minimal, single-entry did.jsonl whose current document is
+    /// `doc` — enough for [`extract_latest_document`] (and therefore
+    /// [`has_passkey_vm`] / [`find_passkey_vm_by_credential_id`]), with no
+    /// proof-chain validity required (mirrors `server.rs`'s
+    /// `preload_self_did_document` fixture).
+    async fn seed_did_document(webvh_ks: &KeyspaceHandle, did: &str, doc: Value) {
+        let log_line = json!({
+            "versionId": "1-test",
+            "versionTime": "2026-05-06T00:00:00Z",
+            "parameters": {},
+            "state": doc,
+        });
+        webvh_store::store_did_log(webvh_ks, did, &serde_json::to_string(&log_line).unwrap())
+            .await
+            .expect("store did log");
+    }
+
+    fn passkey_vm(did: &str, fragment: &str, credential_id_b64: &str) -> Value {
+        json!({
+            "id": format!("{did}#{fragment}"),
+            "type": "Multikey",
+            "controller": did,
+            "publicKeyMultibase": "zNotRealButUnused",
+            "webauthnCredentialId": credential_id_b64,
+        })
+    }
+
+    #[tokio::test]
+    async fn has_passkey_vm_is_false_for_an_unmanaged_did() {
+        let (_store, webvh_ks, _dir) = temp_webvh_ks();
+        assert!(
+            !has_passkey_vm(&webvh_ks, "did:key:zNeverEnrolled")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn has_passkey_vm_is_false_when_the_document_has_no_passkey_fragment() {
+        let (_store, webvh_ks, _dir) = temp_webvh_ks();
+        let did = "did:key:zNoPasskey";
+        seed_did_document(
+            &webvh_ks,
+            did,
+            json!({
+                "id": did,
+                "verificationMethod": [{
+                    "id": format!("{did}#key-0"),
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": "zKey0",
+                }],
+            }),
+        )
+        .await;
+
+        assert!(!has_passkey_vm(&webvh_ks, did).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn has_passkey_vm_is_true_once_a_passkey_fragment_is_enrolled() {
+        let (_store, webvh_ks, _dir) = temp_webvh_ks();
+        let did = "did:key:zHasPasskey";
+        seed_did_document(
+            &webvh_ks,
+            did,
+            json!({
+                "id": did,
+                "verificationMethod": [passkey_vm(did, "passkey-x", "Y3JlZF8x")],
+            }),
+        )
+        .await;
+
+        assert!(has_passkey_vm(&webvh_ks, did).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn find_passkey_vm_by_credential_id_resolves_the_matching_vm() {
+        let (_store, webvh_ks, _dir) = temp_webvh_ks();
+        let did = "did:key:zTwoPasskeys";
+        seed_did_document(
+            &webvh_ks,
+            did,
+            json!({
+                "id": did,
+                "verificationMethod": [
+                    passkey_vm(did, "passkey-a", "Y3JlZF9h"),
+                    passkey_vm(did, "passkey-b", "Y3JlZF9i"),
+                ],
+            }),
+        )
+        .await;
+
+        let found = find_passkey_vm_by_credential_id(&webvh_ks, did, b"cred_b")
+            .await
+            .unwrap();
+        assert_eq!(found.as_deref(), Some(format!("{did}#passkey-b").as_str()));
+
+        // A credential id enrolled on no VM resolves to nothing.
+        assert_eq!(
+            find_passkey_vm_by_credential_id(&webvh_ks, did, b"cred_unknown")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    // ── Passkey-only step-up: clearing a prior elevation ─────────────
+
+    fn fresh_sessions_ks() -> (Store, KeyspaceHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("store open");
+        let sessions_ks = store
+            .keyspace(crate::keyspaces::SESSIONS)
+            .expect("sessions keyspace");
+        (store, sessions_ks, dir)
+    }
+
+    #[tokio::test]
+    async fn clear_non_passkey_elevation_for_did_downgrades_only_that_dids_non_passkey_sessions() {
+        use crate::auth::session::{Session, SessionState, get_session, now_epoch, store_session};
+
+        let (_store, sessions_ks, _dir) = fresh_sessions_ks();
+        let did = "did:key:zEnrolling";
+        let other_did = "did:key:zSomeoneElse";
+
+        let base = |session_id: &str, did: &str| Session {
+            session_id: session_id.into(),
+            did: did.into(),
+            challenge: String::new(),
+            state: SessionState::Authenticated,
+            created_at: now_epoch(),
+            last_seen: now_epoch(),
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: vec!["did".into()],
+            acr: "aal2".into(),
+            acr_expires_at: Some(now_epoch() + 900),
+            token_id: None,
+            session_pubkey_b58btc: None,
+        };
+
+        // This DID's did-signed elevation — must be cleared.
+        store_session(&sessions_ks, &base("sess-1", did))
+            .await
+            .unwrap();
+        // This DID's passkey-backed elevation — must be left alone.
+        let mut passkey_backed = base("sess-2", did);
+        passkey_backed.amr = vec!["did".into(), "passkey".into()];
+        store_session(&sessions_ks, &passkey_backed).await.unwrap();
+        // A different DID's did-signed elevation — must be left alone.
+        store_session(&sessions_ks, &base("sess-3", other_did))
+            .await
+            .unwrap();
+
+        let cleared = clear_non_passkey_elevation_for_did(&sessions_ks, did)
+            .await
+            .unwrap();
+        assert_eq!(cleared, 1);
+
+        let s1 = get_session(&sessions_ks, "sess-1").await.unwrap().unwrap();
+        assert_eq!(s1.acr, "aal1");
+        assert_eq!(s1.acr_expires_at, None);
+
+        let s2 = get_session(&sessions_ks, "sess-2").await.unwrap().unwrap();
+        assert_eq!(s2.acr, "aal2", "passkey-backed elevation left alone");
+
+        let s3 = get_session(&sessions_ks, "sess-3").await.unwrap().unwrap();
+        assert_eq!(
+            s3.acr, "aal2",
+            "a different DID's session must be untouched"
+        );
+    }
 
     #[test]
     fn user_handle_is_deterministic_per_did() {
