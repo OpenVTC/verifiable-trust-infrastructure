@@ -84,7 +84,7 @@ struct Fixture {
 
 async fn build_fixture() -> Fixture {
     // Role changes run through the role-change ceremony, which needs the
-    // active decision policy + a credential signer to re-mint the role VEC
+    // active decision policy + a credential signer to re-mint the role VAC
     // (with_signers) and webauthn for the promote UV ceremony (public_url).
     let vtc = TestVtc::builder()
         .with_audit(true)
@@ -605,7 +605,7 @@ async fn member_credentials_returns_the_stored_bodies_and_audits_the_read() {
     assert_eq!(status, StatusCode::OK, "got {body}");
     assert_eq!(body["did"], did);
     assert_eq!(body["membershipCredential"], grant, "the grant, as stored");
-    assert_eq!(body["roleCredential"], role, "the role VEC, as stored");
+    assert_eq!(body["roleCredential"], role, "the role VAC, as stored");
     assert_eq!(body["memberVmc"], ack, "the acknowledgement, as stored");
     assert!(body["memberVmcReceivedAt"].is_string(), "{body}");
     assert_eq!(body["memberVmcBound"], true);

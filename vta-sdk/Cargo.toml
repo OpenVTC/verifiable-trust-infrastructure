@@ -237,7 +237,8 @@ acl-setup = [
 # `join-requests` / `credential-exchange` protocol types.
 vp = ["dep:affinidi-data-integrity", "dep:affinidi-secrets-resolver"]
 # Peer identity vetting (`vetting` module): sign and verify the Vetting Card (an
-# r-card VDS) and the Vetting Statement (a DTG `EndorsementCredential`), and
+# r-card VDS) and the Vetting Statement (a DTG `StatementCredential` under the
+# `vetted/1` predicate), and
 # count statements against a community's requirements. Verification resolves the
 # signer's DID, so it builds on `proof-verify`; the statement is built with the
 # DTG credentials SDK rather than by hand; the match code hashes with SHA-256;

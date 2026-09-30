@@ -55,6 +55,8 @@ export interface ExplainFacts {
     presentation?: {
       credentials?: Array<{
         type?: string;
+        /** A DTG statement's `credentialSubject.predicate` — what it means. */
+        predicate?: string;
         issuer_trusted?: boolean;
         status?: string;
       }>;
@@ -120,6 +122,8 @@ const HELPERS: Record<string, string> = {
     'cred_held(t) if {\n\tsome c in input.evidence.presentation.credentials\n\tc.type == t\n\tc.status == "valid"\n}',
   cred_trusted:
     'cred_trusted(t) if {\n\tsome c in input.evidence.presentation.credentials\n\tc.type == t\n\tc.issuer_trusted\n\tc.status == "valid"\n}',
+  statement_trusted:
+    'statement_trusted(p) if {\n\tsome c in input.evidence.presentation.credentials\n\tc.type == "StatementCredential"\n\tc.predicate == p\n\tc.issuer_trusted\n\tc.status == "valid"\n}',
   cred_any_trusted:
     'cred_any_trusted if {\n\tsome c in input.evidence.presentation.credentials\n\tc.issuer_trusted\n\tc.status == "valid"\n}',
   has_valid_invitation:
@@ -276,12 +280,33 @@ const JOIN: ConditionDef[] = [
   {
     id: "holds_trusted",
     label: "holds a trusted credential",
-    arg: { label: "credential type", placeholder: "WitnessCredential" },
+    arg: { label: "credential type", placeholder: "MembershipCredential" },
     expr: (a) => `cred_trusted(${JSON.stringify(a ?? "")})`,
     helper: "cred_trusted",
     test: (f, a) =>
       creds(f).some(
         (c) => c.type === a && c.issuer_trusted === true && c.status === "valid",
+      ),
+  },
+  {
+    // A DTG statement is told apart by its predicate, never its type: every
+    // statement is a `StatementCredential`. A witness is `witnessed/1`.
+    id: "holds_trusted_statement",
+    label: "holds a trusted statement",
+    arg: {
+      label: "statement predicate",
+      placeholder: "https://registry.trustoverip.org/dtg/vsc/witnessed/1",
+    },
+    expr: (a) => `statement_trusted(${JSON.stringify(a ?? "")})`,
+    helper: "statement_trusted",
+    phrase: (a) => `holds a trusted statement under ${a ?? "a predicate"}`,
+    test: (f, a) =>
+      creds(f).some(
+        (c) =>
+          c.type === "StatementCredential" &&
+          c.predicate === a &&
+          c.issuer_trusted === true &&
+          c.status === "valid",
       ),
   },
   {
@@ -627,7 +652,7 @@ function isCatchAll(when: { all: Condition[] }): boolean {
 }
 
 /** A human phrase for a single condition, e.g. "holds a trusted
- * credential WitnessCredential". */
+ * credential MembershipCredential". */
 export function conditionToEnglish(cond: Condition, purpose: string): string {
   const defs = conditionsFor(purpose);
   const id = condId(cond);

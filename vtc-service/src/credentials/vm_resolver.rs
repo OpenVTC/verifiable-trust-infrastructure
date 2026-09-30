@@ -168,7 +168,7 @@ impl PurposeVmResolver for DidVmResolver {
 /// A credential proof's `verificationMethod` must sit under the credential's
 /// declared `issuer` — a key controlled by some *other* DID must not sign a
 /// credential claiming this issuer. Shared by every issuer-bound DI verify
-/// (credential-exchange DI VPs, recognition foreign VECs, VRC relationships).
+/// (credential-exchange DI VPs, recognition foreign VACs, VRC relationships).
 ///
 /// Exact string equality of the DID, and the method must be a DID URL with a
 /// fragment: a bare DID names no verification method. The message names the

@@ -46,14 +46,20 @@ pub enum MemberCommands {
         command: RelationshipCommands,
     },
 
-    /// Mint a custom Verifiable Endorsement Credential. Admin or Issuer.
+    /// Issue a community statement (a DTG Verifiable Statement Credential)
+    /// under a registered predicate — a Verifiable Endorsement Credential for
+    /// `https://registry.trustoverip.org/dtg/vsc/endorses/1`. Admin or Issuer.
+    ///
+    /// `--type IdentityVerificationCredential` issues the in-person
+    /// identity-verification credential the default personhood policy
+    /// accepts instead (a plain W3C VC, not a statement).
     Endorse {
-        /// The DID the endorsement is about.
+        /// The DID the statement is about.
         subject: String,
-        /// The endorsement type's registered URI.
+        /// The registered predicate IRI (`credentialSubject.predicate`).
         #[arg(long = "type")]
         type_uri: String,
-        /// The claim body, as a JSON object.
+        /// The claim body, as a JSON object (`credentialSubject.object.value`).
         #[arg(long)]
         claim: String,
         /// Override the community's default validity (30 days): N[s|m|h|d|w].

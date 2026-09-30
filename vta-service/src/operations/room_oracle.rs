@@ -125,12 +125,18 @@ pub async fn present(
     // `agent_did`, the caller this VTA authenticated — and a verifier requires the presenter
     // to be that subject. A second field naming who may present could only repeat the
     // subject or contradict it, which is why dtg-credentials 0.8 removed it.
+    // `issuerScope: directed`: the leaf is issued by the member under the DID the room
+    // admitted — one identifier recognised by the room, its host and the agent, not a
+    // per-counterparty one and not a public identity. `max_attenuation: None` takes the
+    // library default under the room's bound (the parent's less one).
     let mut leaf = root
         .attenuate(
+            dtg_credentials::IssuerScope::Directed,
             agent_did.to_string(),
             vec![action.to_string()],
             now,
             expires,
+            None,
         )
         .map_err(|e| {
             // The common case is asking for an action the principal does not hold, and
@@ -308,6 +314,7 @@ mod tests {
 
         let mut vac = DTGCredential::new_vac(
             room.did.clone(),
+            dtg_credentials::IssuerScope::Public,
             member_did.clone(),
             room.did.clone(),
             vec!["read".into(), "write".into()],
@@ -393,6 +400,7 @@ mod tests {
 
         let mut vac = DTGCredential::new_vac(
             room.did.clone(),
+            dtg_credentials::IssuerScope::Public,
             member_did.clone(),
             room.did.clone(),
             vec!["read".into()],

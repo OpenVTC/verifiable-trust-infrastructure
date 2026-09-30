@@ -5,11 +5,11 @@
 //! is `additionalProperties: false` and says outright that the credential body
 //! is not echoed there. This is the read that answers "what did we issue this
 //! member, and what did they acknowledge": the community-issued grant, the
-//! role VEC, and the member-issued acknowledgement, plus whether that
+//! role VAC, and the member-issued acknowledgement, plus whether that
 //! acknowledgement's digest was verified against the grant.
 //!
 //! Reads the four fields #1213 already keeps on the member row
-//! (`current_vmc`, `current_role_vec`, `member_vmc`, `member_vmc_bound`). No
+//! (`current_vmc`, `current_role_vac`, `member_vmc`, `member_vmc_bound`). No
 //! new storage and no new verification: `memberVmcBound` is the answer
 //! recorded at receipt, deliberately not recomputed (see
 //! [`crate::members::Member::member_vmc_bound`]).
@@ -90,8 +90,8 @@ pub(crate) fn credentials_response(member: &Member) -> Result<wire::Response, Ap
         builder = builder.membership_credential(grant);
     }
     if let Some(role) = document(
-        member.current_role_vec.as_ref(),
-        "current_role_vec",
+        member.current_role_vac.as_ref(),
+        "current_role_vac",
         &member.did,
     ) {
         builder = builder.role_credential(role);

@@ -21,14 +21,14 @@
 //! ## What's wired
 //!
 //! - **Admit** (join) — write the ACL row + Member record, issue the
-//!   VMC + role VEC, flip the status-list slot. Fully wired; the
+//!   VMC + role VAC, flip the status-list slot. Fully wired; the
 //!   manual approve route goes through it.
 //! - **Depart** (leave) — enforce the no-last-admin invariant, delete
 //!   the ACL row, apply the disposition to the Member row, and revoke
 //!   the credential (flip the revocation bit). Fully wired; the
 //!   `DELETE /v1/members/{me,did}` removal routes go through it.
 //! - **Remint** (role-change) — change the ACL role in place + re-mint
-//!   the role VEC, enforcing no-last-admin on demotion. Fully wired;
+//!   the role VAC, enforcing no-last-admin on demotion. Fully wired;
 //!   the `PATCH /v1/members/{did}` role change goes through it.
 //! - **NoStateChange** (deny / refer / request_more) — no-op.
 //! - **Project** (directory) — not handled here: the directory route
@@ -50,7 +50,7 @@ use crate::acl::{
 };
 use crate::auth::session::now_epoch;
 use crate::credentials::{
-    CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
+    CredentialStatusRef, RoleVacParams, VmcParams, build_role_vac, build_vmc,
 };
 use crate::members::{Disposition, Member, delete_member, get_member, store_member};
 use crate::server::AppState;
@@ -85,7 +85,7 @@ pub enum EffectOutcome {
     /// revocation slot that was flipped (for the caller's audit).
     Departed(DepartOutcome),
     /// A member's role was changed in place; carries the previous role
-    /// + the re-minted role VEC. Boxed — the VC makes it large.
+    /// + the re-minted role VAC. Boxed — the VC makes it large.
     Reminted(Box<RemintOutcome>),
     /// No state was changed (the verdict was deny / refer /
     /// request_more).
@@ -96,7 +96,7 @@ pub enum EffectOutcome {
 #[derive(Debug)]
 pub struct AdmitOutcome {
     pub vmc: VerifiableCredential,
-    pub role_vec: VerifiableCredential,
+    pub role_vac: VerifiableCredential,
     pub status_list_index: u32,
 }
 
@@ -106,15 +106,15 @@ pub struct RemintOutcome {
     /// The role the subject held before the change (for the caller's
     /// `RoleChanged` audit).
     pub previous_role: VtcRole,
-    /// The role VEC re-minted at the new role. The DID + VMC are
+    /// The role VAC re-minted at the new role. The DID + VMC are
     /// unchanged; only the role assertion is re-issued.
     ///
     /// `None` when the subject holds an ACL entry but **no member row** — an
     /// integration or operator DID reached through `acl/change-role`. A role
-    /// VEC asserts community membership at a role; there is nobody to assert
+    /// VAC asserts community membership at a role; there is nobody to assert
     /// it about and nothing to repoint, and minting one anyway would make an
     /// ACL role change impossible on a VTC without a credential signer.
-    pub role_vec: Option<VerifiableCredential>,
+    pub role_vac: Option<VerifiableCredential>,
 }
 
 /// The result of a member departure.
@@ -189,7 +189,7 @@ fn parse_role(role: &str) -> Result<VtcRole, AppError> {
 }
 
 /// Admit a DID as a member: write the ACL row + Member record, issue
-/// the VMC + role VEC, flip the status-list slot.
+/// the VMC + role VAC, flip the status-list slot.
 ///
 /// Writes the ACL first (the auth-gating truth), then the Member row,
 /// then issues credentials and stamps their ids back onto the member.
@@ -245,18 +245,18 @@ async fn admit(
         store_member(&state.members_ks, &member).await?;
     }
 
-    let (vmc, role_vec, status_list_index) =
+    let (vmc, role_vac, status_list_index) =
         issue_member_credentials(state, subject_did, role).await?;
     // Keep the bodies, not just the ids: the member's acknowledgement carries a
     // digest of the grant, and an id cannot be digested. See
     // [`crate::members::Member::current_vmc`].
     let vmc_value = serde_json::to_value(&vmc)
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
-    let role_vec_value = serde_json::to_value(&role_vec)
-        .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+    let role_vac_value = serde_json::to_value(&role_vac)
+        .map_err(|e| AppError::Internal(format!("serialise role VAC: {e}")))?;
     crate::members::storage::edit_member(&state.members_ks, subject_did, |m| {
         m.status_list_index = Some(status_list_index);
-        m.record_issued_credentials(vmc_value, role_vec_value);
+        m.record_issued_credentials(vmc_value, role_vac_value);
         true
     })
     .await?
@@ -268,12 +268,12 @@ async fn admit(
 
     Ok(AdmitOutcome {
         vmc,
-        role_vec,
+        role_vac,
         status_list_index,
     })
 }
 
-/// Allocate a revocation-list slot, mint the VMC + role VEC at `role`,
+/// Allocate a revocation-list slot, mint the VMC + role VAC at `role`,
 /// persist the updated status-list state. Returns the signed VCs + the
 /// allocated index.
 ///
@@ -292,7 +292,7 @@ async fn issue_member_credentials(
 
     // Hold the status-list write lock across the whole allocate → build →
     // store sequence (P0.1). The raw guard (not `with_locked`) is needed
-    // because the VMC/VEC build sits between the allocate and the store —
+    // because the VMC/VAC build sits between the allocate and the store —
     // see the doc comment above: the row is persisted only after both VCs
     // build, so a build failure doesn't burn the slot. The guard keeps a
     // concurrent writer from clobbering this allocation in that window.
@@ -324,10 +324,10 @@ async fn issue_member_credentials(
     )
     .await?;
 
-    let vec_id = format!("urn:uuid:{}", Uuid::new_v4());
-    let role_vec = build_role_vec(
+    let vac_id = format!("urn:uuid:{}", Uuid::new_v4());
+    let role_vac = build_role_vac(
         signer,
-        RoleVecParams::new(subject_did, role).with_id(vec_id),
+        RoleVacParams::new(subject_did, role).with_id(vac_id),
     )
     .await?;
 
@@ -340,16 +340,16 @@ async fn issue_member_credentials(
             .map_err(|e| AppError::Internal(format!("credential -> value: {e}")))
     };
     crate::schemas::validate_issued(&state.schemas_ks, &to_value(&vmc)?).await?;
-    crate::schemas::validate_issued(&state.schemas_ks, &to_value(&role_vec)?).await?;
+    crate::schemas::validate_issued(&state.schemas_ks, &to_value(&role_vac)?).await?;
 
     status_list::store_state(&state.status_lists_ks, &row).await?;
     status_list::maybe_emit_occupancy_warning(&row);
 
-    Ok((vmc, role_vec, slot))
+    Ok((vmc, role_vac, slot))
 }
 
 /// Change a member's role in place: update the ACL row and re-mint the
-/// role VEC at the new role. The DID + VMC are unchanged.
+/// role VAC at the new role. The DID + VMC are unchanged.
 ///
 /// Enforces the no-last-admin invariant on **demotion** (an admin
 /// being changed to a non-admin role) — host-enforced under
@@ -397,33 +397,33 @@ async fn remint(
     acl.role = new_role.clone();
     store_acl_entry(&state.acl_ks, &acl).await?;
 
-    // Re-mint the role VEC at the new role + repoint the member — only where
+    // Re-mint the role VAC at the new role + repoint the member — only where
     // there *is* a member. An ACL-only subject has no role assertion to
-    // re-issue (see `RemintOutcome::role_vec`).
-    let role_vec = match get_member(&state.members_ks, subject_did).await? {
+    // re-issue (see `RemintOutcome::role_vac`).
+    let role_vac = match get_member(&state.members_ks, subject_did).await? {
         Some(_) => {
-            let role_vec = issue_role_vec(state, subject_did, new_role).await?;
-            let role_vec_value = serde_json::to_value(&role_vec)
-                .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+            let role_vac = issue_role_vec(state, subject_did, new_role).await?;
+            let role_vac_value = serde_json::to_value(&role_vac)
+                .map_err(|e| AppError::Internal(format!("serialise role VAC: {e}")))?;
             // The grant is untouched by a role change, so the member's
-            // acknowledgement of it still stands — only the VEC is repointed.
+            // acknowledgement of it still stands — only the VAC is repointed.
             crate::members::storage::edit_member(&state.members_ks, subject_did, |m| {
-                m.record_role_vec(role_vec_value);
+                m.record_role_vec(role_vac_value);
                 true
             })
             .await?;
-            Some(role_vec)
+            Some(role_vac)
         }
         None => None,
     };
 
     Ok(RemintOutcome {
         previous_role,
-        role_vec,
+        role_vac,
     })
 }
 
-/// Mint a role VEC at `role` for `subject_did`. Used by role-change to
+/// Mint a role VAC at `role` for `subject_did`. Used by role-change to
 /// re-issue the role assertion; the VMC + status list are untouched.
 async fn issue_role_vec(
     state: &AppState,
@@ -432,13 +432,13 @@ async fn issue_role_vec(
 ) -> Result<VerifiableCredential, AppError> {
     let signer = state.credential_signer.as_ref().ok_or_else(|| {
         AppError::Internal(
-            "credential signer not initialised — cannot re-mint role VEC (run setup first)".into(),
+            "credential signer not initialised — cannot re-mint role VAC (run setup first)".into(),
         )
     })?;
-    let vec_id = format!("urn:uuid:{}", Uuid::new_v4());
-    build_role_vec(
+    let vac_id = format!("urn:uuid:{}", Uuid::new_v4());
+    build_role_vac(
         signer,
-        RoleVecParams::new(subject_did, role).with_id(vec_id),
+        RoleVacParams::new(subject_did, role).with_id(vac_id),
     )
     .await
 }

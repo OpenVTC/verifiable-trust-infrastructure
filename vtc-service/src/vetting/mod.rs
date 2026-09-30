@@ -7,17 +7,25 @@
 //!
 //! The raw submit path verifies the presentation's holder binding and none of
 //! the credentials inside it (see `join::orchestrate::presentation_from_vp`), so
-//! nothing here trusts a statement because it arrived. For each identity-vetting
-//! `EndorsementCredential` in the VP this module:
+//! nothing here trusts a statement because it arrived. For each Vetting
+//! Statement in the VP — a DTG `StatementCredential` whose
+//! `credentialSubject.predicate` is the criterion's `statementType`
+//! (`https://registry.trustoverip.org/dtg/vsc/vetted/1`) — this module:
 //!
 //! 1. verifies it (`vta_sdk::vetting::statement::verify_statement` — proof by
-//!    the issuer, type, bounded window, strict endorsement body);
-//! 2. binds it to the applicant (`credentialSubject.id` = the proven holder);
-//! 3. asks whether the issuer is an **eligible vetter** of this community —
+//!    the issuer, v1 context and type, the `vetted/1` profile: `taskContext`,
+//!    `taskDigestMultibase`, `issuerScope` at least `directed` — bounded
+//!    window, strict `object.value`);
+//! 2. accepts its predicate through the community's fail-closed accept list
+//!    (`crate::endorsement_types::accept_list`) — a predicate the community
+//!    has not registered never counts;
+//! 3. binds it to the applicant (`credentialSubject.id` = the proven holder);
+//! 4. asks whether the issuer is an **eligible vetter** of this community —
 //!    a current member, who had already joined when they issued the statement,
-//!    holding a vetter role grant ([`vetters`]) in the role the requirements
-//!    name that was recorded by then, unexpired then, and is not revoked now;
-//! 4. counts the survivors with `vta_sdk::vetting::requirements::evaluate`, the
+//!    holding a vetter role grant ([`vetters`]; the community-issued VAC
+//!    conferring `role:<eligibleVetters.role>` at the community's DID) that was
+//!    recorded by then, unexpired then, and is not revoked now;
+//! 5. counts the survivors with `vta_sdk::vetting::requirements::evaluate`, the
 //!    same rule the applicant's client uses for its checklist.
 //!
 //! The result is [`VettingFacts`]. Policy reads `satisfied`,
@@ -100,14 +108,13 @@ use tracing::warn;
 
 use vta_sdk::protocols::join_requests::manifest::v0_2::Criterion as ManifestCriterion;
 use vta_sdk::protocols::vetting::{
-    COMMUNITY_ROLE_ENDORSEMENT_TYPE, IDENTITY_VETTING_ENDORSEMENT_TYPE, VettingRequirements,
-    VettingRequirementsInvitation,
+    VETTED_PREDICATE, VettingRequirements, VettingRequirementsInvitation,
 };
 use vta_sdk::vetting::requirements::{REQUIREMENTS_DIGEST_MEMBER, StatementFacts, evaluate};
 use vta_sdk::vetting::statement::verify_statement;
 use vti_common::error::AppError;
 
-use crate::endorsements::endorsements_for_subject;
+use crate::endorsements::{VETTER_GRANT_ROW_TYPE, endorsements_for_subject};
 use crate::members::storage::get_member;
 use crate::routes::join_requests::manifest::manifest_criterion;
 use crate::schemas::accepts::list_accepts;
@@ -231,10 +238,13 @@ pub async fn vetting_facts(
         return Ok(Some(facts));
     }
     let resolver = state.trust_task_vm_resolver();
+    // Fail closed: a statement counts only under a predicate this community
+    // registered (vtc/endorsement-types/register/0.1).
+    let accepted = crate::endorsement_types::accept_list(&state.endorsement_types_ks).await?;
 
     let mut to_count = Vec::new();
     let mut statements = Vec::new();
-    for vc in vetting_credentials(vp) {
+    for vc in vetting_credentials(vp, &requirements.statement_type) {
         let id = vc.get("id").and_then(JsonValue::as_str).map(str::to_string);
         let issuer = issuer_of(vc);
         let verified = match verify_statement(vc, now, &resolver).await {
@@ -262,13 +272,20 @@ pub async fn vetting_facts(
             }
         };
 
-        let endorsement = verified.endorsement();
+        let vetted = verified.value();
         let mut failures = Vec::new();
         if verified.subject() != applicant_did {
             failures.push("subject-not-applicant".to_string());
         }
-        if endorsement.endorsement_type != requirements.statement_type {
+        // `verify_statement` holds the statement to `vetted/1`; a criterion
+        // counting another predicate counts none of these.
+        if requirements.statement_type != VETTED_PREDICATE {
             failures.push("wrong-statement-type".to_string());
+        }
+        let predicate_accepted = dtg_credentials::DTGCredential::try_from(vc.clone())
+            .is_ok_and(|parsed| accepted.accept(&parsed).is_ok());
+        if !predicate_accepted {
+            failures.push("predicate-not-accepted".to_string());
         }
         let eligible = vetter_eligible(
             state,
@@ -294,8 +311,8 @@ pub async fn vetting_facts(
             verified: true,
             eligible,
             revoked,
-            method: Some(endorsement.method.to_string()),
-            declared_relationship: Some(endorsement.declared_relationship.to_string()),
+            method: Some(vetted.method.to_string()),
+            declared_relationship: Some(vetted.declared_relationship.to_string()),
             counted: false,
             failures,
         };
@@ -306,21 +323,21 @@ pub async fn vetting_facts(
             to_count.push(StatementFacts {
                 statement_id: verified.id().to_string(),
                 vetter: verified.issuer().to_string(),
-                method: endorsement.method,
-                claims_verified: endorsement
+                method: vetted.method,
+                claims_verified: vetted
                     .claims_verified
                     .iter()
                     .map(|c| c.as_str().to_owned())
                     .collect(),
-                document_classes: endorsement
+                document_classes: vetted
                     .document_classes
                     .iter()
                     .map(|d| d.as_str().to_owned())
                     .collect(),
-                declared_relationship: endorsement.declared_relationship,
-                identity_commitment: endorsement.identity_commitment.clone(),
+                declared_relationship: vetted.declared_relationship,
+                identity_commitment: vetted.identity_commitment.clone(),
                 valid_from: verified.valid_from(),
-                community_matches: endorsement.community == community_did,
+                community_matches: vetted.community == community_did,
                 eligible,
                 revoked,
             });
@@ -496,16 +513,24 @@ fn select_criterion(
     })
 }
 
-/// Identity-vetting endorsement credentials in a VP's `verifiableCredential`.
-fn vetting_credentials(vp: &JsonValue) -> impl Iterator<Item = &JsonValue> {
+/// Vetting Statements in a VP's `verifiableCredential`: statements whose
+/// `credentialSubject.predicate` is the criterion's `statement_type` or the
+/// registry's `vetted/1`, compared byte for byte. Picked by predicate, never by
+/// a type string; everything else in the presentation is left to the other
+/// facts.
+fn vetting_credentials<'a>(
+    vp: &'a JsonValue,
+    statement_type: &'a str,
+) -> impl Iterator<Item = &'a JsonValue> {
     vp.get("verifiableCredential")
         .and_then(JsonValue::as_array)
         .into_iter()
         .flatten()
-        .filter(|vc| {
-            vc.pointer("/credentialSubject/endorsement/type")
-                .and_then(JsonValue::as_str)
-                == Some(IDENTITY_VETTING_ENDORSEMENT_TYPE)
+        .filter(move |vc| {
+            let predicate = vc
+                .pointer("/credentialSubject/predicate")
+                .and_then(JsonValue::as_str);
+            predicate == Some(statement_type) || predicate == Some(VETTED_PREDICATE)
         })
 }
 
@@ -540,12 +565,8 @@ pub(crate) async fn vetter_eligible(
     if member.removed_at.is_some() || vetters::joined_at_second(&member) > issued_at {
         return Ok(false);
     }
-    let grants = endorsements_for_subject(
-        &state.endorsements_ks,
-        issuer,
-        COMMUNITY_ROLE_ENDORSEMENT_TYPE,
-    )
-    .await?;
+    let grants =
+        endorsements_for_subject(&state.endorsements_ks, issuer, VETTER_GRANT_ROW_TYPE).await?;
     Ok(grants.iter().any(|g| {
         vetters::recorded_during_membership(g, &member) && vetters::grant_covers(g, role, issued_at)
     }))
@@ -607,7 +628,7 @@ mod tests {
             "presentationDefinition": {},
             "vetting": {
                 "version": "0.1",
-                "statementType": IDENTITY_VETTING_ENDORSEMENT_TYPE,
+                "statementType": VETTED_PREDICATE,
                 "minStatements": min,
                 "acceptedMethods": ["inPerson"],
                 "eligibleVetters": { "role": "vetter" }
@@ -682,15 +703,16 @@ mod tests {
     }
 
     #[test]
-    fn only_identity_vetting_endorsements_are_picked_out_of_a_presentation() {
+    fn only_vetting_statements_are_picked_out_of_a_presentation() {
         let vp = json!({
             "verifiableCredential": [
-                { "credentialSubject": { "endorsement": { "type": IDENTITY_VETTING_ENDORSEMENT_TYPE } } },
-                { "credentialSubject": { "endorsement": { "type": "SkillEndorsement" } } },
+                { "credentialSubject": { "predicate": VETTED_PREDICATE } },
+                { "credentialSubject": { "predicate": dtg_credentials::ENDORSES_V1 } },
+                { "credentialSubject": { "predicate": "dtg:vetted" } },
                 { "type": ["VerifiableCredential", "InvitationCredential"] },
                 "eyJhbGciOi.jwt.vc"
             ]
         });
-        assert_eq!(vetting_credentials(&vp).count(), 1);
+        assert_eq!(vetting_credentials(&vp, VETTED_PREDICATE).count(), 1);
     }
 }

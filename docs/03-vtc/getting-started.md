@@ -19,7 +19,7 @@ graph LR
     Admin --> VTC
     Public --> VTC
     Member -->|join request| VTC
-    Member -->|VMC + VEC| VTC
+    Member -->|VMC + VAC| VTC
 
     classDef vta fill:#d4e6f9,stroke:#3a6fb0,color:#08305f
     classDef vtc fill:#e9d7f7,stroke:#7e3fa6,color:#3a0a5a
@@ -265,7 +265,7 @@ Admins approve via:
 cnm join approve <request-id>
 ```
 
-The VTC issues a VMC + (optionally) VECs, allocates a status-list
+The VTC issues a VMC + a role VAC, allocates a status-list
 slot for revocation, and delivers each credential to the member as
 its own `credential-exchange/issue` message — see
 [`credential-delivery.md`](credential-delivery.md).

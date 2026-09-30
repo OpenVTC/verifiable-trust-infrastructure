@@ -64,8 +64,9 @@ pub struct MemberVmcOutcome {
 
 /// Verify a member-issued VMC and store it on the member's row.
 ///
-/// Checks: the member exists and is active; `vc.issuer == member_did`; `type`
-/// includes [`MEMBERSHIP_CREDENTIAL_TYPE`];
+/// Checks: the member exists and is active; `vc.issuer == member_did`; the
+/// credential is a DTG [`MEMBERSHIP_CREDENTIAL_TYPE`] under the v1 context
+/// declaring an `issuerScope`;
 /// `credentialSubject.id == <this VTC's DID>`; the issuer DI proof's
 /// `verificationMethod` is under the member and verifies against the resolved
 /// key. Idempotent: re-sending the same `id` is a no-op.
@@ -223,12 +224,10 @@ pub async fn receive_member_vmc_inner(
 /// acknowledgement that does not answer the grant it holds, which is precisely
 /// the unconsented-membership claim the pair exists to prevent.
 ///
-/// An acknowledgement with **no** `digest` is not an error but does not
-/// complete the edge either. Two populations reach here without one: members on
-/// clients that predate the digest requirement, and members whose grant this
-/// service issued before it kept credential bodies (`current_vmc` is `None`, so
-/// there is nothing to check against). Refusing them would unmake memberships
-/// that were validly formed under the rules in force when they were made.
+/// An acknowledgement with **no** `digestMultibase` is not an error but does
+/// not complete the edge either, and neither does one for a member whose grant
+/// this service issued before it kept credential bodies (`current_vmc` is
+/// `None`, so there is nothing to check against).
 /// Storing them unbound keeps the credential visible to the operator while
 /// leaving the edge honestly incomplete — which is what
 /// `POST /v1/members/{did}/request-vmc` exists to resolve.
@@ -236,56 +235,23 @@ pub async fn receive_member_vmc_inner(
 /// Deliberate asymmetry, and the reason it is safe: an unbound acknowledgement
 /// claims *less* than a bound one, so admitting it grants nothing. A
 /// mismatched one claims something false.
-/// Which spelling of the digest a member sent.
-///
-/// Not a preference: the two encode the same bytes differently, so each is compared against
-/// an expected value computed the same way. Naming the form keeps that pairing in one place
-/// — a check that compared a WD02 digest against a WD01 expectation would refuse a correct
-/// acknowledgement and say the member acknowledged a different grant.
-#[derive(Clone, Copy)]
-enum DigestForm {
-    /// `credentialSubject.digestMultibase` — Working Draft 02, base58btc multihash.
-    Multibase,
-    /// `credentialSubject.digest` — Working Draft 01, `sha256:<lowercase hex>`.
-    LegacyHex,
-}
-
-impl DigestForm {
-    fn property(self) -> &'static str {
-        match self {
-            Self::Multibase => "credentialSubject.digestMultibase",
-            Self::LegacyHex => "credentialSubject.digest",
-        }
-    }
-}
-
 fn check_acknowledgement_binding(
     vc: &JsonValue,
     grant: Option<&JsonValue>,
     member_did: &str,
 ) -> Result<bool, AppError> {
-    // Two property names, because two Working Drafts are in the field. WD02 renamed
-    // `digest` to `digestMultibase` and changed its encoding from `sha256:<hex>` to a
-    // base58btc multihash; a member whose client predates that still sends the old one, and
-    // their acknowledgement must keep verifying. Whichever arrives is compared against the
-    // expected value *for that form* — this widens what is accepted, never what counts as a
-    // match.
-    let subject = vc.get("credentialSubject").and_then(JsonValue::as_object);
-    let claimed = subject
+    // `credentialSubject.digestMultibase`, the only spelling DTG Credentials v1
+    // defines; the Working Draft 01 `digest` is refused by the catalog and is
+    // not read here either.
+    let claimed = vc
+        .get("credentialSubject")
         .and_then(|s| s.get("digestMultibase"))
-        .and_then(JsonValue::as_str)
-        .map(|d| (d, DigestForm::Multibase))
-        .or_else(|| {
-            subject
-                .and_then(|s| s.get("digest"))
-                .and_then(JsonValue::as_str)
-                .map(|d| (d, DigestForm::LegacyHex))
-        });
+        .and_then(JsonValue::as_str);
 
-    let (Some((claimed, form)), Some(grant)) = (claimed, grant) else {
+    let (Some(claimed), Some(grant)) = (claimed, grant) else {
         // R6.3: say which of the two is missing, so an operator looking at an
-        // incomplete edge can tell "the member's client is old" from "we never
-        // kept the grant to check against".
+        // incomplete edge can tell "the member's client did not bind" from "we
+        // never kept the grant to check against".
         tracing::warn!(
             member = %member_did,
             digest_present = claimed.is_some(),
@@ -296,29 +262,38 @@ fn check_acknowledgement_binding(
         return Ok(false);
     };
 
-    let matches = match form {
-        // Compared as decoded bytes, never as strings: one multihash has more than one
-        // spelling, and a string comparison would report a mismatch where the two sides
-        // agree. The specification requires the byte comparison and the library does it.
-        DigestForm::Multibase => {
-            let expected = crate::credentials::ingress::dtg_credential_digest_multibase(grant)?;
-            dtg_credentials::digests_match(claimed, &expected).map_err(|e| {
-                AppError::Validation(format!(
-                    "member vmc digest is not a valid multibase digest: {e}"
-                ))
-            })?
-        }
-        DigestForm::LegacyHex => {
-            claimed == crate::credentials::ingress::dtg_credential_digest(grant)?
-        }
-    };
+    // The grant half of the edge must be a conformant community-issued VMC: one
+    // that declares `issuerScope` `public`, the only scope a community can
+    // truthfully declare for itself. A grant stored before the v1 context
+    // declares none, and no acknowledgement can complete an edge against it —
+    // the member needs a renewed grant first. (The member's own
+    // acknowledgement may declare any scope; that was checked at ingress.)
+    let grant_scope = grant.get("issuerScope").and_then(JsonValue::as_str);
+    if grant_scope != Some(dtg_credentials::IssuerScope::Public.as_str()) {
+        return Err(AppError::Validation(format!(
+            "the membership credential this community holds for {member_did} does not \
+             declare issuerScope `public` (found {grant_scope:?}), so no acknowledgement can \
+             complete an edge against it. Renew the membership, then re-issue the \
+             acknowledgement against the new grant."
+        )));
+    }
+
+    // Compared as decoded bytes, never as strings: one multihash has more than
+    // one spelling, and a string comparison would report a mismatch where the
+    // two sides agree. The specification requires the byte comparison and the
+    // library does it.
+    let expected = crate::credentials::ingress::dtg_credential_digest_multibase(grant)?;
+    let matches = dtg_credentials::digests_match(claimed, &expected).map_err(|e| {
+        AppError::Validation(format!(
+            "member vmc digest is not a valid multibase digest: {e}"
+        ))
+    })?;
 
     if !matches {
         return Err(AppError::Validation(format!(
-            "member vmc `{}` does not match the membership credential this community \
-             issued to {member_did} — it acknowledges a different grant. Re-issue against \
-             the current one.",
-            form.property()
+            "member vmc `credentialSubject.digestMultibase` does not match the membership \
+             credential this community issued to {member_did} — it acknowledges a different \
+             grant. Re-issue against the current one."
         )));
     }
 
@@ -356,19 +331,19 @@ async fn verify_member_vmc(
         )));
     }
 
-    // Type discriminator.
-    let has_type = obj
-        .get("type")
-        .and_then(JsonValue::as_array)
-        .is_some_and(|a| {
-            a.iter()
-                .filter_map(JsonValue::as_str)
-                .any(|t| t == MEMBERSHIP_CREDENTIAL_TYPE)
-        });
-    if !has_type {
-        return Err(invalid(format!(
-            "member vmc `type` must include `{MEMBERSHIP_CREDENTIAL_TYPE}`"
-        )));
+    // The DTG common structure — the v1 context, exactly one subtype, a
+    // declared `issuerScope` — through the one ingress classifier, and the
+    // subtype must be the membership one. Whatever scope the member declared
+    // for their own DID is theirs to declare (`pairwise`, `directed` or
+    // `public`); only that it declares one is checked.
+    match crate::credentials::ingress::classify_dtg(vc) {
+        Ok(dtg_credentials::DTGCredentialType::Membership) => {}
+        Ok(other) => {
+            return Err(invalid(format!(
+                "member vmc must be a `{MEMBERSHIP_CREDENTIAL_TYPE}`; got a {other}"
+            )));
+        }
+        Err(e) => return Err(invalid(format!("member vmc: {e}"))),
     }
 
     // Subject must be THIS community.
@@ -456,24 +431,24 @@ mod binding_tests {
         // `DTGCommon` does not model `credentialStatus`, so parsing and re-serialising a
         // real grant drops it and the digest then matches nothing. 0.5.0 changed the
         // signature to take the JSON for exactly this reason; serialise first.
-        let grant_wire = serde_json::to_value(grant.credential()).expect("grant serialises");
+        let grant_wire = crate::test_support::dtg_json(&grant);
 
         // `new_member_vmc_for` takes the member the grant is expected to name,
         // established independently of the grant, and refuses a mismatch. The
         // identity whose key signs the acknowledgement is the one to pass.
+        // The member declares `directed`: its DID is recognised by the
+        // community and the parties it shows the acknowledgement to.
         let ack = dtg_credentials::DTGCredential::new_member_vmc_for(
             &grant_wire,
             "did:key:zMember",
+            dtg_credentials::IssuerScope::Directed,
             valid_from,
             None,
         )
         .expect("acknowledgement builds")
         .with_id("urn:uuid:ack-1");
 
-        (
-            grant_wire,
-            serde_json::to_value(ack.credential()).expect("ack serialises"),
-        )
+        (grant_wire, crate::test_support::dtg_json(&ack))
     }
 
     /// The happy path, and the one that matters most: a digest computed by
@@ -489,60 +464,38 @@ mod binding_tests {
         );
     }
 
-    /// A member whose client predates Working Draft 02 still verifies.
-    ///
-    /// The one case the fixture above cannot produce, because `dtg-credentials` emits only
-    /// the current form — so this hand-builds the old one. That is worth the awkwardness:
-    /// this is the population the fallback exists for, and without a test the fallback is a
-    /// branch nobody has run. Deleting it would look safe right up until an old member's
-    /// acknowledgement was refused for "acknowledging a different grant", which it did not.
+    /// A grant that does not declare `issuerScope` `public` — one stored
+    /// before the v1 context — cannot anchor an edge, whatever digest the
+    /// acknowledgement carries.
     #[test]
-    fn a_working_draft_01_acknowledgement_still_binds() {
-        let (grant, ack) = pair();
+    fn a_grant_that_is_not_public_completes_no_edge() {
+        let (mut grant, ack) = pair();
+        grant.as_object_mut().unwrap().remove("issuerScope");
+        let err = check_acknowledgement_binding(&ack, Some(&grant), "did:key:zMember")
+            .expect_err("a pre-v1 grant cannot be acknowledged");
+        assert!(format!("{err:?}").contains("issuerScope"), "{err:?}");
 
-        // Same grant, digested the old way, under the old property name.
-        let legacy_digest =
-            crate::credentials::ingress::dtg_credential_digest(&grant).expect("legacy digest");
-        assert!(
-            legacy_digest.starts_with("sha256:"),
-            "the WD01 form is `sha256:<hex>`, and this test is about that spelling"
-        );
-
-        let mut legacy_ack = ack.clone();
-        let subject = legacy_ack
-            .get_mut("credentialSubject")
-            .and_then(JsonValue::as_object_mut)
-            .expect("the acknowledgement has a subject");
-        subject.remove("digestMultibase");
-        subject.insert("digest".into(), JsonValue::String(legacy_digest));
-
-        assert!(
-            check_acknowledgement_binding(&legacy_ack, Some(&grant), "did:key:zMember").unwrap(),
-            "an acknowledgement from before WD02 must keep verifying"
-        );
+        grant["issuerScope"] = serde_json::json!("directed");
+        check_acknowledgement_binding(&ack, Some(&grant), "did:key:zMember")
+            .expect_err("a community grant is always public");
     }
 
-    /// …and the old form is still *checked*, not merely tolerated.
-    ///
-    /// The failure mode a fallback invites: accepting the property and never comparing it,
-    /// so every legacy acknowledgement passes whatever it says.
+    /// The Working Draft 01 `digest` spelling is not read: an acknowledgement
+    /// carrying only that binds nothing.
     #[test]
-    fn a_working_draft_01_acknowledgement_of_a_different_grant_is_refused() {
+    fn a_working_draft_01_digest_member_binds_nothing() {
         let (grant, ack) = pair();
-
         let mut legacy_ack = ack.clone();
         let subject = legacy_ack
             .get_mut("credentialSubject")
             .and_then(JsonValue::as_object_mut)
             .expect("the acknowledgement has a subject");
-        subject.remove("digestMultibase");
-        subject.insert(
-            "digest".into(),
-            JsonValue::String(format!("sha256:{}", "0".repeat(64))),
-        );
+        let digest = subject.remove("digestMultibase").unwrap();
+        subject.insert("digest".into(), digest);
 
-        check_acknowledgement_binding(&legacy_ack, Some(&grant), "did:key:zMember")
-            .expect_err("a mismatched legacy digest must be refused too");
+        assert!(
+            !check_acknowledgement_binding(&legacy_ack, Some(&grant), "did:key:zMember").unwrap()
+        );
     }
 
     /// The community re-signing a grant must not invalidate consent already
@@ -577,7 +530,7 @@ mod binding_tests {
             false,
         )
         .with_id("urn:uuid:grant-2");
-        let renewed = serde_json::to_value(renewed.credential()).expect("serialises");
+        let renewed = crate::test_support::dtg_json(&renewed);
 
         let err = check_acknowledgement_binding(&ack, Some(&renewed), "did:key:zMember")
             .expect_err("a mismatched digest must be refused");
@@ -587,18 +540,19 @@ mod binding_tests {
         );
     }
 
-    /// Two populations arrive without a digest: clients that predate the
-    /// requirement, and members whose grant this service issued before it kept
-    /// bodies. Both are stored and neither completes an edge. Refusing them
-    /// would unmake memberships validly formed under the rules then in force.
+    /// An acknowledgement without a digest is stored and completes no edge.
     #[test]
     fn an_acknowledgement_without_a_digest_is_stored_unbound() {
         let (grant, _) = pair();
         let legacy = serde_json::json!({
-            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "@context": [
+                dtg_credentials::W3C_VC_V2_CONTEXT,
+                dtg_credentials::DTG_CONTEXT_V1
+            ],
             "type": ["VerifiableCredential", "DTGCredential", "MembershipCredential"],
-            "id": "urn:uuid:legacy-ack",
+            "id": "urn:uuid:unbound-ack",
             "issuer": "did:key:zMember",
+            "issuerScope": "directed",
             "validFrom": "2026-01-01T00:00:00Z",
             "credentialSubject": { "id": "did:web:community.example" }
         });

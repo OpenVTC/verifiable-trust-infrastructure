@@ -323,14 +323,14 @@ pub fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocols::vetting::IDENTITY_VETTING_ENDORSEMENT_TYPE;
+    use crate::protocols::vetting::VETTED_PREDICATE;
     use chrono::Duration;
     use serde_json::json;
 
     fn requirements() -> VettingRequirements {
         serde_json::from_value(json!({
             "version": "0.1",
-            "statementType": IDENTITY_VETTING_ENDORSEMENT_TYPE,
+            "statementType": VETTED_PREDICATE,
             "minStatements": 2,
             "minByMethod": { "inPerson": 1 },
             "acceptedMethods": ["inPerson", "video", "priorAcquaintance"],

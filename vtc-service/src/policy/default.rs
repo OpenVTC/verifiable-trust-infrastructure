@@ -305,66 +305,82 @@ pub async fn upgrade_legacy_ceremony_defaults(
     Ok(upgraded)
 }
 
-/// The probe [`upgrade_unbound_witness_personhood_default`] runs: a
-/// `WitnessCredential` from a non-empty issuer whose digest the host could
-/// **not** bind. The pre-#1068 default allowed it; the shipped default must not.
-fn unbound_witness_probe() -> serde_json::Value {
+/// A personhood assertion carrying one v1 witness statement — a
+/// `StatementCredential` under `witnessed/1` from a non-empty issuer — with
+/// the host's binding verdict `state`.
+fn witness_statement_probe(state: &str) -> serde_json::Value {
+    let mut binding = serde_json::json!({ "state": state });
+    if state == "bound" {
+        binding["relationship_id"] = serde_json::json!(Uuid::nil());
+    }
     serde_json::json!({
         "applicant_did": "did:example:probe-applicant",
         "community_did": "did:example:probe-community",
         "vp_claims": {
             "holder": "did:example:probe-applicant",
             "credentials": [{
-                "type": ["VerifiableCredential", "DTGCredential", "WitnessCredential"],
+                "type": ["VerifiableCredential", "DTGCredential", "StatementCredential"],
                 "issuer": "did:example:probe-witness",
-                "credentialSubject": { "id": "did:example:probe-applicant" },
-                "witness_binding": { "state": "absent" }
+                "credentialSubject": {
+                    "id": "did:example:probe-applicant",
+                    "predicate": dtg_credentials::WITNESSED_V1,
+                    "object": { "digestMultibase": "zQmProbe" }
+                },
+                "witness_binding": binding
             }]
         }
     })
 }
 
-/// Whether `policy` grants personhood on a witness whose digest binds nothing.
-fn allows_unbound_witness(policy: &Policy) -> bool {
+/// What `policy` decides on `input`; a policy that will not compile or
+/// evaluate allows nothing.
+fn personhood_policy_allows(policy: &Policy, input: serde_json::Value) -> bool {
     let Ok(compiled) = compile(&policy.rego_source, policy.id) else {
         return false;
     };
-    evaluate(
-        &compiled,
-        "data.vtc.personhood.allow",
-        unbound_witness_probe(),
-    )
-    .ok()
-    .and_then(|r| {
-        r.pointer("/result/0/expressions/0/value")
-            .and_then(serde_json::Value::as_bool)
-    })
-    .unwrap_or(false)
+    evaluate(&compiled, "data.vtc.personhood.allow", input)
+        .ok()
+        .and_then(|r| {
+            r.pointer("/result/0/expressions/0/value")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
-/// Replace a **workspace-shipped** personhood default that predates the witness
-/// digest binding (#1068) with the current one.
+/// Whether a workspace-shipped personhood default is stale: it grants
+/// personhood on a witness whose digest binds nothing (the pre-#1068 rule),
+/// or it refuses a witness statement bound to a held edge — the evidence the
+/// shipped default accepts, which a default written for the retired witness
+/// type and endorsement shapes never recognises.
+fn is_stale_personhood_default(policy: &Policy) -> bool {
+    personhood_policy_allows(policy, witness_statement_probe("absent"))
+        || !personhood_policy_allows(policy, witness_statement_probe("bound"))
+}
+
+/// Replace a **workspace-shipped** personhood default that the shipped one has
+/// superseded: one predating the witness digest binding (#1068), or one
+/// written for the credential shapes that preceded the DTG v1 context — a
+/// witness *type* rather than a `witnessed/1` statement, an identity
+/// verification carried as an endorsement rather than an
+/// `IdentityVerificationCredential`.
 ///
 /// [`install_defaults`] only fills missing pointers, so a VTC first booted on
-/// an earlier binary keeps the personhood default it installed then — and that
-/// default granted personhood on any `WitnessCredential` with a non-empty
-/// issuer, whatever edge (if any) its digest named. Shipping the fix in the
-/// source alone would protect new communities and leave every existing one on
-/// the permissive rule.
+/// an earlier binary keeps the personhood default it installed then. Shipping
+/// the fix in the source alone would protect new communities and leave every
+/// existing one on a rule that either admits too much or recognises nothing.
 ///
 /// Two conditions, both required, so an operator's policy is never touched:
 ///
 /// 1. the active row's `author_did` is [`DEFAULTS_AUTHOR`] — the workspace
 ///    installed it, no operator uploaded it; and
-/// 2. it **behaves** like the superseded default: it allows
-///    [`unbound_witness_probe`]. Decided by evaluation rather than by a list
-///    of historical source hashes, for the same reason
-///    [`upgrade_legacy_ceremony_defaults`] asks whether a policy yields a
-///    decision rather than what its bytes are.
+/// 2. it **behaves** like a superseded default ([`is_stale_personhood_default`]).
+///    Decided by evaluation rather than by a list of historical source
+///    hashes, for the same reason [`upgrade_legacy_ceremony_defaults`] asks
+///    whether a policy yields a decision rather than what its bytes are.
 ///
 /// Fail-forward like its sibling: a new revision at `max_version + 1`, the
 /// active pointer moved to it. Returns whether an upgrade happened.
-pub async fn upgrade_unbound_witness_personhood_default(
+pub async fn upgrade_stale_personhood_default(
     policies_ks: &KeyspaceHandle,
     active_policies_ks: &KeyspaceHandle,
 ) -> Result<bool, AppError> {
@@ -375,7 +391,7 @@ pub async fn upgrade_unbound_witness_personhood_default(
     let Some(active) = get_policy(policies_ks, active_id).await? else {
         return Ok(false);
     };
-    if active.author_did != DEFAULTS_AUTHOR || !allows_unbound_witness(&active) {
+    if active.author_did != DEFAULTS_AUTHOR || !is_stale_personhood_default(&active) {
         return Ok(false);
     }
 
@@ -407,8 +423,8 @@ pub async fn upgrade_unbound_witness_personhood_default(
         purpose = purpose.as_str(),
         replaced = %active_id,
         policy_id = %id,
-        "upgraded the shipped personhood default: it admitted a witness credential whose \
-         digest binds no edge (#1068)"
+        "upgraded the shipped personhood default: it either admitted a witness whose \
+         digest binds no edge (#1068) or predates the DTG v1 credential shapes"
     );
     Ok(true)
 }
@@ -646,7 +662,7 @@ mod tests {
                 "evidence": {
                     "presentation": {
                         "credentials": [
-                            { "type": "WitnessCredential", "issuer_trusted": true, "status": "valid" }
+                            { "type": "MembershipCredential", "issuer_trusted": true, "status": "valid" }
                         ]
                     }
                 }
@@ -907,7 +923,7 @@ mod tests {
             join_decision(json!({
                 "evidence": {
                     "presentation": { "credentials": [
-                        { "type": "WitnessCredential", "issuer_trusted": true, "status": "valid" }
+                        { "type": "MembershipCredential", "issuer_trusted": true, "status": "valid" }
                     ]},
                     "vetting": vetting_facts(true, true, &["vetting:method:inPerson:1"]),
                 }
@@ -1064,12 +1080,12 @@ mod tests {
         .unwrap();
         assert!(
             !pluck_bool(&r),
-            "empty input must deny — no WitnessCredential present"
+            "empty input must deny — no witness statement present"
         );
     }
 
     #[test]
-    fn personhood_default_denies_vp_without_witness_credential() {
+    fn personhood_default_denies_vp_without_a_witness_statement() {
         let c = compile_default(PolicyPurpose::Personhood);
         let r = evaluate(
             &c,
@@ -1087,40 +1103,47 @@ mod tests {
         .unwrap();
         assert!(
             !pluck_bool(&r),
-            "VC without WitnessCredential type must deny"
+            "a VC that is not a witnessed/1 statement must deny"
         );
     }
 
     #[test]
-    fn personhood_default_denies_witness_credential_with_empty_issuer() {
-        let c = compile_default(PolicyPurpose::Personhood);
-        let r = evaluate(
-            &c,
-            "data.vtc.personhood.allow",
-            json!({
-                "applicant_did": "did:key:zX",
-                "vp_claims": {
-                    "holder": "did:key:zX",
-                    "credentials": [
-                        { "type": ["VerifiableCredential", "WitnessCredential"], "issuer": "" }
-                    ]
-                }
-            }),
-        )
-        .unwrap();
+    fn personhood_default_denies_a_witness_statement_with_empty_issuer() {
+        let mut input = witness_input(Some(json!({
+            "state": "bound",
+            "relationship_id": Uuid::new_v4()
+        })));
+        input["vp_claims"]["credentials"][0]["issuer"] = json!("");
         assert!(
-            !pluck_bool(&r),
-            "WitnessCredential with empty issuer must deny"
+            !personhood_allows(input),
+            "a witness statement with empty issuer must deny"
         );
     }
 
-    /// A personhood assertion carrying one `WitnessCredential` whose host
+    /// A witness classified by type rather than predicate: another statement
+    /// under `endorses/1` with a bound-looking verdict is not a witness.
+    #[test]
+    fn personhood_default_reads_the_predicate_not_the_type() {
+        let mut input = witness_input(Some(json!({
+            "state": "bound",
+            "relationship_id": Uuid::new_v4()
+        })));
+        input["vp_claims"]["credentials"][0]["credentialSubject"]["predicate"] =
+            json!(dtg_credentials::ENDORSES_V1);
+        assert!(!personhood_allows(input));
+    }
+
+    /// A personhood assertion carrying one `witnessed/1` statement whose host
     /// verdict is `binding` (`None` = no `witness_binding` member at all).
     fn witness_input(binding: Option<serde_json::Value>) -> serde_json::Value {
         let mut cred = json!({
-            "type": ["VerifiableCredential", "DTGCredential", "WitnessCredential"],
+            "type": ["VerifiableCredential", "DTGCredential", "StatementCredential"],
             "issuer": "did:key:zWitness",
-            "credentialSubject": { "id": "did:key:zX" }
+            "credentialSubject": {
+                "id": "did:key:zX",
+                "predicate": dtg_credentials::WITNESSED_V1,
+                "object": { "digestMultibase": "zQmEdge" }
+            }
         });
         if let Some(b) = binding {
             cred["witness_binding"] = b;
@@ -1148,14 +1171,14 @@ mod tests {
         })))));
     }
 
-    /// The pre-#1068 rule admitted any `WitnessCredential` with a non-empty
-    /// issuer. Every verdict short of `bound` is now refused — including
+    /// The pre-#1068 rule admitted any witness with a non-empty issuer. Every
+    /// verdict short of `bound` is now refused — including
     /// `unresolved`, which is *not* forgery (the edge may live on another
     /// community) but is not something this community can see either; an
     /// operator who trusts foreign edges accepts it in their own policy.
     #[test]
     fn personhood_default_refuses_a_witness_whose_digest_does_not_bind() {
-        for state in ["unresolved", "absent", "malformed"] {
+        for state in ["unresolved", "absent", "malformed", "subjectMismatch"] {
             assert!(
                 !personhood_allows(witness_input(Some(json!({ "state": state })))),
                 "`{state}` must not grant personhood"
@@ -1184,7 +1207,8 @@ mod tests {
         }
     }
 
-    /// The pre-#1068 witness rule, as the shipped default carried it.
+    /// A permissive rule of the pre-#1068 kind: any credential with a
+    /// non-empty issuer.
     const SUPERSEDED_PERSONHOOD_DEFAULT: &str = r#"package vtc.personhood
 
 import rego.v1
@@ -1196,8 +1220,31 @@ asserted if allow
 allow if {
 	some i
 	cred := input.vp_claims.credentials[i]
-	"WitnessCredential" in cred.type
 	cred.issuer != ""
+}
+
+allow if {
+	input.current_personhood == true
+}
+"#;
+
+    /// A binding-aware rule written for a credential type that is not the
+    /// v1 witness statement — the shape of the #1068-era default, which
+    /// matched a retired witness type and so recognises no v1 VWC.
+    const PRE_V1_PERSONHOOD_DEFAULT: &str = r#"package vtc.personhood
+
+import rego.v1
+
+default allow := false
+
+asserted if allow
+
+allow if {
+	some i
+	cred := input.vp_claims.credentials[i]
+	"SomeRetiredWitnessType" in cred.type
+	cred.issuer != ""
+	cred.witness_binding.state == "bound"
 }
 
 allow if {
@@ -1244,7 +1291,7 @@ allow if {
         .await;
 
         assert!(
-            upgrade_unbound_witness_personhood_default(&policies_ks, &active_ks)
+            upgrade_stale_personhood_default(&policies_ks, &active_ks)
                 .await
                 .unwrap()
         );
@@ -1265,7 +1312,7 @@ allow if {
         );
 
         assert!(
-            !upgrade_unbound_witness_personhood_default(&policies_ks, &active_ks)
+            !upgrade_stale_personhood_default(&policies_ks, &active_ks)
                 .await
                 .unwrap(),
             "idempotent: the shipped default is not itself superseded"
@@ -1286,7 +1333,7 @@ allow if {
         .await;
 
         assert!(
-            !upgrade_unbound_witness_personhood_default(&policies_ks, &active_ks)
+            !upgrade_stale_personhood_default(&policies_ks, &active_ks)
                 .await
                 .unwrap()
         );
@@ -1298,17 +1345,46 @@ allow if {
         );
     }
 
-    /// The probe is only meaningful if the shipped default refuses it.
-    #[test]
-    fn the_shipped_personhood_default_refuses_the_upgrade_probe() {
-        assert!(!personhood_allows(unbound_witness_probe()));
+    /// A default that predates the v1 shapes recognises no v1 witness, so it
+    /// is upgraded too — it would otherwise refuse every honest assertion.
+    #[tokio::test]
+    async fn a_pre_v1_personhood_default_is_upgraded() {
+        let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+        let old = activate_personhood(
+            &policies_ks,
+            &active_ks,
+            PRE_V1_PERSONHOOD_DEFAULT,
+            DEFAULTS_AUTHOR,
+        )
+        .await;
+        assert!(
+            upgrade_stale_personhood_default(&policies_ks, &active_ks)
+                .await
+                .unwrap()
+        );
+        assert_ne!(
+            get_active_policy_id(&active_ks, PolicyPurpose::Personhood)
+                .await
+                .unwrap(),
+            Some(old)
+        );
     }
 
-    /// Build the in-person vetting evidence: an endorsement the
-    /// community issued to the applicant recording that a human verified
-    /// their identity. Parameterised on issuer / subject / type so each
-    /// test below can break exactly one of the three bindings.
-    fn vetting_input(issuer: &str, subject: &str, endorsement_type: &str) -> serde_json::Value {
+    /// The probes are only meaningful if the shipped default passes them:
+    /// refuses the unbound witness, admits the bound one.
+    #[test]
+    fn the_shipped_personhood_default_is_not_stale() {
+        assert!(!personhood_allows(witness_statement_probe("absent")));
+        assert!(personhood_allows(witness_statement_probe("bound")));
+    }
+
+    const IDVC: &str = crate::credentials::idvc::IDENTITY_VERIFICATION_CREDENTIAL_TYPE;
+
+    /// Build the in-person vetting evidence: an identity-verification
+    /// credential the community issued to the applicant recording that a human
+    /// verified their identity. Parameterised on issuer / subject / type so
+    /// each test below can break exactly one of the three bindings.
+    fn vetting_input(issuer: &str, subject: &str, types: serde_json::Value) -> serde_json::Value {
         json!({
             "applicant_did": "did:key:zApplicant",
             "community_did": "did:webvh:community.example",
@@ -1316,63 +1392,52 @@ allow if {
                 "holder": "did:key:zApplicant",
                 "credentials": [
                     {
-                        "type": ["VerifiableCredential", "EndorsementCredential"],
+                        "type": types,
                         "issuer": issuer,
-                        "credentialSubject": {
-                            "id": subject,
-                            "endorsement": {
-                                "type": endorsement_type,
-                                "communityDid": "did:webvh:community.example"
-                            }
-                        }
+                        "credentialSubject": { "id": subject, "method": "inPerson" }
                     }
                 ]
             }
         })
     }
 
+    fn idvc_types() -> serde_json::Value {
+        json!(["VerifiableCredential", IDVC])
+    }
+
+    fn personhood_decides(input: serde_json::Value) -> bool {
+        let c = compile_default(PolicyPurpose::Personhood);
+        pluck_bool(&evaluate(&c, "data.vtc.personhood.allow", input).unwrap())
+    }
+
     /// The happy path for the in-person ceremony: the admin met the
-    /// person, issued them an identity-verification endorsement, and the
-    /// member presents it over a challenge.
+    /// person, issued them an IDVC, and the member presents it over a
+    /// challenge.
     #[test]
     fn personhood_default_allows_community_issued_identity_verification() {
-        let c = compile_default(PolicyPurpose::Personhood);
-        let r = evaluate(
-            &c,
-            "data.vtc.personhood.allow",
-            vetting_input(
+        assert!(
+            personhood_decides(vetting_input(
                 "did:webvh:community.example",
                 "did:key:zApplicant",
-                crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI,
-            ),
-        )
-        .unwrap();
-        assert!(
-            pluck_bool(&r),
-            "this community's own identity-verification endorsement must allow"
+                idvc_types(),
+            )),
+            "this community's own identity-verification credential must allow"
         );
     }
 
-    /// The binding that matters most. An endorsement type is a *name*,
-    /// and names are not authority — without the issuer comparison, any
-    /// issuer anywhere could mint `IdentityVerification` and unlock
-    /// personhood in a community that never met the applicant.
+    /// The binding that matters most. A type is a *name*, and names are not
+    /// authority — without the issuer comparison, any issuer anywhere could
+    /// mint an `IdentityVerificationCredential` and unlock personhood in a
+    /// community that never met the applicant.
     #[test]
     fn personhood_default_denies_identity_verification_from_foreign_issuer() {
-        let c = compile_default(PolicyPurpose::Personhood);
-        let r = evaluate(
-            &c,
-            "data.vtc.personhood.allow",
-            vetting_input(
+        assert!(
+            !personhood_decides(vetting_input(
                 "did:webvh:someone-else.example",
                 "did:key:zApplicant",
-                crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI,
-            ),
-        )
-        .unwrap();
-        assert!(
-            !pluck_bool(&r),
-            "an identity-verification endorsement from another issuer must not allow"
+                idvc_types(),
+            )),
+            "an identity-verification credential from another issuer must not allow"
         );
     }
 
@@ -1381,43 +1446,45 @@ allow if {
     /// member cannot present the vetting record of a different member.
     #[test]
     fn personhood_default_denies_identity_verification_about_someone_else() {
-        let c = compile_default(PolicyPurpose::Personhood);
-        let r = evaluate(
-            &c,
-            "data.vtc.personhood.allow",
-            vetting_input(
+        assert!(
+            !personhood_decides(vetting_input(
                 "did:webvh:community.example",
                 "did:key:zSomebodyElse",
-                crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI,
-            ),
-        )
-        .unwrap();
-        assert!(
-            !pluck_bool(&r),
+                idvc_types(),
+            )),
             "a vetting record about another member must not allow"
         );
     }
 
-    /// A role VEC is community-issued and names the member too. If the
-    /// type check were dropped, every member holding a role credential
-    /// would satisfy the personhood policy — which is every member.
+    /// A role VAC and a VMC are community-issued and name the member too. If
+    /// the type check were dropped, every member holding one would satisfy the
+    /// personhood policy — which is every member. And an IDVC is deliberately
+    /// not a DTG credential: a DTG credential claiming the type does not
+    /// count.
     #[test]
-    fn personhood_default_denies_community_issued_role_endorsement() {
-        let c = compile_default(PolicyPurpose::Personhood);
-        let r = evaluate(
-            &c,
-            "data.vtc.personhood.allow",
-            vetting_input(
-                "did:webvh:community.example",
-                "did:key:zApplicant",
-                "CommunityRole",
-            ),
-        )
-        .unwrap();
-        assert!(
-            !pluck_bool(&r),
-            "a role grant must not double as evidence that someone was met in person"
-        );
+    fn personhood_default_denies_other_community_issued_credentials() {
+        for types in [
+            json!([
+                "VerifiableCredential",
+                "DTGCredential",
+                "AuthorityCredential"
+            ]),
+            json!([
+                "VerifiableCredential",
+                "DTGCredential",
+                "MembershipCredential"
+            ]),
+            json!(["VerifiableCredential", "DTGCredential", IDVC]),
+        ] {
+            assert!(
+                !personhood_decides(vetting_input(
+                    "did:webvh:community.example",
+                    "did:key:zApplicant",
+                    types.clone(),
+                )),
+                "{types} must not double as evidence that someone was met in person"
+            );
+        }
     }
 
     /// The seam that no other test crosses: a credential the **real
@@ -1427,118 +1494,58 @@ allow if {
     /// Every other test here hand-writes the `vp_claims` JSON, which
     /// means they all agree with each other about a shape none of them
     /// obtained from the code that actually produces it. If
-    /// `build_custom_endorsement` ever moved `endorsement` out of
-    /// `credentialSubject`, or `extract_vp_claims` stopped copying
-    /// `credentialSubject` verbatim, those tests would keep passing and
-    /// every in-person vetting in production would be denied — with a
-    /// `personhood-policy-denied` and nothing naming the cause.
+    /// `issue_identity_verification` ever moved the type or the subject, or
+    /// `extract_vp_claims` stopped copying `credentialSubject` verbatim, those
+    /// tests would keep passing and every in-person vetting in production
+    /// would be denied — with a `personhood-policy-denied` and nothing naming
+    /// the cause.
     #[tokio::test]
-    async fn real_endorsement_credential_satisfies_the_vetting_rule() {
-        use crate::credentials::{
-            CredentialStatusRef, CustomEndorsementParams, LocalSigner, build_custom_endorsement,
-        };
+    async fn a_real_identity_verification_credential_satisfies_the_vetting_rule() {
+        use crate::credentials::idvc::issue_identity_verification;
+        use crate::credentials::{CredentialStatusRef, LocalSigner};
         use crate::policy::extract::extract_vp_claims;
 
         const COMMUNITY_DID: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
         const APPLICANT_DID: &str = "did:key:zApplicant";
 
         let signer = LocalSigner::from_ed25519_seed(COMMUNITY_DID.into(), &[7u8; 32]);
-        let vc = build_custom_endorsement(
+        let idvc = issue_identity_verification(
             &signer,
-            CustomEndorsementParams::new(
-                APPLICANT_DID,
-                crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI,
-                json!({ "method": "in-person-id", "verifiedBy": "did:key:zAdmin" }),
-                CredentialStatusRef::revocation(
-                    "https://vtc.example.com/v1/status-lists/revocation",
-                    4,
-                ),
+            APPLICANT_DID,
+            &json!({ "method": "inPerson", "verifiedBy": "did:key:zAdmin" }),
+            "urn:uuid:idvc-real",
+            &CredentialStatusRef::revocation(
+                "https://vtc.example.com/v1/status-lists/revocation",
+                4,
             ),
+            chrono::Duration::days(365),
         )
         .await
-        .expect("build identity-verification endorsement");
+        .expect("issue identity-verification credential");
 
-        // Wrap it the way a member's client would, then project it the
-        // way the assert route does.
         let vp = json!({
             "@context": ["https://www.w3.org/ns/credentials/v2"],
             "type": ["VerifiablePresentation"],
             "holder": APPLICANT_DID,
-            "verifiableCredential": [serde_json::to_value(&vc).expect("vc -> json")],
+            "verifiableCredential": [idvc.clone()],
         });
-        let vp_claims = extract_vp_claims(&vp);
-
-        let c = compile_default(PolicyPurpose::Personhood);
-        let r = evaluate(
-            &c,
-            "data.vtc.personhood.allow",
-            json!({
+        assert!(
+            personhood_decides(json!({
                 "applicant_did": APPLICANT_DID,
                 "community_did": COMMUNITY_DID,
-                "vp_claims": vp_claims,
-            }),
-        )
-        .unwrap();
-        assert!(
-            pluck_bool(&r),
-            "a real community-signed identity-verification endorsement must satisfy \
-             the default personhood policy; builder and policy have drifted"
-        );
-    }
-
-    /// The same real credential, judged against a *different* community.
-    /// Pairs with the test above: it proves the issuer comparison is
-    /// doing work on the real shape, not just on hand-written JSON where
-    /// `issuer` might be a string in one place and an object in another.
-    #[tokio::test]
-    async fn real_endorsement_credential_is_rejected_by_another_community() {
-        use crate::credentials::{
-            CredentialStatusRef, CustomEndorsementParams, LocalSigner, build_custom_endorsement,
-        };
-        use crate::policy::extract::extract_vp_claims;
-
-        const ISSUING_COMMUNITY: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
-        const APPLICANT_DID: &str = "did:key:zApplicant";
-
-        let signer = LocalSigner::from_ed25519_seed(ISSUING_COMMUNITY.into(), &[7u8; 32]);
-        let vc = build_custom_endorsement(
-            &signer,
-            CustomEndorsementParams::new(
-                APPLICANT_DID,
-                crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI,
-                json!({ "method": "in-person-id" }),
-                CredentialStatusRef::revocation(
-                    "https://other.example.com/v1/status-lists/revocation",
-                    1,
-                ),
-            ),
-        )
-        .await
-        .expect("build identity-verification endorsement");
-
-        let vp = json!({
-            "@context": ["https://www.w3.org/ns/credentials/v2"],
-            "type": ["VerifiablePresentation"],
-            "holder": APPLICANT_DID,
-            "verifiableCredential": [serde_json::to_value(&vc).expect("vc -> json")],
-        });
-
-        let c = compile_default(PolicyPurpose::Personhood);
-        let r = evaluate(
-            &c,
-            "data.vtc.personhood.allow",
-            json!({
-                "applicant_did": APPLICANT_DID,
-                // A different community is doing the evaluating.
-                "community_did": "did:key:zSomeOtherCommunity",
                 "vp_claims": extract_vp_claims(&vp),
-            }),
-        )
-        .unwrap();
-        assert!(
-            !pluck_bool(&r),
-            "one community's vetting must not confer personhood in another"
+            })),
+            "a real community-signed IDVC must satisfy the default personhood policy; \
+             builder and policy have drifted"
         );
+
+        // The same credential, judged by another community: one community's
+        // vetting does not confer personhood in another.
+        assert!(!personhood_decides(json!({
+            "applicant_did": APPLICANT_DID,
+            "community_did": "did:key:zSomeOtherCommunity",
+            "vp_claims": extract_vp_claims(&vp),
+        })));
     }
 
     /// The policy module and the Rust constant name the same type. A
@@ -1546,16 +1553,15 @@ allow if {
     /// credential is issued, and every assertion is then denied with
     /// nothing in the logs naming the typo.
     #[test]
-    fn personhood_rego_and_rust_agree_on_the_vetting_type_uri() {
+    fn personhood_rego_and_rust_agree_on_the_identity_verification_type() {
         let source = super::default_source(PolicyPurpose::Personhood);
-        let expected = format!(
-            "cred.credentialSubject.endorsement.type == \"{}\"",
-            crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI
+        assert!(
+            source.contains(&format!("\"{IDVC}\" in cred.type")),
+            "personhood.rego must match on {IDVC}; the constant and the module have drifted"
         );
         assert!(
-            source.contains(&expected),
-            "personhood.rego must match on {}; the constant and the module have drifted",
-            crate::endorsement_types::IDENTITY_VERIFICATION_TYPE_URI
+            source.contains(&format!("== \"{}\"", dtg_credentials::WITNESSED_V1)),
+            "personhood.rego must match witnesses on the witnessed/1 predicate"
         );
     }
 
@@ -1707,7 +1713,7 @@ allow if {
             &c,
             "data.vtc.cross_community_roles.allow",
             json!({
-                "foreign_vec": { "issuer": "did:webvh:peer.example", "role": "admin" },
+                "foreign_vac": { "issuer": "did:webvh:peer.example", "role": "admin" },
                 "target_role": "admin",
                 "vtc_state": {}
             }),

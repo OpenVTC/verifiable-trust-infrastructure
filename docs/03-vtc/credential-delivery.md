@@ -4,8 +4,12 @@ When a join ends in admission, the community issues two credentials to the new
 member:
 
 - a **`MembershipCredential`** (the VMC), and
-- a **role `EndorsementCredential`** (`endorsement.type = "CommunityRole"`), for
-  the role admission granted.
+- a **role `AuthorityCredential`** (a VAC whose `credentialSubject.authority` is
+  `{ scope: <community DID>, actions: ["role:<role>"], maxAttenuation: 0 }`),
+  for the role admission granted.
+
+Both are DTG credentials under the v1 context, issued by the community with
+`issuerScope` `public`.
 
 It then **delivers each one as its own Trust Task**. A client that waits only
 for the answer to its submit can miss them. This page covers what arrives, where,
@@ -44,9 +48,11 @@ not returned: the member is admitted either way.
 
 The `#response` to `vtc/join-requests/submit/0.2` is a `VerdictResponse`. On
 `allow` the current VTC also puts both credentials in it, as
-`verdict.with.vmc` and `verdict.with.roleVec`, on every transport. The REST
+`verdict.with.vmc` and `verdict.with.roleVac`, on every transport. The REST
 admin decision (`POST /v1/join-requests/{id}/decide`) returns them as `vmc` and
-`roleVec`, so an admin can hand them over out of band.
+`roleVac` (vtc/join-requests/decide/0.1), so an admin can hand them over out of
+band. Both members were named `roleVec` before role credentials became VACs;
+a client reading the old name finds nothing.
 
 **Do not build a session client on those inline fields.** The contract, as
 `vta_sdk::protocols::join_requests::VerdictWith` states it, is that the
@@ -86,8 +92,8 @@ as soon as they arrive.
 ## Migration note — Eucalyptus
 
 **Who this is for:** a client written against the 0.28-era stack (vta-service
-0.28, vta-sdk 0.38) that read the membership credential and role endorsement
-from `verdict.with.vmc` / `verdict.with.roleVec` in the answer to its submit.
+0.28, vta-sdk 0.38) that read the membership and role credentials
+from `verdict.with.vmc` / `verdict.with.roleVac` in the answer to its submit.
 
 **What changes for you:** on the Eucalyptus train (`VTI-Eucalyptus-RC-0` and
 later), treat the submit's `allow` as the **decision** and nothing more. The
@@ -110,7 +116,7 @@ only one.
   arrival order.
 - Keep an inbox open on the community session after submit, and store the
   `credential-exchange/issue/0.1` deposits as they arrive.
-- If you still read `verdict.with.vmc` / `roleVec`, treat them as optional.
+- If you still read `verdict.with.vmc` / `roleVac`, treat them as optional.
   When they are present they are the same credentials the deposits carry, so
   store by credential `id` to avoid duplicates.
 
@@ -149,7 +155,7 @@ reply.
 
 ## See also
 
-- [Credentials](credentials.md) — VMC / VEC details and status lists.
+- [Credentials](credentials.md) — VMC / role VAC details and status lists.
 - [Community lifecycle](community-lifecycle.md) — the join flow.
 - [Bootstrap runbook](bootstrap-runbook.md) — admitting a community's first
   members.

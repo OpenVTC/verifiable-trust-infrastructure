@@ -216,7 +216,7 @@ enum Commands {
 
     /// Member-facing verbs on your own membership and relationships: renew,
     /// rotate, personhood revoke, relationships list/publish/revoke, and
-    /// issuing a custom endorsement (Admin or Issuer).
+    /// issuing a community statement (Admin or Issuer).
     Member {
         #[command(subcommand)]
         command: member::MemberCommands,

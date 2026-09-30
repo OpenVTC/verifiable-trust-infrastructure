@@ -12,7 +12,7 @@ applies_to:
 
 # VTC Members — Renew
 
-Re-mints the caller's VMC + role VEC. Spec §6.3.
+Re-mints the caller's VMC + role VAC. Spec §6.3.
 
 ## Authentication
 
@@ -32,9 +32,9 @@ ACL membership", and an expired session is a different issue.
    at join time. A member without a slot (a grandfathered
    pre-M2.12 row) gets a fresh allocation as a one-time
    reconcile.
-4. Mints a fresh VMC + role VEC (`validFrom = now`,
+4. Mints a fresh VMC + role VAC (`validFrom = now`,
    `validUntil = now + community.membership.validity`).
-5. Updates `Member.current_vmc_id` + `current_role_vec_id`
+5. Updates `Member.current_vmc_id` + `current_role_vac_id`
    to the new ids.
 6. Emits `MembershipRenewed` audit envelope with
    `personhood_changed` set when the new flag differs from
@@ -46,7 +46,7 @@ ACL membership", and an expired session is a different issue.
 {
   "did": "did:key:zMember",
   "vmc": { ... signed VC ... },
-  "roleVec": { ... signed VC ... },
+  "roleVac": { ... signed VC ... },
   "personhood": false,
   "personhoodChanged": false
 }

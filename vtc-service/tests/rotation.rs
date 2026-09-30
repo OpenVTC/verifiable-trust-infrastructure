@@ -59,7 +59,7 @@ fn party_from_seed(seed: [u8; 32]) -> vti_rooms_dtg::test_support::Party {
 }
 
 async fn build_fixture() -> Fixture {
-    // The fixture verifies re-issued VMC/VEC against this signer, so the
+    // The fixture verifies re-issued VMC/VAC against this signer, so the
     // AppState must issue with this exact instance.
     let signer = Arc::new(LocalSigner::from_ed25519_seed(VTC_DID.into(), &[0xCC; 32]));
     let vtc = TestVtc::builder()
@@ -282,13 +282,13 @@ async fn rotation_happy_path_swaps_acl_and_member() {
         "old-DID sessions must be revoked"
     );
 
-    // VMC + VEC inline + verifying.
+    // VMC + VAC inline + verifying.
     let vmc: affinidi_vc::VerifiableCredential =
         serde_json::from_value(body["vmc"].clone()).unwrap();
-    let role_vec: affinidi_vc::VerifiableCredential =
-        serde_json::from_value(body["roleVec"].clone()).unwrap();
+    let role_vac: affinidi_vc::VerifiableCredential =
+        serde_json::from_value(body["roleVac"].clone()).unwrap();
     fix.signer.verify(&vmc).expect("VMC verifies");
-    fix.signer.verify(&role_vec).expect("VEC verifies");
+    fix.signer.verify(&role_vac).expect("VAC verifies");
 }
 
 /// M2.15.2: did:webvh rotation works, but only when the

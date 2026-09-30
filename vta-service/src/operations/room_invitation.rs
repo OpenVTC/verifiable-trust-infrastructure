@@ -302,8 +302,15 @@ mod tests {
         from: chrono::DateTime<Utc>,
         until: Option<chrono::DateTime<Utc>>,
     ) -> String {
-        let mut vic = DTGCredential::new_vic(issuer.to_string(), subject.to_string(), from, until)
-            .with_id(id);
+        // A room invites as itself: `public`.
+        let mut vic = DTGCredential::new_vic(
+            issuer.to_string(),
+            dtg_credentials::IssuerScope::Public,
+            subject.to_string(),
+            from,
+            until,
+        )
+        .with_id(id);
         vic.sign(signer, None).await.expect("sign the invitation");
         serde_json::to_string(vic.credential()).expect("serialise")
     }

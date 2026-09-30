@@ -506,7 +506,7 @@ mod tests {
         let subject = holder_did(7);
         let claims = json!({ "a": 1, "b": 2 });
         let req = MintRequest {
-            vct: "EndorsementCredential",
+            vct: "SkillEndorsement",
             issuer_did: &issuer_did,
             subject_did: &subject,
             claims: &claims,

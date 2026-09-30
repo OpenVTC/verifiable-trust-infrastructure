@@ -509,6 +509,12 @@ fn witnesses() -> Vec<Witness> {
             "a_claim_over_the_cap_is_the_declared_claim_too_large"
         ),
         witness!(
+            s::endorsements::issue::v0_1::error_codes::PREDICATE_NOT_ISSUABLE,
+            crate::routes::endorsements::ISSUE_ERR_PREDICATE_NOT_ISSUABLE,
+            "endorsements.rs",
+            "a_task_bound_predicate_is_the_declared_predicate_not_issuable"
+        ),
+        witness!(
             s::endorsements::issue::v0_1::error_codes::STATUS_LIST_EXHAUSTED,
             crate::routes::endorsements::ISSUE_ERR_STATUS_LIST_EXHAUSTED,
             "endorsements.rs",

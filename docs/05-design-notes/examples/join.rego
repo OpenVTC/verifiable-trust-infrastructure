@@ -18,13 +18,13 @@ decision := {"effect": "allow", "with": {"role": "member", "obligations": ["reci
 
 # P2 Verified human
 else := {"effect": "allow", "with": {"role": "member", "obligations": ["reciprocate_vmc"]}} if {
-	cred_trusted("WitnessCredential")
+	statement_trusted("https://registry.trustoverip.org/dtg/vsc/witnessed/1")
 	agreed("code-of-conduct")
 }
 
 # P3 Almost there
 else := {"effect": "request_more", "with": {"needs": ["agreed:code-of-conduct"], "presentation_definition": {"id": "vtc-join-coc"}}} if {
-	cred_trusted("WitnessCredential")
+	statement_trusted("https://registry.trustoverip.org/dtg/vsc/witnessed/1")
 }
 
 # P4 Open review (catch-all)
@@ -46,9 +46,19 @@ cred_trusted(t) if {
 	c.status == "valid"
 }
 
-endorsement_count := count([c |
+# A statement is told apart by its predicate, never its type: every DTG
+# statement is a `StatementCredential`.
+statement_trusted(p) if {
 	some c in input.evidence.presentation.credentials
-	c.type == "EndorsementCredential"
+	c.type == "StatementCredential"
+	c.predicate == p
+	c.issuer_trusted
+	c.status == "valid"
+}
+
+statement_count := count([c |
+	some c in input.evidence.presentation.credentials
+	c.type == "StatementCredential"
 ])
 
 has_valid_invitation if {

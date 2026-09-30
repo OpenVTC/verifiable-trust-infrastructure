@@ -30,20 +30,28 @@ use serde_json::Value;
 /// (`DTGCredentialType::Membership`) and as the VTC's own issuance stamps it.
 ///
 /// The name previously carried a `VERIFIABLE_` prefix that the *value* never
-/// had. That gap is not cosmetic: it is how
-/// `"VerifiableEndorsementCredential"` came to be hand-rolled into the
-/// recognition path, where it matched nothing any VTC issues and silently
+/// had. That gap is not cosmetic: it is how a `Verifiable`-prefixed type tag
+/// came to be hand-rolled into the recognition path, where it matched nothing
+/// any VTC issues and silently
 /// broke cross-community recognition for every real presentation
 /// (OpenVTC/verifiable-trust-infrastructure#1062). A constant whose name
 /// disagrees with its value invites exactly that.
 pub const MEMBERSHIP_CREDENTIAL_TYPE: &str = "MembershipCredential";
 
-/// Wire `type` tag of a VEC, per DTG Credentials §VEC.
+/// Wire `type` tag of a VAC (Verifiable Authority Credential) — the credential
+/// a community role is conferred in (`authority.actions` `["role:<name>"]` at
+/// the community's DID), per DTG Credentials §VAC.
 ///
 /// Sibling of [`MEMBERSHIP_CREDENTIAL_TYPE`], and here for the same reason:
-/// the recognition path had this one as a bare literal, spelled wrongly, with
-/// nothing to compare it against.
-pub const ENDORSEMENT_CREDENTIAL_TYPE: &str = "EndorsementCredential";
+/// the recognition path once had its role-credential type as a bare literal,
+/// spelled wrongly, with nothing to compare it against.
+pub const AUTHORITY_CREDENTIAL_TYPE: &str = "AuthorityCredential";
+
+/// Wire `type` tag of a VSC (Verifiable Statement Credential), per DTG
+/// Credentials §VSC. A statement's meaning is its `credentialSubject.predicate`,
+/// never a subtype: every endorsement, witness attestation and vetting
+/// statement carries this one type.
+pub const STATEMENT_CREDENTIAL_TYPE: &str = "StatementCredential";
 
 /// VTC → member: request that the member issue and send their reciprocal VMC.
 pub const MEMBER_REQUEST_VMC_TYPE: &str = "https://trusttasks.org/spec/vtc/members/request-vmc/0.1";

@@ -30,7 +30,7 @@ import {
   DECLARED_RELATIONSHIPS,
   describeSeconds,
   draftToRequirements,
-  IDENTITY_VETTING_STATEMENT_TYPE,
+  VETTED_PREDICATE,
   methodLabel,
   parseIsoDuration,
   relationshipLabel,
@@ -265,8 +265,8 @@ function VettingFields({
         label="Statement type"
         hint={
           options.length === 0
-            ? "No endorsement type is registered yet. Register one above first."
-            : "What a counted statement carries. Peer identity vetting uses the identity-vetting type."
+            ? "No predicate is accepted yet. Register one above first."
+            : "The predicate a counted statement carries. Peer identity vetting uses the registry's vetted/1."
         }
       >
         <select
@@ -278,7 +278,7 @@ function VettingFields({
           <option value="">Choose a type…</option>
           {options.map((uri) => (
             <option key={uri} value={uri}>
-              {uri === IDENTITY_VETTING_STATEMENT_TYPE
+              {uri === VETTED_PREDICATE
                 ? `Identity vetting — ${uri}`
                 : uri}
             </option>

@@ -70,7 +70,7 @@ struct Fixture {
 async fn build_fixture() -> (Fixture, String) {
     // Signers + the default policy bundle: a promotion is the role-change
     // ceremony, which decides against `role_change.rego` and re-mints the
-    // subject's role VEC. Without them this suite could only assert that the
+    // subject's role VAC. Without them this suite could only assert that the
     // gate opened, not that the operation it gates completed.
     let vtc = TestVtc::builder()
         .with_public_url(RP_ORIGIN)

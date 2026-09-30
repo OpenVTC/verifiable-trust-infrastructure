@@ -7,8 +7,8 @@
 //!
 //! - [`card`] — the Vetting Card an applicant signs for one vetter, and the
 //!   verification a vetter's client runs before showing it.
-//! - [`statement`] — the Vetting Statement (a DTG `EndorsementCredential`) a
-//!   vetter signs, and its verification.
+//! - [`statement`] — the Vetting Statement (a DTG `StatementCredential` under
+//!   the `vetted/1` predicate) a vetter signs, and its verification.
 //! - [`requirements`] — the `requirementsDigest`, and the evaluation of a set
 //!   of statements against a community's [`VettingRequirements`]. The applicant's
 //!   client uses it to show progress; the community uses the same counting to
@@ -185,6 +185,12 @@ pub(crate) async fn verify_attached_proof(
 /// top-level `proof`, SHA-256 multihash, base58btc).
 pub(crate) fn digest(value: &Value) -> Result<String, VettingError> {
     dtg_credentials::digest_multibase_json(value).map_err(|e| VettingError::Digest(e.to_string()))
+}
+
+/// A catalog credential's wire form, for tests.
+#[cfg(test)]
+pub(crate) fn tests_support_json(dtg: &dtg_credentials::DTGCredential) -> Value {
+    serde_json::to_value(dtg).expect("catalog credential serialises")
 }
 
 #[cfg(test)]

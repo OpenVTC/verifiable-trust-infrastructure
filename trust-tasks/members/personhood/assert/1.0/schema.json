@@ -19,7 +19,7 @@
     {
       "title": "Response",
       "type": "object",
-      "required": ["did", "personhood", "vmc", "roleVec"],
+      "required": ["did", "personhood", "vmc", "roleVac"],
       "properties": {
         "did": { "type": "string" },
         "personhood": {
@@ -28,7 +28,7 @@
           "description": "Always `true` on success. The flag flipped or stayed asserted."
         },
         "vmc": { "type": "object" },
-        "roleVec": { "type": "object" }
+        "roleVac": { "type": "object" }
       },
       "additionalProperties": false
     }

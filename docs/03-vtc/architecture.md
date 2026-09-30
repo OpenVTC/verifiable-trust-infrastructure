@@ -40,7 +40,7 @@ graph TB
     subgraph Ops["Operations layer"]
         POLICY[policy engine<br/>regorus]
         MEM[member state]
-        ISSUE[credential issuance<br/>VMC · VEC · VRC]
+        ISSUE[credential issuance<br/>VMC · VAC · VRC]
         STATUS[BitstringStatusList]
         SYNC[MembershipSyncer]
         WEBSVC[website serve<br/>+ bundle deploy]
@@ -85,9 +85,9 @@ sealed-transfer, and protocol types shared with the VTA.
 | `auth/` | Session machinery + JWT keys + cookie + bearer extractors (`AuthClaims`, `ManageAuth`, `AdminAuth`). |
 | `community/` | Profile CRUD + community-level config. |
 | `config.rs` | All `AppConfig` types (server, routing, auth, registry, renewal, website, admin_ui, …). |
-| `credentials/` | VMC / VEC / VRC / custom endorsement builders + `LocalSigner` (cached signer wrapping the VTA-minted key). |
+| `credentials/` | VMC / role VAC / community statement (VSC) / IDVC builders + `LocalSigner` (cached signer wrapping the VTA-minted key). |
 | `did_key.rs` | `did:key` helpers (multibase + multicodec). |
-| `endorsement_types/` | Operator-uploaded endorsement type registry. |
+| `endorsement_types/` | The community's predicate accept list (registered endorsement types), seeded with the DTG VSC registry's core predicates; fail-closed for presented statements. |
 | `endorsements/` | Custom endorsement issuance + revocation + storage. |
 | `install/` | Install token signer + state machine (one-shot WebAuthn ceremony). |
 | `join/` | Join request lifecycle + retention. |
@@ -219,7 +219,7 @@ graph TB
     subgraph VTC["VTC (independent process)"]
         VTC_BUNDLE["VtcKeyBundle<br/>(cached at setup)"]
         VTC_SIGNER["LocalSigner<br/>(in-memory)"]
-        VTC_CREDS[VMC / VEC / VRC issuance]
+        VTC_CREDS[VMC / VAC / VRC issuance]
         VTC_BUNDLE --> VTC_SIGNER
         VTC_SIGNER --> VTC_CREDS
     end

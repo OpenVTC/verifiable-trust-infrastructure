@@ -302,6 +302,7 @@ mod tests {
 
         let mut vic = dtg_credentials::DTGCredential::new_vic(
             room_did.clone(),
+            dtg_credentials::IssuerScope::Public,
             "did:key:zInvitee".into(),
             Utc::now(),
             None,
@@ -355,6 +356,7 @@ mod tests {
             "did:key:zRoom",
             &mut dtg_credentials::DTGCredential::new_vic(
                 "did:key:zRoom".into(),
+                dtg_credentials::IssuerScope::Public,
                 "did:key:zInvitee".into(),
                 Utc::now(),
                 None,

@@ -347,21 +347,21 @@ async fn run_role_change(
         ));
     };
 
-    // Deliver the re-minted role VEC to the member's wallet over DIDComm so it
-    // can present its updated role. Best-effort: the VEC is already issued and
+    // Deliver the re-minted role VAC to the member's wallet over DIDComm so it
+    // can present its updated role. Best-effort: the VAC is already issued and
     // persisted (the old one is short-lived and expires on its own validUntil —
-    // role VECs carry no status entry), so a delivery failure is logged, not
+    // role VACs carry no status entry), so a delivery failure is logged, not
     // fatal. `None` means the subject is an ACL entry with no member row (an
-    // integration DID, say): there was no role VEC to re-mint and nobody to
+    // integration DID, say): there was no role VAC to re-mint and nobody to
     // deliver one to.
-    if let Some(role_vec) = outcome.role_vec.as_ref()
+    if let Some(role_vac) = outcome.role_vac.as_ref()
         && let Err(e) =
-            crate::credentials::delivery::deliver_credentials(state, subject_did, &[role_vec]).await
+            crate::credentials::delivery::deliver_credentials(state, subject_did, &[role_vac]).await
     {
         warn!(
             subject = %subject_did,
             error = %e,
-            "role-VEC delivery failed on role change; the credential is issued and can be re-delivered"
+            "role-VAC delivery failed on role change; the credential is issued and can be re-delivered"
         );
     }
 

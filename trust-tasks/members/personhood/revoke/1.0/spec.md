@@ -28,7 +28,7 @@ spec §6.3.
   1. Load Member row (404 if absent).
   2. Flip `Member.personhood = false`,
      `personhood_asserted_at = None`.
-  3. Re-mint VMC + role VEC with `personhood: false`. Reuses
+  3. Re-mint VMC + role VAC with `personhood: false`. Reuses
      the existing status-list slot.
   4. Emit `PersonhoodRevoked { vmcId, reason: <"admin" | "self"> }`.
      The renewal-time `reason: "renewal-policy"` flavour
@@ -49,7 +49,7 @@ spec §6.3.
   "did": "<member-did>",
   "personhood": false,
   "vmc": <vmc>,         // omitted on idempotent no-op
-  "roleVec": <role_vec> // omitted on idempotent no-op
+  "roleVac": <role_vac> // omitted on idempotent no-op
 }
 ```
 

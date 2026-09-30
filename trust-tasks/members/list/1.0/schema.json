@@ -40,7 +40,7 @@
         },
         "statusListIndex": { "type": ["integer", "null"] },
         "currentVmcId": { "type": ["string", "null"] },
-        "currentRoleVecId": { "type": ["string", "null"] },
+        "currentRoleVacId": { "type": ["string", "null"] },
         "extensions": {}
       }
     }

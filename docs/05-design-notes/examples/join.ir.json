@@ -9,12 +9,12 @@
     },
     {
       "name": "Verified human",
-      "when": { "all": [ { "holds_trusted": "WitnessCredential" }, { "agreed": "code-of-conduct" } ] },
+      "when": { "all": [ { "holds_trusted_statement": "https://registry.trustoverip.org/dtg/vsc/witnessed/1" }, { "agreed": "code-of-conduct" } ] },
       "then": { "effect": "allow", "with": { "role": "member", "obligations": ["reciprocate_vmc"] } }
     },
     {
       "name": "Almost there",
-      "when": { "all": [ { "holds_trusted": "WitnessCredential" } ] },
+      "when": { "all": [ { "holds_trusted_statement": "https://registry.trustoverip.org/dtg/vsc/witnessed/1" } ] },
       "then": { "effect": "request_more", "with": { "needs": ["agreed:code-of-conduct"] } }
     },
     {

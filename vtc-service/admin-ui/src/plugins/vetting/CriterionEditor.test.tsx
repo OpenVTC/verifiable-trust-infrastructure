@@ -14,7 +14,7 @@ vi.mock("@/lib/api", async (original) => ({
 }));
 
 const STATEMENT_TYPE =
-  "https://firstperson.network/endorsements/identity-vetting/0.1";
+  "https://registry.trustoverip.org/dtg/vsc/vetted/1";
 
 const TYPES: EndorsementType[] = [
   {

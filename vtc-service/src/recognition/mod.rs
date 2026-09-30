@@ -2,14 +2,14 @@
 //!
 //! Spec §8.4. The `MembershipSyncer` publishes our community's
 //! members to the trust registry; this module is the **inverse**
-//! path — taking a foreign community's
-//! `VerifiableEndorsementCredential` +
-//! `MembershipCredential` and deciding whether the
+//! path — taking a foreign community's role credential (a DTG
+//! `AuthorityCredential` conferring `role:<name>` at that community's DID)
+//! and its `MembershipCredential`, and deciding whether the
 //! local VTC should mint a session for the bearer.
 //!
 //! ## Session-mint hardening (fail-closed)
 //!
-//! [`verify::verify_foreign_vec`] runs four checks **in order**;
+//! [`verify::verify_foreign_role`] runs four checks **in order**;
 //! the first failure short-circuits with a typed
 //! [`RecognitionError`]. Order matters — proof verification is
 //! cheap (one signature + JCS canonicalisation), while the
@@ -17,7 +17,7 @@
 //! network. We want the most disqualifying check (a malformed
 //! credential) to surface before any HTTP call lands.
 //!
-//! 1. **Proof verification.** Both VEC + VMC carry
+//! 1. **Proof verification.** Both VAC + VMC carry
 //!    `DataIntegrityProof::eddsa-jcs-2022` signatures over the
 //!    foreign issuer's `#key-0`. Verified through the DI
 //!    library's `proof.verify` with the shared
@@ -56,5 +56,5 @@ pub mod verify;
 
 pub use verify::{
     HttpStatusListFetcher, RecognitionError, StatusListFetcher, VerifiedForeignCredential,
-    verify_foreign_vec,
+    verify_foreign_role,
 };

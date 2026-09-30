@@ -63,8 +63,10 @@ pub struct SchemaEntry {
     /// The credential type URI / `vct`. Primary key — URL-encoded into the key.
     pub type_uri: String,
     /// The DTG catalog type this binds to (a `DTGCredentialType` string, e.g.
-    /// `"MembershipCredential"`). `None` for community-defined endorsement types
-    /// that map onto the generic `EndorsementCredential`.
+    /// `"MembershipCredential"`, `"AuthorityCredential"`, `"StatementCredential"`).
+    /// `None` for a type outside the DTG catalog. A statement type is its
+    /// predicate, registered through `vtc/endorsement-types/register`, never a
+    /// subtype here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dtg_type: Option<String>,
     /// The JSON Schema (W3C `credentialSchema`) an issued/accepted credential

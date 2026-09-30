@@ -105,8 +105,8 @@ catalog (a superset of `docs/05-design-notes/vtc-mvp.md` §6.1):
 |---|---|---|---|---|
 | **InvitationCredential (VIC)** | community (or member with `can_invite`) | a (possibly unknown) DID | authorizes a join | yes — prove validity without revealing inviter graph |
 | **MembershipCredential (VMC)** | community | member | "is a member of X" | yes — prove membership without other claims |
-| **RoleCredential (Role VEC)** | community | member | proves a role (admin/moderator/issuer/member/custom) | yes |
-| **EndorsementCredential (VEC)** | community or issuer-role member | member | community-defined claims | yes |
+| **Role VAC** (`AuthorityCredential`, `role:<name>` at the community DID) | community | member | proves a role (admin/moderator/issuer/member/custom) | yes |
+| **Statement (VSC; a VEC under `endorses/1`)** | community or issuer-role member | member | claims under a registered predicate | yes |
 | **RelationshipCredential (VRC)** | member (self-issued) | another member | peer trust edge | n/a (Phase 3) |
 | **PersonhoodCredential** | personhood oracle / community | member | Sybil resistance | yes |
 

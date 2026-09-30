@@ -531,15 +531,9 @@ async fn verify_di_vp(
 
         check_w3c_temporal(vc, now)?;
 
-        let vct = vc.get("type").and_then(|t| match t {
-            Value::Array(a) => a
-                .iter()
-                .filter_map(Value::as_str)
-                .find(|s| *s != "VerifiableCredential")
-                .map(str::to_string),
-            Value::String(s) => Some(s.clone()),
-            _ => None,
-        });
+        // The concrete type — for a DTG credential its subtype, not the
+        // `DTGCredential` base type every one of them carries.
+        let vct = crate::credentials::ingress::concrete_type(vc);
         // The W3C `credentialStatus` is a top-level VC field (sibling of
         // `credentialSubject`); capture it from the full VC, not the subject.
         let credential_status = extract_credential_status(vc);
@@ -747,15 +741,7 @@ async fn verify_bbs_presentation(
                     .into(),
             )
         })?;
-    let vct = vc.get("type").and_then(|t| match t {
-        Value::Array(a) => a
-            .iter()
-            .filter_map(Value::as_str)
-            .find(|s| *s != "VerifiableCredential")
-            .map(str::to_string),
-        Value::String(s) => Some(s.clone()),
-        _ => None,
-    });
+    let vct = crate::credentials::ingress::concrete_type(vc);
     let credential_status = extract_credential_status(vc);
     // A derived proof reveals only what the issuer made mandatory-disclosed plus
     // what the holder chose to disclose. An issuer that leaves `taskContext`

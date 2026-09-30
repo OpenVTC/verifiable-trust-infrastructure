@@ -84,11 +84,11 @@ challenge response.
    with the same role + metadata.
 4. Move the Member row (same DID transition).
 5. Revoke every session keyed on the old DID.
-6. Re-mint VMC + role VEC to the new DID, **reusing the
+6. Re-mint VMC + role VAC to the new DID, **reusing the
    existing status-list slot** (spec §6.2 — no new slot
    allocation on rotation).
 7. Emit `DidRotated { oldDid, newDid, method, vmcId,
-   roleVecId, priorRole, rotationReason }` audit envelope.
+   roleVacId, priorRole, rotationReason }` audit envelope.
    Actor is the **new** DID (future principal).
 
 ## Response (`200 OK`)
@@ -98,7 +98,7 @@ challenge response.
   "newDid": "<new DID>",
   "method": "did:key",
   "vmc": { ... freshly-signed VMC ... },
-  "roleVec": { ... freshly-signed VEC ... }
+  "roleVac": { ... freshly-signed role VAC ... }
 }
 ```
 

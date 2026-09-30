@@ -61,7 +61,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::credentials::vec::COMMUNITY_ROLE_ENDORSEMENT_TYPE;
+use crate::endorsements::VETTER_GRANT_ROW_TYPE;
 use crate::endorsements::{Endorsement, endorsements_by_type};
 use vta_sdk::protocols::vetting::vetters::{
     list::v0_1 as list_wire, profile::v0_1 as profile_wire, show::v0_1 as show_wire,
@@ -397,18 +397,17 @@ pub async fn show(
     // Not live: the strongest thing the record says. Newest first, so a vetter
     // whose grant was revoked and re-granted and revoked again is reported by
     // the most recent one.
-    let mut rows: Vec<_> =
-        endorsements_by_type(&state.endorsements_ks, COMMUNITY_ROLE_ENDORSEMENT_TYPE)
-            .await?
-            .into_iter()
-            .filter(|row| row.subject_did == vetter_did)
-            .filter(|row| {
-                row.claim
-                    .get("role")
-                    .and_then(Value::as_str)
-                    .is_some_and(|held| role_matches(held, VETTER_ROLE))
-            })
-            .collect();
+    let mut rows: Vec<_> = endorsements_by_type(&state.endorsements_ks, VETTER_GRANT_ROW_TYPE)
+        .await?
+        .into_iter()
+        .filter(|row| row.subject_did == vetter_did)
+        .filter(|row| {
+            row.claim
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|held| role_matches(held, VETTER_ROLE))
+        })
+        .collect();
     rows.sort_by_key(|row| std::cmp::Reverse(row.created_at));
 
     if let Some(revoked) = rows.iter().find(|row| row.revoked_at.is_some()) {

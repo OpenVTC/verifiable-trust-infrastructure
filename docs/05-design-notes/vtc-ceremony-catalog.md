@@ -16,9 +16,9 @@ The four ceremonies are chosen to differ on *every* axis — if one pipeline han
 
 | Ceremony | Trigger / `actor` | `actor` = `subject`? | Evidence | Effects | Hard invariant | Threaded? | Direction |
 |---|---|---|---|---|---|---|---|
-| **Join** | applicant (unauth) | **yes** | VP (invitation? / credentials?) | issue VMC + VEC, write ACL+Member | privilege ceiling | yes | constructive |
+| **Join** | applicant (unauth) | **yes** | VP (invitation? / credentials?) | issue VMC + VAC, write ACL+Member | privilege ceiling | yes | constructive |
 | **Leave** | member (self) **or** admin | **no** (admin case) | disposition choice / removal reason | revoke VMC, apply disposition, registry departure | no-last-admin | optional | **destructive** |
-| **Role-change** | admin | **no** | target + desired role (+ step-up) | re-issue VEC, update ACL role | privilege ceiling + step-up | optional | **mutating** |
+| **Role-change** | admin | **no** | target + desired role (+ step-up) | re-issue VAC, update ACL role | privilege ceiling + step-up | optional | **mutating** |
 | **Directory** | any member (a query) | **no** | the query (fields requested) | return a **field projection** (no write) | PII boundary | **no** (sync) | **read-only** |
 
 Join is constructive/self/threaded; Leave inverts it (destructive/other/one-shot); Role-change is in-place
@@ -34,11 +34,11 @@ The canonical evidence-bearing ceremony. Full treatment because it exercises all
 - **Trigger:** applicant, unauthenticated, rate-limited. `actor` = `subject` = the applicant.
 - **Evidence:** a VP — optionally an `InvitationCredential` (VIC) and/or other credentials.
 - **Routes (policy):** first-match over `evidence`. e.g. `has_valid_invitation → allow(role from invitation)`;
-  `cred_trusted("WitnessCredential") AND agreed("code-of-conduct") → allow(member)`;
-  `cred_trusted("WitnessCredential") → request_more(code-of-conduct)`; else `refer(moderator)`.
+  `statement_trusted("https://registry.trustoverip.org/dtg/vsc/witnessed/1") AND agreed("code-of-conduct") → allow(member)`;
+  `statement_trusted("https://registry.trustoverip.org/dtg/vsc/witnessed/1") → request_more(code-of-conduct)`; else `refer(moderator)`.
 - **Verdict realization:** `allow` ⇒ admit; `request_more` ⇒ return a PD; `refer` ⇒ moderator queue;
   `deny` ⇒ reject.
-- **Effects (allow):** allocate status-list index → mint VMC + role VEC → write ACL + Member → sealed-transfer →
+- **Effects (allow):** allocate status-list index → mint VMC + role VAC → write ACL + Member → sealed-transfer →
   audit. Obligation `reciprocate_vmc` (the member counter-signs → bidirectional DTG edge).
 - **Invariant:** privilege ceiling — join never grants `admin`.
 
@@ -51,10 +51,16 @@ The canonical evidence-bearing ceremony. Full treatment because it exercises all
   "context": { "community_did":"did:webvh:acme.example", "channel":"rest", "member_count":1421 },
   "evidence":{ "invitation":null,
     "presentation":{ "verified":true, "holder":"did:key:z6MkHuman",
-      "credentials":[ { "type":"WitnessCredential", "issuer":"did:webvh:notary.example",
+      "credentials":[ { "type":"StatementCredential", "predicate":"https://registry.trustoverip.org/dtg/vsc/witnessed/1", "issuer":"did:webvh:notary.example",
                         "issuer_trusted":true, "status":"valid", "claims":{"kind":"proximity"} } ] } },
   "state":   { "subject_member":null } }
 ```
+
+A DTG statement's `type` fact is `StatementCredential` whatever it says; its
+meaning is the `predicate` fact (`credentialSubject.predicate`), so a policy
+matches a witness with `statement_trusted("https://registry.trustoverip.org/dtg/vsc/witnessed/1")`,
+never with a type string. The host refuses a presented statement under a
+predicate the community does not accept before policy runs.
 
 Witness present, agreement absent → first-match yields `{"effect":"request_more","with":{"needs":["agreed:code-of-conduct"],
 "presentation_definition":{…}}}`. Round 2 (same thread) carries the agreement → `{"effect":"allow","with":{"role":"member",
@@ -109,9 +115,9 @@ had `subject.role == "admin"` and the set would empty.
 - **Evidence:** `request: { target_role }`; for promotion-to-admin, a fresh **step-up** user-verification.
 - **Routes (`role-change.rego`):** `target_role in {member,moderator,custom:*} → allow(target_role)`;
   `target_role == "admin" → refer(step-up)` *(or quorum)*; demotion guarded by no-last-admin.
-- **Verdict realization:** `allow.with.role` ⇒ re-issue the role VEC + update the ACL role (mutation, not
+- **Verdict realization:** `allow.with.role` ⇒ re-issue the role VAC + update the ACL role (mutation, not
   issuance-from-scratch). `refer` ⇒ the step-up / M-of-N path.
-- **Effects (allow):** re-issue role VEC → update ACL role → audit `RoleChanged`. No new membership.
+- **Effects (allow):** re-issue role VAC → update ACL role → audit `RoleChanged`. No new membership.
 - **Invariants:** privilege ceiling (policy can't grant admin directly) **and** step-up reauth for admin
   promotion (`vtc-mvp.md` §9.7, §10.4) **and** no-last-admin on demotion.
 
@@ -147,11 +153,11 @@ The other `vtc-mvp.md` §7.1 purposes are further instances — listed to show c
 
 | Purpose | `actor` / `subject` | Evidence | `allow` effect | Notes |
 |---|---|---|---|---|
-| **Personhood** | member self | VP w/ `WitnessCredential` | set `personhood` flag, re-mint VMC | minimal-allow default (`vtc-mvp.md` §6.4) |
+| **Personhood** | member self | VP w/ a `witnessed/1` statement or the community's IDVC | set `personhood` flag, re-mint VMC | minimal-allow default (`vtc-mvp.md` §6.4) |
 | **Relationship** (VRC) | member → other member | self-issued VRC | store edge if both are members | `vtc-mvp.md` §12.3 |
-| **Renewal** | member self | none | re-mint VMC + VEC | today unconditional; pipeline lets it be policy-gated |
+| **Renewal** | member self | none | re-mint VMC + VAC | today unconditional; pipeline lets it be policy-gated |
 | **Registry / departure** | system | the departing member | choose disposition + publish | runs inside Leave's effects |
-| **Cross-community recognition** | foreign issuer | foreign VEC | honor external role | federation; TRQP-resolved |
+| **Cross-community recognition** | foreign issuer | foreign role VAC | honor external role | federation; TRQP-resolved |
 | **Directory** | member viewer | query | field projection | §5 |
 
 Every one is `verify → facts → evaluate → verdict → effects` with a different policy module, evidence slot, and

@@ -2,11 +2,14 @@
 //! again (`vtc/vetting/vetters/resend/0.1`).
 //!
 //! OpenVTC vetting design §10. A vetter is a member the community has issued a
-//! **vetter role credential**: a DTG `EndorsementCredential` with endorsement
-//! `{ type: "CommunityRole", role: "vetter", communityDid }`, a revocation slot
-//! on the shared `Revocation` status list, and a bounded validity. The grant is
-//! recorded as an [`Endorsement`] row — the record the join path counts
-//! statements against — with the signed credential kept on it, and the
+//! **vetter role credential**: a DTG Verifiable Authority Credential, issued by
+//! the community with `issuerScope` `public`, whose `authority` is
+//! `{ scope: <community DID>, actions: ["role:vetter"], maxAttenuation: 0 }`
+//! (vtc/vetting/vetters/grant/0.1 step 4), with a revocation slot on the shared
+//! `Revocation` status list and a bounded validity. The grant is recorded as an
+//! [`Endorsement`] row of type [`VETTER_GRANT_ROW_TYPE`] — the record the join
+//! path counts statements against, and what `vtc/endorsements/revoke/0.1`
+//! takes by `endorsementId` — with the signed credential kept on it, and the
 //! credential is delivered to the member, who presents it to applicants
 //! (`vta_sdk::vetting::eligibility`).
 //!
@@ -39,13 +42,13 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use vta_sdk::protocols::members::ENDORSEMENT_CREDENTIAL_TYPE;
+use vta_sdk::protocols::members::AUTHORITY_CREDENTIAL_TYPE;
 use vta_sdk::protocols::vetting::vetters::{
     grant::v0_1 as grant_wire, resend::v0_1 as resend_wire,
 };
 use vta_sdk::protocols::vetting::{
-    COMMUNITY_ROLE_ENDORSEMENT_TYPE, CheckShape, DEFAULT_VETTER_GRANT_VALIDITY_SECONDS,
-    GrantOrigin, VETTER_ROLE, VetterGrantRow, role_matches,
+    CheckShape, DEFAULT_VETTER_GRANT_VALIDITY_SECONDS, GrantOrigin, VETTER_ROLE, VetterGrantRow,
+    role_matches,
 };
 use vti_common::audit::{
     AuditEvent, AuditWriter, CredentialIssuedData, CustomEndorsementRevokedData,
@@ -57,9 +60,10 @@ use super::profiles;
 use crate::acl::{VtcRole, get_acl_entry};
 use crate::credentials::CredentialStatusRef;
 use crate::credentials::delivery::deliver_credentials;
-use crate::credentials::dtg::{into_typed, issue_endorsement};
+use crate::credentials::dtg::{into_typed, issue_role_action};
 use crate::endorsements::{
-    Endorsement, endorsements_by_type, endorsements_for_subject, mark_revoked, store_endorsement,
+    Endorsement, VETTER_GRANT_ROW_TYPE, endorsements_by_type, endorsements_for_subject,
+    mark_revoked, store_endorsement,
 };
 use crate::error::TaskError;
 use crate::members::Member;
@@ -94,7 +98,7 @@ impl VetterGrant {
 /// `validFrom`: a grant recorded after the statement was signed does not make
 /// its issuer retroactively a vetter.
 pub fn grant_covers(grant: &Endorsement, role: &str, at: DateTime<Utc>) -> bool {
-    grant.endorsement_type == COMMUNITY_ROLE_ENDORSEMENT_TYPE
+    grant.endorsement_type == VETTER_GRANT_ROW_TYPE
         && grant.revoked_at.is_none()
         && grant.created_at <= at
         && grant.valid_until.is_none_or(|until| until >= at)
@@ -158,15 +162,13 @@ async fn live_grant_of(
     member: &Member,
     now: DateTime<Utc>,
 ) -> Result<Option<Endorsement>, AppError> {
-    Ok(endorsements_for_subject(
-        &state.endorsements_ks,
-        &member.did,
-        COMMUNITY_ROLE_ENDORSEMENT_TYPE,
+    Ok(
+        endorsements_for_subject(&state.endorsements_ks, &member.did, VETTER_GRANT_ROW_TYPE)
+            .await?
+            .into_iter()
+            .rev()
+            .find(|g| is_live_for(g, member, now)),
     )
-    .await?
-    .into_iter()
-    .rev()
-    .find(|g| is_live_for(g, member, now)))
 }
 
 /// Every live vetter grant, by member DID: one scan of the grants and one
@@ -176,8 +178,7 @@ pub async fn live_grants(
     now: DateTime<Utc>,
 ) -> Result<HashMap<String, Endorsement>, AppError> {
     let mut by_subject: HashMap<String, Vec<Endorsement>> = HashMap::new();
-    for row in endorsements_by_type(&state.endorsements_ks, COMMUNITY_ROLE_ENDORSEMENT_TYPE).await?
-    {
+    for row in endorsements_by_type(&state.endorsements_ks, VETTER_GRANT_ROW_TYPE).await? {
         by_subject
             .entry(row.subject_did.clone())
             .or_default()
@@ -213,7 +214,7 @@ pub async fn grant_rows(state: &AppState) -> Result<Vec<VetterGrantRow>, AppErro
             .map(|p| (p.vetter_did.clone(), p))
             .collect();
     let mut rows: Vec<VetterGrantRow> =
-        endorsements_by_type(&state.endorsements_ks, COMMUNITY_ROLE_ENDORSEMENT_TYPE)
+        endorsements_by_type(&state.endorsements_ks, VETTER_GRANT_ROW_TYPE)
             .await?
             .into_iter()
             .filter(|row| {
@@ -228,7 +229,7 @@ pub async fn grant_rows(state: &AppState) -> Result<Vec<VetterGrantRow>, AppErro
                 origin: origin_of(&row),
                 profile: profiles.get(&row.subject_did).map(|p| p.summary()),
                 member_did: row.subject_did,
-                credential_id: row.vec_id,
+                credential_id: row.credential_id,
                 valid_from: row.created_at,
                 valid_until: row.valid_until,
                 revoked: row.revoked_at.is_some(),
@@ -300,7 +301,7 @@ pub async fn grant(
 /// wallet missed the credential is still a vetter, and can ask for it again
 /// (`vtc/vetting/vetters/resend/0.1`).
 pub(crate) async fn deliver_grant(state: &AppState, member_did: &str, credential: &JsonValue) {
-    match into_typed(credential.clone(), "vetter role VEC") {
+    match into_typed(credential.clone(), "vetter role VAC") {
         Ok(typed) => {
             if let Err(e) = deliver_credentials(state, member_did, &[&typed]).await {
                 warn!(member = %member_did, error = %e, "vetter role credential not delivered");
@@ -384,21 +385,19 @@ pub(crate) async fn grant_locked(
     let status_ref = CredentialStatusRef::revocation(list_credential_id, slot);
 
     let id = Uuid::new_v4();
-    let vec_id = format!("urn:uuid:{id}");
+    let credential_id = format!("urn:uuid:{id}");
     let seconds = validity_seconds.unwrap_or(DEFAULT_VETTER_GRANT_VALIDITY_SECONDS);
     let validity = Duration::seconds(
         i64::try_from(seconds)
             .map_err(|_| AppError::Validation("validitySeconds is out of range".into()))?,
     );
-    let credential = issue_endorsement(
+    // `role:vetter` at the community, `maxAttenuation` 0: who may vet is the
+    // community's to decide personally (vtc/vetting/vetters/grant/0.1 step 4).
+    let credential = issue_role_action(
         signer,
         member_did,
-        json!({
-            "type": COMMUNITY_ROLE_ENDORSEMENT_TYPE,
-            "role": VETTER_ROLE,
-            "communityDid": signer.issuer_did(),
-        }),
-        Some(&vec_id),
+        VETTER_ROLE,
+        Some(&credential_id),
         Some(&status_ref),
         validity,
     )
@@ -410,12 +409,12 @@ pub(crate) async fn grant_locked(
 
     let row = Endorsement {
         id,
-        endorsement_type: COMMUNITY_ROLE_ENDORSEMENT_TYPE.into(),
+        endorsement_type: VETTER_GRANT_ROW_TYPE.into(),
         issuer_did: signer.issuer_did().to_string(),
         subject_did: member_did.to_string(),
         claim: json!({ "role": VETTER_ROLE }),
         status_list_index: slot,
-        vec_id: vec_id.clone(),
+        credential_id: credential_id.clone(),
         created_at: valid_from,
         revoked_at: None,
         valid_until: Some(valid_until),
@@ -443,8 +442,8 @@ pub(crate) async fn grant_locked(
             actor_did,
             Some(member_did),
             AuditEvent::VecIssued(CredentialIssuedData {
-                credential_id: vec_id.clone(),
-                credential_type: ENDORSEMENT_CREDENTIAL_TYPE.into(),
+                credential_id: credential_id.clone(),
+                credential_type: AUTHORITY_CREDENTIAL_TYPE.into(),
                 valid_from: rfc3339(valid_from),
                 valid_until: rfc3339(valid_until),
                 status_list_index: Some(slot),
@@ -496,7 +495,7 @@ pub async fn resend(
     let valid_until = row
         .valid_until
         .ok_or_else(|| AppError::Internal("vetter grant row has no validUntil".into()))?;
-    let typed = into_typed(credential, "vetter role VEC")?;
+    let typed = into_typed(credential, "vetter role VAC")?;
     if let Err(e) = deliver_credentials(state, member_did, &[&typed]).await {
         warn!(member = %member_did, error = %e, "vetter grant credential could not be delivered again");
         return Err(AppError::ServiceError {
@@ -512,7 +511,7 @@ pub async fn resend(
                 Some(member_did),
                 AuditEvent::VetterGrantResent(VetterGrantResentData {
                     endorsement_id: row.id.to_string(),
-                    credential_id: row.vec_id.clone(),
+                    credential_id: row.credential_id.clone(),
                 }),
             )
             .await?;
@@ -520,7 +519,7 @@ pub async fn resend(
     info!(member = %member_did, endorsement_id = %row.id, "vetter grant credential delivered again");
     resend_wire::Response::try_from(
         resend_wire::Response::builder()
-            .credential_id(row.vec_id)
+            .credential_id(row.credential_id)
             .valid_until(valid_until),
     )
     .map_err(|e| AppError::Internal(format!("vetter resend response: {e}")))
@@ -549,15 +548,12 @@ pub(crate) async fn revoke_auto_grants(
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
     let _guard = GRANT_LOCK.lock().await;
     let now = Utc::now();
-    let own: Vec<Endorsement> = endorsements_for_subject(
-        &state.endorsements_ks,
-        member_did,
-        COMMUNITY_ROLE_ENDORSEMENT_TYPE,
-    )
-    .await?
-    .into_iter()
-    .filter(|g| g.auto_granted && grant_covers(g, VETTER_ROLE, now))
-    .collect();
+    let own: Vec<Endorsement> =
+        endorsements_for_subject(&state.endorsements_ks, member_did, VETTER_GRANT_ROW_TYPE)
+            .await?
+            .into_iter()
+            .filter(|g| g.auto_granted && grant_covers(g, VETTER_ROLE, now))
+            .collect();
     let mut revoked = 0u32;
     for grant in own {
         let slot = grant.status_list_index;
@@ -608,7 +604,7 @@ pub(crate) async fn revoke_on_departure(
     let grants = match endorsements_for_subject(
         &state.endorsements_ks,
         subject_did,
-        COMMUNITY_ROLE_ENDORSEMENT_TYPE,
+        VETTER_GRANT_ROW_TYPE,
     )
     .await
     {
@@ -705,7 +701,7 @@ fn response_for(row: &Endorsement) -> Result<grant_wire::Response, AppError> {
     grant_wire::Response::try_from(
         grant_wire::Response::builder()
             .endorsement_id(row.id.to_string())
-            .credential_id(row.vec_id.clone())
+            .credential_id(row.credential_id.clone())
             .valid_from(row.created_at)
             .valid_until(valid_until),
     )
@@ -733,12 +729,12 @@ mod tests {
         let id = Uuid::new_v4();
         Endorsement {
             id,
-            endorsement_type: COMMUNITY_ROLE_ENDORSEMENT_TYPE.into(),
+            endorsement_type: VETTER_GRANT_ROW_TYPE.into(),
             issuer_did: "did:webvh:vtc".into(),
             subject_did: "did:key:zCarol".into(),
             claim: json!({ "role": role }),
             status_list_index: 1,
-            vec_id: format!("urn:uuid:{id}"),
+            credential_id: format!("urn:uuid:{id}"),
             created_at: created,
             revoked_at: None,
             valid_until: until,

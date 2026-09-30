@@ -38,7 +38,7 @@ versioned source of truth (§8 of the pipeline doc), so diffs are semantic.
 ```
 cond     := leaf | { "all": [cond, …] } | { "any": [cond, …] } | { "not": cond }
 leaf     := "<id>"                       // no-arg condition, e.g. "has_valid_invitation"
-          | { "<id>": <arg> }            // arg'd condition, e.g. { "holds_trusted": "WitnessCredential" }
+          | { "<id>": <arg> }            // arg'd condition, e.g. { "holds_trusted_statement": "https://registry.trustoverip.org/dtg/vsc/witnessed/1" }
 ```
 
 `all` = AND, `any` = OR, `not` = negation. Leaves come from the vocabulary in §2.
@@ -67,6 +67,7 @@ host resolved that in *Verify*. Each row gives the IR leaf, its argument, and th
 | `has_valid_invitation` | — | `has_valid_invitation` *(helper)* |
 | `holds` | type str | `cred_held("<type>")` *(helper)* |
 | `holds_trusted` | type str | `cred_trusted("<type>")` *(helper)* |
+| `holds_trusted_statement` | predicate IRI | `statement_trusted("<predicate>")` *(helper)* — a DTG statement is matched by its `predicate` fact, never its type: every statement's `type` is `StatementCredential` |
 | `endorsements_gte` | int | `endorsement_count >= <n>` |
 | `agreed` | tag str | `agreed("<tag>")` *(helper)* |
 
@@ -162,7 +163,8 @@ else := <thenₙ> if { <whenₙ> }
 # helpers (emitted as used)
 cred_held(t) if { some c in input.evidence.presentation.credentials; c.type == t; c.status == "valid" }
 cred_trusted(t) if { some c in input.evidence.presentation.credentials; c.type == t; c.issuer_trusted; c.status == "valid" }
-endorsement_count := count([c | some c in input.evidence.presentation.credentials; c.type == "EndorsementCredential"])
+statement_trusted(p) if { some c in input.evidence.presentation.credentials; c.type == "StatementCredential"; c.predicate == p; c.issuer_trusted; c.status == "valid" }
+endorsement_count := count([c | some c in input.evidence.presentation.credentials; c.type == "StatementCredential"; c.predicate == "https://registry.trustoverip.org/dtg/vsc/endorses/1"])
 has_valid_invitation if { input.evidence.invitation.verified; not input.evidence.invitation.consumed }
 agreed(tag) if { input.evidence.request.agreements[tag] == true }
 ```
@@ -204,8 +206,8 @@ One line per route, in priority order, e.g.:
 ```
 To join Acme, the first matching route applies:
   P1 Invitation (unlisted): hold a valid invitation → admitted as member
-  P2 Verified human: a trusted WitnessCredential AND agree to the code of conduct → admitted as member
-  P3 Almost there: a trusted WitnessCredential → asked for the code-of-conduct agreement
+  P2 Verified human: a trusted witness statement (witnessed/1) AND agree to the code of conduct → admitted as member
+  P3 Almost there: a trusted witness statement (witnessed/1) → asked for the code-of-conduct agreement
   P4 Open review: anyone else → sent to moderator review
   ∎ default: → denied
 ```

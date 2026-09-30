@@ -6,11 +6,11 @@
   "properties": {
     "response": {
       "type": "object",
-      "required": ["did", "vmc", "roleVec", "personhood", "personhoodChanged"],
+      "required": ["did", "vmc", "roleVac", "personhood", "personhoodChanged"],
       "properties": {
         "did": { "type": "string" },
         "vmc": { "type": "object" },
-        "roleVec": { "type": "object" },
+        "roleVac": { "type": "object" },
         "personhood": { "type": "boolean" },
         "personhoodChanged": { "type": "boolean" }
       }

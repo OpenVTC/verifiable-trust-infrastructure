@@ -32,7 +32,7 @@ pub struct MemberResponse {
     pub departure_preference: Disposition,
     pub status_list_index: Option<u32>,
     pub current_vmc_id: Option<String>,
-    pub current_role_vec_id: Option<String>,
+    pub current_role_vac_id: Option<String>,
     /// Serialised as `{}` when the member has none.
     ///
     /// The canonical component makes `extensions` **required** and types it
@@ -100,7 +100,7 @@ impl MemberResponse {
             departure_preference: member.departure_preference,
             status_list_index: member.status_list_index,
             current_vmc_id: member.current_vmc_id,
-            current_role_vec_id: member.current_role_vec_id,
+            current_role_vac_id: member.current_role_vac_id,
             extensions: member.extensions,
             personhood: member.personhood,
             personhood_asserted_at: member.personhood_asserted_at,

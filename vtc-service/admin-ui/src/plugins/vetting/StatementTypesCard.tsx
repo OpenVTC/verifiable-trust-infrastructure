@@ -1,5 +1,7 @@
-// Statement types — the endorsement types this community recognises, and the
-// one peer identity vetting needs.
+// Accepted predicates — the statement predicates this community accepts (its
+// fail-closed accept list, registered through `vtc/endorsement-types/*`), and
+// the one peer identity vetting needs: the DTG VSC registry's `vetted/1`. The
+// daemon seeds the registry's core predicates once, at first boot.
 //
 // It sits on the Requirements page because it is a prerequisite of the thing
 // that page exists for: `POST /v1/schemas/accepts` refuses a criterion whose
@@ -11,11 +13,11 @@
 // a type anything still references and the console could not see what did. The
 // half it can see is the half that blocks an operator in practice: peer-vetting
 // statements are signed by vetters' own wallets, so they are not in this
-// community's endorsement store at all, and what actually depends on a type is
-// a criterion naming it. The criteria are already loaded one component up, so
+// community's endorsement store at all, and what actually depends on a
+// predicate is a criterion naming it. The criteria are already loaded one component up, so
 // each type says who uses it and Remove is disabled while anyone does.
 //
-// The other half — live endorsements of the type, which would mean paging the
+// The other half — live statements under the predicate, which would mean paging the
 // whole endorsement store to count — is left to the daemon. Its 409 carries the
 // count, and the error block below renders it.
 
@@ -24,7 +26,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useToast } from "@/lib/toast";
-import { IDENTITY_VETTING_STATEMENT_TYPE } from "@/lib/vetting";
+import { VETTED_PREDICATE } from "@/lib/vetting";
 import type { AcceptsCriterion, EndorsementType } from "@/lib/wire-types";
 
 import {
@@ -61,7 +63,7 @@ export function StatementTypesCard({
 
   const types = query.data ?? [];
   const hasIdentityVetting = types.some(
-    (t) => t.typeUri === IDENTITY_VETTING_STATEMENT_TYPE,
+    (t) => t.typeUri === VETTED_PREDICATE,
   );
 
   const register = useMutation({
@@ -73,7 +75,7 @@ export function StatementTypesCard({
       setAttempted(false);
       toast.push(
         "success",
-        `Registered ${res.endorsementType.typeUri}. A criterion can now count statements of this type.`,
+        `Registered ${res.endorsementType.typeUri}. A criterion can now count statements under this predicate.`,
       );
     },
   });
@@ -84,23 +86,23 @@ export function StatementTypesCard({
       void queryClient.invalidateQueries({ queryKey: vettingKeys.endorsementTypes });
       toast.push(
         "success",
-        `Removed ${uri}. No criterion can name it until it is registered again; statements already issued of that type are untouched.`,
+        `Removed ${uri}. Statements under it are no longer accepted, and no criterion can name it until it is registered again; statements already issued are untouched.`,
       );
     },
   });
 
   const onRemove = async (type: EndorsementType) => {
     const ok = await confirm({
-      title: `Remove the statement type "${type.typeUri}"?`,
+      title: `Stop accepting the predicate "${type.typeUri}"?`,
       message:
-        "No criterion will be able to name it until it is registered again. Statements already issued of this type are not touched, and the daemon still refuses the removal if any of them are live.",
-      confirmLabel: "Remove type",
+        "Statements under it will be refused, and no criterion will be able to name it until it is registered again. Statements already issued are not touched, and the daemon still refuses the removal if any the community issued are live.",
+      confirmLabel: "Remove predicate",
       destructive: true,
     });
     if (ok) remove.mutate(type.typeUri);
   };
 
-  const uriError = typeUri.trim() ? null : "Give the type URI a statement carries.";
+  const uriError = typeUri.trim() ? null : "Give the predicate IRI a statement carries.";
   const shownUriError = attempted ? uriError : null;
 
   const onSubmit = (e: FormEvent) => {
@@ -114,22 +116,23 @@ export function StatementTypesCard({
   };
 
   if (query.error) {
-    return <LoadError what="the registered statement types" error={query.error} />;
+    return <LoadError what="the accepted predicates" error={query.error} />;
   }
 
   return (
     <section className="card" aria-labelledby="statement-types-title">
-      <h3 id="statement-types-title">Statement types</h3>
+      <h3 id="statement-types-title">Accepted predicates</h3>
       <p className="lead">
-        A criterion can only count statements of a type this community
-        recognises. Peer identity vetting uses one type; register it once, and
-        every vetting criterion names it.
+        A statement counts only under a predicate this community accepts — any
+        other is refused, never read as a generic statement. Peer identity
+        vetting uses the registry's <code>vetted/1</code>, which a new
+        community accepts out of the box.
       </p>
 
       {query.isPending ? (
-        <p className="muted">Loading the registered types…</p>
+        <p className="muted">Loading the accepted predicates…</p>
       ) : types.length === 0 ? (
-        <p className="muted">No endorsement types are registered yet.</p>
+        <p className="muted">No predicates are accepted yet.</p>
       ) : (
         <ul className="vet-list">
           {types.map((t, i) => (
@@ -154,11 +157,11 @@ export function StatementTypesCard({
       {query.data && !hasIdentityVetting && (
         <div className="finding warn">
           <strong>
-            The identity-vetting statement type is not registered, so no
-            criterion can ask for vetting yet.
+            The identity-vetting predicate is not accepted, so no criterion
+            can ask for vetting yet.
           </strong>
           <p className="muted">
-            <code>{IDENTITY_VETTING_STATEMENT_TYPE}</code>
+            <code>{VETTED_PREDICATE}</code>
           </p>
           <button
             type="button"
@@ -166,7 +169,7 @@ export function StatementTypesCard({
             disabled={register.isPending}
             onClick={() =>
               register.mutate({
-                typeUri: IDENTITY_VETTING_STATEMENT_TYPE,
+                typeUri: VETTED_PREDICATE,
                 description: IDENTITY_VETTING_DESCRIPTION,
               })
             }
@@ -177,12 +180,12 @@ export function StatementTypesCard({
       )}
 
       <details className="vet-details">
-        <summary>Register another type</summary>
+        <summary>Accept another predicate</summary>
         <form className="form-stack" onSubmit={onSubmit} noValidate>
           <FormField
             id="statement-type-uri"
-            label="Type URI"
-            hint="The value a statement carries as its endorsement type."
+            label="Predicate IRI"
+            hint="The absolute IRI a statement carries in credentialSubject.predicate — a DTG VSC registry predicate, or one in a namespace the community controls."
             error={shownUriError}
           >
             <input
@@ -191,7 +194,7 @@ export function StatementTypesCard({
               value={typeUri}
               spellCheck={false}
               autoComplete="off"
-              placeholder="https://example.org/endorsements/…"
+              placeholder="https://example.org/predicates/…"
               onChange={(e) => setTypeUri(e.target.value)}
               aria-invalid={Boolean(shownUriError)}
               aria-describedby={describedBy("statement-type-uri", true, shownUriError)}
@@ -212,7 +215,7 @@ export function StatementTypesCard({
           </FormField>
           <div className="form-actions">
             <button type="submit" className="primary" disabled={register.isPending}>
-              {register.isPending ? "Registering…" : "Register type"}
+              {register.isPending ? "Registering…" : "Register predicate"}
             </button>
           </div>
         </form>
@@ -265,8 +268,8 @@ function StatementTypeRow({
       <div>
         <code>{type.typeUri}</code>
         {type.description ? ` — ${type.description}` : ""}
-        {type.typeUri === IDENTITY_VETTING_STATEMENT_TYPE && (
-          <> — the identity-vetting statement</>
+        {type.typeUri === VETTED_PREDICATE && (
+          <> — the identity-vetting predicate</>
         )}
         <span className={inUse ? "vet-note warn" : "vet-note"} id={noteId}>
           {usedBy === null ? (

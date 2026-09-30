@@ -27,7 +27,7 @@ forming the **bidirectional DTG membership edge**. It discharges the
 catalog §2; protocol §2 verb set; pipeline §11).
 
 A join `allow` issues the community → member half of the edge: the VTC
-mints the VMC + role VEC and (best-effort) delivers them to the
+mints the VMC + role VAC and (best-effort) delivers them to the
 applicant. That half alone is **one-directional** — the community
 asserts "this DID is a member," but the member has not yet asserted
 "I am a member of this community." `accept` carries the member's
@@ -36,7 +36,7 @@ it and completes the edge.
 
 ```
 … join-requests/request|present → allow {role, obligations:["reciprocate_vmc"]}
-   VTC issues VMC + role VEC to the member (community → member half)
+   VTC issues VMC + role VAC to the member (community → member half)
 member ─join-requests/accept {reciprocal VMC, thread}─▶ VTC
    VTC verifies + records the reciprocal edge (member → community half)
 ```
@@ -55,20 +55,26 @@ member ─join-requests/accept {reciprocal VMC, thread}─▶ VTC
 ## The reciprocal artifact
 
 The member's counter-assertion is a **member-issued Verifiable
-Credential** — the *reciprocal VMC* (`MembershipAcknowledgement`). The
-member is the issuer; the credential subject is the **community** (this
-VTC — the DID that issued the VMC) and asserts the member accepts
-membership under the issued `vmcId`. Concrete 1.0 shape:
+Credential** — the *reciprocal VMC*: a DTG `MembershipCredential` issued by
+the member. The member is the issuer; the credential subject is the
+**community** (this VTC — the DID that issued the grant), and
+`credentialSubject.digestMultibase` is the digest (DTG Digest Encoding, proof
+excluded) of the community-issued grant it acknowledges. The member declares
+the `issuerScope` it can truthfully claim for its DID; the grant it
+acknowledges always declares `public`. Shape:
 
 ```jsonc
 {
-  "@context": ["https://www.w3.org/ns/credentials/v2"],
-  "type": ["VerifiableCredential", "MembershipAcknowledgement"],
+  "@context": ["https://www.w3.org/ns/credentials/v2",
+               "https://registry.trustoverip.org/dtg/context/v1"],
+  "type": ["VerifiableCredential", "DTGCredential", "MembershipCredential"],
   "id": "urn:uuid:…",                  // recorded as the member's reciprocalVcId
   "issuer": "did:key:z…member",        // MUST equal memberDid
+  "issuerScope": "directed",           // the member's own declaration
+  "validFrom": "…",
   "credentialSubject": {
-    "id": "did:webvh:…community",       // MUST equal this VTC's DID (the VMC issuer)
-    "reciprocates": "urn:uuid:…vmc"     // MUST equal the member's current VMC id
+    "id": "did:webvh:…community",       // MUST equal this VTC's DID (the grant issuer)
+    "digestMultibase": "zQm…"          // MUST be the digest of the member's current grant
   },
   "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
              "proofPurpose": "assertionMethod", "verificationMethod": "did:key:z…member#…" }

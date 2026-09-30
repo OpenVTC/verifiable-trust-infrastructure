@@ -390,6 +390,10 @@ impl ChainVerifier for DtgChainVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Room credentials in these fixtures: the room issues as itself (`public`); a member
+    // attenuating for their agent issues under the DID the room admitted, one identifier
+    // the room, its host and the agent all recognise (`directed`).
+    use dtg_credentials::IssuerScope;
 
     /// A resolver that resolves nothing.
     struct NoKeys;
@@ -435,6 +439,7 @@ mod tests {
     fn a_vac(issuer: &str, subject: &str, scope: &str, actions: &[&str]) -> String {
         let mut vac = DTGCredential::new_vac(
             issuer.into(),
+            IssuerScope::Public,
             subject.into(),
             scope.into(),
             actions.iter().map(|s| s.to_string()).collect(),
@@ -586,8 +591,12 @@ mod tests {
 #[cfg(test)]
 mod signed {
     use super::*;
+    // Room credentials in these fixtures: the room issues as itself (`public`); a member
+    // attenuating for their agent issues under the DID the room admitted, one identifier
+    // the room, its host and the agent all recognise (`directed`).
     use affinidi_tdk::dids::{DID, KeyType};
     use chrono::{Duration, Utc};
+    use dtg_credentials::IssuerScope;
 
     /// Resolves a `did:key`'s verification method to its own public key, which is what a
     /// `did:key` is. No network, and no opportunity to resolve to the wrong key.
@@ -629,6 +638,7 @@ mod signed {
         // something because the *room* issued it.
         let mut owner_vac = DTGCredential::new_vac(
             room_did.clone(),
+            IssuerScope::Public,
             owner_did.clone(),
             room_did.clone(),
             vec!["read".into(), "write".into()],
@@ -643,10 +653,12 @@ mod signed {
         // from the room. That is the whole point of attenuation.
         let mut agent_vac = owner_vac
             .attenuate(
+                IssuerScope::Directed,
                 agent_did.clone(),
                 vec!["read".into()],
                 now - Duration::minutes(1),
                 now + Duration::hours(4),
+                None,
             )
             .expect("attenuate")
             .with_id("urn:uuid:vac-agent");
@@ -892,7 +904,11 @@ mod signed {
 #[cfg(feature = "test-support")]
 pub mod test_support {
     use super::*;
+    // Room credentials in these fixtures: the room issues as itself (`public`); a member
+    // attenuating for their agent issues under the DID the room admitted, one identifier
+    // the room, its host and the agent all recognise (`directed`).
     use chrono::{Duration, Utc};
+    use dtg_credentials::IssuerScope;
 
     /// One party: a `did:key` in the three forms different layers want.
     pub struct Party {
@@ -966,6 +982,7 @@ pub mod test_support {
 
             let mut owner_vac = DTGCredential::new_vac(
                 room_key.did.clone(),
+                IssuerScope::Public,
                 owner.did.clone(),
                 room_key.did.clone(),
                 vec![
@@ -988,10 +1005,12 @@ pub mod test_support {
             // reason attenuation exists.
             let mut agent_vac = owner_vac
                 .attenuate(
+                    IssuerScope::Directed,
                     agent.did.clone(),
                     vec!["read".into()],
                     now - Duration::minutes(1),
                     now + Duration::hours(4),
+                    None,
                 )
                 .expect("attenuate to the agent")
                 .with_id("urn:uuid:vac-agent");
@@ -1013,6 +1032,7 @@ pub mod test_support {
 
             let mut successor_vac = DTGCredential::new_vac(
                 room_key.did.clone(),
+                IssuerScope::Public,
                 successor.did.clone(),
                 room_key.did.clone(),
                 vec!["read".into()],
@@ -1111,6 +1131,7 @@ pub mod test_support {
             let now = Utc::now();
             let mut vac = DTGCredential::new_vac(
                 self.room_key.did.clone(),
+                IssuerScope::Public,
                 successor.to_string(),
                 self.room_key.did.clone(),
                 vec![crate::ACTION_SUCCEED.into()],

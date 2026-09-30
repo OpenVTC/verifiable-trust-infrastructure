@@ -31,7 +31,7 @@ use crate::ceremony::{
 use crate::credentials::invitation_verify::{
     ConsumedInvitation, mark_consumed, verify_presented_invitation,
 };
-use crate::credentials::vec::VEC_TYPE;
+use crate::credentials::vac::VAC_TYPE;
 use crate::credentials::vmc::VMC_TYPE;
 use crate::join::{
     JoinDecision, JoinRequest, JoinStatus, JoinTransport, list_join_requests, store_join_request,
@@ -472,7 +472,7 @@ async fn apply_verdict_to_request(
             if let EffectOutcome::Admitted(creds) =
                 execute::apply(state, plan, applicant_did).await?
             {
-                // Deliver the issued VMC + role VEC to the applicant's wallet
+                // Deliver the issued VMC + role VAC to the applicant's wallet
                 // over DIDComm — mirrors the approve path. Best-effort: the
                 // credentials are already issued (and returned inline on the
                 // REST path), so a delivery failure (no mediator, unreachable
@@ -768,18 +768,11 @@ fn presentation_from_vp(applicant_did: &str, vp: &JsonValue) -> Presentation {
 /// are skipped — full JWT-VP support lands with VP verification.
 fn credential_from_vc(vc: &JsonValue) -> Option<Credential> {
     let obj = vc.as_object()?;
-    let credential_type = obj
-        .get("type")
-        .and_then(|t| match t {
-            JsonValue::Array(a) => a
-                .iter()
-                .filter_map(|x| x.as_str())
-                .find(|s| *s != "VerifiableCredential")
-                .map(str::to_string),
-            JsonValue::String(s) => Some(s.clone()),
-            _ => None,
-        })
+    let credential_type = crate::credentials::ingress::concrete_type(vc)
         .unwrap_or_else(|| "VerifiableCredential".to_string());
+    // As unverified as `type` beside it: it names what a statement claims to
+    // be, and every trust signal below stays fail-safe.
+    let predicate = crate::credentials::ingress::statement_predicate(vc);
     let issuer = match obj.get("issuer") {
         Some(JsonValue::String(s)) => s.clone(),
         Some(JsonValue::Object(o)) => o
@@ -791,6 +784,7 @@ fn credential_from_vc(vc: &JsonValue) -> Option<Credential> {
     };
     Some(Credential {
         credential_type,
+        predicate,
         issuer,
         issuer_trusted: false,
         // The raw-VP submit path verifies NOTHING about the embedded VC — not
@@ -940,7 +934,7 @@ pub async fn emit_admit_audit(
         .write(
             actor_did,
             Some(subject_did),
-            AuditEvent::VecIssued(credential_issued_data(&creds.role_vec, None)?),
+            AuditEvent::VecIssued(credential_issued_data(&creds.role_vac, None)?),
         )
         .await?;
     Ok(())
@@ -957,9 +951,9 @@ pub(crate) fn credential_issued_data(
     let credential_type = vc
         .types
         .iter()
-        .find(|t| *t == VMC_TYPE || *t == VEC_TYPE)
+        .find(|t| *t == VMC_TYPE || *t == VAC_TYPE)
         .cloned()
-        .ok_or_else(|| AppError::Internal("credential carries neither VMC nor VEC type".into()))?;
+        .ok_or_else(|| AppError::Internal("credential carries neither VMC nor VAC type".into()))?;
     let valid_from = vc
         .valid_from
         .clone()
