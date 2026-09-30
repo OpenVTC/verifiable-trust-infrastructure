@@ -66,23 +66,26 @@
 //!
 //! Only what no generated module carries:
 //!
-//! - [`IdentityVettingEndorsement`], the `endorsement` body of a Vetting
-//!   Statement. It is a credential body (`vetting/_shared/0.1/identity-vetting`),
-//!   not a Trust Task, and the codegen generates no type for shared definitions;
-//!   its members use the generated vocabulary;
+//! - [`VettedObjectValue`], the `credentialSubject.object.value` of a Vetting
+//!   Statement. It is a credential body (`vetting/_shared/0.1/identity-vetting`,
+//!   the DTG VSC registry's `vetted/1` object schema), not a Trust Task, and the
+//!   codegen generates no type for shared definitions; its members use the
+//!   generated vocabulary;
 //! - the rules [`CheckShape`] and [`check_request`] add beyond the schemas;
 //! - the extended error codes the specifications declare in their front matter;
 //! - the community admin REST bodies that are not Trust Tasks: the grant listing
 //!   ([`VetterGrantListResponse`]) and the automatic-grant configuration
 //!   ([`AutoGrantConfig`], [`AutoGrantStatus`]).
 //!
-//! A vetter is named by a **vetter role credential**: a DTG
-//! `EndorsementCredential` the community issues to the member, with endorsement
-//! `{ type: "CommunityRole", role: "vetter", communityDid }` and a
-//! `credentialStatus` so it can be revoked. The community counts a statement only
-//! from a vetter whose grant it recorded; the vetter presents the same credential
-//! to an applicant (`crate::vetting::eligibility`). The Vetting Statement itself
-//! travels over `credential-exchange/issue/0.1`.
+//! A vetter is named by a **vetter role credential**: a DTG Verifiable Authority
+//! Credential (`AuthorityCredential`) the community issues to the member with
+//! `issuerScope` `public` and `credentialSubject.authority`
+//! `{ scope: <community DID>, actions: ["role:vetter"], maxAttenuation: 0 }`, and
+//! a `credentialStatus` so it can be revoked. The community counts a statement
+//! only from a vetter whose grant it recorded; the vetter presents the same
+//! credential to an applicant (`crate::vetting::eligibility`). The Vetting
+//! Statement itself — a DTG Verifiable Statement Credential under
+//! [`VETTED_PREDICATE`] — travels over `credential-exchange/issue/0.1`.
 //!
 //! Building, signing and verifying the card and the statement, and counting
 //! statements against requirements, live in `crate::vetting` (feature
@@ -222,12 +225,30 @@ pub const VETTING_VETTER_RESEND_ERR_NOT_GRANTED: &str =
 // Shared vocabulary that no schema carries
 // ---------------------------------------------------------------------------
 
-/// `credentialSubject.endorsement.type` of a community role credential — the
-/// role VEC a community issues to a member.
-pub const COMMUNITY_ROLE_ENDORSEMENT_TYPE: &str = "CommunityRole";
+/// The prefix a community role carries as a VAC `authority.actions` entry:
+/// `role:<name>` (vtc/vetting/vetters/grant/0.1, Definitions). The same
+/// convention invitation `scopes` use.
+pub const ROLE_ACTION_PREFIX: &str = "role:";
 /// The role a vetter role credential names, and the conventional
 /// `eligibleVetters.role`.
 pub const VETTER_ROLE: &str = "vetter";
+/// The VAC action a vetter role credential confers: `role:vetter`.
+pub const VETTER_ROLE_ACTION: &str = "role:vetter";
+
+/// The VAC action conferring community role `role`: `role:<role>`.
+#[must_use]
+pub fn role_action(role: &str) -> String {
+    format!("{ROLE_ACTION_PREFIX}{role}")
+}
+
+/// The role a VAC action confers, or `None` when the action is not a
+/// `role:<name>` action. Actions compare as exact, case-sensitive strings.
+#[must_use]
+pub fn role_of_action(action: &str) -> Option<&str> {
+    action
+        .strip_prefix(ROLE_ACTION_PREFIX)
+        .filter(|role| !role.is_empty())
+}
 
 /// Does a held role name satisfy a required one?
 ///
@@ -242,9 +263,13 @@ pub fn role_matches(held: &str, required: &str) -> bool {
     held == required || (bare(held) == VETTER_ROLE && bare(required) == VETTER_ROLE)
 }
 
-/// `endorsement.type` of a Vetting Statement.
-pub const IDENTITY_VETTING_ENDORSEMENT_TYPE: &str =
-    "https://firstperson.network/endorsements/identity-vetting/0.1";
+/// `credentialSubject.predicate` of a Vetting Statement: the DTG VSC predicate
+/// registry's identity-vetting predicate, and the `statementType` a
+/// community's manifest names for peer identity vetting.
+///
+/// Equal to `dtg_credentials::VETTED_V1`; spelled out here because this module
+/// compiles without the `vetting` feature that brings that crate in.
+pub const VETTED_PREDICATE: &str = "https://registry.trustoverip.org/dtg/vsc/vetted/1";
 
 /// The `type` members a Vetting Card carries. It is a profile of the r-card,
 /// which is itself a Verifiable Data Structure.
@@ -792,11 +817,16 @@ pub fn has_event_filter(body: &vetters::list::v0_1::Payload) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// The Vetting Statement's endorsement body
+// The Vetting Statement's object value
 // ---------------------------------------------------------------------------
 
-/// `credentialSubject.endorsement` of a Vetting Statement —
-/// `vetting/_shared/0.1/identity-vetting`.
+/// `credentialSubject.object.value` of a Vetting Statement —
+/// `vetting/_shared/0.1/identity-vetting`, whose members are exactly those of
+/// the DTG VSC registry's `vetted/1` object schema
+/// (`https://registry.trustoverip.org/dtg/vsc/vetted/1/vetting.schema.json`).
+///
+/// There is no `type` member: the statement's `predicate`
+/// ([`VETTED_PREDICATE`]) carries its meaning.
 ///
 /// Written here because nothing generates it: it is a credential body, not a
 /// Trust Task, and the codegen skips shared definitions. Its members take the
@@ -804,10 +834,7 @@ pub fn has_event_filter(body: &vetters::list::v0_1::Payload) -> bool {
 /// against compare value for value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct IdentityVettingEndorsement {
-    /// [`IDENTITY_VETTING_ENDORSEMENT_TYPE`].
-    #[serde(rename = "type")]
-    pub endorsement_type: String,
+pub struct VettedObjectValue {
     /// The one community this statement counts for. Not transitive.
     pub community: String,
     /// How the vetter established identity.
@@ -820,9 +847,9 @@ pub struct IdentityVettingEndorsement {
     pub claims_verified: Vec<ClaimType>,
     /// The match code was confirmed with the person present.
     pub liveness_confirmed: bool,
-    /// Copied from the card.
+    /// Copied from the card: multibase base58btc.
     pub identity_commitment: String,
-    /// `digestMultibase` of the card the vetter checked.
+    /// `digestMultibase` of the card the vetter checked: multibase base58btc.
     pub card_digest_multibase: String,
     /// The vetter's declared relationship to the applicant.
     pub declared_relationship: VettingRelationship,
@@ -831,17 +858,16 @@ pub struct IdentityVettingEndorsement {
     pub attestation_text_digest: Option<String>,
 }
 
-impl CheckShape for IdentityVettingEndorsement {
+impl CheckShape for VettedObjectValue {
     /// The shared definition's rules beyond what the member types enforce. No
     /// schema for it is embedded anywhere, so they are checked here.
     fn check_shape(&self) -> Result<(), ShapeError> {
-        if self.endorsement_type.is_empty() || self.endorsement_type.chars().count() > 512 {
-            return Err(ShapeError::Field {
-                field: "type",
-                rule: "is empty or longer than 512 characters",
-            });
-        }
         shape::did("community", &self.community)?;
+        shape::base58btc("identityCommitment", &self.identity_commitment)?;
+        shape::base58btc("cardDigestMultibase", &self.card_digest_multibase)?;
+        if let Some(digest) = &self.attestation_text_digest {
+            shape::base58btc("attestationTextDigest", digest)?;
+        }
         if shape::repeats(&self.document_classes) {
             return Err(ShapeError::Field {
                 field: "documentClasses",
@@ -1047,6 +1073,19 @@ pub(crate) mod shape {
             field,
             rule: "must be a DID",
         })
+    }
+
+    /// `^z[1-9A-HJ-NP-Za-km-z]+$` — multibase base58btc, the only encoding the
+    /// `vetted/1` object schema gives its digests and commitment.
+    pub(crate) fn base58btc(field: &'static str, value: &str) -> Result<(), ShapeError> {
+        const ALPHABET: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        match value.strip_prefix('z') {
+            Some(rest) if !rest.is_empty() && rest.chars().all(|c| ALPHABET.contains(c)) => Ok(()),
+            _ => Err(ShapeError::Field {
+                field,
+                rule: "must be multibase base58btc (`z…`)",
+            }),
+        }
     }
 
     /// `uniqueItems` for a list no embedded schema covers.
@@ -1422,7 +1461,7 @@ mod tests {
     fn requirements_json() -> Value {
         json!({
             "version": "0.1",
-            "statementType": IDENTITY_VETTING_ENDORSEMENT_TYPE,
+            "statementType": VETTED_PREDICATE,
             "minStatements": 2,
             "minByMethod": { "inPerson": 1 },
             "acceptedMethods": ["inPerson", "video", "priorAcquaintance"],
@@ -1758,9 +1797,8 @@ mod tests {
         }
     }
 
-    fn endorsement() -> IdentityVettingEndorsement {
+    fn vetted_value() -> VettedObjectValue {
         serde_json::from_value(json!({
-            "type": IDENTITY_VETTING_ENDORSEMENT_TYPE,
             "community": "did:web:vtc.example",
             "method": "video",
             "documentClasses": ["passport"],
@@ -1774,15 +1812,18 @@ mod tests {
     }
 
     #[test]
-    fn an_endorsement_follows_its_shared_definition() {
-        endorsement().check_shape().unwrap();
-        let broken = |f: &dyn Fn(&mut IdentityVettingEndorsement)| {
-            let mut e = endorsement();
+    fn a_vetted_value_follows_its_shared_definition() {
+        vetted_value().check_shape().unwrap();
+        let broken = |f: &dyn Fn(&mut VettedObjectValue)| {
+            let mut e = vetted_value();
             f(&mut e);
             e.check_shape().is_err()
         };
         assert!(broken(&|e| e.community = "vtc.example".into()));
-        assert!(broken(&|e| e.endorsement_type = String::new()));
+        // The registry schema admits base58btc only.
+        assert!(broken(&|e| e.identity_commitment = "uNotBase58".into()));
+        assert!(broken(&|e| e.card_digest_multibase = "z0OIl".into()));
+        assert!(broken(&|e| e.attestation_text_digest = Some("z".into())));
         assert!(broken(&|e| {
             e.document_classes
                 .push(documentation::PASSPORT.try_into().unwrap());
@@ -1796,8 +1837,21 @@ mod tests {
         }));
         assert!(!broken(&|e| e.document_classes.clear()));
         assert!(
-            serde_json::from_value::<IdentityVettingEndorsement>(json!({
-                "type": IDENTITY_VETTING_ENDORSEMENT_TYPE,
+            serde_json::from_value::<VettedObjectValue>(json!({
+                "type": "https://example.org/retired-type-member",
+                "community": "did:web:vtc.example",
+                "method": "video",
+                "claimsVerified": ["name.legal"],
+                "livenessConfirmed": true,
+                "identityCommitment": "zC",
+                "cardDigestMultibase": "zD",
+                "declaredRelationship": "none"
+            }))
+            .is_err(),
+            "the predicate carries the meaning; a `type` member is refused"
+        );
+        assert!(
+            serde_json::from_value::<VettedObjectValue>(json!({
                 "community": "did:web:vtc.example",
                 "method": "video",
                 "documentClasses": ["national-id"],
@@ -1810,6 +1864,21 @@ mod tests {
             .is_err(),
             "documentation is a lowerCamelCase token"
         );
+    }
+
+    #[cfg(feature = "vetting")]
+    #[test]
+    fn the_vetted_predicate_is_the_registry_iri() {
+        assert_eq!(VETTED_PREDICATE, dtg_credentials::VETTED_V1);
+    }
+
+    #[test]
+    fn role_actions_round_trip() {
+        assert_eq!(role_action(VETTER_ROLE), VETTER_ROLE_ACTION);
+        assert_eq!(role_of_action(VETTER_ROLE_ACTION), Some(VETTER_ROLE));
+        assert_eq!(role_of_action("role:"), None);
+        assert_eq!(role_of_action("Role:vetter"), None);
+        assert_eq!(role_of_action("vetter"), None);
     }
 
     #[test]

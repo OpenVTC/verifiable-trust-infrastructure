@@ -308,12 +308,15 @@ pub enum AuditEvent {
     /// A new VMC was minted (join-approve or renewal). Spec §6.1.
     VmcIssued(CredentialIssuedData),
 
-    /// A new role VEC was minted (join-approve, renewal, or role
-    /// change). Spec §6.1.
+    /// A community credential other than a VMC was minted: a role VAC
+    /// (join-approve, renewal, role change, vetter grant) or a statement VSC
+    /// (`vtc/endorsements/issue`). Spec §6.1. The envelope name predates
+    /// role credentials becoming VACs and endorsements becoming VSCs; it is
+    /// kept because SIEM rules key on it. `credentialType` says which.
     VecIssued(CredentialIssuedData),
 
     /// `POST /v1/members/me/renew` re-minted the member's VMC +
-    /// role VEC. Spec §6.3. `personhood_changed` flips when the
+    /// role VAC. Spec §6.3. `personhood_changed` flips when the
     /// renewal's `personhood.rego` re-eval produced a different
     /// flag than the prior VMC.
     MembershipRenewed(MembershipRenewedData),
@@ -1575,20 +1578,18 @@ pub struct CredentialIssuedData {
     /// VC `id` URI (typically `urn:uuid:<server-allocated>`).
     pub credential_id: String,
     /// Wire-form credential type — the DTG tag exactly as issued
-    /// (`"MembershipCredential"`, `"EndorsementCredential"`).
+    /// (`"MembershipCredential"`, `"AuthorityCredential"`,
+    /// `"StatementCredential"`).
     ///
-    /// This recorded `"MembershipCredential"` /
-    /// `"EndorsementCredential"` until the naming cleanup: tags no
-    /// credential ever carried, in the one record meant to be authoritative
-    /// after the fact.
+    /// This once recorded `Verifiable`-prefixed tags no credential ever
+    /// carried, in the one record meant to be authoritative after the fact.
     pub credential_type: String,
     /// RFC3339 `validFrom` from the issued VC.
     pub valid_from: String,
     /// RFC3339 `validUntil` from the issued VC.
     pub valid_until: String,
-    /// Status-list slot for VMCs (revocation list). `None` for
-    /// VECs and other credential types that don't carry a
-    /// status-list entry.
+    /// Status-list slot, where the credential carries one. `None` for
+    /// credentials that don't carry a status-list entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_list_index: Option<u32>,
 }
@@ -1599,8 +1600,10 @@ pub struct CredentialIssuedData {
 pub struct MembershipRenewedData {
     /// New VMC id.
     pub vmc_id: String,
-    /// New role VEC id.
-    pub role_vec_id: String,
+    /// New role credential (VAC) id. `roleVecId` on rows written before role
+    /// credentials became VACs.
+    #[serde(alias = "roleVecId")]
+    pub role_vac_id: String,
     /// Whether the `personhood.rego` re-eval produced a different
     /// flag than the prior VMC (spec §6.3 step 3). Phase 2 ships
     /// the deny-all stub so this is always `false` in MVP; the
@@ -1683,7 +1686,7 @@ pub struct CrossCommunitySessionMintedData {
     /// Foreign community's issuer DID (e.g.
     /// `did:webvh:peer.example.com:abc`).
     pub foreign_issuer_did: String,
-    /// Role claim from the foreign VEC — present even on
+    /// Role from the foreign role VAC's `role:<name>` action — present even on
     /// `denied` so operators can see what was attempted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreign_role: Option<String>,
@@ -1692,7 +1695,7 @@ pub struct CrossCommunitySessionMintedData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mapped_role: Option<String>,
     /// Clamped session TTL in seconds. `min(jwt_default,
-    /// vec.validUntil - now, vmc.validUntil - now)`. Populated
+    /// vac.validUntil - now, vmc.validUntil - now)`. Populated
     /// on `minted` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl_seconds: Option<u64>,
@@ -2135,9 +2138,10 @@ pub struct DidRotatedData {
     /// daemon misconfiguration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vmc_id: Option<String>,
-    /// New role VEC id minted in the same transaction.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role_vec_id: Option<String>,
+    /// New role credential (VAC) id minted in the same transaction.
+    /// `roleVecId` on rows written before role credentials became VACs.
+    #[serde(default, alias = "roleVecId", skip_serializing_if = "Option::is_none")]
+    pub role_vac_id: Option<String>,
     /// Role the rotating member held before the rotation, carried
     /// across unchanged. Lets a reviewer see the privilege level a
     /// rotated key inherits. `None` on pre-enrichment rows.
@@ -2513,7 +2517,7 @@ mod tests {
     fn vec_issued_round_trip_omits_status_list_index_when_none() {
         let e = AuditEvent::VecIssued(CredentialIssuedData {
             credential_id: "urn:uuid:22222222-2222-2222-2222-222222222222".into(),
-            credential_type: "EndorsementCredential".into(),
+            credential_type: "AuthorityCredential".into(),
             valid_from: "2026-05-12T00:00:00Z".into(),
             valid_until: "2026-06-11T00:00:00Z".into(),
             status_list_index: None,
@@ -2531,7 +2535,7 @@ mod tests {
     fn membership_renewed_round_trip() {
         let e = AuditEvent::MembershipRenewed(MembershipRenewedData {
             vmc_id: "urn:uuid:vmc-1".into(),
-            role_vec_id: "urn:uuid:vec-1".into(),
+            role_vac_id: "urn:uuid:vac-1".into(),
             personhood_changed: true,
         });
         let v = wire_value(&e);
@@ -2562,7 +2566,7 @@ mod tests {
             new_did: "did:key:zNew".into(),
             method: "did:key".into(),
             vmc_id: Some("urn:uuid:vmc-2".into()),
-            role_vec_id: Some("urn:uuid:vec-2".into()),
+            role_vac_id: Some("urn:uuid:vac-2".into()),
             prior_role: Some("member".into()),
             rotation_reason: Some(DidRotationReason::Compromise),
         });
@@ -2582,13 +2586,13 @@ mod tests {
             new_did: "did:key:zNew".into(),
             method: "did:key".into(),
             vmc_id: None,
-            role_vec_id: None,
+            role_vac_id: None,
             prior_role: None,
             rotation_reason: None,
         });
         let v = wire_value(&e);
         assert!(v["data"].get("vmcId").is_none());
-        assert!(v["data"].get("roleVecId").is_none());
+        assert!(v["data"].get("roleVacId").is_none());
         round_trip(&e);
     }
 
@@ -3122,7 +3126,7 @@ mod tests {
             (
                 AuditEvent::VecIssued(CredentialIssuedData {
                     credential_id: "id".into(),
-                    credential_type: "EndorsementCredential".into(),
+                    credential_type: "AuthorityCredential".into(),
                     valid_from: "vf".into(),
                     valid_until: "vu".into(),
                     status_list_index: None,
@@ -3132,7 +3136,7 @@ mod tests {
             (
                 AuditEvent::MembershipRenewed(MembershipRenewedData {
                     vmc_id: "v".into(),
-                    role_vec_id: "r".into(),
+                    role_vac_id: "r".into(),
                     personhood_changed: false,
                 }),
                 "MembershipRenewed",
@@ -3151,7 +3155,7 @@ mod tests {
                     new_did: "n".into(),
                     method: "did:key".into(),
                     vmc_id: None,
-                    role_vec_id: None,
+                    role_vac_id: None,
                     prior_role: None,
                     rotation_reason: None,
                 }),

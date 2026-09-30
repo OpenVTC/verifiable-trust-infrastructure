@@ -423,9 +423,11 @@ pub struct VerdictWith {
     /// follow-up message and this is omitted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vmc: Option<JsonValue>,
-    /// The issued role VEC — same delivery story as [`Self::vmc`].
+    /// The issued role credential — a community VAC conferring `role:<name>`
+    /// at the community's DID — same delivery story as [`Self::vmc`]. The wire
+    /// member is `roleVac`, as in vtc/join-requests/decide/0.1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role_vec: Option<JsonValue>,
+    pub role_vac: Option<JsonValue>,
     /// Sealed-transfer pointer to the issued credential bundle — added by
     /// the host on issuing ceremonies that seal, not emitted by the policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -474,7 +476,7 @@ impl VerdictResponse {
         request_id: Uuid,
         role: Option<String>,
         vmc: Option<JsonValue>,
-        role_vec: Option<JsonValue>,
+        role_vac: Option<JsonValue>,
     ) -> Self {
         Self {
             request_id,
@@ -483,7 +485,7 @@ impl VerdictResponse {
                 with: VerdictWith {
                     role,
                     vmc,
-                    role_vec,
+                    role_vac,
                     ..Default::default()
                 },
             },

@@ -97,13 +97,13 @@ const NO_EXT_BY_DESIGN: &[(&str, &str)] = &[
          `IssuedCredentialSummary` above.",
     ),
     (
-        "IdentityVettingEndorsement",
-        "Not a Trust Task payload: the `endorsement` body of a Vetting Statement \
-         (a DTG `EndorsementCredential`), whose shape the community registers as \
-         the endorsement type's `claimSchema`. It is attested content — a member \
-         a verifier does not recognise would be an attestation it cannot \
-         interpret yet would count — so it is closed, and a new member is a new \
-         endorsement-type version rather than an extension.",
+        "VettedObjectValue",
+        "Not a Trust Task payload: the `credentialSubject.object.value` of a \
+         Vetting Statement (a DTG `StatementCredential` under the `vetted/1` \
+         predicate), whose shape is the registry predicate's object schema. It is \
+         attested content — a member a verifier does not recognise would be an \
+         attestation it cannot interpret yet would count — so it is closed, and a \
+         new member is a new predicate version rather than an extension.",
     ),
     (
         "LocalProfileEntry",
