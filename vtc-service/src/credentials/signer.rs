@@ -151,8 +151,16 @@ impl LocalSigner {
         doc: &(impl serde::Serialize + Sync),
         options: SignOptions,
     ) -> Result<serde_json::Value, AppError> {
-        let signers: Vec<&dyn affinidi_data_integrity::signer::Signer> = self
-            .secrets
+        self.proof_value_from(&self.secrets, doc, options).await
+    }
+
+    async fn proof_value_from(
+        &self,
+        secrets: &[Secret],
+        doc: &(impl serde::Serialize + Sync),
+        options: SignOptions,
+    ) -> Result<serde_json::Value, AppError> {
+        let signers: Vec<&dyn affinidi_data_integrity::signer::Signer> = secrets
             .iter()
             .map(|s| s as &dyn affinidi_data_integrity::signer::Signer)
             .collect();
@@ -262,8 +270,14 @@ impl LocalSigner {
             .as_object_mut()
             .ok_or_else(|| AppError::Internal("request document is not a JSON object".into()))?;
         obj.remove("proof");
+        // One proof, from the primary key, whatever else this signer holds. A
+        // Trust Task's `proof` is a single object (`trust_tasks_rs::Document`),
+        // so a hybrid signer's proof *array* — right for a credential, which
+        // carries a proof set — fails to reparse locally ("invalid type:
+        // sequence, expected struct Proof") before anything is sent.
         let proof_value = self
-            .proof_value_with(
+            .proof_value_from(
+                std::slice::from_ref(self.primary()),
                 &*doc,
                 SignOptions::new().with_proof_purpose("authentication"),
             )
@@ -458,6 +472,29 @@ mod multi_key_tests {
         let mut vc = vc();
         signer.sign_doc(&mut vc).await.expect("signs");
         assert_ne!(vc["proof"]["proofPurpose"], "authentication");
+    }
+
+    /// A Trust Task is signed with one key even when the signer holds several:
+    /// its `proof` is a single object, and a hybrid signer's array did not
+    /// reparse as a `trust_tasks_rs::Document` (registry health probe, boot).
+    #[tokio::test]
+    async fn a_hybrid_signer_signs_a_trust_task_with_one_proof() {
+        let pq = Secret::generate_ml_dsa_44(Some(&format!("{DID}#key-pq")), None);
+        let signer =
+            LocalSigner::from_ed25519_seed(DID.into(), &[0x11; 32]).with_additional_key(pq);
+        assert_eq!(signer.key_count(), 2);
+        let doc = vti_common::capability_client::build_document(
+            DID,
+            "did:web:registry.example",
+            "https://trusttasks.org/spec/registry/record/put/0.1",
+            serde_json::json!({}),
+        );
+        let mut doc = serde_json::to_value(&doc).unwrap();
+        signer.sign_operational_doc(&mut doc).await.expect("signs");
+        assert!(doc["proof"].is_object(), "{doc}");
+        assert_eq!(doc["proof"]["cryptosuite"], "eddsa-jcs-2022");
+        serde_json::from_value::<trust_tasks_rs::TrustTask<serde_json::Value>>(doc)
+            .expect("reparses as a Trust Task");
     }
 
     /// Two keys emit a proof set — one per key, so a verifier can check the
