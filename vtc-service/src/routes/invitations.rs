@@ -233,14 +233,20 @@ pub struct InvitationListItem {
 
 impl From<InvitationRecord> for InvitationListItem {
     fn from(r: InvitationRecord) -> Self {
+        // One timestamp form per row: `validUntil` is echoed from the signed
+        // credential (`…Z`, whole seconds), so the record's own instants are
+        // written the same way rather than chrono's default `+00:00` with
+        // microseconds (OBS-04).
+        let instant =
+            |t: chrono::DateTime<chrono::Utc>| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         Self {
             id: r.id,
             subject_did: r.subject_did,
             role: r.role,
             issued_by: r.issued_by,
-            issued_at: r.issued_at.to_rfc3339(),
+            issued_at: instant(r.issued_at),
             valid_until: r.valid_until,
-            revoked_at: r.revoked_at.map(|t| t.to_rfc3339()),
+            revoked_at: r.revoked_at.map(instant),
         }
     }
 }
