@@ -11,8 +11,18 @@
 //!
 //! — and nothing else. The record is a *credential of `D`*, exactly the way a
 //! registered passkey is ([`super::admin::RegisteredPasskey`]), enrolled by `D`
-//! behind the step-up the console already runs, listed beside the passkeys, and
-//! individually revocable.
+//! with a passkey gesture bound to the one enrolment, listed beside the
+//! passkeys, and individually revocable. It is served as
+//! `auth/signing-key/{enroll,list,revoke}/0.1`
+//! (`trust_tasks::signing_key_tasks`).
+//!
+//! Every delegation has the `console` scope and an expiry, at most
+//! [`MAX_LIFETIME_DAYS`] away, and an identity holds at most
+//! [`MAX_ACTIVE_PER_IDENTITY`] active ones. A delegated key is accepted for the
+//! administration console's operations only, and **never** as an approver's
+//! attestation: the spine refuses a step-up `approve-response`,
+//! `task-consent/decision` or `confirm/response` signed by any key a
+//! delegation names.
 //!
 //! ## What a delegation confers: nothing
 //!
@@ -64,10 +74,44 @@
 //! burned key can never be re-enrolled by mistake and the list can say why a
 //! browser stopped working.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
+
+/// The longest a delegation lives, and the lifetime one gets when its
+/// enrolment asked for none: 30 days, the ceiling
+/// `auth/signing-key/enroll/0.1` item 6 sets.
+pub const MAX_LIFETIME_DAYS: i64 = 30;
+
+/// How many active delegations one identity may hold
+/// (`auth/signing-key/enroll:tooManyKeys`). A console per browser profile an
+/// operator uses; more than this is a key nobody is watching.
+pub const MAX_ACTIVE_PER_IDENTITY: usize = 5;
+
+/// Serialises every check-then-write on the delegation keyspace — enrolment's
+/// "not already enrolled" read and its write, and revocation — so two
+/// concurrent enrolments of one key, for two identities, cannot both succeed
+/// and silently re-point it (enroll item 9, revoke item 6).
+pub static DELEGATION_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// What a delegated key may be accepted for. `console` in this version: the
+/// operations the identity performs through the administration console.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum DelegationScope {
+    Console,
+}
+
+impl DelegationScope {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Console => "console",
+        }
+    }
+}
 
 /// The stored delegation: "this console key may act as this admin DID".
 ///
@@ -82,10 +126,11 @@ pub struct ConsoleKeyDelegation {
     /// This is the document `issuer` and the DID the proof's
     /// `verificationMethod` names, so it is what a signed document presents.
     pub console_did: String,
-    /// The admin DID this key acts as. **Always the enrolling caller's own
-    /// DID** — never a request field; see
-    /// [`enrol`](crate::routes::admin::console_keys::enrol).
+    /// The identity this key acts as — the enrolment's `identityDid`, which a
+    /// passkey gesture by that identity, bound to the enrolment, established.
     pub admin_did: String,
+    /// What the key may be accepted for.
+    pub scope: DelegationScope,
     /// Operator-supplied, e.g. `"Work laptop — Chrome"`. Absent rather than
     /// empty when nobody chose one: an invented label is indistinguishable
     /// from a chosen one to somebody deciding which key to revoke — the same
@@ -93,14 +138,11 @@ pub struct ConsoleKeyDelegation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub created_at: DateTime<Utc>,
-    /// Optional finite lifetime. `None` — the default — means the delegation
-    /// lasts until it is revoked or the browser profile is cleared, which is
-    /// the decision taken on #1684. An expired delegation refuses on the
-    /// verification path; it is not swept, because a row nobody can use costs
-    /// a few hundred bytes and revocation is the lever operators actually
-    /// reach for.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<DateTime<Utc>>,
+    /// When the delegation stops authorizing documents — always set, and at
+    /// most [`MAX_LIFETIME_DAYS`] after enrolment. An expired delegation
+    /// refuses on the verification path; it is not swept, because a row nobody
+    /// can use costs a few hundred bytes and it keeps the key burned.
+    pub expires_at: DateTime<Utc>,
     /// Stamped by [`touch_last_used`] when the delegation authorizes a
     /// document. Best-effort: a failed write never fails the request, because
     /// this is a usability signal ("which of these browsers is still in use")
@@ -122,7 +164,7 @@ impl ConsoleKeyDelegation {
     /// Takes the instant rather than reading the clock so a test can pin it.
     #[must_use]
     pub fn is_active_at(&self, now: DateTime<Utc>) -> bool {
-        self.revoked_at.is_none() && self.expires_at.is_none_or(|exp| exp > now)
+        self.revoked_at.is_none() && self.expires_at > now
     }
 }
 
@@ -228,12 +270,50 @@ impl EnrolError {
     }
 }
 
-/// Check every enrolment rule and, if they all hold, write the delegation.
+/// The first enrolment rule `console_did` breaks, if any. These concern the
+/// key, not the identity, so a refusal on them says nothing about
+/// `admin_did`'s standing (enroll item 2).
+pub async fn key_refusal(
+    console_keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    console_did: &str,
+    admin_did: &str,
+) -> Result<Option<EnrolError>, AppError> {
+    if !console_did.starts_with("did:key:") {
+        return Ok(Some(EnrolError::NotADidKey));
+    }
+    if console_did == admin_did {
+        return Ok(Some(EnrolError::SelfDelegation));
+    }
+    if let Some(existing) = get_delegation(console_keys_ks, console_did).await? {
+        return Ok(Some(if existing.revoked_at.is_some() {
+            EnrolError::Revoked
+        } else {
+            EnrolError::AlreadyDelegated
+        }));
+    }
+    if crate::acl::get_acl_entry(acl_ks, console_did)
+        .await?
+        .is_some()
+    {
+        return Ok(Some(EnrolError::SubjectHoldsAclRow));
+    }
+    Ok(None)
+}
+
+/// The expiry a delegation gets: the earlier of the requested one and
+/// [`MAX_LIFETIME_DAYS`] from `now`, or that maximum when none was requested.
+#[must_use]
+pub fn capped_expiry(requested: Option<DateTime<Utc>>, now: DateTime<Utc>) -> DateTime<Utc> {
+    let ceiling = now + Duration::days(MAX_LIFETIME_DAYS);
+    requested.map_or(ceiling, |r| r.min(ceiling))
+}
+
+/// Check every key rule and, if they all hold, write a `console` delegation of
+/// `console_did` to `admin_did`, expiring at [`capped_expiry`].
 ///
-/// `admin_did` is the **caller's own** DID. The caller cannot name it, so
-/// "enrol a delegation for somebody else" is not a request this surface can
-/// express — see the route for why that is the opposite of the promotion rule
-/// and still correct.
+/// The caller holds [`DELEGATION_LOCK`] and has already established that the
+/// enrolling party controls `admin_did` and that it has the standing to lend.
 pub async fn enrol_delegation(
     console_keys_ks: &KeyspaceHandle,
     acl_ks: &KeyspaceHandle,
@@ -242,38 +322,36 @@ pub async fn enrol_delegation(
     label: Option<String>,
     expires_at: Option<DateTime<Utc>>,
 ) -> Result<ConsoleKeyDelegation, AppError> {
-    if !console_did.starts_with("did:key:") {
-        return Err(EnrolError::NotADidKey.into_app_error(console_did));
+    if let Some(refusal) = key_refusal(console_keys_ks, acl_ks, console_did, admin_did).await? {
+        return Err(refusal.into_app_error(console_did));
     }
-    if console_did == admin_did {
-        return Err(EnrolError::SelfDelegation.into_app_error(console_did));
-    }
-    if let Some(existing) = get_delegation(console_keys_ks, console_did).await? {
-        return Err(if existing.revoked_at.is_some() {
-            EnrolError::Revoked.into_app_error(console_did)
-        } else {
-            EnrolError::AlreadyDelegated.into_app_error(console_did)
-        });
-    }
-    if crate::acl::get_acl_entry(acl_ks, console_did)
-        .await?
-        .is_some()
-    {
-        return Err(EnrolError::SubjectHoldsAclRow.into_app_error(console_did));
-    }
-
+    let now = Utc::now();
     let delegation = ConsoleKeyDelegation {
         console_did: console_did.to_string(),
         admin_did: admin_did.to_string(),
+        scope: DelegationScope::Console,
         label: label.filter(|l| !l.trim().is_empty()),
-        created_at: Utc::now(),
-        expires_at,
+        created_at: now,
+        expires_at: capped_expiry(expires_at, now),
         last_used_at: None,
         revoked_at: None,
         revoked_by: None,
     };
     store_delegation(console_keys_ks, &delegation).await?;
     Ok(delegation)
+}
+
+/// How many of `admin_did`'s delegations are active at `now`.
+pub async fn active_count(
+    ks: &KeyspaceHandle,
+    admin_did: &str,
+    now: DateTime<Utc>,
+) -> Result<usize, AppError> {
+    Ok(list_delegations_for_admin(ks, admin_did)
+        .await?
+        .iter()
+        .filter(|d| d.is_active_at(now))
+        .count())
 }
 
 /// Mark a delegation revoked. Idempotent on an already-revoked row: the caller

@@ -21,7 +21,7 @@ Three VTC verbs are gated on a live passkey gesture:
 | `acl/change-role` to `admin` | `Invariant::StepUpForAdmin` in the role-change ceremony; `step_up` resolved from the caller's live session | `ceremony/invariant.rs`, `ceremony/orchestrate.rs` |
 | `acl/grant` of `admin` that widens authority | `elevation::verified` in the handler | `routes/acl.rs`, `acl/elevation.rs` |
 | `acl/update` of an `admin` entry that widens authority (a scope added, an expiry lifted or pushed out) | signed door only — the bound gesture `acl/grant` uses (`trust_tasks::acl_tasks::settle_signed_gate`); there is no bearer route | `routes/acl.rs::plan_update`, `trust_tasks/acl_tasks.rs` |
-| console-key enrolment (`POST /v1/admin/console-keys`) | `AdminAuth` + `elevation::verified` | `routes/admin/console_keys.rs` |
+| console-key enrolment (now `auth/signing-key/enroll/0.1`) | a passkey gesture of the named identity, bound to the enrolment and asked of the requester before standing is known (`bound_step_up::request_for_enrolment`) | `trust_tasks/signing_key_tasks.rs` |
 
 Every one reads the **session**: a passkey step-up stamps `acr = aal2` and
 `acr_expires_at = now + 900` on the session row (`routes/auth.rs::step_up_finish`),

@@ -131,6 +131,11 @@ struct PendingMark {
     /// challenge, so the assertion binds the nonce this record is keyed by.
     auth_state: PasskeyAuthentication,
     expires_at: u64,
+    /// The key that asked, for a gesture requested before the actor's standing
+    /// is known — a signing-key enrolment ([`request_for_enrolment`]). Absent
+    /// for every other gate, whose document is signed by the actor itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requester: Option<String>,
 }
 
 // Hand-written so a stray `?pending` in a log line prints the binding and not
@@ -142,6 +147,7 @@ impl std::fmt::Debug for PendingMark {
             .field("bound_to", &self.bound_to)
             .field("type_uri", &self.type_uri)
             .field("expires_at", &self.expires_at)
+            .field("requester", &self.requester)
             .finish_non_exhaustive()
     }
 }
@@ -184,6 +190,19 @@ impl From<StepUpEvidence> for vti_common::audit::StepUpEvidence {
 pub enum EvidencedGate {
     Satisfied(StepUpEvidence),
     Required(Box<approve_request::Payload>),
+}
+
+/// Read and remove `key` in one step ([`KeyspaceHandle::take_raw`]), so of two
+/// concurrent callers exactly one gets the row.
+async fn take<T: serde::de::DeserializeOwned>(
+    ks: &KeyspaceHandle,
+    key: String,
+) -> Result<Option<T>, AppError> {
+    ks.take_raw(key)
+        .await?
+        .map(|raw| serde_json::from_slice(&raw))
+        .transpose()
+        .map_err(|e| AppError::Internal(format!("step-up mark does not parse: {e}")))
 }
 
 fn pending_key(challenge: &str) -> String {
@@ -246,15 +265,14 @@ pub async fn redeem_or_request_with_evidence(
     // Removed before it is honoured, so two concurrent re-sends of the same
     // document cannot both find it. An expired mark is removed the same way and
     // then treated as absent.
-    if let Some(mark) = ks.get::<RedeemableMark>(key.clone()).await? {
-        ks.remove(key).await?;
-        if now_epoch() < mark.expires_at {
-            info!(admin = %admin_did, task = %type_uri, "operation-bound step-up spent");
-            return Ok(EvidencedGate::Satisfied(StepUpEvidence {
-                credential_id: mark.credential_id.unwrap_or_default(),
-                bound_to: mark.bound_to.unwrap_or_default(),
-            }));
-        }
+    if let Some(mark) = take::<RedeemableMark>(ks, key).await?
+        && now_epoch() < mark.expires_at
+    {
+        info!(admin = %admin_did, task = %type_uri, "operation-bound step-up spent");
+        return Ok(EvidencedGate::Satisfied(StepUpEvidence {
+            credential_id: mark.credential_id.unwrap_or_default(),
+            bound_to: mark.bound_to.unwrap_or_default(),
+        }));
     }
 
     let webauthn = state.webauthn.as_ref().ok_or_else(|| {
@@ -315,12 +333,90 @@ pub async fn redeem_or_request_with_evidence(
         type_uri: type_uri.to_string(),
         auth_state,
         expires_at: now_epoch().saturating_add(MARK_TTL_SECS),
+        requester: None,
     };
     ks.insert(pending_key(&challenge), &pending).await?;
 
     let request = approve_request_payload(admin_did, &challenge, &bound_to, reason, &options)?;
     info!(admin = %admin_did, task = %type_uri, %bound_to, "operation-bound step-up requested");
     Ok(EvidencedGate::Required(Box::new(request)))
+}
+
+/// Park a ceremony for a signing-key enrolment (`auth/signing-key/enroll/0.1`)
+/// of a key acting for `identity_did`, requested by `requester` — the key
+/// being enrolled — and return the inline approve-request.
+///
+/// The enrolment's standing is not yet known, so the answer must not depend
+/// on it: the ceremony offers **every** registered console passkey, exactly as
+/// an unauthenticated passkey login does, so a stranger's enrolment against
+/// any DID gets the same kind of answer (enroll, *The refusal is not an
+/// oracle*). It is delivered only inline, to the requester, and reaches none
+/// of the identity's devices (enroll item 5). Only a passkey registered to
+/// `identity_did` can then answer it ([`approve`]).
+pub async fn request_for_enrolment(
+    state: &AppState,
+    identity_did: &str,
+    requester: &str,
+    type_uri: &str,
+    payload: &Value,
+    reason: &str,
+) -> Result<approve_request::Payload, AppError> {
+    let webauthn = state.webauthn.as_ref().ok_or_else(|| {
+        AppError::StepUpRequired(
+            "enrolling a signing key needs a passkey gesture, and this community has no \
+             WebAuthn relying party configured"
+                .into(),
+        )
+    })?;
+    let passkeys = vti_common::auth::passkey::store::get_all_passkeys(&state.passkey_ks).await?;
+    if passkeys.is_empty() {
+        return Err(AppError::StepUpRequired(
+            "enrolling a signing key needs a passkey gesture, and no passkey is registered \
+             with this community"
+                .into(),
+        ));
+    }
+    let (rcr, auth_state) = webauthn
+        .start_passkey_authentication(&passkeys)
+        .map_err(|e| AppError::Internal(format!("webauthn authentication start failed: {e}")))?;
+    let options = serde_json::to_value(&rcr.public_key)
+        .map_err(|e| AppError::Internal(format!("webauthn options serialise: {e}")))?;
+    let challenge = options["challenge"]
+        .as_str()
+        .ok_or_else(|| AppError::Internal("webauthn options carry no challenge".into()))?
+        .to_string();
+    let bound_to = wire_digest(type_uri, payload, &challenge)?;
+    let pending = PendingMark {
+        admin_did: identity_did.to_string(),
+        digest: operation_digest(type_uri, payload)?,
+        bound_to: bound_to.clone(),
+        type_uri: type_uri.to_string(),
+        auth_state,
+        expires_at: now_epoch().saturating_add(MARK_TTL_SECS),
+        requester: Some(requester.to_string()),
+    };
+    state
+        .step_up_marks_ks
+        .insert(pending_key(&challenge), &pending)
+        .await?;
+    info!(identity = %identity_did, %requester, %bound_to, "signing-key enrolment step-up requested");
+    approve_request_payload(identity_did, &challenge, &bound_to, reason, &options)
+}
+
+/// Spend the recorded gesture for `(admin_did, this operation)`: `true` when a
+/// live one existed and is now gone. Removed before it is honoured, so two
+/// concurrent re-sends cannot both spend it.
+pub async fn spend_mark(
+    state: &AppState,
+    admin_did: &str,
+    type_uri: &str,
+    payload: &Value,
+) -> Result<bool, AppError> {
+    let key = mark_key(admin_did, &operation_digest(type_uri, payload)?);
+    let ks = &state.step_up_marks_ks;
+    Ok(take::<RedeemableMark>(ks, key)
+        .await?
+        .is_some_and(|mark| now_epoch() < mark.expires_at))
 }
 
 /// Whether a recorded gesture for `(admin_did, this operation)` is waiting,
@@ -422,6 +518,10 @@ pub enum ApproveError {
     /// The assertion failed. The hint is the machine-readable
     /// `details.reason` the code declares; the cause is logged, not sent.
     AssertionInvalid(&'static str),
+    /// The answer needs its approver's own signature and carries none: a
+    /// refusal is an approver-signed statement, and a member's step-up passkey
+    /// is only ever beside the member's proof, never instead of it.
+    ProofRequired,
     Internal(AppError),
 }
 
@@ -450,14 +550,18 @@ pub enum Approved {
 pub async fn approve(
     state: &AppState,
     payload: &approve_response::Payload,
+    signed_by_subject: bool,
 ) -> Result<Approved, ApproveError> {
     let ks = &state.step_up_marks_ks;
     let challenge = payload.challenge.to_string();
     let key = pending_key(&challenge);
-    let Some(pending) = ks.get::<PendingMark>(key.clone()).await? else {
+    // Taken atomically: an unsigned answer carries no proof, so its `id` is
+    // the sender's to choose and the spine's replay cache cannot stop two
+    // concurrent copies of one assertion. Only one of them may find the
+    // ceremony, or a second mark could be recorded after the first is spent.
+    let Some(pending) = take::<PendingMark>(ks, key).await? else {
         return Err(ApproveError::ChallengeUnknown);
     };
-    ks.remove(key).await?;
     if now_epoch() >= pending.expires_at {
         return Err(ApproveError::ChallengeExpired);
     }
@@ -469,6 +573,9 @@ pub async fn approve(
     }
 
     if payload.decision == approve_response::PayloadDecision::Denied {
+        if !signed_by_subject {
+            return Err(ApproveError::ProofRequired);
+        }
         info!(admin = %pending.admin_did, task = %pending.type_uri, "operation-bound step-up declined");
         return Ok(Approved::Declined {
             reason: payload
@@ -524,6 +631,12 @@ pub async fn approve(
                 true,
             ),
         };
+    // A member's step-up passkey is only ever beside the member's own proof.
+    // An unsigned answer is a console user's session passkey, the one gate an
+    // administrator's browser holds that script in the origin cannot forge.
+    if step_up && !signed_by_subject {
+        return Err(ApproveError::ProofRequired);
+    }
     if user.did != pending.admin_did {
         warn!(
             admin = %pending.admin_did,
@@ -772,5 +885,23 @@ mod tests {
         assert_eq!(v["webauthn"]["challenge"], v["challenge"]);
         assert_eq!(v["webauthn"]["userVerification"], "required");
         assert_eq!(v["acceptableEvidence"], json!(["webauthn"]));
+    }
+
+    /// A recorded gesture is spent once, however many copies of the act race
+    /// for it — the take is atomic, not a read followed by a remove.
+    #[tokio::test]
+    async fn concurrent_spends_of_one_mark_succeed_once() {
+        let tv = crate::test_support::build_test_vtc().await;
+        let p = payload("did:key:zRaced");
+        record_mark_for_test(&tv.state, "did:key:zAdmin", GRANT, &p)
+            .await
+            .unwrap();
+        let spends = (0..16).map(|_| spend_mark(&tv.state, "did:key:zAdmin", GRANT, &p));
+        let won = futures_util::future::join_all(spends)
+            .await
+            .into_iter()
+            .filter(|r| matches!(r, Ok(true)))
+            .count();
+        assert_eq!(won, 1);
     }
 }

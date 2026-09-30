@@ -84,6 +84,8 @@ pub(crate) mod policy_tasks;
 // applicants, the schema registry, vetting reads, edge suspend/restore, a join
 // request's vetting and credential query, and the host's rooms.
 pub(crate) mod surface_tasks;
+// `auth/signing-key/*`: the console's signing keys, as delegations.
+pub(crate) mod signing_key_tasks;
 
 // The member-facing verbs that were HTTPS REST only: renewal, DID rotation,
 // personhood revocation, the relationship graph's member verbs and the
@@ -514,6 +516,28 @@ async fn dispatch_trust_task_validated(
                     large_doc_charge.as_ref(),
                     Some(signer.as_str()),
                 );
+                // A delegated signing key is an operational credential, never
+                // an approver's attestation (auth/signing-key/enroll item 7):
+                // no approval is accepted under its proof, whatever its state.
+                if helpers::is_approval_type(&type_uri) {
+                    match crate::acl::console_key::get_delegation(&state.console_keys_ks, &signer)
+                        .await
+                    {
+                        Ok(None) => {}
+                        Ok(Some(_)) => {
+                            return reject_with(
+                                &doc,
+                                RejectReason::PermissionDenied {
+                                    reason: "a delegated signing key is never accepted as an \
+                                             approver's attestation; sign with the approver's \
+                                             own key, or answer a passkey step-up unsigned"
+                                        .to_string(),
+                                },
+                            );
+                        }
+                        Err(e) => return app_error_to_reject(&doc, &e),
+                    }
+                }
                 &ctx.with_verified_signer(Some(signer))
             }
             // A proof that is present and does not verify is always fatal,
@@ -973,6 +997,15 @@ async fn dispatch_typed(
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("admin_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
+        uri if signing_key_tasks::URIS.contains(&uri) => {
+            match signing_key_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!("signing_key_tasks::URIS names {uri}, which it does not route")
+                }
             }
         }
         uri if surface_tasks::URIS.contains(&uri) => {
@@ -1573,7 +1606,7 @@ mod spine_proof_tests {
         let hidden_vetting = if cfg!(feature = "vetting-pcs") { 4 } else { 0 };
         assert_eq!(
             required.len(),
-            88 + hidden_vetting,
+            91 + hidden_vetting,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1616,7 +1649,8 @@ mod spine_proof_tests {
              requested-attributes,join-discovery}}/update`, `vtc/schemas/{{register,delete}}`, \
              `vtc/schemas/accepts/{{register,delete}}`, `vtc/vetting/auto-grant/update`, \
              `vtc/relationships/{{suspend,restore}}`, `vtc/join-requests/query`; the reads \
-             declare none and their handlers refuse an unsigned one regardless) + the 4 \
+             declare none and their handlers refuse an unsigned one regardless) + the 3 \
+             `auth/signing-key/{{enroll,list,revoke}}` tasks + the 4 \
              hidden-vetting tasks under `vetting-pcs`; got {required:?}"
         );
     }
@@ -1789,9 +1823,9 @@ mod spine_proof_tests {
         }
     }
 
-    /// The approve-response's gate is the passkey, but the document is still
-    /// the approver's: one with no proof is refused before any pending
-    /// step-up is consulted.
+    /// An unsigned approve-response is heard only as an approval carrying a
+    /// console user's passkey assertion; one with no evidence is refused before
+    /// any pending step-up is consulted.
     #[tokio::test]
     async fn an_unsigned_approve_response_is_refused() {
         let tv = build_test_vtc().await;
@@ -2098,6 +2132,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     surface_tasks::JOIN_VETTING_SHOW_TYPE,
     surface_tasks::JOIN_QUERY_TYPE,
     surface_tasks::ROOMS_LIST_TYPE,
+    // The console's signing keys, which replaced `/v1/admin/console-keys`.
+    signing_key_tasks::ENROLL_TYPE,
+    signing_key_tasks::LIST_TYPE,
+    signing_key_tasks::REVOKE_TYPE,
     // rooms/* — top-level, not `spec/vtc/*`: a room's protocol is host-neutral, so
     // filing it under a service prefix would encode into the URI the one thing the
     // design exists to avoid. The vtc conformance sweep scopes to `spec/vtc/` and so
@@ -3196,37 +3234,6 @@ async fn admin_signer(
     resolve_admin_claims(state, doc, &signer).await
 }
 
-/// Who an approver's own decision (a step-up `approve-response`) is from: the
-/// document's verified signer, or — for a console key — the administrator it
-/// acts for, resolved exactly as [`admin_signer`] resolves it. Unlike
-/// [`admin_signer`] it asks for no role: an approval authorizes nothing by
-/// itself, and the question it answers is only *who* approved, which the
-/// caller then holds to the subject the step-up was asked of.
-async fn approver_of(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: &TrustTask<Value>,
-) -> Result<String, TrustTaskOutcome> {
-    let Some(signer) = ctx.verified_signer.clone() else {
-        return Err(reject_with(doc, RejectReason::ProofRequired));
-    };
-    let has_own_row = crate::acl::get_acl_entry(&state.acl_ks, &signer)
-        .await
-        .map_err(|e| app_error_to_reject(doc, &e))?
-        .is_some();
-    if !has_own_row
-        && let Some(delegation) =
-            crate::acl::console_key::resolve_delegated_admin(&state.console_keys_ks, &signer)
-                .await
-                .map_err(|e| app_error_to_reject(doc, &e))?
-    {
-        let claims = resolve_admin_claims(state, doc, &delegation.admin_did).await?;
-        crate::acl::console_key::touch_last_used(&state.console_keys_ks, &delegation).await;
-        return Ok(claims.did);
-    }
-    Ok(signer)
-}
-
 /// Read `did`'s ACL row and shape it into the claims the admin verbs take.
 ///
 /// Split out of [`admin_signer`] because the delegated arm needs the identical
@@ -3969,12 +3976,11 @@ async fn handle_acl_change_role(
 /// Two gates, by one approver. The WebAuthn assertion, which only the actor's
 /// own authenticator — a session passkey, or a member's step-up passkey
 /// (`crate::step_up_passkey`) — can produce over this service's challenge. And
-/// the document's own proof, because the document is the approver's
-/// attestation: an `assertionMethod` proof ([`verify_approval_proof`], checked
-/// by the spine) by the subject, or by a console key acting for them
-/// ([`approver_of`]). The passkey is in addition to the proof, never instead
-/// of it (approve-response 0.5). Both are checked before the pending mark is
-/// consulted, so nobody else can spend the actor's challenge. What the gesture authorizes is read from this
+/// the document's own proof where it has one: an `assertionMethod` proof
+/// ([`verify_approval_proof`], checked by the spine) by the subject itself —
+/// never by a delegated signing key, which the spine refuses. A member's
+/// step-up passkey is always beside the member's proof; a console user's
+/// session passkey may answer unsigned, the one gate its browser holds. What the gesture authorizes is read from this
 /// service's record of the refusal, never from this document. See
 /// [`crate::acl::bound_step_up::approve`].
 ///
@@ -4000,22 +4006,32 @@ async fn handle_step_up_approve_response(
             hint.map(|h| serde_json::json!({ "reason": h })),
         )
     };
-    // No proof, no approval. The signer, or the admin its console key acts
-    // for, must be the subject the step-up was asked of — and it need not be
+    // Who answers. A signed answer is the subject's own attestation: its
+    // signer must be the subject the step-up was asked of — and it need not be
     // an administrator: a member answers the step-ups asked of them (a
-    // break-glass) with a step-up passkey, signing the answer themselves.
-    let approver = match approver_of(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
+    // break-glass) with a step-up passkey, signing the answer themselves. A
+    // delegated key's proof never reaches here (the spine refuses it). An
+    // unsigned answer carries only the WebAuthn gate (approve-response 0.4), so
+    // it may only approve, with a console user's session passkey registered to
+    // the subject — which is how the console answers, holding no key of the
+    // subject's ([`bound_step_up::approve`]).
+    let signed_by_subject = match ctx.verified_signer.as_deref() {
+        Some(signer) if signer == payload.subject.as_str() => true,
+        Some(_) => {
+            return refuse(
+                codes::SUBJECT_MISMATCH,
+                "the approve-response is not signed by the subject of the step-up",
+                None,
+            );
+        }
+        None => false,
     };
-    if approver != payload.subject.as_str() {
-        return refuse(
-            codes::SUBJECT_MISMATCH,
-            "the approve-response is not signed by the subject of the step-up",
-            None,
-        );
+    // Settled before the pending step-up is touched, so a refused answer
+    // leaves the challenge for the right one.
+    if !signed_by_subject && !unsigned_answer_admissible(state, &payload).await {
+        return reject_with(&doc, RejectReason::ProofRequired);
     }
-    match bound_step_up::approve(state, &payload).await {
+    match bound_step_up::approve(state, &payload, signed_by_subject).await {
         Ok(Approved::Recorded { bound_to }) => success_response(
             &doc,
             serde_json::json!({ "status": "recorded", "boundTo": bound_to }),
@@ -4049,8 +4065,39 @@ async fn handle_step_up_approve_response(
             "the passkey assertion did not verify",
             Some(hint),
         ),
+        Err(ApproveError::ProofRequired) => reject_with(&doc, RejectReason::ProofRequired),
         Err(ApproveError::Internal(e)) => app_error_to_reject(&doc, &e),
     }
+}
+
+/// Whether an **unsigned** approve-response may be heard at all: an approval
+/// (a refusal is an approver-signed statement), carrying a WebAuthn assertion,
+/// from a console user's session passkey. A member's step-up passkey is only
+/// ever beside the member's own proof. [`crate::acl::bound_step_up::approve`]
+/// checks the credential again once the assertion has verified.
+async fn unsigned_answer_admissible(
+    state: &AppState,
+    payload: &step_up_approve_response::Payload,
+) -> bool {
+    use base64::Engine as _;
+    if payload.decision != step_up_approve_response::PayloadDecision::Approved {
+        return false;
+    }
+    let Some(step_up_approve_response::Evidence::Webauthn(assertion)) = payload.evidence.as_ref()
+    else {
+        return false;
+    };
+    let Ok(raw) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&assertion.raw_id) else {
+        return false;
+    };
+    matches!(
+        vti_common::auth::passkey::store::get_passkey_user_by_cred(
+            &state.passkey_ks,
+            &hex::encode(raw)
+        )
+        .await,
+        Ok(Some(_))
+    )
 }
 
 /// `task-consent/decision/0.1` — another admin's answer to a request for
@@ -4542,6 +4589,9 @@ mod tests {
             surface_tasks::JOIN_VETTING_SHOW_TYPE,
             surface_tasks::JOIN_QUERY_TYPE,
             surface_tasks::ROOMS_LIST_TYPE,
+            signing_key_tasks::ENROLL_TYPE,
+            signing_key_tasks::LIST_TYPE,
+            signing_key_tasks::REVOKE_TYPE,
             // Hidden vetting. These four name a string constant rather than a generated
             // `TYPE_URI` because the pinned `trust-tasks-rs` does not carry their modules yet.
             // The specifications are merged (#618, #620) and the bindings generate as 0.22;

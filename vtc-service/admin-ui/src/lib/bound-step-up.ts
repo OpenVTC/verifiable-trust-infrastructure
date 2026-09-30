@@ -28,17 +28,19 @@
 // step 2 here, and `cnm` then re-sends its document. The request travels in
 // the fragment, which browsers never send to a server.
 //
-// ## Every answer is signed by the approver
+// ## Who signs the answer
 //
-// The approve-response is the approver's attestation, so it always carries
-// their `assertionMethod` proof; the passkey is in addition to it, never
-// instead (approve-response 0.5). A console user's browser signs with its
-// console key. A member who is no console user answers with a step-up
-// passkey and has no key here, so this page does the ceremony and shows an
-// **answer code** — the assertion — which `cnm` signs into the
-// approve-response with the member's own key.
+// A console user's browser holds a session passkey of the operator's and no
+// key of theirs — its console key is a delegation, and a delegated key is
+// never accepted as an approver's attestation (`auth/signing-key/enroll/0.1`
+// item 7). So it answers **unsigned**, with the passkey assertion as the gate
+// (approve-response 0.4 `evidence.kind = webauthn`). A member who is no
+// console user answers with a step-up passkey, which is only ever beside the
+// member's own proof, so this page does the ceremony and shows an **answer
+// code** — the assertion — which `cnm` signs into the approve-response with
+// the member's own key.
 
-import { postSignedTrustTask } from "./api";
+import { postUnsignedTrustTask } from "./api";
 import {
   base64urlToBuffer,
   bufferToBase64url,
@@ -158,14 +160,13 @@ export async function runStepUpCeremony(
 
 /**
  * Run the passkey ceremony `req` asks for and send the approve-response,
- * signed by this browser's console key.
+ * unsigned: the WebAuthn assertion is the gate, and the VTC checks that it
+ * came from a console passkey registered to `req.subject`.
  *
  * Resolves once the VTC has **recorded** the gesture against the operation;
- * throws if it rejected it, if the browser returned no credential, or —
- * `SigningUnavailableError` — if this browser holds no console key (then use
- * [`runStepUpCeremony`] and [`answerCodeOf`], and let `cnm` sign). The
- * WebAuthn assertion inside is the second gate; the VTC checks that it came
- * from a passkey of `req.subject`'s and that the proof is theirs too.
+ * throws if it rejected it or the browser returned no credential. A member's
+ * step-up passkey is refused this way — use [`runStepUpCeremony`] and
+ * [`answerCodeOf`], and let `cnm` sign.
  */
 export async function answerStepUp(
   req: StepUpRequest,
@@ -179,7 +180,7 @@ export async function answerStepUp(
     evidence: { kind: "webauthn", assertion: serializeAssertion(credential) },
   };
   if (req.sessionId) payload.sessionId = req.sessionId;
-  const ack = await postSignedTrustTask<ApproveAck>(APPROVE_RESPONSE_URI, payload);
+  const ack = await postUnsignedTrustTask<ApproveAck>(APPROVE_RESPONSE_URI, payload, req.subject);
   if (ack.status !== "recorded") {
     throw new Error(
       ack.reason

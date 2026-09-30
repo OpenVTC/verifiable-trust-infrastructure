@@ -525,12 +525,18 @@ export async function postSignedDocument<T>(signed: SignedTrustTaskDocument): Pr
 /**
  * Post `payload` as an **unsigned** Trust Task document naming `issuer`.
  *
- * For exactly one case: finishing a step-up passkey redemption
- * (`auth/passkey/enroll/redeem/finish/0.1`) from the browser that ran
- * `navigator.credentials.create` — a member who is no console user, so holds
- * no key here. Its authority is the ceremony the member's **signed**
- * `redeem/start` opened (sent by `cnm`); the VTC reads nothing from this
- * document's issuer. Never for an approval: every approve-response is signed.
+ * For two cases, each of which carries its own gate and takes nothing from the
+ * document's issuer:
+ *
+ * - finishing a step-up passkey redemption
+ *   (`auth/passkey/enroll/redeem/finish/0.1`) from the browser that ran
+ *   `navigator.credentials.create` — a member who is no console user, so holds
+ *   no key here. Its authority is the ceremony the member's **signed**
+ *   `redeem/start` opened (sent by `cnm`);
+ * - a console user's answer to a bound step-up
+ *   (`auth/step-up/approve-response/0.4`, `evidence.kind = webauthn`), whose
+ *   gate is the passkey assertion. The console key is a delegation, and a
+ *   delegated key is never accepted as an approver's attestation.
  */
 export async function postUnsignedTrustTask<T>(
   typeUri: string,

@@ -219,10 +219,13 @@ async fn once_enrolled_a_step_up_passkey_is_the_only_gesture_that_counts() {
         "only the admin's own (console) credential is offered: {request}"
     );
     let cred = authenticator.authenticate(&options(&request), RP_ORIGIN);
-    let approved =
-        bound_step_up::approve(&vtc.state, &approve_payload(&admin.did, &request, &cred))
-            .await
-            .expect("the console passkey answers before any step-up passkey exists");
+    let approved = bound_step_up::approve(
+        &vtc.state,
+        &approve_payload(&admin.did, &request, &cred),
+        false,
+    )
+    .await
+    .expect("the console passkey answers before any step-up passkey exists");
     assert!(matches!(approved, Approved::Recorded { .. }));
 
     // Enrol a dedicated step-up passkey for the same admin.
@@ -247,6 +250,7 @@ async fn once_enrolled_a_step_up_passkey_is_the_only_gesture_that_counts() {
     let refused = bound_step_up::approve(
         &vtc.state,
         &approve_payload(&admin.did, &console_request, &console_cred),
+        false,
     )
     .await;
     assert!(
@@ -257,10 +261,13 @@ async fn once_enrolled_a_step_up_passkey_is_the_only_gesture_that_counts() {
     // The step-up passkey does.
     let request = request_for(&vtc, &admin.did, &payload("after-3")).await;
     let cred = authenticator.authenticate(&options(&request), RP_ORIGIN);
-    let approved =
-        bound_step_up::approve(&vtc.state, &approve_payload(&admin.did, &request, &cred))
-            .await
-            .expect("the step-up passkey answers");
+    let approved = bound_step_up::approve(
+        &vtc.state,
+        &approve_payload(&admin.did, &request, &cred),
+        true,
+    )
+    .await
+    .expect("the step-up passkey answers");
     assert!(matches!(approved, Approved::Recorded { .. }));
 }
 
@@ -278,10 +285,13 @@ async fn a_subject_with_no_step_up_passkey_keeps_the_session_passkey_route() {
 
     let request = request_for(&vtc, &admin.did, &payload("solo")).await;
     let cred = authenticator.authenticate(&options(&request), RP_ORIGIN);
-    let approved =
-        bound_step_up::approve(&vtc.state, &approve_payload(&admin.did, &request, &cred))
-            .await
-            .expect("the session passkey still answers with no step-up passkey enrolled");
+    let approved = bound_step_up::approve(
+        &vtc.state,
+        &approve_payload(&admin.did, &request, &cred),
+        false,
+    )
+    .await
+    .expect("the session passkey still answers with no step-up passkey enrolled");
     assert!(matches!(approved, Approved::Recorded { .. }));
 }
 
@@ -304,7 +314,7 @@ async fn a_wallet_signed_answer_never_satisfies_the_gesture() {
         "decision": "approved",
     }))
     .unwrap();
-    let refused = bound_step_up::approve(&vtc.state, &wallet_signed).await;
+    let refused = bound_step_up::approve(&vtc.state, &wallet_signed, true).await;
     assert!(matches!(refused, Err(ApproveError::NoGate)), "{refused:?}");
 }
 

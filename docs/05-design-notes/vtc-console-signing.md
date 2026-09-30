@@ -457,6 +457,15 @@ of that seam, not 60 call sites.
 
 ### 6c. Enrolment
 
+> **Superseded.** Enrolment is now `auth/signing-key/{enroll,list,revoke}/0.1`
+> (trust-tasks #680), served on the spine by `trust_tasks::signing_key_tasks`;
+> the `/v1/admin/console-keys` routes below are gone. The enrolment is signed by
+> the new key and names the identity; control of the identity is a passkey
+> gesture bound to that one enrolment, answered unsigned from the console.
+> Every delegation has the `console` scope and an expiry of at most 30 days, an
+> identity holds at most five, and no approval is ever accepted under a
+> delegated key's proof. What follows is the original design.
+
 A self-service pair mirroring `auth/passkey/{enroll,revoke}` exactly:
 
 - `POST /v1/admin/console-keys` — `AdminAuth` **plus a live step-up**

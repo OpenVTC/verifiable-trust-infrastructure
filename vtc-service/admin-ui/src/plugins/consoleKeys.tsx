@@ -20,11 +20,11 @@ import { formatIso as formatDate } from "@/lib/format";
 import { ed25519Available, loadConsoleKey } from "@/lib/console-key";
 import {
   enrolThisBrowser,
-  isStepUpRequired,
   listConsoleKeys,
   revokeConsoleKey,
   type ConsoleKey,
 } from "@/lib/console-keys-api";
+import { gestureFromConfirm } from "@/lib/signed-act";
 
 /** What this browser holds, and whether it could hold one at all. */
 interface LocalState {
@@ -65,7 +65,7 @@ export function ConsoleKeys() {
   });
 
   const enrol = useMutation({
-    mutationFn: () => enrolThisBrowser(label),
+    mutationFn: () => enrolThisBrowser(label, gestureFromConfirm(confirm)),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["console-keys"] });
       setLabel("");
@@ -146,9 +146,7 @@ export function ConsoleKeys() {
               <section className="card error">
                 <h3>Could not enable signing</h3>
                 <p>
-                  {isStepUpRequired(enrolError)
-                    ? "Your passkey verification did not complete, or it has since lapsed. Try again and complete the prompt."
-                    : enrolError.message}
+                  {enrolError.message}
                 </p>
               </section>
             )}

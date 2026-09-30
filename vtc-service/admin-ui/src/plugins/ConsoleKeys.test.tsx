@@ -4,34 +4,49 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 
+vi.mock("@/lib/console-keys-api", async (original) => ({
+  ...(await original<typeof import("@/lib/console-keys-api")>()),
+  listConsoleKeys: vi.fn(),
+  enrolThisBrowser: vi.fn(),
+}));
+
 import { ConsoleKeys } from "@/plugins/consoleKeys";
 import {
   forgetConsoleKey,
   generateConsoleKey,
   resetConsoleKeyCacheForTests,
 } from "@/lib/console-key";
-import { mockFetch, renderWithProviders } from "@/test/render";
+import { enrolThisBrowser, listConsoleKeys, type ConsoleKey } from "@/lib/console-keys-api";
+import { renderWithProviders } from "@/test/render";
 
 const ADMIN_DID = "did:webvh:QmScid:community.example:alice";
 
 afterEach(async () => {
   await forgetConsoleKey();
   resetConsoleKeyCacheForTests();
+  vi.mocked(listConsoleKeys).mockReset();
+  vi.mocked(enrolThisBrowser).mockReset();
 });
 
-function row(consoleDid: string, patch: Record<string, unknown> = {}) {
+function row(consoleDid: string, patch: Partial<ConsoleKey> = {}): ConsoleKey {
   return {
     consoleDid,
     adminDid: ADMIN_DID,
+    label: null,
     createdAt: "2026-09-23T10:00:00Z",
+    expiresAt: "2026-10-23T10:00:00Z",
+    lastUsedAt: null,
+    revokedAt: null,
     active: true,
     ...patch,
   };
 }
 
+const listing = (rows: ConsoleKey[]) => vi.mocked(listConsoleKeys).mockResolvedValue(rows);
+
 describe("the signing-keys screen", () => {
   it("offers to enable signing on a browser that has never enrolled", async () => {
-    mockFetch([{ path: "/v1/admin/console-keys", body: { consoleKeys: [] } }]);
+    listing([]);
     renderWithProviders(<ConsoleKeys />);
 
     expect(
@@ -50,7 +65,7 @@ describe("the signing-keys screen", () => {
       value: () => Promise.reject(new DOMException("nope", "NotSupportedError")),
     });
     try {
-      mockFetch([{ path: "/v1/admin/console-keys", body: { consoleKeys: [] } }]);
+      listing([]);
       renderWithProviders(<ConsoleKeys />);
 
       expect(await screen.findByText(/this browser cannot sign/i)).toBeTruthy();
@@ -68,22 +83,15 @@ describe("the signing-keys screen", () => {
 
   it("marks the row this browser holds, and does not re-derive `active`", async () => {
     const key = await generateConsoleKey();
-    mockFetch([
-      {
-        path: "/v1/admin/console-keys",
-        body: {
-          consoleKeys: [
-            row(key.consoleDid, { label: "This laptop" }),
-            // Revoked, with no `expiresAt`: the daemon says `active: false`
-            // and the screen reports that rather than working it out.
-            row("did:key:zOther", {
-              label: "Old laptop",
-              active: false,
-              revokedAt: "2026-09-22T09:00:00Z",
-            }),
-          ],
-        },
-      },
+    listing([
+      row(key.consoleDid, { label: "This laptop" }),
+      // Revoked: the daemon says `active: false` and the screen reports that
+      // rather than working it out.
+      row("did:key:zOther", {
+        label: "Old laptop",
+        active: false,
+        revokedAt: "2026-09-22T09:00:00Z",
+      }),
     ]);
     renderWithProviders(<ConsoleKeys />);
 
@@ -99,16 +107,7 @@ describe("the signing-keys screen", () => {
     // A revoked console DID is tombstoned server-side and can never be
     // re-enrolled, so the screen must not imply that retrying will restore it.
     const key = await generateConsoleKey();
-    mockFetch([
-      {
-        path: "/v1/admin/console-keys",
-        body: {
-          consoleKeys: [
-            row(key.consoleDid, { active: false, revokedAt: "2026-09-22T09:00:00Z" }),
-          ],
-        },
-      },
-    ]);
+    listing([row(key.consoleDid, { active: false, revokedAt: "2026-09-22T09:00:00Z" })]);
     renderWithProviders(<ConsoleKeys />);
 
     expect(await screen.findByText(/a revoked key can never be re-enrolled/i)).toBeTruthy();
@@ -122,47 +121,13 @@ describe("the signing-keys screen", () => {
     // browser hold" read has to happen again afterwards. Without it the
     // operator enrols successfully and the screen goes on offering to enrol,
     // which reads as a failure.
-    vi.stubGlobal("navigator", {
-      ...globalThis.navigator,
-      credentials: {
-        get: () =>
-          Promise.resolve({
-            id: "cred",
-            rawId: new Uint8Array([1]).buffer,
-            type: "public-key",
-            response: {
-              authenticatorData: new Uint8Array([2]).buffer,
-              clientDataJSON: new Uint8Array([3]).buffer,
-              signature: new Uint8Array([4]).buffer,
-              userHandle: null,
-            },
-          }),
-      },
+    let enrolled: ConsoleKey | null = null;
+    vi.mocked(listConsoleKeys).mockImplementation(async () => (enrolled ? [enrolled] : []));
+    vi.mocked(enrolThisBrowser).mockImplementation(async () => {
+      const key = await generateConsoleKey();
+      enrolled = row(key.consoleDid, { label: "Here" });
+      return enrolled;
     });
-    let enrolledDid: string | null = null;
-    mockFetch([
-      {
-        path: "/v1/admin/console-keys",
-        body: () => ({
-          consoleKeys: enrolledDid ? [row(enrolledDid, { label: "Here" })] : [],
-        }),
-      },
-      {
-        method: "POST",
-        path: "/v1/auth/passkey-login/start",
-        body: { authId: "a", options: { challenge: "AAAA", allowCredentials: [] } },
-      },
-      { method: "POST", path: "/v1/auth/passkey-login/finish", body: {} },
-      {
-        method: "POST",
-        path: "/v1/admin/console-keys",
-        status: 201,
-        body: ({ body }) => {
-          enrolledDid = (body as { consoleDid: string }).consoleDid;
-          return row(enrolledDid, { label: "Here" });
-        },
-      },
-    ]);
 
     renderWithProviders(<ConsoleKeys />);
     fireEvent.click(
@@ -172,9 +137,7 @@ describe("the signing-keys screen", () => {
   });
 
   it("shows the daemon's own message when the listing fails", async () => {
-    mockFetch([
-      { path: "/v1/admin/console-keys", status: 403, body: { error: "Caller is not an admin" } },
-    ]);
+    vi.mocked(listConsoleKeys).mockRejectedValue(new Error("Caller is not an admin"));
     vi.spyOn(console, "error").mockImplementation(() => {});
     renderWithProviders(<ConsoleKeys />);
 
