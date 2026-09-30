@@ -16,9 +16,9 @@
       "type": "object",
       "description": "Newly-minted VMC carrying `personhood: false`. Omitted on idempotent no-op."
     },
-    "roleVec": {
+    "roleVac": {
       "type": "object",
-      "description": "Newly-minted role VEC. Omitted on idempotent no-op."
+      "description": "Newly-minted role VAC (a community Verifiable Authority Credential conferring `role:<name>`). Omitted on idempotent no-op."
     }
   },
   "additionalProperties": false

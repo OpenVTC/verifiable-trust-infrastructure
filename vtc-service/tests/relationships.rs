@@ -143,14 +143,12 @@ fn fake_vrc(issuer: &str, subject: &str) -> Value {
     json!({
         "@context": [
             "https://www.w3.org/ns/credentials/v2",
-            "https://firstperson.network/credentials/dtg/v1"
+            "https://registry.trustoverip.org/dtg/context/v1"
         ],
         "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
         "issuer": issuer,
-        "credentialSubject": {
-            "id": subject,
-            "endorsement": { "type": "endorses" }
-        },
+        "issuerScope": "pairwise",
+        "credentialSubject": { "id": subject },
         "proof": {
             "type": "DataIntegrityProof",
             "cryptosuite": "eddsa-jcs-2022",
@@ -789,15 +787,14 @@ mod pairwise {
             json!({
                 "@context": [
                     "https://www.w3.org/ns/credentials/v2",
-                    "https://firstperson.network/credentials/dtg/v1"
+                    "https://registry.trustoverip.org/dtg/context/v1"
                 ],
                 "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
                 "issuer": did_for(issuer_seed),
+                // A relationship DID for this one counterparty.
+                "issuerScope": "pairwise",
                 "validFrom": "2020-01-01T00:00:00Z",
-                "credentialSubject": {
-                    "id": did_for(subject_seed),
-                    "endorsement": { "type": "endorses" }
-                },
+                "credentialSubject": { "id": did_for(subject_seed) },
             }),
         )
         .await
@@ -1377,10 +1374,11 @@ mod pairwise {
         let mut body = json!({
             "@context": [
                 "https://www.w3.org/ns/credentials/v2",
-                "https://firstperson.network/credentials/dtg/v1"
+                "https://registry.trustoverip.org/dtg/context/v1"
             ],
             "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
             "issuer": did_for(RDID),
+            "issuerScope": "pairwise",
             "validFrom": "2021-06-01T00:00:00Z",
             "credentialSubject": { "id": did_for(PEER_RDID) },
         });
@@ -1411,10 +1409,11 @@ mod pairwise {
         let mut body = json!({
             "@context": [
                 "https://www.w3.org/ns/credentials/v2",
-                "https://firstperson.network/credentials/dtg/v1"
+                "https://registry.trustoverip.org/dtg/context/v1"
             ],
             "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
             "issuer": did_for(RDID),
+            "issuerScope": "pairwise",
             "validFrom": "2021-06-01T00:00:00Z",
             "credentialSubject": { "id": did_for(PEER_RDID) },
         });
@@ -1498,10 +1497,11 @@ mod pairwise {
                 json!({
                     "@context": [
                         "https://www.w3.org/ns/credentials/v2",
-                        "https://firstperson.network/credentials/dtg/v1"
+                        "https://registry.trustoverip.org/dtg/context/v1"
                     ],
                     "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
                     "issuer": member,
+                    "issuerScope": "public",
                     "validFrom": "2020-01-01T00:00:00Z",
                     "credentialSubject": { "id": did_for(peer) },
                 }),
@@ -1529,10 +1529,11 @@ mod pairwise {
         let mut body = json!({
             "@context": [
                 "https://www.w3.org/ns/credentials/v2",
-                "https://firstperson.network/credentials/dtg/v1"
+                "https://registry.trustoverip.org/dtg/context/v1"
             ],
             "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
             "issuer": did_for(RDID),
+            "issuerScope": "pairwise",
             "validFrom": "2020-01-01T00:00:00Z",
             "credentialSubject": { "id": did_for(PEER_RDID) },
         });
@@ -1632,10 +1633,12 @@ mod pairwise {
                 json!({
                     "@context": [
                         "https://www.w3.org/ns/credentials/v2",
-                        "https://firstperson.network/credentials/dtg/v1"
+                        "https://registry.trustoverip.org/dtg/context/v1"
                     ],
                     "type": ["VerifiableCredential", "DTGCredential", "PersonaCredential"],
                     "issuer": did_for(persona_seed),
+                    // A persona, recognised by the counterparties it is shown to.
+                    "issuerScope": "directed",
                     "validFrom": "2020-01-01T00:00:00Z",
                     "credentialSubject": { "id": did_for(counterparty_seed) },
                 }),
@@ -2231,10 +2234,11 @@ mod pairwise {
             json!({
                 "@context": [
                     "https://www.w3.org/ns/credentials/v2",
-                    "https://firstperson.network/credentials/dtg/v1"
+                    "https://registry.trustoverip.org/dtg/context/v1"
                 ],
                 "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
                 "issuer": did_for(MEMBER),
+                "issuerScope": "public",
                 "validFrom": "2020-01-01T00:00:00Z",
                 "credentialSubject": { "id": did_for(OTHER) },
             }),
@@ -2247,5 +2251,33 @@ mod pairwise {
             Some(PUBLISH_ERR_SUBJECT_NOT_MEMBER),
             "{body}"
         );
+
+        // `issuerScope` is the edge's own declaration of its identifier form,
+        // and a membership DID — which the whole community recognises — cannot
+        // truthfully be `pairwise`.
+        let mispaired = sign(
+            MEMBER,
+            json!({
+                "@context": [
+                    dtg_credentials::W3C_VC_V2_CONTEXT,
+                    dtg_credentials::DTG_CONTEXT_V1
+                ],
+                "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+                "issuer": did_for(MEMBER),
+                "issuerScope": "pairwise",
+                "validFrom": "2020-01-01T00:00:00Z",
+                "credentialSubject": { "id": did_for(OTHER) },
+            }),
+        )
+        .await;
+        let (status, body) = body_value(post(&fix, &mispaired, false).await).await;
+        assert!(status.is_client_error(), "{body}");
+        assert_eq!(rest_error_code(&body), PUBLISH_ERR_VRC_INVALID, "{body}");
+
+        // And an edge that declares no `issuerScope` is not a DTG credential.
+        let mut unscoped = vrc(RDID, PEER_RDID).await;
+        unscoped.as_object_mut().unwrap().remove("issuerScope");
+        let (status, body) = body_value(post(&fix, &unscoped, true).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     }
 }

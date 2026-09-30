@@ -23,44 +23,73 @@ then applies the rules a schema cannot state, such as an event's `endDate`
 against its `startDate`.
 
 What is not a Trust Task stays in `vta_sdk::protocols::vetting` as its own type:
-the Vetting Statement's endorsement body (`IdentityVettingEndorsement`, in the
-specification's vocabulary) and the admin REST bodies for grant rows and
+the Vetting Statement's object value (`VettedObjectValue`, in the
+specification's vocabulary — the DTG VSC registry's `vetted/1` object schema) and the admin REST bodies for grant rows and
 automatic grants. Signing, verification and counting are in `vta_sdk::vetting`.
 
 ## Setting it up
 
 Steps 1 and 2 are the admin console's **Vetting → Requirements** page: it
-registers the statement type, writes the criterion, and shows what applicants
+shows the accepted predicates, writes the criterion, and shows what applicants
 will be told before anything is saved. The requests below are what it sends, and
 remain the way to script a community's setup.
 
-### 1. Register the statement type
+### 1. Accept the statement predicate
 
-Statements are DTG `EndorsementCredential`s whose `endorsement.type` is
-`https://firstperson.network/endorsements/identity-vetting/0.1`. Register it so
-criteria may count it — "Register it" on the Requirements page, or:
+A Vetting Statement is a DTG **Verifiable Statement Credential**
+(`StatementCredential`) under the DTG VSC registry predicate
+`https://registry.trustoverip.org/dtg/vsc/vetted/1`, issued by the vetter's
+member DID with `issuerScope` `directed` or `public`. Its body is
+`credentialSubject.object.value` (no `type` member — the predicate carries the
+meaning), and it cites the `vetting/session` document by both `taskContext` and
+`taskDigestMultibase`:
+
+```json
+{
+  "@context": ["https://www.w3.org/ns/credentials/v2",
+               "https://registry.trustoverip.org/dtg/context/v1"],
+  "type": ["VerifiableCredential", "DTGCredential", "StatementCredential"],
+  "issuer": "did:…vetter", "issuerScope": "directed",
+  "taskContext": "urn:uuid:…session", "taskDigestMultibase": "zQm…",
+  "credentialSubject": {
+    "id": "did:…applicant",
+    "predicate": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
+    "object": { "value": { "community": "did:…", "method": "video", "…": "…" } }
+  }
+}
+```
+
+A statement counts only under a predicate the community **accepts** — its
+registered endorsement types are a fail-closed predicate accept list
+(`vtc/endorsement-types/*`; see [Credentials](credentials.md#statements-and-the-predicate-accept-list)).
+A new community accepts the registry's four core predicates — `endorses/1`,
+`witnessed/1`, `vetted/1`, `presented/1` — seeded once at first boot, so
+`vetted/1` is already there. A community that deleted it registers it again —
+"Register it" on the Requirements page, or:
 
 ```json
 {
   "type": "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1",
   "payload": {
-    "typeUri": "https://firstperson.network/endorsements/identity-vetting/0.1",
+    "typeUri": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
     "description": "A member verified this person's identity"
   }
 }
 ```
 
-A type can be withdrawn again — "Remove" beside it on the Requirements page, or
+A predicate can be withdrawn again — "Remove" beside it on the Requirements page, or
 `vtc/endorsement-types/delete/0.1`, a signed document —
 but **only while nothing references it**. The community refuses with the
-task's `inUse` code while any criterion names the type as its
-`statementType`, or any endorsement of the type is still live, and the refusal
-names both: the criteria by id and the live endorsements by count. Revoke the
-endorsements and remove or re-point the criteria first. The console shows which
-criteria require each type, and leaves Remove disabled while any do.
+task's `inUse` code while any criterion names the predicate as its
+`statementType`, or any statement the community issued under it is still live,
+and the refusal names both: the criteria by id and the live statements by count.
+Revoke the statements and remove or re-point the criteria first. The console
+shows which criteria require each predicate, and leaves Remove disabled while
+any do.
 
-Removing a type does not touch statements already issued of it. It means no
-criterion may name it until it is registered again — a criterion that already
+Removing a predicate does not touch statements already issued under it, but
+from then on a presented statement under it is refused, and no criterion may
+name it until it is registered again — a criterion that already
 does is what the refusal exists to protect, since registering a criterion whose
 `statementType` is unregistered is itself refused.
 
@@ -75,10 +104,12 @@ policy — there are no defaults:
   "id": "kernel-developer",
   "description": "Two vetters, at least one in person",
   "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
-             "meta": { "type_values": ["EndorsementCredential"] } } ] },
+             "meta": { "type_values": ["StatementCredential"] },
+             "claims": [ { "path": ["credentialSubject", "predicate"],
+                           "values": ["https://registry.trustoverip.org/dtg/vsc/vetted/1"] } ] } ] },
   "vetting": {
     "version": "0.1",
-    "statementType": "https://firstperson.network/endorsements/identity-vetting/0.1",
+    "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
     "minStatements": 2,
     "minByMethod": { "inPerson": 1 },
     "acceptedMethods": ["inPerson", "video", "priorAcquaintance"],
@@ -131,10 +162,12 @@ as the task URI is refused) or TSP:
 { "memberDid": "did:…", "validitySeconds": 31536000 }
 ```
 
-The community issues the member a **vetter role credential**: an
-`EndorsementCredential` with endorsement
-`{ "type": "CommunityRole", "role": "vetter", "communityDid": "did:…" }`, a
-`credentialStatus` on the community's revocation list, and a validity of one
+The community issues the member a **vetter role credential**: a DTG Verifiable
+Authority Credential (`AuthorityCredential`) issued by the community with
+`issuerScope` `public`, whose `credentialSubject.authority` is
+`{ "scope": "<community DID>", "actions": ["role:vetter"], "maxAttenuation": 0 }`
+(nobody may attenuate it onward), a `credentialStatus` on the community's
+revocation list, and a validity of one
 year unless `validitySeconds` (one day to two years) says otherwise. It records
 the grant, delivers the credential to the member, and answers with the grant:
 
@@ -147,19 +180,22 @@ Only an admin may grant, and only to a current member. Granting again while the
 member holds a live grant returns that grant. An admin is not a member, so a new
 community's first vetter is a separate identity, admitted *before* any criterion
 requires vetting — the order is in the [bootstrap runbook](bootstrap-runbook.md#part-2--the-first-vetter). A grant is audited as
-`VetterGranted`, with a `VecIssued` for the credential.
+`VetterGranted`, with a `VecIssued` (`credentialType: "AuthorityCredential"`)
+for the credential. The grant's row in the endorsement store has `typeUri`
+`role:vetter`, which is why `vtc/endorsements/revoke/0.1` withdraws it.
 
 The vetter shows the credential to applicants: it answers a
 `vetting/request/0.1` with an `eligibilityVp`, a presentation whose `nonce` is
 the request's `id` and whose `domain` is the request's `joinDid`. The
 applicant's client checks it with
 `vta_sdk::vetting::eligibility::verify_eligibility_vp` — the presentation
-answers its own request and holds a role credential this community signed for
-that vetter — so the applicant knows before any session that the vetter's
+answers its own request and holds a role VAC this community signed for that
+vetter, in its own scope, with `issuerScope` `public` and no `authority.parent` — so the applicant knows before any session that the vetter's
 statement will count.
 
-`eligibleVetters.role` names the role the community's `CommunityRole` credential
-carries — a bare token such as `"vetter"`: a letter, then letters, digits, `_` or
+`eligibleVetters.role` names the role a statement's issuer must hold, matched as
+the action `role:<role>` in a VAC the community issued in its own scope — a bare
+token such as `"vetter"`: a letter, then letters, digits, `_` or
 `-`, at most 128 characters. It is not an ACL role name, so a `custom:*` form is
 refused.
 
@@ -172,8 +208,8 @@ proof and that its issuer is the community, and reads the credential's bit —
 as `Active`.
 
 To withdraw a vetter, revoke the grant like any endorsement: "Revoke vetter
-role" in the console, or `DELETE /v1/credentials/endorsements/{endorsementId}`
-(`vtc/endorsements/revoke/0.1`). A member's grants are revoked when they leave.
+role" in the console, or the signed `vtc/endorsements/revoke/0.1` document with
+the grant's `endorsementId`. A member's grants are revoked when they leave.
 Either way the vetter's profile is deleted.
 
 `GET /v1/vetting/vetters` lists every grant, newest first, for the console:
@@ -447,8 +483,8 @@ key revoked later does not revoke the grant — revoke it with
   linking to the join requests and members they touch.
 - **Vetting → Requirements** is where admission criteria are written: it adds,
   edits and removes them (`/v1/schemas/accepts`), registers and removes the
-  endorsement types a criterion may count (signed
-  `vtc/endorsement-types/{register,delete}/0.1`) — saying under each type which
+  predicates the community accepts, which a criterion may count (signed
+  `vtc/endorsement-types/{register,delete}/0.1`) — saying under each which
   criteria require it, and leaving Remove disabled while any do — and reads
   each criterion's `requirementsDigest` from the signed
   `vtc/join-requests/manifest/0.2` document applicants send, so a change is
@@ -462,14 +498,16 @@ key revoked later does not revoke the grant — revoke it with
 
 ## What the community checks at submit
 
-For every identity-vetting statement in the join presentation
+For every Vetting Statement in the join presentation — every credential whose
+`credentialSubject.predicate` is the criterion's `statementType` or `vetted/1`
 (`vtc-service/src/vetting/mod.rs`):
 
 | Check | Not counted as |
 |---|---|
-| Proof by the issuer, type, bounded validity, strict endorsement body | `unverified` |
+| Proof by the issuer; v1 context and `StatementCredential` type; the `vetted/1` profile (`taskContext` + `taskDigestMultibase`, `issuerScope` at least `directed`); bounded validity; strict `object.value` | `unverified` |
+| The predicate is one the community accepts (fail-closed accept list) | `predicate-not-accepted` |
 | Subject is the proven holder of the presentation | `subject-not-applicant` |
-| Endorsement type is the criterion's `statementType` | `wrong-statement-type` |
+| The criterion's `statementType` is `vetted/1`, the predicate this implementation counts | `wrong-statement-type` |
 | Issuer is a current member, admitted before issuing, holding a vetter grant recorded by the statement's `validFrom`, unexpired then, and not revoked | `issuer-not-vetter` |
 | Statement is for this community | `wrong-community` |
 | Method accepted; required claims verified; within `maxStatementAge`; documentation within any floor | `method-not-accepted`, `claim-not-verified`, `too-old`, `documentation-not-accepted` |

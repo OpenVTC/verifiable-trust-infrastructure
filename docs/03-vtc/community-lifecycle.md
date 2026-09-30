@@ -33,7 +33,7 @@ The VTC tracks every state transition in the audit log
 |---|---|---|---|
 | `join.rego` | `POST /v1/join-requests` | deny-all | `join` |
 | `removal.rego` | `DELETE /v1/members/{did}` | deny-all | `removal` |
-| `personhood.rego` | `POST /v1/members/{did}/personhood/assert` | allow if VP carries a `WitnessCredential` whose digest binds to an edge this community holds, or this community's own `IdentityVerification` endorsement | `personhood` |
+| `personhood.rego` | `POST /v1/members/{did}/personhood/assert` | allow if VP carries a `witnessed/1` statement (VWC) whose digest binds to an edge this community holds, or this community's own `IdentityVerificationCredential` | `personhood` |
 | `relationships.rego` | `POST /v1/relationships` | allow if both parties are current members | `relationships` |
 | `registry.rego` | `MembershipSyncer` reconciliation | `publish_on_join: true; default_departure: tombstone` — publishes only members whose `publishConsent` is true; the rule can narrow that, never override it ([trust-registry.md](trust-registry.md#who-is-published-member-consent)) | `registry` |
 | `cross_community_roles.rego` | `POST /v1/auth/recognise` | deny-all (no peer recognition) | `crossCommunityRoles` |
@@ -56,7 +56,7 @@ sequenceDiagram
     participant Admin as Admin
     participant TR as Trust Registry
 
-    M->>M: Assemble evidence VPs<br/>(WitnessCredential, etc.)
+    M->>M: Assemble evidence VPs<br/>(witness statements, etc.)
     M->>VTC: POST /v1/join-requests<br/>(VP-framed)
     VTC->>VTC: Verify VP signatures
     VTC->>VTC: Evaluate active join.rego
@@ -120,11 +120,11 @@ permitted (`removal_options` field) and the default
 (`default_departure`). A self-initiated `Purge` always overrides
 `min_disposition` (RTBF cannot be downgraded by community policy).
 
-## VMC / VEC lifecycle
+## VMC / role VAC lifecycle
 
 ```mermaid
 graph LR
-    join([Member joins]) --> mint[Mint VMC<br/>+ optional VEC]
+    join([Member joins]) --> mint[Mint VMC<br/>+ role VAC]
     mint --> live[Live<br/>not revoked]
     live -->|renew| live2[New VMC<br/>fresh validUntil<br/>same slot]
     live -->|rotate DID| live
@@ -145,9 +145,10 @@ graph LR
   Inside the community the ACL is authoritative — an expired VMC
   doesn't lock the member out, they just renew via
   `POST /v1/members/me/renew`.
-- **VEC** = Verifiable Endorsement Credential. Optional. Adds a
-  role or attribute claim (Issuer, Moderator, custom endorsement
-  type).
+- **Role VAC** = Verifiable Authority Credential conferring the member's
+  role as the action `role:<role>` at the community's DID, re-minted on
+  every role change. Community statements (VSCs under a registered
+  predicate, `vtc/endorsements/issue/0.1`) are issued separately.
 - **VRC** = Verifiable Relationship Credential. Self-issued by
   members to declare trust edges to other members (see
   [`personhood-and-graph.md`](personhood-and-graph.md)).
@@ -313,8 +314,8 @@ route needs a `Trust-Task` header and an admin bearer token
 | List join requests | **Join requests** | `GET /join-requests` |
 | Approve or reject a request | **Join requests** | `POST /join-requests/{id}/decide`, body `{"decision": "approved"}` or `"rejected"` |
 | Upload, test, activate a policy | — | `POST /policies`, `POST /policies/{id}/test`, `POST /policies/{id}/activate` |
-| Issue an endorsement | — | `POST /credentials/endorsements` |
-| Revoke an endorsement | **Members** | `DELETE /credentials/endorsements/{id}` |
+| Issue a community statement (VSC) or IDVC | — | signed `vtc/endorsements/issue/0.1` |
+| Revoke a statement, vetter grant or IDVC | **Members** | signed `vtc/endorsements/revoke/0.1` |
 
 `cnm` covers the rest of community administration. It needs the community
 profile to name the VTC (`cnm community set-vtc <vtc-did>`) and the profile's
@@ -338,7 +339,7 @@ for the conventions every CLI verb follows.
 
 ## See also
 
-- [Credentials](credentials.md) — VMC / VEC details + status-list
+- [Credentials](credentials.md) — VMC / role VAC details + status-list
   mechanics.
 - [Credential delivery](credential-delivery.md) — how the admitted
   member receives its credentials.

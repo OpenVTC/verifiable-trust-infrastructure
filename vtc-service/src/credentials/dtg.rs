@@ -1,12 +1,24 @@
 //! Issue catalog credentials from the **DTG (Decentralized Trust Graph)**
 //! credentials catalog (`dtg-credentials`) — task 2.0.
 //!
-//! Every credential the VTC mints (Membership, role/custom Endorsement,
-//! Invitation, …) gets its **canonical shape** here from the `dtg-credentials`
-//! catalog constructors (`new_vmc`, `new_vec`, `new_vic`, …) rather than being
-//! hand-rolled. The catalog fixes the `@context`, the `type` array, and the
-//! `credentialSubject` shape for each kind, so every issuer in the ecosystem
-//! mints the same wire form.
+//! Every DTG credential the VTC mints (Membership, role Authority, Statement,
+//! Invitation) gets its **canonical shape** here from the `dtg-credentials`
+//! catalog constructors (`new_vmc`, `new_community_role_vac`, `new_vsc`,
+//! `new_vic`) rather than being hand-rolled. The catalog fixes the `@context`
+//! (`[credentials/v2, DTG_CONTEXT_V1]`), the `type` array (exactly one concrete
+//! subtype), `issuerScope` and the `credentialSubject` shape for each kind, so
+//! every issuer in the ecosystem mints the same wire form.
+//!
+//! ## `issuerScope`
+//!
+//! Every credential here is issued by the community under its own DID, which
+//! every verifier — members, applicants, foreign communities — must be able to
+//! recognise. That is `public` in the DTG Credentials Core Specification, and
+//! it is the only scope the VTC declares.
+//!
+//! The one credential the VTC issues that is *not* a DTG credential is the
+//! identity-verification credential ([`super::idvc`]), a plain
+//! W3C VC.
 //!
 //! ## Signing covers `id` + `credentialStatus`
 //!
@@ -27,21 +39,27 @@
 
 use affinidi_vc::VerifiableCredential;
 use chrono::{DateTime, Duration, Utc};
-use dtg_credentials::DTGCredential;
+use dtg_credentials::{DTGCredential, IssuerScope, StatementObject};
 use serde_json::Value;
 use vti_common::error::AppError;
 
 use crate::acl::VtcRole;
 
 use super::signer::LocalSigner;
-use super::vec::COMMUNITY_ROLE_ENDORSEMENT_TYPE;
 use super::vmc::CredentialStatusRef;
+
+/// `maxAttenuation` on every community role VAC: `0`, so a role cannot be
+/// attenuated onward. Who holds a community role is the community's decision
+/// to make personally — vtc/vetting/vetters/grant/0.1 fixes `0` for
+/// `role:vetter` for exactly that reason, and vtc/join-requests/decide/0.1
+/// issues "the same shape" for every other role.
+pub const ROLE_VAC_MAX_ATTENUATION: u32 = 0;
 
 /// Parse a signed catalog credential (the JSON any `issue_*` returns) into the
 /// typed [`VerifiableCredential`] the credential builders hand back. Centralises
 /// the `serde_json::from_value` + `AppError::Internal` mapping the `build_vmc` /
-/// `build_role_vec` / `build_custom_endorsement` builders each repeated (P2.8);
-/// `kind` (e.g. `"VMC"`, `"role VEC"`) is woven into the error for diagnosis.
+/// `build_role_vac` / `build_custom_endorsement` builders each repeated (P2.8);
+/// `kind` (e.g. `"VMC"`, `"role VAC"`) is woven into the error for diagnosis.
 pub fn into_typed(doc: Value, kind: &str) -> Result<VerifiableCredential, AppError> {
     serde_json::from_value(doc)
         .map_err(|e| AppError::Internal(format!("DTG {kind} -> VerifiableCredential: {e}")))
@@ -62,6 +80,12 @@ async fn finalize(
     status_ref: Option<&CredentialStatusRef>,
     subject_scopes: &[String],
 ) -> Result<Value, AppError> {
+    // Hold the model to the catalog's own rules — context, type, issuerScope,
+    // a statement's predicate profile — before anything is signed. Signing
+    // goes through `LocalSigner` rather than `DTGCredential::sign`, so this is
+    // the one place those checks run.
+    dtg.validate()
+        .map_err(|e| AppError::Validation(format!("DTG credential is not conformant: {e}")))?;
     // The wire VC is the catalog's `DTGCommon` body; the `DTGCredential`
     // wrapper's `type_`/`version` helpers are not part of the credential.
     let mut doc = serde_json::to_value(dtg.credential())
@@ -120,11 +144,12 @@ pub async fn issue_membership(
     finalize(signer, dtg, id, status_ref, &[]).await
 }
 
-/// Issue a signed **role-grant** Endorsement credential (VEC) as JSON.
+/// Issue a signed community **role** credential as JSON: a VAC conferring
+/// `role:<role>` at the community's DID, `issuerScope` `public`,
+/// `maxAttenuation` [`ROLE_VAC_MAX_ATTENUATION`].
 ///
-/// The endorsement carries `{ type: "CommunityRole", role, communityDid }` at
-/// `credentialSubject.endorsement` — the shape `recognition` parses for
-/// cross-community role verification.
+/// The action is [`role_action_for`]`(role)` — `role:admin`, `role:moderator`,
+/// `role:custom:<name>` — so `recognition` can map it back to a [`VtcRole`].
 pub async fn issue_role(
     signer: &LocalSigner,
     member_did: &str,
@@ -133,34 +158,73 @@ pub async fn issue_role(
     status_ref: Option<&CredentialStatusRef>,
     validity: Duration,
 ) -> Result<Value, AppError> {
-    let endorsement = serde_json::json!({
-        "type": COMMUNITY_ROLE_ENDORSEMENT_TYPE,
-        "role": role.to_string(),
-        "communityDid": signer.issuer_did(),
-    });
-    issue_endorsement(signer, member_did, endorsement, id, status_ref, validity).await
+    issue_role_action(
+        signer,
+        member_did,
+        &role.to_string(),
+        id,
+        status_ref,
+        validity,
+    )
+    .await
 }
 
-/// Issue a signed **Endorsement** credential (VEC) as JSON with a
-/// caller-supplied `endorsement` value at `credentialSubject.endorsement`.
-/// Used for both role grants ([`issue_role`]) and operator-defined custom
-/// endorsements.
-pub async fn issue_endorsement(
+/// [`issue_role`] for a role that is not a [`VtcRole`] — `vetter`, which
+/// vtc/vetting/vetters/grant/0.1 names bare.
+pub async fn issue_role_action(
     signer: &LocalSigner,
     member_did: &str,
-    endorsement: Value,
+    role: &str,
     id: Option<&str>,
     status_ref: Option<&CredentialStatusRef>,
     validity: Duration,
 ) -> Result<Value, AppError> {
     let (valid_from, valid_until) = window(validity);
-    let dtg = DTGCredential::new_vec(
+    let dtg = DTGCredential::new_community_role_vac(
         signer.issuer_did().to_string(),
         member_did.to_string(),
+        role,
+        valid_from,
+        valid_until,
+    )
+    .and_then(|vac| vac.with_max_attenuation(ROLE_VAC_MAX_ATTENUATION))
+    .map_err(|e| AppError::Validation(format!("role credential: {e}")))?;
+    finalize(signer, dtg, id, status_ref, &[]).await
+}
+
+/// The VAC action a community role credential carries for `role`.
+pub fn role_action_for(role: &VtcRole) -> String {
+    dtg_credentials::create::role_action(&role.to_string())
+}
+
+/// Issue a signed community **statement** (VSC) as JSON: the community, as
+/// itself (`issuerScope` `public`), asserts `value` about `subject_did` under
+/// `predicate`, carried as `credentialSubject.object.value`.
+///
+/// What `vtc/endorsements/issue/0.1` mints. Under
+/// [`dtg_credentials::ENDORSES_V1`] it is a Verifiable Endorsement Credential.
+/// A predicate whose profile requires `taskContext` is refused by
+/// [`finalize`]'s conformance check, since nothing here cites a task.
+pub async fn issue_statement(
+    signer: &LocalSigner,
+    subject_did: &str,
+    predicate: &str,
+    value: Value,
+    id: Option<&str>,
+    status_ref: Option<&CredentialStatusRef>,
+    validity: Duration,
+) -> Result<Value, AppError> {
+    let (valid_from, valid_until) = window(validity);
+    let dtg = DTGCredential::new_vsc(
+        signer.issuer_did().to_string(),
+        IssuerScope::Public,
+        subject_did.to_string(),
+        predicate,
+        StatementObject::Value(value),
         valid_from,
         Some(valid_until),
-        endorsement,
-    );
+    )
+    .map_err(|e| AppError::Validation(format!("statement credential: {e}")))?;
     finalize(signer, dtg, id, status_ref, &[]).await
 }
 
@@ -177,8 +241,10 @@ pub async fn issue_invitation(
     subject_scopes: &[String],
 ) -> Result<Value, AppError> {
     let (valid_from, valid_until) = window(validity);
+    // A community inviting as itself: `public`, like every credential here.
     let dtg = DTGCredential::new_vic(
         signer.issuer_did().to_string(),
+        IssuerScope::Public,
         subject_did.to_string(),
         valid_from,
         Some(valid_until),
@@ -214,7 +280,7 @@ mod tests {
     fn into_typed_maps_malformed_json_to_kind_tagged_internal() {
         // A non-VC JSON shape fails the typed parse with an Internal error
         // that names the credential kind for diagnosis. (The success path is
-        // covered by the build_vmc / build_role_vec / build_custom_endorsement
+        // covered by the build_vmc / build_role_vac / build_custom_endorsement
         // suites, which all route through `into_typed`.)
         let err = into_typed(serde_json::json!({ "not": "a credential" }), "VMC")
             .expect_err("a non-VC object must not parse as a VerifiableCredential");
@@ -274,25 +340,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn role_vec_preserves_recognition_endorsement_shape() {
+    async fn role_vac_carries_the_recognition_authority_shape() {
         let s = signer();
         let doc = issue_role(
             &s,
             "did:key:zMember",
             &VtcRole::Admin,
-            Some("urn:uuid:vec-1"),
+            Some("urn:uuid:vac-1"),
             None,
             Duration::days(30),
         )
         .await
-        .expect("issue role VEC");
+        .expect("issue role VAC");
 
-        verify(&doc, &s).expect("VEC proof verifies");
-        // The shape recognition/verify.rs parses: endorsement.{role,communityDid}.
-        let endorsement = &doc["credentialSubject"]["endorsement"];
-        assert_eq!(endorsement["type"], "CommunityRole");
-        assert_eq!(endorsement["role"], VtcRole::Admin.to_string());
-        assert_eq!(endorsement["communityDid"], TEST_DID);
+        verify(&doc, &s).expect("VAC proof verifies");
+        // The shape recognition/verify.rs parses: authority.{scope,actions}.
+        assert_eq!(doc["issuerScope"], "public");
+        let authority = &doc["credentialSubject"]["authority"];
+        assert_eq!(authority["scope"], TEST_DID);
+        assert_eq!(
+            authority["actions"],
+            serde_json::json!([role_action_for(&VtcRole::Admin)])
+        );
+        assert_eq!(authority["maxAttenuation"], ROLE_VAC_MAX_ATTENUATION);
+        assert!(authority.get("parent").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_statement_under_a_task_bound_predicate_is_refused() {
+        // `vetted/1` requires `taskContext`, which a community statement never
+        // carries — the conformance check refuses it before signing.
+        let err = issue_statement(
+            &signer(),
+            "did:key:zMember",
+            dtg_credentials::VETTED_V1,
+            serde_json::json!({ "community": TEST_DID }),
+            None,
+            None,
+            Duration::days(30),
+        )
+        .await
+        .expect_err("vetted/1 cannot be issued without a task citation");
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
     }
 
     #[tokio::test]
@@ -329,18 +418,19 @@ mod tests {
     async fn credential_status_is_inside_the_signed_bytes() {
         let s = signer();
         let status = CredentialStatusRef::revocation("urn:uuid:list-1", 42);
-        let doc = issue_endorsement(
+        let doc = issue_statement(
             &s,
             "did:key:zMember",
-            serde_json::json!({ "type": "CommunityRole", "role": "member" }),
+            dtg_credentials::ENDORSES_V1,
+            serde_json::json!({ "skill": "rust" }),
             None,
             Some(&status),
             Duration::days(30),
         )
         .await
-        .expect("issue VEC with status");
+        .expect("issue VSC with status");
 
-        verify(&doc, &s).expect("VEC-with-status verifies");
+        verify(&doc, &s).expect("VSC-with-status verifies");
         assert!(doc.get("credentialStatus").is_some());
 
         // Tampering with the status (e.g. removing it) breaks the proof —
@@ -378,17 +468,23 @@ mod catalog_wire_shape {
 
     const TEST_DID: &str = "did:web:acme.example";
     const CONTEXT: [&str; 2] = [
-        "https://www.w3.org/ns/credentials/v2",
-        "https://firstperson.network/credentials/dtg/v1",
+        dtg_credentials::W3C_VC_V2_CONTEXT,
+        dtg_credentials::DTG_CONTEXT_V1,
     ];
 
     fn signer() -> LocalSigner {
         LocalSigner::from_ed25519_seed(TEST_DID.into(), &[7u8; 32])
     }
 
-    /// `@context` and `type`, exactly, in order. Order matters in JSON-LD: the
-    /// later context overlays the earlier, so a swap changes what the terms mean.
+    /// `@context`, `type` and `issuerScope`, exactly, in order. Order matters in
+    /// JSON-LD: the later context overlays the earlier, so a swap changes what
+    /// the terms mean.
     fn assert_shape(doc: &Value, expected_types: &[&str], kind: &str) {
+        assert_scoped_shape(doc, expected_types, "public", kind);
+    }
+
+    fn assert_scoped_shape(doc: &Value, expected_types: &[&str], scope: &str, kind: &str) {
+        assert_eq!(doc["issuerScope"], scope, "{kind}: issuerScope drifted");
         let ctx: Vec<String> = serde_json::from_value(doc["@context"].clone())
             .unwrap_or_else(|e| panic!("{kind}: @context is not a string array: {e}"));
         assert_eq!(ctx, CONTEXT, "{kind}: @context drifted");
@@ -447,31 +543,66 @@ mod catalog_wire_shape {
     }
 
     #[tokio::test]
-    async fn endorsement_credential_wire_shape() {
-        let doc = issue_endorsement(
+    async fn authority_credential_wire_shape() {
+        let doc = issue_role(
             &signer(),
             "did:key:zM",
-            serde_json::json!({ "type": "CommunityRole", "role": "member" }),
+            &VtcRole::Member,
             None,
             None,
             Duration::days(30),
         )
         .await
-        .expect("issue VEC");
+        .expect("issue role VAC");
         assert_shape(
             &doc,
             &[
                 "VerifiableCredential",
                 "DTGCredential",
-                "EndorsementCredential",
+                "AuthorityCredential",
             ],
-            "VEC",
+            "role VAC",
         );
-        // The caller-supplied endorsement rides verbatim — `recognition` parses
-        // this exact path for cross-community role verification.
         assert_eq!(
-            doc["credentialSubject"]["endorsement"]["type"],
-            "CommunityRole"
+            doc["credentialSubject"]["authority"],
+            serde_json::json!({
+                "scope": TEST_DID,
+                "actions": ["role:member"],
+                "maxAttenuation": 0,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn statement_credential_wire_shape() {
+        let doc = issue_statement(
+            &signer(),
+            "did:key:zM",
+            dtg_credentials::ENDORSES_V1,
+            serde_json::json!({ "skill": "rust" }),
+            None,
+            None,
+            Duration::days(30),
+        )
+        .await
+        .expect("issue VSC");
+        assert_shape(
+            &doc,
+            &[
+                "VerifiableCredential",
+                "DTGCredential",
+                "StatementCredential",
+            ],
+            "VSC",
+        );
+        // The claim rides verbatim as `object.value` under the predicate.
+        assert_eq!(
+            doc["credentialSubject"]["predicate"],
+            dtg_credentials::ENDORSES_V1
+        );
+        assert_eq!(
+            doc["credentialSubject"]["object"],
+            serde_json::json!({ "value": { "skill": "rust" } })
         );
     }
 
@@ -491,6 +622,7 @@ mod catalog_wire_shape {
         let (valid_from, valid_until) = super::window(Duration::days(30));
         let dtg = dtg_credentials::DTGCredential::new_vpc(
             "did:key:zPersona".into(),
+            IssuerScope::Directed,
             "did:key:zCounterparty".into(),
             valid_from,
             Some(valid_until),
@@ -499,9 +631,11 @@ mod catalog_wire_shape {
         // the body alone is what is pinned. Every other test here goes through
         // `finalize` because the VTC does mint those.
         let doc = serde_json::to_value(dtg.credential()).expect("VPC body -> value");
-        assert_shape(
+        // A persona is recognised by the set of counterparties it is shown to.
+        assert_scoped_shape(
             &doc,
             &["VerifiableCredential", "DTGCredential", "PersonaCredential"],
+            "directed",
             "VPC",
         );
         // DTG Credentials §VPC: issuer is the P-DID, subject is the

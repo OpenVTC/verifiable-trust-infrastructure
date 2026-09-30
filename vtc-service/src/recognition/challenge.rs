@@ -5,7 +5,7 @@
 //! thread id of an in-flight `credential-exchange/query`), the recognise flow
 //! has no thread: the caller fetches a nonce from
 //! `POST /v1/auth/recognise/challenge`, the foreign-credential holder signs a
-//! W3C VP over `{nonce, domain = this VTC's DID, [VEC, VMC]}`, and the
+//! W3C VP over `{nonce, domain = this VTC's DID, [VAC, VMC]}`, and the
 //! `recognise` handler [`consume`]s the challenge by the nonce embedded in that
 //! VP. The **nonce itself is the key**.
 //!

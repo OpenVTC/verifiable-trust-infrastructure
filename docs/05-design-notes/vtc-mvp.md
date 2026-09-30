@@ -50,8 +50,8 @@ do not restate.
 
 | | Decision | Rationale |
 |---|---|---|
-| **A** | **1 VTC ⇄ 1 VTA**; **VTA mints + controls keys, VTC caches + signs locally** | The VTA is the canonical issuer of the integration DID's keys: it mints them at first-boot via the existing provision-integration flow and remains the only party authorised to mint or rotate them. The VTC retains a cached working copy of those keys in its own secret store (mediator / webvh-service pattern) and signs locally — every VMC, VEC, status-list credential, install-token JWT, and DIDComm outbound message is signed in-process. "No key custody" in earlier drafts meant "no key minting / rotation authority", not "no key storage" — clarified per Phase 2 M2.16. |
-| **B** | **VTC is always authoritative for its own state** | ACL + keyspaces are truth. VMC/VEC are *projections* useful only when the member operates outside the VTC. VTC authz never reads its own issued VCs. |
+| **A** | **1 VTC ⇄ 1 VTA**; **VTA mints + controls keys, VTC caches + signs locally** | The VTA is the canonical issuer of the integration DID's keys: it mints them at first-boot via the existing provision-integration flow and remains the only party authorised to mint or rotate them. The VTC retains a cached working copy of those keys in its own secret store (mediator / webvh-service pattern) and signs locally — every VMC, VAC, status-list credential, install-token JWT, and DIDComm outbound message is signed in-process. "No key custody" in earlier drafts meant "no key minting / rotation authority", not "no key storage" — clarified per Phase 2 M2.16. |
+| **B** | **VTC is always authoritative for its own state** | ACL + keyspaces are truth. VMC/VAC are *projections* useful only when the member operates outside the VTC. VTC authz never reads its own issued VCs. |
 | **C** | **Credentials limited to the DTG catalog** | New credential needs go upstream into `dtg-credentials`, not local extensions. |
 | **D** | **Embedded `regorus`, no OPA sidecar** | Single artefact, lower latency. Policy activation is explicit; no hot-reload watchers. |
 | **E** | **Trust-registry and StatusList are complementary** | StatusList = "is this VC revoked?"; trust-registry = "is this entity an active member?". Robust verifiers consult both. |
@@ -313,7 +313,7 @@ default `"en"`), `created_at`, `extensions` (§3-M).
 
 ```
 did, role, joined_at, status_list_index, publish_consent,
-departure_preference, current_vmc_id, current_role_vec_id, extensions,
+departure_preference, current_vmc_id, current_role_vac_id, extensions,
 personhood, personhood_asserted_at
 ```
 
@@ -342,7 +342,7 @@ Default permission matrix for **standard roles**:
 | Edit community profile | ✓ | | | |
 | Author / activate policies | ✓ | | | |
 | Approve / reject join requests | ✓ | ✓ | | |
-| Issue VEC / VWC / RCard on behalf of community | ✓ | | ✓ | |
+| Issue community statements (VSC) on behalf of community | ✓ | | ✓ | |
 | Issue VMC | (only via join flow) | | | |
 | Promote to Admin | ✓ (§10.4) | | | |
 | Remove other members | ✓ | ✓ (policy-gated) | | |
@@ -402,18 +402,18 @@ active_from, active_to, last_synced_at
 | Use | Type | Issuer | Subject | Notes |
 |---|---|---|---|---|
 | Membership | **VMC** | community DID | member DID | `personhood: bool` gated by §6.4. `validUntil` mandatory (§3-F). |
-| Role grant | **VEC** | community DID | member DID | `endorsement = { type: "CommunityRole", role, communityDid }`. Re-issued on role change. |
+| Role grant | **VAC** | community DID (`issuerScope` public) | member DID | `authority = { scope: <community DID>, actions: ["role:<role>"], maxAttenuation: 0 }`. Re-issued on role change. |
 | Invitation | **VIC** | community DID (admin/issuer) | applicant DID | Required by gated communities' join policies. |
 | Member ↔ member trust edge | **VRC** | member DID | other member DID | Self-issued, optionally published (§12.3). |
-| Member contact card | **RCard** | member or community | member | jCard value. |
-| Event/proximity witness | **VWC** | external | applicant | Consumed in join VPs; VTC does not issue. |
-| Custom endorsement (badges, attestations) | **VEC** | community (issuer role) | any DID | Community-defined `endorsement` value. **Operator-uploaded type registry** (Phase 4 M4.8.1, planning-review D4) — only registered types are issuable. Workspace-reserved `"CommunityRole"` URI refused at registration time. |
+| Event/proximity witness | **VWC** — a `StatementCredential` under `witnessed/1` | external | issuer of the witnessed edge | Consumed in join VPs; VTC does not issue. |
+| Community statement (badges, attestations) | **VSC** (a VEC under `endorses/1`) | community (issuer role), `issuerScope` public | any DID | Claim as `object.value` under a registered predicate. **Operator-registered predicate accept list** (Phase 4 M4.8.1, planning-review D4) — only accepted predicates are issuable, and presented statements under any other are refused. Workspace-reserved `role:vetter` / `IdentityVerificationCredential` refused at registration time. |
 | Persona | VPC | community | member | **v2**. Not in MVP. |
 
-**Custom endorsement type registry (Phase 4 M4.8.1).** Operators
-register endorsement type URIs via
-`POST /v1/endorsement-types` before the issuance path accepts
-them. The issue handler refuses unknown types with `400
+**Predicate accept list (Phase 4 M4.8.1).** Operators register
+the predicate IRIs the community accepts via
+`vtc/endorsement-types/register/0.1` (the four DTG VSC registry core
+predicates are seeded at first boot) before the issuance path accepts
+them, and a presented statement under any other is refused. The issue handler refuses unknown types with `400
 endorsement-type-not-registered`. The delete-type handler
 refuses with `409 endorsement-type-in-use` when any live
 endorsement still references the type.
@@ -462,7 +462,7 @@ Issuance steps:
 1. Mint new VMC (`validFrom = now`, `validUntil = now + community.membership.validity`)
    via the VTC's local signer (§3-A — cached integration-DID keys).
    Same status-list index.
-2. Re-issue role VEC (always — both for ACL/role drift and to keep
+2. Re-issue role VAC (always — both for ACL/role drift and to keep
    external chains current).
 3. Re-evaluate `personhood.rego` (§6.4) and surface the resulting
    `personhood` flag on the new VMC. If the flag changes from the
@@ -485,7 +485,8 @@ Issuance steps:
 
 `personhood.rego` ships as a **minimal-allow default** (Phase 4
 M4.2.1): allow when the applicant's VP carries at least one
-`WitnessCredential` from a non-empty issuer. Operators upload
+witness statement (`witnessed/1`) from a non-empty issuer (today: whose
+digest the host bound to an edge it holds). Operators upload
 stricter policies when the witness-only baseline isn't enough.
 
 **Assert flow (Phase 4 M4.3, planning-review D2 — VP-only body).**
@@ -526,11 +527,11 @@ consults live inputs (trust-registry queries, etc.).
 |---|---|---|
 | `join` | Decide join requests | Template `policies.open` (accept any signed VP) |
 | `removal` | Decide admin-initiated removals | Any admin may remove any non-admin |
-| `personhood` | Decide personhood assertion | **Minimal-allow on `WitnessCredential` presence** (Phase 4 M4.2.1) |
+| `personhood` | Decide personhood assertion | **Minimal-allow on a bound `witnessed/1` statement** (Phase 4 M4.2.1) |
 | `registry` | Trust-registry publish + departure disposition | Publish on join; default disposition `Tombstone` |
 | `directory` | Member-directory visibility | Members see DID + role only |
 | `role_definitions` | Map roles to permissions (incl. Custom) | The matrix in §5.3 for standard roles only |
-| `cross_community_roles` | Honour external VEC role grants | **Deny-all** |
+| `cross_community_roles` | Honour external VAC role grants | **Deny-all** |
 | `cross_community_relationships` | Store external VRCs | **Deny-all** |
 | `relationships` | Store published VRCs | Store if the caller is a current member (attributed form also requires both named parties to be) |
 
@@ -553,7 +554,7 @@ file-watching, no auto-reload.
 | `registry` | `{ member, action, requested_disposition? }` |
 | `directory` | `{ viewer_did, viewer_role, target_member, fields_requested }` |
 | `role_definitions` | `{ role, action, resource? }` |
-| `cross_community_roles` | `{ foreign_vec, target_role, vtc_state }` |
+| `cross_community_roles` | `{ foreign_vac, target_role, vtc_state }` |
 | `cross_community_relationships` | `{ vrc, viewer_member, vtc_state }` |
 | `relationships` | `{ vrc, authenticated_member, identifier_form, issuer, subject }` |
 
@@ -632,7 +633,7 @@ privacy regression the disposition is meant to prevent.
 
 ### 8.4 Cross-community recognition
 
-`cross_community_roles.rego` decides whether a foreign VEC's role
+`cross_community_roles.rego` decides whether a foreign VAC's role
 claim maps to a local ACL role. Default deny-all.
 
 **Session-mint hardening.**
@@ -640,26 +641,26 @@ claim maps to a local ACL role. Default deny-all.
 - **Holder proof-of-possession (P0.2, PR #354).** Recognition is a
   two-step flow: `POST /v1/auth/recognise/challenge` issues a single-use,
   TTL'd `nonce` bound to this VTC's DID, then `POST /v1/auth/recognise`
-  carries the `(VEC, VMC)` pair **inside a holder-signed VP** whose
+  carries the `(VAC, VMC)` pair **inside a holder-signed VP** whose
   `eddsa-jcs-2022` proof (`proofPurpose: authentication`) commits to that
   nonce (freshness/replay) and our DID as `domain` (audience). The mint
   verifies the holder proof plus each embedded issuer proof and refuses
-  unless the **verified VP holder == VEC subject**. A bare `{vec, vmc}`
+  unless the **verified VP holder == VAC subject**. A bare `{vec, vmc}` (0.1)
   body is no longer accepted — a captured pair is inert without the
   subject's key, and a replayed VP finds its nonce consumed.
-- **Subject binding (P0.2, PR #351).** The VMC subject must equal the VEC
+- **Subject binding (P0.2, PR #351).** The VMC subject must equal the VAC
   subject. The VMC's only job is the "live, non-revoked member" gate;
-  without this check, member A's role VEC + any other current member B's
+  without this check, member A's role VAC + any other current member B's
   VMC (same issuer) would pass.
 - **Denied-path audit actor (P0.2).** A rejected recognise records the
   cryptographically-proven VP holder as actor, never an unverified DID
   read from the credential body.
-- The foreign VEC must pass StatusList revocation check at
+- The foreign VAC must pass StatusList revocation check at
   session-mint time (the issuer's status list URL is resolved live).
 - The foreign issuer must be present in the trust-registry's
   recognition graph at the time of mint.
 - The minted session's TTL is clamped to the shortest of: the JWT
-  audience default, the foreign VEC's `validUntil`, the foreign
+  audience default, the foreign VAC's `validUntil`, the foreign
   VMC's `validUntil`.
 - Recognition is **not cached**; every session mint re-runs the
   full policy + StatusList + trust-registry check.
@@ -938,7 +939,7 @@ VTC:
   2. Run join.rego with input.vp_claims
   3. allow:
      a. Allocate status-list index (random; flipped slots excluded)
-     b. Mint VMC + role VEC via the VTC's local signer (§3-A; in-process)
+     b. Mint VMC + role VAC via the VTC's local signer (§3-A; in-process)
      c. Write ACL + Member, enqueue registry.rego decision
      d. Sealed-transfer credentials to applicant_did
      e. Audit: JoinRequestApproved + MemberAdded
@@ -1010,7 +1011,7 @@ See §6.3. Unconditional on ACL membership.
 > `vtc/members/update` now answers `adminRoleForbidden` and names the
 > replacement. Everything the members/update path carried came with it:
 > self-promotion refused, serialised on the promote lock, `role_change.rego`
-> governed, role VEC re-minted, admin sister record created, `AdminPromoted`
+> governed, role VAC re-minted, admin sister record created, `AdminPromoted`
 > audit.
 >
 > Historical description follows.
@@ -1029,7 +1030,7 @@ requiring:
 - audit event `AdminPromoted` (its own variant, not a generic
   `RoleChanged`) — distinct event type for SIEM filtering
 
-ACL update + new VEC issuance + sealed transfer + DIDComm
+ACL update + new VAC issuance + sealed transfer + DIDComm
 notification mirror non-admin role change.
 
 ### 10.5 DID rotation
@@ -1056,7 +1057,7 @@ notification mirror non-admin role change.
   in-flight DIDComm threads keyed on the old DID are revoked in the
   same transaction.**
 - Status-list index reused (member identity continuous), VMC + role
-  VEC re-issued to new DID.
+  VAC re-issued to new DID.
 
 Members must use `did:key` or `did:webvh` (workspace doctrine).
 
@@ -1410,7 +1411,7 @@ Full config taxonomy (which key reloads, which restarts, which is
 UX-settable, sensitive-flag) lives in `docs/04-reference/vtc-config.md`,
 not in this spec.
 
-**Remote-dependency breakers.** VMC + VEC issuance is in-process
+**Remote-dependency breakers.** VMC + VAC issuance is in-process
 in Phase 2 (§3-A — cached-locally signer), so the per-call
 timeout and circuit-breaker configuration apply to **non-VMC
 remote dependencies only**: the trust-registry publish path in
@@ -1538,7 +1539,7 @@ workspace doctrine. Detailed verb list lives in
 |---|---|---|
 | **0** | `vtc-host` template, install wizard, WebAuthn install flow, multi-passkey admin DID, community profile, config plumbing | DID + auth foundation. |
 | **1** | Role enum + custom roles, ACL extension, member CRUD with manual approval, self/admin removal (no-last-admin), audit envelope + HMAC, idempotency, `/v1/` versioning, cursor pagination | Members can exist. |
-| **2** | `regorus`, policy upload + activate, `join.rego` + `removal.rego`, **in-process VMC + VEC issuance** (cached-locally signer per §3-A), status-list with reserved-index discipline, renewal, DID rotation (`did:key` + `did:webvh`, domain-tagged) | Live policy + credentials. |
+| **2** | `regorus`, policy upload + activate, `join.rego` + `removal.rego`, **in-process VMC + VAC issuance** (cached-locally signer per §3-A), status-list with reserved-index discipline, renewal, DID rotation (`did:key` + `did:webvh`, domain-tagged) | Live policy + credentials. |
 | **3** | Trust-registry publish, three departure dispositions, `registry.rego`, `MembershipSyncer` + diagnostic surfacing, RTBF override + batched timing, cross-community recognition (session-mint hardening) | Community on the wider network. |
 | **4** | VRC self-issuance + `relationships.rego`, `personhood.rego` (deny-all stub) + assert/revoke + renewal re-eval, custom endorsement issuance (issuer role) | Graph + personhood live. |
 | **5** | Public website (filesystem-backed, CSP, path safety), admin UX baked in-tree via `include_dir!` (per Phase 5 D1; the original "sibling repo + signed tarball" plan was renegotiated), path-prefix routing default + subdomain support | MVP complete. |

@@ -85,7 +85,7 @@ async fn admit_honours_the_plan_role() {
         .expect("member row");
     assert_eq!(member.status_list_index, Some(creds.status_list_index));
     assert!(member.current_vmc_id.is_some(), "VMC id stamped");
-    assert!(member.current_role_vec_id.is_some(), "role VEC id stamped");
+    assert!(member.current_role_vac_id.is_some(), "role VAC id stamped");
 }
 
 /// Admitting a DID that already holds an ACL row is a conflict — the
@@ -235,12 +235,12 @@ async fn depart_revokes_the_members_role_grants() {
         &state.endorsements_ks,
         &Endorsement {
             id,
-            endorsement_type: "CommunityRole".into(),
+            endorsement_type: "role:vetter".into(),
             issuer_did: "did:webvh:vtc.example.com:abc".into(),
             subject_did: subject.into(),
             claim: serde_json::json!({ "role": "vetter" }),
             status_list_index: slot,
-            vec_id: format!("urn:uuid:{id}"),
+            credential_id: format!("urn:uuid:{id}"),
             created_at: now,
             revoked_at: None,
             valid_until: Some(now + chrono::Duration::days(365)),
@@ -393,8 +393,8 @@ async fn depart_refuses_the_last_admin() {
     assert!(get_acl_entry(&state.acl_ks, admin).await.unwrap().is_some());
 }
 
-/// Remint changes a member's role in place and re-mints the role VEC —
-/// the ACL role updates and the member's role-VEC pointer moves.
+/// Remint changes a member's role in place and re-mints the role VAC —
+/// the ACL role updates and the member's role-VAC pointer moves.
 #[tokio::test]
 async fn remint_changes_role_and_reissues_vec() {
     let (state, _dir) = build_state().await;
@@ -410,13 +410,13 @@ async fn remint_changes_role_and_reissues_vec() {
     execute::apply(&state, admit, ACTOR_DID)
         .await
         .expect("admit");
-    // The role-VEC pointer stamped at admit time.
+    // The role-VAC pointer stamped at admit time.
     let original_vec_id = get_member(&state.members_ks, subject)
         .await
         .unwrap()
         .expect("member")
-        .current_role_vec_id;
-    assert!(original_vec_id.is_some(), "admit stamped a role VEC");
+        .current_role_vac_id;
+    assert!(original_vec_id.is_some(), "admit stamped a role VAC");
 
     // Re-mint at moderator.
     let plan = EffectPlan::Remint {
@@ -431,7 +431,7 @@ async fn remint_changes_role_and_reissues_vec() {
     };
     assert_eq!(outcome.previous_role, VtcRole::Member);
 
-    // ACL role updated; the member's role-VEC pointer moved to the new VEC.
+    // ACL role updated; the member's role-VAC pointer moved to the new VAC.
     let acl = get_acl_entry(&state.acl_ks, subject)
         .await
         .unwrap()
@@ -441,10 +441,10 @@ async fn remint_changes_role_and_reissues_vec() {
         .await
         .unwrap()
         .expect("member");
-    assert!(m.current_role_vec_id.is_some());
+    assert!(m.current_role_vac_id.is_some());
     assert_ne!(
-        m.current_role_vec_id, original_vec_id,
-        "the role VEC was re-minted"
+        m.current_role_vac_id, original_vec_id,
+        "the role VAC was re-minted"
     );
 }
 

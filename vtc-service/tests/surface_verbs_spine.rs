@@ -57,7 +57,7 @@ fn verbs() -> Vec<(String, Value, bool)> {
         ),
         (
             t("schemas/register/0.1"),
-            json!({ "typeUri": "EndorsementCredential", "dtgType": "EndorsementCredential", "kind": "accepts" }),
+            json!({ "typeUri": "StatementCredential", "dtgType": "StatementCredential", "kind": "accepts" }),
             false,
         ),
         (t("schemas/list/0.1"), json!({}), false),
@@ -125,11 +125,11 @@ async fn the_schema_registry_round_trips_with_its_declared_codes() {
         &vtc,
         &admin,
         &t("schemas/register/0.1"),
-        json!({ "typeUri": "EndorsementCredential", "kind": "accepts", "credentialSchema": schema }),
+        json!({ "typeUri": "StatementCredential", "kind": "accepts", "credentialSchema": schema }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{doc}");
-    assert_eq!(payload(&doc)["schema"]["typeUri"], "EndorsementCredential");
+    assert_eq!(payload(&doc)["schema"]["typeUri"], "StatementCredential");
 
     let (_, doc) = call(
         &vtc,
@@ -156,7 +156,7 @@ async fn the_schema_registry_round_trips_with_its_declared_codes() {
         &vtc,
         &admin,
         &t("schemas/show/0.1"),
-        json!({ "typeUri": "EndorsementCredential" }),
+        json!({ "typeUri": "StatementCredential" }),
     )
     .await;
     assert_eq!(payload(&doc)["schema"]["credentialSchema"], schema, "{doc}");
@@ -168,7 +168,7 @@ async fn the_schema_registry_round_trips_with_its_declared_codes() {
         json!({
             "id": "membership",
             "query": { "credentials": [ { "id": "m", "format": "ldp_vc",
-                       "meta": { "type_values": ["EndorsementCredential"] } } ] },
+                       "meta": { "type_values": ["StatementCredential"] } } ] },
         }),
     )
     .await;
@@ -206,16 +206,16 @@ async fn the_schema_registry_round_trips_with_its_declared_codes() {
         &vtc,
         &admin,
         &t("schemas/delete/0.1"),
-        json!({ "typeUri": "EndorsementCredential" }),
+        json!({ "typeUri": "StatementCredential" }),
     )
     .await;
-    assert_eq!(payload(&doc)["typeUri"], "EndorsementCredential", "{doc}");
+    assert_eq!(payload(&doc)["typeUri"], "StatementCredential", "{doc}");
     for task in ["schemas/show/0.1", "schemas/delete/0.1"] {
         let (_, doc) = call(
             &vtc,
             &admin,
             &t(task),
-            json!({ "typeUri": "EndorsementCredential" }),
+            json!({ "typeUri": "StatementCredential" }),
         )
         .await;
         let code = error_code(&doc).unwrap_or_default().to_string();
@@ -376,7 +376,7 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
     error_code(doc)
 }
 
-const STATEMENT_TYPE: &str = "https://example.test/endorsements/identity-vetting/0.1";
+const STATEMENT_TYPE: &str = "https://example.test/predicates/vetted/1";
 
 /// A DCQL query naming `vct` as the credential type it accepts.
 fn query_for(vct: &str) -> Value {

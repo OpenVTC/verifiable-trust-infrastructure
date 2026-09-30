@@ -23,8 +23,8 @@
 //     (the grant schema's own) and `MIN_/MAX_AUTO_GRANT_SWEEP_MINUTES`.
 //
 // The daemon stays the authority: it runs every one of these again, and makes
-// the one check this module cannot — that a `statementType` is a registered
-// endorsement type.
+// the one check this module cannot — that a `statementType` is a predicate the
+// community registered (its accept list).
 //
 // The last section turns those same rules around: a criterion the console edits
 // is a draft of text, and `criterionProblems` answers it with the sentences
@@ -426,7 +426,7 @@ export function validateRequirements(value: unknown): string[] {
     chars(v.statementType) > 512
   ) {
     problems.push(
-      "Set statementType to the endorsement type a counted statement carries, up to 512 characters.",
+      "Set statementType to the predicate IRI a counted statement carries, up to 512 characters.",
     );
   }
 
@@ -630,15 +630,16 @@ export function summarizeRequirements(r: VettingRequirements): string[] {
 // may rely on nothing. So the draft keeps `documentFloor` beside the list.
 
 /**
- * The endorsement type a Vetting Statement carries
- * (`vta_sdk::protocols::vetting::IDENTITY_VETTING_ENDORSEMENT_TYPE`).
+ * The predicate a Vetting Statement carries in `credentialSubject.predicate`:
+ * the DTG VSC predicate registry's `vetted/1`
+ * (`vta_sdk::protocols::vetting::VETTED_PREDICATE`).
  *
- * A URI, not a schema, so it has no generated type to alias — but the console
- * offers to register it, and a criterion that counts anything else is not peer
- * identity vetting. The daemon is still the authority on what is registered.
+ * An IRI, not a schema, so it has no generated type to alias. The community
+ * accepts it out of the box (the daemon seeds the registry's core predicates
+ * once), and a criterion that counts anything else is not peer identity
+ * vetting. The daemon is still the authority on what is registered.
  */
-export const IDENTITY_VETTING_STATEMENT_TYPE =
-  "https://firstperson.network/endorsements/identity-vetting/0.1";
+export const VETTED_PREDICATE = "https://registry.trustoverip.org/dtg/vsc/vetted/1";
 
 /** An admission criterion's vetting requirements, as a form holds them. */
 export interface RequirementsDraft {
@@ -675,7 +676,8 @@ export interface CriterionDraft {
 
 /**
  * The query a new vetting criterion starts from: statements are
- * `EndorsementCredential`s, and the criterion may count more than one.
+ * `StatementCredential`s whose `credentialSubject.predicate` is
+ * {@link VETTED_PREDICATE}, and the criterion may count more than one.
  *
  * It is a starting point, not a rule. The daemon validates the query
  * structurally and checks every type it references, so an edited one is still
@@ -688,7 +690,13 @@ export const DEFAULT_ACCEPTS_QUERY = {
       id: "vetting",
       format: "ldp_vc",
       multiple: true,
-      meta: { type_values: ["EndorsementCredential"] },
+      meta: { type_values: ["StatementCredential"] },
+      claims: [
+        {
+          path: ["credentialSubject", "predicate"],
+          values: [VETTED_PREDICATE],
+        },
+      ],
     },
   ],
 };

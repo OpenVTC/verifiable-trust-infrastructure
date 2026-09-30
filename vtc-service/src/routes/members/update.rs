@@ -5,7 +5,7 @@
 //! it runs through the decision pipeline ([`crate::ceremony`]) —
 //! assemble Facts → decide the active `roleChange` policy → apply via
 //! the `Remint` executor arm (which updates the ACL role in place,
-//! re-mints the role VEC, and enforces no-last-admin on demotion).
+//! re-mints the role VAC, and enforces no-last-admin on demotion).
 //!
 //! `role = admin` is **refused here**, with the `adminRoleForbidden` code
 //! `vtc/members/update/0.1` declares for it: promotion to admin is a separate,
@@ -141,7 +141,7 @@ pub(crate) async fn update_member_inner(
 
     // Non-role field updates — written directly (not a ceremony).
     // Persisted *before* any role change so the Remint executor (which
-    // re-reads the member to repoint its role VEC) sees them.
+    // re-reads the member to repoint its role VAC) sees them.
     let mut fields_changed: Vec<String> = Vec::new();
     let mut changes: Vec<FieldChange> = Vec::new();
     if let Some(consent) = req.publish_consent
@@ -287,7 +287,7 @@ pub(crate) async fn update_member_inner(
     }
 
     // Re-read the authoritative state for the response — the Remint
-    // executor may have changed the ACL role + the member's role-VEC
+    // executor may have changed the ACL role + the member's role-VAC
     // pointer.
     let acl = get_acl_entry(&state.acl_ks, did)
         .await?
@@ -319,7 +319,7 @@ impl MemberResponse {
             departure_preference: member.departure_preference,
             status_list_index: member.status_list_index,
             current_vmc_id: member.current_vmc_id,
-            current_role_vec_id: member.current_role_vec_id,
+            current_role_vac_id: member.current_role_vac_id,
             extensions: member.extensions,
             personhood: member.personhood,
             personhood_asserted_at: member.personhood_asserted_at,

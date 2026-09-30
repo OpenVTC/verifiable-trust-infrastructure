@@ -160,7 +160,7 @@ pub(super) async fn handle_present(
     };
     let applicant_did = outcome.request.applicant_did.clone();
 
-    // On auto-admit, deliver the issued MembershipCredential (+ role VEC) to the
+    // On auto-admit, deliver the issued MembershipCredential (+ role VAC) to the
     // proven holder — the receipt below says only that the request was decided,
     // so without this the credential it just earned would never reach it.
     // Best-effort: the credential is already issued + persisted, so a delivery

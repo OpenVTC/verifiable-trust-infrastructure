@@ -98,7 +98,7 @@ pub use vta_sdk::trust_task_sign::HolderKey;
 /// Round-trip budget for a holder verb sent over a session, in seconds.
 ///
 /// A join submit is not a local read: the community evaluates its policy and,
-/// on auto-admit, issues a VMC and a role VEC before it answers. The HTTPS path
+/// on auto-admit, issues a VMC and a role VAC before it answers. The HTTPS path
 /// inherits `reqwest`'s own timeout; this is the session path's equivalent, and
 /// it exists at all because a call with no finite bound turns a community that
 /// has stopped answering into a client that never returns.
@@ -442,9 +442,10 @@ pub struct DecideResult {
     /// The issued membership credential (VMC) — present on approve.
     #[serde(default)]
     pub vmc: Option<serde_json::Value>,
-    /// The issued role credential (VEC) — present on approve when a role applies.
+    /// The issued role credential (a community VAC conferring `role:<name>`) —
+    /// present on approve when a role applies. Wire member `roleVac`.
     #[serde(default)]
-    pub role_vec: Option<serde_json::Value>,
+    pub role_vac: Option<serde_json::Value>,
 }
 
 /// Outcome of removing a member (offboarding). The VTC flips the member's
@@ -500,7 +501,7 @@ pub struct RevocationDetail {
 }
 
 /// The result of renewing the caller's own membership
-/// (`vtc/members/renew/0.1`) — re-issued VMC + role VEC, and whether
+/// (`vtc/members/renew/0.1`) — re-issued VMC + role VAC, and whether
 /// personhood flipped on the reissue.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -508,7 +509,7 @@ pub struct RevocationDetail {
 pub struct MemberRenewal {
     pub did: String,
     pub vmc: serde_json::Value,
-    pub role_vec: serde_json::Value,
+    pub role_vac: serde_json::Value,
     pub personhood: bool,
     pub personhood_changed: bool,
 }
@@ -556,11 +557,11 @@ pub struct MemberRotated {
     pub new_did: String,
     pub method: String,
     pub vmc: serde_json::Value,
-    pub role_vec: serde_json::Value,
+    pub role_vac: serde_json::Value,
 }
 
 /// The result of clearing a member's personhood flag
-/// (`vtc/members/personhood/revoke/0.1`). `vmc` / `role_vec` are absent when
+/// (`vtc/members/personhood/revoke/0.1`). `vmc` / `role_vac` are absent when
 /// the member's personhood was already unset — an idempotent no-op.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -571,7 +572,7 @@ pub struct PersonhoodRevocation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vmc: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role_vec: Option<serde_json::Value>,
+    pub role_vac: Option<serde_json::Value>,
 }
 
 /// One Verifiable Relationship Credential recorded for a member
@@ -610,7 +611,8 @@ pub struct RelationshipRevoked {
     pub id: String,
 }
 
-/// A newly minted Verifiable Endorsement Credential
+/// A newly minted Verifiable Statement Credential under a registered predicate
+/// — a Verifiable Endorsement Credential for `endorses/1`
 /// (`vtc/endorsements/issue/0.1`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -638,7 +640,7 @@ pub struct IssuedEndorsement {
     pub revoked_at: Option<String>,
 }
 
-/// A pointer to the issued VEC: its identifier and lifetime, not its bytes.
+/// A pointer to the issued statement credential (VSC): its identifier and lifetime, not its bytes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -1224,7 +1226,7 @@ impl VtcClient {
     /// Submit a join request (the applicant side): sign a
     /// `join-requests/submit/0.1` Trust Task with the applicant's holder key and
     /// post it to the document endpoint. Returns the community's verdict —
-    /// auto-admit carries the issued VMC + role VEC inline, otherwise the
+    /// auto-admit carries the issued VMC + role VAC inline, otherwise the
     /// request is queued for an admin.
     ///
     /// **No bearer token.** The document's `eddsa-jcs-2022` proof *is* the
@@ -1570,7 +1572,7 @@ impl VtcClient {
     }
 
     /// Renew the caller's own membership (`vtc/members/renew/0.1`) —
-    /// re-issues the VMC + role VEC. Self-service: the signer renews
+    /// re-issues the VMC + role VAC. Self-service: the signer renews
     /// **their own** membership; there is no console-key delegation.
     pub async fn renew(&self) -> Result<MemberRenewal, VtcError> {
         let reply = self
@@ -1723,8 +1725,9 @@ impl VtcClient {
         decode_payload(reply, "relationships/revoke")
     }
 
-    /// Mint a Verifiable Endorsement Credential of a registered type
-    /// (`vtc/endorsements/issue/0.1`). An `Admin` or `Issuer` ACL row.
+    /// Mint a Verifiable Statement Credential under a registered predicate
+    /// (`vtc/endorsements/issue/0.1`): `type_uri` is the predicate IRI and
+    /// `claim` becomes `credentialSubject.object.value`. An `Admin` or `Issuer` ACL row.
     /// `valid_for_seconds` overrides the community's default (30 days).
     pub async fn issue_endorsement(
         &self,
@@ -2424,14 +2427,14 @@ mod tests {
         let json = serde_json::json!({
             "requestId": "11111111-1111-1111-1111-111111111111",
             "status": "approved",
-            "vmc": { "type": ["VerifiableCredential", "MembershipCredential"] },
-            "roleVec": null
+            "vmc": { "type": ["VerifiableCredential", "DTGCredential", "MembershipCredential"] },
+            "roleVac": null
         });
         let d: DecideResult = serde_json::from_value(json).unwrap();
         assert_eq!(d.request_id, "11111111-1111-1111-1111-111111111111");
         assert_eq!(d.status, "approved");
         assert!(d.vmc.is_some());
-        assert!(d.role_vec.is_none());
+        assert!(d.role_vac.is_none());
     }
 
     #[test]

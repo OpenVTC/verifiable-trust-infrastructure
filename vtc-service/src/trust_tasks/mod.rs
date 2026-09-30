@@ -2482,13 +2482,13 @@ fn outcome_to_verdict(outcome: &JoinSubmitOutcome) -> Result<VerdictResponse, Ap
             });
         let vmc = serde_json::to_value(&admit.vmc)
             .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
-        let role_vec = serde_json::to_value(&admit.role_vec)
-            .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+        let role_vac = serde_json::to_value(&admit.role_vac)
+            .map_err(|e| AppError::Internal(format!("serialise role VAC: {e}")))?;
         return Ok(VerdictResponse::allow(
             request_id,
             role,
             Some(vmc),
-            Some(role_vec),
+            Some(role_vac),
         ));
     }
 
@@ -4071,7 +4071,7 @@ async fn handle_acl_grant(
 /// `AdminAuth`. The transition runs the role-change ceremony exactly as the
 /// bearer route does ([`crate::routes::acl::change_role_inner`]): the
 /// compare-and-swap on `fromRole`, the scope checks, the operator's
-/// `role_change` policy, the host invariants and the role-VEC re-mint.
+/// `role_change` policy, the host invariants and the role-VAC re-mint.
 ///
 /// A promotion to `admin` needs a passkey gesture, and here it is **bound to
 /// this operation** ([`crate::acl::bound_step_up`]) rather than read from a
@@ -6172,7 +6172,7 @@ mod join_decide_profile_tests {
     async fn fixture() -> Fixture {
         // `with_audit` because both verbs refuse rather than act when they
         // cannot record what they did; `with_signers` because approving mints
-        // a VMC and a role VEC, and the spine signs its replies;
+        // a VMC and a role VAC, and the spine signs its replies;
         // `with_public_url` because the credentials name the status list by
         // URL.
         let vtc = TestVtc::builder()
@@ -7206,7 +7206,7 @@ mod endorsement_type_tests {
     use serde_json::json;
     use vti_rooms_dtg::test_support::Party;
 
-    const TYPE: &str = "https://example.org/endorsements/identity-vetting/0.1";
+    const TYPE: &str = "https://example.org/predicates/vetted/1";
 
     struct Fixture {
         vtc: TestVtc,
@@ -7389,7 +7389,12 @@ mod endorsement_type_tests {
     #[tokio::test]
     async fn the_declared_register_refusals_are_carried_as_codes() {
         let fix = fixture().await;
-        let out = register(&fix, &fix.admin, json!({ "typeUri": "CommunityRole" })).await;
+        let out = register(
+            &fix,
+            &fix.admin,
+            json!({ "typeUri": crate::endorsements::VETTER_GRANT_ROW_TYPE }),
+        )
+        .await;
         assert_eq!(error_code(&out).as_deref(), Some(REGISTER_ERR_RESERVED));
 
         assert!(
@@ -7486,8 +7491,8 @@ mod endorsement_type_tests {
         );
         let schemas_ks = &fix.vtc.state.schemas_ks;
         let entry: crate::schemas::SchemaEntry = serde_json::from_value(json!({
-            "typeUri": "EndorsementCredential",
-            "dtgType": "EndorsementCredential",
+            "typeUri": "StatementCredential",
+            "dtgType": "StatementCredential",
             "kind": "accepts",
             "createdAt": "2026-09-24T00:00:00Z",
             "createdByDid": fix.admin.did,
@@ -7499,7 +7504,7 @@ mod endorsement_type_tests {
         let criterion: crate::schemas::accepts::AcceptsCriterion = serde_json::from_value(json!({
             "id": "vetted",
             "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
-                       "meta": { "type_values": ["EndorsementCredential"] } } ] },
+                       "meta": { "type_values": ["StatementCredential"] } } ] },
             "vetting": {
                 "version": "0.1",
                 "statementType": TYPE,

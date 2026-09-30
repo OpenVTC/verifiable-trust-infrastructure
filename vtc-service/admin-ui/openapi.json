@@ -1388,7 +1388,7 @@
       },
       "CredentialReference": {
         "type": "object",
-        "description": "A pointer to the issued VEC: its identifier and lifetime, not its bytes.\n\n#1098 mapped this to the registry-wide `IssuedCredential`, whose\n`credential` and `expiresAt` are required and neither of which is on the\nstored row — so `list` and `show` could not fill it and stayed\nnon-conformant. That turned out to be the component being used in the\nwrong place rather than a gap in this service: `IssuedCredential` is\nscoped to the moment of minting, and a listing is not an issuance event.\ntrustoverip/dtgwg-trust-tasks-tf#262 splits the two, and this is the read\nside of that split. The credential itself now rides on the `issue`\nresponse alone, which is the one call whose caller cannot get it any\nother way.",
+        "description": "A pointer to the issued credential: its identifier and lifetime, not its\nbytes.\n\n#1098 mapped this to the registry-wide `IssuedCredential`, whose\n`credential` and `expiresAt` are required and neither of which is on the\nstored row — so `list` and `show` could not fill it and stayed\nnon-conformant. That turned out to be the component being used in the\nwrong place rather than a gap in this service: `IssuedCredential` is\nscoped to the moment of minting, and a listing is not an issuance event.\ntrustoverip/dtgwg-trust-tasks-tf#262 splits the two, and this is the read\nside of that split. The credential itself now rides on the `issue`\nresponse alone, which is the one call whose caller cannot get it any\nother way.",
         "required": [
           "credentialId"
         ],
@@ -1423,14 +1423,14 @@
             "type": "string",
             "format": "uuid"
           },
-          "roleVec": {
+          "roleVac": {
             "oneOf": [
               {
                 "type": "null"
               },
               {
                 "$ref": "#/components/schemas/Value",
-                "description": "Issued role VEC. Same delivery story as `vmc`."
+                "description": "Issued role VAC. Same delivery story as `vmc`."
               }
             ]
           },
@@ -1843,7 +1843,7 @@
       },
       "EndorsementType": {
         "type": "object",
-        "description": "A registered endorsement type. Stored verbatim; the\nregistrar route enforces validation at insert time.",
+        "description": "A registered predicate (historically \"endorsement type\"). Stored\nverbatim; the registrar route enforces validation at insert time.",
         "required": [
           "typeUri",
           "createdAt",
@@ -1857,7 +1857,7 @@
               },
               {
                 "$ref": "#/components/schemas/Value",
-                "description": "Optional JSON Schema every claim of this type must satisfy. Issuance\nvalidates the claim against it and refuses a violation."
+                "description": "Optional JSON Schema every claim of this predicate must satisfy — the\nstatement's `object.value`. Issuance validates the claim against it and\nrefuses a violation."
               }
             ]
           },
@@ -1878,7 +1878,7 @@
           },
           "typeUri": {
             "type": "string",
-            "description": "The type URI. Primary key — URL-encoded into the\nkeyspace key."
+            "description": "The predicate IRI. Primary key — URL-encoded into the\nkeyspace key."
           }
         }
       },
@@ -4104,7 +4104,7 @@
           "personhood"
         ],
         "properties": {
-          "currentRoleVecId": {
+          "currentRoleVacId": {
             "type": [
               "string",
               "null"
@@ -4300,7 +4300,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "A registered endorsement type. Stored verbatim; the\nregistrar route enforces validation at insert time.",
+              "description": "A registered predicate (historically \"endorsement type\"). Stored\nverbatim; the registrar route enforces validation at insert time.",
               "required": [
                 "typeUri",
                 "createdAt",
@@ -4314,7 +4314,7 @@
                     },
                     {
                       "$ref": "#/components/schemas/Value",
-                      "description": "Optional JSON Schema every claim of this type must satisfy. Issuance\nvalidates the claim against it and refuses a violation."
+                      "description": "Optional JSON Schema every claim of this predicate must satisfy — the\nstatement's `object.value`. Issuance validates the claim against it and\nrefuses a violation."
                     }
                   ]
                 },
@@ -4335,7 +4335,7 @@
                 },
                 "typeUri": {
                   "type": "string",
-                  "description": "The type URI. Primary key — URL-encoded into the\nkeyspace key."
+                  "description": "The predicate IRI. Primary key — URL-encoded into the\nkeyspace key."
                 }
               }
             }
@@ -4476,7 +4476,7 @@
                 "personhood"
               ],
               "properties": {
-                "currentRoleVecId": {
+                "currentRoleVacId": {
                   "type": [
                     "string",
                     "null"
@@ -6095,7 +6095,7 @@
             "properties": {
               "role": {
                 "type": "string",
-                "description": "The role named in a community-issued `CommunityRole` endorsement credential (see `vtc/vetting/vetters/grant/0.1`). A statement counts only if its issuer holds that credential.",
+                "description": "The role a statement's issuer must hold, matched as the action `role:<role>` in a Verifiable Authority Credential (`AuthorityCredential`) the community issued to that issuer, whose `authority.scope` is the community's DID (see `vtc/vetting/vetters/grant/0.1`). A statement counts only if its issuer holds such a credential.",
                 "maxLength": 128,
                 "minLength": 1,
                 "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
@@ -6182,7 +6182,7 @@
           "statementType": {
             "type": "string",
             "format": "uri",
-            "description": "The endorsement type URI a counted vetting statement carries as `credentialSubject.endorsement.type`, as registered with the community via vtc/endorsement-types/register.",
+            "description": "The predicate IRI a counted vetting statement carries in `credentialSubject.predicate` — `https://registry.trustoverip.org/dtg/vsc/vetted/1`, the DTG VSC registry's identity-vetting predicate, or a predicate in a namespace the community controls — registered as one the community accepts via vtc/endorsement-types/register. A statement under any other predicate does not count.",
             "maxLength": 512,
             "minLength": 1
           },
@@ -6240,7 +6240,7 @@
           },
           "roleCredential": {
             "type": "object",
-            "description": "The role Verifiable Endorsement Credential. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2.",
+            "description": "The role credential: a community-issued Verifiable Authority Credential (`AuthorityCredential`) conferring `role:<name>` at the community's DID. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2.",
             "minProperties": 1
           }
         },
@@ -6571,14 +6571,14 @@
         "properties": {
           "credentialId": {
             "type": "string",
-            "description": "The `id` of the role credential, a URI.",
+            "description": "The `id` of the role credential (the Verifiable Authority Credential), a URI.",
             "maxLength": 512,
             "minLength": 1,
             "pattern": "^[a-zA-Z][a-zA-Z0-9+.-]*:\\S+$"
           },
           "endorsementId": {
             "type": "string",
-            "description": "The community's endorsement record for this grant — the identifier vtc/endorsements/revoke takes.",
+            "description": "The community's record of this grant's credential and its status-list slot — the identifier vtc/endorsements/revoke takes to revoke it. The name is kept from when the role credential was an endorsement; the credential is a Verifiable Authority Credential.",
             "maxLength": 128,
             "minLength": 1
           },

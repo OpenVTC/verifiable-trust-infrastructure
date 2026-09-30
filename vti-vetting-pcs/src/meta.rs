@@ -9,8 +9,9 @@ use vta_sdk::protocols::vetting::{VettingMethod, VettingRelationship};
 
 use crate::ProtoError;
 
-/// The public metadata of one hidden statement: the fields of the V0 `IdentityVetting`
-/// endorsement that the VTC counts, minus any identifier of the vetter. Sent beside the
+/// The public metadata of one hidden statement: the fields of a named Vetting Statement's
+/// `object.value` (the `vetted/1` predicate) that the VTC counts, minus any identifier of the
+/// vetter. Sent beside the
 /// attestation; bound into its `ctx_j`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

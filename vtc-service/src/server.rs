@@ -154,8 +154,8 @@ pub struct AppState {
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
     /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
-    /// Issued custom endorsement rows (Phase 4 M4.7).
-    /// Tracked here for list + revoke surfaces; the VEC body
+    /// Community-issued statement, vetter-grant and IDVC rows (Phase 4
+    /// M4.7). Tracked here for list + revoke surfaces; a statement's body
     /// itself is signed + returned at issuance time.
     pub endorsements_ks: KeyspaceHandle,
     /// Data rooms — one row per room. Carries owner, visibility, epoch and
@@ -229,7 +229,7 @@ pub struct AppState {
     /// tokens at the end of the claim ceremony. `None` until the secret
     /// store yields key material — install routes 503 in that case.
     pub install_signer: Option<Arc<InstallTokenSigner>>,
-    /// Ed25519 signer that mints VMC, VEC, and BitstringStatusList
+    /// Ed25519 signer that mints VMC, VAC, and BitstringStatusList
     /// credentials (M2.9). Wraps the same `#key-0` secret the
     /// `secrets_resolver` holds. `None` until the secret store
     /// yields key material — credential routes 503 in that case.
@@ -469,6 +469,10 @@ pub async fn run(
     // never overwrites operator edits) so the registry reflects what the VTC
     // mints out of the box.
     crate::schemas::seed_default_issues(&schemas_ks).await?;
+    // Seed the predicate accept list with the DTG VSC registry's core
+    // profiles, once (an operator's deletions stay deleted). Without it the
+    // fail-closed accept list would refuse every presented statement.
+    crate::endorsement_types::seed_defaults(&endorsement_types_ks).await?;
     let endorsements_ks = store.keyspace(keyspaces::ENDORSEMENTS)?;
     let rooms_ks = store.keyspace(keyspaces::ROOMS)?;
     let room_records_ks = store.keyspace(keyspaces::ROOM_RECORDS)?;
@@ -509,15 +513,15 @@ pub async fn run(
         Err(e) => warn!("failed to upgrade legacy ceremony policies: {e}"),
     }
 
-    // The personhood default an earlier binary installed admitted any
-    // `WitnessCredential` with a non-empty issuer, digest unchecked (#1068).
-    // Replace it if — and only if — it is still the workspace's own row;
-    // an operator-authored personhood policy is left alone.
-    if let Err(e) = crate::policy::default::upgrade_unbound_witness_personhood_default(
-        &policies_ks,
-        &active_policies_ks,
-    )
-    .await
+    // The personhood default an earlier binary installed either admitted any
+    // witness with a non-empty issuer, digest unchecked (#1068), or was
+    // written for the credential shapes before the DTG v1 context and
+    // recognises no current witness statement or IDVC. Replace it if — and
+    // only if — it is still the workspace's own row; an operator-authored
+    // personhood policy is left alone.
+    if let Err(e) =
+        crate::policy::default::upgrade_stale_personhood_default(&policies_ks, &active_policies_ks)
+            .await
     {
         warn!("failed to upgrade the superseded personhood default: {e}");
     }
@@ -1965,7 +1969,7 @@ async fn init_auth(
     let storage_key: Option<[u8; 32]> = derive_storage_key(&*ed25519_bytes);
 
     // M2.9 credential signer — wraps the same 32-byte Ed25519
-    // seed in a [`LocalSigner`] handle so VMC / VEC / status-list
+    // seed in a [`LocalSigner`] handle so VMC / VAC / status-list
     // credential builders can sign without round-tripping through
     // the secret store on every call.
     //

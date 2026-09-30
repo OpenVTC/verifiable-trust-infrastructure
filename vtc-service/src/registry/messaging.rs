@@ -106,7 +106,7 @@ pub struct MessagingRegistryClient {
     /// messaging is transient, not permanent.
     didcomm: Arc<OnceCell<Arc<VtcMessaging>>>,
     /// The VTC's assertion signer (`{vtc_did}#key-0`), the same identity that
-    /// mints VMC/VEC. The community is the authority its records are written
+    /// mints VMC/VAC. The community is the authority its records are written
     /// under, so this is the right key — and its canonical form already
     /// verifies at the registry (proven by the git-trust path).
     signer: Arc<LocalSigner>,

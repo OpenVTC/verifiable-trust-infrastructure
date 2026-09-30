@@ -910,7 +910,8 @@ export interface components {
             ext?: components["schemas"]["CredentialExchangeRequestV0_1Ext"];
         };
         /**
-         * @description A pointer to the issued VEC: its identifier and lifetime, not its bytes.
+         * @description A pointer to the issued credential: its identifier and lifetime, not its
+         *     bytes.
          *
          *     #1098 mapped this to the registry-wide `IssuedCredential`, whose
          *     `credential` and `expiresAt` are required and neither of which is on the
@@ -933,7 +934,7 @@ export interface components {
         DecideResponse: {
             /** Format: uuid */
             requestId: string;
-            roleVec?: null | components["schemas"]["Value"];
+            roleVac?: null | components["schemas"]["Value"];
             status: string;
             vmc?: null | components["schemas"]["Value"];
         };
@@ -1170,8 +1171,8 @@ export interface components {
             typeUri: string;
         };
         /**
-         * @description A registered endorsement type. Stored verbatim; the
-         *     registrar route enforces validation at insert time.
+         * @description A registered predicate (historically "endorsement type"). Stored
+         *     verbatim; the registrar route enforces validation at insert time.
          */
         EndorsementType: {
             claimSchema?: null | components["schemas"]["Value"];
@@ -1186,7 +1187,7 @@ export interface components {
             /** @description Free-form description shown in admin UIs. */
             description?: string | null;
             /**
-             * @description The type URI. Primary key — URL-encoded into the
+             * @description The predicate IRI. Primary key — URL-encoded into the
              *     keyspace key.
              */
             typeUri: string;
@@ -2179,7 +2180,7 @@ export interface components {
          *     + `acl:<did>` so a caller doesn't need a second request.
          */
         MemberResponse: {
-            currentRoleVecId?: string | null;
+            currentRoleVacId?: string | null;
             currentVmcId?: string | null;
             departurePreference: components["schemas"]["Disposition"];
             did: string;
@@ -2343,7 +2344,7 @@ export interface components {
                 /** @description Free-form description shown in admin UIs. */
                 description?: string | null;
                 /**
-                 * @description The type URI. Primary key — URL-encoded into the
+                 * @description The predicate IRI. Primary key — URL-encoded into the
                  *     keyspace key.
                  */
                 typeUri: string;
@@ -2424,7 +2425,7 @@ export interface components {
          */
         Paginated_MemberResponse: {
             items: {
-                currentRoleVecId?: string | null;
+                currentRoleVacId?: string | null;
                 currentVmcId?: string | null;
                 departurePreference: components["schemas"]["Disposition"];
                 did: string;
@@ -3370,7 +3371,7 @@ export interface components {
             decisionSla?: components["schemas"]["VtcJoinRequestsManifestV0_2Duration"];
             /** @description How a vetter's eligibility is established. */
             eligibleVetters: {
-                /** @description The role named in a community-issued `CommunityRole` endorsement credential (see `vtc/vetting/vetters/grant/0.1`). A statement counts only if its issuer holds that credential. */
+                /** @description The role a statement's issuer must hold, matched as the action `role:<role>` in a Verifiable Authority Credential (`AuthorityCredential`) the community issued to that issuer, whose `authority.scope` is the community's DID (see `vtc/vetting/vetters/grant/0.1`). A statement counts only if its issuer holds such a credential. */
                 role: string;
             };
             ext?: components["schemas"]["VtcJoinRequestsManifestV0_2Ext"];
@@ -3408,7 +3409,7 @@ export interface components {
             requirementsGrace?: components["schemas"]["VtcJoinRequestsManifestV0_2Duration"];
             /**
              * Format: uri
-             * @description The endorsement type URI a counted vetting statement carries as `credentialSubject.endorsement.type`, as registered with the community via vtc/endorsement-types/register.
+             * @description The predicate IRI a counted vetting statement carries in `credentialSubject.predicate` — `https://registry.trustoverip.org/dtg/vsc/vetted/1`, the DTG VSC registry's identity-vetting predicate, or a predicate in a namespace the community controls — registered as one the community accepts via vtc/endorsement-types/register. A statement under any other predicate does not count.
              */
             statementType: string;
             /** @description Version of this requirements object's shape. `0.1` for the members defined here. */
@@ -3436,7 +3437,7 @@ export interface components {
             memberVmcReceivedAt?: string;
             /** @description The community-issued Verifiable Membership Credential — the grant. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2. */
             membershipCredential?: Record<string, never>;
-            /** @description The role Verifiable Endorsement Credential. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2. */
+            /** @description The role credential: a community-issued Verifiable Authority Credential (`AuthorityCredential`) conferring `role:<name>` at the community's DID. A verifiable credential, carried verbatim and opaque to this schema. Maintainers must not re-serialise it — the bytes carry a proof over themselves. Matches the `vrcJsonld` idiom in vtc/relationships/list/0.2. */
             roleCredential?: Record<string, never>;
         };
         /** @description Vendor-namespaced extension object per SPEC.md §4.5.1. Each immediate key MUST be a reverse-DNS namespace; structure under each namespace is opaque to the framework. */
@@ -3574,9 +3575,9 @@ export interface components {
         };
         /** @description The grant — newly issued, or the member's existing live grant. */
         VtcVettingVettersGrantV0_1Response: {
-            /** @description The `id` of the role credential, a URI. */
+            /** @description The `id` of the role credential (the Verifiable Authority Credential), a URI. */
             credentialId: string;
-            /** @description The community's endorsement record for this grant — the identifier vtc/endorsements/revoke takes. */
+            /** @description The community's record of this grant's credential and its status-list slot — the identifier vtc/endorsements/revoke takes to revoke it. The name is kept from when the role credential was an endorsement; the credential is a Verifiable Authority Credential. */
             endorsementId: string;
             ext?: components["schemas"]["VtcVettingVettersGrantV0_1Ext"];
             /**

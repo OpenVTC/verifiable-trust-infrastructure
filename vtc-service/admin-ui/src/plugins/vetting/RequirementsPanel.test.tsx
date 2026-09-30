@@ -16,7 +16,7 @@ vi.mock("@/lib/api", async (original) => ({
 const MANIFEST_TASK = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2";
 
 const STATEMENT_TYPE =
-  "https://firstperson.network/endorsements/identity-vetting/0.1";
+  "https://registry.trustoverip.org/dtg/vsc/vetted/1";
 
 const REQUIREMENTS = {
   version: "0.1",
@@ -35,7 +35,7 @@ const REQUIREMENTS = {
 
 const QUERY = {
   credentials: [
-    { id: "vetting", format: "ldp_vc", meta: { type_values: ["EndorsementCredential"] } },
+    { id: "vetting", format: "ldp_vc", meta: { type_values: ["StatementCredential"] } },
   ],
 };
 

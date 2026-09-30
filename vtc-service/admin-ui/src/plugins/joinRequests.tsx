@@ -295,7 +295,7 @@ function JoinRequestDetail() {
               <h3>Decide</h3>
               <p className="lead">
                 Approve creates the member + ACL row atomically and
-                fires the VMC + role-VEC issuance. Reject closes the
+                fires the VMC + role-VAC issuance. Reject closes the
                 request with the supplied reason; the applicant may
                 resubmit.
               </p>
@@ -323,7 +323,7 @@ function JoinRequestDetail() {
                   onClick={async () => {
                     const ok = await confirm({
                       title: "Approve join request?",
-                      message: `${query.data.applicantDid} gets an ACL + member row, and credentials (VMC + role VEC) are issued.${vettingNote}`,
+                      message: `${query.data.applicantDid} gets an ACL + member row, and credentials (VMC + role VAC) are issued.${vettingNote}`,
                       confirmLabel: "Approve",
                     });
                     if (ok) approveMutation.mutate(id);

@@ -125,7 +125,7 @@ pinned by a census test.
 | `relationships_by_did` | **backup** | Secondary index; backed up to avoid post-restore divergence (cheap, and the census prefers completeness over rebuild logic). |
 | `endorsement_types` | **backup** | Operator-registered types. |
 | `schemas` | **backup** | Operator-registered accept-schemas. |
-| `endorsements` | **backup** | Issued custom VECs. |
+| `endorsements` | **backup** | Issued community statements (VSCs), vetter-grant and IDVC rows. |
 | `audit` | **backup** (gated) | Included only when `include_audit = true`, mirroring the VTA. |
 | `audit_key` | **backup** | HMAC actor-hash key — without it, restored audit logs are unverifiable. Always included. |
 | `sessions` | exclude | Ephemeral auth; restoring stale sessions is a security regression. |

@@ -2,17 +2,19 @@
 //!
 //! Phase 3 M3.10. Spec §8.4.
 //!
-//! The caller presents a foreign community's (`VEC`, `VMC`) pair **inside a
+//! The caller presents a foreign community's (role `VAC`, `VMC`) pair —
+//! the role credential is a DTG `AuthorityCredential` conferring
+//! `role:<name>` at the foreign community's DID — **inside a
 //! holder-signed W3C Verifiable Presentation**, the route runs the M3.9
 //! verifier, evaluates `cross_community_roles.rego` to map the foreign role
 //! onto a local role, and mints a session JWT with TTL clamped to
-//! `min(jwt_default, vec.validUntil - now, vmc.validUntil - now)`.
+//! `min(jwt_default, vac.validUntil - now, vmc.validUntil - now)`.
 //!
 //! ## Holder proof-of-possession (P0.2 part 2)
 //!
-//! A VEC + VMC are bearer artifacts: anyone who captures the pair (a relayed
+//! A VAC + VMC are bearer artifacts: anyone who captures the pair (a relayed
 //! join, an audit log, a compromised member device) holds everything the old
-//! `{vec, vmc}` body needed. Minting a session straight off them made the pair
+//! `{vac, vmc}` body of 0.1 needed. Minting a session straight off them made the pair
 //! a **replayable impersonation token** for the subject — no proof the caller
 //! controls the subject's key, no replay nonce, no audience binding.
 //!
@@ -22,12 +24,12 @@
 //! 2. `POST /v1/auth/recognise` carries a **VP** whose holder
 //!    `eddsa-jcs-2022` proof (`proofPurpose: authentication`) commits to that
 //!    `nonce` (freshness/replay) + this VTC's DID as `domain` (audience), and
-//!    embeds the VEC + VMC. The handler consumes the challenge, verifies the
+//!    embeds the VAC + VMC. The handler consumes the challenge, verifies the
 //!    holder proof (proves possession of the subject key) plus each embedded
 //!    credential's issuer proof, and refuses unless the **VP holder is the
 //!    credential subject**. Only then does it run the recognition gate + mint.
 //!
-//! A captured VEC + VMC is now inert: the attacker can't produce the holder
+//! A captured VAC + VMC is now inert: the attacker can't produce the holder
 //! signature over a fresh challenge, and a replayed VP finds its single-use
 //! nonce already consumed.
 //!
@@ -65,12 +67,12 @@ use vti_common::auth::PurposeVmResolver;
 use crate::credentials::vm_resolver::DidVmResolver;
 use crate::recognition::{
     HttpStatusListFetcher, RecognitionError, VerifiedForeignCredential, challenge,
-    verify_foreign_vec,
+    verify_foreign_role,
 };
 use crate::server::AppState;
 use affinidi_vc::VerifiableCredential;
 use trust_tasks_rs::specs::vtc::auth::recognise::challenge::v0_1::Response as RecogniseChallengeResponse;
-use vta_sdk::protocols::members::{ENDORSEMENT_CREDENTIAL_TYPE, MEMBERSHIP_CREDENTIAL_TYPE};
+use vta_sdk::protocols::members::{AUTHORITY_CREDENTIAL_TYPE, MEMBERSHIP_CREDENTIAL_TYPE};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,7 +134,7 @@ pub(crate) async fn recognise_challenge(
         .map_err(|e| AppError::Internal(format!("build recognise-challenge response: {e}")))
 }
 
-/// `vtc/auth/recognise:credentialInvalid` — the VEC or VMC failed proof
+/// `vtc/auth/recognise:credentialInvalid` — the VAC or VMC failed proof
 /// verification, fell outside its validity window, or was revoked through
 /// `credentialStatus`.
 pub const RECOGNISE_ERR_CREDENTIAL_INVALID: &str =
@@ -147,7 +149,7 @@ pub const RECOGNISE_ERR_ROLE_NOT_MAPPED: &str =
     trust_tasks_rs::specs::vtc::auth::recognise::v0_2::error_codes::ROLE_NOT_MAPPED.code;
 
 /// `vtc/auth/recognise/0.2` — cross-community session mint from a
-/// holder-signed VP embedding a foreign VEC + VMC. Called from
+/// holder-signed VP embedding a foreign VAC + VMC. Called from
 /// `trust_tasks::recognise_tasks`; no REST route mounts it.
 pub(crate) async fn recognise(
     state: &AppState,
@@ -206,23 +208,23 @@ pub(crate) async fn recognise(
     .await?;
     let holder_did = verified_vp.holder;
 
-    // 3. Pull the raw VEC + VMC back out of the (now holder-bound) VP so the
+    // 3. Pull the raw VAC + VMC back out of the (now holder-bound) VP so the
     //    recognition gate can run its status-list / registry / role checks.
-    let (vec, vmc) = extract_vec_vmc(&presentation)?;
+    let (vac, vmc) = extract_vac_vmc(&presentation)?;
 
     // 4. Holder-binding (the headline of P0.2 part 2). The proven VP holder
-    //    MUST be the credential subject — otherwise a captured VEC + VMC,
+    //    MUST be the credential subject — otherwise a captured VAC + VMC,
     //    re-wrapped in a VP signed by the *attacker's own* holder key, would
     //    still verify in step 2 and mint a session to the victim subject.
     //    Cheap (no network) and fail-fast, so it gates before the recognition
-    //    HTTP calls. `verify_foreign_vec` independently binds
-    //    `vmc.subject == vec.subject` (part 1), making this transitive to the
+    //    HTTP calls. `verify_foreign_role` independently binds
+    //    `vmc.subject == vac.subject` (part 1), making this transitive to the
     //    returned `verified.subject_did`.
-    let vec_subject = vc_subject_id(&vec)
-        .ok_or_else(|| AppError::Validation("foreign VEC has no credentialSubject.id".into()))?;
-    if holder_did != vec_subject {
+    let vac_subject = vc_subject_id(&vac)
+        .ok_or_else(|| AppError::Validation("foreign VAC has no credentialSubject.id".into()))?;
+    if holder_did != vac_subject {
         let err = RecognitionError::Malformed(format!(
-            "VP holder `{holder_did}` is not the credential subject `{vec_subject}`"
+            "VP holder `{holder_did}` is not the credential subject `{vac_subject}`"
         ));
         emit_denied_audit(state, &holder_did, None, "holder-binding", None, &err).await;
         return Err(AppError::Forbidden(
@@ -236,14 +238,14 @@ pub(crate) async fn recognise(
     })?;
     let key_resolver: Arc<dyn PurposeVmResolver> = Arc::new(DidVmResolver::new(Some(resolver)));
     // Verify the foreign status list's own issuer signature (bound to the
-    // VEC/VMC issuer) before trusting it — the same key resolver the proof check
+    // VAC/VMC issuer) before trusting it — the same key resolver the proof check
     // uses.
     let status_fetcher = HttpStatusListFetcher::with_issuer_verification(key_resolver.clone());
 
     // 5. Run the M3.9 recognition gate. Failures are mapped to `denied` audit
     //    envelopes (actor = the cryptographically-proven VP holder) + a 403.
-    let verified = match verify_foreign_vec(
-        &vec,
+    let verified = match verify_foreign_role(
+        &vac,
         &vmc,
         key_resolver.as_ref(),
         &status_fetcher,
@@ -279,10 +281,10 @@ pub(crate) async fn vtc_did(state: &AppState) -> Result<String, AppError> {
 /// Classification goes through `dtg_credentials` — the same catalog the VTC
 /// mints through — rather than comparing string literals here. A literal on
 /// this side can drift from what the catalog emits without anything failing,
-/// which is exactly what happened: this path matched
-/// `"VerifiableEndorsementCredential"` while `issue_endorsement` minted
-/// `"EndorsementCredential"`, so no genuinely-issued VEC was ever routed to its
-/// slot, and cross-community recognition rejected every real presentation.
+/// which is exactly what happened once: this path matched a
+/// `Verifiable`-prefixed role-credential type no VTC ever minted, so no
+/// genuinely-issued role credential was ever routed to its slot, and
+/// cross-community recognition rejected every real presentation.
 ///
 /// The catalog is the only accepted authority. Nothing here re-admits the
 /// `Verifiable`-prefixed tags that hand-rolled pre-catalog bodies carried:
@@ -293,10 +295,10 @@ fn classify(types: &[String]) -> Option<DTGCredentialType> {
     DTGCredentialType::try_from(types).ok()
 }
 
-/// Pull the foreign VEC + VMC out of a VP's `verifiableCredential`, classifying
+/// Pull the foreign VAC + VMC out of a VP's `verifiableCredential`, classifying
 /// by `type`. Both must be present exactly once. Accepts either a single object
 /// or an array (the W3C VP shape).
-fn extract_vec_vmc(
+fn extract_vac_vmc(
     presentation: &JsonValue,
 ) -> Result<(VerifiableCredential, VerifiableCredential), AppError> {
     let raw = presentation
@@ -307,7 +309,7 @@ fn extract_vec_vmc(
         other => vec![other],
     };
 
-    let mut vec_cred: Option<VerifiableCredential> = None;
+    let mut vac_cred: Option<VerifiableCredential> = None;
     let mut vmc_cred: Option<VerifiableCredential> = None;
     for entry in entries {
         let cred: VerifiableCredential = serde_json::from_value(entry.clone()).map_err(|e| {
@@ -316,17 +318,17 @@ fn extract_vec_vmc(
         // Common structure first: a presented credential must be a DTG
         // credential before its subtype means anything. This path used to
         // classify on `type` alone, so a document carrying the right subtype
-        // tag and neither `@context` entry was routed as though it were a VEC.
+        // tag and neither `@context` entry was routed as though it were a VAC.
         // Non-DTG credentials in a VP are legitimate and simply skipped — only
-        // the VEC + VMC pair is acted on — so a failure here is not an error.
+        // the VAC + VMC pair is acted on — so a failure here is not an error.
         if crate::credentials::ingress::classify_dtg(entry).is_err() {
             continue;
         }
 
         // Route the credential to its slot by type. Other credential types are
-        // ignored — the recognition gate only acts on the VEC + VMC pair.
+        // ignored — the recognition gate only acts on the VAC + VMC pair.
         let (slot, label) = match classify(&cred.types) {
-            Some(DTGCredentialType::Endorsement) => (&mut vec_cred, ENDORSEMENT_CREDENTIAL_TYPE),
+            Some(DTGCredentialType::Authority) => (&mut vac_cred, AUTHORITY_CREDENTIAL_TYPE),
             Some(DTGCredentialType::Membership) => (&mut vmc_cred, MEMBERSHIP_CREDENTIAL_TYPE),
             _ => continue,
         };
@@ -337,17 +339,17 @@ fn extract_vec_vmc(
         }
     }
 
-    let vec = vec_cred.ok_or_else(|| {
-        AppError::Validation(format!("presentation has no {ENDORSEMENT_CREDENTIAL_TYPE}"))
+    let vac = vac_cred.ok_or_else(|| {
+        AppError::Validation(format!("presentation has no {AUTHORITY_CREDENTIAL_TYPE}"))
     })?;
     let vmc = vmc_cred.ok_or_else(|| {
         AppError::Validation(format!("presentation has no {MEMBERSHIP_CREDENTIAL_TYPE}"))
     })?;
-    Ok((vec, vmc))
+    Ok((vac, vmc))
 }
 
 /// Read a credential's `credentialSubject.id`. `None` if absent or
-/// id-less (a VEC the recognition gate would reject anyway).
+/// id-less (a VAC the recognition gate would reject anyway).
 fn vc_subject_id(vc: &VerifiableCredential) -> Option<String> {
     use affinidi_vc::SubjectValue;
     let subj = match &vc.credential_subject {
@@ -401,7 +403,7 @@ pub async fn mint_recognised_session(
         }
     };
 
-    // Clamp the TTL to `min(jwt_default, vec.validUntil - now,
+    // Clamp the TTL to `min(jwt_default, vac.validUntil - now,
     // vmc.validUntil - now)`. The verifier already exposed the
     // *earliest* validUntil; we just compare to the configured
     // access-token TTL.
@@ -438,7 +440,7 @@ pub async fn mint_recognised_session(
     // `authenticate` path: store a Session row + emit a JWT.
     // Skip the refresh token (cross-community sessions don't
     // refresh — see module docs). AAL is `did/aal1`: the foreign
-    // VEC verification is a single-factor proof of the subject
+    // VAC verification is a single-factor proof of the subject
     // DID; passkey or VTA step-up is not part of the recognise
     // flow.
     let session_id = format!("xc-{}", Uuid::new_v4());
@@ -540,7 +542,7 @@ async fn map_foreign_role(
     let compiled = compile_policy(&policy.rego_source, policy.id)?;
 
     let input = serde_json::json!({
-        "foreign_vec": {
+        "foreign_vac": {
             "issuer": verified.foreign_issuer_did,
             "role": verified.foreign_role,
             "subject_did": verified.subject_did,
@@ -657,24 +659,20 @@ mod classify_tests {
     }
 
     // `DTGCredentialType` derives no `PartialEq`, so these assert by pattern.
-    fn is_endorsement(t: Option<DTGCredentialType>) -> bool {
-        matches!(t, Some(DTGCredentialType::Endorsement))
+    fn is_authority(t: Option<DTGCredentialType>) -> bool {
+        matches!(t, Some(DTGCredentialType::Authority))
     }
     fn is_membership(t: Option<DTGCredentialType>) -> bool {
         matches!(t, Some(DTGCredentialType::Membership))
     }
 
-    /// The wire form `issue_endorsement` actually mints. This is the case that
-    /// was broken: the routing predicate matched a string the catalog has
-    /// never emitted, so no genuinely-issued VEC was ever routed to its slot,
-    /// and every cross-community recognition failed with "presentation has no
-    /// VerifiableEndorsementCredential".
+    /// The wire form the role and membership paths actually mint.
     #[test]
     fn classifies_the_wire_form_the_catalog_mints() {
-        assert!(is_endorsement(classify(&types(&[
+        assert!(is_authority(classify(&types(&[
             "VerifiableCredential",
             "DTGCredential",
-            "EndorsementCredential"
+            "AuthorityCredential"
         ]))));
         assert!(is_membership(classify(&types(&[
             "VerifiableCredential",
@@ -683,25 +681,21 @@ mod classify_tests {
         ]))));
     }
 
-    /// The `Verifiable`-prefixed tags were never DTG credential types. They
-    /// exist only as a mistake this repo made and has since corrected, and
-    /// accepting them would reintroduce the drift `classify` prevents.
+    /// The `Verifiable`-prefixed tags were never DTG credential types, and
+    /// the role-endorsement type earlier drafts used is retired: a role is a
+    /// VAC. Accepting any of them would reintroduce the drift `classify`
+    /// prevents.
     #[test]
-    fn refuses_the_verifiable_prefixed_tags_that_were_never_dtg_types() {
-        assert!(
-            classify(&types(&[
-                "VerifiableCredential",
-                "VerifiableEndorsementCredential"
-            ]))
-            .is_none()
-        );
-        assert!(
-            classify(&types(&[
-                "VerifiableCredential",
-                "VerifiableMembershipCredential"
-            ]))
-            .is_none()
-        );
+    fn refuses_tags_that_are_not_current_dtg_types() {
+        for tag in [
+            "VerifiableAuthorityCredential",
+            "VerifiableMembershipCredential",
+        ] {
+            assert!(
+                classify(&types(&["VerifiableCredential", "DTGCredential", tag])).is_none(),
+                "{tag}"
+            );
+        }
     }
 
     /// The guard that would have caught #1062.
@@ -710,16 +704,11 @@ mod classify_tests {
     /// a literal here can agree with a literal in the handler while both
     /// disagree with what the VTC actually issues — which is exactly what
     /// happened. This one asserts against **catalog output**: it mints through
-    /// the same `dtg-credentials` constructors `issue_endorsement` and the VMC
-    /// path use, serialises as `credentials::dtg` does, and requires
-    /// `classify` to recognise the result.
-    ///
-    /// Change the catalog's wire form and this fails. Change `classify` away
-    /// from the catalog and this fails. No literal in this file can make it
-    /// pass.
+    /// the same `dtg-credentials` constructors `credentials::dtg` uses and
+    /// requires `classify` to recognise the result.
     #[tokio::test]
     async fn classifies_what_the_catalog_actually_mints() {
-        use dtg_credentials::DTGCredential;
+        use dtg_credentials::{DTGCredential, IssuerScope};
 
         fn types_of(dtg: &DTGCredential) -> Vec<String> {
             crate::test_support::dtg_json(dtg)["type"]
@@ -731,17 +720,18 @@ mod classify_tests {
         }
 
         let now = chrono::Utc::now();
-        let vec = DTGCredential::new_vec(
+        let vac = DTGCredential::new_community_role_vac(
             "did:web:issuer.example".into(),
             "did:key:zSubject".into(),
+            "moderator",
             now,
-            None,
-            serde_json::json!({ "role": "moderator" }),
-        );
+            now + chrono::Duration::days(30),
+        )
+        .unwrap();
         assert!(
-            is_endorsement(classify(&types_of(&vec))),
-            "a catalog-minted VEC must classify as an endorsement — got {:?}",
-            types_of(&vec)
+            is_authority(classify(&types_of(&vac))),
+            "a catalog-minted role VAC must classify as an authority credential — got {:?}",
+            types_of(&vac)
         );
 
         let vmc = DTGCredential::new_vmc(
@@ -759,12 +749,17 @@ mod classify_tests {
 
         // A relationship credential is neither, and the recognition gate must
         // ignore it rather than routing it into a slot.
-        let vrc =
-            DTGCredential::new_vrc("did:peer:2.zR1".into(), "did:peer:2.zR2".into(), now, None);
+        let vrc = DTGCredential::new_vrc(
+            "did:peer:2.zR1".into(),
+            IssuerScope::Pairwise,
+            "did:peer:2.zR2".into(),
+            now,
+            None,
+        );
         let vrc_types = types_of(&vrc);
         assert!(
-            !is_endorsement(classify(&vrc_types)) && !is_membership(classify(&vrc_types)),
-            "a VRC must not be routed to the VEC or VMC slot"
+            !is_authority(classify(&vrc_types)) && !is_membership(classify(&vrc_types)),
+            "a VRC must not be routed to the VAC or VMC slot"
         );
     }
 

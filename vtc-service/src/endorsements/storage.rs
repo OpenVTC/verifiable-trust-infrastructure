@@ -185,7 +185,7 @@ mod tests {
             subject_did: subject.into(),
             claim: serde_json::json!({ "level": "expert" }),
             status_list_index: 0,
-            vec_id: format!("urn:uuid:{id}"),
+            credential_id: format!("urn:uuid:{id}"),
             created_at: Utc::now(),
             revoked_at: None,
             valid_until: None,
@@ -197,16 +197,28 @@ mod tests {
     #[tokio::test]
     async fn endorsements_for_subject_filters_by_subject_and_type() {
         let (ks, _audit, _dir) = temp_ks().await;
-        let mine = fresh("CommunityRole", "did:webvh:vtc", "did:key:zA");
+        let mine = fresh(
+            crate::endorsements::VETTER_GRANT_ROW_TYPE,
+            "did:webvh:vtc",
+            "did:key:zA",
+        );
         let other_type = fresh("https://example.com/v1/x", "did:webvh:vtc", "did:key:zA");
-        let other_subject = fresh("CommunityRole", "did:webvh:vtc", "did:key:zB");
+        let other_subject = fresh(
+            crate::endorsements::VETTER_GRANT_ROW_TYPE,
+            "did:webvh:vtc",
+            "did:key:zB",
+        );
         for row in [&mine, &other_type, &other_subject] {
             store_endorsement(&ks, row).await.unwrap();
         }
         mark_revoked(&ks, mine.id).await.unwrap();
-        let rows = endorsements_for_subject(&ks, "did:key:zA", "CommunityRole")
-            .await
-            .unwrap();
+        let rows = endorsements_for_subject(
+            &ks,
+            "did:key:zA",
+            crate::endorsements::VETTER_GRANT_ROW_TYPE,
+        )
+        .await
+        .unwrap();
         assert_eq!(rows.len(), 1, "revoked rows are returned too");
         assert_eq!(rows[0].id, mine.id);
         assert!(rows[0].is_revoked());

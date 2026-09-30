@@ -2,7 +2,7 @@
 # spine (ceremony-pipeline design §4).
 #
 # Role-change is the mutating ceremony: a member's role changes in
-# place (the DID + VMC are unchanged; the role VEC is re-minted). It
+# place (the DID + VMC are unchanged; the role VAC is re-minted). It
 # is the one ceremony whose `allow` may grant `admin` — but only with
 # a verified step-up. The host enforces the rest around this policy:
 # the step-up-for-admin invariant (an admin grant without

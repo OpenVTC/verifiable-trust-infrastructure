@@ -857,7 +857,7 @@ pub(crate) async fn change_role_inner(
     // The role change itself is the **role-change ceremony**, not a field
     // write (#1645). This route used to set `entry.role` and store it, which
     // skipped everything the ceremony does: the operator's `role_change.rego`,
-    // the no-last-admin guard on demotion, the role-VEC re-mint, the
+    // the no-last-admin guard on demotion, the role-VAC re-mint, the
     // serialisation of concurrent promotions — and the host invariants that
     // refuse self-promotion and admin-without-a-step-up. Two doors onto one
     // ACL row disagreed about what a role change costs, and this was the
@@ -1140,7 +1140,7 @@ pub(crate) async fn revoke_entry(
     // Two surfaces own the ACL row and only one of them knows membership
     // exists. The leave ceremony (`vtc/members/admin-remove` →
     // `ceremony::execute::depart`) deletes the ACL, tombstones the member row,
-    // *and* flips the revocation bit on their VMC + VEC. This route deletes the
+    // *and* flips the revocation bit on their VMC + VAC. This route deletes the
     // ACL and stops — so a revoke aimed at a member left a live member row with
     // no authorization and, worse, credentials that still verify for anyone
     // holding them.

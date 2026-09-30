@@ -163,7 +163,7 @@ whoever can check a checkpoint can also forge one. That reduces to the
 status quo.
 
 **Decision: sign with the community Ed25519 signing key** — the same
-`LocalSigner` that issues VMCs and VECs. It gives externally-verifiable
+`LocalSigner` that issues VMCs and role VACs. It gives externally-verifiable
 checkpoints: an auditor holding only the community's DID can confirm
 the log has not been truncated or rewritten, with no shared secret and
 no access to the daemon. That is the property worth having, and it

@@ -11,7 +11,7 @@
 //!   2. applicant `manifest` over DIDComm               → real `manifest_inner`, DCQL criteria
 //!   3. manifest DCQL → `vp_token` via `vta_sdk::vp`     → the OpenVTC **D4** capability
 //!   4. applicant `status` over DIDComm                 → real `status_inner`, still pending
-//!   5. admin `approve` as a signed document              → real ceremony issues the VMC + role VEC
+//!   5. admin `approve` as a signed document              → real ceremony issues the VMC + role VAC
 //!   6. VMC delivered to the applicant **over DIDComm**  → `credential-exchange/issue` lands
 //!
 //! This is the template a downstream consumer (OpenVTC) copies to test its join
@@ -82,7 +82,7 @@ fn init_tracing() {
 
 /// How long to wait for one admission credential to arrive over DIDComm.
 ///
-/// Two credentials are pushed independently (VMC + role VEC), each awaited with
+/// Two credentials are pushed independently (VMC + role VAC), each awaited with
 /// this bound. Sized for a loaded CI runner rather than a developer machine —
 /// see the comment at the assertion for why the previous 20s was marginal.
 const CREDENTIAL_PUSH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -309,7 +309,7 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     assert_eq!(recovered.status, "pending");
 
     // 5. An administrator approves with a signed decision — the real ceremony
-    //    admits the applicant, issues the VMC + role VEC, and pushes them to
+    //    admits the applicant, issues the VMC + role VAC, and pushes them to
     //    the applicant's wallet over DIDComm (`deliver_membership_credentials`).
     let _ = admin_token;
     let admin = common::signed::admin(&mock.vtc).await;
@@ -326,12 +326,12 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     // 6. The membership credential lands at the applicant over DIDComm — the
     //    full push the activation path (T6) needs.
     //
-    //    Admission delivers *two* credentials (the VMC and the role VEC) as
+    //    Admission delivers *two* credentials (the VMC and the role VAC) as
     //    independent one-way messages — `deliver_credentials` opens a fresh
     //    thread per credential, and each is forwarded through the mediator
     //    separately. Arrival order is therefore not guaranteed, so collect both
     //    pushes and look for the VMC among them rather than asserting it is the
-    //    first to land (which flaked in CI when the VEC overtook it).
+    //    first to land (which flaked in CI when the VAC overtook it).
     //    The per-push bound is generous because CI is markedly slower than a
     //    developer machine at exactly this step: the whole test runs in ~6s
     //    locally and ~23s on a runner, and a delivery that takes a couple of
@@ -422,14 +422,14 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
         "VMC subject is the applicant"
     );
 
-    // The role VEC is the other half of the admission push.
+    // The role VAC is the other half of the admission push.
     let vec_cred = delivered
         .iter()
-        .find(|c| has_type(c, "EndorsementCredential"))
-        .unwrap_or_else(|| panic!("a role EndorsementCredential was delivered: {delivered:#?}"));
+        .find(|c| has_type(c, "AuthorityCredential"))
+        .unwrap_or_else(|| panic!("a role AuthorityCredential was delivered: {delivered:#?}"));
     assert_eq!(
         vec_cred["credentialSubject"]["id"], applicant_did,
-        "role VEC subject is the applicant"
+        "role VAC subject is the applicant"
     );
 
     mock.shutdown().await;

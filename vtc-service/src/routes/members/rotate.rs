@@ -48,7 +48,7 @@
 //!    `acl:<new>` with the same role + metadata.
 //! 4. Move the Member row.
 //! 5. Revoke every session keyed on the old DID.
-//! 6. Re-mint VMC + role VEC against the new DID, reusing
+//! 6. Re-mint VMC + role VAC against the new DID, reusing
 //!    the existing status-list slot.
 //! 7. Audit `DidRotated`.
 //!
@@ -94,7 +94,7 @@ use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;
 use crate::credentials::{
-    CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
+    CredentialStatusRef, RoleVacParams, VmcParams, build_role_vac, build_vmc,
 };
 use crate::error::TaskError;
 use crate::members::get_member;
@@ -290,7 +290,7 @@ pub struct FinishResponse {
     pub new_did: String,
     pub method: String,
     pub vmc: JsonValue,
-    pub role_vec: JsonValue,
+    pub role_vac: JsonValue,
 }
 
 /// Complete a rotation `caller_did` opened — the operation behind the
@@ -480,11 +480,11 @@ pub(crate) async fn rotate_inner(
         let _ = delete_session(&state.sessions_ks, &s.session_id).await;
     }
 
-    // 10. Re-mint VMC + role VEC against the new DID. Reuse
+    // 10. Re-mint VMC + role VAC against the new DID. Reuse
     //     the status-list slot. A daemon misconfiguration
     //     leaves the credential pointers null — the operator
     //     can recover via the renewal endpoint.
-    let (vmc_value, vec_value, vmc_id, vec_id) =
+    let (vmc_value, vec_value, vmc_id, vac_id) =
         match reissue_credentials(state, &body.new_did, &acl).await {
             Ok(out) => out,
             Err(e) => {
@@ -504,7 +504,7 @@ pub(crate) async fn rotate_inner(
                 new_did: body.new_did.clone(),
                 method: method.to_string(),
                 vmc_id,
-                role_vec_id: vec_id,
+                role_vac_id: vac_id,
                 prior_role: Some(acl.role.to_string()),
                 rotation_reason: challenge.reason,
             }),
@@ -522,7 +522,7 @@ pub(crate) async fn rotate_inner(
         new_did: body.new_did,
         method: method.to_string(),
         vmc: vmc_value,
-        role_vec: vec_value,
+        role_vac: vec_value,
     })
 }
 
@@ -633,7 +633,7 @@ async fn verify_did_webvh_signature(
         .map_err(|e| format!("signature verification: {e}"))
 }
 
-/// Re-mint VMC + role VEC against the new DID. Reuses the
+/// Re-mint VMC + role VAC against the new DID. Reuses the
 /// existing status-list slot (recovered from the moved
 /// Member row).
 async fn reissue_credentials(
@@ -675,31 +675,31 @@ async fn reissue_credentials(
     )
     .await?;
 
-    let vec_id = format!("urn:uuid:{}", Uuid::new_v4());
-    let role_vec = build_role_vec(
+    let vac_id = format!("urn:uuid:{}", Uuid::new_v4());
+    let role_vac = build_role_vac(
         signer,
-        RoleVecParams::new(new_did, acl.role.clone()).with_id(vec_id.clone()),
+        RoleVacParams::new(new_did, acl.role.clone()).with_id(vac_id.clone()),
     )
     .await?;
 
     // Update Member row pointers, re-read under the members edit lock.
     let vmc_value = serde_json::to_value(&vmc)
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
-    let role_vec_value = serde_json::to_value(&role_vec)
-        .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+    let role_vac_value = serde_json::to_value(&role_vac)
+        .map_err(|e| AppError::Internal(format!("serialise role VAC: {e}")))?;
     // Keep the bodies, not just the ids — see [`crate::members::Member::current_vmc`].
     // Rotation mints a grant naming the new DID, so the acknowledgement the member
     // sent under the old one no longer matches and is dropped.
     crate::members::storage::edit_member(&state.members_ks, new_did, |m| {
-        m.record_issued_credentials(vmc_value.clone(), role_vec_value);
+        m.record_issued_credentials(vmc_value.clone(), role_vac_value);
         true
     })
     .await?
     .ok_or_else(|| AppError::Conflict("the member left while this was in progress".into()))?;
-    let vec_value = serde_json::to_value(&role_vec)
-        .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?;
+    let vec_value = serde_json::to_value(&role_vac)
+        .map_err(|e| AppError::Internal(format!("serialise VAC: {e}")))?;
 
-    Ok((vmc_value, vec_value, Some(vmc_id), Some(vec_id)))
+    Ok((vmc_value, vec_value, Some(vmc_id), Some(vac_id)))
 }
 
 #[allow(dead_code)]

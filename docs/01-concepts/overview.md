@@ -28,7 +28,7 @@ graph TB
         profile[Community profile]
         members[Member roster + ACL]
         policies[Rego policies<br/>join · removal · personhood · ...]
-        creds[Credentials<br/>VMC · VEC · VRC · custom]
+        creds[Credentials<br/>VMC · VAC · VSC · VRC]
         registry[Trust-registry<br/>integration]
         profile --> members
         policies --> members
@@ -95,10 +95,11 @@ an already-running VTA (one VTA can host many VTCs) and manages:
 - **Policy** — embedded `regorus` (in-process Rego evaluator) that
   decides join admission, removal terms, personhood assertion,
   endorsement issuance.
-- **Credentials** — issues W3C Verifiable Membership Credentials
-  (VMC), Verifiable Endorsement Credentials (VEC), Verifiable
-  Relationship Credentials (VRC), and operator-defined custom
-  endorsements. Each credential carries a Bitstring Status List
+- **Credentials** — issues DTG credentials under the v1 context:
+  Verifiable Membership Credentials (VMC), role Verifiable Authority
+  Credentials (VAC), and Verifiable Statement Credentials (VSC) under the
+  predicates the community accepts; accepts member-issued Verifiable
+  Relationship Credentials (VRC). Each credential carries a Bitstring Status List
   index for revocation.
 - **Trust-registry integration** — publishes membership to a
   TRQP-compatible trust registry, drives the `MembershipSyncer`
@@ -113,7 +114,7 @@ an already-running VTA (one VTA can host many VTCs) and manages:
 The VTC does **not** mint its own keys — the VTA's
 provision-integration flow mints the VTC's identity at setup and
 hands over a sealed bundle. The VTC keeps a cached working copy of
-those keys for local signing (every VMC, VEC, status-list
+those keys for local signing (every VMC, VAC, status-list
 credential, install-token JWT, and DIDComm outbound message is
 signed in-process).
 

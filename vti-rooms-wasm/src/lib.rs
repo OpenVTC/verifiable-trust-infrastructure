@@ -568,6 +568,7 @@ mod tests {
     ) -> String {
         let mut vic = dtg_credentials::DTGCredential::new_vic(
             room.to_string(),
+            dtg_credentials::IssuerScope::Public,
             subject.to_string(),
             from,
             until,
@@ -665,6 +666,7 @@ mod tests {
         // The room grants this member `read` and `curate` at its own scope.
         let mut vac = dtg_credentials::DTGCredential::new_vac(
             room.clone(),
+            dtg_credentials::IssuerScope::Public,
             me.did().to_string(),
             room.clone(),
             vec!["read".into(), "curate".into()],
@@ -739,6 +741,7 @@ mod tests {
 
         let mut vac = dtg_credentials::DTGCredential::new_vac(
             room.clone(),
+            dtg_credentials::IssuerScope::Public,
             me.did().to_string(),
             room.clone(),
             vec!["read".into()],
@@ -807,6 +810,7 @@ mod tests {
 
         let mut vac = dtg_credentials::DTGCredential::new_vac(
             room.clone(),
+            dtg_credentials::IssuerScope::Public,
             me.did().to_string(),
             room.clone(),
             vec!["read".into()],
@@ -858,6 +862,7 @@ mod tests {
         let now = chrono::Utc::now();
         let mut vic = dtg_credentials::DTGCredential::new_vic(
             room.clone(),
+            dtg_credentials::IssuerScope::Public,
             me.to_string(),
             now,
             Some(now + chrono::Duration::hours(1)),
@@ -902,6 +907,7 @@ mod tests {
         let now = chrono::Utc::now();
         let mut vic = dtg_credentials::DTGCredential::new_vic(
             room.clone(),
+            dtg_credentials::IssuerScope::Public,
             me.to_string(),
             now - chrono::Duration::minutes(1),
             Some(now + chrono::Duration::hours(1)),
@@ -939,6 +945,7 @@ mod tests {
         let now = chrono::Utc::now();
         let mut vrc = dtg_credentials::DTGCredential::new_vac(
             room.clone(),
+            dtg_credentials::IssuerScope::Public,
             me.to_string(),
             "room".into(),
             vec!["read".into()],
@@ -1032,6 +1039,7 @@ mod tests {
         let now = chrono::Utc::now();
         let mut vic = dtg_credentials::DTGCredential::new_vic(
             room.to_string(),
+            dtg_credentials::IssuerScope::Public,
             me.to_string(),
             now - chrono::Duration::minutes(1),
             Some(now + chrono::Duration::hours(1)),

@@ -379,7 +379,8 @@ mod tests {
             vrc_jsonld: serde_json::json!({
                 "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
                 "issuer": issuer,
-                "credentialSubject": { "id": subject, "endorsement": { "type": "endorses" } }
+                "issuerScope": "pairwise",
+                "credentialSubject": { "id": subject }
             }),
             vrc_digest_multibase: format!("{:x}", id.as_u128()),
             created_at: Utc::now(),

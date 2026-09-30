@@ -347,7 +347,7 @@ const REQUEST_ID: &str = "5b8f1d4e-9c2a-4f6b-8e31-7a0c5d9e2f14";
 const TS: &str = "2026-08-23T00:00:00Z";
 
 /// A signed VC as this service emits one. Opaque to every schema below
-/// (`vmc` / `roleVec` / `vec` / `vic` are all `type: object`), so one shape
+/// (`vmc` / `roleVac` / `vec` / `vic` are all `type: object`), so one shape
 /// serves them all rather than eight near-copies.
 fn credential() -> Value {
     json!({
@@ -381,7 +381,7 @@ fn member_response() -> Value {
         "departurePreference": "tombstone",
         "statusListIndex": 4211,
         "currentVmcId": "urn:uuid:2f9c1d4e-7a3b-4c5d-8e6f-1a2b3c4d5e6f",
-        "currentRoleVecId": "urn:uuid:8ab13f70-2c4d-4e5f-9a0b-1c2d3e4f5a6b",
+        "currentRoleVacId": "urn:uuid:8ab13f70-2c4d-4e5f-9a0b-1c2d3e4f5a6b",
         "extensions": { "org": "acme" },
         "personhood": true,
         "personhoodAssertedAt": TS,
@@ -399,10 +399,14 @@ fn member_response() -> Value {
 /// fixture typed by hand here would keep passing after the projection changed.
 fn member_credentials_response() -> Value {
     let mut member = crate::members::Member::fresh(DID);
-    let mut role_vec = credential();
-    role_vec["id"] = json!("urn:uuid:8ab13f70-2c4d-4e5f-9a0b-1c2d3e4f5a6b");
-    role_vec["type"] = json!(["VerifiableCredential", "EndorsementCredential"]);
-    member.record_issued_credentials(credential(), role_vec);
+    let mut role_vac = credential();
+    role_vac["id"] = json!("urn:uuid:8ab13f70-2c4d-4e5f-9a0b-1c2d3e4f5a6b");
+    role_vac["type"] = json!([
+        "VerifiableCredential",
+        "DTGCredential",
+        "AuthorityCredential"
+    ]);
+    member.record_issued_credentials(credential(), role_vac);
     let mut ack = credential();
     ack["id"] = json!("urn:uuid:c0de1234-5678-4abc-9def-0123456789ab");
     ack["issuer"] = json!(DID);
@@ -1108,7 +1112,7 @@ fn table() -> Vec<Conformance> {
             // them and DOES conform, which is exactly why the witness has to
             // carry the approve arm.
             json!({ "requestId": REQUEST_ID, "status": "approved",
-                    "vmc": credential(), "roleVec": credential() })
+                    "vmc": credential(), "roleVac": credential() })
         ),
         checked!(
             s::join_requests::manifest::v0_1::Payload,
@@ -1283,7 +1287,7 @@ fn table() -> Vec<Conformance> {
             s::members::renew::v0_1::Response,
             json!({}),
             // `RenewResponse` — routes/members/renew.rs:56.
-            json!({ "did": DID, "vmc": credential(), "roleVec": credential(),
+            json!({ "did": DID, "vmc": credential(), "roleVac": credential(),
                     "personhood": true, "personhoodChanged": false })
         ),
         checked!(
@@ -1307,7 +1311,7 @@ fn table() -> Vec<Conformance> {
                     "oldSignature": "9a3f", "newSignature": "1c7b" }),
             // `FinishResponse` — routes/members/rotate.rs:282.
             json!({ "newDid": OTHER_DID, "method": "did:key",
-                    "vmc": credential(), "roleVec": credential() })
+                    "vmc": credential(), "roleVac": credential() })
         ),
         checked!(
             s::members::self_remove::v0_1::Payload,
@@ -1362,14 +1366,14 @@ fn table() -> Vec<Conformance> {
             // The response-conformance layer saw it on real traffic. #1108
             // gives each verb its own task; `revoke` is witnessed below.
             json!({ "did": DID, "personhood": true,
-                    "vmc": credential(), "roleVec": credential() })
+                    "vmc": credential(), "roleVac": credential() })
         ),
         checked!(
             s::members::personhood::revoke::v0_1::Payload,
             s::members::personhood::revoke::v0_1::Response,
             json!({ "did": DID }),
             // `RevokeResponse` — routes/members/personhood.rs:526. `vmc` and
-            // `roleVec` are `skip_serializing_if`, so a revoke that re-mints
+            // `roleVac` are `skip_serializing_if`, so a revoke that re-mints
             // nothing sends neither; the component makes both optional and
             // pins `personhood` to `const false`.
             json!({ "did": DID, "personhood": false })
@@ -1750,7 +1754,7 @@ fn table() -> Vec<Conformance> {
                             serde_json::from_value(json!({
                                 "version": "0.1",
                                 "statementType":
-                                    vta_sdk::protocols::vetting::IDENTITY_VETTING_ENDORSEMENT_TYPE,
+                                    vta_sdk::protocols::vetting::VETTED_PREDICATE,
                                 "minStatements": 2,
                                 "minByMethod": { "inPerson": 1 },
                                 "acceptedMethods": ["inPerson", "video"],

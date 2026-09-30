@@ -10,7 +10,7 @@
       "verified": true,
       "holder": "did:key:z6MkHuman",
       "credentials": [
-        { "type": "WitnessCredential", "issuer": "did:webvh:notary.example", "issuer_trusted": true, "status": "valid", "claims": { "kind": "proximity" } }
+        { "type": "StatementCredential", "predicate": "https://registry.trustoverip.org/dtg/vsc/witnessed/1", "issuer": "did:webvh:notary.example", "issuer_trusted": true, "status": "valid", "claims": { "kind": "proximity" } }
       ]
     },
     "request": { "agreements": {} }

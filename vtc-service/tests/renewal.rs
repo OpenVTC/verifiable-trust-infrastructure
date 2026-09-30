@@ -4,7 +4,7 @@
 //! so every request here goes through the signed door.
 //!
 //! Verifies:
-//! - Happy path re-mints VMC + role VEC and stamps the new
+//! - Happy path re-mints VMC + role VAC and stamps the new
 //!   ids on the Member row.
 //! - Renewal reuses the same status-list slot the member was
 //!   allocated at join time.
@@ -46,7 +46,7 @@ struct Fixture {
 }
 
 async fn build_fixture() -> Fixture {
-    // The fixture verifies re-issued VMC/VEC against this signer, so the
+    // The fixture verifies re-issued VMC/VAC against this signer, so the
     // AppState must issue with this exact instance.
     let signer = Arc::new(LocalSigner::from_ed25519_seed(VTC_DID.into(), &[0xCC; 32]));
     let vtc = TestVtc::builder()
@@ -115,10 +115,10 @@ async fn renew_mints_fresh_vmc_and_role_vec() {
 
     let vmc: affinidi_vc::VerifiableCredential =
         serde_json::from_value(body["vmc"].clone()).unwrap();
-    let role_vec: affinidi_vc::VerifiableCredential =
-        serde_json::from_value(body["roleVec"].clone()).unwrap();
+    let role_vac: affinidi_vc::VerifiableCredential =
+        serde_json::from_value(body["roleVac"].clone()).unwrap();
     fix.signer.verify(&vmc).expect("VMC verifies");
-    fix.signer.verify(&role_vec).expect("VEC verifies");
+    fix.signer.verify(&role_vac).expect("VAC verifies");
 
     // Member row updated with the new ids + the freshly-
     // allocated slot.
@@ -127,7 +127,7 @@ async fn renew_mints_fresh_vmc_and_role_vec() {
         .unwrap()
         .unwrap();
     assert!(m.current_vmc_id.is_some());
-    assert!(m.current_role_vec_id.is_some());
+    assert!(m.current_role_vac_id.is_some());
     assert!(m.status_list_index.is_some());
 }
 

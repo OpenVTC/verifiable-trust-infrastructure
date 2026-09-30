@@ -109,8 +109,11 @@ pub(super) async fn handle_invite(
         Err(resp) => return resp,
     };
 
+    // `issuerScope: public`: the room issues as itself, under the one DID every
+    // party that verifies a room credential already knows — the room's scope.
     let vic = dtg_credentials::DTGCredential::new_vic(
         req.room_id.clone(),
+        dtg_credentials::IssuerScope::Public,
         req.subject.clone(),
         chrono::Utc::now(),
         req.valid_until,
@@ -215,8 +218,11 @@ pub(super) async fn handle_issue_authority(
     // consulted when a chain is verified, so a root that does not expire is authority nobody
     // can withdraw by waiting — it is simply enforced a layer up now, which is where a
     // shape constraint belongs.
+    // `issuerScope: public`: the room governs its own scope and issues the root under
+    // the DID that scope names, which every verifier of the chain resolves.
     let vac = match dtg_credentials::DTGCredential::new_vac(
         req.room_id.clone(),
+        dtg_credentials::IssuerScope::Public,
         req.subject.clone(),
         req.room_id.clone(),
         actions,

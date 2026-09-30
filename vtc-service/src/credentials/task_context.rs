@@ -1,9 +1,11 @@
 //! Trust Task Context Binding — which exchange a credential came out of.
 //!
 //! DTG Credentials gives every credential an optional `taskContext`: the
-//! `threadId` of the trust task exchange it was issued in. On the VWC it is
-//! REQUIRED, because a witness attestation only means anything under the
-//! conditions it was made under, and those live in the exchange.
+//! `threadId` of the trust task exchange it was issued in. A statement under a
+//! predicate whose profile requires it — `witnessed/1` (a VWC), `vetted/1`,
+//! `presented/1` — MUST carry it, with the exchange's `taskDigestMultibase`,
+//! because such an attestation only means anything under the conditions it
+//! was made under, and those live in the exchange.
 //!
 //! Security Considerations 5 names the attack this exists to stop —
 //! **context collapse**: "A credential presented outside the trust task
@@ -46,13 +48,13 @@ use vti_common::error::AppError;
 /// resolved.
 ///
 /// Passed in rather than derived here because the two receipt paths classify a
-/// credential differently — `credentials::ingress` reads the JSON-LD `type`
-/// array, the presentation path reads an SD-JWT-VC `vct` — and neither should
-/// have to agree with the other about how to spell a credential type in order
-/// for the requirement to be enforced.
+/// credential differently — `credentials::ingress` reads the JSON-LD document,
+/// the presentation path reads an SD-JWT-VC's claims — and both derive it from
+/// the statement's predicate through [`requirement_for_predicate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
-    /// The VWC. Absence is a rejection.
+    /// A statement whose predicate profile requires `taskContext` — the VWC
+    /// (`witnessed/1`) among them. Absence is a rejection.
     Required,
     /// Every other DTG credential type: `taskContext` is OPTIONAL, and a
     /// credential without one "MUST be interpretable standing alone,
@@ -144,6 +146,17 @@ pub fn resolve(
     })
 }
 
+/// The requirement a statement's `predicate` places on `taskContext`: REQUIRED
+/// under a core profile that says so (`witnessed/1`, `vetted/1`,
+/// `presented/1`), OPTIONAL otherwise — including for a credential that is not
+/// a statement at all (`predicate` `None`).
+pub fn requirement_for_predicate(predicate: Option<&str>) -> Requirement {
+    match predicate.and_then(dtg_credentials::PredicateProfile::core) {
+        Some(profile) if profile.task_context_required => Requirement::Required,
+        _ => Requirement::Optional,
+    }
+}
+
 /// The rejection for a credential that must carry a `taskContext` and does not.
 ///
 /// `Validation`, not `Forbidden`: nothing about the credential's cryptography
@@ -152,9 +165,9 @@ pub fn resolve(
 /// wrong.
 pub fn missing() -> AppError {
     AppError::Validation(
-        "WitnessCredential is missing the required `taskContext`; DTG Credentials \
-         marks it REQUIRED on this type and a verifier cannot bind the credential \
-         to the exchange it was issued in without it"
+        "statement is missing the required `taskContext`; its predicate profile \
+         (DTG VSC registry) marks it REQUIRED and a verifier cannot bind the \
+         credential to the exchange it was issued in without it"
             .into(),
     )
 }
@@ -164,6 +177,25 @@ mod tests {
     use super::*;
 
     const THREAD: &str = "urn:uuid:0b3f2a8e-1f8c-4a3d-9c1a-6d2f5e7b8c90";
+
+    #[test]
+    fn the_predicate_decides_the_requirement() {
+        for required in [
+            dtg_credentials::WITNESSED_V1,
+            dtg_credentials::VETTED_V1,
+            dtg_credentials::PRESENTED_V1,
+        ] {
+            assert_eq!(
+                requirement_for_predicate(Some(required)),
+                Requirement::Required
+            );
+        }
+        assert_eq!(
+            requirement_for_predicate(Some(dtg_credentials::ENDORSES_V1)),
+            Requirement::Optional
+        );
+        assert_eq!(requirement_for_predicate(None), Requirement::Optional);
+    }
 
     #[test]
     fn a_credential_naming_this_exchange_is_bound_to_it() {

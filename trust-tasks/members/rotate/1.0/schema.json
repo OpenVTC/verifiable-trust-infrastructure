@@ -40,7 +40,7 @@
         "newDid",
         "method",
         "vmc",
-        "roleVec"
+        "roleVac"
       ],
       "properties": {
         "newDid": {
@@ -56,7 +56,7 @@
         "vmc": {
           "type": "object"
         },
-        "roleVec": {
+        "roleVac": {
           "type": "object"
         }
       }

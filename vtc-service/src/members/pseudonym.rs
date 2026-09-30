@@ -195,12 +195,11 @@ pub async fn release_for_member(
 /// Pull the pseudonyms out of a presentation's credentials, keeping only those
 /// issued by a provider this community accepts.
 ///
-/// Two shapes are read, because a community may be its own IDVP or may rely on
-/// a foreign one:
-///
-/// - `credentialSubject.pseudonym` — a plain IDVC, whatever its schema.
-/// - `credentialSubject.endorsement.claim.pseudonym` — this community's own
-///   endorsement machinery, where operator claims live under `endorsement.claim`.
+/// One shape is read: `credentialSubject.pseudonym` of an IDVC, whatever its
+/// schema. That covers a foreign IDVP and this community acting as its own —
+/// the community's `IdentityVerificationCredential`
+/// (`crate::credentials::idvc`) carries its claim members directly in
+/// `credentialSubject`.
 ///
 /// The issuer filter is the load-bearing part. Without it, any issuer could
 /// mint a credential carrying whatever pseudonym they liked — including one
@@ -224,12 +223,6 @@ pub fn extract(vp_claims: &JsonValue, accepted_idvps: &[String]) -> Vec<String> 
             let subject = cred.get("credentialSubject")?;
             subject
                 .get("pseudonym")
-                .or_else(|| {
-                    subject
-                        .get("endorsement")
-                        .and_then(|e| e.get("claim"))
-                        .and_then(|c| c.get("pseudonym"))
-                })
                 .and_then(|p| p.as_str())
                 .filter(|p| !p.is_empty())
                 .map(str::to_owned)
@@ -430,19 +423,13 @@ mod tests {
         assert_eq!(extract(&vp, &[IDVP.into()]), vec!["p-1".to_string()]);
     }
 
-    /// This community's own endorsement shape, where operator claims sit
-    /// under `endorsement.claim`.
+    /// This community as its own IDVP: its `IdentityVerificationCredential`
+    /// carries claim members directly on the subject.
     #[test]
-    fn an_endorsement_pseudonym_is_read() {
+    fn a_community_idvc_pseudonym_is_read() {
         let vp = vp_with(
             COMMUNITY,
-            json!({
-                "id": ALICE,
-                "endorsement": {
-                    "type": "IdentityVerification",
-                    "claim": { "method": "in-person-id", "pseudonym": "p-2" }
-                }
-            }),
+            json!({ "id": ALICE, "method": "inPerson", "pseudonym": "p-2" }),
         );
         assert_eq!(extract(&vp, &[COMMUNITY.into()]), vec!["p-2".to_string()]);
     }

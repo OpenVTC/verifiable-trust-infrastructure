@@ -35,7 +35,7 @@ opa eval -d directory.rego   -i facts.directory.json   'data.vtc.directory.decis
 
 ## Test vectors (sample `input` → expected verdict)
 
-**Join** — `facts.join.json`: a trusted `WitnessCredential`, no code-of-conduct agreement yet.
+**Join** — `facts.join.json`: a trusted witness statement (`StatementCredential` under the `witnessed/1` predicate), no code-of-conduct agreement yet.
 First-match falls past *Verified human* (agreement missing) to *Almost there*:
 ```json
 { "effect": "request_more", "with": { "needs": ["agreed:code-of-conduct"], "presentation_definition": { "id": "vtc-join-coc" } } }

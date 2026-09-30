@@ -12,7 +12,7 @@
 //! Three reasons we wrap:
 //! 1. **Issuer-DID coupling.** Every VC the VTC signs has
 //!    `issuer = vtc_did`. Pairing the DID with the secret in one
-//!    handle means the VMC + VEC builders don't have to take both
+//!    handle means the VMC + VAC builders don't have to take both
 //!    and the caller can't pass mismatched values.
 //! 2. **Assertion-method id.** `secret.id` is the
 //!    `verificationMethod` URI the proof carries. Building it
@@ -352,7 +352,7 @@ impl LocalSigner {
 }
 
 /// `{did}#key-0` — the conventional assertion-method id for the
-/// VTC. Re-exposed here so the VMC + VEC builders compose the
+/// VTC. Re-exposed here so the VMC + VAC builders compose the
 /// same URI without re-deriving it from `LocalSigner` every
 /// time.
 ///

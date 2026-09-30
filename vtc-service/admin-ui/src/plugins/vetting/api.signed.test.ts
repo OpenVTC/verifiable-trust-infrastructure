@@ -17,7 +17,7 @@ import { deleteEndorsementType, registerEndorsementType } from "./api";
 const VTC_DID = "did:webvh:QmScid:community.example:vtc";
 const REGISTER = "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
 const DELETE = "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
-const TYPE = "https://example.org/endorsements/identity-vetting/0.1";
+const TYPE = "https://example.org/predicates/vetted/1";
 
 afterEach(async () => {
   await forgetConsoleKey();

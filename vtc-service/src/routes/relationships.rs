@@ -54,6 +54,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::Utc;
+use dtg_credentials::IssuerScope;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use tracing::info;
@@ -85,6 +86,20 @@ use crate::server::AppState;
 /// relationship; the community declares which it expects (see the community
 /// profile's `relationshipIdentifierDefault`). Both are permanent, supported
 /// forms — neither is a migration state.
+///
+/// Read from the VRC's own `issuerScope` — the issuer's declaration of how
+/// widely its identifier is recognised (DTG Credentials §issuerScope):
+///
+/// | `issuerScope` | form | why |
+/// |---|---|---|
+/// | `pairwise` | `pairwise` | an identifier for this one counterparty — the same claim |
+/// | `directed` | `attributed` | a persona recognised by a set of counterparties; the edge names it |
+/// | `public` | `attributed` | an identifier anyone can recognise, such as a membership DID |
+///
+/// `attributed` has no single `issuerScope` of its own: it means "not
+/// per-counterparty", which `directed` and `public` both are. The policy also
+/// receives the raw `issuer_scope`, so a community that distinguishes the two
+/// can.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentifierForm {
     /// Issued under the member's membership DID. The edge names them and the
@@ -96,6 +111,14 @@ enum IdentifierForm {
 }
 
 impl IdentifierForm {
+    /// The form an `issuerScope` declares — see the type's table.
+    fn from_scope(scope: IssuerScope) -> Self {
+        match scope {
+            IssuerScope::Pairwise => IdentifierForm::Pairwise,
+            IssuerScope::Directed | IssuerScope::Public => IdentifierForm::Attributed,
+        }
+    }
+
     /// Wire value, and the string operator policies match on.
     fn as_str(self) -> &'static str {
         match self {
@@ -274,32 +297,45 @@ pub(crate) async fn publish_inner(
     //    The community declares which it expects; the member
     //    decides each time. Only the *claim* is enforced here —
     //    see the uniqueness check below.
-    let identifier_form = match (&body.pop, issuer_did == signer_did) {
-        (Some(pop), _) => {
-            let vrc_digest = crate::credentials::ingress::digest_multibase(vrc)?;
-            verify_publish_authorization(pop, &issuer_did, &doc.id, &vrc_digest, &resolver)
-                .await
-                .map_err(|e| {
-                    TaskError::declared(
-                        PUBLISH_ERR_VRC_INVALID,
-                        AppError::Forbidden(format!("VrcPublishAuthorizationInvalid: {e}")),
-                    )
-                })?;
-            IdentifierForm::Pairwise
-        }
-        (None, true) => IdentifierForm::Attributed,
-        // Rejected at step 2; restated rather than `unreachable!` so a
+    if let Some(pop) = &body.pop {
+        let vrc_digest = crate::credentials::ingress::digest_multibase(vrc)?;
+        verify_publish_authorization(pop, &issuer_did, &doc.id, &vrc_digest, &resolver)
+            .await
+            .map_err(|e| {
+                TaskError::declared(
+                    PUBLISH_ERR_VRC_INVALID,
+                    AppError::Forbidden(format!("VrcPublishAuthorizationInvalid: {e}")),
+                )
+            })?;
+    } else if issuer_did != signer_did {
+        // Rejected at step 3; restated rather than `unreachable!` so a
         // future edit that moves the gate cannot turn a caller error into
         // a panicking request handler.
-        (None, false) => {
-            return Err(AppError::Forbidden(
-                "VRC issuer is not the document signer and no publish \
-                 authorization (`pop`) was supplied"
-                    .into(),
-            )
-            .into());
-        }
-    };
+        return Err(AppError::Forbidden(
+            "VRC issuer is not the document signer and no publish \
+             authorization (`pop`) was supplied"
+                .into(),
+        )
+        .into());
+    }
+
+    //    The form is the credential's own declaration (`issuerScope`),
+    //    checked against what the community can see of it: the member's
+    //    membership DID is recognised by the whole community, so a VRC
+    //    issued under it cannot truthfully declare `pairwise`.
+    let issuer_scope = vrc_issuer_scope(vrc)?;
+    let identifier_form = IdentifierForm::from_scope(issuer_scope);
+    if identifier_form == IdentifierForm::Pairwise && issuer_did == signer_did {
+        return Err(TaskError::declared(
+            PUBLISH_ERR_VRC_INVALID,
+            AppError::Validation(format!(
+                "VRC declares issuerScope `pairwise` but is issued under your membership DID \
+                 {issuer_did}, which the whole community recognises. Issue a pairwise edge \
+                 under a relationship DID (with `pop`), or declare `public`"
+            )),
+        )
+        .into());
+    }
 
     //    An identifier presented as pairwise must actually be
     //    pairwise. DTG Credentials: "each entity MUST generate a
@@ -360,6 +396,7 @@ pub(crate) async fn publish_inner(
     // their publication of the reciprocal VRC, not our assertion
     // that they exist.
     if identifier_form == IdentifierForm::Attributed
+        && issuer_did == signer_did
         && !subject_current
         && get_acl_entry(&state.acl_ks, &subject_did).await?.is_none()
     {
@@ -376,6 +413,7 @@ pub(crate) async fn publish_inner(
         "vrc": vrc,
         "authenticated_member": { "did": signer_did, "is_current": member_current },
         "identifier_form": identifier_form.as_str(),
+        "issuer_scope": issuer_scope.as_str(),
         // `is_current` on the credential'"'"'s own parties is meaningful only for
         // the attributed form; under pairwise identifiers neither party is
         // resolvable to a member, and is not meant to be.
@@ -1149,6 +1187,16 @@ fn check_vrc_shape(vrc: &JsonValue, now: chrono::DateTime<Utc>) -> Result<(), Ap
     )
 }
 
+/// The `issuerScope` a VRC declares. [`check_vrc_shape`] has already refused
+/// one without a valid value; this reads it.
+fn vrc_issuer_scope(vrc: &JsonValue) -> Result<IssuerScope, AppError> {
+    vrc.get("issuerScope")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| AppError::Validation("VRC carries no `issuerScope`".into()))?
+        .parse::<IssuerScope>()
+        .map_err(|e| AppError::Validation(format!("VRC `issuerScope`: {e}")))
+}
+
 /// Reject anything that is not a conformant VPC before it annotates an edge.
 ///
 /// Same contract as [`check_vrc_shape`], one subtype over: DTG Credentials
@@ -1824,8 +1872,13 @@ mod tests {
         use crate::test_support::dtg_json as body;
 
         let now = Utc::now();
-        let vrc =
-            DTGCredential::new_vrc("did:peer:2.zR1".into(), "did:peer:2.zR2".into(), now, None);
+        let vrc = DTGCredential::new_vrc(
+            "did:peer:2.zR1".into(),
+            IssuerScope::Pairwise,
+            "did:peer:2.zR2".into(),
+            now,
+            None,
+        );
         check_vrc_shape(&body(&vrc), now).expect("a catalog-minted VRC must be publishable");
 
         // Same catalog, different subtype — this endpoint publishes
@@ -1862,6 +1915,7 @@ mod tests {
         let now = Utc::now();
         let expired = DTGCredential::new_vrc(
             "did:peer:2.zR1".into(),
+            IssuerScope::Pairwise,
             "did:peer:2.zR2".into(),
             now - Duration::days(30),
             Some(now - Duration::days(1)),
@@ -1899,6 +1953,7 @@ mod tests {
         let valid_from = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
         let vrc = dtg_credentials::DTGCredential::new_vrc(
             issuer.to_string(),
+            IssuerScope::Public,
             subject.to_string(),
             valid_from,
             None,
@@ -1944,10 +1999,10 @@ mod tests {
             false,
         )
         .with_id("urn:uuid:grant-1");
-        let grant_json = serde_json::to_value(grant.credential()).expect("grant serialises");
+        let grant_json = crate::test_support::dtg_json(&grant);
 
-        let role_vec = serde_json::json!({ "id": "urn:uuid:vec-1" });
-        m.record_issued_credentials(grant_json.clone(), role_vec);
+        let role_vac = serde_json::json!({ "id": "urn:uuid:vac-1" });
+        m.record_issued_credentials(grant_json.clone(), role_vac);
 
         if let Some(bound) = ack {
             // The grant's **wire** form: `DTGCommon` does not model `credentialStatus`, so
@@ -1957,6 +2012,7 @@ mod tests {
             let ack = dtg_credentials::DTGCredential::new_member_vmc_for(
                 &grant_json,
                 did,
+                IssuerScope::Directed,
                 m.joined_at,
                 None,
             )

@@ -11,11 +11,11 @@
       "properties": {
         "vec": {
           "type": "object",
-          "description": "Foreign-issued VerifiableEndorsementCredential. Carries the role grant. Must include a DataIntegrityProof eddsa-jcs-2022 signature."
+          "description": "Foreign-issued role credential: a DTG Verifiable Authority Credential (`AuthorityCredential`) conferring `role:<name>` at the foreign community's DID (the 1.0 member name `vec` predates roles becoming VACs). Must include a DataIntegrityProof eddsa-jcs-2022 signature."
         },
         "vmc": {
           "type": "object",
-          "description": "Foreign-issued VerifiableMembershipCredential. Carries the membership proof + optional credentialStatus for live revocation."
+          "description": "Foreign-issued DTG `MembershipCredential` (VMC). Carries the membership proof + optional credentialStatus for live revocation."
         }
       },
       "additionalProperties": false

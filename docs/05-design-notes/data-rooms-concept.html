@@ -378,7 +378,7 @@
         <g font-family="IBM Plex Mono,monospace" font-size="12.5">
           <rect x="60" y="18" width="600" height="52" rx="9" fill="var(--pine-soft)" stroke="var(--pine)" stroke-width="1.5"/>
           <text x="84" y="42" fill="var(--pine)" font-weight="500">IDENTITY — DTG credentials</text>
-          <text x="84" y="59" fill="var(--pine)" font-size="10.5">VIC · VMC · VAC issued by the room; VRC · VEC · VWC alongside</text>
+          <text x="84" y="59" fill="var(--pine)" font-size="10.5">VIC · VMC · VAC issued by the room; VRC · VSC alongside</text>
           <text x="688" y="49" fill="currentColor" opacity=".85" font-size="11.5">trusted: nobody — verify proofs</text>
 
           <rect x="60" y="83" width="600" height="52" rx="9" fill="none" stroke="var(--amber)" stroke-width="1.5"/>
@@ -405,11 +405,11 @@
     <p class="eyebrow">The new credential</p>
     <h2>The case for the VAC</h2>
     <p>The DTG catalog holds six credentials. Two build edges (VMC, VRC), one invites (VIC),
-    three annotate (VPC, VEC, VWC). <strong>None of them confers authority.</strong> There is no
+    three annotate (VPC, and VSC statements — endorsements and witnesses). <strong>None of them confers authority.</strong> There is no
     credential whose meaning is <em>“the holder may do X here”</em> — and rooms need exactly
     that: read, write, curate, admin, as a grant distinct from membership.</p>
-    <p>The near-miss is instructive. Communities today express role grants as a VEC —
-    <code>endorsement: CommunityRole</code>. But an endorsement is a statement
+    <p>The near-miss is instructive. Communities once expressed role grants as endorsement credentials,
+    and now express them as VACs — <code>role:&lt;name&gt;</code> at the community's DID. An endorsement is a statement
     <em>about</em> someone; a role grant <em>confers</em> something on them. Packing authority
     into the endorsement slot blurs a line the catalog has otherwise kept sharp — the same
     <em>delegation is not authority</em> line that reserved the VAC's name in the first place.

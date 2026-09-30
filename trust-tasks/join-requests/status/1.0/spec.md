@@ -76,7 +76,7 @@ in 1.0 (as on `submit`). The signer must match the request's applicant.
 - `needs` + `presentationDefinition` are projected from the request's
   stored `policy_decision` (the `request_more` verdict
   `realize_join_verdict` persisted). Absent for every other status.
-- `approved` does **not** re-deliver credentials — the VMC + role VEC
+- `approved` does **not** re-deliver credentials — the VMC + role VAC
   were delivered at admit (and returned inline on a REST auto-admit).
   `status` reports the disposition only.
 

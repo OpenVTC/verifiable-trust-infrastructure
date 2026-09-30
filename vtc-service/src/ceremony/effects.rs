@@ -50,7 +50,7 @@ pub enum EffectPlan {
     Project { fields: Map<String, JsonValue> },
     /// Join `allow` — admit `subject` with `role`, then discharge
     /// `obligations` (e.g. `reciprocate_vmc`). The executor writes
-    /// the ACL + Member rows and issues the VMC + role VEC.
+    /// the ACL + Member rows and issues the VMC + role VAC.
     Admit {
         subject: String,
         role: String,
@@ -72,7 +72,7 @@ pub enum EffectPlan {
         subject: String,
         disposition: Option<String>,
     },
-    /// Role-change `allow` — re-mint `subject`'s role VEC at `role`
+    /// Role-change `allow` — re-mint `subject`'s role VAC at `role`
     /// and update the ACL row in place. The DID + VMC are unchanged.
     Remint { subject: String, role: String },
     /// No state change — the verdict was `deny` / `refer` /

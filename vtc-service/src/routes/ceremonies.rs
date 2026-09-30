@@ -254,7 +254,8 @@ fn manifests() -> Vec<CeremonyManifest> {
                         "verified": true,
                         "holder": "did:key:zApplicant",
                         "credentials": [{
-                            "type": "WitnessCredential",
+                            "type": "StatementCredential",
+                            "predicate": "https://registry.trustoverip.org/dtg/vsc/witnessed/1",
                             "issuer": "did:webvh:notary.example",
                             "issuer_trusted": "$field:joinTrusted",
                             "status": "valid",
@@ -352,7 +353,7 @@ fn manifests() -> Vec<CeremonyManifest> {
             nature: "mutating",
             label: "Role change",
             wired: "live",
-            blurb: "A member's role changes in place (the DID + VMC are unchanged; the role VEC is re-minted). The one ceremony whose allow may grant admin — gated by a verified step-up; demotions are guarded by no-last-admin.",
+            blurb: "A member's role changes in place (the DID + VMC are unchanged; the role VAC is re-minted). The one ceremony whose allow may grant admin — gated by a verified step-up; demotions are guarded by no-last-admin.",
             fields: vec![
                 FieldDef {
                     key: "targetRole",

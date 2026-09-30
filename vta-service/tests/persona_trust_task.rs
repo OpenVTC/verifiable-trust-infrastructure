@@ -3785,7 +3785,7 @@ async fn a_derived_value_stays_derived_and_an_endorsement_must_be_held() {
     let cred = StoredCredential {
         id: "cred-colleague-vouch".into(),
         format: CredentialFormat::SdJwtVc,
-        types: vec!["EndorsementCredential".into()],
+        types: vec!["StatementCredential".into()],
         schema_id: None,
         community_did: None,
         context_id: None,

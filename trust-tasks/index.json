@@ -379,21 +379,21 @@
       "status": "retired",
       "path": "relationships/publish/1.0",
       "rest": "POST /v1/relationships",
-      "supersededBy": "https://trusttasks.org/spec/vtc/relationships/publish/0.1"
+      "supersededBy": "https://trusttasks.org/spec/vtc/relationships/publish/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/relationships/list/1.0",
       "status": "retired",
       "path": "relationships/list/1.0",
       "rest": "GET /v1/members/{did}/relationships",
-      "supersededBy": "https://trusttasks.org/spec/vtc/relationships/list/0.1"
+      "supersededBy": "https://trusttasks.org/spec/vtc/relationships/list/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/relationships/revoke/1.0",
       "status": "retired",
       "path": "relationships/revoke/1.0",
       "rest": "DELETE /v1/relationships/{id}",
-      "supersededBy": "https://trusttasks.org/spec/vtc/relationships/revoke/0.1"
+      "supersededBy": "https://trusttasks.org/spec/vtc/relationships/revoke/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/endorsement-types/register/1.0",

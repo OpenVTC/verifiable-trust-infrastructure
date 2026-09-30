@@ -10,13 +10,16 @@
 # The policy returns `allow == true` on either of two evidence
 # shapes:
 #
-#   - a `WitnessCredential` from a non-empty issuer whose digest
-#     the host has bound to an edge this community holds — a third
-#     party vouching for the applicant; or
-#   - an `IdentityVerification` endorsement **this community
-#     itself issued to this applicant** — the in-person vetting
-#     ceremony, where an administrator met the person and issued
-#     the record to the DID they presented.
+#   - a witness statement — a DTG `StatementCredential` under the
+#     predicate `https://registry.trustoverip.org/dtg/vsc/witnessed/1`
+#     (a VWC) — from a non-empty issuer, whose digest the host has
+#     bound to an edge this community holds — a third party vouching
+#     for the applicant; or
+#   - an `IdentityVerificationCredential` **this community itself
+#     issued to this applicant** — the in-person vetting ceremony,
+#     where an administrator met the person and issued the record to
+#     the DID they presented. A plain W3C VC, deliberately not a DTG
+#     credential.
 #
 # Both are intentionally permissive — operators with stricter
 # requirements upload a custom rego. The default lets the
@@ -37,9 +40,12 @@
 #      }
 #    }
 #
-#    Every `WitnessCredential` entry also carries the host-computed
-#    `"witness_binding": { "state": "bound" | "unresolved" | "absent"
-#    | "malformed", "relationship_id": "<uuid>" (bound only) }`.
+#    Every `witnessed/1` statement entry also carries the host-computed
+#    `"witness_binding": { "state": "bound" | "subjectMismatch" |
+#    "unresolved" | "absent" | "malformed", "relationship_id": "<uuid>"
+#    (bound and subjectMismatch only) }`. A statement under a predicate
+#    the community does not accept never reaches this policy: the host
+#    refuses the assertion first.
 #
 # 2. **Renewal-time re-evaluation** (M4.2.2):
 #    {
@@ -68,18 +74,24 @@ asserted if allow
 
 # ── Assert path (default minimal-allow) ────────────────────
 
-# Allow when the applicant presents at least one `WitnessCredential`
-# from a non-empty issuer **whose digest binds to an edge this community
-# holds**.
+# Allow when the applicant presents at least one witness statement
+# (`StatementCredential`, predicate `witnessed/1` — classified by the
+# predicate, never by a type string) from a non-empty issuer **whose
+# digest binds to an edge this community holds**.
 #
 # `witness_binding` is the host's verdict, not the presenter's: the
-# daemon recomputes the VWC's `credentialSubject.digestMultibase` against
-# every relationship credential it stores, comparing decoded digest
-# bytes, and writes one of four states onto each witness entry (DTG
-# Credentials Security Considerations 6, *Digest integrity* — without
-# that recomputation a VWC is not evidence of which edge was witnessed):
+# daemon recomputes the VWC's `credentialSubject.object.digestMultibase`
+# against every relationship credential it stores, comparing decoded
+# digest bytes, checks the `witnessed/1` subject–object rule (the
+# statement's subject is the issuer of the edge), and writes one of five
+# states onto each witness entry (DTG Credentials Security
+# Considerations 6, *Digest integrity* — without that recomputation a
+# VWC is not evidence of which edge was witnessed):
 #
-#   - `bound`      — names an edge held here; carries `relationship_id`.
+#   - `bound`      — names an edge held here, issued by the statement's
+#                    subject; carries `relationship_id`.
+#   - `subjectMismatch` — names an edge held here that someone other than
+#                    the statement's subject issued. Never evidence.
 #   - `unresolved` — a well-formed digest naming no edge held here. Not
 #                    forgery: a witness may attest an edge published on
 #                    another community. Not accepted by this default,
@@ -89,48 +101,52 @@ asserted if allow
 #   - `absent`     — no digest; the VWC witnesses nothing in particular.
 #   - `malformed`  — a digest that is not a `sha2-256` multihash.
 #
-# Before the verdict existed this rule accepted any `WitnessCredential`
+# Before the verdict existed this rule accepted any witness credential
 # with a non-empty issuer (#1068).
 allow if {
 	some i
 	cred := input.vp_claims.credentials[i]
-	"WitnessCredential" in cred.type
+	"StatementCredential" in cred.type
+	cred.credentialSubject.predicate == "https://registry.trustoverip.org/dtg/vsc/witnessed/1"
 	cred.issuer != ""
 	cred.witness_binding.state == "bound"
 }
 
 # ── In-person vetting by this community ────────────────────
 
-# Allow when the applicant presents an endorsement **this community
-# itself issued** recording that a human verified their identity.
+# Allow when the applicant presents an identity-verification credential
+# **this community itself issued** recording that a human verified their
+# identity.
 #
 # This is the in-person ceremony: an administrator meets the person,
-# satisfies themselves the DID in front of them is theirs, and issues
-# an identity-verification endorsement to that DID
-# (`vtc/endorsements/issue/0.1`). The member later presents it here,
-# over a single-use challenge, and the community's own signature on the
-# credential is the evidence.
+# satisfies themselves the DID in front of them is theirs, and issues an
+# `IdentityVerificationCredential` to that DID
+# (`vtc/endorsements/issue/0.1` with `typeUri`
+# `IdentityVerificationCredential`, the one reserved type that mints a
+# plain W3C VC rather than a statement). The member later presents it
+# here, over a single-use challenge, and the community's own signature on
+# the credential is the evidence.
 #
 # Three conditions, and each one is load-bearing:
 #
 #   1. `issuer == input.community_did` — otherwise any issuer anywhere
-#      could mint a credential whose endorsement type happens to read
-#      `IdentityVerification` and unlock personhood in this community.
-#      The endorsement type is a *name*, not an authority.
+#      could mint a credential whose type happens to read
+#      `IdentityVerificationCredential` and unlock personhood in this
+#      community. The type is a *name*, not an authority.
 #   2. `credentialSubject.id == input.applicant_did` — the credential
 #      names the party asserting, not somebody else. The route's
 #      holder-match already binds the presenter; this binds the
 #      credential, so a member cannot present a vetting record issued
 #      about another member.
-#   3. the endorsement type is the identity-verification one — a role
-#      VEC is also community-issued and also names the member, and must
-#      not double as proof that someone met them.
+#   3. the type is the identity-verification one — a role VAC or a VMC
+#      is also community-issued and also names the member, and must not
+#      double as proof that someone met them.
 #
 # DTG Credentials §Identity Verification Credentials puts this squarely
 # in scope: "IDVCs are **not** DTGCredential subtypes — any W3C VC
 # satisfying a VTC/VTN's identity-proofing requirements". A community
 # acting as its own identity-verification provider is the simplest case
-# of that, and it needs no new credential type and no new Trust Task.
+# of that.
 #
 # Note what this rule does **not** establish. DTG Credentials
 # §Personhood Credentials requires governance enforcing *both* real
@@ -152,10 +168,10 @@ allow if {
 allow if {
 	some i
 	cred := input.vp_claims.credentials[i]
-	"EndorsementCredential" in cred.type
+	"IdentityVerificationCredential" in cred.type
+	not "DTGCredential" in cred.type
 	cred.issuer == input.community_did
 	cred.credentialSubject.id == input.applicant_did
-	cred.credentialSubject.endorsement.type == "IdentityVerification"
 }
 
 # ── Renewal-time re-eval (preserve existing assertion) ─────

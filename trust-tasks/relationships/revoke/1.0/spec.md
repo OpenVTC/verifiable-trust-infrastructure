@@ -2,7 +2,7 @@
 id: https://trusttasks.org/openvtc/vtc/relationships/revoke/1.0
 title: VTC — VRC Revoke
 status: retired
-supersededBy: https://trusttasks.org/spec/vtc/relationships/revoke/0.1
+supersededBy: https://trusttasks.org/spec/vtc/relationships/revoke/0.2
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

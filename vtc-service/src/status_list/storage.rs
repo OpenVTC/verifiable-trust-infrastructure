@@ -180,7 +180,7 @@ static STATUS_LIST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 ///
 /// Most callers want [`with_locked`]. Reach for the raw guard only when
 /// async work must sit between the allocate and the store while still
-/// excluding other writers — e.g. the admit path builds the VMC/VEC
+/// excluding other writers — e.g. the admit path builds the VMC/VAC
 /// between allocating a slot and persisting it, so a build failure
 /// doesn't burn the slot.
 ///

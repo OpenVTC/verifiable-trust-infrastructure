@@ -2,7 +2,7 @@
 //! holder — over whichever transport the holder speaks.
 //!
 //! When the VTC issues a credential to a member — at join auto-admit, at
-//! admin-approve, or when a role change re-mints the role VEC — the holder needs
+//! admin-approve, or when a role change re-mints the role VAC — the holder needs
 //! to actually *receive* it. The REST surfaces return the credential inline in
 //! their response (for out-of-band hand-off), but a holder that interacted over
 //! messaging, or one that's offline at approval/role-change time, has no inline
@@ -33,14 +33,14 @@ use crate::ceremony::AdmitOutcome;
 use crate::server::AppState;
 
 /// Deliver the credentials a holder earned by being admitted — the
-/// MembershipCredential and role EndorsementCredential of an [`AdmitOutcome`] —
+/// MembershipCredential and role AuthorityCredential of an [`AdmitOutcome`] —
 /// into the holder's wallet. See [`deliver_credentials`].
 pub(crate) async fn deliver_membership_credentials(
     state: &AppState,
     holder_did: &str,
     admit: &AdmitOutcome,
 ) -> Result<(), AppError> {
-    deliver_credentials(state, holder_did, &[&admit.vmc, &admit.role_vec]).await
+    deliver_credentials(state, holder_did, &[&admit.vmc, &admit.role_vac]).await
 }
 
 /// Deliver each of `credentials` to `holder_did`, one signed
@@ -55,7 +55,7 @@ pub(crate) async fn deliver_membership_credentials(
 ///
 /// This loop used to be `push_to_holder(..).await?`, which abandoned every
 /// *remaining* credential the moment one failed. Admission delivers two — the
-/// VMC and the role VEC — so a transient failure packing the second (holder DID
+/// VMC and the role VAC — so a transient failure packing the second (holder DID
 /// resolution, say) meant the member got their membership credential, never got
 /// their role credential, and never would: the enqueue that makes delivery
 /// durable is the very step that was skipped, so there was nothing to retry.
@@ -88,7 +88,7 @@ pub(crate) async fn deliver_credentials(
         };
 
         if let Err(e) = push.await {
-            // Name the credential by type, not just position: "the role VEC did
+            // Name the credential by type, not just position: "the role VAC did
             // not go" is actionable where "credential 2 of 2" is a puzzle.
             let kind = credential_kind(credential);
             tracing::warn!(
@@ -263,7 +263,7 @@ mod tests {
     ///
     /// The loop was `push_to_holder(..).await?`, so the first failure returned
     /// and every remaining credential was silently dropped. Admission delivers
-    /// two — the VMC and the role VEC — so a transient failure on the second
+    /// two — the VMC and the role VAC — so a transient failure on the second
     /// left the member holding one credential, with no retry possible: the
     /// enqueue that makes delivery durable is the step that was skipped. The
     /// caller only `warn!`s, so nothing surfaced but a log line.
@@ -283,15 +283,15 @@ mod tests {
             "credentialSubject": { "id": "did:key:zHolder" },
         }))
         .expect("parse VMC");
-        let vec_: VerifiableCredential = serde_json::from_value(json!({
+        let vac: VerifiableCredential = serde_json::from_value(json!({
             "@context": ["https://www.w3.org/ns/credentials/v2"],
-            "type": ["VerifiableCredential", "EndorsementCredential"],
+            "type": ["VerifiableCredential", "AuthorityCredential"],
             "issuer": "did:web:vtc.example",
             "credentialSubject": { "id": "did:key:zHolder" },
         }))
-        .expect("parse VEC");
+        .expect("parse VAC");
 
-        let err = deliver_credentials(&tv.state, "did:key:zHolder", &[&vmc, &vec_])
+        let err = deliver_credentials(&tv.state, "did:key:zHolder", &[&vmc, &vac])
             .await
             .expect_err("messaging is not running, so both pushes fail");
         let msg = err.to_string();
@@ -301,7 +301,7 @@ mod tests {
             "the first credential must be named: {msg}"
         );
         assert!(
-            msg.contains("EndorsementCredential"),
+            msg.contains("AuthorityCredential"),
             "the second must be attempted too — naming only the first is the \
              short-circuit this test exists to catch: {msg}"
         );

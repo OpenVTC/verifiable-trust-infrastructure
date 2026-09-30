@@ -346,7 +346,7 @@ mod tests {
     fn requirements(min: u32) -> VettingRequirements {
         serde_json::from_value(json!({
             "version": "0.1",
-            "statementType": "https://firstperson.network/endorsements/identity-vetting/0.1",
+            "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
             "minStatements": min,
             "acceptedMethods": ["inPerson", "video"],
             "eligibleVetters": { "role": "vetter" }

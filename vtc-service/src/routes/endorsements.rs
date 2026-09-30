@@ -1,13 +1,25 @@
-//! `vtc/endorsements/{issue,list,show,revoke}/0.1` — custom endorsement
+//! `vtc/endorsements/{issue,list,show,revoke}/0.1` — community statement
 //! issuance, retrieval and revocation (Phase 4 M4.8.2-4). All four are signed
 //! documents only, dispatched by `trust_tasks::member_tasks`: each bearer REST
 //! route had no caller once the spine dispatched it (issuance, #1809;
 //! retrieval and revocation, tt-tf#689) and was removed.
 //!
 //! - `vtc/endorsements/issue/0.1` — issue. Auth: Admin OR Issuer role.
-//!   Consults the type registry (M4.8.1). Allocates a slot on the shared
-//!   `Revocation` status list (D8 review), builds + signs the VEC, persists
-//!   the row, emits `CustomEndorsementIssued` + `VecIssued`.
+//!   `typeUri` is a predicate IRI the community registered
+//!   (`vtc/endorsement-types/register/0.1`); anything else is
+//!   `typeNotRegistered`, and a registered predicate whose profile requires
+//!   `taskContext` (`vetted/1`, `witnessed/1`, `presented/1`) is
+//!   `predicateNotIssuable`. Allocates a slot on the shared `Revocation`
+//!   status list (D8 review), builds + signs a DTG **Verifiable Statement
+//!   Credential** — issuer the community, `issuerScope` `public`,
+//!   `credentialSubject.predicate` = `typeUri`, `object.value` = `claim` —
+//!   persists the row, emits `CustomEndorsementIssued` + `VecIssued`.
+//!
+//!   One reserved `typeUri`, [`IDENTITY_VERIFICATION_CREDENTIAL_TYPE`], mints
+//!   an identity-verification credential instead: a plain W3C VC, deliberately
+//!   not a DTG credential, on the same status list and revocable through the
+//!   same task (see [`crate::credentials::idvc`] for why this path, and the
+//!   divergence it records).
 //! - `vtc/endorsements/list/0.1` — paginated list. Auth: Admin OR Issuer.
 //! - `vtc/endorsements/show/0.1` — one endorsement by id.
 //! - `vtc/endorsements/revoke/0.1` — revoke. Auth: Admin OR the original
@@ -19,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::{error, info};
 use uuid::Uuid;
-use vta_sdk::protocols::members::ENDORSEMENT_CREDENTIAL_TYPE;
+use vta_sdk::protocols::members::STATEMENT_CREDENTIAL_TYPE;
 use vti_common::audit::{
     AuditEvent, CredentialIssuedData, CustomEndorsementIssuedData, CustomEndorsementRevokedData,
     StatusListFlippedData,
@@ -28,7 +40,11 @@ use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated};
 
 use crate::acl::get_acl_entry;
-use crate::credentials::{CredentialStatusRef, CustomEndorsementParams, build_custom_endorsement};
+use crate::credentials::idvc::{
+    IDENTITY_VERIFICATION_CREDENTIAL_TYPE, issue_identity_verification,
+};
+use crate::credentials::statement::DEFAULT_STATEMENT_VALIDITY;
+use crate::credentials::{CredentialStatusRef, StatementParams, build_statement};
 use crate::endorsement_types::get_type;
 use crate::endorsements::{
     Endorsement, get_endorsement, list_endorsements_matching, mark_revoked, store_endorsement,
@@ -48,6 +64,10 @@ use trust_tasks_rs::specs::vtc::endorsements as end_spec;
 /// `vtc/endorsements/issue:typeNotRegistered`.
 pub const ISSUE_ERR_TYPE_NOT_REGISTERED: &str =
     end_spec::issue::v0_1::error_codes::TYPE_NOT_REGISTERED.code;
+/// `vtc/endorsements/issue:predicateNotIssuable` — registered, but the
+/// predicate's profile requires a task citation this task cannot carry.
+pub const ISSUE_ERR_PREDICATE_NOT_ISSUABLE: &str =
+    end_spec::issue::v0_1::error_codes::PREDICATE_NOT_ISSUABLE.code;
 /// `vtc/endorsements/issue:claimTooLarge` — over the 8 KiB cap.
 pub const ISSUE_ERR_CLAIM_TOO_LARGE: &str =
     end_spec::issue::v0_1::error_codes::CLAIM_TOO_LARGE.code;
@@ -115,7 +135,8 @@ pub struct EndorsementRow {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
-/// A pointer to the issued VEC: its identifier and lifetime, not its bytes.
+/// A pointer to the issued credential: its identifier and lifetime, not its
+/// bytes.
 ///
 /// #1098 mapped this to the registry-wide `IssuedCredential`, whose
 /// `credential` and `expiresAt` are required and neither of which is on the
@@ -144,7 +165,7 @@ impl From<Endorsement> for EndorsementRow {
             type_uri: e.endorsement_type,
             subject_did: e.subject_did,
             issued: CredentialReference {
-                credential_id: e.vec_id,
+                credential_id: e.credential_id,
                 issued_at: Some(e.created_at),
                 // Recorded since rows gained `validUntil`; absent on older rows.
                 expires_at: e.valid_until,
@@ -186,17 +207,65 @@ pub(crate) async fn issue_inner(
         .as_ref()
         .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
 
-    // 2. Type registry consultation (D4 review).
-    let Some(endorsement_type) =
-        get_type(&state.endorsement_types_ks, &body.endorsement_type).await?
-    else {
-        return Err(TaskError::declared(
-            ISSUE_ERR_TYPE_NOT_REGISTERED,
-            AppError::Validation(format!(
-                "endorsement-type-not-registered: '{}' is not in the endorsement type registry",
-                body.endorsement_type
-            )),
-        ));
+    let identity_verification = body.endorsement_type == IDENTITY_VERIFICATION_CREDENTIAL_TYPE;
+
+    // The IDVC's claim sits beside `credentialSubject.id`, so it must not name
+    // `id` itself. The spec declares that refusal as `claimSchemaViolation`, the
+    // same code a registered claimSchema raises. (The payload schema already
+    // requires an object; the first arm is defence in depth.)
+    if identity_verification {
+        let problem = match body.claim.as_object() {
+            None => Some("an identity-verification claim must be a JSON object"),
+            Some(c) if c.contains_key("id") => {
+                Some("an identity-verification claim cannot name `id`: the subject is `subjectDid`")
+            }
+            Some(_) => None,
+        };
+        if let Some(msg) = problem {
+            return Err(TaskError::declared(
+                ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
+                AppError::Validation(msg.into()),
+            ));
+        }
+    }
+
+    // 2. Predicate registry consultation (D4 review). The IDVC type is
+    //    reserved — never registrable, since it is not a predicate — and is
+    //    dispatched before the lookup.
+    let registered = if identity_verification {
+        None
+    } else {
+        let Some(registered) =
+            get_type(&state.endorsement_types_ks, &body.endorsement_type).await?
+        else {
+            return Err(TaskError::declared(
+                ISSUE_ERR_TYPE_NOT_REGISTERED,
+                AppError::Validation(format!(
+                    "endorsement-type-not-registered: '{}' is not a predicate registered with \
+                     this community",
+                    body.endorsement_type
+                )),
+            ));
+        };
+        // A registered predicate whose profile requires `taskContext` (and
+        // `taskDigestMultibase`) cannot be minted here: this task carries no
+        // task citation, and those statements are made by the party that ran
+        // the exchange — `vetted/1` by an eligible vetter, never by the
+        // community (vtc/endorsements/issue/0.1, Conformance 2).
+        if crate::credentials::task_context::requirement_for_predicate(Some(&body.endorsement_type))
+            == crate::credentials::task_context::Requirement::Required
+        {
+            return Err(TaskError::declared(
+                ISSUE_ERR_PREDICATE_NOT_ISSUABLE,
+                AppError::Validation(format!(
+                    "'{}' is registered, but its profile requires a taskContext citing the \
+                     exchange the statement was made in; the community cannot issue it \
+                     through vtc/endorsements/issue",
+                    body.endorsement_type
+                )),
+            ));
+        }
+        Some(registered)
     };
 
     // 3. Body-side validation. The builder enforces the same
@@ -213,9 +282,10 @@ pub(crate) async fn issue_inner(
             AppError::Validation(format!("claim exceeds {CLAIM_MAX_BYTES} bytes")),
         ));
     }
-    // A type that declares a `claimSchema` binds every claim of it
-    // (`vtc/endorsements/issue/0.1`, Conformance 3). Registration stored the
-    // schema, but until #1600 nothing read it back, so any claim was accepted.
+    // A predicate that declares a `claimSchema` binds every claim of it
+    // (`vtc/endorsements/issue/0.1`, Conformance 3): the schema of the
+    // statement's `object.value`. Registration stored the schema, but until
+    // #1600 nothing read it back, so any claim was accepted.
     //
     // A stored schema that will not compile is the type's fault, not this
     // claim's, and it is a 500 — no declared code fits, and `claimSchemaViolation`
@@ -224,7 +294,7 @@ pub(crate) async fn issue_inner(
     // schema since this change, so reaching here means a row written before it;
     // the answer names the type and says the type must be re-registered, so the
     // operator is not left reading "internal error" against a well-formed claim.
-    if let Some(schema) = endorsement_type.claim_schema.as_ref() {
+    if let Some(schema) = registered.as_ref().and_then(|t| t.claim_schema.as_ref()) {
         if let Err(detail) = crate::schemas::check_schema(schema) {
             error!(
                 type_uri = %body.endorsement_type,
@@ -286,33 +356,43 @@ pub(crate) async fn issue_inner(
     };
     let status_ref = CredentialStatusRef::revocation(list_credential_id, slot);
 
-    // 6. Build + sign the VEC.
+    // 6. Build + sign the credential: a VSC under the registered predicate,
+    //    or — for the reserved type — an IDVC.
     let id = Uuid::new_v4();
-    let vec_id = format!("urn:uuid:{id}");
+    let credential_id = format!("urn:uuid:{id}");
     let validity = body
         .validity_seconds
         .map(|s| Duration::seconds(s as i64))
-        .unwrap_or_else(|| {
-            crate::credentials::custom_endorsement::DEFAULT_CUSTOM_ENDORSEMENT_VALIDITY
-        });
-    let params = CustomEndorsementParams::new(
-        &body.subject_did,
-        &body.endorsement_type,
-        body.claim.clone(),
-        status_ref,
-    )
-    .with_id(&vec_id)
-    .with_validity(validity);
-    let vec = build_custom_endorsement(signer, params).await?;
+        .unwrap_or(DEFAULT_STATEMENT_VALIDITY);
+    let (credential_value, credential_type) = if identity_verification {
+        let idvc = issue_identity_verification(
+            signer,
+            &body.subject_did,
+            &body.claim,
+            &credential_id,
+            &status_ref,
+            validity,
+        )
+        .await?;
+        (idvc, IDENTITY_VERIFICATION_CREDENTIAL_TYPE)
+    } else {
+        let params = StatementParams::new(
+            &body.subject_did,
+            &body.endorsement_type,
+            body.claim.clone(),
+            status_ref,
+        )
+        .with_id(&credential_id)
+        .with_validity(validity);
+        let vsc = build_statement(signer, params).await?;
+        let vsc = serde_json::to_value(&vsc)
+            .map_err(|e| AppError::Internal(format!("serialise statement: {e}")))?;
+        (vsc, STATEMENT_CREDENTIAL_TYPE)
+    };
 
     // Issue-time schema validation: enforce a registered credentialSchema for
-    // this endorsement type, if any (no-op when none is registered).
-    crate::schemas::validate_issued(
-        &state.schemas_ks,
-        &serde_json::to_value(&vec)
-            .map_err(|e| AppError::Internal(format!("endorsement -> value: {e}")))?,
-    )
-    .await?;
+    // this credential type, if any (no-op when none is registered).
+    crate::schemas::validate_issued(&state.schemas_ks, &credential_value).await?;
 
     // 7. Persist the Endorsement row.
     let now = Utc::now();
@@ -324,7 +404,7 @@ pub(crate) async fn issue_inner(
         subject_did: body.subject_did.clone(),
         claim: body.claim.clone(),
         status_list_index: slot,
-        vec_id: vec_id.clone(),
+        credential_id: credential_id.clone(),
         created_at: now,
         revoked_at: None,
         valid_until: Some(valid_until),
@@ -333,8 +413,8 @@ pub(crate) async fn issue_inner(
     };
     store_endorsement(&state.endorsements_ks, &end).await?;
 
-    // 8. Audit — two envelopes (custom endorsement + generic
-    //    VEC issuance accounting).
+    // 8. Audit — two envelopes (the endorsement row + generic
+    //    credential issuance accounting).
     audit_writer
         .write(
             actor_did,
@@ -351,8 +431,8 @@ pub(crate) async fn issue_inner(
             actor_did,
             Some(&body.subject_did),
             AuditEvent::VecIssued(CredentialIssuedData {
-                credential_id: vec_id.clone(),
-                credential_type: ENDORSEMENT_CREDENTIAL_TYPE.into(),
+                credential_id: credential_id.clone(),
+                credential_type: credential_type.into(),
                 valid_from: rfc3339(now),
                 valid_until: rfc3339(valid_until),
                 status_list_index: Some(slot),
@@ -365,22 +445,20 @@ pub(crate) async fn issue_inner(
         endorsement_type = %body.endorsement_type,
         subject = %body.subject_did,
         slot,
-        "custom endorsement issued"
+        "community statement issued"
     );
 
-    let vec_value = serde_json::to_value(&vec)
-        .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?;
     Ok(IssueResponse {
         endorsement: EndorsementRow {
             // `issue` knows the expiry it just computed; a read does not.
             issued: CredentialReference {
-                credential_id: vec_id,
+                credential_id,
                 issued_at: Some(now),
                 expires_at: Some(valid_until),
             },
             ..end.into()
         },
-        credential: vec_value,
+        credential: credential_value,
     })
 }
 
@@ -580,7 +658,7 @@ pub(crate) async fn revoke_inner(
 
     // A vetter whose grant this was, holding no other, no longer has a profile
     // to publish (`vtc/vetting/vetters/profile/0.1`, Conformance 5).
-    if row.endorsement_type == vta_sdk::protocols::vetting::COMMUNITY_ROLE_ENDORSEMENT_TYPE {
+    if row.endorsement_type == crate::endorsements::VETTER_GRANT_ROW_TYPE {
         crate::vetting::profiles::after_grant_revoked(state, actor_did, &row.subject_did).await?;
     }
 
@@ -597,7 +675,7 @@ pub(crate) async fn revoke_inner(
     Ok(RevokeResponse {
         endorsement_id: id.to_string(),
         revocation: RevocationDetail {
-            credential_id: row.vec_id.clone(),
+            credential_id: row.credential_id.clone(),
             revoked_at: rfc3339(updated.revoked_at.unwrap_or_else(Utc::now)),
         },
         status_list_index: row.status_list_index,

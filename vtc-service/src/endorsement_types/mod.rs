@@ -1,69 +1,149 @@
-//! Operator-uploaded endorsement type registry — Phase 4
-//! M4.8.0 (D4 planning review).
+//! The community's **predicate accept list** — Phase 4 M4.8.0 (D4 planning
+//! review), kept under its original name, `vtc/endorsement-types/*`.
 //!
-//! ## Why a separate keyspace
+//! ## What an entry is
 //!
-//! Per planning-review D4, only registered endorsement types
-//! are issuable. The issuance path (M4.8.2) consults this
-//! registry at every POST — refusing unknown types with a
-//! `422 endorsement-type-not-registered`. The deletion path
-//! (M4.8.1) refuses to drop a type while live endorsements
-//! still reference it (`409 endorsement-type-in-use`).
+//! A registered `typeUri` is a **predicate IRI** the community accepts: a
+//! DTG VSC predicate registry IRI (`https://registry.trustoverip.org/dtg/vsc/
+//! …/1`) or an IRI in a namespace the community controls, defined in the
+//! registry's predicate definition format (vtc/_shared/0.1/endorsement-type).
+//! A DTG statement carries its meaning in `credentialSubject.predicate`; the
+//! registered set is what this community will honour:
 //!
-//! Workspace-reserved types — currently only `"CommunityRole"`
-//! (VEC-managed; see [`crate::credentials::vec`]) — are
-//! refused at registration time so they can never enter the
-//! issuance path.
+//! - **Issuance** (`vtc/endorsements/issue/0.1`) mints a VSC only under a
+//!   registered predicate, refusing anything else with `typeNotRegistered`.
+//! - **Verification** of presented statements fails closed through
+//!   [`accept_list`], a `dtg_credentials::PredicateAcceptList` built from the
+//!   registered set: a statement under an unlisted predicate is rejected,
+//!   never processed as a generic statement.
+//!
+//! The deletion path (M4.8.1) refuses to drop a predicate while live
+//! statements still reference it (`409 endorsement-type-in-use`).
+//!
+//! Roles are not endorsements and are never registered here: a role is
+//! conferred by a VAC (vtc/vetting/vetters/grant/0.1). URIs the implementation
+//! reserves for its own records ([`RESERVED_TYPE_URIS`]) are refused at
+//! registration; so is anything that is not an absolute predicate IRI
+//! (`invalidUri`).
 
 pub mod storage;
 
 use chrono::{DateTime, Utc};
+use dtg_credentials::PredicateAcceptList;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 pub use storage::{
     ENDORSEMENT_TYPES_PREFIX, all_types, delete_type, get_type, list_types, store_type, type_exists,
 };
 
-/// Reserved type URIs that operators cannot register because
-/// they collide with workspace-managed semantics. Phase 4
-/// only reserves `"CommunityRole"` — the VEC role-grant
-/// type. Adding more reserved names is additive (the
-/// registrar refuses; existing rows on disk that happen to
-/// share a reserved name keep working — operators upgraded
-/// across the reservation boundary aren't broken).
-pub const RESERVED_TYPE_URIS: &[&str] = &["CommunityRole"];
+/// `typeUri`s this implementation reserves for its own `endorsements:` rows,
+/// refused at registration (`vtc/endorsement-types/register:reserved`): the
+/// vetter-grant row type (`role:vetter`) and the identity-verification
+/// credential type. Neither is a predicate IRI, so the IRI check would refuse
+/// them too; naming them here gives the operator the more useful answer.
+pub const RESERVED_TYPE_URIS: &[&str] = &[
+    crate::endorsements::VETTER_GRANT_ROW_TYPE,
+    crate::credentials::idvc::IDENTITY_VERIFICATION_CREDENTIAL_TYPE,
+];
 
-/// The endorsement type the default `personhood.rego` accepts as
-/// in-person vetting evidence.
+/// The predicates a fresh community accepts: the four core profiles of the
+/// DTG VSC predicate registry. Seeded once, like the schema registry
+/// defaults; an operator deletes what the community does not honour.
 ///
-/// Deliberately **not** in [`RESERVED_TYPE_URIS`]. Reserved means
-/// "operators may not register this", and the whole flow depends on an
-/// operator registering it: `vtc/endorsement-types/register/0.1` first,
-/// then `vtc/endorsements/issue/0.1` to each vetted member. Reserving it
-/// would make the issuance path refuse the very credential the policy
-/// looks for.
-///
-/// It is a constant here so the Rust side, the default policy module and
-/// the operator docs cannot drift apart — the failure mode of a
-/// mismatched string is a community that vets members correctly and then
-/// denies every assertion, with nothing in the logs naming the typo.
-/// [`crate::policy::default`]'s tests pin the two together.
-///
-/// The name is the DTG spec's, not ours: §Identity Verification
-/// Credentials defines an IDVC as any W3C VC meeting a community's
-/// identity-proofing requirements, explicitly *not* a `DTGCredential`
-/// subtype. Issuing it as an endorsement keeps it a plain W3C VC that
-/// happens to be revocable through the community's existing status list.
-pub const IDENTITY_VERIFICATION_TYPE_URI: &str = "IdentityVerification";
+/// `vetted/1` is what a peer-vetting criterion counts (`statementType`),
+/// `witnessed/1` what a witnessed relationship presents, `endorses/1` the
+/// favourable-claim predicate `vtc/endorsements/issue/0.1` mints a VEC under,
+/// and `presented/1` the witnessed-presentation counterpart.
+pub const DEFAULT_ACCEPTED_PREDICATES: [&str; 4] = [
+    dtg_credentials::ENDORSES_V1,
+    dtg_credentials::WITNESSED_V1,
+    dtg_credentials::VETTED_V1,
+    dtg_credentials::PRESENTED_V1,
+];
 
-/// A registered endorsement type. Stored verbatim; the
-/// registrar route enforces validation at insert time.
+/// Build the community's fail-closed accept list from its registered
+/// predicates.
+///
+/// A stored row whose `typeUri` is not a predicate IRI — one registered before
+/// registration checked — is skipped rather than failing the whole list: it
+/// can never match a statement's predicate, so leaving it out accepts nothing
+/// it would have accepted, and one bad row must not make every statement
+/// unverifiable. It is logged so the operator can delete it.
+pub async fn accept_list(ks: &KeyspaceHandle) -> Result<PredicateAcceptList, AppError> {
+    let iris: Vec<String> = all_types(ks)
+        .await?
+        .into_iter()
+        .filter_map(
+            |t| match dtg_credentials::check_predicate_iri(&t.type_uri) {
+                Ok(()) => Some(t.type_uri),
+                Err(e) => {
+                    tracing::warn!(
+                        type_uri = %t.type_uri,
+                        error = %e,
+                        "registered endorsement type is not a predicate IRI; it accepts nothing — \
+                         delete it"
+                    );
+                    None
+                }
+            },
+        )
+        .collect();
+    PredicateAcceptList::from_iris(iris)
+        .map_err(|e| AppError::Internal(format!("predicate accept list: {e}")))
+}
+
+/// The marker recording that [`seed_defaults`] has run, so a default an
+/// operator deleted does not come back on the next boot. Outside
+/// [`ENDORSEMENT_TYPES_PREFIX`], so no listing sees it.
+const SEEDED_MARKER: &[u8] = b"meta:predicates-seeded:v1";
+
+/// The DID recorded as the registrant of a seeded default — the same
+/// system author the schema registry's defaults carry.
+const SEED_AUTHOR: &str = "did:vtc:system";
+
+/// Seed [`DEFAULT_ACCEPTED_PREDICATES`] once, at community boot. Each default
+/// already registered is left as the operator has it; after the first run the
+/// marker keeps an operator's deletions deleted. Returns how many were added.
+pub async fn seed_defaults(ks: &KeyspaceHandle) -> Result<usize, AppError> {
+    if ks.get_raw(SEEDED_MARKER.to_vec()).await?.is_some() {
+        return Ok(0);
+    }
+    let now = Utc::now();
+    let mut added = 0;
+    for iri in DEFAULT_ACCEPTED_PREDICATES {
+        if type_exists(ks, iri).await? {
+            continue;
+        }
+        store_type(
+            ks,
+            &EndorsementType {
+                type_uri: iri.to_string(),
+                claim_schema: None,
+                description: Some(
+                    "DTG VSC predicate registry core profile (seeded default)".into(),
+                ),
+                created_at: now,
+                created_by_did: SEED_AUTHOR.to_string(),
+            },
+        )
+        .await?;
+        added += 1;
+    }
+    ks.insert_raw(SEEDED_MARKER.to_vec(), now.to_rfc3339().into_bytes())
+        .await?;
+    Ok(added)
+}
+
+/// A registered predicate (historically "endorsement type"). Stored
+/// verbatim; the registrar route enforces validation at insert time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct EndorsementType {
-    /// The type URI. Primary key — URL-encoded into the
+    /// The predicate IRI. Primary key — URL-encoded into the
     /// keyspace key.
     pub type_uri: String,
     // Binding since #1649: `vtc/endorsements/issue/0.1` validates the claim
@@ -78,8 +158,9 @@ pub struct EndorsementType {
     // The doc comment below is rendered into `admin-ui/openapi.json` (and from
     // there into `wire.ts`), so it stays short and operator-facing; the history
     // is in this ordinary comment, which utoipa does not read.
-    /// Optional JSON Schema every claim of this type must satisfy. Issuance
-    /// validates the claim against it and refuses a violation.
+    /// Optional JSON Schema every claim of this predicate must satisfy — the
+    /// statement's `object.value`. Issuance validates the claim against it and
+    /// refuses a violation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim_schema: Option<JsonValue>,
     /// Free-form description shown in admin UIs.
