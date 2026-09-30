@@ -7765,6 +7765,7 @@ dependencies = [
  "dialoguer",
  "ed25519-dalek 3.0.0",
  "hex",
+ "libc",
  "multibase",
  "rand 0.10.2",
  "ratatui",
