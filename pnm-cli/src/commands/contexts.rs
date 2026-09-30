@@ -17,7 +17,6 @@ pub(crate) async fn run(
             id,
             name,
             description,
-            parent,
             admin_did,
             admin_label,
             admin_expires,
@@ -30,9 +29,7 @@ pub(crate) async fn run(
             admin_holder,
             admin_handoff,
         ) {
-            Ok(admin) => {
-                contexts::cmd_context_create(client, &id, &name, description, parent, admin).await
-            }
+            Ok(admin) => contexts::cmd_context_create(client, &id, &name, description, admin).await,
             Err(e) => Err(e),
         },
         ContextCommands::Update {
