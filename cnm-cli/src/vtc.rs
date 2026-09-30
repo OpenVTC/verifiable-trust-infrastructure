@@ -169,6 +169,19 @@ pub async fn connect_for_tasks(
     connect_with(keyring_key, target, Reach::Tasks(transport)).await
 }
 
+/// [`connect_for_tasks`] for a DID and key already in hand, skipping the
+/// stored profile session (and so the OS keyring) entirely — the seam a test
+/// uses to watch a resolved-transport connection without one.
+#[cfg(test)]
+pub(crate) async fn connect_for_tasks_as(
+    target: &VtcTarget,
+    did: &str,
+    key: &str,
+    transport: TransportChoice,
+) -> CliResult<Connected> {
+    connect_with_identity(target, did, key, Reach::Tasks(transport)).await
+}
+
 /// Which transports a connection may use.
 #[derive(Debug, Clone, Copy)]
 enum Reach {
@@ -179,14 +192,33 @@ enum Reach {
 }
 
 async fn connect_with(keyring_key: &str, target: &VtcTarget, reach: Reach) -> CliResult<Connected> {
-    use vta_sdk::session::VtaEndpoint;
     let session = auth::loaded_session(keyring_key).ok_or_else(|| {
         format!(
             "no stored identity for this community profile. Run `{} setup` first.",
             bin_name()
         )
     })?;
-    let (did, key) = (&session.client_did, &session.private_key_multibase);
+    connect_with_identity(
+        target,
+        &session.client_did,
+        &session.private_key_multibase,
+        reach,
+    )
+    .await
+}
+
+/// [`connect_for_tasks`] / [`connect_end_to_end`] for a profile's DID and key
+/// already in hand — the transport-resolution core both share, once the
+/// stored session is read. Split out from [`connect_with`] so a test can
+/// watch which transport a resolved connection actually uses without a
+/// stored profile session (the OS keyring [`connect_with`] reads).
+async fn connect_with_identity(
+    target: &VtcTarget,
+    did: &str,
+    key: &str,
+    reach: Reach,
+) -> CliResult<Connected> {
+    use vta_sdk::session::VtaEndpoint;
     let connected = |client: VtcClient| Connected {
         client,
         client_did: did.to_string(),
