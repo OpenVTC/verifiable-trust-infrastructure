@@ -470,11 +470,18 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # retired once these are on the spine (`vtc-service/src/trust_tasks/
 # member_tasks.rs`'s `handle_relationships_revoke_v0_2`, `mod.rs`'s
 # `handle_vetter_resend_v0_2`).
-trust-tasks-rs = { version = "0.24.8", default-features = false, features = [
+#
+# 0.24.9 raises it again: it is the first release carrying
+# `vta/metrics/show/0.1`, `vta/attestation/mnemonic-status/0.1` and
+# `vtc/vetting/hidden/publish/0.1` — the last three REST-exception routes,
+# retired in `vta-service/src/routes/vta.rs` (`GET /metrics`),
+# `vta-service/src/routes/attestation.rs` (`GET /attestation/mnemonic`) and
+# `vtc-service`'s `POST /vetting/hidden` handler once these are on the spine.
+trust-tasks-rs = { version = "0.24.9", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.24.8"
+trust-tasks-capability-client = "0.24.9"
 trust-tasks-https = { version = "0.24", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
