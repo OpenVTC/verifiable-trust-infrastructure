@@ -1,22 +1,16 @@
-//! Shared building blocks for the **canonical REST auth transport**: a
-//! `auth/authenticate/0.1` Trust Task whose holder `eddsa-jcs-2022`
+//! Shared building blocks for the **canonical Trust-Task auth transport**: a
+//! `auth/authenticate/0.2` Trust Task whose holder `eddsa-jcs-2022`
 //! Data-Integrity proof *is* the authentication, and its unsigned
-//! `auth/refresh/0.1` counterpart.
+//! `auth/refresh/0.2` counterpart.
 //!
-//! Why this exists rather than a DIDComm envelope: the VTA's `/auth/` and
-//! `/auth/refresh` routes try the Trust-Task document **before** the
-//! DIDComm-envelope path (`vta-service/src/routes/auth.rs::
-//! try_authenticate_trust_task`), so this transport works against a REST-only
-//! VTA (no mediator / ATM) as well as a DIDComm-enabled one — and it *signs*,
-//! which the envelope path now requires of everyone.
-//!
-//! The historical alternative — `didcomm_light`'s **anoncrypt** envelope —
-//! carried an unauthenticated plaintext `from`. The VTA hardened `/auth/*` to
-//! require authcrypt (`vti_common::auth::bind_authcrypt_sender`, VTI #771), so
-//! an anoncrypt envelope is now rejected outright with "authenticate message
-//! must be an authenticated (authcrypt) DIDComm envelope". Signing with the
-//! holder key is the fix — the key the caller already holds proves the sender
-//! instead of a header asserting it.
+//! Both `auth/challenge`, `auth/authenticate` and `auth/refresh` are dispatched
+//! on `POST /trust-tasks` now, by a pre-session family-owned dispatch
+//! (`vta-service::trust_tasks::auth::owns`/`dispatch_pre_session`) that runs
+//! ahead of the ACL-gated pipeline — there is no dedicated `/auth/*` REST
+//! route for them any more. This works against a REST-only VTA (no mediator /
+//! ATM) as well as a DIDComm/TSP-enabled one, since the document's own proof
+//! (present on authenticate; absent on challenge and refresh) is the whole of
+//! the authority it carries, on every transport alike.
 //!
 //! Server-side the proof is verified with a **`did:key` resolver**
 //! (`vti-common/src/auth/di_proof.rs`, shared by the VTA and the VTC), so
@@ -30,12 +24,42 @@
 
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
-use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
+use trust_tasks_rs::specs::auth::authenticate::v0_2 as authenticate;
+use trust_tasks_rs::specs::auth::challenge::v0_1 as challenge;
+use trust_tasks_rs::specs::auth::refresh::v0_2 as refresh;
 
 use crate::protocols::auth::AuthenticateResponse;
 use crate::trust_task_sign::{self, TrustTaskSignError};
-use crate::trust_tasks::{TASK_AUTH_AUTHENTICATE_0_1, TASK_AUTH_REFRESH_0_1};
+use crate::trust_tasks::{
+    TASK_AUTH_AUTHENTICATE_0_2, TASK_AUTH_CHALLENGE_0_1, TASK_AUTH_REFRESH_0_2,
+};
+
+/// Build an `auth/challenge/0.1` Trust Task, returning the JSON body to POST
+/// to `/trust-tasks`. Carries no proof — the subject is the document's stated
+/// holder; issuance is pre-auth and ACL-gated server-side.
+///
+/// Payload built from the generated `challenge::Payload` for the same
+/// casing-can't-drift reason as [`sign_authenticate_doc`].
+pub fn build_challenge_doc(
+    client_did: &str,
+    vta_did: &str,
+    subject: &str,
+) -> Result<String, AuthDiError> {
+    let payload: challenge::Payload = challenge::Payload::builder()
+        .subject(Some(
+            challenge::PayloadSubject::try_from(subject.to_string())
+                .map_err(|e| AuthDiError::Payload(format!("subject: {e}")))?,
+        ))
+        .try_into()
+        .map_err(|e| AuthDiError::Payload(format!("challenge payload: {e}")))?;
+    let doc = trust_task_sign::build_unsigned(
+        TASK_AUTH_CHALLENGE_0_1,
+        serde_json::to_value(&payload).map_err(|e| AuthDiError::Payload(e.to_string()))?,
+        client_did,
+        vta_did,
+    )?;
+    serde_json::to_string(&doc).map_err(|e| AuthDiError::Payload(e.to_string()))
+}
 
 /// Why building or reading a DI-signed auth document failed.
 ///
@@ -72,10 +96,10 @@ impl std::fmt::Display for AuthDiError {
 
 impl std::error::Error for AuthDiError {}
 
-/// Build and sign an `auth/authenticate/0.1` Trust Task, returning the JSON
-/// body to POST to `/auth/`.
+/// Build and sign an `auth/authenticate/0.2` Trust Task, returning the JSON
+/// body to POST to `/trust-tasks`.
 ///
-/// `challenge` / `session_id` come from `/auth/challenge`. The payload is built
+/// `challenge` / `session_id` come from `auth/challenge`. The payload is built
 /// from the **generated spec type** (`authenticate::Payload`) rather than
 /// hand-written JSON, so its wire casing (`sessionId`) is whatever the spec says
 /// and cannot drift: the server deserializes into that same type with
@@ -105,7 +129,7 @@ pub async fn sign_authenticate_doc(
         .try_into()
         .map_err(|e| AuthDiError::Payload(format!("authenticate payload: {e}")))?;
     Ok(trust_task_sign::build_signed(
-        TASK_AUTH_AUTHENTICATE_0_1,
+        TASK_AUTH_AUTHENTICATE_0_2,
         serde_json::to_value(&payload).map_err(|e| AuthDiError::Payload(e.to_string()))?,
         client_did,
         private_key_multibase,
@@ -114,8 +138,8 @@ pub async fn sign_authenticate_doc(
     .await?)
 }
 
-/// Build an `auth/refresh/0.1` Trust Task, returning the JSON body to POST to
-/// `/auth/refresh`.
+/// Build an `auth/refresh/0.2` Trust Task, returning the JSON body to POST to
+/// `/trust-tasks`.
 ///
 /// **Unsigned by design.** The opaque refresh token in the payload *is* the
 /// bearer credential (RFC 6749 §10.4 rotation), so the server's Trust-Task
@@ -139,7 +163,7 @@ pub fn build_refresh_doc(
         .try_into()
         .map_err(|e| AuthDiError::Payload(format!("refresh payload: {e}")))?;
     let doc = trust_task_sign::build_unsigned(
-        TASK_AUTH_REFRESH_0_1,
+        TASK_AUTH_REFRESH_0_2,
         serde_json::to_value(&payload).map_err(|e| AuthDiError::Payload(e.to_string()))?,
         client_did,
         vta_did,
@@ -147,11 +171,11 @@ pub fn build_refresh_doc(
     serde_json::to_string(&doc).map_err(|e| AuthDiError::Payload(e.to_string()))
 }
 
-/// Parse an `/auth/` or `/auth/refresh` response body.
+/// Parse an `auth/authenticate` or `auth/refresh` response body.
 ///
 /// A Trust-Task request yields a Trust-Task `#response` document whose payload
-/// is the `{ session, tokens }` body; flat JSON is still what the older
-/// DIDComm-envelope path returns, and some mocks emit it. Accept either.
+/// is the `{ session, tokens }` body; flat JSON is still accepted for mocks
+/// that emit it directly.
 pub fn parse_auth_response(body: &str) -> Result<AuthenticateResponse, AuthDiError> {
     if let Ok(flat) = serde_json::from_str::<AuthenticateResponse>(body) {
         return Ok(flat);
@@ -160,6 +184,21 @@ pub fn parse_auth_response(body: &str) -> Result<AuthenticateResponse, AuthDiErr
         .map_err(|e| AuthDiError::Response(format!("{e} (is this a VTA?)")))?;
     serde_json::from_value(doc.payload)
         .map_err(|e| AuthDiError::Response(format!("payload is not an AuthenticateResponse: {e}")))
+}
+
+/// Parse an `auth/challenge` response body: a Trust-Task `#response` document
+/// whose payload is the `{ challenge, sessionId, expiresAt }` body. Flat JSON
+/// is still accepted for mocks that emit it directly.
+pub fn parse_challenge_response(
+    body: &str,
+) -> Result<crate::protocols::auth::ChallengeResponse, AuthDiError> {
+    if let Ok(flat) = serde_json::from_str::<crate::protocols::auth::ChallengeResponse>(body) {
+        return Ok(flat);
+    }
+    let doc: TrustTask<Value> = serde_json::from_str(body)
+        .map_err(|e| AuthDiError::Response(format!("{e} (is this a VTA?)")))?;
+    serde_json::from_value(doc.payload)
+        .map_err(|e| AuthDiError::Response(format!("payload is not a ChallengeResponse: {e}")))
 }
 
 #[cfg(test)]
@@ -196,7 +235,7 @@ mod tests {
             .expect("sign");
         let v: Value = serde_json::from_str(&body).unwrap();
 
-        assert_eq!(v["type"], TASK_AUTH_AUTHENTICATE_0_1);
+        assert_eq!(v["type"], TASK_AUTH_AUTHENTICATE_0_2);
         assert_eq!(v["payload"]["challenge"], CHALLENGE);
         assert_eq!(v["payload"]["sessionId"], "sess-1");
         assert_eq!(v["issuer"], did);
@@ -248,7 +287,7 @@ mod tests {
     fn refresh_doc_is_unsigned_and_camel_cased() {
         let body = build_refresh_doc("did:key:z6MkHolder", "did:key:z6MkVta", "tok-1").unwrap();
         let v: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["type"], TASK_AUTH_REFRESH_0_1);
+        assert_eq!(v["type"], TASK_AUTH_REFRESH_0_2);
         assert_eq!(v["payload"]["refreshToken"], "tok-1");
         assert!(
             v.get("proof").is_none_or(Value::is_null),
@@ -276,7 +315,7 @@ mod tests {
 
         let wrapped = json!({
             "id": "urn:uuid:1",
-            "type": "https://trusttasks.org/spec/auth/authenticate/0.1#response",
+            "type": "https://trusttasks.org/spec/auth/authenticate/0.2#response",
             "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "payload": tokens,
         });

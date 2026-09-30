@@ -62,6 +62,27 @@ pub async fn handle_trust_task(
     // The DIDComm message body IS the trust-task envelope.
     let body = serde_json::to_vec(&message.body).map_err(handler_err)?;
 
+    // Pre-session auth family (`auth/challenge`, `auth/authenticate/{0.2,0.3}`,
+    // `auth/refresh/0.2`): checked and dispatched before the sender is even
+    // read — none of this family's identity comes from the transport, so
+    // there is no ACL pre-filter to apply here. See
+    // `trust_tasks::auth::owns`/`dispatch_pre_session`.
+    if crate::trust_tasks::ceremony::peek_type_uri(&body)
+        .as_deref()
+        .is_some_and(crate::trust_tasks::auth::owns)
+    {
+        let response = crate::trust_tasks::transport::with_binding(
+            "didcomm",
+            crate::trust_tasks::dispatch_auth_family(&app_state, &body),
+        )
+        .await;
+        if response.body.is_empty() {
+            return Ok(None);
+        }
+        let doc: serde_json::Value = serde_json::from_slice(&response.body).map_err(handler_err)?;
+        return Ok(Some(DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc)));
+    }
+
     // The DIDComm sender is a claim, not a proof of who composed the
     // document: `accept_from_proven_sender` requires the document's own Data
     // Integrity proof to verify as its `issuer`, and that issuer to be this

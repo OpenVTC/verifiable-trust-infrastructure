@@ -1,14 +1,40 @@
 //! Auth-slice trust-task handlers.
 //!
 //! `revoke-session/0.2`, `whoami/0.1` and `sessions/list/0.1` are dispatched
-//! here. Pre-authentication
-//! operations (challenge, authenticate, refresh, passkey-login) cannot
-//! pass `AuthClaims` and so live on dedicated unauth REST routes in
-//! `routes::auth` — see the `REST_ROUTED` allowlist in the parity
-//! harness for the full list.
+//! by the ordinary ACL-gated pipeline, exactly like every other authenticated
+//! task — the handlers below take `&AuthClaims` and are wired into
+//! `dispatch_table!`.
+//!
+//! The **pre-session family** — [`owns`] / [`dispatch_pre_session`] — is
+//! different in kind, not just in operation. `auth/challenge/0.1`,
+//! `auth/authenticate/{0.2,0.3}` and `auth/refresh/0.2` carry no prior
+//! session, so they cannot pass `AuthClaims` through the dispatcher's
+//! extractor, and they must not be routed through the ACL/issuer-consistency
+//! gates `dispatch_trust_task_core` applies to everything else — those gates
+//! assume a caller already has standing here, which is precisely what these
+//! four establish. So each of the three transports (REST's
+//! `dispatch_trust_task`, DIDComm's `handle_trust_task`, TSP's `handle_tsp`)
+//! checks [`owns`] and calls [`dispatch_pre_session`] directly, *before*
+//! `dispatch_trust_task_core` — a family-owned dispatch, mirroring
+//! `affinidi-webvh-service`'s `did-hosting-control::trust_tasks_auth`
+//! (`owns`/`dispatch`, checked ahead of that service's ACL pre-filter). The
+//! document's own proof — present on authenticate, required by its
+//! specification; absent on challenge and refresh, whose specifications
+//! declare none — is the whole of the authority any of these four carry, so
+//! there is no ACL pre-filter here to skip *around*: there simply is none in
+//! this path.
+//!
+//! These four are still declared in `vta_sdk::trust_tasks::REST_ROUTED_URIS`
+//! (see its doc comment) even though — challenge/authenticate/refresh, unlike
+//! passkey-login — they now travel as ordinary Trust-Task envelopes over
+//! `/trust-tasks`: the name is about what a generic "invoke any operation"
+//! surface must exclude (no session to carry), not about the literal
+//! transport.
 
 use super::helpers::TrustTaskOutcome;
 use serde_json::{Value, json};
+use trust_tasks_rs::specs::auth::authenticate::{v0_2 as authenticate_v2, v0_3 as authenticate_v3};
+use trust_tasks_rs::specs::auth::refresh::v0_2 as refresh_v2;
 use trust_tasks_rs::specs::auth::revoke_session::v0_2 as revoke_session_spec;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::protocols::auth::epoch_to_rfc3339;
@@ -19,7 +45,314 @@ use crate::auth::AuthClaims;
 use crate::auth::session::{SessionState, delete_session, get_session, list_sessions, now_epoch};
 use crate::server::AppState;
 
-use super::helpers::{app_error_to_reject, parse_payload, reject_with, success_response};
+use super::helpers::{
+    app_error_to_reject, body_parse_error_response, parse_payload, reject_declared, reject_with,
+    success_response,
+};
+
+// ─── Pre-session family ────────────────────────────────────────────────────
+
+/// Does `type_uri` belong to the pre-session auth family?
+pub(crate) fn owns(type_uri: &str) -> bool {
+    type_uri == vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1
+        || type_uri == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2
+        || type_uri == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3
+        || type_uri == vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2
+}
+
+/// Dispatch a pre-session auth document. `body` is the raw envelope bytes,
+/// identical whichever transport carried them — none of this family's
+/// identity comes from the transport, so there is nothing transport-specific
+/// left to plumb through.
+///
+/// Callers check [`owns`] on the peeked `type` first; a URI this function
+/// does not recognize falls through to a `malformedRequest` rather than a
+/// panic, but that arm is unreachable in the wired transports.
+pub(crate) async fn dispatch_pre_session(state: &AppState, body: &[u8]) -> TrustTaskOutcome {
+    let doc: TrustTask<Value> = match serde_json::from_slice(body) {
+        Ok(d) => d,
+        Err(e) => return body_parse_error_response(&e.to_string()),
+    };
+    let type_uri = doc.type_uri.to_string();
+
+    // SPEC §7.2's flag-driven checks this family still owes a caller:
+    // `issuedAt`/`proof`/`recipient` REQUIRED, per what each spec declares.
+    // The generic dispatch spine runs this too (`dispatch_trust_task_validated`);
+    // this family bypasses that spine entirely, so it runs its own copy rather
+    // than silently going without.
+    if let Some(policy) = trust_tasks_rs::schema_index::spec_policy_for(&type_uri)
+        && let Err(reason) = policy.enforce(&doc)
+    {
+        return reject_with(&doc, reason);
+    }
+
+    match type_uri.as_str() {
+        t if t == vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1 => {
+            dispatch_challenge(state, doc).await
+        }
+        t if t == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2 => {
+            dispatch_authenticate_v2(state, doc).await
+        }
+        t if t == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3 => {
+            dispatch_authenticate_v3(state, doc).await
+        }
+        t if t == vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2 => {
+            dispatch_refresh_v2(state, doc).await
+        }
+        other => reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: format!("`{other}` is not a member of the pre-session auth family"),
+            },
+        ),
+    }
+}
+
+/// Handler for `spec/auth/challenge/0.1`. No proof: the subject is the
+/// document's stated holder (same trust model the REST route used — issuance
+/// is pre-auth and ACL-gated inside [`vti_common::auth::handlers::handle_challenge`]).
+async fn dispatch_challenge(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    let Some(subject) = doc.payload.get("subject").and_then(Value::as_str) else {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: "auth/challenge payload missing `subject`".into(),
+            },
+        );
+    };
+    let subject = subject.to_string();
+
+    let backend = match crate::auth::VtaAuthBackend::from_state(state).await {
+        Ok(b) => b,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    let resp = match vti_common::auth::handlers::handle_challenge(
+        &backend,
+        vti_common::auth::ChallengeInput {
+            did: subject.clone(),
+            session_pubkey_b58btc: None,
+        },
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    audit!(
+        "auth.challenge",
+        actor = &subject,
+        resource = &resp.session_id,
+        outcome = "success"
+    );
+    success_response(
+        &doc,
+        json!({
+            "challenge": resp.challenge,
+            "sessionId": resp.session_id,
+            "expiresAt": resp.expires_at,
+        }),
+    )
+}
+
+/// Handler for `spec/auth/authenticate/0.2`. The holder's Data-Integrity
+/// proof IS the authentication; `sessionKey` is not yet honoured.
+async fn dispatch_authenticate_v2(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    let signer_did =
+        match vti_common::auth::verify_trust_task_proof_with(&doc, &state.trust_task_vm_resolver())
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                return reject_with(
+                    &doc,
+                    RejectReason::ProofInvalid {
+                        reason: e.to_string(),
+                    },
+                );
+            }
+        };
+    let payload: authenticate_v2::Payload = match serde_json::from_value(doc.payload.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("invalid authenticate payload: {e}"),
+                },
+            );
+        }
+    };
+    if payload.session_key.is_some() {
+        return reject_declared(
+            &doc,
+            authenticate_v2::error_codes::SESSION_KEY_UNSUPPORTED,
+            "this VTA does not yet bind a session key from an authenticate document",
+        );
+    }
+    complete_authenticate(
+        state,
+        &doc,
+        signer_did,
+        payload.session_id.to_string(),
+        payload.challenge.to_string(),
+    )
+    .await
+}
+
+/// Handler for `spec/auth/authenticate/0.3`. Same as 0.2, plus the proxied
+/// (`principal` + `delegationEvidence`) shape — refused, since this VTA
+/// recognizes no delegation-evidence kind; the ordinary case (no `principal`,
+/// or one equal to the document's own signer) behaves exactly like 0.2.
+async fn dispatch_authenticate_v3(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    let signer_did =
+        match vti_common::auth::verify_trust_task_proof_with(&doc, &state.trust_task_vm_resolver())
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                return reject_with(
+                    &doc,
+                    RejectReason::ProofInvalid {
+                        reason: e.to_string(),
+                    },
+                );
+            }
+        };
+    let payload: authenticate_v3::Payload = match serde_json::from_value(doc.payload.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("invalid authenticate payload: {e}"),
+                },
+            );
+        }
+    };
+    if payload.session_key.is_some() {
+        return reject_declared(
+            &doc,
+            authenticate_v3::error_codes::SESSION_KEY_UNSUPPORTED,
+            "this VTA does not yet bind a session key from an authenticate document",
+        );
+    }
+    if let Some(principal) = payload.principal.as_ref().map(|p| p.to_string())
+        && principal != signer_did
+    {
+        return reject_declared(
+            &doc,
+            authenticate_v3::error_codes::DELEGATION_NOT_RECOGNIZED,
+            "this VTA recognizes no delegationEvidence kind; authenticate as the principal \
+             directly",
+        );
+    }
+    complete_authenticate(
+        state,
+        &doc,
+        signer_did,
+        payload.session_id.to_string(),
+        payload.challenge.to_string(),
+    )
+    .await
+}
+
+/// The self-authentication path shared by 0.2 and 0.3 once each has narrowed
+/// its own payload shape: mint tokens for `signer_did` against the challenged
+/// session, addressed by the document's own `recipient` (SPEC §7.2 item 5,
+/// #1638) — there is no transport binding to lean on instead, since this
+/// bypass runs ahead of any transport-specific scope.
+async fn complete_authenticate(
+    state: &AppState,
+    doc: &TrustTask<Value>,
+    signer_did: String,
+    session_id: String,
+    challenge: String,
+) -> TrustTaskOutcome {
+    let backend = match crate::auth::VtaAuthBackend::from_state(state).await {
+        Ok(b) => b,
+        Err(e) => return app_error_to_reject(doc, e),
+    };
+    let resp = match vti_common::auth::handlers::handle_authenticate(
+        &backend,
+        vti_common::auth::AuthenticateInput {
+            session_id: session_id.clone(),
+            challenge,
+            signer_did: signer_did.clone(),
+            // No DIDComm `created_time` here — see the module doc: this
+            // bypass runs ahead of any transport-specific scope, so the
+            // single-use, TTL'd challenge bound to the session is the
+            // freshness/replay anchor on every transport alike.
+            created_time: None,
+            session_pubkey_b58btc: None,
+            audience: vti_common::auth::AudienceBinding::Recipient {
+                recipient: doc.recipient.clone(),
+                own_did: state.config.read().await.vta_did.clone(),
+            },
+        },
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(doc, e),
+    };
+    audit!(
+        "auth.authenticate",
+        actor = &signer_did,
+        resource = &session_id,
+        outcome = "success"
+    );
+    success_response(
+        doc,
+        json!({ "tokens": resp.tokens, "session": resp.session }),
+    )
+}
+
+/// Handler for `spec/auth/refresh/0.2`. Carries no proof — the opaque refresh
+/// token in the payload is the credential (OAuth2 §10.4 semantics), verified
+/// server-side by the rotating reverse-index.
+async fn dispatch_refresh_v2(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
+    let payload: refresh_v2::Payload = match serde_json::from_value(doc.payload.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("invalid refresh payload: {e}"),
+                },
+            );
+        }
+    };
+    let refresh_token = payload.refresh_token.to_string();
+
+    let backend = match crate::auth::VtaAuthBackend::from_state(state).await {
+        Ok(b) => b,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    let resp = match vti_common::auth::handlers::handle_refresh(
+        &backend,
+        vti_common::auth::RefreshInput {
+            refresh_token,
+            // No proven signer: the token alone is sufficient, exactly as
+            // the retired REST route treated an `auth/refresh/0.1` document.
+            signer_did: None,
+        },
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    audit!(
+        "auth.refresh",
+        actor = &resp.session.subject,
+        resource = &resp.session.id,
+        outcome = "success"
+    );
+    success_response(
+        &doc,
+        json!({ "tokens": resp.tokens, "session": resp.session }),
+    )
+}
 
 /// What an `auth/revoke-session/0.2` document targets — exactly one of the
 /// three forms the specification's `oneOf` admits.

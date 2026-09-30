@@ -52,7 +52,7 @@ mod attestation;
 mod audit;
 #[cfg(test)]
 mod audit_coverage;
-mod auth;
+pub(crate) mod auth;
 mod backup;
 /// The ceremony-task predicate + the zero-authority claim an unenrolled
 /// approver is dispatched under. Shared by the PDP gate and every
@@ -106,10 +106,6 @@ pub(crate) mod transport;
 // is [`policy_gate`] and nothing else — the `RequireStepUp` extractor and its
 // per-route op markers are gone with the config floors they read.
 pub(crate) mod step_up;
-// The PDP gate, callable from the REST routes. In-handler by necessity: the
-// consent digest and the planner both need the parsed payload, which an axum
-// extractor does not have.
-pub(crate) use policy_gate::rest_gate;
 mod vault;
 #[cfg(feature = "webvh")]
 pub(crate) mod webvh;
@@ -143,9 +139,11 @@ use trust_tasks_rs::RejectReason;
 /// ([`vta_sdk::trust_tasks::REST_ROUTED_URIS`]) so the dispatcher's parity
 /// harness and any generic client catalog (e.g. the `vta-mcp` `vta_call`
 /// gateway, which advertises [`vta_sdk::trust_tasks::dispatch_routed_uris`])
-/// can't drift. Handlers live in `routes::auth` (passkey login, legacy
-/// challenge/authenticate/refresh) and `routes::attestation` (TEE status /
-/// report).
+/// can't drift. Passkey login lives in `routes::auth`; pre-session auth
+/// (challenge/authenticate/refresh) is a family-owned dispatch on
+/// `/trust-tasks` itself (`trust_tasks::auth::owns`/`dispatch_pre_session`),
+/// checked ahead of this dispatcher's ACL gate rather than mounted as a
+/// separate REST route.
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
 const REST_ROUTED: &[&str] = vta_sdk::trust_tasks::REST_ROUTED_URIS;
 
@@ -451,6 +449,26 @@ pub async fn dispatch_trust_task(
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
+    // Pre-session auth family (`auth/challenge`, `auth/authenticate/{0.2,0.3}`,
+    // `auth/refresh/0.2`): no session to gate on, checked and dispatched
+    // before `auth` is even resolved — see `auth::owns`/`auth::dispatch_pre_session`.
+    // Same body-size ceiling as the public-task path below; this family is
+    // just as reachable by an uncredentialed caller.
+    if let Some(uri) = ceremony::peek_type_uri(&body)
+        && auth::owns(&uri)
+    {
+        if body.len() > PUBLIC_TASK_BODY_LIMIT {
+            return Err(AppError::Validation(format!(
+                "an anonymous request is limited to {PUBLIC_TASK_BODY_LIMIT} bytes"
+            )));
+        }
+        return Ok(
+            transport::with_binding("https", dispatch_auth_family(&state, &body))
+                .await
+                .into_response(),
+        );
+    }
+
     // A caller with no credential may send only a public task
     // (`vta_sdk::trust_tasks::PUBLIC_URIS`), which it runs on a claim that
     // reaches nothing. A caller who presents a credential has it verified by
@@ -1161,6 +1179,29 @@ pub(crate) async fn dispatch_trust_task_core(
     // through this function — DIDComm and TSP read `outcome.body` directly, and
     // an HTTP-layer check would be blind to both. Compiled out of production
     // builds; see `test_support::response_conformance`.
+    #[cfg(any(test, feature = "test-support"))]
+    let outcome =
+        match crate::test_support::response_conformance::observe(outcome.status, &outcome.body) {
+            Some(body) => TrustTaskOutcome {
+                status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                body,
+            },
+            None => outcome,
+        };
+    outcome
+}
+
+/// The pre-session auth family's own tiny "core", parallel to
+/// [`dispatch_trust_task_core`] but bypassing it entirely — see
+/// `auth::owns`/`auth::dispatch_pre_session`'s module doc for why. Every
+/// transport (REST, DIDComm, TSP) calls this instead of
+/// `dispatch_trust_task_core` once it recognizes the inbound `type` as a
+/// member of the family, so the three still converge on one function, signed
+/// the same way and (in test builds) checked against its own schema the same
+/// way — just not the ACL-gated one.
+pub(crate) async fn dispatch_auth_family(state: &AppState, body: &[u8]) -> TrustTaskOutcome {
+    let outcome = auth::dispatch_pre_session(state, body).await;
+    let outcome = sign_response(state, outcome).await;
     #[cfg(any(test, feature = "test-support"))]
     let outcome =
         match crate::test_support::response_conformance::observe(outcome.status, &outcome.body) {
@@ -2106,12 +2147,15 @@ pub(crate) fn reject_trust_task(body: &[u8], reason: RejectReason) -> TrustTaskO
     }
 }
 
-// Note: `passkey-login-{start,finish}/1.0`, `challenge/1.0`,
-// `authenticate/1.0`, and `refresh/1.0` are NOT in this table. They are
-// UNAUTHENTICATED operations served as dedicated REST routes (`/auth/*`) — the
-// user has no session JWT, so they can't pass `AuthClaims` through the
-// dispatcher's extractor. The parity harness's `REST_ROUTED` allowlist tracks
-// them.
+// Note: `passkey-login-{start,finish}/1.0` and the pre-session auth family
+// (`challenge/0.1`, `authenticate/{0.2,0.3}`, `refresh/0.2`) are NOT in this
+// table. Passkey login is UNAUTHENTICATED, served as a dedicated REST route
+// (`/auth/passkey-login/*`). The auth family IS a Trust-Task envelope on
+// `/trust-tasks`, but a pre-session one — the user has no session JWT, so it
+// can't pass `AuthClaims` through this table's `dispatch_typed`, and is
+// dispatched instead by `trust_tasks::auth::owns`/`dispatch_pre_session`
+// ahead of the ACL-gated pipeline this table belongs to. The parity harness's
+// `REST_ROUTED` allowlist tracks both.
 dispatch_table! {
     // ─── Auth slice (authenticated operations) ───────────────────
     vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2 => auth::handle_revoke_session
@@ -2985,10 +3029,15 @@ mod tests {
     fn only_the_spine_parses_a_trust_task_document() {
         /// Transport modules that legitimately parse a document, with the
         /// reason. May only shrink.
-        const ALLOWED: &[(&str, &str)] = &[(
-            "routes/auth.rs",
-            "Pre-login: `auth/{challenge,authenticate,refresh}` carry no session,              so they cannot pass `AuthClaims` through the dispatcher's extractor              and are served as dedicated REST routes. `vta_sdk`'s              `REST_ROUTED_URIS` is the canonical list and names exactly these.",
-        )];
+        ///
+        /// Empty: pre-login auth (`auth/challenge`, `auth/authenticate`,
+        /// `auth/refresh`) used to earn `routes/auth.rs` an entry here — it
+        /// parsed a `TrustTask<Value>` document by hand on a dedicated REST
+        /// route to reach the extractor's `AuthClaims` couldn't carry. It is a
+        /// Trust-Task family dispatched from `trust_tasks::auth` now (parsed
+        /// once, in `trust_tasks/auth.rs` — not scanned; this sweep covers
+        /// `messaging` and `routes` only), so the exception no longer applies.
+        const ALLOWED: &[(&str, &str)] = &[];
 
         fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             let Ok(entries) = std::fs::read_dir(dir) else {
@@ -3285,8 +3334,9 @@ mod tests {
         // is declared in `vta-sdk::trust_tasks`. If a URI gets renamed
         // or removed in vta-sdk, this stops compiling.
         let _ = vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1;
-        let _ = vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1;
-        let _ = vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_1;
+        let _ = vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2;
+        let _ = vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3;
+        let _ = vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_2;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1;
@@ -3300,9 +3350,11 @@ mod tests {
     ///
     /// 1. Be tracked by `dispatched_uris()` (i.e. have a
     ///    [`dispatch_table!`] entry wiring its handler into `dispatch_typed`), OR
-    /// 2. Be on the `REST_ROUTED` allowlist (served by dedicated
-    ///    unauth REST handlers — passkey login, legacy challenge/
-    ///    authenticate/refresh, TEE attestation), OR
+    /// 2. Be on the `REST_ROUTED` allowlist — not reachable through the
+    ///    session-gated `dispatch_typed` pipeline: passkey login (a
+    ///    dedicated unauth REST route) and the pre-session auth family
+    ///    (challenge/authenticate/refresh — a family-owned bypass on
+    ///    `/trust-tasks` itself; see `trust_tasks::auth`), OR
     /// 3. Be on the `KNOWN_FEATURE_GATED_URIS` allowlist (feature-
     ///    flagged in vta-service and not compiled in this build).
     ///
