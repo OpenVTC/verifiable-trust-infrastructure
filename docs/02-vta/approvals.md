@@ -279,7 +279,7 @@ Two further caveats:
 
 The flow is exercised end to end by
 `a_reprovision_is_refused_pending_consent_and_executes_once_approved` in
-`vta-service/tests/delegated_consent_e2e.rs`.
+`vta-service/tests/it/delegated_consent_e2e.rs`.
 
 ## See also
 

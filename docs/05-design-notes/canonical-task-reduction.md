@@ -4,7 +4,7 @@
 **Context:** the widened census in #821 (`every_bound_canonical_task_exists_in_the_registry`)
 found 67 bound URIs claiming the `trusttasks.org/spec/` authority that the
 registry does not publish. They are held by counted family exceptions in
-`vtc-service/tests/trust_task_manifest.rs`, which stops the debt growing but
+`vtc-service/tests/it/trust_task_manifest.rs`, which stops the debt growing but
 does not shrink it.
 
 ---

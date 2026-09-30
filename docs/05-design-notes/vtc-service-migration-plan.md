@@ -33,7 +33,7 @@ tasks that stay VTC-owned.
 
 ## Two tripwires
 
-- **The census test** (`vtc-service/tests/trust_task_manifest.rs`) scrapes
+- **The census test** (`vtc-service/tests/it/trust_task_manifest.rs`) scrapes
   source for the `openvtc/vtc/` prefix and asserts manifest ↔ router
   agreement. It fails loudest and first. Its hardcoded `PREFIX` (:23) and
   two exception tables (`UNBOUND_OK`, `UNPUBLISHED_OK`) must be

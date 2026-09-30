@@ -1,0 +1,303 @@
+//! Integration coverage for `vtc/registry/diagnostics/0.1`, a signed document.
+//!
+//! Exercises the full router stack — the document endpoint → the spine → the
+//! signer's ACL row → handler → registry storage — through `Router::oneshot`.
+//!
+//! Phase 3 M3.8.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+
+use crate::common::signed::{admin, call, error_code, party_with_role};
+use vtc_service::acl::VtcRole;
+use vtc_service::registry::{SyncJob, SyncJobKind, SyncJobState, store_sync_job};
+use vtc_service::server::AppState;
+use vtc_service::test_support::TestVtc;
+
+const DIAGNOSTICS_TASK: &str = "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1";
+
+struct Fixture {
+    router: axum::Router,
+    state: AppState,
+    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    vtc: TestVtc,
+}
+
+async fn build() -> Fixture {
+    let vtc = TestVtc::builder().build().await;
+    Fixture {
+        router: vtc.router.clone(),
+        state: vtc.state.clone(),
+        vtc,
+    }
+}
+
+/// `vtc/registry/diagnostics/0.1`, signed by an unrestricted administrator:
+/// the reply's status and payload.
+async fn send(vtc: &TestVtc) -> (StatusCode, Value) {
+    let admin = admin(vtc).await;
+    let (status, doc) = call(vtc, &admin, DIAGNOSTICS_TASK, json!({})).await;
+    (status, doc["payload"].clone())
+}
+
+async fn body_value(resp: axum::response::Response) -> (StatusCode, Value) {
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| json!({ "raw": String::from_utf8_lossy(&bytes) }));
+    (status, v)
+}
+
+#[tokio::test]
+async fn diagnostics_empty_queue_reports_zero_counts() {
+    let fix = build().await;
+
+    let (status, v) = send(&fix.vtc).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["queueDepth"], 0);
+    assert_eq!(v["rtbfBatchedCount"], 0);
+    assert_eq!(v["failedCount"], 0);
+    // Default RegistryHealth state is "degraded" (no successful
+    // probe yet).
+    assert_eq!(v["registryStatus"], "degraded");
+    assert!(
+        v.get("oldestPendingAgeSeconds").is_none_or(|x| x.is_null()),
+        "empty queue → no oldest_pending_age"
+    );
+    // Syncer liveness is surfaced (P3.13). The test daemon has no
+    // registry client, so the syncer was never spawned.
+    assert_eq!(v["syncerEnabled"], false);
+    assert_eq!(v["syncerRunning"], false);
+    assert_eq!(v["syncerRestarts"], 0);
+}
+
+#[tokio::test]
+async fn diagnostics_reports_pending_rtbf_and_failed_counts() {
+    let fix = build().await;
+
+    // Pending dispatchable.
+    let pending = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:zP");
+    store_sync_job(&fix.state.sync_queue_ks, &pending)
+        .await
+        .unwrap();
+
+    // RTBF-batched (future-dated next_attempt_at).
+    let mut rtbf = SyncJob::fresh(SyncJobKind::DeleteMember, "did:key:zR");
+    rtbf.next_attempt_at = chrono::Utc::now() + chrono::Duration::hours(20);
+    rtbf.rtbf_batched = true;
+    store_sync_job(&fix.state.sync_queue_ks, &rtbf)
+        .await
+        .unwrap();
+
+    // Failed (terminal).
+    let mut failed = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:zF");
+    failed.state = SyncJobState::Failed;
+    failed.last_error = Some("permanent error from upstream".into());
+    store_sync_job(&fix.state.sync_queue_ks, &failed)
+        .await
+        .unwrap();
+
+    let (status, v) = send(&fix.vtc).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    // Pending (1) + RTBF-pending (1) = queue_depth 2; Failed
+    // sits outside the active queue.
+    assert_eq!(v["queueDepth"], 2);
+    assert_eq!(v["rtbfBatchedCount"], 1);
+    assert_eq!(v["failedCount"], 1);
+    // Pending (dispatchable) job's age is surfaced; RTBF row
+    // doesn't count toward "stuck" SLI.
+    assert!(v["oldestPendingAgeSeconds"].is_number());
+}
+
+#[tokio::test]
+async fn diagnostics_requires_admin_role() {
+    let fix = build().await;
+    // A member is in the ACL but not an administrator.
+    let member = party_with_role(&fix.vtc, VtcRole::Member, &[]).await;
+    let (_, doc) = call(&fix.vtc, &member, DIAGNOSTICS_TASK, json!({})).await;
+    assert_eq!(error_code(&doc), Some("permissionDenied"), "{doc}");
+}
+
+#[tokio::test]
+async fn health_payload_is_minimal_and_unauth() {
+    // P3.7: `/health` is unauth + at the parent root, so it must not
+    // leak infrastructure topology. It carries only status, version,
+    // and the community's public DID.
+    let fix = build().await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "ok");
+    assert!(v["version"].is_string());
+    assert!(v.get("vtc_did").is_some(), "community DID stays public");
+    // The recon-sensitive fields are gone from the unauth surface.
+    assert!(v.get("mediatorUrl").is_none(), "mediator_url leaked: {v}");
+    assert!(v.get("mediatorDid").is_none(), "mediator_did leaked: {v}");
+    assert!(v.get("vtaDid").is_none(), "vta_did leaked: {v}");
+}
+
+#[tokio::test]
+async fn diagnostics_surfaces_mediator_detail_to_admin() {
+    // The mediator detail dropped from `/health` is readable by an
+    // admin via the governed diagnostics route.
+    let vtc = TestVtc::builder()
+        .messaging_mediator("did:key:z6MkMediator")
+        .build()
+        .await;
+
+    let (status, v) = send(&vtc).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["mediatorDid"], "did:key:z6MkMediator");
+}
+
+/// The transport findings ride in `ext["org.openvtc"]`, and that placement is
+/// the contract — not an implementation detail of the handler.
+///
+/// `spec/vtc/registry/diagnostics/0.1#response` is `additionalProperties:
+/// false`, which the response-conformance layer enforces on every test in this
+/// file, so a well-meant promotion of `transportFindings` to the top level
+/// fails every other test here with a schema violation rather than this one.
+/// This test is the other half: it pins that the field is *present* and where
+/// the console looks for it, so the placement cannot quietly move to some
+/// other namespace and leave the console reading `undefined`.
+#[tokio::test]
+async fn transport_findings_ride_in_the_openvtc_ext_namespace() {
+    let fix = build().await;
+
+    let (status, v) = send(&fix.vtc).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+
+    // Reverse-DNS, per SPEC.md §4.5.1 — a bare `vtc` key claims a name nobody
+    // owns and would fail the `ext` propertyNames pattern.
+    let findings = v
+        .pointer("/ext/org.openvtc/transportFindings")
+        .unwrap_or_else(|| panic!("transportFindings must live under ext[org.openvtc]: {v}"));
+    assert!(
+        findings.is_array(),
+        "transportFindings is a list even when empty, so a consumer never has \
+         to distinguish absent from none: {v}"
+    );
+
+    assert!(
+        v.get("transportFindings").is_none(),
+        "the field must not also appear at the top level — the published \
+         response schema forbids it: {v}"
+    );
+}
+
+/// The `Failed` rows themselves ride in `ext["org.openvtc"].failedJobs`.
+///
+/// `failedCount` alone was not an operator surface. A `Failed` row is
+/// terminal — the syncer skips it on every tick, boot recovery rescues only
+/// `InFlight`, and nothing re-derives it — so the count named a condition
+/// that never resolves on its own while giving nobody a way to see *which*
+/// member had stopped publishing. The log had it; the `RegistrySyncFailed`
+/// audit envelope did not, because its DIDs are HMAC-hashed (§11.1).
+///
+/// Same placement contract as `transportFindings` above: the published
+/// response schema is `additionalProperties: false`, so this belongs under
+/// the reverse-DNS `ext` namespace and nowhere else.
+#[tokio::test]
+async fn failed_jobs_ride_in_the_openvtc_ext_namespace() {
+    let fix = build().await;
+
+    let mut failed = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:z6MkStranded");
+    failed.state = SyncJobState::Failed;
+    failed.attempts = 1;
+    failed.last_attempted_at = Some(chrono::Utc::now());
+    failed.last_error = Some(
+        "permanent registry failure: registry rejected registry/record/put: unsupportedType".into(),
+    );
+    store_sync_job(&fix.state.sync_queue_ks, &failed)
+        .await
+        .unwrap();
+
+    let (status, v) = send(&fix.vtc).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+
+    let jobs = v
+        .pointer("/ext/org.openvtc/failedJobs")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("failedJobs must live under ext[org.openvtc]: {v}"));
+    assert_eq!(jobs.len(), 1, "{v}");
+
+    let job = &jobs[0];
+    assert_eq!(job["jobId"], failed.id.to_string());
+    assert_eq!(job["kind"], "publishMember");
+    // The member DID in the clear is the whole point: it is the one field the
+    // audit trail cannot give an operator, and without it the list names a
+    // failure without naming who it stranded.
+    assert_eq!(job["memberDid"], "did:key:z6MkStranded");
+    assert_eq!(job["attempts"], 1);
+    assert!(
+        job["lastError"]
+            .as_str()
+            .is_some_and(|e| e.contains("unsupportedType")),
+        "the registry's answer is carried verbatim, because it is what tells \
+         an operator to upgrade the registry rather than change this VTC: {v}"
+    );
+    // A deadline, not a fix: the retention sweeper clears the row and leaves
+    // the member unpublished.
+    assert!(
+        job["purgeDueAt"].as_str().is_some(),
+        "every failed row carries when it will age out: {v}"
+    );
+
+    assert!(
+        v.get("failedJobs").is_none(),
+        "must not also appear at the top level — the published response is \
+         additionalProperties:false: {v}"
+    );
+}
+
+/// Before any drift check has run, `registryDrift` is **absent** — and that is
+/// deliberately distinguishable from a check that found nothing.
+///
+/// "Not yet compared" and "compared, and the two views agree" are different
+/// facts with different operator responses, and a surface that rendered them
+/// alike would let a VTC whose drift check never ran look permanently healthy.
+/// The check runs on its own timer, so a freshly-booted VTC — and every test
+/// fixture, which spawns no background tasks — legitimately reports absent.
+#[tokio::test]
+async fn registry_drift_is_absent_until_a_check_has_run() {
+    let fix = build().await;
+
+    let (status, v) = send(&fix.vtc).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(
+        v.pointer("/ext/org.openvtc/registryDrift").is_none(),
+        "absent means not-yet-checked; an empty snapshot here would read as \
+         'the two views agree', which nothing has established: {v}"
+    );
+    assert!(
+        v.get("registryDrift").is_none(),
+        "must not appear at the top level — the published response is \
+         additionalProperties:false: {v}"
+    );
+}
+
+/// A healthy VTC serves an empty list, not an absent field, so the console
+/// never has to distinguish "none failed" from "this build predates the
+/// field".
+#[tokio::test]
+async fn failed_jobs_is_an_empty_list_when_nothing_failed() {
+    let fix = build().await;
+
+    let (status, v) = send(&fix.vtc).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        v.pointer("/ext/org.openvtc/failedJobs"),
+        Some(&json!([])),
+        "{v}"
+    );
+}

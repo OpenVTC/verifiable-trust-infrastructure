@@ -69,7 +69,7 @@ signatures are audited with the path and a SHA-256 of what was signed
 | Every network-reachable derivation of a stored record (`get_key_secret`, `get_key_secret_internal`, `sign_payload`, holder keys, `did:webvh` key load) | `key_custody::derive_record_key` | 6 |
 | Vault signing loaders + `vault/upsert` | `operations/vault/mod.rs`, `trust_tasks/vault.rs` | 7 |
 | Boot-time scan (reports, never revokes) | `server.rs` → `key_custody::scan_key_custody` | 3 |
-| Raw-access census | `vta-service/tests/key_custody_census.rs` | all |
+| Raw-access census | `vta-service/tests/it/key_custody_census.rs` | all |
 
 **Gates live in operations, not transports.** The seed gate was an axum
 extractor on REST, a role check on Trust Tasks and `Gate::Admin` on DIDComm:
