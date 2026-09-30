@@ -150,16 +150,12 @@ impl Harness {
             .unwrap();
         let row = vtc_service::endorsements::Endorsement {
             id: Uuid::new_v4(),
-            endorsement_type: vta_sdk::protocols::vetting::COMMUNITY_ROLE_ENDORSEMENT_TYPE
-                .to_string(),
+            endorsement_type: vtc_service::endorsements::VETTER_GRANT_ROW_TYPE.to_string(),
             issuer_did: self.community.clone(),
             subject_did: did.to_string(),
-            claim: json!({
-                "type": vta_sdk::protocols::vetting::COMMUNITY_ROLE_ENDORSEMENT_TYPE,
-                "role": "vetter",
-            }),
+            claim: json!({ "role": "vetter" }),
             status_list_index: 0,
-            vec_id: format!("urn:uuid:{}", Uuid::new_v4()),
+            credential_id: format!("urn:uuid:{}", Uuid::new_v4()),
             created_at: Utc::now() - Duration::hours(1),
             revoked_at: None,
             valid_until: None,

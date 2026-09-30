@@ -16,6 +16,7 @@ import {
   compileToRego,
   conditionsFor,
   effectsFor,
+  explainDecision,
   irToEnglish,
   parseRego,
   type RuleIR,
@@ -88,6 +89,49 @@ describe("visual authoring is offered where there is a vocabulary", () => {
   it("starts a vetter-eligibility policy on the posture the daemon ships", () => {
     const ir = blankIR("vetterEligibility");
     expect(ir.routes[0]!.then).toEqual({ effect: "deny", with: {} });
+  });
+});
+
+describe("a trusted statement is matched by its predicate", () => {
+  const WITNESSED = "https://registry.trustoverip.org/dtg/vsc/witnessed/1";
+  const IR: RuleIR = {
+    purpose: "join",
+    routes: [
+      {
+        name: "Witnessed",
+        when: { all: [{ holds_trusted_statement: WITNESSED }] },
+        then: { effect: "allow", with: { role: "member" } },
+      },
+      {
+        name: "Everyone else",
+        when: { all: ["always"] },
+        then: { effect: "deny", with: {} },
+      },
+    ],
+  };
+
+  it("compiles to the statement_trusted helper", () => {
+    const rego = compileToRego(IR, pkgFor("join"));
+    expect(rego).toContain(`statement_trusted(${JSON.stringify(WITNESSED)})`);
+    expect(rego).toContain("statement_trusted(p) if {");
+    expect(rego).toContain('c.type == "StatementCredential"');
+    expect(rego).toContain("c.predicate == p");
+  });
+
+  it("explains against the predicate, not the type", () => {
+    const fact = (predicate: string) => ({
+      evidence: {
+        presentation: {
+          credentials: [
+            { type: "StatementCredential", predicate, issuer_trusted: true, status: "valid" },
+          ],
+        },
+      },
+    });
+    const fired = (predicate: string) =>
+      explainDecision(IR, fact(predicate)).routes[0]?.matched;
+    expect(fired(WITNESSED)).toBe(true);
+    expect(fired("https://registry.trustoverip.org/dtg/vsc/endorses/1")).toBe(false);
   });
 });
 

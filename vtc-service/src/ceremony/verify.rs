@@ -185,7 +185,8 @@ mod tests {
             verified: true,
             holder: "did:key:zActor".into(),
             credentials: vec![Credential {
-                credential_type: "WitnessCredential".into(),
+                credential_type: "StatementCredential".into(),
+                predicate: Some(dtg_credentials::WITNESSED_V1.into()),
                 issuer: "did:webvh:notary.example".into(),
                 issuer_trusted: true,
                 status: CredentialStatus::Valid,

@@ -73,7 +73,7 @@ struct Fixture {
 
 async fn build_fixture() -> Fixture {
     // M2.12 credential signer — deterministic seed so the tests can
-    // reconstruct it and verify issued VMC/VEC proofs against it.
+    // reconstruct it and verify issued VMC/VAC proofs against it.
     let credential_signer = Arc::new(vtc_service::credentials::LocalSigner::from_ed25519_seed(
         "did:webvh:vtc.example.com:abc".into(),
         &[0xCC; 32],
@@ -587,25 +587,28 @@ async fn approve_writes_acl_and_member_atomically() {
         .expect("Member row written");
     assert_eq!(member.did, applicant_did);
 
-    // M2.12: approve now mints a VMC + role VEC and stamps the
+    // M2.12: approve now mints a VMC + role VAC and stamps the
     // pointers on the Member row.
     assert!(
         member.status_list_index.is_some(),
         "approve must allocate a status-list slot"
     );
     let vmc_id = member.current_vmc_id.as_deref().expect("VMC id stamped");
-    let vec_id = member
-        .current_role_vec_id
+    let credential_id = member
+        .current_role_vac_id
         .as_deref()
-        .expect("VEC id stamped");
+        .expect("VAC id stamped");
     assert!(vmc_id.starts_with("urn:uuid:"), "got {vmc_id}");
-    assert!(vec_id.starts_with("urn:uuid:"), "got {vec_id}");
+    assert!(
+        credential_id.starts_with("urn:uuid:"),
+        "got {credential_id}"
+    );
 
     // Response carries the signed VCs inline.
     let vmc = &body["vmc"];
-    let role_vec = &body["roleVec"];
+    let role_vac = &body["roleVac"];
     assert_eq!(vmc["id"], vmc_id);
-    assert_eq!(vec_id, role_vec["id"].as_str().unwrap());
+    assert_eq!(credential_id, role_vac["id"].as_str().unwrap());
 
     // VMC carries the credentialStatus block pointing at the
     // allocated slot.
@@ -623,8 +626,8 @@ async fn approve_writes_acl_and_member_atomically() {
         serde_json::from_value(vmc.clone()).expect("VMC parses");
     signer.verify(&vmc_vc).expect("VMC proof must verify");
     let vec_vc: affinidi_vc::VerifiableCredential =
-        serde_json::from_value(role_vec.clone()).expect("VEC parses");
-    signer.verify(&vec_vc).expect("VEC proof must verify");
+        serde_json::from_value(role_vac.clone()).expect("VAC parses");
+    signer.verify(&vec_vc).expect("VAC proof must verify");
 }
 
 #[tokio::test]
@@ -836,8 +839,8 @@ async fn rest_submit_under_allow_policy_auto_admits() {
     let with = &tt_payload(&body)["verdict"]["with"];
     assert!(with["vmc"]["id"].is_string(), "VMC returned inline: {body}");
     assert!(
-        with["roleVec"]["id"].is_string(),
-        "role VEC returned: {body}"
+        with["roleVac"]["id"].is_string(),
+        "role VAC returned: {body}"
     );
 
     // The applicant is now a member (ACL + Member rows exist).
@@ -880,7 +883,7 @@ async fn collect_admit_audit(audit_ks: &KeyspaceHandle) -> AdmitAudit {
 }
 
 /// Regression for the auto-admit audit gap: policy auto-admit runs the same
-/// Admit effect as a manual approve (mints a VMC + role VEC, burns a status
+/// Admit effect as a manual approve (mints a VMC + role VAC, burns a status
 /// slot), so it must emit the same `MemberAdded` + `VmcIssued` + `VecIssued`
 /// envelopes. Before the shared `audit::emit_admit_audit` helper, the
 /// auto-admit path emitted none of them — credentials were issued with no
@@ -920,7 +923,7 @@ async fn auto_admit_emits_membership_issuance_audit() {
     assert_eq!(audit.vec_issued.len(), 1, "auto-admit must emit VecIssued");
     assert!(
         audit.vec_issued[0].status_list_index.is_none(),
-        "the role VEC has no status-list slot"
+        "the role VAC has no status-list slot"
     );
 }
 
@@ -1946,7 +1949,7 @@ async fn manifest_0_2_advertises_vetting_requirements_and_their_digest() {
         vetting: Some(
             serde_json::from_value(json!({
                 "version": "0.1",
-                "statementType": "https://firstperson.network/endorsements/identity-vetting/0.1",
+                "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
                 "minStatements": 2,
                 "minByMethod": { "inPerson": 1 },
                 "acceptedMethods": ["inPerson", "video"],
@@ -2032,7 +2035,7 @@ async fn grants_of(fix: &Fixture, did: &str) -> Vec<vtc_service::endorsements::E
     vtc_service::endorsements::endorsements_for_subject(
         &fix.state.endorsements_ks,
         did,
-        vta_sdk::protocols::vetting::COMMUNITY_ROLE_ENDORSEMENT_TYPE,
+        vta_sdk::protocols::vetting::VETTER_ROLE_ACTION,
     )
     .await
     .expect("read grants")
@@ -2074,7 +2077,7 @@ async fn store_vetting_criterion(fix: &Fixture) {
                 "credentials": [{
                     "id": "vetting",
                     "format": "ldp_vc",
-                    "meta": { "type_values": ["EndorsementCredential"] }
+                    "meta": { "type_values": ["StatementCredential"] }
                 }]
             }),
             description: Some("Two vetters".into()),
@@ -2082,7 +2085,7 @@ async fn store_vetting_criterion(fix: &Fixture) {
             vetting: Some(
                 serde_json::from_value(json!({
                     "version": "0.1",
-                    "statementType": vta_sdk::protocols::vetting::IDENTITY_VETTING_ENDORSEMENT_TYPE,
+                    "statementType": vta_sdk::protocols::vetting::VETTED_PREDICATE,
                     "minStatements": 2,
                     "acceptedMethods": ["inPerson", "video"],
                     "requiredClaims": ["name.legal"],
@@ -2112,32 +2115,40 @@ async fn vetting_statement_from(
     n: u8,
     valid_from: chrono::DateTime<chrono::Utc>,
 ) -> Value {
-    use vta_sdk::protocols::vetting::{
-        IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement, VettingMethod,
-        VettingRelationship,
-    };
-    use vta_sdk::vetting::statement::{StatementDraft, sign_statement};
+    use vta_sdk::protocols::vetting::{VettedObjectValue, VettingMethod, VettingRelationship};
+    use vta_sdk::vetting::statement::{IssuerScope, StatementDraft, sign_statement};
     let now = valid_from;
+    let issuer = vetter.id.split('#').next().unwrap().to_string();
+    let session_id = format!("urn:uuid:session-{n}");
     sign_statement(
         StatementDraft {
             id: format!("urn:uuid:statement-{n}"),
-            issuer: vetter.id.split('#').next().unwrap().to_string(),
+            issuer: issuer.clone(),
+            issuer_scope: IssuerScope::Directed,
             subject: applicant.to_string(),
-            endorsement: IdentityVettingEndorsement {
-                endorsement_type: IDENTITY_VETTING_ENDORSEMENT_TYPE.into(),
+            value: VettedObjectValue {
                 community: vtc_service::test_support::TEST_VTC_DID.into(),
                 method: VettingMethod::Video,
                 document_classes: vec!["passport".try_into().unwrap()],
                 claims_verified: vec!["name.legal".try_into().unwrap()],
                 liveness_confirmed: true,
-                identity_commitment: "zSameIdentity".into(),
-                card_digest_multibase: format!("zCard{n}"),
+                identity_commitment: "zSameCommitment".into(),
+                // base58btc has no `0`: spell the card by letter.
+                card_digest_multibase: format!("zCard{}", char::from(b'a' + n % 26)),
                 declared_relationship: VettingRelationship::None,
                 attestation_text_digest: None,
             },
             valid_from: now,
             valid_until: now + chrono::Duration::days(90),
-            task_context: format!("urn:uuid:session-{n}"),
+            session: json!({
+                "id": session_id,
+                "type": "https://trusttasks.org/spec/vetting/session/0.1",
+                "threadId": session_id,
+                "issuer": issuer,
+                "recipient": applicant,
+                "issuedAt": now.to_rfc3339(),
+                "payload": { "method": "video" }
+            }),
         },
         vetter,
     )

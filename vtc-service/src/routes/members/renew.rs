@@ -1,4 +1,4 @@
-//! `vtc/members/renew/0.1` — VMC + role VEC renewal (M2.13). Spec §6.3.
+//! `vtc/members/renew/0.1` — VMC + role VAC renewal (M2.13). Spec §6.3.
 //! Signed document only (`trust_tasks::member_tasks`); the bearer REST route
 //! it once also served (`POST /v1/members/me/renew`) had no caller once the
 //! spine dispatched it (#1809) and was removed.
@@ -23,8 +23,8 @@
 //!    carries `personhood: false`; if the prior VMC had a
 //!    different flag, the audit envelope records
 //!    `personhood_changed: true`.
-//! 4. Mint VMC + role VEC.
-//! 5. Update the Member row with the new VMC + VEC ids.
+//! 4. Mint VMC + role VAC.
+//! 5. Update the Member row with the new VMC + VAC ids.
 //! 6. Emit `MembershipRenewed` audit.
 
 use affinidi_status_list::StatusPurpose;
@@ -38,7 +38,7 @@ use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;
 use crate::credentials::{
-    CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
+    CredentialStatusRef, RoleVacParams, VmcParams, build_role_vac, build_vmc,
 };
 use crate::error::TaskError;
 use crate::members::get_member;
@@ -59,7 +59,7 @@ pub const RENEW_ERR_NOT_MEMBER: &str =
 pub struct RenewResponse {
     pub did: String,
     pub vmc: JsonValue,
-    pub role_vec: JsonValue,
+    pub role_vac: JsonValue,
     /// `personhood.rego` re-eval outcome for the new VMC.
     /// Phase 2's deny-all default keeps this `false`; the
     /// field exists from day one so Phase 4's
@@ -72,7 +72,7 @@ pub struct RenewResponse {
     pub personhood_changed: bool,
 }
 
-/// Renew `caller_did`'s VMC + role VEC — the operation behind the
+/// Renew `caller_did`'s VMC + role VAC — the operation behind the
 /// `vtc/members/renew/0.1` Trust Task (`trust_tasks::member_tasks`), which
 /// authorizes from the document's proof signer. Renewal has no bearer REST
 /// route: it is a signed document only, reached over TSP, DIDComm or HTTPS
@@ -184,7 +184,7 @@ pub(crate) async fn renew_inner(
 
     let personhood_changed = prior_personhood != personhood;
 
-    // 4. Build VMC + role VEC.
+    // 4. Build VMC + role VAC.
     let vmc_id = format!("urn:uuid:{}", Uuid::new_v4());
     let vmc = build_vmc(
         signer,
@@ -195,13 +195,13 @@ pub(crate) async fn renew_inner(
     )
     .await?;
 
-    let vec_id = format!("urn:uuid:{}", Uuid::new_v4());
-    let role_vec_acl = get_acl_entry(&state.acl_ks, &caller_did)
+    let vac_id = format!("urn:uuid:{}", Uuid::new_v4());
+    let role_vac_acl = get_acl_entry(&state.acl_ks, &caller_did)
         .await?
         .ok_or_else(|| AppError::Internal("ACL row disappeared mid-renewal".into()))?;
-    let role_vec = build_role_vec(
+    let role_vac = build_role_vac(
         signer,
-        RoleVecParams::new(&caller_did, role_vec_acl.role.clone()).with_id(vec_id.clone()),
+        RoleVacParams::new(&caller_did, role_vac_acl.role.clone()).with_id(vac_id.clone()),
     )
     .await?;
 
@@ -215,11 +215,11 @@ pub(crate) async fn renew_inner(
     // does not match.
     let vmc_value = serde_json::to_value(&vmc)
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
-    let role_vec_value = serde_json::to_value(&role_vec)
-        .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+    let role_vac_value = serde_json::to_value(&role_vac)
+        .map_err(|e| AppError::Internal(format!("serialise role VAC: {e}")))?;
     crate::members::storage::edit_member(&state.members_ks, &caller_did, |m| {
         m.status_list_index = Some(slot);
-        m.record_issued_credentials(vmc_value, role_vec_value);
+        m.record_issued_credentials(vmc_value, role_vac_value);
         if downgrade_audit {
             // Renewal-policy downgrade clears the asserted-at
             // timestamp alongside the flag. The member must
@@ -241,7 +241,7 @@ pub(crate) async fn renew_inner(
             Some(&caller_did),
             AuditEvent::MembershipRenewed(MembershipRenewedData {
                 vmc_id: vmc_id.clone(),
-                role_vec_id: vec_id.clone(),
+                role_vac_id: vac_id.clone(),
                 personhood_changed,
             }),
         )
@@ -278,8 +278,8 @@ pub(crate) async fn renew_inner(
         did: caller_did,
         vmc: serde_json::to_value(&vmc)
             .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
-        role_vec: serde_json::to_value(&role_vec)
-            .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
+        role_vac: serde_json::to_value(&role_vac)
+            .map_err(|e| AppError::Internal(format!("serialise VAC: {e}")))?,
         personhood,
         personhood_changed,
     })

@@ -97,6 +97,6 @@ export function credentialDocuments(c: MemberCredentials): CredentialDocument[] 
   };
   push("membershipCredential", "Membership credential (VTC → member) — the grant", c.membershipCredential);
   push("memberVmc", "Member VMC (member → VTC) — the acknowledgement", c.memberVmc);
-  push("roleCredential", "Role credential (VEC)", c.roleCredential);
+  push("roleCredential", "Role credential (VAC)", c.roleCredential);
   return out;
 }

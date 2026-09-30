@@ -210,7 +210,7 @@ async fn register_happy_path() {
 #[tokio::test]
 async fn register_rejects_reserved_uri() {
     let fix = build().await;
-    let (status, body) = register(&fix, json!({ "typeUri": "CommunityRole" })).await;
+    let (status, body) = register(&fix, json!({ "typeUri": "role:vetter" })).await;
     assert!(status.is_client_error(), "{body}");
     assert_eq!(rest_error_code(&body), REGISTER_ERR_RESERVED, "{body}");
 }
@@ -298,6 +298,32 @@ async fn issue_happy_path_issuer_mints_credential() {
     // old 201.
     assert_eq!(status, StatusCode::OK, "{v}");
     assert!(v["endorsement"]["endorsementId"].is_string());
+    // vtc/endorsements/issue/0.1, "The credential issued": a DTG statement by
+    // the community, as itself, under the registered predicate.
+    let credential = &v["credential"];
+    assert_eq!(
+        credential["@context"],
+        json!([
+            dtg_credentials::W3C_VC_V2_CONTEXT,
+            dtg_credentials::DTG_CONTEXT_V1
+        ])
+    );
+    assert_eq!(
+        credential["type"],
+        json!([
+            "VerifiableCredential",
+            "DTGCredential",
+            "StatementCredential"
+        ])
+    );
+    assert_eq!(credential["issuerScope"], "public");
+    assert_eq!(credential["credentialSubject"]["id"], SUBJECT_DID);
+    assert_eq!(credential["credentialSubject"]["predicate"], uri);
+    assert_eq!(
+        credential["credentialSubject"]["object"],
+        json!({ "value": { "level": "expert", "since": "2020" } })
+    );
+    assert!(credential["credentialStatus"].is_object());
     // The row carries a *reference* — identifier and lifetime — and the
     // credential itself is a sibling that only this call returns. #1098 put
     // it inside the reference, which made every listing embed a signed
@@ -324,7 +350,7 @@ async fn issue_happy_path_issuer_mints_credential() {
             AuditEvent::CustomEndorsementIssued(d) if d.endorsement_type == uri => {
                 saw_issued = true;
             }
-            AuditEvent::VecIssued(d) if d.credential_type == "EndorsementCredential" => {
+            AuditEvent::VecIssued(d) if d.credential_type == "StatementCredential" => {
                 saw_vec = true;
             }
             _ => {}
@@ -530,7 +556,7 @@ async fn register_schema_refuses_an_external_ref() {
 }
 
 /// An Accepts criterion counting statements of `statement_type`. The DCQL
-/// query references `EndorsementCredential`, so that per-type schema is
+/// query references `StatementCredential`, so that per-type schema is
 /// registered first — `store_accepts` refuses a dangling type reference.
 async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &str) {
     let (status, body) = signed_task(
@@ -538,8 +564,8 @@ async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &st
         &fix.admin,
         SCHEMA_REGISTER_TASK,
         json!({
-            "typeUri": "EndorsementCredential",
-            "dtgType": "EndorsementCredential",
+            "typeUri": "StatementCredential",
+            "dtgType": "StatementCredential",
             "kind": "accepts",
         }),
     )
@@ -554,7 +580,7 @@ async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &st
                 "id": id,
                 "description": "Two vetters, at least one in person",
                 "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
-                           "meta": { "type_values": ["EndorsementCredential"] } } ] },
+                           "meta": { "type_values": ["StatementCredential"] } } ] },
                 "vetting": {
                     "version": "0.1",
                     "statementType": statement_type,
@@ -723,6 +749,8 @@ const ISSUE_ERR_CLAIM_SCHEMA_VIOLATION: &str =
     end_spec::issue::v0_1::error_codes::CLAIM_SCHEMA_VIOLATION.code;
 const ISSUE_ERR_STATUS_LIST_EXHAUSTED: &str =
     end_spec::issue::v0_1::error_codes::STATUS_LIST_EXHAUSTED.code;
+const ISSUE_ERR_PREDICATE_NOT_ISSUABLE: &str =
+    end_spec::issue::v0_1::error_codes::PREDICATE_NOT_ISSUABLE.code;
 const LIST_ERR_INVALID_CURSOR: &str = end_spec::list::v0_1::error_codes::INVALID_CURSOR.code;
 const SHOW_ERR_NOT_FOUND: &str = end_spec::show::v0_1::error_codes::NOT_FOUND.code;
 const REVOKE_ERR_NOT_FOUND: &str = end_spec::revoke::v0_1::error_codes::NOT_FOUND.code;
@@ -772,6 +800,89 @@ async fn an_empty_or_oversized_type_uri_is_the_declared_invalid_uri() {
     let at_cap = format!("https://x/{}", "a".repeat(512 - "https://x/".len()));
     let (status, body) = register(&fix, json!({ "typeUri": at_cap })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// A registered `typeUri` is a predicate IRI. A bare term or a CURIE can never
+/// match a statement's predicate, so it is `invalidUri`.
+#[tokio::test]
+async fn a_type_uri_that_is_not_a_predicate_iri_is_the_declared_invalid_uri() {
+    let fix = build().await;
+    for uri in ["IdentityVetting", "dtg:endorses", "urn"] {
+        let (status, body) = register(&fix, json!({ "typeUri": uri })).await;
+        assert!(status.is_client_error(), "{uri}: {body}");
+        assert_eq!(
+            rest_error_code(&body),
+            REGISTER_ERR_INVALID_URI,
+            "{uri}: {body}"
+        );
+    }
+}
+
+/// The DTG VSC registry's core predicates are accepted from first boot.
+#[tokio::test]
+async fn the_core_predicates_are_seeded() {
+    let fix = build().await;
+    for iri in vtc_service::endorsement_types::DEFAULT_ACCEPTED_PREDICATES {
+        assert!(
+            get_type(&fix._vtc.state.endorsement_types_ks, iri)
+                .await
+                .unwrap()
+                .is_some(),
+            "{iri} is accepted out of the box"
+        );
+    }
+}
+
+/// `vetted/1` is registered — the community counts vetting statements under
+/// it — but its profile requires a `taskContext` citing the vetting session,
+/// and its issuer is an eligible vetter, never the community. So it is
+/// `predicateNotIssuable` here.
+#[tokio::test]
+async fn a_task_bound_predicate_is_the_declared_predicate_not_issuable() {
+    let fix = build().await;
+    for iri in [dtg_credentials::VETTED_V1, dtg_credentials::WITNESSED_V1] {
+        let (status, body) = issue(&fix, iri, json!({ "community": "did:web:x" })).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{iri}: {body}");
+        assert_eq!(
+            rest_error_code(&body),
+            ISSUE_ERR_PREDICATE_NOT_ISSUABLE,
+            "{iri}: {body}"
+        );
+    }
+}
+
+/// The reserved `IdentityVerificationCredential` type mints an IDVC — a plain
+/// W3C VC, not a DTG statement — on the community's status list, revocable
+/// through `vtc/endorsements/revoke/0.1` like any other row. No registration.
+#[tokio::test]
+async fn the_reserved_idvc_type_mints_an_identity_verification_credential() {
+    let fix = build().await;
+    let (status, v) = issue(
+        &fix,
+        "IdentityVerificationCredential",
+        json!({ "method": "inPerson" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let credential = &v["credential"];
+    assert_eq!(
+        credential["type"],
+        json!(["VerifiableCredential", "IdentityVerificationCredential"])
+    );
+    assert_eq!(
+        credential["@context"],
+        json!([dtg_credentials::W3C_VC_V2_CONTEXT])
+    );
+    assert!(credential.get("issuerScope").is_none());
+    assert_eq!(credential["credentialSubject"]["id"], SUBJECT_DID);
+    assert_eq!(credential["credentialSubject"]["method"], "inPerson");
+    assert!(credential["credentialStatus"].is_object());
+
+    // It cannot be registered as a predicate.
+    let (status, body) =
+        register(&fix, json!({ "typeUri": "IdentityVerificationCredential" })).await;
+    assert!(status.is_client_error(), "{body}");
+    assert_eq!(rest_error_code(&body), REGISTER_ERR_RESERVED, "{body}");
 }
 
 /// A claim over 8 KiB is `claimTooLarge` (400, unchanged).

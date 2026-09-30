@@ -4,7 +4,7 @@
 //! path) with a self-issued Invitation Credential presented inside a VP:
 //!
 //!   issue VIC → present in VP over the DIDComm path → auto-admit (VMC + role
-//!   VEC issued) → invitation burned in the single-use ledger.
+//!   VAC issued) → invitation burned in the single-use ledger.
 //!
 //! Plus the holder-binding guard: a VIC minted for one DID cannot be redeemed by
 //! another. Crypto edges (expired / revoked / tampered / untrusted issuer) are

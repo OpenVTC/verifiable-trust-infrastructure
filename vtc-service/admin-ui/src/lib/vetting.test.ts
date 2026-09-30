@@ -37,7 +37,7 @@ import type {
 
 const REQUIREMENTS: VettingRequirements = {
   version: "0.1",
-  statementType: "https://firstperson.network/endorsements/identity-vetting/0.1",
+  statementType: "https://registry.trustoverip.org/dtg/vsc/vetted/1",
   minStatements: 2,
   minByMethod: { inPerson: 1 },
   acceptedMethods: ["inPerson", "video", "priorAcquaintance"],

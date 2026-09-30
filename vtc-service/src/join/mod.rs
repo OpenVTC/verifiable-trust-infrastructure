@@ -11,7 +11,7 @@
 //! - VP scoring against `join.rego`. Phase 1 records the VP as
 //!   opaque JSON; Phase 2's policy step reads it back without a
 //!   re-submit.
-//! - VMC + role VEC issuance via the VTA oracle on approve.
+//! - VMC + role VAC issuance via the VTA oracle on approve.
 //!   Phase 1's approve writes ACL + Member only.
 
 pub mod orchestrate;

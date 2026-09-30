@@ -1,12 +1,23 @@
-//! Custom endorsement credentials — Phase 4 M4.7 + M4.8.
+//! Community-issued statement and grant records — Phase 4 M4.7 + M4.8.
 //! Spec §6.1 "Custom endorsement" row.
 //!
 //! ## What this module owns
 //!
-//! - `Endorsement` — the persisted row recording a custom
-//!   endorsement issued by an Issuer-role member (or admin)
-//!   for a subject. Stored in the `endorsements:` keyspace
-//!   keyed by UUID.
+//! - `Endorsement` — the persisted row recording a credential the community
+//!   issued about a subject and can revoke through
+//!   `vtc/endorsements/revoke/0.1`. Stored in the `endorsements:` keyspace
+//!   keyed by UUID. The name is kept from when every such credential was an
+//!   endorsement; `endorsement_type` says which kind of row it is:
+//!   - a registered **predicate IRI** — a statement (VSC) minted by
+//!     `vtc/endorsements/issue/0.1`, a VEC under `endorses/1`;
+//!   - `role:vetter` ([`VETTER_GRANT_ROW_TYPE`]) — a vetter role **VAC**
+//!     issued by `vtc/vetting/vetters/grant/0.1`, which keeps its record
+//!     here so the same revoke task withdraws it;
+//!   - `IdentityVerificationCredential` — an IDVC
+//!     (`crate::credentials::idvc`), a plain W3C VC.
+//!
+//!   None of the latter two is a predicate IRI, so neither can collide with a
+//!   registered predicate.
 //! - Storage helpers: round-trip, list (paginated), mark
 //!   revoked, find live-by-type.
 //! - **Live-by-type check** is load-bearing for the type
@@ -25,27 +36,32 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
+/// `endorsement_type` of a vetter-grant row: the VAC action the grant confers.
+/// Not an absolute predicate IRI, so no registered predicate can equal it.
+pub const VETTER_GRANT_ROW_TYPE: &str = vta_sdk::protocols::vetting::VETTER_ROLE_ACTION;
+
 pub use storage::{
     ENDORSEMENTS_PREFIX, count_live_by_type, delete_endorsement, endorsements_by_type,
     endorsements_for_subject, get_endorsement, list_endorsements, list_endorsements_matching,
     mark_revoked, store_endorsement,
 };
 
-/// A stored custom endorsement. The accompanying VEC body
-/// isn't persisted here — the route layer hands the signed
-/// VC to the caller verbatim on issue; downstream consumers
-/// (verifiers, list endpoints) re-mint or re-fetch from the
-/// VEC's `id` field if they need the proof.
+/// A stored community-issued credential record. The accompanying credential
+/// body isn't persisted here for statements — the route layer hands the
+/// signed VC to the caller verbatim on issue; downstream consumers (verifiers,
+/// list endpoints) re-fetch from the credential's `id` if they need the proof.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct Endorsement {
-    /// Server-allocated UUID. Forms `vec_id`'s
+    /// Server-allocated UUID. Forms `credential_id`'s
     /// `urn:uuid:<id>` shape.
     pub id: Uuid,
-    /// Operator-registered endorsement type URI. Must match
-    /// a row in the `endorsement_types:` keyspace at issue
-    /// time (route-layer invariant; storage trusts it).
+    /// What the row records: a registered predicate IRI (a statement, which
+    /// must match a row in the `endorsement_types:` keyspace at issue time —
+    /// route-layer invariant; storage trusts it), [`VETTER_GRANT_ROW_TYPE`]
+    /// for a vetter grant, or the IDVC type. See the module docs. Wire
+    /// `typeUri`.
     pub endorsement_type: String,
     /// The community DID (always `signer.issuer_did()` at
     /// issue time). Kept on the row so list responses don't
@@ -59,8 +75,10 @@ pub struct Endorsement {
     /// (D8 review — endorsements reuse the existing list).
     pub status_list_index: u32,
     /// The credential's top-level `id` field —
-    /// `urn:uuid:<id>` by construction.
-    pub vec_id: String,
+    /// `urn:uuid:<id>` by construction. Stored as `vecId` on rows written
+    /// before statements and grants stopped being endorsement credentials.
+    #[serde(alias = "vecId")]
+    pub credential_id: String,
     pub created_at: DateTime<Utc>,
     /// `Some(_)` once `DELETE /v1/credentials/endorsements/{id}`
     /// fires. The row stays in the keyspace for audit + list

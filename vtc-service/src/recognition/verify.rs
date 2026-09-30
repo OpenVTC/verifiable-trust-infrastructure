@@ -1,6 +1,8 @@
-//! `verify_foreign_vec` — the load-bearing M3.9 entry point.
+//! `verify_foreign_role` — the load-bearing M3.9 entry point.
 //!
-//! Verifies a foreign-issued (VEC, VMC) pair against four
+//! Verifies a foreign-issued (role VAC, VMC) pair — the foreign community's
+//! Verifiable Authority Credential conferring `role:<name>` at its own DID, and
+//! its membership credential for the same subject — against four
 //! invariants (in order, fail-closed):
 //!
 //! 1. Both proofs verify against the foreign issuer's
@@ -25,7 +27,7 @@
 //! `PurposeVmResolver` (the shared
 //! [`crate::credentials::vm_resolver::DidVmResolver`]); status
 //! fetching is behind the small [`StatusListFetcher`] trait.
-//! Both are injected, so `verify_foreign_vec` is unit-testable
+//! Both are injected, so `verify_foreign_role` is unit-testable
 //! without a live DID resolver or status-list host.
 
 use std::sync::Arc;
@@ -52,7 +54,7 @@ pub enum RecognitionError {
     /// `#key-0` verification method couldn't be located.
     #[error("issuer DID resolution failed: {0}")]
     IssuerKeyUnresolved(String),
-    /// VEC or VMC proof failed signature verification.
+    /// VAC or VMC proof failed signature verification.
     #[error("foreign credential proof verification failed: {0}")]
     ProofInvalid(String),
     /// Status-list fetch / decode / status-bit check failed.
@@ -130,24 +132,24 @@ pub trait StatusListFetcher: Send + Sync {
     ) -> Result<bool, RecognitionError>;
 }
 
-/// Post-verification view of a (VEC, VMC) pair. Only
-/// constructible by [`verify_foreign_vec`] — the route layer
+/// Post-verification view of a (VAC, VMC) pair. Only
+/// constructible by [`verify_foreign_role`] — the route layer
 /// taking this type as input is guaranteed to be looking at a
 /// fully-verified pair (typestate discipline per workspace
 /// CLAUDE.md).
 #[derive(Debug, Clone)]
 pub struct VerifiedForeignCredential {
-    /// The foreign community's issuer DID — `vec.issuer ==
+    /// The foreign community's issuer DID — `vac.issuer ==
     /// vmc.issuer` by spec §6.1.
     pub foreign_issuer_did: String,
     /// The bearer's DID — the `credentialSubject.id` field on
-    /// the VEC. The session is minted *to* this DID.
+    /// the VAC. The session is minted *to* this DID.
     pub subject_did: String,
-    /// The role claim from the VEC's `credentialSubject.role`
+    /// The role claim from the VAC's `credentialSubject.role`
     /// field. Fed into `cross_community_roles.rego` for local
     /// role mapping.
     pub foreign_role: String,
-    /// The **earliest** `validUntil` across VEC + VMC. The
+    /// The **earliest** `validUntil` across VAC + VMC. The
     /// route layer clamps session TTL to `min(jwt_default,
     /// this)` per spec §8.4.
     pub earliest_valid_until: DateTime<Utc>,
@@ -155,8 +157,8 @@ pub struct VerifiedForeignCredential {
 
 /// Run the four-step verification. See module docs for the
 /// rationale on ordering + fail-closed semantics.
-pub async fn verify_foreign_vec(
-    vec: &VerifiableCredential,
+pub async fn verify_foreign_role(
+    vac: &VerifiableCredential,
     vmc: &VerifiableCredential,
     resolver: &dyn PurposeVmResolver,
     status_fetcher: &dyn StatusListFetcher,
@@ -164,10 +166,10 @@ pub async fn verify_foreign_vec(
     now: DateTime<Utc>,
 ) -> Result<VerifiedForeignCredential, RecognitionError> {
     // Spec §6.1 requires both credentials share an issuer.
-    let issuer = vec.issuer.id();
+    let issuer = vac.issuer.id();
     if issuer != vmc.issuer.id() {
         return Err(RecognitionError::Malformed(format!(
-            "VEC issuer ({}) != VMC issuer ({})",
+            "VAC issuer ({}) != VMC issuer ({})",
             issuer,
             vmc.issuer.id()
         )));
@@ -175,35 +177,35 @@ pub async fn verify_foreign_vec(
     let issuer = issuer.to_string();
 
     // Spec §8.4: the VMC's only job here is the "is a live, non-revoked
-    // member" gate, so it must name the **same subject** as the role VEC.
-    // Without this, an attacker pairs member A's role VEC with member B's
+    // member" gate, so it must name the **same subject** as the role VAC.
+    // Without this, an attacker pairs member A's role VAC with member B's
     // (still-unrevoked) VMC — same issuer — and passes the membership gate
     // even after the foreign community revoked A. Checked before any
     // proof/network work so a mismatched pair fails fast.
-    let vec_subject = subject_id(vec, "VEC")?;
+    let vac_subject = subject_id(vac, "VAC")?;
     let vmc_subject = subject_id(vmc, "VMC")?;
-    if vec_subject != vmc_subject {
+    if vac_subject != vmc_subject {
         return Err(RecognitionError::Malformed(format!(
-            "VEC subject ({vec_subject}) != VMC subject ({vmc_subject})"
+            "VAC subject ({vac_subject}) != VMC subject ({vmc_subject})"
         )));
     }
 
     // Step 1: proof verification. Cheap; runs first so a
     // malformed pair short-circuits before any network call.
-    verify_proof(vec, &issuer, resolver, "VEC").await?;
+    verify_proof(vac, &issuer, resolver, "VAC").await?;
     verify_proof(vmc, &issuer, resolver, "VMC").await?;
 
     // Step 4 (early): validity windows. Cheap RFC3339 parse +
     // comparison. Bumped before the network calls so an
     // expired credential doesn't waste a status-list fetch.
-    let vec_until = parse_valid_until(vec, "VEC")?;
+    let vac_until = parse_valid_until(vac, "VAC")?;
     let vmc_until = parse_valid_until(vmc, "VMC")?;
-    if let Some(vf) = vec.valid_from.as_deref() {
+    if let Some(vf) = vac.valid_from.as_deref() {
         let vf = parse_rfc3339(vf)
-            .map_err(|e| RecognitionError::ValidityWindow(format!("VEC validFrom: {e}")))?;
+            .map_err(|e| RecognitionError::ValidityWindow(format!("VAC validFrom: {e}")))?;
         if vf > now {
             return Err(RecognitionError::ValidityWindow(format!(
-                "VEC validFrom {vf} is in the future"
+                "VAC validFrom {vf} is in the future"
             )));
         }
     }
@@ -216,9 +218,9 @@ pub async fn verify_foreign_vec(
             )));
         }
     }
-    if vec_until <= now {
+    if vac_until <= now {
         return Err(RecognitionError::ValidityWindow(format!(
-            "VEC validUntil {vec_until} is in the past"
+            "VAC validUntil {vac_until} is in the past"
         )));
     }
     if vmc_until <= now {
@@ -232,7 +234,7 @@ pub async fn verify_foreign_vec(
     // revocation surface" (the credential never opted into
     // BitstringStatusList). A *present* status block whose
     // bit is set rejects the credential.
-    check_status_list(vec, status_fetcher, &issuer, "VEC").await?;
+    check_status_list(vac, status_fetcher, &issuer, "VAC").await?;
     check_status_list(vmc, status_fetcher, &issuer, "VMC").await?;
 
     // Step 3: registry recognition. The most operator-visible
@@ -253,14 +255,14 @@ pub async fn verify_foreign_vec(
         return Err(RecognitionError::IssuerNotRecognised(issuer));
     }
 
-    // Extract bearer subject + role from the VEC.
-    let (subject_did, foreign_role) = extract_role_claim(vec)?;
+    // Extract bearer subject + role from the VAC.
+    let (subject_did, foreign_role) = extract_role_claim(vac)?;
 
     Ok(VerifiedForeignCredential {
         foreign_issuer_did: issuer,
         subject_did,
         foreign_role,
-        earliest_valid_until: vec_until.min(vmc_until),
+        earliest_valid_until: vac_until.min(vmc_until),
     })
 }
 
@@ -337,7 +339,7 @@ async fn check_status_list(
         RecognitionError::Malformed(format!("{label} statusListIndex {index_str}: {e}"))
     })?;
     // The status list MUST be signed by the foreign issuer (the same issuer that
-    // signed the VEC/VMC). The production fetcher verifies this; a substituted or
+    // signed the VAC/VMC). The production fetcher verifies this; a substituted or
     // forged list is rejected before the bit is read.
     let bit_set = fetcher
         .check_status_bit(url, index, Some(expected_issuer))
@@ -389,29 +391,57 @@ fn subject_id(vc: &VerifiableCredential, label: &str) -> Result<String, Recognit
         })
 }
 
-fn extract_role_claim(vec: &VerifiableCredential) -> Result<(String, String), RecognitionError> {
+/// The bearer and the foreign role a community role VAC confers.
+///
+/// The role credential is a DTG Verifiable Authority Credential (vtc/auth/
+/// recognise/0.2): `credentialSubject.authority` is `{ scope: <foreign
+/// community DID>, actions: ["role:<name>", …] }`. The foreign role is the
+/// `<name>` of its first `role:` action. It must be the community conferring
+/// authority in itself — `authority.scope` is the issuer — and issued directly,
+/// with no `authority.parent`: an attenuated VAC is a member re-granting, not
+/// the foreign community deciding, and recognising one would let any holder of
+/// a role mint sessions for others.
+fn extract_role_claim(vac: &VerifiableCredential) -> Result<(String, String), RecognitionError> {
     use affinidi_vc::SubjectValue;
-    let subject_did = subject_id(vec, "VEC")?;
-    let subject_map = match &vec.credential_subject {
+    let subject_did = subject_id(vac, "VAC")?;
+    let subject_map = match &vac.credential_subject {
         SubjectValue::Single(m) => m.clone(),
         SubjectValue::Multiple(v) => v
             .first()
             .cloned()
-            .ok_or_else(|| RecognitionError::Malformed("VEC credentialSubject is empty".into()))?,
+            .ok_or_else(|| RecognitionError::Malformed("VAC credentialSubject is empty".into()))?,
     };
-    // VEC shape per `build_role_vec`:
-    // credentialSubject = { id, endorsement: { type, role, communityDid } }
-    // The role lives under `endorsement.role`, not at the top level
-    // of `credentialSubject`.
-    let role = subject_map
-        .get("endorsement")
+    let authority = subject_map
+        .get("authority")
         .and_then(|v| v.as_object())
-        .and_then(|m| m.get("role"))
-        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            RecognitionError::Malformed("VAC credentialSubject.authority missing".into())
+        })?;
+    let issuer = vac.issuer.id();
+    if authority.get("scope").and_then(|v| v.as_str()) != Some(issuer) {
+        return Err(RecognitionError::Malformed(format!(
+            "VAC authority.scope is not its issuer {issuer}: a community role is conferred by \
+             the community in its own scope"
+        )));
+    }
+    if authority.contains_key("parent") {
+        return Err(RecognitionError::Malformed(
+            "VAC is attenuated (authority.parent); only a role the community issued directly \
+             is recognised"
+                .into(),
+        ));
+    }
+    let role = authority
+        .get("actions")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|a| a.as_str())
+        .find_map(vta_sdk::protocols::vetting::role_of_action)
         .map(str::to_string)
         .ok_or_else(|| {
             RecognitionError::Malformed(
-                "VEC credentialSubject.endorsement.role missing or not a string".into(),
+                "VAC authority.actions carries no `role:<name>` action".into(),
             )
         })?;
     Ok((subject_did, role))
@@ -744,7 +774,7 @@ mod tests {
     use super::*;
     use crate::acl::VtcRole;
     use crate::credentials::{
-        CredentialStatusRef, LocalSigner, RoleVecParams, VmcParams, build_role_vec, build_vmc,
+        CredentialStatusRef, LocalSigner, RoleVacParams, VmcParams, build_role_vac, build_vmc,
     };
     use crate::registry::client::MockRegistryClient;
     use affinidi_vc::IssuerValue;
@@ -831,7 +861,7 @@ mod tests {
         }
     }
 
-    /// Build a signed (VEC, VMC) pair issued by a fresh
+    /// Build a signed (VAC, VMC) pair issued by a fresh
     /// `LocalSigner` with a fixed DID. Returns the signer's
     /// public bytes alongside so the test can seed the
     /// resolver.
@@ -845,26 +875,26 @@ mod tests {
         let signer = LocalSigner::from_ed25519_seed(issuer_did.into(), &seed);
         let pubkey = signer.public_bytes().to_vec();
 
-        let vec_params = RoleVecParams::new(subject_did, role)
+        let vac_params = RoleVacParams::new(subject_did, role)
             .with_validity(chrono::Duration::seconds(validity_secs))
-            .with_id("urn:vec:test");
-        let vec_vc = build_role_vec(&signer, vec_params)
+            .with_id("urn:vac:test");
+        let vac_vc = build_role_vac(&signer, vac_params)
             .await
-            .expect("build vec");
+            .expect("build vac");
 
         let vmc_params = VmcParams::new(subject_did)
             .with_validity(chrono::Duration::seconds(validity_secs))
             .with_id("urn:vmc:test");
         let vmc_vc = build_vmc(&signer, vmc_params).await.expect("build vmc");
 
-        (vec_vc, vmc_vc, pubkey)
+        (vac_vc, vmc_vc, pubkey)
     }
 
     #[tokio::test]
     async fn happy_path_verifies_and_returns_earliest_expiry() {
         let issuer = "did:webvh:peer.example.com:abc";
         let subject = "did:key:zSubject";
-        let (vec, vmc, pubkey) = fresh_pair(issuer, subject, VtcRole::Moderator, 3600).await;
+        let (vac, vmc, pubkey) = fresh_pair(issuer, subject, VtcRole::Moderator, 3600).await;
 
         let resolver = StubKeyResolver::new().with(issuer, pubkey);
         let fetcher = StubStatusFetcher::new();
@@ -872,7 +902,7 @@ mod tests {
         mock_reg.set_recognised(issuer).await;
         let reg: Arc<dyn TrustRegistryClient> = Arc::new(mock_reg);
 
-        let verified = verify_foreign_vec(&vec, &vmc, &resolver, &fetcher, reg, Utc::now())
+        let verified = verify_foreign_role(&vac, &vmc, &resolver, &fetcher, reg, Utc::now())
             .await
             .expect("happy path");
         assert_eq!(verified.foreign_issuer_did, issuer);
@@ -883,7 +913,7 @@ mod tests {
 
     #[tokio::test]
     async fn vmc_subject_mismatch_is_rejected_before_network_calls() {
-        // The attack: pair member A's role VEC with member B's (still
+        // The attack: pair member A's role VAC with member B's (still
         // unrecognised-as-revoked) VMC — same issuer — to pass the
         // membership gate as A after A was revoked. The subjects must match.
         let issuer = "did:webvh:peer.example.com:abc";
@@ -891,17 +921,17 @@ mod tests {
         let signer = LocalSigner::from_ed25519_seed(issuer.into(), &seed);
         let pubkey = signer.public_bytes().to_vec();
 
-        let vec_vc = build_role_vec(
+        let vac_vc = build_role_vac(
             &signer,
-            RoleVecParams::new("did:key:zAlice", VtcRole::Moderator)
+            RoleVacParams::new("did:key:zAlice", VtcRole::Moderator)
                 .with_validity(chrono::Duration::seconds(3600))
-                .with_id("urn:vec:test"),
+                .with_id("urn:vac:test"),
         )
         .await
-        .expect("build vec");
+        .expect("build vac");
         let vmc_vc = build_vmc(
             &signer,
-            VmcParams::new("did:key:zBob") // different subject than the VEC
+            VmcParams::new("did:key:zBob") // different subject than the VAC
                 .with_validity(chrono::Duration::seconds(3600))
                 .with_id("urn:vmc:test"),
         )
@@ -914,9 +944,9 @@ mod tests {
         mock_reg.set_recognised(issuer).await;
         let reg: Arc<dyn TrustRegistryClient> = Arc::new(mock_reg.clone());
 
-        let err = verify_foreign_vec(&vec_vc, &vmc_vc, &resolver, &fetcher, reg, Utc::now())
+        let err = verify_foreign_role(&vac_vc, &vmc_vc, &resolver, &fetcher, reg, Utc::now())
             .await
-            .expect_err("mismatched VEC/VMC subjects must be rejected");
+            .expect_err("mismatched VAC/VMC subjects must be rejected");
         assert!(matches!(err, RecognitionError::Malformed(_)), "got {err:?}");
         assert!(format!("{err}").contains("subject"), "got {err}");
         assert_eq!(
@@ -929,7 +959,7 @@ mod tests {
     #[tokio::test]
     async fn unrecognised_issuer_is_rejected_even_with_valid_proofs() {
         let issuer = "did:webvh:stranger.example";
-        let (vec, vmc, pubkey) =
+        let (vac, vmc, pubkey) =
             fresh_pair(issuer, "did:key:zSubject", VtcRole::Member, 3600).await;
 
         let resolver = StubKeyResolver::new().with(issuer, pubkey);
@@ -937,7 +967,7 @@ mod tests {
         // Mock registry: NO recognised issuers.
         let reg: Arc<dyn TrustRegistryClient> = Arc::new(MockRegistryClient::new());
 
-        let err = verify_foreign_vec(&vec, &vmc, &resolver, &fetcher, reg, Utc::now())
+        let err = verify_foreign_role(&vac, &vmc, &resolver, &fetcher, reg, Utc::now())
             .await
             .expect_err("must reject");
         assert!(matches!(err, RecognitionError::IssuerNotRecognised(_)));
@@ -947,7 +977,7 @@ mod tests {
     #[tokio::test]
     async fn proof_mismatch_rejected_before_network_calls() {
         let issuer = "did:webvh:peer.example";
-        let (vec, vmc, _pubkey) =
+        let (vac, vmc, _pubkey) =
             fresh_pair(issuer, "did:key:zSubject", VtcRole::Member, 3600).await;
 
         // Wrong pubkey → proof verify fails.
@@ -957,7 +987,7 @@ mod tests {
         mock_reg.set_recognised(issuer).await;
         let reg: Arc<dyn TrustRegistryClient> = Arc::new(mock_reg.clone());
 
-        let err = verify_foreign_vec(&vec, &vmc, &resolver, &fetcher, reg, Utc::now())
+        let err = verify_foreign_role(&vac, &vmc, &resolver, &fetcher, reg, Utc::now())
             .await
             .expect_err("must reject");
         assert!(matches!(err, RecognitionError::ProofInvalid(_)));
@@ -971,7 +1001,7 @@ mod tests {
     #[tokio::test]
     async fn revoked_credential_is_rejected() {
         // Build a VMC with a credentialStatus pointing at our
-        // stub fetcher. (RoleVecParams doesn't currently
+        // stub fetcher. (RoleVacParams doesn't currently
         // accept a status ref — the VMC carries the status
         // block in the workspace today, and that's where the
         // revocation surface lives in steady state.)
@@ -981,14 +1011,14 @@ mod tests {
         let signer = LocalSigner::from_ed25519_seed(issuer.into(), &seed);
         let pubkey = signer.public_bytes().to_vec();
 
-        let vec_vc = build_role_vec(
+        let vac_vc = build_role_vac(
             &signer,
-            RoleVecParams::new(subject, VtcRole::Member)
+            RoleVacParams::new(subject, VtcRole::Member)
                 .with_validity(chrono::Duration::seconds(3600))
-                .with_id("urn:vec:fresh"),
+                .with_id("urn:vac:fresh"),
         )
         .await
-        .expect("build vec");
+        .expect("build vac");
 
         let status_url = "https://peer.example/status-lists/revocation";
         let status_ref = CredentialStatusRef::revocation(status_url, 42);
@@ -1009,7 +1039,7 @@ mod tests {
         mock_reg.set_recognised(issuer).await;
         let reg: Arc<dyn TrustRegistryClient> = Arc::new(mock_reg);
 
-        let err = verify_foreign_vec(&vec_vc, &vmc_vc, &resolver, &fetcher, reg, Utc::now())
+        let err = verify_foreign_role(&vac_vc, &vmc_vc, &resolver, &fetcher, reg, Utc::now())
             .await
             .expect_err("must reject");
         assert!(matches!(err, RecognitionError::StatusListFailed(_)));
@@ -1020,7 +1050,7 @@ mod tests {
     async fn expired_credential_is_rejected_before_network() {
         let issuer = "did:webvh:peer.example";
         // Issue with a 1-second window so it expires by `now`.
-        let (vec, vmc, pubkey) = fresh_pair(issuer, "did:key:zSubject", VtcRole::Member, 1).await;
+        let (vac, vmc, pubkey) = fresh_pair(issuer, "did:key:zSubject", VtcRole::Member, 1).await;
         let resolver = StubKeyResolver::new().with(issuer, pubkey);
         let fetcher = StubStatusFetcher::new();
         let mock_reg = MockRegistryClient::new();
@@ -1029,7 +1059,7 @@ mod tests {
 
         // Verify 10 minutes in the future → both expired.
         let now = Utc::now() + chrono::Duration::minutes(10);
-        let err = verify_foreign_vec(&vec, &vmc, &resolver, &fetcher, reg, now)
+        let err = verify_foreign_role(&vac, &vmc, &resolver, &fetcher, reg, now)
             .await
             .expect_err("must reject");
         assert!(matches!(err, RecognitionError::ValidityWindow(_)));
@@ -1044,7 +1074,7 @@ mod tests {
     async fn issuer_mismatch_between_vec_and_vmc_rejected() {
         let issuer_a = "did:webvh:peer-a.example";
         let issuer_b = "did:webvh:peer-b.example";
-        let (vec, _vmc_a, _pk_a) =
+        let (vac, _vmc_a, _pk_a) =
             fresh_pair(issuer_a, "did:key:zSubject", VtcRole::Member, 3600).await;
         let (_vec_b, vmc, _pk_b) =
             fresh_pair(issuer_b, "did:key:zSubject", VtcRole::Member, 3600).await;
@@ -1053,7 +1083,7 @@ mod tests {
         let fetcher = StubStatusFetcher::new();
         let reg: Arc<dyn TrustRegistryClient> = Arc::new(MockRegistryClient::new());
 
-        let err = verify_foreign_vec(&vec, &vmc, &resolver, &fetcher, reg, Utc::now())
+        let err = verify_foreign_role(&vac, &vmc, &resolver, &fetcher, reg, Utc::now())
             .await
             .expect_err("must reject");
         assert!(matches!(err, RecognitionError::Malformed(_)));
@@ -1062,7 +1092,7 @@ mod tests {
     #[tokio::test]
     async fn registry_unreachable_maps_to_distinct_error_variant() {
         let issuer = "did:webvh:peer.example";
-        let (vec, vmc, pubkey) =
+        let (vac, vmc, pubkey) =
             fresh_pair(issuer, "did:key:zSubject", VtcRole::Member, 3600).await;
         let resolver = StubKeyResolver::new().with(issuer, pubkey);
         let fetcher = StubStatusFetcher::new();
@@ -1072,7 +1102,7 @@ mod tests {
             .await;
         let reg: Arc<dyn TrustRegistryClient> = Arc::new(mock_reg);
 
-        let err = verify_foreign_vec(&vec, &vmc, &resolver, &fetcher, reg, Utc::now())
+        let err = verify_foreign_role(&vac, &vmc, &resolver, &fetcher, reg, Utc::now())
             .await
             .expect_err("must reject");
         assert!(matches!(err, RecognitionError::RegistryUnreachable(_)));
@@ -1087,13 +1117,13 @@ mod tests {
         let signer = LocalSigner::from_ed25519_seed(issuer.into(), &seed);
         let pubkey = signer.public_bytes().to_vec();
 
-        // VEC valid 1h, VMC valid 30min — expected earliest =
+        // VAC valid 1h, VMC valid 30min — expected earliest =
         // VMC's window.
-        let vec_vc = build_role_vec(
+        let vac_vc = build_role_vac(
             &signer,
-            RoleVecParams::new(subject, VtcRole::Member)
+            RoleVacParams::new(subject, VtcRole::Member)
                 .with_validity(chrono::Duration::hours(1))
-                .with_id("urn:vec:long"),
+                .with_id("urn:vac:long"),
         )
         .await
         .unwrap();
@@ -1113,7 +1143,7 @@ mod tests {
         let reg: Arc<dyn TrustRegistryClient> = Arc::new(mock_reg);
 
         let now = Utc::now();
-        let verified = verify_foreign_vec(&vec_vc, &vmc_vc, &resolver, &fetcher, reg, now)
+        let verified = verify_foreign_role(&vac_vc, &vmc_vc, &resolver, &fetcher, reg, now)
             .await
             .unwrap();
 

@@ -196,7 +196,7 @@ pub async fn verify_oid4vci_proof_resolved(
 /// Issue a credential in response to an OID4VCI credential request.
 ///
 /// `credential` is the credential the VTC has already decided to issue (a
-/// minted VMC / VEC / VIC, opaque here); `expected_holder_did` is the subject
+/// minted VMC / VAC / VIC, opaque here); `expected_holder_did` is the subject
 /// it is bound to. The request's key-binding proof must verify *and* prove
 /// control of exactly `expected_holder_did` — so only the rightful subject,
 /// demonstrating key possession, can redeem the credential. Returns the OID4VCI

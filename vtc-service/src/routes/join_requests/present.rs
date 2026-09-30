@@ -326,8 +326,22 @@ async fn presentation_from_verified_set(
         None => HttpStatusListFetcher::new(),
     };
 
+    // Statements are accepted fail-closed, by predicate: one under a predicate
+    // this community has not registered is refused rather than processed as a
+    // generic statement (vtc/endorsement-types/register/0.1).
+    let accepted = crate::endorsement_types::accept_list(&state.endorsement_types_ks).await?;
+
     let mut credentials = Vec::with_capacity(set.presentations.len());
     for p in &set.presentations {
+        if let Some(predicate) = crate::credentials::ingress::statement_predicate(&p.claims)
+            && !accepted.contains(&predicate)
+        {
+            return Err(AppError::Validation(format!(
+                "presented statement from {} is under predicate `{predicate}`, which this \
+                 community does not accept",
+                p.issuer_did
+            )));
+        }
         let trusted = issuer_trusted(registry, own_did.as_deref(), &p.issuer_did).await;
         let status = resolve_presented_status(
             p.credential_status.as_ref(),
@@ -347,7 +361,7 @@ async fn presentation_from_verified_set(
         // whole presentation: one unreadable keyspace must not decide a
         // ceremony, and `Unresolved` is the honest answer — we could not find
         // the edge. The policy still sees an unbound witness.
-        let is_witness = is_witness_credential(p);
+        let is_witness = witness::is_witness_statement(&p.claims);
         let witness_binding = if is_witness {
             Some(
                 witness::resolve_binding(&state.relationships_ks, &p.claims)
@@ -361,16 +375,15 @@ async fn presentation_from_verified_set(
         } else {
             None
         };
-        // The receipt half of Trust Task Context Binding. A VWC is the one type
-        // the specification marks `taskContext` REQUIRED on, so its absence is
-        // an error rather than a verdict — and the error is raised instead of
-        // filling the current thread in, which would forge the very binding
-        // being checked. Everything else resolves to a verdict the policy reads.
-        let requirement = if is_witness {
-            task_context::Requirement::Required
-        } else {
-            task_context::Requirement::Optional
-        };
+        // The receipt half of Trust Task Context Binding. A statement whose
+        // predicate profile marks `taskContext` REQUIRED (a VWC under
+        // `witnessed/1`, a `vetted/1` statement) makes its absence an error
+        // rather than a verdict — and the error is raised instead of filling
+        // the current thread in, which would forge the very binding being
+        // checked. Everything else resolves to a verdict the policy reads.
+        let requirement = task_context::requirement_for_predicate(
+            crate::credentials::ingress::statement_predicate(&p.claims).as_deref(),
+        );
         let task_context = task_context::resolve(
             requirement,
             p.task_context.as_deref(),
@@ -392,25 +405,6 @@ async fn presentation_from_verified_set(
     })
 }
 
-/// Whether this verified credential is a VWC, and so has a digest binding to
-/// resolve.
-///
-/// Matches on the credential type rather than on the presence of a `digest`
-/// member: a credential that should carry one and does not is exactly the case
-/// worth surfacing as [`WitnessBinding::Absent`], and keying off the member
-/// would silently classify it as "not a witness" instead.
-fn is_witness_credential(p: &VerifiedPresentation) -> bool {
-    p.vct.as_deref() == Some("WitnessCredential")
-        || p.claims
-            .get("type")
-            .and_then(|t| t.as_array())
-            .is_some_and(|types| {
-                types
-                    .iter()
-                    .any(|t| t.as_str() == Some("WitnessCredential"))
-            })
-}
-
 /// Pure projection of a single [`VerifiedPresentation`] into a ceremony
 /// [`Credential`], with the caller-resolved `issuer_trusted` verdict and
 /// lifecycle `status`. Kept separate from the TRQP + status-list lookups so it
@@ -427,6 +421,7 @@ fn credential_from_verified(
             .vct
             .clone()
             .unwrap_or_else(|| "VerifiableCredential".to_string()),
+        predicate: crate::credentials::ingress::statement_predicate(&p.claims),
         issuer: p.issuer_did.clone(),
         issuer_trusted,
         status,

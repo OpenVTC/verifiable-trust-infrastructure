@@ -77,7 +77,7 @@ use vti_common::error::AppError;
 
 use crate::acl::get_acl_entry;
 use crate::credentials::{
-    CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
+    CredentialStatusRef, RoleVacParams, VmcParams, build_role_vac, build_vmc,
 };
 use crate::error::TaskError;
 use crate::members::{get_member, match_code};
@@ -241,7 +241,7 @@ pub struct AssertResponse {
     pub did: String,
     pub personhood: bool,
     pub vmc: JsonValue,
-    pub role_vec: JsonValue,
+    pub role_vac: JsonValue,
 }
 
 /// Verify a personhood presentation and, if the active policy allows it,
@@ -400,6 +400,11 @@ pub(crate) async fn assert_inner(
     //    surfaced to the policy via extract but not verified at the route —
     //    operators wanting strict VC verification upload custom rego.)
     let vp_claims = policy_projection(state, presentation).await;
+    // A statement under a predicate this community does not accept is
+    // refused, not handed to the policy as a generic statement (fail closed).
+    reject_unaccepted_statements(state, &vp_claims)
+        .await
+        .map_err(presentation_invalid)?;
 
     // 6. Run personhood.rego.
     let allow =
@@ -464,13 +469,13 @@ pub(crate) async fn assert_inner(
             .with_personhood(true),
     )
     .await?;
-    let vec_id = format!("urn:uuid:{}", Uuid::new_v4());
+    let vac_id = format!("urn:uuid:{}", Uuid::new_v4());
     let acl_row = get_acl_entry(&state.acl_ks, member_did)
         .await?
         .ok_or_else(|| AppError::Internal("ACL row disappeared mid-assert".into()))?;
-    let role_vec = build_role_vec(
+    let role_vac = build_role_vac(
         signer,
-        RoleVecParams::new(member_did, acl_row.role.clone()).with_id(vec_id.clone()),
+        RoleVacParams::new(member_did, acl_row.role.clone()).with_id(vac_id.clone()),
     )
     .await?;
 
@@ -482,13 +487,13 @@ pub(crate) async fn assert_inner(
     // member visibly owing a fresh one.
     let vmc_value = serde_json::to_value(&vmc)
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
-    let role_vec_value = serde_json::to_value(&role_vec)
-        .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+    let role_vac_value = serde_json::to_value(&role_vac)
+        .map_err(|e| AppError::Internal(format!("serialise role VAC: {e}")))?;
     crate::members::storage::edit_member(&state.members_ks, member_did, |m| {
         m.personhood = true;
         m.personhood_asserted_at = Some(now);
         m.status_list_index = Some(slot);
-        m.record_issued_credentials(vmc_value, role_vec_value);
+        m.record_issued_credentials(vmc_value, role_vac_value);
         true
     })
     .await?
@@ -513,8 +518,8 @@ pub(crate) async fn assert_inner(
         personhood: true,
         vmc: serde_json::to_value(&vmc)
             .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
-        role_vec: serde_json::to_value(&role_vec)
-            .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
+        role_vac: serde_json::to_value(&role_vac)
+            .map_err(|e| AppError::Internal(format!("serialise VAC: {e}")))?,
     })
 }
 
@@ -532,7 +537,7 @@ pub struct RevokeResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vmc: Option<JsonValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role_vec: Option<JsonValue>,
+    pub role_vac: Option<JsonValue>,
 }
 
 /// Which of the two parties `personhood/revoke` admits is acting. Decided by
@@ -587,11 +592,11 @@ pub(crate) async fn revoke_inner(
             did: member_did,
             personhood: false,
             vmc: None,
-            role_vec: None,
+            role_vac: None,
         });
     }
 
-    // Mint a fresh VMC + role VEC carrying personhood: false.
+    // Mint a fresh VMC + role VAC carrying personhood: false.
     let slot = member
         .status_list_index
         .ok_or_else(|| AppError::Internal("Member row has no status_list_index".into()))?;
@@ -612,13 +617,13 @@ pub(crate) async fn revoke_inner(
             .with_personhood(false),
     )
     .await?;
-    let vec_id = format!("urn:uuid:{}", Uuid::new_v4());
+    let vac_id = format!("urn:uuid:{}", Uuid::new_v4());
     let acl_row = get_acl_entry(&state.acl_ks, &member_did)
         .await?
         .ok_or_else(|| AppError::Internal("ACL row disappeared mid-revoke".into()))?;
-    let role_vec = build_role_vec(
+    let role_vac = build_role_vac(
         signer,
-        RoleVecParams::new(&member_did, acl_row.role.clone()).with_id(vec_id.clone()),
+        RoleVacParams::new(&member_did, acl_row.role.clone()).with_id(vac_id.clone()),
     )
     .await?;
 
@@ -629,12 +634,12 @@ pub(crate) async fn revoke_inner(
     // member visibly owing a fresh one.
     let vmc_value = serde_json::to_value(&vmc)
         .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?;
-    let role_vec_value = serde_json::to_value(&role_vec)
-        .map_err(|e| AppError::Internal(format!("serialise role VEC: {e}")))?;
+    let role_vac_value = serde_json::to_value(&role_vac)
+        .map_err(|e| AppError::Internal(format!("serialise role VAC: {e}")))?;
     crate::members::storage::edit_member(&state.members_ks, &member_did, |m| {
         m.personhood = false;
         m.personhood_asserted_at = None;
-        m.record_issued_credentials(vmc_value, role_vec_value);
+        m.record_issued_credentials(vmc_value, role_vac_value);
         true
     })
     .await?
@@ -660,9 +665,9 @@ pub(crate) async fn revoke_inner(
             serde_json::to_value(&vmc)
                 .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
         ),
-        role_vec: Some(
-            serde_json::to_value(&role_vec)
-                .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
+        role_vac: Some(
+            serde_json::to_value(&role_vac)
+                .map_err(|e| AppError::Internal(format!("serialise VAC: {e}")))?,
         ),
     })
 }
@@ -724,12 +729,38 @@ async fn verify_vp_proof(
     Ok(())
 }
 
+/// Refuse a projection carrying a DTG statement whose predicate this community
+/// has not registered (`crate::endorsement_types::accept_list`). The accept
+/// list fails closed; a statement it does not name is never evidence here.
+async fn reject_unaccepted_statements(
+    state: &AppState,
+    vp_claims: &JsonValue,
+) -> Result<(), AppError> {
+    let accepted = crate::endorsement_types::accept_list(&state.endorsement_types_ks).await?;
+    for credential in vp_claims
+        .get("credentials")
+        .and_then(JsonValue::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(predicate) = crate::credentials::ingress::statement_predicate(credential)
+            && !accepted.contains(&predicate)
+        {
+            return Err(AppError::Validation(format!(
+                "personhood-predicate-not-accepted: the presentation carries a statement under \
+                 `{predicate}`, which this community does not accept"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The `vp_claims` the personhood policy reads: the canonical projection, plus
 /// the host's [`WitnessBinding`](crate::credentials::witness::WitnessBinding)
-/// verdict on every `WitnessCredential` in it.
+/// verdict on every `witnessed/1` statement in it.
 ///
 /// Without the verdict the default policy could only ask whether a
-/// `WitnessCredential` had a non-empty issuer — a question anyone can answer
+/// witness credential had a non-empty issuer — a question anyone can answer
 /// yes to — and admit personhood on a witness that witnessed nothing, or an
 /// edge this community has never seen (#1068). The verdict is computed here,
 /// where the relationships keyspace is in hand, for the same reason the join
@@ -1016,7 +1047,7 @@ mod witness_binding_tests {
     use crate::relationships::Relationship;
     use crate::relationships::storage::store_relationship;
     use crate::test_support::{TestVtc, dtg_json};
-    use dtg_credentials::DTGCredential;
+    use dtg_credentials::{DTGCredential, IssuerScope};
 
     const COMMUNITY: &str = "did:webvh:acme.example";
     const WITNESS: &str = "did:webvh:witness.example";
@@ -1035,7 +1066,13 @@ mod witness_binding_tests {
         .await
         .expect("install defaults");
 
-        let vrc = DTGCredential::new_vrc(ALICE.into(), BOB.into(), Utc::now(), None);
+        let vrc = DTGCredential::new_vrc(
+            ALICE.into(),
+            IssuerScope::Pairwise,
+            BOB.into(),
+            Utc::now(),
+            None,
+        );
         let mut vrc_jsonld = dtg_json(&vrc);
         vrc_jsonld["proof"] = json!({
             "type": "DataIntegrityProof",
@@ -1066,7 +1103,7 @@ mod witness_binding_tests {
     }
 
     /// The `witness/session` document that opened the session `SESSION` names.
-    /// `new_vwc_for_session` reads `taskContext` and `taskDigestMultibase` off
+    /// `new_witnessed_vsc` reads `taskContext` and `taskDigestMultibase` off
     /// it, so the pair cannot disagree.
     fn witness_session() -> JsonValue {
         json!({
@@ -1080,30 +1117,44 @@ mod witness_binding_tests {
         })
     }
 
-    /// A catalog-built VWC over `digest`, presented by Alice.
+    /// A catalog-built VWC — a `witnessed/1` statement about Alice issuing
+    /// an edge — presented by Alice, with its `object.digestMultibase` set to
+    /// `digest`, or removed for `None`.
     ///
-    /// `new_vwc_for_session` takes the edge digest as REQUIRED, which the
-    /// specification makes it. `digest: None` is therefore not something the
-    /// constructor can produce — it is the VWC that predates the requirement,
-    /// and the only honest way to hold one is to drop the member from the wire
-    /// form, which is how it would arrive.
+    /// `new_witnessed_vsc` computes the digest from the edge credential it is
+    /// handed, so a VWC naming some other digest — or none — is not something
+    /// the constructor produces: the only honest way to hold one is to edit
+    /// the wire form, which is how it would arrive. The proof is not checked
+    /// on this path, so an unsigned statement stands in for a signed one.
     fn presentation_with_witness(digest: Option<String>) -> JsonValue {
-        let vwc = DTGCredential::new_vwc_for_session(
-            WITNESS.into(),
+        let edge = dtg_json(&DTGCredential::new_vrc(
             ALICE.into(),
+            IssuerScope::Pairwise,
+            BOB.into(),
             Utc::now(),
             None,
+        ));
+        let vwc = DTGCredential::new_witnessed_vsc(
+            WITNESS.into(),
+            IssuerScope::Directed,
+            &edge,
             &witness_session(),
-            digest.clone().unwrap_or_default(),
+            Utc::now(),
+            None,
             None,
         )
         .expect("the opening witness/session document builds a VWC");
         let mut vwc = dtg_json(&vwc);
-        if digest.is_none() {
-            vwc["credentialSubject"]
-                .as_object_mut()
-                .expect("credentialSubject is an object")
-                .remove("digestMultibase");
+        let object = vwc["credentialSubject"]["object"]
+            .as_object_mut()
+            .expect("object is an object");
+        match digest {
+            Some(d) => {
+                object.insert("digestMultibase".into(), JsonValue::String(d));
+            }
+            None => {
+                object.remove("digestMultibase");
+            }
         }
         json!({
             "@context": ["https://www.w3.org/ns/credentials/v2"],
@@ -1139,6 +1190,7 @@ mod witness_binding_tests {
         // A well-formed digest of an edge this community does not hold.
         let elsewhere = DTGCredential::new_vrc(
             "did:key:zCarol".into(),
+            IssuerScope::Pairwise,
             "did:key:zDave".into(),
             Utc::now(),
             None,

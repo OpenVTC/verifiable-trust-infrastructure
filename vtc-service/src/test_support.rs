@@ -49,7 +49,7 @@ const JWT_SEED: [u8; 32] = [0x42u8; 32];
 
 /// Deterministic 32-byte Ed25519 seed used to synthesise the credential /
 /// install signers when a test opts in. Not the JWT seed — these sign
-/// VMC/VEC/install material, JWT seed signs access tokens.
+/// VMC/VAC/install material, JWT seed signs access tokens.
 const SIGNER_SEED: [u8; 32] = [0xC5u8; 32];
 
 /// Pin jsonwebtoken's default `CryptoProvider` to `aws_lc` once per
@@ -130,7 +130,7 @@ impl TestVtcBuilder {
 
     /// Seed a [`LocalSigner`] (credential issuance) and an
     /// [`InstallTokenSigner`] (install ceremony) from a deterministic
-    /// Ed25519 seed, so VMC/VEC/status-list and install routes work.
+    /// Ed25519 seed, so VMC/VAC/status-list and install routes work.
     /// This is the in-process equivalent of having bootstrapped the
     /// VTC's signing bundle from a VTA.
     pub fn with_signers(mut self, on: bool) -> Self {
@@ -262,6 +262,11 @@ impl TestVtcBuilder {
         let endorsement_types_ks = store
             .keyspace("endorsement_types")
             .expect("endorsement_types ks");
+        // As `server::run` does at boot: the core predicates are accepted
+        // until an operator deletes them.
+        crate::endorsement_types::seed_defaults(&endorsement_types_ks)
+            .await
+            .expect("seed default predicates");
         let vetting_revocations_ks = store
             .keyspace("vetting_revocations")
             .expect("vetting_revocations ks");
@@ -2440,9 +2445,9 @@ mod didcomm_harness {
 /// JSON instead states the *implementation's* belief about the wire form
 /// rather than the catalog's definition of it — so a fixture and a validator
 /// can agree with each other while both disagree with what any client sends.
-/// That is not hypothetical: it is how the recognition path came to match
-/// `"VerifiableEndorsementCredential"`, a type nothing has ever issued, and
-/// reject every real presentation (#1062), with a green suite throughout.
+/// That is not hypothetical: it is how the recognition path came to match a
+/// `Verifiable`-prefixed type nothing has ever issued, and reject every real
+/// presentation (#1062), with a green suite throughout.
 ///
 /// Hand-rolled JSON remains correct for malformed-input cases — the catalog
 /// cannot produce a credential that is missing its own `@context`.

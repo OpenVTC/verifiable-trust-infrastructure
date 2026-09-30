@@ -277,10 +277,10 @@ async fn missing_active_policy_surfaces_as_internal_error() {
 
 /// Route-level coverage for the P0.2-part-2 holder-binding rewrite: the
 /// `/v1/auth/recognise` route now demands a holder-signed VP (challenge nonce +
-/// audience bound) embedding the VEC + VMC, and refuses unless the VP holder is
+/// audience bound) embedding the VAC + VMC, and refuses unless the VP holder is
 /// the credential subject. These drive the real HTTP stack via `oneshot` and a
 /// holder-signed `eddsa-jcs-2022` VP, exercising everything up to (but not
-/// through) the registry-gated `verify_foreign_vec` — `TestVtc` wires no
+/// through) the registry-gated `verify_foreign_role` — `TestVtc` wires no
 /// registry client, so a VP that clears the holder-binding gate fails next at
 /// the registry pre-flight, which is exactly how we assert the gate let it pass.
 mod holder_binding {
@@ -291,7 +291,7 @@ mod holder_binding {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
-    use vta_sdk::protocols::members::MEMBERSHIP_CREDENTIAL_TYPE;
+    use vta_sdk::protocols::members::{AUTHORITY_CREDENTIAL_TYPE, MEMBERSHIP_CREDENTIAL_TYPE};
     use vtc_service::test_support::TestVtc;
 
     const VTC_DID: &str = "did:key:z6MkTestVTC";
@@ -328,22 +328,34 @@ mod holder_binding {
         };
         let issuer_did = did_for(issuer_seed);
         // The DTG wire form, as `dtg_credentials` mints it. Hand-rolling a
-        // different shape here is what let the VEC routing bug live: the test
-        // built the type the handler matched, and neither matched what
-        // `issue_endorsement` actually issues.
+        // different shape here is what let the role-credential routing bug
+        // live: the test built the type the handler matched, and neither
+        // matched what the VTC actually issues. A role VAC confers
+        // `role:moderator` at the issuing community's own DID; the VMC's
+        // subject is the bare `{ id }`.
+        let subject = if vc_type == AUTHORITY_CREDENTIAL_TYPE {
+            json!({
+                "id": subject_did,
+                "authority": {
+                    "scope": issuer_did,
+                    "actions": ["role:moderator"],
+                    "maxAttenuation": 0
+                },
+            })
+        } else {
+            json!({ "id": subject_did })
+        };
         let mut vc = json!({
             "@context": [
-                "https://www.w3.org/ns/credentials/v2",
-                "https://firstperson.network/credentials/dtg/v1"
+                dtg_credentials::W3C_VC_V2_CONTEXT,
+                dtg_credentials::DTG_CONTEXT_V1
             ],
             "type": ["VerifiableCredential", "DTGCredential", vc_type],
             "issuer": issuer_did,
+            "issuerScope": "public",
             "validFrom": "2020-01-01T00:00:00Z",
             "validUntil": "2999-01-01T00:00:00Z",
-            "credentialSubject": {
-                "id": subject_did,
-                "endorsement": { "role": "moderator", "communityDid": issuer_did },
-            },
+            "credentialSubject": subject,
         });
         let proof = DataIntegrityProof::sign(
             &vc,
@@ -358,7 +370,7 @@ mod holder_binding {
         vc
     }
 
-    /// Build a holder-signed DI VP embedding a foreign VEC + VMC (both issued by
+    /// Build a holder-signed DI VP embedding a foreign VAC + VMC (both issued by
     /// `issuer_seed`, subject `subject_seed`), holder-signed by `holder_seed`
     /// with `proofPurpose: authentication` over `nonce` + `domain = VTC_DID`.
     /// Returns the VP object. When `holder_seed == subject_seed` the holder is
@@ -369,10 +381,9 @@ mod holder_binding {
         };
         let subject_did = did_for(subject_seed);
         let holder_did = did_for(holder_seed);
-        let vec = sign_vc(issuer_seed, "EndorsementCredential", &subject_did).await;
-        // The VMC's wire tag is `MembershipCredential` — NOT
-        // `VerifiableMembershipCredential`. The `VERIFIABLE_` prefix lives in the
-        // constant's *name* only (it's historical); the tag is what
+        let vac = sign_vc(issuer_seed, AUTHORITY_CREDENTIAL_TYPE, &subject_did).await;
+        // The VMC's wire tag is `MembershipCredential` — with no `Verifiable`
+        // prefix. That prefix once lived in the constant's *name* only; the tag is what
         // `dtg-credentials` emits and what the VTC stamps, and it's what
         // `routes::recognise` matches on. Hand-rolling the wrong string here made
         // every VP that got as far as the credential lookup 400 with
@@ -383,7 +394,7 @@ mod holder_binding {
             "@context": ["https://www.w3.org/ns/credentials/v2"],
             "type": ["VerifiablePresentation"],
             "holder": holder_did,
-            "verifiableCredential": [vec, vmc],
+            "verifiableCredential": [vac, vmc],
             "nonce": nonce,
             "domain": VTC_DID,
         });
@@ -471,7 +482,7 @@ mod holder_binding {
     #[tokio::test]
     async fn holder_that_is_not_the_subject_is_rejected() {
         // The headline. Attacker (holder seed 7) captured a victim's (subject
-        // seed 5) VEC + VMC and re-wraps them in a VP signed with the
+        // seed 5) VAC + VMC and re-wraps them in a VP signed with the
         // attacker's own holder key over a freshly-fetched challenge. The
         // holder proof verifies — but the holder is not the credential subject,
         // so the route must refuse before minting.

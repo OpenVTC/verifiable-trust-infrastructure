@@ -139,7 +139,7 @@ function isSatisfiable(need: string): boolean {
 type Facts = Record<string, unknown>;
 
 /** Apply a satisfied need to the facts — e.g. `agreed:code-of-conduct`
- * sets the agreement flag; `trusted:WitnessCredential` adds a trusted
+ * sets the agreement flag; `trusted:MembershipCredential` adds a trusted
  * credential to the presentation. */
 function satisfyNeed(facts: Facts, need: string): Facts {
   const f = structuredClone(facts) as Facts;

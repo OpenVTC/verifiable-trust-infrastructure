@@ -416,10 +416,10 @@ mod tests {
         token::TokenWallet,
     };
 
+    use crate::endorsements::VETTER_GRANT_ROW_TYPE;
     use crate::endorsements::{Endorsement, store_endorsement};
     use crate::members::{Member, store_member};
     use crate::test_support::TestVtc;
-    use vta_sdk::protocols::vetting::COMMUNITY_ROLE_ENDORSEMENT_TYPE;
 
     const COMMUNITY: &str = "did:webvh:QmScid:kernel.example";
     const PERIOD: &str = "2026-09";
@@ -435,12 +435,12 @@ mod tests {
         store_member(&state.members_ks, &member).await.unwrap();
         let row = Endorsement {
             id: Uuid::new_v4(),
-            endorsement_type: COMMUNITY_ROLE_ENDORSEMENT_TYPE.to_string(),
+            endorsement_type: VETTER_GRANT_ROW_TYPE.to_string(),
             issuer_did: COMMUNITY.to_string(),
             subject_did: did.to_string(),
-            claim: json!({ "type": COMMUNITY_ROLE_ENDORSEMENT_TYPE, "role": "vetter" }),
+            claim: json!({ "role": "vetter" }),
             status_list_index: 0,
-            vec_id: format!("urn:uuid:{}", Uuid::new_v4()),
+            credential_id: format!("urn:uuid:{}", Uuid::new_v4()),
             created_at: Utc::now() - chrono::Duration::hours(1),
             revoked_at: None,
             valid_until: None,

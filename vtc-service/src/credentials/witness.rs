@@ -1,14 +1,21 @@
 //! Verifying the digest binding on a Verifiable Witness Credential.
 //!
-//! A VWC asserts that its issuer witnessed *one specific* relationship. The
-//! only thing that says *which* is `credentialSubject.digestMultibase`: a
-//! digest over the witnessed edge credential, in the form DTG Credentials
+//! A VWC is a DTG Verifiable Statement Credential (`StatementCredential`)
+//! under the predicate `https://registry.trustoverip.org/dtg/vsc/witnessed/1`
+//! (`dtg_credentials::WITNESSED_V1`; witness/session/submit/0.1, "The
+//! credential delivered"). It is recognised by that predicate, never by a type
+//! string: DTG Credentials no longer defines a witness credential type.
+//!
+//! A VWC asserts that its issuer witnessed *one specific* relationship being
+//! issued. The only thing that says *which* is
+//! `credentialSubject.object.digestMultibase`: a digest over the witnessed edge
+//! credential, in the form DTG Credentials
 //! §Digest Encoding specifies — SHA-256 over the RFC 8785 canonicalization of
 //! the credential **with its top-level `proof` removed**, wrapped as a
 //! `sha2-256` multihash and multibase-encoded.
 //!
 //! Until this module existed, nothing recomputed it. The ceremony engine took
-//! `WitnessCredential` as a policy fact carrying trusted-issuer, validity and
+//! a witness credential as a policy fact carrying trusted-issuer, validity and
 //! holder-binding predicates, and reasoned to a decision on the *assertion*
 //! that a witness credential was present — with no code path that could have
 //! established which edge, if any, it witnessed. DTG Credentials Security
@@ -20,15 +27,22 @@
 //!
 //! The recompute and the decode both go through `dtg-credentials`
 //! (`digest_multibase_json`, `decode_digest_multibase`), the implementation
-//! `DTGCredential::new_vwc_for_session` callers use to produce the value. A
-//! first version of this module digested with
+//! `DTGCredential::new_witnessed_vsc` uses to produce the value. A first
+//! version of this module digested with
 //! [`crate::credentials::ingress::digest_multibase`]
 //! — the Trust Task framework digest, same encoding, but over the document
-//! *proof included* — and read the Working Draft 01 member name `digest`. Both
+//! *proof included* — and read a member name the library never wrote. Both
 //! compile, both produce plausible strings, and a VWC built by the library to
-//! the specification came back `Absent`: the member was never read, and had it
-//! been, the coverage would not have matched a signed VRC. The round-trip test
-//! at the bottom of this file pins the two implementations together.
+//! the specification came back `Absent`. The round-trip test at the bottom of
+//! this file pins the two implementations together.
+//!
+//! ## The subject–object rule
+//!
+//! The `witnessed/1` profile binds each VWC to one direction of the edge:
+//! `credentialSubject.id` MUST be the `issuer` of the credential the digest
+//! names. A digest that matches a stored edge whose issuer is someone else is
+//! [`WitnessBinding::SubjectMismatch`], not `Bound` — otherwise a VWC attesting
+//! that Bob issued a VRC could be presented as evidence about Alice's.
 //!
 //! ## Recomputed, not compared to a stored digest
 //!
@@ -73,8 +87,9 @@ use crate::relationships::Relationship;
 ///
 /// Reaches policy under the snake_case key `witness_binding`, as
 /// `{ "state": "bound", "relationship_id": "<uuid>" }` or
+/// `{ "state": "subjectMismatch", "relationship_id": "<uuid>" }` or
 /// `{ "state": "unresolved" | "absent" | "malformed" }` — on the ceremony
-/// `Credential` fact and on each `WitnessCredential` entry of the personhood
+/// `Credential` fact and on each `witnessed/1` statement of the personhood
 /// projection alike ([`annotate_vp_claims`]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", tag = "state")]
@@ -83,6 +98,11 @@ pub enum WitnessBinding {
     /// to the same bytes. This is the only variant that establishes *which*
     /// edge was witnessed, so it is the only one carrying an id.
     Bound { relationship_id: Uuid },
+    /// The digest names a stored edge, but `credentialSubject.id` is not that
+    /// edge's issuer, so the `witnessed/1` subject–object rule fails: the
+    /// credential attests somebody else issuing it. Carries the edge so an
+    /// operator can see which one was misattributed; never evidence.
+    SubjectMismatch { relationship_id: Uuid },
     /// The digest decodes and is well-formed, but no relationship this service
     /// holds recomputes to it.
     ///
@@ -91,8 +111,8 @@ pub enum WitnessBinding {
     /// honest evidence. It is surfaced so the policy can decide, which is the
     /// same reason `CredentialStatus::Unknown` exists rather than a guess.
     Unresolved,
-    /// The credential asserts no `credentialSubject.digestMultibase` at all. A
-    /// VWC without one witnesses nothing in particular.
+    /// The credential asserts no `credentialSubject.object.digestMultibase` at
+    /// all. A VWC without one witnesses nothing in particular.
     Absent,
     /// A digest is present but is not a decodable multibase multihash, or does
     /// not name `sha2-256`. Distinguished from [`Self::Unresolved`] because
@@ -142,26 +162,34 @@ pub fn digests_match(asserted: &str, recomputed: &str) -> bool {
     }
 }
 
-/// Read the asserted digest out of a credential's claims.
-///
-/// Accepts it under `credentialSubject` (a DI VC, where `claims` is the whole
-/// credential) or at the top level (an SD-JWT-VC, where `claims` is already the
-/// subject). Both shapes reach the ceremony `Credential` fact through the same
-/// field, so both have to be read here rather than at one call site.
-///
-/// The member is `digestMultibase` (DTG Credentials Working Draft 02). The
-/// Working Draft 01 name `digest` is still read, as `dtg-credentials` reads it
-/// on deserialization — but only where `digestMultibase` is missing, and a WD01
-/// *value* (`sha256:<hex>`) does not decode and resolves to
-/// [`WitnessBinding::Malformed`].
-fn asserted_digest(claims: &JsonValue) -> Option<&str> {
-    fn member(obj: &JsonValue) -> Option<&JsonValue> {
-        obj.get("digestMultibase").or_else(|| obj.get("digest"))
+/// The members of a statement's subject: under `credentialSubject` (a DI VC,
+/// where `claims` is the whole credential) or at the top level (an SD-JWT-VC,
+/// where `claims` is already the subject). Both shapes reach the ceremony
+/// `Credential` fact through the same field, so both are read here rather
+/// than at one call site. `credentialSubject` wins when both are present,
+/// because that is the issuer-signed location.
+fn statement_subject(claims: &JsonValue) -> &JsonValue {
+    match claims.get("credentialSubject") {
+        Some(subject) if subject.is_object() => subject,
+        _ => claims,
     }
-    claims
-        .get("credentialSubject")
-        .and_then(member)
-        .or_else(|| member(claims))
+}
+
+/// Read the asserted digest out of a credential's claims:
+/// `object.digestMultibase` of the statement subject, the only object kind
+/// `witnessed/1` permits.
+fn asserted_digest(claims: &JsonValue) -> Option<&str> {
+    statement_subject(claims)
+        .get("object")
+        .and_then(|object| object.get("digestMultibase"))
+        .and_then(JsonValue::as_str)
+}
+
+/// `credentialSubject.id` of the statement: the party the witness says issued
+/// the witnessed credential.
+fn asserted_issuer(claims: &JsonValue) -> Option<&str> {
+    statement_subject(claims)
+        .get("id")
         .and_then(JsonValue::as_str)
 }
 
@@ -185,43 +213,63 @@ pub async fn resolve_binding(
     }
     for rel in crate::relationships::storage::list_all(relationships_ks).await? {
         if recomputes_to(&rel, asserted) {
-            return Ok(WitnessBinding::Bound {
-                relationship_id: rel.id,
-            });
+            // `witnessed/1`: the subject is the issuer of the witnessed edge.
+            return Ok(
+                if asserted_issuer(claims) == Some(rel.issuer_did.as_str()) {
+                    WitnessBinding::Bound {
+                        relationship_id: rel.id,
+                    }
+                } else {
+                    WitnessBinding::SubjectMismatch {
+                        relationship_id: rel.id,
+                    }
+                },
+            );
         }
     }
     Ok(WitnessBinding::Unresolved)
 }
 
-/// Whether a credential's `type` names a `WitnessCredential`.
+/// Whether a credential is a `witnessed/1` statement: `type` includes
+/// `StatementCredential` and the subject's `predicate` is
+/// [`dtg_credentials::WITNESSED_V1`], compared byte for byte.
 ///
-/// Matches on the type rather than on the presence of a digest member: a
-/// credential that should carry one and does not is exactly the case worth
-/// surfacing as [`WitnessBinding::Absent`], and keying off the member would
-/// silently classify it as "not a witness" instead. `type` may be a string or
-/// an array, as W3C VCDM allows.
-fn names_witness_type(credential: &JsonValue) -> bool {
-    match credential.get("type") {
-        Some(JsonValue::String(t)) => t == "WitnessCredential",
-        Some(JsonValue::Array(types)) => types
-            .iter()
-            .any(|t| t.as_str() == Some("WitnessCredential")),
+/// Classified by predicate, never by a type string — DTG Credentials has no
+/// witness type. Keyed off the predicate rather than the presence of a digest
+/// member: a statement that should carry one and does not is exactly the case
+/// worth surfacing as [`WitnessBinding::Absent`], and keying off the member
+/// would silently classify it as "not a witness" instead. `type` may be a
+/// string or an array, as W3C VCDM allows; an SD-JWT-VC projection carries no
+/// `type` beside its claims, so the predicate alone decides there.
+pub fn is_witness_statement(credential: &JsonValue) -> bool {
+    let typed_as_statement = match credential.get("type") {
+        Some(JsonValue::String(t)) => t == STATEMENT_TYPE,
+        Some(JsonValue::Array(types)) => types.iter().any(|t| t.as_str() == Some(STATEMENT_TYPE)),
+        None => credential.get("credentialSubject").is_none(),
         _ => false,
-    }
+    };
+    typed_as_statement
+        && statement_subject(credential)
+            .get("predicate")
+            .and_then(JsonValue::as_str)
+            == Some(dtg_credentials::WITNESSED_V1)
 }
+
+const STATEMENT_TYPE: &str = vta_sdk::protocols::members::STATEMENT_CREDENTIAL_TYPE;
 
 /// The key a binding verdict is written under on a projected credential. Shared
 /// with the ceremony `Credential` fact, which serializes its field under the
 /// same name, so one policy idiom reads both.
 pub const WITNESS_BINDING_KEY: &str = "witness_binding";
 
-/// Attach the host's [`WitnessBinding`] verdict to every `WitnessCredential`
-/// in a `vp_claims` projection (`crate::policy::extract::extract_vp_claims`).
+/// Attach the host's [`WitnessBinding`] verdict to every `witnessed/1`
+/// statement in a `vp_claims` projection
+/// (`crate::policy::extract::extract_vp_claims`).
 ///
 /// The personhood `assert` path hands policy this projection rather than the
 /// ceremony facts, and before this existed it carried no binding verdict at
 /// all — so the default `personhood.rego` could only check that a
-/// `WitnessCredential` had a non-empty issuer, which says nothing about which
+/// witness credential had a non-empty issuer, which says nothing about which
 /// edge, if any, was witnessed. This puts the same verdict the ceremony path
 /// computes onto the projection, and the policy branches on it the same way.
 ///
@@ -242,7 +290,7 @@ pub async fn annotate_vp_claims(relationships_ks: &KeyspaceHandle, vp_claims: &m
         return;
     };
     for credential in credentials {
-        let is_witness = names_witness_type(credential);
+        let is_witness = is_witness_statement(credential);
         let Some(entry) = credential.as_object_mut() else {
             continue;
         };
@@ -361,47 +409,44 @@ mod tests {
     }
 
     /// The two claim shapes that reach the ceremony fact: a DI VC keeps the
-    /// digest under `credentialSubject`, an SD-JWT-VC has already unwrapped it.
+    /// statement under `credentialSubject`, an SD-JWT-VC has already unwrapped
+    /// it.
     #[test]
     fn reads_the_digest_from_either_claim_shape() {
         assert_eq!(
-            asserted_digest(&json!({ "credentialSubject": { "digestMultibase": "zAbc" } })),
+            asserted_digest(
+                &json!({ "credentialSubject": { "object": { "digestMultibase": "zAbc" } } })
+            ),
             Some("zAbc")
         );
         assert_eq!(
-            asserted_digest(&json!({ "digestMultibase": "zAbc" })),
+            asserted_digest(&json!({ "object": { "digestMultibase": "zAbc" } })),
             Some("zAbc")
         );
         assert_eq!(asserted_digest(&json!({ "credentialSubject": {} })), None);
         assert_eq!(asserted_digest(&json!({})), None);
     }
 
-    /// Working Draft 02 renamed the member to `digestMultibase`. The WD01 name
-    /// is still read — `dtg-credentials` accepts it as an alias — but never in
-    /// preference to the current one.
+    /// The retired placement — a digest directly under `credentialSubject`, as
+    /// the pre-v1 witness type carried it — is not read: it is not a
+    /// `witnessed/1` statement.
     #[test]
-    fn reads_the_wd02_member_name_before_the_wd01_one() {
+    fn the_retired_digest_placement_is_not_read() {
         assert_eq!(
-            asserted_digest(&json!({ "credentialSubject": { "digest": "zOld" } })),
-            Some("zOld")
-        );
-        assert_eq!(
-            asserted_digest(&json!({
-                "credentialSubject": { "digest": "zOld", "digestMultibase": "zNew" }
-            })),
-            Some("zNew")
+            asserted_digest(&json!({ "credentialSubject": { "digestMultibase": "zOld" } })),
+            None
         );
     }
 
     /// `credentialSubject` wins when both are present, because that is the
-    /// issuer-signed location — a top-level digest beside it is not a second
+    /// issuer-signed location — a top-level object beside it is not a second
     /// opinion to be preferred.
     #[test]
     fn the_signed_location_wins() {
         assert_eq!(
             asserted_digest(&json!({
-                "credentialSubject": { "digestMultibase": "zSigned" },
-                "digestMultibase": "zElsewhere"
+                "credentialSubject": { "object": { "digestMultibase": "zSigned" } },
+                "object": { "digestMultibase": "zElsewhere" }
             })),
             Some("zSigned")
         );
@@ -443,6 +488,21 @@ mod tests {
 
     use crate::relationships::Relationship;
     use crate::relationships::storage::store_relationship;
+
+    /// Hand-built claims of a `witnessed/1` statement by `subject` over
+    /// `witnessed`.
+    fn vwc_claims(subject: &str, witnessed: &JsonValue) -> JsonValue {
+        json!({
+            "type": ["VerifiableCredential", "DTGCredential", "StatementCredential"],
+            "credentialSubject": {
+                "id": subject,
+                "predicate": dtg_credentials::WITNESSED_V1,
+                "object": {
+                    "digestMultibase": dtg_credential_digest_multibase(witnessed).unwrap()
+                }
+            }
+        })
+    }
     use chrono::Utc;
     use uuid::Uuid;
     use vti_common::config::StoreConfig;
@@ -493,15 +553,30 @@ mod tests {
         store_relationship(&primary, &index, &edge).await.unwrap();
         store_relationship(&primary, &index, &other).await.unwrap();
 
-        let vwc = json!({
-            "credentialSubject": { "digestMultibase": dtg_credential_digest_multibase(&edge.vrc_jsonld).unwrap() }
-        });
+        let vwc = vwc_claims("did:key:zIssuer", &edge.vrc_jsonld);
         assert_eq!(
             resolve_binding(&primary, &vwc).await.unwrap(),
             WitnessBinding::Bound {
                 relationship_id: edge.id
             },
             "must name the edge it witnessed, not merely 'some edge'"
+        );
+    }
+
+    /// `witnessed/1`'s subject–object rule: a witness attesting that the
+    /// *subject* issued an edge the *issuer* issued names the wrong party.
+    #[tokio::test]
+    async fn a_witness_naming_the_wrong_issuer_is_a_subject_mismatch() {
+        let (primary, index, _dir) = temp_kss().await;
+        let edge = edge_with_a_stale_digest_column("did:key:zIssuer", "did:key:zSubject");
+        store_relationship(&primary, &index, &edge).await.unwrap();
+
+        let vwc = vwc_claims("did:key:zSubject", &edge.vrc_jsonld);
+        assert_eq!(
+            resolve_binding(&primary, &vwc).await.unwrap(),
+            WitnessBinding::SubjectMismatch {
+                relationship_id: edge.id
+            }
         );
     }
 
@@ -515,11 +590,9 @@ mod tests {
 
         let (_, bytes) =
             multibase::decode(dtg_credential_digest_multibase(&edge.vrc_jsonld).unwrap()).unwrap();
-        let vwc = json!({
-            "credentialSubject": {
-                "digestMultibase": multibase::encode(multibase::Base::Base16Lower, &bytes)
-            }
-        });
+        let mut vwc = vwc_claims("did:key:zIssuer", &edge.vrc_jsonld);
+        vwc["credentialSubject"]["object"]["digestMultibase"] =
+            json!(multibase::encode(multibase::Base::Base16Lower, &bytes));
         assert_eq!(
             resolve_binding(&primary, &vwc).await.unwrap(),
             WitnessBinding::Bound {
@@ -543,9 +616,7 @@ mod tests {
         .unwrap();
 
         let elsewhere = json!({ "type": ["VerifiableCredential"], "issuer": "did:key:zNowhere" });
-        let vwc = json!({
-            "credentialSubject": { "digestMultibase": dtg_credential_digest_multibase(&elsewhere).unwrap() }
-        });
+        let vwc = vwc_claims("did:key:zNowhere", &elsewhere);
         assert_eq!(
             resolve_binding(&primary, &vwc).await.unwrap(),
             WitnessBinding::Unresolved
@@ -573,7 +644,7 @@ mod tests {
             assert_eq!(
                 resolve_binding(
                     &primary,
-                    &json!({ "credentialSubject": { "digestMultibase": bad } })
+                    &json!({ "credentialSubject": { "object": { "digestMultibase": bad } } })
                 )
                 .await
                 .unwrap(),
@@ -588,9 +659,7 @@ mod tests {
     #[tokio::test]
     async fn an_empty_keyspace_binds_nothing() {
         let (primary, _index, _dir) = temp_kss().await;
-        let vwc = json!({
-            "credentialSubject": { "digestMultibase": dtg_credential_digest_multibase(&vrc()).unwrap() }
-        });
+        let vwc = vwc_claims("did:webvh:issuer.example", &vrc());
         assert_eq!(
             resolve_binding(&primary, &vwc).await.unwrap(),
             WitnessBinding::Unresolved
@@ -600,7 +669,7 @@ mod tests {
     // ── a VWC built by the catalog, verified by this module ───────────────
 
     use crate::test_support::dtg_json;
-    use dtg_credentials::DTGCredential;
+    use dtg_credentials::{DTGCredential, IssuerScope};
 
     const WITNESS: &str = "did:webvh:witness.example";
     const ALICE: &str = "did:key:zAlice";
@@ -611,7 +680,7 @@ mod tests {
     const SESSION: &str = "urn:uuid:6f1c1c1e-5a8b-4f7e-9d0c-2b7a4e1d9c30";
 
     /// The `witness/session` document that opened the session, as the witness
-    /// received it. `new_vwc_for_session` reads both halves of the citation off
+    /// received it. `new_witnessed_vsc` reads both halves of the citation off
     /// it — `taskContext` from its `id`, `taskDigestMultibase` from its task
     /// digest — so the two cannot disagree, and refuses anything that is not
     /// the opening document (a `submit`, a `#response`, or one whose
@@ -632,7 +701,13 @@ mod tests {
     /// **signed** — the `proof` is what a stored edge carries and what the VWC
     /// digest must not cover.
     fn stored_signed_vrc(issuer: &str, subject: &str) -> (DTGCredential, Relationship) {
-        let vrc = DTGCredential::new_vrc(issuer.into(), subject.into(), Utc::now(), None);
+        let vrc = DTGCredential::new_vrc(
+            issuer.into(),
+            IssuerScope::Pairwise,
+            subject.into(),
+            Utc::now(),
+            None,
+        );
         let mut vrc_jsonld = dtg_json(&vrc);
         vrc_jsonld["proof"] = json!({
             "type": "DataIntegrityProof",
@@ -659,24 +734,25 @@ mod tests {
     }
 
     /// A VWC for one direction of a witnessed edge, built the only way the
-    /// catalog builds one. `credentialSubject.id` is the witnessed VRC's
-    /// issuer (DTG Credentials §VWC: "MUST be the DID of the issuer of the edge
-    /// credential that the VWC attests"), and `taskContext` is REQUIRED.
+    /// catalog builds one: a `witnessed/1` statement whose
+    /// `credentialSubject.id` is read off the witnessed VRC's issuer (the
+    /// profile's subject–object rule) and whose `taskContext` is REQUIRED. The
+    /// witness declares `directed`, the profile's minimum.
     fn vwc_for(witnessed: &DTGCredential) -> DTGCredential {
-        DTGCredential::new_vwc_for_session(
+        DTGCredential::new_witnessed_vsc(
             WITNESS.into(),
-            witnessed.credential().issuer.clone(),
+            IssuerScope::Directed,
+            &dtg_json(witnessed),
+            &witness_session(),
             Utc::now(),
             None,
-            &witness_session(),
-            witnessed.digest_multibase().expect("catalog digest"),
             None,
         )
         .expect("the opening witness/session document builds a VWC")
     }
 
     /// **The round trip #1068 asked for.** A VWC built through
-    /// `DTGCredential::new_vwc_for_session`, its digest produced by the
+    /// `DTGCredential::new_witnessed_vsc`, its digest produced by the
     /// catalog's own `digest_multibase` over the witnessed VRC, binds to that
     /// VRC as this service stores it — signed, with a `proof` the digest
     /// excludes.
@@ -697,8 +773,10 @@ mod tests {
         store_relationship(&primary, &index, &edge).await.unwrap();
 
         let vwc = dtg_json(&vwc_for(&alice_to_bob));
+        assert!(is_witness_statement(&vwc));
+        assert_eq!(vwc["credentialSubject"]["id"], ALICE);
         assert_eq!(
-            vwc["credentialSubject"]["digestMultibase"]
+            vwc["credentialSubject"]["object"]["digestMultibase"]
                 .as_str()
                 .and_then(|d| d.chars().next()),
             Some('z'),
@@ -714,7 +792,7 @@ mod tests {
     }
 
     /// The same catalog-built VWC clears the receipt half of Trust Task Context
-    /// Binding (#1065): `new_vwc_for_session` cannot omit `taskContext`, and
+    /// Binding (#1065): `new_witnessed_vsc` cannot omit `taskContext`, and
     /// ingress, which refuses a VWC without one, accepts it.
     ///
     /// Since dtg-credentials 0.11 it also carries `taskDigestMultibase`, the
@@ -738,8 +816,9 @@ mod tests {
         );
         assert_eq!(
             crate::credentials::ingress::classify_dtg(&vwc).unwrap(),
-            dtg_credentials::DTGCredentialType::Witness
+            dtg_credentials::DTGCredentialType::Statement
         );
+        assert_eq!(vwc["issuerScope"], "directed");
     }
 
     /// One VWC per direction (DTG Credentials §VWC: the witness "SHOULD issue
@@ -811,9 +890,13 @@ mod tests {
         let mut claims = json!({
             "holder": BOB,
             "credentials": [
-                { "type": ["VerifiableCredential", "WitnessCredential"],
+                { "type": ["VerifiableCredential", "DTGCredential", "StatementCredential"],
                   "issuer": WITNESS,
-                  "credentialSubject": { "id": ALICE },
+                  "credentialSubject": {
+                      "id": ALICE,
+                      "predicate": dtg_credentials::WITNESSED_V1,
+                      "object": { "id": "did:key:zNotADigest" }
+                  },
                   "witness_binding": forged_verdict },
                 { "type": ["VerifiableCredential"],
                   "issuer": WITNESS,
@@ -830,14 +913,28 @@ mod tests {
         assert!(claims["credentials"][1].get(WITNESS_BINDING_KEY).is_none());
     }
 
-    /// A single-string `type` is legal VCDM, and a witness that uses one is
-    /// still a witness.
+    /// A witness is classified by its predicate. A single-string `type` is
+    /// legal VCDM; a statement under any other predicate is not a witness; and
+    /// the retired witness type string classifies nothing.
     #[test]
-    fn a_string_type_names_a_witness() {
-        assert!(names_witness_type(&json!({ "type": "WitnessCredential" })));
-        assert!(!names_witness_type(
-            &json!({ "type": "VerifiableCredential" })
+    fn a_witness_is_a_witnessed_statement() {
+        let subject = json!({ "id": ALICE, "predicate": dtg_credentials::WITNESSED_V1 });
+        assert!(is_witness_statement(
+            &json!({ "type": "StatementCredential", "credentialSubject": subject })
         ));
-        assert!(!names_witness_type(&json!({})));
+        assert!(!is_witness_statement(&json!({
+            "type": ["VerifiableCredential", "StatementCredential"],
+            "credentialSubject": { "id": ALICE, "predicate": dtg_credentials::ENDORSES_V1 }
+        })));
+        assert!(!is_witness_statement(&json!({
+            "type": ["VerifiableCredential", "RelationshipCredential"],
+            "credentialSubject": subject
+        })));
+        // A predicate is compared byte for byte: no CURIE, no trailing slash.
+        assert!(!is_witness_statement(&json!({
+            "type": "StatementCredential",
+            "credentialSubject": { "predicate": "dtg:witnessed" }
+        })));
+        assert!(!is_witness_statement(&json!({})));
     }
 }

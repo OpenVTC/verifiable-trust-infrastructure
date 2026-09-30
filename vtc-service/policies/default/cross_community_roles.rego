@@ -1,16 +1,16 @@
 # Default `cross_community_roles` policy — deny-all
 # (spec §7.1 + §8.4).
 #
-# Honouring a foreign VEC's role grant is a session-mint
+# Honouring a foreign VAC's role grant is a session-mint
 # hardening hazard (spec §8.4): a malicious peer community
-# could mint arbitrary VECs and have them confer admin in your
+# could mint arbitrary VACs and have them confer admin in your
 # community. Default-deny forces the operator to make an
 # explicit allowlist before any cross-community grant takes
 # effect.
 #
 # Input shape (spec §7.3 + M3.10):
 #   {
-#     "foreign_vec": {
+#     "foreign_vac": {
 #       "issuer": "<did>",
 #       "role": "<foreign role string>",
 #       "subject_did": "<did>"

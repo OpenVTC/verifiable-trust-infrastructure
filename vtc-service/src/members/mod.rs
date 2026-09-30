@@ -14,7 +14,7 @@
 //! ## What's deferred to Phase 2+
 //!
 //! Spec §5.2's `status_list_index`, `current_vmc_id`, and
-//! `current_role_vec_id` are credential pointers populated by
+//! `current_role_vac_id` are credential pointers populated by
 //! Phase 2's VTA-oracle issuance flow. They ship as `Option<T>`
 //! slots from day one so Phase 2 can populate them without a
 //! migration; Phase 1 always writes `None`.
@@ -107,17 +107,22 @@ pub struct Member {
     /// [`crate::members::inbound_vmc`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_vmc: Option<JsonValue>,
-    /// ID of the currently-active role VEC (spec §6.1).
-    /// Populated by Phase 2's issuance flow.
-    #[serde(default)]
-    pub current_role_vec_id: Option<String>,
-    /// The role VEC itself, kept for the same reasons as
+    /// ID of the currently-active role credential (spec §6.1) — a community
+    /// VAC conferring `role:<name>`. Populated by Phase 2's issuance flow.
+    /// Stored as `currentRoleVecId` before role credentials became VACs.
+    #[serde(default, alias = "currentRoleVecId")]
+    pub current_role_vac_id: Option<String>,
+    /// The role VAC itself, kept for the same reasons as
     /// [`Self::current_vmc`] — re-delivery and operator visibility. It is not
     /// digest-bound to anything, so nothing verifies against it; it is here so
     /// that "what did we issue this member" has one answer rather than two
     /// half-answers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_role_vec: Option<JsonValue>,
+    #[serde(
+        default,
+        alias = "currentRoleVec",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub current_role_vac: Option<JsonValue>,
     /// Community-defined extensions slot (spec §3-M). Bounded by
     /// [`MEMBER_EXTENSIONS_MAX_BYTES`] = 16 KiB at the route
     /// layer.
@@ -222,8 +227,8 @@ impl Member {
             departure_preference: Disposition::default_preference(),
             current_vmc_id: None,
             current_vmc: None,
-            current_role_vec_id: None,
-            current_role_vec: None,
+            current_role_vac_id: None,
+            current_role_vac: None,
             extensions: JsonValue::Null,
             removed_at: None,
             personhood: false,
@@ -238,7 +243,7 @@ impl Member {
         }
     }
 
-    /// Record the community-issued VMC + role VEC this member was granted,
+    /// Record the community-issued VMC + role VAC this member was granted,
     /// keeping both the ids and the bodies.
     ///
     /// Replacing the grant invalidates any acknowledgement bound to the old
@@ -248,14 +253,14 @@ impl Member {
     /// a different one. Clearing [`Self::member_vmc`] here is what makes the
     /// obligation visible rather than leaving a stale acknowledgement standing
     /// against a grant it no longer matches.
-    pub fn record_issued_credentials(&mut self, vmc: JsonValue, role_vec: JsonValue) {
+    pub fn record_issued_credentials(&mut self, vmc: JsonValue, role_vac: JsonValue) {
         let vmc_id = top_level_id(&vmc);
         let superseded = self.current_vmc_id.is_some() && self.current_vmc_id != vmc_id;
 
         self.current_vmc_id = vmc_id;
         self.current_vmc = Some(vmc);
-        self.current_role_vec_id = top_level_id(&role_vec);
-        self.current_role_vec = Some(role_vec);
+        self.current_role_vac_id = top_level_id(&role_vac);
+        self.current_role_vac = Some(role_vac);
 
         if superseded {
             self.member_vmc = None;
@@ -265,15 +270,15 @@ impl Member {
         }
     }
 
-    /// Record a re-minted role VEC, leaving the membership grant alone.
+    /// Record a re-minted role VAC, leaving the membership grant alone.
     ///
-    /// A role change re-mints the VEC only. The grant is untouched, so the
+    /// A role change re-mints the VAC only. The grant is untouched, so the
     /// member's acknowledgement of it still stands and MUST NOT be dropped —
     /// which is why this is separate from
     /// [`Self::record_issued_credentials`].
-    pub fn record_role_vec(&mut self, role_vec: JsonValue) {
-        self.current_role_vec_id = top_level_id(&role_vec);
-        self.current_role_vec = Some(role_vec);
+    pub fn record_role_vec(&mut self, role_vac: JsonValue) {
+        self.current_role_vac_id = top_level_id(&role_vac);
+        self.current_role_vac = Some(role_vac);
     }
 
     /// Record the member-issued reciprocal VMC (member → community half of the
@@ -327,8 +332,8 @@ impl Member {
         self.departure_preference = Disposition::default_preference();
         self.current_vmc_id = None;
         self.current_vmc = None;
-        self.current_role_vec_id = None;
-        self.current_role_vec = None;
+        self.current_role_vac_id = None;
+        self.current_role_vac = None;
         self.extensions = JsonValue::Null;
         self.removed_at = Some(Utc::now());
         // Tombstone wipes personhood — it's a PII-bearing

@@ -3,23 +3,30 @@
 //!
 //! DTG Credentials §Common Structure is normative for every subtype:
 //!
-//! - `@context` MUST include both the W3C VC v2 context and the DTG context
+//! - `@context` MUST be the W3C VC v2 context followed by the DTG v1 context
+//!   (`https://registry.trustoverip.org/dtg/context/v1`); further contexts may
+//!   follow. The retired `firstperson.network` context is refused, with no
+//!   alias.
 //! - `type` MUST include `VerifiableCredential`, `DTGCredential`, and exactly
 //!   one concrete subtype
+//! - `issuerScope` MUST be present: `pairwise`, `directed` or `public`
 //!
 //! The VTC asserted all of that on everything it *mints* — `credentials::dtg`
 //! builds through the `dtg-credentials` catalog behind the `catalog_wire_shape`
 //! guard — and, until this module, on almost nothing it *accepted*. Each
 //! ingress point compared string literals of its own. Every literal that
 //! drifted, drifted silently: the recognition path spent its whole life
-//! matching `"VerifiableEndorsementCredential"`, a type nothing has ever
-//! issued, rejecting every real presentation (#1062), and the VRC publish path
+//! matching a `Verifiable`-prefixed type nothing has ever issued, rejecting
+//! every real presentation (#1062), and the VRC publish path
 //! never looked at `type` at all, so any signed JSON with an `issuer` and a
 //! `credentialSubject.id` became an edge in the community trust graph.
 //!
-//! Classification here goes through `dtg_credentials::DTGCredentialType` — the
-//! same catalog the issuing side mints from — so the two cannot drift apart
-//! without the round-trip tests below failing.
+//! Classification here goes through `dtg_credentials` — the same catalog the
+//! issuing side mints from: its `type` rule (`DTGCredentialType::try_from`,
+//! which names a retired type such as the old endorsement or witness type
+//! rather than treating it as unknown), its `IssuerScope` parse, and, for a
+//! statement, its full parse including the predicate profile — so the two
+//! cannot drift apart without the round-trip tests below failing.
 //!
 //! ## Validity windows
 //!
@@ -30,19 +37,19 @@
 //! `classify_dtg` is also used as a *filter*: `routes/recognise.rs:329` walks a
 //! presentation's `verifiableCredential` array and skips entries that are not
 //! DTG credentials, since a VP may legitimately carry others. Folding the
-//! window check into it would turn an expired VEC into a silently skipped
-//! entry, and the caller would report "presentation has no
-//! EndorsementCredential" instead of `recognition::verify`'s "VEC validUntil …
-//! is in the past".
+//! window check into it would turn an expired role VAC into a silently skipped
+//! entry, and the caller would report "presentation has no AuthorityCredential"
+//! instead of `recognition::verify`'s "VAC validUntil … is in the past".
 //!
 //! ## Trust Task Context Binding
 //!
-//! [`classify_dtg`] also refuses a `WitnessCredential` carrying no
-//! `taskContext`. That *is* classification, not validity: DTG Credentials marks
-//! the property REQUIRED on that subtype, and the catalog's own
-//! `TryFrom<DTGCommon>` rejects a witness without one at exactly this point. So
-//! it belongs inside the filter rather than beside it — a document that cannot
-//! be built as a VWC is not a VWC being skipped for the wrong reason. Without
+//! [`classify_dtg`] also refuses a statement whose predicate profile requires
+//! `taskContext` — a `witnessed/1` VWC, a `vetted/1` vetting statement — and
+//! that carries none (or no `taskDigestMultibase`). That *is* classification,
+//! not validity: the profile marks the properties REQUIRED, and the catalog's
+//! own parse rejects such a statement at exactly this point. So it belongs
+//! inside the filter rather than beside it — a document that cannot be built
+//! as a VWC is not a VWC being skipped for the wrong reason. Without
 //! it, a witness made in one exchange reads identically to one made in the
 //! exchange it is presented in (Security Considerations 5, context collapse);
 //! see [`crate::credentials::task_context`].
@@ -73,19 +80,59 @@
 //! window's edges are.
 
 use chrono::{DateTime, Utc};
-use dtg_credentials::DTGCredentialType;
+use dtg_credentials::{DTGCredential, DTGCredentialError, DTGCredentialType, IssuerScope};
 use serde_json::Value as JsonValue;
 use vti_common::error::AppError;
 
-/// The two `@context` entries every DTG credential MUST carry.
+/// The two `@context` entries every DTG credential MUST carry, first and
+/// second, in this order.
 pub const DTG_CONTEXTS: [&str; 2] = [
-    "https://www.w3.org/ns/credentials/v2",
-    "https://firstperson.network/credentials/dtg/v1",
+    dtg_credentials::W3C_VC_V2_CONTEXT,
+    dtg_credentials::DTG_CONTEXT_V1,
 ];
 
 /// The base `type` entries every DTG credential MUST carry, alongside exactly
 /// one concrete subtype.
 pub const DTG_BASE_TYPES: [&str; 2] = ["VerifiableCredential", "DTGCredential"];
+
+/// The member of a credential's `type` array that says what it is: the first
+/// entry that is neither the W3C base type, the DTG base type, nor the
+/// non-authoritative `PersonhoodCredential` hint. For a DTG credential that is
+/// its concrete subtype; for any other VC, its own type. `None` for a document
+/// with no such entry.
+///
+/// Reading "the first entry that is not `VerifiableCredential`", as the
+/// presentation paths did, names every DTG credential `DTGCredential`.
+pub fn concrete_type(doc: &JsonValue) -> Option<String> {
+    match doc.get("type")? {
+        JsonValue::Array(types) => types
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .find(|t| {
+                !matches!(
+                    *t,
+                    "VerifiableCredential" | "DTGCredential" | "PersonhoodCredential"
+                )
+            })
+            .map(str::to_string),
+        JsonValue::String(t) => Some(t.clone()),
+        _ => None,
+    }
+}
+
+/// `credentialSubject.predicate` of a DTG statement — or `predicate` of an
+/// already-unwrapped subject (the DI / SD-JWT presentation projections keep
+/// only the subject). `None` for anything that is not a statement.
+pub fn statement_predicate(claims: &JsonValue) -> Option<String> {
+    let subject = match claims.get("credentialSubject") {
+        Some(subject) if subject.is_object() => subject,
+        _ => claims,
+    };
+    subject
+        .get("predicate")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string)
+}
 
 /// Check the DTG common structure and return the concrete subtype.
 ///
@@ -102,10 +149,12 @@ pub fn classify_dtg(doc: &JsonValue) -> Result<DTGCredentialType, AppError> {
         .ok_or_else(|| {
             AppError::Validation("credential `@context` missing or not an array".into())
         })?;
-    for required in DTG_CONTEXTS {
-        if !ctx.iter().any(|c| c == required) {
+    // Exact positions, as the catalog's own parse compares them: the W3C
+    // context first, the DTG v1 context second, further contexts after.
+    for (position, required) in DTG_CONTEXTS.iter().enumerate() {
+        if ctx.get(position).map(String::as_str) != Some(*required) {
             return Err(AppError::Validation(format!(
-                "credential `@context` must include `{required}`"
+                "credential `@context` must carry `{required}` at position {position}"
             )));
         }
     }
@@ -122,18 +171,34 @@ pub fn classify_dtg(doc: &JsonValue) -> Result<DTGCredentialType, AppError> {
         }
     }
 
-    let subtype = DTGCredentialType::try_from(types.as_slice()).map_err(|_| {
-        AppError::Validation("credential `type` names no DTG credential subtype".into())
-    })?;
+    let subtype = DTGCredentialType::try_from(types.as_slice())
+        .map_err(|e| AppError::Validation(format!("credential `type`: {e}")))?;
 
-    // §Trust Task Context Binding makes `taskContext` REQUIRED on the VWC, and
-    // the catalog's own `TryFrom<DTGCommon>` refuses a witness without one at
-    // exactly this point — classification, not validity. Enforced here so the
-    // rule holds at every JSON-LD ingress rather than only where someone
-    // remembered it: the missing binding is what lets a witness from one
-    // exchange be read as evidence in another (Security Considerations 5).
-    if matches!(subtype, DTGCredentialType::Witness) && doc.get("taskContext").is_none() {
-        return Err(crate::credentials::task_context::missing());
+    // `issuerScope` is REQUIRED on every DTG credential, and its value is one
+    // of three exact lowercase strings.
+    let scope = doc
+        .get("issuerScope")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| AppError::Validation("credential `issuerScope` missing".into()))?;
+    scope
+        .parse::<IssuerScope>()
+        .map_err(|e| AppError::Validation(format!("credential `issuerScope`: {e}")))?;
+
+    // A statement is held to its predicate profile — the catalog's full parse,
+    // which is where `taskContext` / `taskDigestMultibase` being REQUIRED under
+    // `witnessed/1` and `vetted/1` is enforced. Classification, not validity:
+    // the missing binding is what lets a witness from one exchange be read as
+    // evidence in another (Security Considerations 5).
+    if matches!(subtype, DTGCredentialType::Statement) {
+        match DTGCredential::try_from(doc.clone()) {
+            Ok(_) => {}
+            Err(DTGCredentialError::MissingTaskContext) => {
+                return Err(crate::credentials::task_context::missing());
+            }
+            Err(e) => {
+                return Err(AppError::Validation(format!("statement credential: {e}")));
+            }
+        }
     }
     Ok(subtype)
 }
@@ -312,21 +377,17 @@ mod tests {
     use super::*;
     use crate::test_support::dtg_json;
     use chrono::{Duration, Utc};
-    use dtg_credentials::DTGCredential;
+    use dtg_credentials::{DTGCredential, IssuerScope};
 
     fn vrc() -> JsonValue {
-        dtg_json(&DTGCredential::new_vrc(
-            "did:peer:2.zR1".into(),
-            "did:peer:2.zR2".into(),
-            Utc::now(),
-            None,
-        ))
+        vrc_valid(Utc::now(), None)
     }
 
     /// A catalog-minted VRC with an explicit window.
     fn vrc_valid(from: DateTime<Utc>, until: Option<DateTime<Utc>>) -> JsonValue {
         dtg_json(&DTGCredential::new_vrc(
             "did:peer:2.zR1".into(),
+            IssuerScope::Pairwise,
             "did:peer:2.zR2".into(),
             from,
             until,
@@ -343,14 +404,31 @@ mod tests {
         ))
     }
 
-    fn vec_cred() -> JsonValue {
-        dtg_json(&DTGCredential::new_vec(
-            "did:web:issuer.example".into(),
-            "did:key:zSubject".into(),
-            Utc::now(),
-            None,
-            serde_json::json!({ "role": "moderator" }),
-        ))
+    fn vsc() -> JsonValue {
+        dtg_json(
+            &DTGCredential::new_endorses_vsc(
+                "did:web:issuer.example".into(),
+                IssuerScope::Public,
+                "did:key:zSubject".into(),
+                serde_json::json!({ "skill": "moderation" }),
+                Utc::now(),
+                None,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn vac() -> JsonValue {
+        dtg_json(
+            &DTGCredential::new_community_role_vac(
+                "did:web:community.example".into(),
+                "did:key:zMember".into(),
+                "moderator",
+                Utc::now(),
+                Utc::now() + Duration::days(30),
+            )
+            .unwrap(),
+        )
     }
 
     /// The guard that makes this module worth having: every subtype the
@@ -365,7 +443,8 @@ mod tests {
         for (doc, expected, label) in [
             (vrc(), DTGCredentialType::Relationship, "VRC"),
             (vmc(), DTGCredentialType::Membership, "VMC"),
-            (vec_cred(), DTGCredentialType::Endorsement, "VEC"),
+            (vsc(), DTGCredentialType::Statement, "VSC"),
+            (vac(), DTGCredentialType::Authority, "VAC"),
         ] {
             let got = classify_dtg(&doc)
                 .unwrap_or_else(|e| panic!("catalog-minted {label} must classify: {e:?}"));
@@ -378,25 +457,57 @@ mod tests {
     }
 
     /// A VWC the catalog itself would refuse to build must not classify as one
-    /// here either. `taskContext` is REQUIRED on this subtype, and a witness
+    /// here either. `taskContext` is REQUIRED under `witnessed/1`, and a witness
     /// without it is the credential that cannot be tied to any exchange — the
     /// one the context-collapse attack needs.
     #[test]
-    fn refuses_a_witness_credential_with_no_task_context() {
-        let mut witness = vmc();
-        witness["type"] =
-            serde_json::json!(["VerifiableCredential", "DTGCredential", "WitnessCredential"]);
+    fn refuses_a_witness_statement_with_no_task_context() {
+        let mut witness = vsc();
+        witness["issuerScope"] = serde_json::json!("directed");
+        witness["credentialSubject"]["predicate"] =
+            serde_json::json!(dtg_credentials::WITNESSED_V1);
+        witness["credentialSubject"]["object"] = serde_json::json!({ "digestMultibase": dtg_credential_digest_multibase(&vrc()).unwrap() });
 
         let err = classify_dtg(&witness).expect_err("a VWC without taskContext must be refused");
         assert!(format!("{err:?}").contains("taskContext"), "{err:?}");
 
-        // The same document with the binding present classifies normally, so
-        // the refusal is about the missing property and not about the subtype.
+        // Both halves of the citation present, it classifies normally, so the
+        // refusal is about the missing property and not about the subtype.
         witness["taskContext"] = serde_json::json!("urn:uuid:some-exchange");
+        witness["taskDigestMultibase"] =
+            serde_json::json!(digest_multibase(&serde_json::json!({ "id": "x" })).unwrap());
         assert_eq!(
             std::mem::discriminant(&classify_dtg(&witness).expect("a bound VWC classifies")),
-            std::mem::discriminant(&DTGCredentialType::Witness)
+            std::mem::discriminant(&DTGCredentialType::Statement)
         );
+    }
+
+    /// `issuerScope` is REQUIRED on every DTG credential, as one of three
+    /// exact lowercase strings.
+    #[test]
+    fn refuses_a_credential_without_a_valid_issuer_scope() {
+        let mut doc = vrc();
+        doc.as_object_mut().unwrap().remove("issuerScope");
+        assert!(classify_dtg(&doc).is_err(), "missing issuerScope");
+        doc["issuerScope"] = serde_json::json!("Public");
+        assert!(classify_dtg(&doc).is_err(), "case-sensitive");
+    }
+
+    /// The retired DTG context is refused, with no alias, and the v1 context
+    /// must be second — not merely present.
+    #[test]
+    fn refuses_the_retired_context_and_a_misplaced_v1_context() {
+        let mut doc = vrc();
+        doc["@context"] = serde_json::json!([
+            dtg_credentials::W3C_VC_V2_CONTEXT,
+            "https://example.org/some-older-dtg-context"
+        ]);
+        assert!(classify_dtg(&doc).is_err());
+        doc["@context"] = serde_json::json!([
+            dtg_credentials::DTG_CONTEXT_V1,
+            dtg_credentials::W3C_VC_V2_CONTEXT
+        ]);
+        assert!(classify_dtg(&doc).is_err(), "order matters");
     }
 
     #[test]
@@ -565,15 +676,14 @@ mod tests {
         assert!(classify_dtg(&no_subtype).is_err(), "no concrete subtype");
     }
 
-    /// `VerifiableRecognitionCredential` and the `Verifiable`-prefixed
-    /// membership/endorsement tags were never DTG types. Nothing here may
-    /// re-admit them.
+    /// `Verifiable`-prefixed tags were never DTG types, and the types earlier
+    /// drafts defined are retired. Nothing here may re-admit them.
     #[test]
     fn refuses_types_the_specification_does_not_define() {
         for fiction in [
             "VerifiableRecognitionCredential",
             "VerifiableMembershipCredential",
-            "VerifiableEndorsementCredential",
+            "VerifiableStatementCredential",
         ] {
             let mut doc = vrc();
             doc["type"] = serde_json::json!(["VerifiableCredential", "DTGCredential", fiction]);
@@ -598,8 +708,8 @@ mod tests {
 /// This is the **Trust Task framework** digest — what
 /// `_framework/0.3#/$defs/DigestMultibase` describes, used to bind a publish
 /// authorization to the credential it authorizes. It is not the digest a DTG
-/// credential carries in `credentialSubject.digest`; that one is
-/// [`dtg_credential_digest`], and the two differ in both encoding and coverage.
+/// credential carries in `digestMultibase`; that one is
+/// [`dtg_credential_digest_multibase`], and the two differ in coverage.
 pub fn digest_multibase(doc: &JsonValue) -> Result<String, AppError> {
     use sha2::{Digest, Sha256};
     let canonical = serde_json_canonicalizer::to_vec(doc)
@@ -634,63 +744,6 @@ pub fn dtg_credential_digest_multibase(doc: &JsonValue) -> Result<String, AppErr
         .map_err(|e| AppError::Validation(format!("credential is not canonicalizable: {e}")))
 }
 
-/// Digest of a credential in the form DTG Core Credentials specifies for
-/// `credentialSubject.digest`: SHA-256 over the RFC 8785 (JCS)
-/// canonicalization of the document **with its top-level `proof` removed**,
-/// encoded as `sha256:` followed by the lowercase hexadecimal digest.
-///
-/// **Working Draft 01, and kept only to read what is already in the field.** WD02 replaced
-/// this with the multibase multihash [`dtg_credential_digest_multibase`] computes, and
-/// renamed the property to `digestMultibase`. Members whose client predates that change
-/// still send the old form, and their acknowledgements must keep verifying — so this stays
-/// for the read path and nothing new should emit it.
-///
-/// Distinct from [`digest_multibase`] in encoding *and* coverage — do not substitute one
-/// for the other.
-///
-/// # Over the document as it stands, not a re-serialised model
-///
-/// Same discipline as [`digest_multibase`], and it matters more here: the
-/// counterparty computed their digest over the JSON they received. A
-/// credential may carry members this service's model does not know, and
-/// digesting a parsed-and-re-serialised model would drop them — leaving the
-/// two sides computing different digests for the same credential, with nothing
-/// to show why.
-///
-/// # Why `proof` is excluded
-///
-/// The digest binds to what the credential *says*, not to a signature over it,
-/// so an acknowledgement survives its grant being re-signed. A re-issued grant
-/// carries different claims and therefore a different digest, which is what
-/// makes renewal force re-acknowledgement.
-pub fn dtg_credential_digest(doc: &JsonValue) -> Result<String, AppError> {
-    use sha2::{Digest, Sha256};
-
-    let proofless = match doc {
-        JsonValue::Object(members) => {
-            let mut members = members.clone();
-            members.remove("proof");
-            JsonValue::Object(members)
-        }
-        // Not an object: canonicalize as-is and let the digest simply not match
-        // anything. A shape check belongs to the caller, which has a better
-        // error to give than this one would.
-        other => other.clone(),
-    };
-
-    let canonical = serde_json_canonicalizer::to_vec(&proofless)
-        .map_err(|e| AppError::Validation(format!("credential is not canonicalizable: {e}")))?;
-
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity("sha256:".len() + 64);
-    out.push_str("sha256:");
-    for byte in Sha256::digest(&canonical) {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod digest_tests {
     use super::*;
@@ -715,34 +768,11 @@ mod digest_tests {
         );
     }
 
-    /// The `sha256:<hex>` digest is an interoperability surface: the member
-    /// computes it and this service recomputes it, in two codebases. Pinned
-    /// against a literal computed outside both — the same fixture
-    /// `dtg-credentials` asserts — so the two implementations are checked
-    /// against one definition rather than against each other.
-    #[test]
-    fn dtg_credential_digest_matches_the_cross_implementation_fixture() {
-        let grant = serde_json::json!({
-            "@context": [
-                "https://www.w3.org/ns/credentials/v2",
-                "https://firstperson.network/credentials/dtg/v1"
-            ],
-            "type": ["VerifiableCredential", "DTGCredential", "MembershipCredential"],
-            "id": "urn:uuid:2a4e1d90-6e0c-4d3f-9a4a-6d0a8f7c1b52",
-            "issuer": "did:example:community",
-            "validFrom": "2025-12-11T00:00:00Z",
-            "credentialSubject": { "id": "did:example:member" }
-        });
-
-        assert_eq!(
-            dtg_credential_digest(&grant).unwrap(),
-            "sha256:49c9d5135ab4b5659a343bc79d351e37d64f05add58408cae6eef022828495c2"
-        );
-    }
-
-    /// Signing the grant must not change its digest, or the community could
-    /// never re-sign a credential without silently invalidating every
-    /// acknowledgement already made against it.
+    /// The DTG digest is an interoperability surface: the member computes it
+    /// and this service recomputes it, in two codebases. It excludes the
+    /// top-level `proof`, so signing the grant must not change it, or the
+    /// community could never re-sign a credential without silently
+    /// invalidating every acknowledgement already made against it.
     #[test]
     fn dtg_credential_digest_ignores_the_proof() {
         let unsigned = serde_json::json!({
@@ -757,8 +787,8 @@ mod digest_tests {
         });
 
         assert_eq!(
-            dtg_credential_digest(&unsigned).unwrap(),
-            dtg_credential_digest(&signed).unwrap()
+            dtg_credential_digest_multibase(&unsigned).unwrap(),
+            dtg_credential_digest_multibase(&signed).unwrap()
         );
     }
 
@@ -767,10 +797,10 @@ mod digest_tests {
     /// credential to the credential it references.
     #[test]
     fn the_two_digests_are_not_interchangeable() {
-        let doc = serde_json::json!({ "a": 1 });
+        let doc = serde_json::json!({ "a": 1, "proof": { "proofValue": "zSig" } });
         assert_ne!(
             digest_multibase(&doc).unwrap(),
-            dtg_credential_digest(&doc).unwrap()
+            dtg_credential_digest_multibase(&doc).unwrap()
         );
     }
 

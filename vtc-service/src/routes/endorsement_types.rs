@@ -1,5 +1,7 @@
-//! `/v1/endorsement-types/*` — operator-uploaded endorsement
-//! type registry (Phase 4 M4.8.1; D4 planning review).
+//! `/v1/endorsement-types/*` — the community's predicate accept list,
+//! under its original name (Phase 4 M4.8.1; D4 planning review). Each
+//! registered `typeUri` is a predicate IRI a DTG statement carries in
+//! `credentialSubject.predicate`; see [`crate::endorsement_types`].
 //!
 //! Three admin-gated endpoints:
 //!
@@ -20,11 +22,13 @@
 //! type the community no longer recognises, and the criterion can
 //! no longer be saved again.
 //!
-//! ## Reserved type URIs
+//! ## Reserved type URIs, and what a `typeUri` must be
 //!
-//! `"CommunityRole"` is reserved by the workspace (VEC-
-//! managed role grants). The registrar refuses to register
-//! it; the issuance path can't see it on disk either way.
+//! [`RESERVED_TYPE_URIS`] — the vetter-grant row type (`role:vetter`) and
+//! the identity-verification credential type — are the workspace's own
+//! `endorsements:` row kinds, refused with `reserved`. Anything else must be
+//! an absolute predicate IRI (`dtg_credentials::check_predicate_iri`) or it
+//! is `invalidUri`: roles are VACs, never registered here.
 //!
 //! ## URI encoding on the wire
 //!
@@ -181,6 +185,20 @@ pub(crate) async fn register_inner(
             REGISTER_ERR_RESERVED,
             AppError::Conflict(format!(
                 "endorsement-type-reserved: '{uri}' is reserved by the workspace"
+            )),
+        ));
+    }
+    // A registered `typeUri` is a predicate IRI a statement carries in
+    // `credentialSubject.predicate` (vtc/_shared/0.1/endorsement-type): an
+    // absolute IRI in NFC, never a CURIE or a bare term, which could never
+    // match a statement's predicate byte for byte.
+    if let Err(e) = dtg_credentials::check_predicate_iri(uri) {
+        return Err(TaskError::declared(
+            REGISTER_ERR_INVALID_URI,
+            AppError::Validation(format!(
+                "typeUri must be a predicate IRI — a DTG VSC predicate registry IRI such as \
+                 `{}` or an absolute IRI in a namespace the community controls: {e}",
+                dtg_credentials::ENDORSES_V1
             )),
         ));
     }
@@ -407,14 +425,14 @@ fn capitalise(s: &str) -> String {
 mod tests {
     use super::in_use_message;
 
-    const URI: &str = "https://example.org/endorsements/identity-vetting/0.1";
+    const URI: &str = "https://example.org/predicates/vetted/1";
 
     #[test]
     fn names_the_single_criterion_and_what_to_do() {
         let msg = in_use_message(URI, 0, &["kernel-developer".to_string()]);
         assert_eq!(
             msg,
-            "endorsement-type-in-use: 'https://example.org/endorsements/identity-vetting/0.1' \
+            "endorsement-type-in-use: 'https://example.org/predicates/vetted/1' \
              is still referenced — criterion 'kernel-developer' requires statements of it. \
              Remove or re-point the criteria before deleting the type."
         );

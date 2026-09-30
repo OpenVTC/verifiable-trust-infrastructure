@@ -94,7 +94,7 @@
     "requiredClaims": [
       "name.legal"
     ],
-    "statementType": "https://firstperson.network/endorsements/identity-vetting/0.1",
+    "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
     "version": "0.1"
   },
   "requirementsDigest": "zQmWLpaPx2M8kj8vYGChQPWeL7gkYqxHVGfhzoaCRHnmYeX",

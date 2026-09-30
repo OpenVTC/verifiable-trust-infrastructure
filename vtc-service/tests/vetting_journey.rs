@@ -48,9 +48,8 @@ use vta_sdk::protocols::credential_exchange::{ISSUE as CREDENTIAL_ISSUE_TYPE, Is
 use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_0_2_TYPE;
 use vta_sdk::protocols::vetting::session::v0_1::VettingCardClaim;
 use vta_sdk::protocols::vetting::{
-    COMMUNITY_ROLE_ENDORSEMENT_TYPE, IDENTITY_VETTING_ENDORSEMENT_TYPE, IdentityVettingEndorsement,
-    VETTING_REVOKE_STATEMENT_TYPE, VETTING_VETTER_LIST_TYPE, VETTING_VETTER_PROFILE_TYPE,
-    VettingMethod, VettingRelationship,
+    VETTED_PREDICATE, VETTER_ROLE_ACTION, VETTING_REVOKE_STATEMENT_TYPE, VETTING_VETTER_LIST_TYPE,
+    VETTING_VETTER_PROFILE_TYPE, VettedObjectValue, VettingMethod, VettingRelationship,
 };
 use vta_sdk::trust_task_proof::TrustTaskVmResolver;
 use vta_sdk::vetting::card::{
@@ -60,7 +59,7 @@ use vta_sdk::vetting::eligibility::{
     EligibilityExpectations, build_eligibility_vp, verify_eligibility_vp,
 };
 use vta_sdk::vetting::requirements::requirements_digest;
-use vta_sdk::vetting::statement::{StatementDraft, sign_statement, verify_statement};
+use vta_sdk::vetting::statement::{IssuerScope, StatementDraft, sign_statement, verify_statement};
 use vta_sdk::vetting::status::{StatusCheck, check_credential_status};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::{MockVtcDidcomm, TestJoinClient, TestVtc};
@@ -116,17 +115,23 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     // 1. The admin sets up the community.
     // -----------------------------------------------------------------------
 
-    // Statements are endorsements of a registered type…
-    let (status, body) = c
+    // Statements count only under a predicate the community accepts. The
+    // registry's `vetted/1` is seeded at first boot, so registering it again
+    // is the declared `exists`…
+    let (_, body) = c
         .admin_document(
             ENDORSEMENT_TYPE_REGISTER_TASK,
             json!({
-                "typeUri": IDENTITY_VETTING_ENDORSEMENT_TYPE,
+                "typeUri": VETTED_PREDICATE,
                 "description": "A member verified this person's identity",
             }),
         )
         .await;
-    assert!(status.is_success(), "register statement type: {body}");
+    assert!(
+        body.to_string()
+            .contains("vtc/endorsement-types/register:exists"),
+        "vetted/1 is accepted out of the box: {body}"
+    );
 
     // …and the criterion says how many a join needs. Every number is the
     // community's policy.
@@ -137,10 +142,10 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
                 "id": "kernel-developer",
                 "description": "Two vetters, at least one in person",
                 "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
-                           "meta": { "type_values": ["EndorsementCredential"] } } ] },
+                           "meta": { "type_values": ["StatementCredential"] } } ] },
                 "vetting": {
                     "version": "0.1",
-                    "statementType": IDENTITY_VETTING_ENDORSEMENT_TYPE,
+                    "statementType": VETTED_PREDICATE,
                     "minStatements": 2,
                     "minByMethod": { "inPerson": 1 },
                     "acceptedMethods": ["inPerson", "video"],
@@ -867,6 +872,17 @@ impl Community {
         // Vetter: open the session (`vetting/session`) with a fresh challenge.
         let session_id = format!("urn:uuid:{}", Uuid::new_v4());
         let challenge = new_commitment_salt().expect("challenge");
+        // The session document as the vetter sent it — what the statement
+        // cites by `taskContext` and `taskDigestMultibase`.
+        let session = json!({
+            "id": session_id,
+            "type": "https://trusttasks.org/spec/vetting/session/0.1",
+            "threadId": session_id,
+            "issuer": vetter.did,
+            "recipient": applicant.did,
+            "issuedAt": Utc::now().to_rfc3339(),
+            "payload": { "method": method.to_string(), "challenge": challenge },
+        });
 
         // Applicant: a card for this vetter and this session only.
         let card = sign_card(
@@ -915,9 +931,9 @@ impl Community {
             StatementDraft {
                 id: format!("urn:uuid:{}", Uuid::new_v4()),
                 issuer: vetter.did.clone(),
+                issuer_scope: IssuerScope::Directed,
                 subject: applicant.did.clone(),
-                endorsement: IdentityVettingEndorsement {
-                    endorsement_type: IDENTITY_VETTING_ENDORSEMENT_TYPE.into(),
+                value: VettedObjectValue {
                     community: self.did.clone(),
                     method,
                     document_classes: vec!["passport".try_into().unwrap()],
@@ -930,7 +946,7 @@ impl Community {
                 },
                 valid_from: now,
                 valid_until: now + Duration::days(90),
-                task_context: session_id,
+                session: session.clone(),
             },
             &vetter.key,
         )
@@ -944,6 +960,11 @@ impl Community {
             .expect("the statement verifies")
             .check_against_card(&own_card)
             .expect("the statement is about the card the applicant showed");
+        verify_statement(&statement, Utc::now(), &resolver)
+            .await
+            .unwrap()
+            .check_against_session(&session)
+            .expect("the statement cites the session it was made in");
         statement
     }
 
@@ -953,7 +974,7 @@ impl Community {
         vtc_service::endorsements::endorsements_for_subject(
             &self.state.endorsements_ks,
             did,
-            COMMUNITY_ROLE_ENDORSEMENT_TYPE,
+            VETTER_ROLE_ACTION,
         )
         .await
         .expect("read grants")
@@ -1269,12 +1290,12 @@ async fn a_lapsed_grant_reads_expired_and_a_withdrawn_one_still_reads_revoked() 
     // nothing in the API can issue one already lapsed.
     let lapsed = Endorsement {
         id: uuid::Uuid::new_v4(),
-        endorsement_type: "CommunityRole".into(),
+        endorsement_type: "role:vetter".into(),
         issuer_did: c.did.clone(),
         subject_did: frank.did.clone(),
         claim: json!({ "role": "vetter" }),
         status_list_index: 4001,
-        vec_id: format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        credential_id: format!("urn:uuid:{}", uuid::Uuid::new_v4()),
         created_at: Utc::now() - chrono::Duration::days(400),
         revoked_at: None,
         valid_until: Some(Utc::now() - chrono::Duration::days(35)),
@@ -1308,7 +1329,7 @@ async fn a_lapsed_grant_reads_expired_and_a_withdrawn_one_still_reads_revoked() 
         valid_until: Some(Utc::now() - chrono::Duration::days(1)),
         revoked_at: Some(Utc::now() - chrono::Duration::days(2)),
         status_list_index: 4002,
-        vec_id: format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        credential_id: format!("urn:uuid:{}", uuid::Uuid::new_v4()),
         ..lapsed.clone()
     };
     store_endorsement(&c.state.endorsements_ks, &withdrawn)

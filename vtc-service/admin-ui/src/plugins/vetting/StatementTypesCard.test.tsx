@@ -23,7 +23,7 @@ const REGISTER_TASK = "https://trusttasks.org/spec/vtc/endorsement-types/registe
 const DELETE_TASK = "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 
 const STATEMENT_TYPE =
-  "https://firstperson.network/endorsements/identity-vetting/0.1";
+  "https://registry.trustoverip.org/dtg/vsc/vetted/1";
 
 const REGISTERED = {
   typeUri: STATEMENT_TYPE,
@@ -61,7 +61,7 @@ describe("StatementTypesCard", () => {
     renderWithProviders(<StatementTypesCard criteria={[]} />);
 
     expect(
-      await screen.findByText(/The identity-vetting statement type is not registered/),
+      await screen.findByText(/The identity-vetting predicate is not accepted/),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Register it" }));
 
@@ -107,14 +107,14 @@ describe("StatementTypesCard", () => {
     renderWithProviders(<StatementTypesCard criteria={[]} />);
 
     await screen.findByText(STATEMENT_TYPE);
-    fireEvent.change(screen.getByLabelText("Type URI"), {
-      target: { value: "https://example.org/endorsements/affiliation/0.1" },
+    fireEvent.change(screen.getByLabelText("Predicate IRI"), {
+      target: { value: "https://example.org/predicates/affiliation/1" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Register type" }));
+    fireEvent.click(screen.getByRole("button", { name: "Register predicate" }));
 
     await waitFor(() => expect(sentPayloads(requests, REGISTER_TASK)).toHaveLength(1));
     expect(sentPayloads(requests, REGISTER_TASK)[0]).toEqual({
-      typeUri: "https://example.org/endorsements/affiliation/0.1",
+      typeUri: "https://example.org/predicates/affiliation/1",
     });
   });
 
@@ -130,7 +130,7 @@ describe("StatementTypesCard", () => {
     expect(remove.hasAttribute("disabled")).toBe(false);
 
     fireEvent.click(remove);
-    fireEvent.click(await screen.findByRole("button", { name: "Remove type" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove predicate" }));
 
     await waitFor(() => expect(sentPayloads(requests, DELETE_TASK)).toHaveLength(1));
     expect(sentPayloads(requests, DELETE_TASK)[0]).toEqual({ typeUri: STATEMENT_TYPE });
@@ -192,7 +192,7 @@ describe("StatementTypesCard", () => {
     renderWithProviders(<StatementTypesCard criteria={[]} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Remove" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Remove type" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove predicate" }));
 
     expect(await screen.findByText(/Could not remove the type/)).toBeTruthy();
     expect(

@@ -277,11 +277,19 @@ pub struct Presentation {
 /// before the policy runs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Credential {
-    /// The credential `type` (e.g. `WitnessCredential`). Serialized
-    /// as `type` to match the compiled helpers (`cred_trusted(t)`
+    /// The credential `type` — the concrete DTG subtype (e.g.
+    /// `MembershipCredential`, `StatementCredential`) or an SD-JWT-VC `vct`.
+    /// Serialized as `type` to match the compiled helpers (`cred_trusted(t)`
     /// matches on `c.type`).
     #[serde(rename = "type")]
     pub credential_type: String,
+    /// For a DTG statement, its `credentialSubject.predicate` — what the
+    /// statement means. Statements share one `type`, so a policy tells a
+    /// witness (`https://registry.trustoverip.org/dtg/vsc/witnessed/1`) from
+    /// an endorsement by this, never by `type` (`statement_trusted(p)`).
+    /// Absent for every other credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate: Option<String>,
     /// Issuer DID.
     pub issuer: String,
     /// Host verdict: is the issuer trusted for this credential type
@@ -307,9 +315,10 @@ pub struct Credential {
     /// against [`Facts::now`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_until: Option<DateTime<Utc>>,
-    /// Host verdict: for a `WitnessCredential`, which edge its
-    /// `credentialSubject.digest` actually names — recomputed against the VRC
-    /// bodies this service holds, comparing decoded digest bytes.
+    /// Host verdict: for a `witnessed/1` statement (a VWC), which edge its
+    /// `credentialSubject.object.digestMultibase` actually names — recomputed
+    /// against the VRC bodies this service holds, comparing decoded digest
+    /// bytes, and holding the profile's subject–object rule.
     ///
     /// `None` for every other credential type, where the question does not
     /// arise. Present and [`WitnessBinding::Unresolved`] is a different fact
@@ -418,7 +427,8 @@ mod tests {
                     verified: true,
                     holder: "did:key:z6MkHuman".into(),
                     credentials: vec![Credential {
-                        credential_type: "WitnessCredential".into(),
+                        credential_type: "StatementCredential".into(),
+                        predicate: Some(dtg_credentials::WITNESSED_V1.into()),
                         issuer: "did:webvh:notary.example".into(),
                         issuer_trusted: true,
                         status: CredentialStatus::Valid,
@@ -447,7 +457,7 @@ mod tests {
                     "verified": true,
                     "holder": "did:key:z6MkHuman",
                     "credentials": [
-                        { "type": "WitnessCredential", "issuer": "did:webvh:notary.example", "issuer_trusted": true, "status": "valid", "holder_bound": true, "claims": { "kind": "proximity" } }
+                        { "type": "StatementCredential", "predicate": dtg_credentials::WITNESSED_V1, "issuer": "did:webvh:notary.example", "issuer_trusted": true, "status": "valid", "holder_bound": true, "claims": { "kind": "proximity" } }
                     ]
                 },
                 "request": { "agreements": {} }
@@ -559,7 +569,8 @@ mod tests {
                     verified: true,
                     holder: "did:key:z6MkHuman".into(),
                     credentials: vec![Credential {
-                        credential_type: "WitnessCredential".into(),
+                        credential_type: "StatementCredential".into(),
+                        predicate: Some(dtg_credentials::WITNESSED_V1.into()),
                         issuer: "did:webvh:notary.example".into(),
                         issuer_trusted: true,
                         status: CredentialStatus::Valid,

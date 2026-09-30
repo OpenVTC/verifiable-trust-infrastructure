@@ -15,13 +15,25 @@ use vti_common::store::KeyspaceHandle;
 
 use super::{SchemaEntry, SchemaKind, schema_exists, store_schema};
 
-/// The built-in catalog types the VTC issues, keyed by the short type name the
-/// DTG catalog stamps in a credential's `type` array (what
-/// [`super::validate_issued`] matches against). `(type_uri, dtg_type)`.
-pub const DEFAULT_ISSUES_TYPES: &[(&str, &str)] = &[
-    ("MembershipCredential", "MembershipCredential"),
-    ("EndorsementCredential", "EndorsementCredential"),
-    ("InvitationCredential", "InvitationCredential"),
+/// The built-in credential types the VTC issues, keyed by the short type name
+/// stamped in a credential's `type` array (what [`super::validate_issued`]
+/// matches against). `(type_uri, dtg_type)`; `dtg_type` is `None` for a type
+/// outside the DTG catalog.
+///
+/// The DTG types are the four the community mints: grants (VMC), role
+/// credentials (VAC), statements (VSC — which statement is its predicate, the
+/// set `crate::endorsement_types` accepts, never a subtype) and invitations
+/// (VIC). The identity-verification credential is a plain W3C VC, so it is
+/// registered with no DTG type.
+pub const DEFAULT_ISSUES_TYPES: &[(&str, Option<&str>)] = &[
+    ("MembershipCredential", Some("MembershipCredential")),
+    ("AuthorityCredential", Some("AuthorityCredential")),
+    ("StatementCredential", Some("StatementCredential")),
+    ("InvitationCredential", Some("InvitationCredential")),
+    (
+        crate::credentials::idvc::IDENTITY_VERIFICATION_CREDENTIAL_TYPE,
+        None,
+    ),
 ];
 
 /// The DID recorded as the registrant of a seeded default.
@@ -39,7 +51,7 @@ pub async fn seed_default_issues(schemas_ks: &KeyspaceHandle) -> Result<(), AppE
             schemas_ks,
             &SchemaEntry {
                 type_uri: (*type_uri).to_string(),
-                dtg_type: Some((*dtg_type).to_string()),
+                dtg_type: dtg_type.map(str::to_string),
                 credential_schema: None,
                 kind: SchemaKind::Issues,
                 description: Some("Built-in catalog type (seeded default)".to_string()),

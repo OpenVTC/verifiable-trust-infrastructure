@@ -441,7 +441,7 @@ fn build_api_chain(
     // handler sits behind the tower-governor + the 64 KB body
     // cap — it's an unauthenticated endpoint that does DID
     // resolution + outbound HTTP fetch + Rego policy eval +
-    // session-JWT mint, all driven by attacker-controlled VEC/VMC
+    // session-JWT mint, all driven by attacker-controlled VAC/VMC
     // JSON, and it was previously exposed on the 1 MB / no-rate-
     // limit main chain.
     // Read endpoints (M2.4). GET /v1/policies and

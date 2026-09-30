@@ -32,7 +32,7 @@ pub struct DidcommCapabilityWriter {
     /// running messaging is a transient condition, not a permanent failure).
     didcomm: Arc<OnceCell<Arc<VtcMessaging>>>,
     /// The VTC's assertion signer (`{vtc_did}#key-0`) — the same identity
-    /// that mints VMC/VEC. The community is the authority its grants are
+    /// that mints VMC/VAC. The community is the authority its grants are
     /// issued under, so this is exactly the right key.
     signer: Arc<LocalSigner>,
     /// DID of the community's trust registry (the write recipient).

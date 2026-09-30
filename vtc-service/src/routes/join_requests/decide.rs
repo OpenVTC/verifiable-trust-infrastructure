@@ -46,7 +46,7 @@ pub const DECIDE_ERR_NOT_PENDING: &str = decide_codes::NOT_PENDING.code;
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub enum Decision {
-    /// Admit the applicant as a member (issues the VMC + role VEC).
+    /// Admit the applicant as a member (issues the VMC + role VAC).
     Approved,
     /// Refuse the applicant; recoverable only by re-applying.
     Rejected,
@@ -75,9 +75,9 @@ pub struct DecideResponse {
     /// `None` on the reject path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vmc: Option<JsonValue>,
-    /// Issued role VEC. Same delivery story as `vmc`.
+    /// Issued role VAC. Same delivery story as `vmc`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role_vec: Option<JsonValue>,
+    pub role_vac: Option<JsonValue>,
 }
 
 /// Decide a pending join request on behalf of `actor_did` — the whole of the
@@ -181,7 +181,7 @@ async fn approve_pending(
 
     // Deliver the issued credentials to the applicant's wallet over DIDComm. A
     // referred-then-approved applicant presented over DIDComm and is not
-    // connected now, so — like the auto-admit path — push the VMC + role VEC to
+    // connected now, so — like the auto-admit path — push the VMC + role VAC to
     // its mediator. Best-effort: the credentials are already issued and are also
     // returned inline below for out-of-band hand-off, so a delivery failure (no
     // mediator, unreachable holder) is logged, not fatal.
@@ -241,9 +241,9 @@ async fn approve_pending(
             serde_json::to_value(&creds.vmc)
                 .map_err(|e| AppError::Internal(format!("serialise VMC for response: {e}")))?,
         ),
-        role_vec: Some(
-            serde_json::to_value(&creds.role_vec)
-                .map_err(|e| AppError::Internal(format!("serialise VEC for response: {e}")))?,
+        role_vac: Some(
+            serde_json::to_value(&creds.role_vac)
+                .map_err(|e| AppError::Internal(format!("serialise VAC for response: {e}")))?,
         ),
     })
 }
@@ -302,6 +302,6 @@ async fn reject_pending(
         request_id: id,
         status: req.status.to_string(),
         vmc: None,
-        role_vec: None,
+        role_vac: None,
     })
 }

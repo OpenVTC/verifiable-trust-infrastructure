@@ -234,8 +234,8 @@ mod tests {
             departure_preference: Disposition::Historical,
             current_vmc_id: Some("vmc-1".into()),
             current_vmc: Some(serde_json::json!({ "id": "vmc-1" })),
-            current_role_vec_id: Some("vec-1".into()),
-            current_role_vec: Some(serde_json::json!({ "id": "vec-1" })),
+            current_role_vac_id: Some("vec-1".into()),
+            current_role_vac: Some(serde_json::json!({ "id": "vec-1" })),
             extensions: serde_json::json!({ "team": "platform" }),
             removed_at: None,
             personhood: false,
@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(json["publishConsent"], true);
         assert_eq!(json["departurePreference"], "historical");
         assert_eq!(json["currentVmcId"], "vmc-1");
-        assert_eq!(json["currentRoleVecId"], "vec-1");
+        assert_eq!(json["currentRoleVacId"], "vec-1");
         assert_eq!(json["personhood"], false);
         assert!(json["personhoodAssertedAt"].is_null());
         let parsed: Member = serde_json::from_value(json).unwrap();
@@ -272,8 +272,8 @@ mod tests {
             departure_preference: Disposition::PolicyDefault,
             current_vmc_id: None,
             current_vmc: None,
-            current_role_vec_id: None,
-            current_role_vec: None,
+            current_role_vac_id: None,
+            current_role_vac: None,
             extensions: serde_json::Value::Null,
             removed_at: None,
             personhood: true,

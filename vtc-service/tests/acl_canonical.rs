@@ -14,7 +14,7 @@
 //! Since #1645 `acl/change-role` is also **the** admin-promotion path, and
 //! carries the gates that used to live on `vtc/members/update` alone: a live
 //! step-up (VTI-OPS-051), no self-promotion (VTI-OPS-050), the operator's
-//! `role_change.rego`, and the role-VEC re-mint.
+//! `role_change.rego`, and the role-VAC re-mint.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -74,7 +74,7 @@ impl Fixture {
 async fn build() -> Fixture {
     // A role change is the role-change ceremony, so the fixture needs the
     // active decision policy and a credential signer to re-mint a member's
-    // role VEC — the same thing `members_crud`'s fixture builds.
+    // role VAC — the same thing `members_crud`'s fixture builds.
     let vtc = TestVtc::builder()
         .with_audit(true)
         .with_signers(true)
@@ -137,7 +137,7 @@ async fn admin_token(fix: &Fixture) -> String {
     fix.admin.did.clone()
 }
 
-/// Seed a member: an ACL entry **and** the member row a role VEC is repointed
+/// Seed a member: an ACL entry **and** the member row a role VAC is repointed
 /// on. Promotion targets are members; ACL-only subjects are covered separately.
 async fn seed_member(fix: &Fixture, did: &str, role: &str) {
     let token = admin_token(fix).await;
@@ -728,7 +728,7 @@ async fn vti_ops_051_change_role_to_admin_without_a_live_step_up_is_refused() {
 }
 
 /// A role change brings the whole role-change pipeline with it: the ACL row
-/// moves and the member's role VEC is re-minted at the new role. (A promotion
+/// moves and the member's role VAC is re-minted at the new role. (A promotion
 /// to admin runs the same pipeline behind an operation-bound passkey gesture,
 /// driven end to end in `signed_step_up.rs`.)
 #[tokio::test]
@@ -768,8 +768,8 @@ async fn a_role_change_runs_the_role_change_pipeline() {
         .unwrap()
         .unwrap();
     assert!(
-        member.current_role_vec_id.is_some(),
-        "the role VEC must be re-minted by the ceremony, got {member:?}"
+        member.current_role_vac_id.is_some(),
+        "the role VAC must be re-minted by the ceremony, got {member:?}"
     );
 }
 

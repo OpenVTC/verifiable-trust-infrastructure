@@ -16,7 +16,7 @@
 //   - `relationships/list/0.2` for the relationship credentials naming this
 //     member, bodies included.
 //
-// The membership credential, role VEC and member-issued VMC *bodies* come from
+// The membership credential, role VAC and member-issued VMC *bodies* come from
 // a third source, `members/credentials/0.1` (#1215): the `members/show/0.1`
 // response is `additionalProperties: false` and its own text says "The
 // credential body is not echoed here", so the bodies needed a task of their
@@ -89,7 +89,9 @@ const TRUST_TASK_ENDORSEMENT_LIST =
   "https://trusttasks.org/spec/vtc/endorsements/list/0.1";
 const TRUST_TASK_ENDORSEMENT_REVOKE =
   "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
-const COMMUNITY_ROLE = "CommunityRole";
+// A vetter grant's row in the endorsement list: its `typeUri` is the VAC
+// action the grant confers (the credential itself is a community-issued VAC).
+const VETTER_GRANT_ROW_TYPE = "role:vetter";
 const VETTER_ROLE = "vetter";
 // The endorsement list has no subject filter; walking it stops here.
 const MAX_ENDORSEMENT_PAGES = 50;
@@ -129,7 +131,7 @@ async function fetchVetterGrants(did: string): Promise<EndorsementRow[]> {
     grants.push(
       ...body.items.filter(
         (e) =>
-          e.typeUri === COMMUNITY_ROLE &&
+          e.typeUri === VETTER_GRANT_ROW_TYPE &&
           e.subjectDid === did &&
           (e.claim as { role?: unknown } | null)?.role === VETTER_ROLE,
       ),
@@ -768,10 +770,10 @@ function MemberDetail() {
                   "—"
                 )}
               </dd>
-              <dt>Current role VEC</dt>
+              <dt>Current role VAC</dt>
               <dd>
-                {query.data.currentRoleVecId ? (
-                  <code>{query.data.currentRoleVecId}</code>
+                {query.data.currentRoleVacId ? (
+                  <code>{query.data.currentRoleVacId}</code>
                 ) : (
                   "—"
                 )}

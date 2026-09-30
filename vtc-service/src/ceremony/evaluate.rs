@@ -105,12 +105,13 @@ import future.keywords.in
 default decision := {"effect": "deny", "with": {"code": "no-matching-route"}}
 
 decision := {"effect": "allow", "with": {"role": "member", "obligations": ["reciprocate_vmc"]}} if {
-    cred_trusted("WitnessCredential")
+    statement_trusted("https://registry.trustoverip.org/dtg/vsc/witnessed/1")
 }
 
-cred_trusted(t) if {
+statement_trusted(p) if {
     some c in input.evidence.presentation.credentials
-    c.type == t
+    c.type == "StatementCredential"
+    c.predicate == p
     c.issuer_trusted
     c.status == "valid"
 }
@@ -141,7 +142,8 @@ cred_trusted(t) if {
                     verified: true,
                     holder: "did:key:zHuman".into(),
                     credentials: vec![Credential {
-                        credential_type: "WitnessCredential".into(),
+                        credential_type: "StatementCredential".into(),
+                        predicate: Some(dtg_credentials::WITNESSED_V1.into()),
                         issuer: "did:webvh:notary.example".into(),
                         issuer_trusted,
                         status: CredentialStatus::Valid,

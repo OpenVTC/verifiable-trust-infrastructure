@@ -317,7 +317,7 @@ fn row_id(
 
 // ─── members ─────────────────────────────────────────────────────────────
 
-/// `vtc/members/renew/0.1` — re-mint the signer's VMC and role VEC.
+/// `vtc/members/renew/0.1` — re-mint the signer's VMC and role VAC.
 async fn handle_renew(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -1329,11 +1329,14 @@ mod tests {
         let mut vc = json!({
             "@context": [
                 "https://www.w3.org/ns/credentials/v2",
-                "https://firstperson.network/credentials/dtg/v1"
+                "https://registry.trustoverip.org/dtg/context/v1"
             ],
             "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
             "id": format!("urn:uuid:{}", Uuid::new_v4()),
             "issuer": issuer.did,
+            // Issued under the member's own DID, which the community
+            // recognises: an attributed edge.
+            "issuerScope": "public",
             "validFrom": "2020-01-01T00:00:00Z",
             "credentialSubject": { "id": subject.did },
         });
