@@ -359,7 +359,24 @@ fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppErro
     println!("  2. Open the install URL in your browser.");
     println!("  3. Enter the claim code when prompted, then register your passkey.");
     println!();
+    // VTI-11: nothing is in the ACL until the install is claimed, so the
+    // admin DID cannot authenticate before then. Say how to seed it without
+    // the browser (docs/03-vtc/bootstrap-runbook.md, Path B).
+    println!("The ACL stays empty until the install URL is claimed. Without a browser,");
+    println!("seed the admin with the daemon stopped:");
+    println!("  {}", offline_acl_add_command(outcome));
+    println!();
     Ok(())
+}
+
+/// The offline command that grants the setup's admin DID without the
+/// install claim — the runbook's "Path B".
+pub(crate) fn offline_acl_add_command(outcome: &SetupOutcome) -> String {
+    format!(
+        "vtc --config {} acl add --did {} --role admin --label \"first admin\"",
+        outcome.config_path.display(),
+        outcome.admin_did
+    )
 }
 
 // ---------------------------------------------------------------------------
