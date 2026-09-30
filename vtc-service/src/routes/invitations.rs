@@ -587,7 +587,23 @@ pub(crate) async fn deliver(
             )
             .await?;
     }
-    info!(actor = %actor, vic_id = %id, channel = channel_name, "delivered an invitation");
+    // R1.1: over `message` the offer is only queued here — the push engine logs
+    // `trust-task push delivered` when there is evidence the invitee collected
+    // it. Over `offer` it is handed back to the caller for out-of-band hand-off.
+    match channel {
+        Channel::Message => info!(
+            actor = %actor,
+            vic_id = %id,
+            channel = channel_name,
+            "queued an invitation offer for delivery to the invitee"
+        ),
+        Channel::Offer => info!(
+            actor = %actor,
+            vic_id = %id,
+            channel = channel_name,
+            "returned an invitation offer for out-of-band hand-off"
+        ),
+    }
 
     let response: spec::Response = spec::Response::builder()
         .id(id)
