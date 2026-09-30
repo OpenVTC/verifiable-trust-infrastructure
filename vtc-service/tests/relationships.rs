@@ -2272,7 +2272,11 @@ mod pairwise {
         .await;
         let (status, body) = body_value(post(&fix, &mispaired, false).await).await;
         assert!(status.is_client_error(), "{body}");
-        assert_eq!(rest_error_code(&body), PUBLISH_ERR_VRC_INVALID, "{body}");
+        assert_eq!(
+            tt_error_code(&body),
+            Some(PUBLISH_ERR_VRC_INVALID),
+            "{body}"
+        );
 
         // And an edge that declares no `issuerScope` is not a DTG credential.
         let mut unscoped = vrc(RDID, PEER_RDID).await;
