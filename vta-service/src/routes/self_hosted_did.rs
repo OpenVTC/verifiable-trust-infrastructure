@@ -434,12 +434,12 @@ mod tests {
 
     #[tokio::test]
     async fn catch_all_does_not_shadow_authed_route() {
-        // GET /keys is a real authed route. Without a bearer it must be
+        // GET /did/verification-methods/passkey is a real authed route. Without a bearer it must be
         // rejected by its auth extractor (not swallowed into the catch-all's
         // 404), proving static routes keep precedence over the wildcard.
         let (app, _ctx) = crate::test_support::build_test_app().await;
         let req = Request::builder()
-            .uri("/keys")
+            .uri("/did/verification-methods/passkey")
             .method("GET")
             .body(Body::empty())
             .unwrap();

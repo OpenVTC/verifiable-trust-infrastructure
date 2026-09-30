@@ -581,7 +581,6 @@ mod cors_tests {
             "/bootstrap/request",
             "/auth/passkey-login/start",
             "/backup/blob/{bundle_id}",
-            "/metrics",
             // webvh (default feature) groups. (Service management is the
             // `vta/services/*` Trust Tasks, with no REST paths to document.)
             "/did/{did}/log",
