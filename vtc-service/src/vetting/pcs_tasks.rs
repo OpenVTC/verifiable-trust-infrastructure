@@ -34,6 +34,9 @@ pub const PCS_TOKENS_TYPE: &str = "https://trusttasks.org/spec/vtc/vetting/vette
 pub const EVENT_MODE_TYPE: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/event-mode/0.1";
 /// `vtc/vetting/pcs-challenge/0.1` — an applicant asks for a submission challenge.
 pub const PCS_CHALLENGE_TYPE: &str = "https://trusttasks.org/spec/vtc/vetting/pcs-challenge/0.1";
+/// `vtc/vetting/hidden/publish/0.1` — an admin turns on (or rotates) hidden-vetter admission for
+/// a criterion. Was `POST /vetting/hidden`, served by `crate::trust_tasks::handle_hidden_publish`.
+pub const HIDDEN_PUBLISH_TYPE: &str = "https://trusttasks.org/spec/vtc/vetting/hidden/publish/0.1";
 
 // --- declared error codes --------------------------------------------------------------------
 //

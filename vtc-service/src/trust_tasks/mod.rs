@@ -960,6 +960,12 @@ async fn dispatch_typed(
         crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE => {
             handle_pcs_challenge(state, ctx, doc).await
         }
+        // The community's own act of turning hidden vetting on for a criterion. Admin REST with
+        // no Trust Task of its own until now; was `POST /vetting/hidden`.
+        #[cfg(feature = "vetting-pcs")]
+        crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE => {
+            handle_hidden_publish(state, ctx, doc).await
+        }
         // The rooms family. Note what these still do not take: no `ctx`, and no auth
         // claims. A room operation is authorized by the authority chain the room itself
         // issued, never by this service's ACL, roster, or the caller's session —
@@ -2038,6 +2044,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     crate::vetting::pcs_tasks::EVENT_MODE_TYPE,
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
+    // The admin publish that turns hidden vetting on. Was `POST /vetting/hidden`.
+    #[cfg(feature = "vetting-pcs")]
+    crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE,
     PERSONHOOD_CHALLENGE_TYPE,
     PERSONHOOD_ASSERT_TYPE,
     // The admin-facing member verbs (#1641 phase 2): the binding that holds the
@@ -2653,6 +2662,75 @@ async fn handle_pcs_challenge(
     match crate::vetting::pcs_tasks::handle_pcs_challenge(state, &applicant_did, &doc).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/hidden/publish/0.1` — turn on (or rotate) hidden-vetter admission for a
+/// criterion. Admin only, read from the signer's ACL entry — the same `VtcRole::Admin` the REST
+/// route's `AdminAuth` demanded, and the only gate that route applied. Was `POST /vetting/hidden`;
+/// the derivation itself is
+/// [`crate::routes::vetting_hidden::publish_hidden_vetting_core`], shared with that route.
+#[cfg(feature = "vetting-pcs")]
+async fn handle_hidden_publish(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let actor = match admin_signer(state, ctx, &doc).await {
+        Ok(a) => a,
+        Err(reject) => return reject,
+    };
+    if let Err(e) = actor.require_admin() {
+        return app_error_to_reject(&doc, &e);
+    }
+    let payload: trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload =
+        match parse_spec_payload(&doc) {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
+    let live_periods = payload
+        .live_periods
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>();
+    let live_token_labels = payload
+        .live_token_labels
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>();
+    let events = if payload.events.is_empty() {
+        None
+    } else {
+        match serde_json::to_value(&payload.events) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                return app_error_to_reject(
+                    &doc,
+                    &AppError::Internal(format!("encode events: {e}")),
+                );
+            }
+        }
+    };
+    match crate::routes::vetting_hidden::publish_hidden_vetting_core(
+        state,
+        payload.criterion_id.to_string(),
+        if live_periods.is_empty() {
+            None
+        } else {
+            Some(live_periods)
+        },
+        if live_token_labels.is_empty() {
+            None
+        } else {
+            Some(live_token_labels)
+        },
+        payload.drip_per_tick.map(|n| n.get() as usize),
+        events,
+    )
+    .await
+    {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => app_error_to_reject(&doc, &e),
     }
 }
 
@@ -4729,6 +4807,8 @@ mod tests {
             crate::vetting::pcs_tasks::EVENT_MODE_TYPE,
             #[cfg(feature = "vetting-pcs")]
             crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
+            #[cfg(feature = "vetting-pcs")]
+            crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE,
         ];
         // `rooms/*` is no longer checked here, because there is no longer a copy
         // to check.

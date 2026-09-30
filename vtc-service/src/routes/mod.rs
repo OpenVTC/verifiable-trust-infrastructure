@@ -697,20 +697,11 @@ fn build_api_chain(
         // the console sends the same signed document an applicant does.
         // The by-DID lookup the listing cannot answer (`vetters/show/0.1`,
         // #1651) is a signed document only.
-        // Hidden-vetter admission (development branch `zkp-pcs`): derive this
-        // community's PCS keys and publish them on a criterion. Admin REST with
-        // no Trust Task of its own — turning the mode on is an act of
-        // administration, not a task a member can ask for.
-        .merge({
-            #[cfg(feature = "vetting-pcs")]
-            {
-                OpenApiRouter::new().routes(routes!(vetting_hidden::publish_hidden_vetting))
-            }
-            #[cfg(not(feature = "vetting-pcs"))]
-            {
-                OpenApiRouter::new()
-            }
-        });
+        ;
+    // Hidden-vetter admission (development branch `zkp-pcs`): derive this
+    // community's PCS keys and publish them on a criterion. Was admin REST
+    // here; it is `vtc/vetting/hidden/publish/0.1` now, on the spine like
+    // every other admin verb, behind the same `vetting-pcs` feature.
     // A member's update and removal (`vtc/members/{update,admin-remove}/0.1`)
     // are signed documents only.
     // Join requests (Phase 1 M1.7–M1.10). The admin queue

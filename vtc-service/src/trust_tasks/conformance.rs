@@ -2316,6 +2316,44 @@ fn pcs_witnesses() -> Vec<Conformance> {
                     .expires_at(TS.parse::<DateTime<chrono::Utc>>().unwrap())
             ))
         ),
+        // The community's own admin verb: turn hidden vetting on (or rotate its
+        // parameters) for a criterion. Plain JSON fixtures rather than the generated
+        // builder — the response nests `PublishedConfig`/`StoredConfig`, and this is
+        // exactly the shape `routes::vetting_hidden::publish_hidden_vetting_core`
+        // builds, so the fixture doubles as a check that shape still matches.
+        checked!(
+            s::vetting::hidden::publish::v0_1::Payload,
+            s::vetting::hidden::publish::v0_1::Response,
+            json!({
+                "criterionId": "vetting-hidden-pilot",
+                "dripPerTick": 3,
+                "events": [],
+                "livePeriods": ["2026-09"],
+                "liveTokenLabels": ["token/2026-09"],
+            }),
+            json!({
+                "criterionId": "vetting-hidden-pilot",
+                "requirementsDigest": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+                "published": {
+                    "suite": "pcs-bls12-381-g1",
+                    "helperKey": MB,
+                    "tokenKey": MB,
+                    "tokenLabels": ["token/2026-09"],
+                    "vetterLabels": ["vetter/2026-09"],
+                    "dripPerTick": 3,
+                    "events": [],
+                },
+                "stored": {
+                    "suite": "pcs-bls12-381-g1",
+                    "hvk": MB,
+                    "tvk": MB,
+                    "livePeriods": ["2026-09"],
+                    "liveTokenLabels": ["token/2026-09"],
+                    "dripPerTick": 3,
+                    "events": [],
+                },
+            })
+        ),
     ]
 }
 
