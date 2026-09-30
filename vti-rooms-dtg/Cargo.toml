@@ -24,7 +24,7 @@ publish.workspace = true
 test-support = ["dep:ed25519-dalek", "dep:getrandom", "dep:multibase", "dep:vta-sdk", "dep:affinidi-tdk"]
 
 [dependencies]
-vti-rooms = { path = "../vti-rooms", version = "0.2" }
+vti-rooms = { path = "../vti-rooms", version = "0.3" }
 vti-common = { path = "../vti-common", version = "0.31" }
 
 # `authority::verify_chain` and the VAC/VDC types. Was a pinned git rev while
