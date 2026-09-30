@@ -2,6 +2,28 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.9.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.8.1...vtc-client-v0.9.0) — 2026-09-30
+
+
+### Added
+
+- **vtc**: Member verbs served as signed Trust Tasks — callers wired, REST retired ([#1845](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1845))
+
+* feat(vtc-client): member verbs — renew, rotate, personhood, relationships, endorsement issue
+
+  Adds signed-door client methods for the batch-1 member-facing verbs
+  vtc-service already dispatches on the spine (trust_tasks::member_tasks,
+  #1809): renew, rotate-challenge/rotate, personhood/revoke,
+  relationships/{list,publish,revoke}, and endorsements/issue. Every call
+  rides POST /trust-tasks, matching the pattern vtc-client already uses for
+  its other admin verbs.
+
+- **vtc-client**: Every VTC call is a signed Trust Task ([#1840](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1840))
+
+* feat(vtc-client)!: every VTC call is a signed Trust Task
+
+
+
 ## [0.8.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.8.0...vtc-client-v0.8.1) — 2026-09-27
 
 

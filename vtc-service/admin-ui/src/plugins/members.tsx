@@ -47,10 +47,8 @@ import {
 } from "lucide-react";
 
 import {
-  deleteJson,
   fetchMemberRelationships,
   fetchRelationshipsGraph,
-  getJson,
   postSignedRead,
   postSignedTrustTask,
   type MemberRelationship,
@@ -124,11 +122,9 @@ async function fetchVetterGrants(did: string): Promise<EndorsementRow[]> {
   const grants: EndorsementRow[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_ENDORSEMENT_PAGES; page++) {
-    const q = new URLSearchParams({ limit: "200" });
-    if (cursor) q.set("cursor", cursor);
-    const body: EndorsementsPage = await getJson<EndorsementsPage>(
-      `/v1/credentials/endorsements?${q.toString()}`,
-      { trustTask: TRUST_TASK_ENDORSEMENT_LIST },
+    const body: EndorsementsPage = await postSignedRead<EndorsementsPage>(
+      TRUST_TASK_ENDORSEMENT_LIST,
+      { limit: 200, ...(cursor ? { cursor } : {}) },
     );
     grants.push(
       ...body.items.filter(
@@ -158,10 +154,9 @@ async function grantVetterRole(did: string): Promise<VetterGrantResponse> {
 }
 
 async function revokeVetterRole(endorsementId: string): Promise<void> {
-  await deleteJson<unknown>(
-    `/v1/credentials/endorsements/${encodeURIComponent(endorsementId)}`,
-    { trustTask: TRUST_TASK_ENDORSEMENT_REVOKE },
-  );
+  await postSignedTrustTask<unknown>(TRUST_TASK_ENDORSEMENT_REVOKE, {
+    endorsementId,
+  });
 }
 async function fetchMembers(params: {
   cursor: string | null;

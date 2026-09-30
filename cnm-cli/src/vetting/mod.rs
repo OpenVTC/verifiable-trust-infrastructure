@@ -1,19 +1,20 @@
 //! `cnm vetting …` — the community-admin side of peer identity vetting.
 //!
-//! Every command drives the VTC's vetting admin REST surface through
-//! [`vtc_client::VtcClient`]: the vetter grants (`/v1/vetting/vetters`), the
-//! automatic-grant configuration (`/v1/vetting/auto-grant`), the community's
-//! branding (`/v1/community/branding`) and the statement withdrawal notices
-//! (`/v1/vetting/revocations`). A grant is withdrawn like any endorsement,
-//! with `DELETE /v1/credentials/endorsements/{endorsementId}`.
+//! Every command drives the VTC's vetting admin surface through
+//! [`vtc_client::VtcClient`]: naming a vetter and revoking a grant are signed
+//! Trust Tasks (`vtc/vetting/vetters/grant/0.1`, `vtc/endorsements/revoke/0.1`
+//! — a grant is withdrawn like any endorsement); the automatic-grant
+//! configuration (`/v1/vetting/auto-grant`), the community's branding
+//! (`/v1/community/branding`) and the statement withdrawal notices
+//! (`/v1/vetting/revocations`) are admin REST with no Trust Task of their own.
 //!
 //! `bootstrap-pgp` seeds the first vetters from an existing OpenPGP web of
 //! trust; its graph and link logic is the pure [`wot`] and [`plan`] pair.
 //!
-//! The routes are REST-only and need a community-admin token, so every command
-//! authenticates to the VTC itself, with the VTC's DID as the audience (see
-//! [`crate::vtc`]), and fails with the fix when the VTC refuses. There are no
-//! retries here: a failed call is reported, not repeated.
+//! Every command needs a community-admin identity, and authenticates to the
+//! VTC itself, with the VTC's DID as the audience (see [`crate::vtc`]), and
+//! fails with the fix when the VTC refuses. There are no retries here: a
+//! failed call is reported, not repeated.
 
 mod bootstrap;
 pub mod plan;

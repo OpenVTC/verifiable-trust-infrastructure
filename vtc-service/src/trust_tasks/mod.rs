@@ -905,6 +905,9 @@ async fn dispatch_typed(
         vetting_wire::VETTING_VETTER_LIST_TYPE => handle_vetter_list(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_SHOW_TYPE => handle_vetter_show(state, ctx, doc).await,
         vetting_wire::VETTING_VETTER_RESEND_TYPE => handle_vetter_resend(state, ctx, doc).await,
+        vetting_wire::VETTING_VETTER_RESEND_0_2_TYPE => {
+            handle_vetter_resend_v0_2(state, ctx, doc).await
+        }
         // Hidden vetting's community half (development branch `zkp-pcs`). Four exchanges: a
         // vetter enrolling, a vetter drawing its drip, a vetter asking to vet at an event, an
         // applicant asking for the challenge its proof must bind. Feature-gated, because a build
@@ -1570,7 +1573,7 @@ mod spine_proof_tests {
         let hidden_vetting = if cfg!(feature = "vetting-pcs") { 4 } else { 0 };
         assert_eq!(
             required.len(),
-            86 + hidden_vetting,
+            88 + hidden_vetting,
             "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
              member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
              (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
@@ -1594,7 +1597,8 @@ mod spine_proof_tests {
              assertionMethod proof) + the 8 member-facing verbs `member_tasks` \
              moved that declare one (`members/{{renew,rotate-challenge,rotate}}`, \
              `members/personhood/revoke`, `relationships/{{publish,revoke}}`, \
-             `endorsements/{{issue,revoke}}`; `relationships/list` and \
+             `endorsements/{{issue,revoke}}`, and the 0.2 versions of \
+             `relationships/revoke` and `vetting/vetters/resend`; `relationships/list` and \
              `endorsements/{{list,show}}` declare none, and their handlers refuse \
              an unsigned one regardless) + the 10 operational verbs `admin_tasks` \
              moved that declare one (`vtc/registry/sync-jobs/{{retry,discard}}`, \
@@ -1931,13 +1935,14 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // An admin naming a vetter. It has no REST route.
     vetting_wire::VETTING_VETTER_GRANT_TYPE,
     // The vetter registry: a vetter publishing a profile, anyone identified
-    // finding vetters, and a vetter asking for their grant credential again
-    // (only resend keeps an admin REST route, for resending another member's
-    // grant, which this task cannot express).
+    // finding vetters, and a vetter asking for their grant credential again.
+    // `0.2` adds the administrator's route (`memberDid`), which is what let
+    // the admin-only REST resend route retire (tt-tf#689).
     vetting_wire::VETTING_VETTER_PROFILE_TYPE,
     vetting_wire::VETTING_VETTER_LIST_TYPE,
     vetting_wire::VETTING_VETTER_SHOW_TYPE,
     vetting_wire::VETTING_VETTER_RESEND_TYPE,
+    vetting_wire::VETTING_VETTER_RESEND_0_2_TYPE,
     // Hidden vetting: enrolment, the drip, event mode, and the applicant's challenge.
     #[cfg(feature = "vetting-pcs")]
     crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
@@ -2004,11 +2009,12 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     backup_tasks::PUT_CHUNK_TYPE,
     backup_tasks::FINALIZE_IMPORT_TYPE,
     backup_tasks::ABORT_TYPE,
-    // The member-facing verbs, each also still mounted on its REST route:
-    // renewal and DID rotation (the member's own), personhood revocation (the
-    // subject or an admin), the relationship graph's list / publish / revoke,
-    // and the endorsement verbs an Admin or Issuer performs. Before these, a
-    // member on TSP or DIDComm could join and then do none of this.
+    // The member-facing verbs: renewal and DID rotation (the member's own),
+    // personhood revocation (the subject or an admin), the relationship
+    // graph's list / publish / revoke (`0.1` direct-issuer-or-admin, `0.2`
+    // adding the pairwise `pop` route), and the endorsement verbs an Admin or
+    // Issuer performs. None has a REST route any more. Before these, a member
+    // on TSP or DIDComm could join and then do none of this.
     member_tasks::RENEW_TYPE,
     member_tasks::ROTATE_CHALLENGE_TYPE,
     member_tasks::ROTATE_TYPE,
@@ -2016,6 +2022,7 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     member_tasks::RELATIONSHIPS_LIST_TYPE,
     member_tasks::RELATIONSHIPS_PUBLISH_TYPE,
     member_tasks::RELATIONSHIPS_REVOKE_TYPE,
+    member_tasks::RELATIONSHIPS_REVOKE_0_2_TYPE,
     member_tasks::ENDORSEMENTS_ISSUE_TYPE,
     member_tasks::ENDORSEMENTS_LIST_TYPE,
     member_tasks::ENDORSEMENTS_SHOW_TYPE,
@@ -2652,6 +2659,73 @@ async fn handle_vetter_resend(
             )
         }
         Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `vtc/vetting/vetters/resend/0.2` — a vetter asks for their grant credential
+/// again, or an administrator asks on a named vetter's behalf.
+///
+/// Absent `memberDid`, this is exactly `handle_vetter_resend`'s `0.1` behaviour:
+/// the sender identified by the document's own proof (`resolve_holder`),
+/// resending their own grant. Present, [`admin_signer`] establishes the
+/// sender holds the community-administrator capability — refusing with
+/// `permissionDenied` otherwise, per the specification's Conformance item 2 —
+/// and honours a console-key delegation exactly as the other admin verbs do;
+/// the resend then concerns `memberDid`'s grant, not the sender's own. Either
+/// way the actor recorded on the `VetterGrantResent` audit entry is the
+/// sender, never the subject, so an administrator's resend is attributable to
+/// the administrator who asked for it.
+async fn handle_vetter_resend_v0_2(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use trust_tasks_rs::{StandardCode, TrustTaskCode};
+
+    let body: vetting_wire::vetters::resend::v0_2::Payload = match parse_checked_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    let (actor_did, subject_did) = match body.member_did.as_ref() {
+        Some(member_did) => {
+            let admin = match admin_signer(state, ctx, &doc).await {
+                Ok(a) => a,
+                Err(reject) => return reject,
+            };
+            (admin.did, member_did.to_string())
+        }
+        None => {
+            let vetter_did = match resolve_holder(state, ctx, &doc).await {
+                Ok(did) => did,
+                Err(reject) => return reject,
+            };
+            (vetter_did.clone(), vetter_did)
+        }
+    };
+    match crate::vetting::vetters::resend(state, &actor_did, &subject_did).await {
+        // `notGranted` is a `NotFound` underneath, and its local part is not
+        // `notFound`, so #1602's client-side rule does not recover it — the
+        // marker is the only thing that does. `0.1` and `0.2` declare the
+        // identical code text, so `0.1`'s constant witnesses both.
+        Err(AppError::NotFound(reason)) => reject_with_code_because(
+            &doc,
+            extended_code(vetting_wire::VETTING_VETTER_RESEND_ERR_NOT_GRANTED),
+            reason,
+            None,
+            reasons::NOT_FOUND,
+        ),
+        Err(AppError::ServiceError { status, message })
+            if status == axum::http::StatusCode::SERVICE_UNAVAILABLE =>
+        {
+            reject_with_code(
+                &doc,
+                TrustTaskCode::Standard(StandardCode::Unavailable),
+                message,
+                None,
+            )
+        }
+        Err(e) => app_error_to_reject(&doc, &e),
+        Ok(response) => success_response(&doc, response),
     }
 }
 
@@ -4358,6 +4432,7 @@ mod tests {
             vetting_wire::VETTING_VETTER_LIST_TYPE,
             vetting_wire::VETTING_VETTER_SHOW_TYPE,
             vetting_wire::VETTING_VETTER_RESEND_TYPE,
+            <vetting_wire::vetters::resend::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <member_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI,
@@ -4399,6 +4474,7 @@ mod tests {
             <trust_tasks_rs::specs::vtc::relationships::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::relationships::publish::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::relationships::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            <trust_tasks_rs::specs::vtc::relationships::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::issue::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
             <trust_tasks_rs::specs::vtc::endorsements::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,

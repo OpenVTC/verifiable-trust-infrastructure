@@ -144,6 +144,8 @@ pub mod task {
         "https://trusttasks.org/spec/vtc/relationships/publish/0.2";
     pub const RELATIONSHIPS_REVOKE: &str =
         "https://trusttasks.org/spec/vtc/relationships/revoke/0.1";
+    pub const RELATIONSHIPS_REVOKE_0_2: &str =
+        "https://trusttasks.org/spec/vtc/relationships/revoke/0.2";
     pub const AUDIT_VERIFY: &str = "https://trusttasks.org/spec/audit/verify/0.1";
     pub const MEMBERS_CREDENTIALS: &str =
         <super::members_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI;
@@ -456,8 +458,8 @@ pub struct VetterGrant {
     pub grant: vetting::vetters::grant::v0_1::Response,
 }
 
-/// Outcome of revoking an endorsement (`DELETE /credentials/endorsements/{id}`)
-/// — which is how a vetter grant is withdrawn.
+/// Outcome of revoking an endorsement (`vtc/endorsements/revoke/0.1`) — which
+/// is how a vetter grant is withdrawn.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
@@ -1654,20 +1656,31 @@ impl VtcClient {
     }
 
     /// Revoke a Verifiable Relationship Credential by id
-    /// (`vtc/relationships/revoke/0.1`). The edge's own issuer, or an
-    /// administrator; any other caller gets the same `notFound` a missing id
-    /// would (anti-probing).
+    /// (`vtc/relationships/revoke/0.2`). The edge's own issuer — directly, or
+    /// by proving control of a pairwise relationship DID via `pop` — or an
+    /// administrator; any other caller, or a `pop` that fails to verify, gets
+    /// the same `notFound` a missing id would (anti-probing).
     ///
-    /// An edge published under a pairwise relationship DID (its `issuer` not
-    /// the caller's own membership DID) cannot be revoked through this
-    /// verb — the task's payload is `{id}` alone and carries no proof of
-    /// control over that DID. That capacity still needs the VTC's bearer
-    /// `DELETE /relationships/{id}` route, with a `pop`.
-    pub async fn revoke_relationship(&self, id: &str) -> Result<RelationshipRevoked, VtcError> {
+    /// `pop` is a `VrcRevokeAuthorization`: `{ type: "VrcRevokeAuthorization",
+    /// documentId, relationship, proof }`, signed by the relationship's own
+    /// `issuerDid`, with `documentId` set to this call's own document `id` and
+    /// `relationship` set to `id`. Required only when the edge was published
+    /// under a relationship DID that is not the caller's own membership DID;
+    /// omit it when revoking an edge you issued under your own DID, or when
+    /// revoking as an administrator.
+    pub async fn revoke_relationship(
+        &self,
+        id: &str,
+        pop: Option<serde_json::Value>,
+    ) -> Result<RelationshipRevoked, VtcError> {
+        let mut payload = serde_json::json!({ "id": id });
+        if let Some(pop) = pop {
+            payload["pop"] = pop;
+        }
         let reply = self
             .document(
-                task::RELATIONSHIPS_REVOKE,
-                serde_json::json!({ "id": id }),
+                task::RELATIONSHIPS_REVOKE_0_2,
+                payload,
                 &[],
                 MAX_DOCUMENT_RESPONSE_BYTES,
             )

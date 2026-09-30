@@ -28,12 +28,14 @@
 //!    `src/routes/members/relationships.rs`. Owns its own
 //!    file because the URL is rooted under `/v1/members/`.
 //!
-//! 3. `DELETE /v1/relationships/{id}` — issuer-only retraction
-//!    (admin can also revoke for moderation). Authorized the
-//!    same three ways publication is: session DID equals the
-//!    row's issuer, admin, or a `VrcRevokeAuthorization`
-//!    proving control of a pairwise issuer. Deletes the row
-//!    plus secondary-index entries; emits `VrcRevoked`. Per
+//! 3. `vtc/relationships/revoke/{0.1,0.2}` — issuer-only
+//!    retraction (admin can also revoke for moderation).
+//!    Signed document only. Authorized the same three ways
+//!    publication is: the document's proof signer equals the
+//!    row's issuer, an administrator, or (`0.2` only) a
+//!    `VrcRevokeAuthorization` proving control of a pairwise
+//!    issuer, bound to the document and the edge. Deletes the
+//!    row plus secondary-index entries; emits `VrcRevoked`. Per
 //!    D7, VRCs carry no `credentialStatus`; revocation is row
 //!    deletion, not a status-list bit flip.
 //!
@@ -602,106 +604,58 @@ pub struct RevokeResponse {
     pub id: String,
 }
 
-/// `type` of the revoke authorization. Distinct from the publish type so the
-/// authorization a member signs every time they lodge an edge cannot be
-/// replayed to delete it.
+/// `type` of the revoke authorization (`vtc/relationships/revoke/0.2`'s
+/// `pop`). Distinct from the publish type so the authorization a member signs
+/// every time they lodge an edge cannot be replayed to delete it.
 const REVOKE_AUTHORIZATION_TYPE: &str = "VrcRevokeAuthorization";
 
-#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
-pub struct RevokeBody {
-    /// Proof that the caller controls the key behind the row's `issuerDid`,
-    /// when that is not the caller's session DID — i.e. for every edge
-    /// published under a pairwise relationship DID.
-    ///
-    /// Bound to the row `id` rather than to a credential, because `DELETE
-    /// /v1/relationships/{id}` names the row and carries no credential to
-    /// bind to.
-    #[serde(default)]
-    pub pop: Option<JsonValue>,
-}
-
-/// `DELETE /v1/relationships/{id}` — retract an edge.
+/// Verify a `VrcRevokeAuthorization` — `vtc/relationships/revoke/0.2`'s `pop`,
+/// the pairwise route's proof of possession of the relationship's own
+/// `issuerDid`.
 ///
-/// ## Why there is a body here at all
+/// Same construction as [`verify_publish_authorization`], with the document's
+/// own `id` and the edge's `id` in place of publish's `vrcDigestMultibase`:
+/// `documentId` so a captured authorization is not replayable into another
+/// document, and `relationship` so an authorization signed for one edge
+/// cannot revoke another. Unlike the bearer route this replaces, it carries no
+/// `sessionId` or `aud` — a signed Trust Task document has no session to bind
+/// to (`vtc/relationships/revoke/0.2` §Security & Privacy).
 ///
-/// `revoke` kept the identity equality that `publish` replaced in #1054/#1061:
-/// `auth.did == rel.issuer_did`. For an edge published under a pairwise
-/// relationship DID that compares a membership DID against an R-DID and is
-/// false by construction, so a member could lodge an edge and then never take
-/// it back — only an admin could. The property the equality was standing in
-/// for is *control of the issuing key*, and once the identifier stopped being
-/// the member's own, only a proof can establish it.
-///
-/// Three routes to authorization, and the first two are exactly as before:
-///
-/// - **attributed** — `auth.did == rel.issuer_did`. Still correct, still
-///   sufficient, no proof needed. The session already demonstrates control of
-///   that key.
-/// - **admin** — moderation, keyed on the row id and not on issuer identity.
-///   Unchanged.
-/// - **pairwise** — a `VrcRevokeAuthorization` signed by the row's
-///   `issuerDid`, bound to this row, this community, this session and this
-///   moment. New.
-///
-/// Like the publish authorization, **it is verified and discarded** — never
-/// stored, logged or audited. It carries `sessionId`, which is attributable to
-/// a membership DID, and this handler writes to the audit store, so it is the
-/// one place on the pairwise path where that linkage could plausibly become
-/// durable. See `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
-#[utoipa::path(
-    delete, path = "/relationships/{id}",
-    operation_id = "relationshipRevoke", tag = "relationships",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Relationship (VRC) id")),
-    request_body(content = RevokeBody, description = "Optional. Required only \
-        for an edge issued under a pairwise relationship DID."),
-    responses(
-        (status = 200, description = "Relationship (VRC) revoked", body = RevokeResponse),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not the issuer or an admin"),
-        (status = 404, description = "Relationship not found"),
-    ),
-)]
-pub async fn revoke(
-    auth: AuthClaims,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    // Optional: every client sending this request today sends no body at all,
-    // and must keep working. `Option<Json<_>>` yields `None` when there is no
-    // JSON content-type, and still rejects a malformed body when there is.
-    body: Option<Json<RevokeBody>>,
-) -> Result<(StatusCode, Json<RevokeResponse>), TaskError> {
-    let rel = get_relationship(&state.relationships_ks, id)
-        .await?
-        .ok_or_else(|| {
-            TaskError::declared(
-                REVOKE_ERR_NOT_FOUND,
-                AppError::NotFound(format!("VRC {id} not found")),
-            )
-        })?;
-
-    let pop = body.and_then(|Json(b)| b.pop);
-    let revoked_by = authorize_edge_control(
-        &state,
-        &auth,
-        &rel,
-        id,
-        pop.as_ref(),
-        REVOKE_AUTHORIZATION_TYPE,
-        "revoke",
-    )
-    .await?;
-
-    Ok((
-        StatusCode::OK,
-        Json(revoke_authorized(&state, &auth.did, &rel, revoked_by).await?),
-    ))
+/// **Verified and discarded.** Retaining it would accumulate a durable link
+/// between a member and a relationship DID that names nobody — the same
+/// reason [`verify_publish_authorization`] discards its own.
+pub(crate) async fn verify_revoke_authorization(
+    pop: &JsonValue,
+    issuer_did: &str,
+    expected_document_id: &str,
+    expected_relationship_id: &str,
+    resolver: &DIDCacheClient,
+) -> Result<(), String> {
+    let field = |name: &str| -> Result<String, String> {
+        pop.get(name)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| format!("authorization missing `{name}`"))
+    };
+    let ty = field("type")?;
+    if ty != REVOKE_AUTHORIZATION_TYPE {
+        return Err(format!(
+            "authorization `type` must be `{REVOKE_AUTHORIZATION_TYPE}`, got `{ty}`"
+        ));
+    }
+    if field("documentId")? != expected_document_id {
+        return Err("authorization is bound to a different document".into());
+    }
+    if field("relationship")? != expected_relationship_id {
+        return Err("authorization is bound to a different edge".into());
+    }
+    verify_di_proof(pop, issuer_did, resolver).await
 }
 
 /// Delete an edge whose control the door has already established, and audit
-/// it — the effect behind both the bearer route above and the
-/// `vtc/relationships/revoke/0.1` Trust Task. `revoked_by` is the capacity the
-/// door authorized `actor_did` in (`"issuer"` or `"admin"`).
+/// it — the effect behind the `vtc/relationships/revoke/{0.1,0.2}` Trust
+/// Tasks. `revoked_by` is the capacity the door authorized `actor_did` in
+/// (`"issuer"` or `"admin"`).
 pub(crate) async fn revoke_authorized(
     state: &AppState,
     actor_did: &str,
@@ -727,96 +681,6 @@ pub(crate) async fn revoke_authorized(
     info!(vrc_id = %id, revoked_by, "VRC revoked");
 
     Ok(RevokeResponse { id: id.to_string() })
-}
-
-/// Establish that the caller may change the state of an existing edge, and
-/// report which of the two capacities they acted in.
-///
-/// Extracted from [`revoke`] when suspension and restoration arrived, because
-/// all three verbs answer the identical question — *does this caller control
-/// this edge* — and three copies of a three-branch authorization check is
-/// exactly how the ingress-window check ended up implemented three different
-/// ways and enforced on one path (#1069). The verb differs only in the
-/// authorization `type` it will accept, which is a parameter.
-///
-/// Three routes, in the order the publish path documents (caller errors before
-/// daemon-config prerequisites):
-///
-/// - **attributed** — the session DID is the row's issuer. The session already
-///   demonstrates control of that key; no proof is needed.
-/// - **admin** — moderation, keyed on the row id and not on issuer identity.
-/// - **pairwise** — an authorization signed by the row's `issuerDid`, bound to
-///   this edge, this community, this session. For an edge published under a
-///   relationship DID this is the *only* route, because the session DID is an
-///   M-DID and the comparison is false by construction.
-///
-/// The authorization is verified and discarded — never stored, logged or
-/// audited. It carries `sessionId`, which is attributable to a membership DID,
-/// and these handlers write to the audit store, so this is the one place on
-/// the pairwise path where that linkage could plausibly become durable. See
-/// `docs/05-design-notes/vrc-publish-proof-of-possession.md`.
-///
-/// `authorization_type` must be distinct per verb: a signature the member made
-/// to suspend an edge must not be replayable to delete it.
-///
-/// Returns `"issuer"` or `"admin"` for the audit trail. Proving control of the
-/// issuing key *is* being the issuer — recording it as an admin action would
-/// misattribute a member's own decision in the one trail an operator uses to
-/// answer who did what.
-async fn authorize_edge_control(
-    state: &AppState,
-    auth: &AuthClaims,
-    rel: &Relationship,
-    id: Uuid,
-    pop: Option<&JsonValue>,
-    authorization_type: &str,
-    verb: &str,
-) -> Result<&'static str, AppError> {
-    let is_issuer = auth.did == rel.issuer_did;
-    let is_admin = auth.role == vti_common::acl::Role::Admin;
-
-    // Cheapest gate first, before the resolver is touched: with none of the
-    // three routes available this is a caller error, and reaching the
-    // daemon-config prerequisite below would report it as a 500.
-    if !is_issuer && !is_admin && pop.is_none() {
-        return Err(AppError::Forbidden(format!(
-            "only the issuer or an admin can {verb} a VRC — an edge issued \
-             under a relationship DID needs an authorization (`pop`) proving \
-             control of it"
-        )));
-    }
-
-    // A supplied authorization must verify, whoever supplied it. Accepting a
-    // request that carried an authorization we then ignored would make the
-    // failure of a *bad* one indistinguishable from success.
-    let mut proved_control = false;
-    if let Some(pop) = pop {
-        let resolver = state.did_resolver.as_ref().cloned().ok_or_else(|| {
-            AppError::Internal(format!(
-                "DID resolver not configured — a VRC {verb} authorization requires it"
-            ))
-        })?;
-        let aud = crate::routes::recognise::vtc_did(state).await?;
-        check_authorization_envelope(pop, authorization_type, &aud, &auth.session_id)
-            .and_then(|()| {
-                let edge = authorization_field(pop, "relationship")?;
-                if edge != id.to_string() {
-                    return Err("authorization is bound to a different edge".into());
-                }
-                Ok(())
-            })
-            .map_err(|e| AppError::Forbidden(format!("{authorization_type}Invalid: {e}")))?;
-        verify_di_proof(pop, &rel.issuer_did, &resolver)
-            .await
-            .map_err(|e| AppError::Forbidden(format!("{authorization_type}Invalid: {e}")))?;
-        proved_control = true;
-    }
-
-    Ok(if is_issuer || proved_control {
-        "issuer"
-    } else {
-        "admin"
-    })
 }
 
 // ─── Suspend / restore ───────────────────────────────────

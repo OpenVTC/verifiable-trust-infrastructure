@@ -2,6 +2,91 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.29.1...vti-common-v0.30.0) — 2026-09-30
+
+
+### Added
+
+- **vtc-service**: The administrator's operational verbs are signed Trust Tasks ([#1824](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1824))
+
+The trust-registry reconciler, the audit log, the runtime configuration,
+  admin invites and the auth service's sessions are served by the spine
+  (trust_tasks::admin_tasks) on every transport, with the signer's ACL row
+  as authority: the role and scope questions the bearer extractors asked,
+  and an invite's step-up bound to the document.
+
+  auth/sessions/list/0.1 answers { sessions: [Session] } under the
+  revocation's authority (caller_covers_target); auth/revoke-session/0.2
+  is served on the spine, and a refused revocation by subject is audited
+  (SessionRevocationRefused). The console's drift read moves to
+  git-ns/view/0.5.
+
+  The bearer routes are removed, except GET /v1/audit/verify, which
+  vtc-client still calls.
+
+- **trust-tasks**: Advertise the acceptance window over trust-task-discovery 0.3 (VTI-TRN-047) ([#1817](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1817))
+
+Both VTI node types refuse a document more than ten minutes (plus 60 s of
+  skew) past its issuedAt (VTI-OPS-024). A sender holding a document before
+  delivery has to know that window to decide when to issue a new attempt
+  instead, and until now the only way to know it was to share the constant.
+  trust-task-discovery/0.3 (trust-tasks #677, trust-tasks-rs 0.24.4) lets a
+  responder state it.
+
+  - Raise the trust-tasks-rs floor to 0.24.4, the first release carrying
+    discovery 0.3, and trust-tasks-capability-client with it. Only those two
+    lockfile entries move.
+  - vti-common: `trust_task::acceptance::AcceptanceWindow` and
+    `VTI_ACCEPTANCE_WINDOW` (ACCEPTANCE_WINDOW + DEFAULT_SKEW). This is the one
+    value the consumers apply (`freshness_policy()`), the responders advertise
+    (`advertised()`, rounded down so it is never wider, VTI-TRN-047), and the
+    push engine judges staleness by (`past_max_age`, `refuses`).
+    `trust_task::discovery` has the pattern grammar and the 0.1/0.3 response
+    builders, so both nodes answer the same way.
+  - VTA: serves trust-task-discovery/0.3 next to 0.1, answering each in the
+    version it was asked. The window goes at response level, since the VTA
+    applies one window to everything it dispatches. The 0.1 frameworkVersion was
+    "0.2", a stale copy of the framework crate's default. It is now "0.6",
+    the MAJOR.MINOR of the 0.6.0 that 0.3 writes, so one responder no longer
+    names two framework releases.
+  - VTC: serves trust-task-discovery/0.3 for the first time. It answers
+    identified callers only, as the VTA does, and lists the routing table itself
+    (DISPATCHED_URIS plus the rooms and git-ns registrations).
+  - Registrations: TASK_TRUST_TASK_DISCOVERY_0_3 in vta_sdk::trust_tasks and
+    its task list, ReadOnly in retry_safety, the VTA dispatch table and its
+    conformance witness (built from the real builder, not a literal), and the
+    VTC DISPATCHED_URIS and its declared-URI census.
+  - Push engine (VTI-TRN-045): its two staleness predicates now read
+    VTI_ACCEPTANCE_WINDOW, the same value the nodes advertise, where before
+    they combined two separate constants. It still reads no advertised window.
+    A lookup would be a request/reply exchange, and every push is one-way.
+    None of the recipients (approvers' devices, wallets, requesters) serves
+    discovery. The window only matters when the recipient cannot answer. The
+    engine never sees an `expired` refusal, so 0.3's "re-ask after an
+    unexpected refusal" would have no trigger. The module docs and
+    docs/05-design-notes/retry-and-idempotency.md say so. What remains of the
+    spec's divergence F.3 is the producer side only.
+
+
+
+### Fixed
+
+- **vti-common**: Step-up gate reads the session's level, not the token's ([#1842](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1842))
+
+A step-up (`auth/passkey/login/finish/0.2`, `purpose: stepUp`) elevates the
+  session row and mints no new token; the spec has the caller's existing tokens
+  pick the elevation up at introspection. `check_fresh_step_up` nonetheless
+  required `claims.acr == "aal2"` from the JWT, so a session that signed in at
+  aal1 (SIOPv2, DID-signed authenticate) kept an aal1 token for its whole life
+  and could never satisfy any StepUpAuth / `elevation::verified` gate. In the VTC
+  console that surfaced as "passkey verification did not complete" on enabling
+  console signing, after the passkey ceremony had succeeded.
+
+  The gate now checks the row's `acr` and the live elevation window. The window
+  remains the authority: only a step-up writes it.
+
+
+
 ## [0.29.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.29.0...vti-common-v0.29.1) — 2026-09-28
 
 
