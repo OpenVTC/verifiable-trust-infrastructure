@@ -3168,7 +3168,7 @@ async fn handle_hidden_publish(
     .await
     {
         Ok(response) => success_response(&doc, response),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 

@@ -409,7 +409,7 @@ async fn handle_invitations_issue(
     };
     match crate::routes::invitations::issue(state, &actor.did, body).await {
         Ok(response) => success_response(&doc, response),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 
@@ -439,7 +439,7 @@ async fn handle_invitations_revoke(
     };
     match crate::routes::invitations::revoke(state, &actor.did, payload.id.to_string()).await {
         Ok(response) => success_response(&doc, response),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 

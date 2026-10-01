@@ -171,6 +171,18 @@ fn witnesses() -> Vec<Witness> {
             "deliver_refuses_what_it_cannot_deliver"
         ),
         witness!(
+            s::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE,
+            crate::routes::invitations::INVITATION_ISSUE_ERR_UNKNOWN_ROLE,
+            "invitations.rs",
+            "invite_refuses_a_role_the_community_does_not_define"
+        ),
+        witness!(
+            s::invitations::revoke::v0_1::error_codes::NOT_FOUND,
+            crate::routes::invitations::INVITATION_REVOKE_ERR_NOT_FOUND,
+            "invitations.rs",
+            "revoke_unknown_invitation_is_404"
+        ),
+        witness!(
             s::members::credentials::v0_1::error_codes::NOT_FOUND,
             crate::routes::members::credentials::MEMBER_CREDENTIALS_ERR_NOT_FOUND,
             "members_crud.rs",
@@ -875,6 +887,18 @@ fn pcs_witnesses() -> Vec<Witness> {
     use trust_tasks_rs::specs::vtc as s;
     vec![
         witness!(
+            s::vetting::hidden::publish::v0_1::error_codes::NO_SUCH_CRITERION,
+            pcs::HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION,
+            "hidden_vetting_tasks.rs",
+            "publishing_hidden_vetting_refuses_with_the_codes_it_declares"
+        ),
+        witness!(
+            s::vetting::hidden::publish::v0_1::error_codes::NO_VETTING,
+            pcs::HIDDEN_PUBLISH_ERR_NO_VETTING,
+            "hidden_vetting_tasks.rs",
+            "publishing_hidden_vetting_refuses_with_the_codes_it_declares"
+        ),
+        witness!(
             s::vetting::vetters::pcs_root::v0_1::error_codes::ALREADY_ENROLLED,
             pcs::ROOT_ERR_ALREADY_ENROLLED,
             "hidden_vetting_tasks.rs",
@@ -991,8 +1015,7 @@ fn pcs_witnesses() -> Vec<Witness> {
 /// compile error here, not a stale row.
 fn unwitnessed() -> Vec<DeclaredErrorCode> {
     use trust_tasks_rs::specs::vtc as s;
-    #[allow(unused_mut)]
-    let mut v = vec![
+    vec![
         // BASELINE-BEGIN — generated from this test's own failure output.
         s::admin::invites::revoke::v0_1::error_codes::ALREADY_CONSUMED,
         // Both remaining auth codes need infrastructure this workspace does not
@@ -1010,8 +1033,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // at the registry pre-flight and the gate never runs. Witnessing it
         // means building a registry stub.
         s::auth::recognise::v0_2::error_codes::ISSUER_NOT_RECOGNISED,
-        s::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE,
-        s::invitations::revoke::v0_1::error_codes::NOT_FOUND,
         s::join_requests::submit::v0_2::error_codes::POLICY_UNSATISFIED,
         s::vetting::revoke_statement::v0_1::error_codes::DIGEST_MISMATCH,
         s::vetting::revoke_statement::v0_1::error_codes::ISSUER_MISMATCH,
@@ -1027,16 +1048,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
         // BASELINE-END
-    ];
-    // `vetting/hidden/publish` is bound only with `vetting-pcs`, and moved from
-    // REST to the spine in #1858 without a signed-document test driving its two
-    // refusals yet.
-    #[cfg(feature = "vetting-pcs")]
-    v.extend([
-        s::vetting::hidden::publish::v0_1::error_codes::NO_SUCH_CRITERION,
-        s::vetting::hidden::publish::v0_1::error_codes::NO_VETTING,
-    ]);
-    v
+    ]
 }
 
 /// The ceiling [`unwitnessed`]'s length may never exceed. This is the one
@@ -1047,14 +1059,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 10
-    + if cfg!(feature = "vetting-pcs") {
-        // `vetting/hidden/publish`'s two codes, until a signed-document test
-        // drives them (see `unwitnessed`).
-        2
-    } else {
-        0
-    };
+const UNWITNESSED_CEILING: usize = 8;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

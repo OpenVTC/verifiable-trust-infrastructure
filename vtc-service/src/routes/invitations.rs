@@ -27,6 +27,7 @@ use crate::credentials::invitation::{DEFAULT_INVITATION_VALIDITY, issue_invitati
 use crate::credentials::invitation_registry::{
     InvitationRecord, get_invitation, list_invitations, store_invitation,
 };
+use crate::error::TaskError;
 use crate::server::AppState;
 use crate::status_list;
 
@@ -69,7 +70,7 @@ pub(crate) async fn issue(
     state: &AppState,
     actor: &str,
     body: IssueInvitationBody,
-) -> Result<IssueInvitationResponse, AppError> {
+) -> Result<IssueInvitationResponse, TaskError> {
     let signer = state
         .credential_signer
         .as_ref()
@@ -86,12 +87,13 @@ pub(crate) async fn issue(
     ) {
         return Err(AppError::Forbidden(
             "only Admin, Moderator, or Issuer members can issue invitations".into(),
-        ));
+        )
+        .into());
     }
 
     // An invite is for a *prospective* member.
     if !body.subject_did.starts_with("did:") {
-        return Err(AppError::Validation("subjectDid must be a DID".into()));
+        return Err(AppError::Validation("subjectDid must be a DID".into()).into());
     }
     // "Already a member" means a *current* (ACL-present) member — not a departed
     // one whose tombstone Member row lingers after a Tombstone/Historical
@@ -104,14 +106,16 @@ pub(crate) async fn issue(
         return Err(AppError::Conflict(format!(
             "{} is already a current member — no invitation needed",
             body.subject_did
-        )));
+        ))
+        .into());
     }
 
     let validity = match body.validity_days {
         Some(d) if d == 0 || (d as i64) > MAX_VALIDITY_DAYS => {
             return Err(AppError::Validation(format!(
                 "validityDays must be between 1 and {MAX_VALIDITY_DAYS}"
-            )));
+            ))
+            .into());
         }
         Some(d) => Duration::days(d as i64),
         None => DEFAULT_INVITATION_VALIDITY,
@@ -121,13 +125,26 @@ pub(crate) async fn issue(
     // `admin` — a join can't grant admin (host privilege ceiling), so we refuse
     // it at issuance rather than mint an invite that would be denied on redeem.
     if let Some(role) = body.role.as_deref() {
-        let parsed = role
-            .parse::<VtcRole>()
-            .map_err(|_| AppError::Validation(format!("unknown role `{role}`")))?;
+        // Only an unparseable role is `unknownRole`. `admin` parses and is
+        // refused below as the privilege ceiling, which the specification
+        // does not describe, so it stays the framework's own refusal.
+        //
+        // "Not one this community defines" can mean no more than this today:
+        // a community keeps no register of its `custom:<name>` roles — a
+        // custom role is a name, granted whatever an operator's
+        // `role_definitions.rego` grants it — so any well-formed custom name
+        // is one this service can seat.
+        let parsed = role.parse::<VtcRole>().map_err(|_| {
+            TaskError::declared(
+                INVITATION_ISSUE_ERR_UNKNOWN_ROLE,
+                AppError::Validation(format!("unknown role `{role}`")),
+            )
+        })?;
         if matches!(parsed, VtcRole::Admin) {
             return Err(AppError::Validation(
                 "an invitation may not grant `admin` (no admin via join)".into(),
-            ));
+            )
+            .into());
         }
         // Conferring a role is an administrator's authority. A `Moderator` or
         // `Issuer` invites members; it cannot mint an invitation that seats
@@ -135,7 +152,8 @@ pub(crate) async fn issue(
         if !matches!(parsed, VtcRole::Member) && !matches!(acl.role, VtcRole::Admin) {
             return Err(AppError::Forbidden(format!(
                 "only an administrator can invite with the role `{role}`"
-            )));
+            ))
+            .into());
         }
     }
 
@@ -321,13 +339,20 @@ pub(crate) async fn revoke(
     state: &AppState,
     actor: &str,
     id: String,
-) -> Result<RevokeResponse, AppError> {
+) -> Result<RevokeResponse, TaskError> {
     let scope = require_inviter(state, actor).await?;
 
     let mut record = get_invitation(&state.invitations_ks, &id)
         .await?
+        // One outside the caller's scope is as absent as one never issued: a
+        // Moderator learns nothing of another inviter's invitations.
         .filter(|r| scope.covers(r, actor))
-        .ok_or_else(|| AppError::NotFound(format!("no invitation with id {id}")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                INVITATION_REVOKE_ERR_NOT_FOUND,
+                AppError::NotFound(format!("no invitation with id {id}")),
+            )
+        })?;
 
     // Idempotent: an already-revoked invite reports its prior revocation.
     if let Some(revoked_at) = record.revoked_at {
@@ -377,6 +402,13 @@ pub(crate) async fn revoke(
         newly_revoked: true,
     })
 }
+
+/// `vtc/invitations/issue:unknownRole`, read from the generated bindings.
+pub const INVITATION_ISSUE_ERR_UNKNOWN_ROLE: &str =
+    trust_tasks_rs::specs::vtc::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE.code;
+/// `vtc/invitations/revoke:notFound`, read from the generated bindings.
+pub const INVITATION_REVOKE_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::invitations::revoke::v0_1::error_codes::NOT_FOUND.code;
 
 use trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes as deliver_codes;
 

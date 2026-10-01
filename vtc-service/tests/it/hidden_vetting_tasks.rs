@@ -893,3 +893,43 @@ async fn the_enrolment_and_the_drip_refuse_with_the_codes_they_declare() {
     assert_ne!(status, StatusCode::OK);
     assert_eq!(tt_error_code(&body), pcs_tasks::TOKENS_ERR_NOT_A_VETTER);
 }
+
+/// `vtc/vetting/hidden/publish/0.1`, refused for the two reasons its specification declares: a
+/// criterion that does not exist, and one asking for no vetting for the parameters to qualify.
+#[tokio::test]
+async fn publishing_hidden_vetting_refuses_with_the_codes_it_declares() {
+    let h = Harness::start().await;
+    let (admin_did, admin) = identity(0x70);
+    crate::common::signed::seed_role(&h.tv, &admin_did, vtc_service::acl::VtcRole::Admin, &[])
+        .await;
+
+    let (status, body) = h
+        .post(
+            &admin,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            json!({ "criterionId": "no-such-criterion" }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION,
+        "{body}"
+    );
+
+    // The harness's criterion carries hidden-vetting parameters but no `vetting` requirements.
+    h.publish().await;
+    let (status, body) = h
+        .post(
+            &admin,
+            pcs_tasks::HIDDEN_PUBLISH_TYPE,
+            json!({ "criterionId": "hidden-criterion" }),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        tt_error_code(&body),
+        pcs_tasks::HIDDEN_PUBLISH_ERR_NO_VETTING,
+        "{body}"
+    );
+}
