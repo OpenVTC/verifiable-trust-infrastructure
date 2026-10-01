@@ -181,7 +181,7 @@ impl VtaClient {
         req: CreateDidWebvhRequest,
     ) -> Result<crate::protocols::did_management::create::CreateDidWebvhResultBody, VtaError> {
         self.rpc_tt(
-            crate::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+            crate::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
             serde_json::to_value(&req)?,
             60,
         )

@@ -22,6 +22,7 @@
 //! | `webvh/servers/remove/1.0`          | super-admin |
 //! | `webvh/dids/list/1.0`               | any authed  |
 //! | `webvh/dids/create/1.0`             | `key-mint`  |
+//! | `webvh/dids/create/1.1`             | `key-mint`  |
 //! | `webvh/dids/get/1.0`                | any authed  |
 //! | `webvh/dids/get-log/1.0`            | any authed  |
 //! | `webvh/dids/delete/1.0`             | admin       |
@@ -200,12 +201,33 @@ pub(super) async fn handle_dids_list(
     }
 }
 
-/// `webvh/dids/create/1.0` — mint a new DID. The `key-mint` capability, in the
-/// target context (Keyring VTI-23; gated in `create_did_webvh`).
+/// `webvh/dids/create/1.1` — mint a new DID, the response stating `serverless`
+/// (Keyring VTI-20). The `key-mint` capability, in the target context (Keyring
+/// VTI-23; gated in `create_did_webvh`).
 pub(super) async fn handle_dids_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    create_dids(state, auth, doc, true).await
+}
+
+/// `webvh/dids/create/1.0` — [`handle_dids_create`] answered in 1.0's shape.
+/// 1.0's response refuses members it does not define, `serverless` among them,
+/// so it is left out; a 1.0 client reads serverless from the absent `serverId`.
+pub(super) async fn handle_dids_create_1_0(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    create_dids(state, auth, doc, false).await
+}
+
+async fn create_dids(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    states_serverless: bool,
 ) -> TrustTaskOutcome {
     let body: CreateDidWebvhBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -225,7 +247,12 @@ pub(super) async fn handle_dids_create(
     let deps =
         operations::did_webvh::CreateDidWebvhDeps::from_app_state(state, &config, did_resolver);
     match operations::did_webvh::create_did_webvh(&deps, auth, params, TRANSPORT_TRUST_TASK).await {
-        Ok(body) => success_response(&doc, body),
+        Ok(mut body) => {
+            if !states_serverless {
+                body.serverless = None;
+            }
+            success_response(&doc, body)
+        }
         Err(e) => app_error_to_reject(&doc, e),
     }
 }

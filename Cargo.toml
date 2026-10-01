@@ -497,7 +497,11 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # notice `vtc-service/src/ceremony/step_up_passkey_notice.rs` sends.
 # `trust-tasks-capability-client` published its own 0.25.3 alongside it, still
 # on `trust-tasks-rs = "^0.25"`, and is pinned to match.
-trust-tasks-rs = { version = "0.25.3", default-features = false, features = [
+#
+# 0.25.4 raises it again: it is the first release carrying
+# `vta/webvh/dids/create/1.1` (dtgwg-trust-tasks-tf#702), whose response states
+# `serverless` (Keyring VTI-20) and which `trust_tasks::webvh` serves.
+trust-tasks-rs = { version = "0.25.4", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

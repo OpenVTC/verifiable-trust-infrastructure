@@ -4528,6 +4528,21 @@ fn webvh_and_context_witnesses() -> Vec<(&'static str, ReqParts, RespParts)> {
             ),
         ),
         (
+            uris::TASK_WEBVH_DIDS_CREATE_1_1,
+            (
+                json!({ "contextId": "personal" }),
+                parses::<wv::dids::create::v1_1::Payload>,
+                validates::<wv::dids::create::v1_1::Payload>,
+            ),
+            (
+                json!({ "did": did, "contextId": "personal", "serverless": true, "scid": "QmScid",
+                  "portable": true, "signingKeyId": "k-sign", "kaKeyId": "k-ka",
+                  "preRotationKeyCount": 2, "createdAt": "2026-08-19T09:00:00Z",
+                  "logEntry": "{}" }),
+                parses::<wv::dids::create::v1_1::Response>,
+            ),
+        ),
+        (
             uris::TASK_WEBVH_DIDS_DELETE_1_0,
             (
                 json!({ "did": did }),

@@ -65,6 +65,7 @@ fn create_did_webvh_result_body_debug_redacts_mnemonic() {
         did: "did:webvh:example.com:abc".into(),
         context_id: "ctx".into(),
         server_id: Some("prod".into()),
+        serverless: Some(false),
         mnemonic: Some(MARKER.into()),
         scid: "QmTest".into(),
         portable: false,

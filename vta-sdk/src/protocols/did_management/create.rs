@@ -232,6 +232,15 @@ pub struct CreateDidWebvhResultBody {
     pub context_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "server_id")]
     pub server_id: Option<String>,
+    /// Whether no hosting server was published to: the VTA holds the log and
+    /// the DID does not resolve until the caller serves `logEntry` at its URL
+    /// (`vta/webvh/dids/create/1.1`, Keyring VTI-20).
+    ///
+    /// `None` when the answer predates it: a `create/1.0` response, or a sealed
+    /// bundle written before 1.1. Read [`Self::is_serverless`], which falls back
+    /// to an absent `server_id` there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serverless: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
     pub scid: String,
@@ -268,6 +277,16 @@ pub struct CreateDidWebvhResultBody {
     pub log_entry: Option<String>,
 }
 
+impl CreateDidWebvhResultBody {
+    /// Whether this DID was minted serverless and so does not resolve until
+    /// the caller serves its log: the stated `serverless`, or, from an answer
+    /// that predates it, an absent `server_id`.
+    #[must_use]
+    pub fn is_serverless(&self) -> bool {
+        self.serverless.unwrap_or(self.server_id.is_none())
+    }
+}
+
 // Manual Debug — `mnemonic` is a 24-word BIP-39 phrase that recovers
 // the entire key hierarchy under the DID. Logging it via `{:?}` is a
 // total compromise. Serialize is unchanged so the wire shape and
@@ -278,6 +297,7 @@ impl std::fmt::Debug for CreateDidWebvhResultBody {
             .field("did", &self.did)
             .field("context_id", &self.context_id)
             .field("server_id", &self.server_id)
+            .field("serverless", &self.serverless)
             .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
             .field("scid", &self.scid)
             .field("portable", &self.portable)
@@ -414,5 +434,41 @@ mod casing_tests {
             serde_json::from_str(r#"{"context_id":"default","pre_rotation_count":2}"#).unwrap();
         assert_eq!(snake.context_id, "default");
         assert_eq!(snake.pre_rotation_count, Some(2));
+    }
+}
+
+#[cfg(test)]
+mod serverless_tests {
+    use super::*;
+
+    fn answer(extra: serde_json::Value) -> CreateDidWebvhResultBody {
+        let mut v = serde_json::json!({
+            "did": "did:webvh:Qm:example.com", "contextId": "c", "scid": "Qm",
+            "portable": false, "signingKeyId": "s", "kaKeyId": "k",
+            "preRotationKeyCount": 0, "createdAt": "2026-10-01T00:00:00Z",
+        });
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(v).unwrap()
+    }
+
+    /// Keyring VTI-20: the VTA's statement wins when it is there.
+    #[test]
+    fn vti_20_a_stated_serverless_is_read_as_stated() {
+        assert!(answer(serde_json::json!({ "serverless": true })).is_serverless());
+        assert!(
+            !answer(serde_json::json!({ "serverless": false, "serverId": "prod" })).is_serverless()
+        );
+    }
+
+    /// A 1.0 answer, or a bundle written before 1.1, says nothing: fall back
+    /// to the absent `serverId` it always implied.
+    #[test]
+    fn vti_20_an_answer_without_it_falls_back_to_server_id() {
+        let old = answer(serde_json::json!({}));
+        assert_eq!(old.serverless, None);
+        assert!(old.is_serverless());
+        assert!(!answer(serde_json::json!({ "serverId": "prod" })).is_serverless());
     }
 }
