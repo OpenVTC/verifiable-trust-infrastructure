@@ -1736,6 +1736,25 @@ impl VtcClient {
         claim: serde_json::Value,
         valid_for_seconds: Option<u64>,
     ) -> Result<EndorsementIssued, VtcError> {
+        self.issue_endorsement_with_ext(subject_did, type_uri, claim, valid_for_seconds, None)
+            .await
+    }
+
+    /// [`Self::issue_endorsement`] with the payload's vendor-namespaced `ext`.
+    ///
+    /// Under `vetted/1` — the community recording its own identity check —
+    /// `{"org.openvtc.uniqueness": {"pseudonym": "<value>"}}` binds the person's
+    /// uniqueness pseudonym to the subject server-side, so the community's
+    /// `personhood.singleMembership` can be satisfied by that check. The
+    /// pseudonym is never written into the credential.
+    pub async fn issue_endorsement_with_ext(
+        &self,
+        subject_did: &str,
+        type_uri: &str,
+        claim: serde_json::Value,
+        valid_for_seconds: Option<u64>,
+        ext: Option<serde_json::Value>,
+    ) -> Result<EndorsementIssued, VtcError> {
         let mut payload = serde_json::json!({
             "subjectDid": subject_did,
             "typeUri": type_uri,
@@ -1743,6 +1762,9 @@ impl VtcClient {
         });
         if let Some(secs) = valid_for_seconds {
             payload["validitySeconds"] = serde_json::json!(secs);
+        }
+        if let Some(ext) = ext {
+            payload["ext"] = ext;
         }
         let reply = self
             .document(

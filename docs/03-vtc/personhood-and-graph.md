@@ -202,6 +202,11 @@ list and is recorded as an endorsement row, so withdrawing a check later is
 (`vtc-service/src/routes/endorsements.rs`,
 `credentials::dtg::issue_vetted_statement`).
 
+A community enforcing one membership per person also passes the person's
+uniqueness pseudonym, as the `org.openvtc.uniqueness` payload extension; it is
+bound server-side and never written into the statement (see [binding at
+issue](#the-communitys-own-check-binding-at-issue)).
+
 **The statement is evidence, not a status.** Personhood remains this
 community's decision, recorded on the member's VMC (the `PersonhoodCredential`
 hint) when the assertion succeeds. A verifier acts on that decision, not on
@@ -291,11 +296,12 @@ verifier may act on.
 **Setting both requires naming at least one accepted IDVP.** A community
 claiming PHC status while naming nobody it trusts to verify identity has
 not written its governance down, and a verifier cannot tell an unwritten
-policy from a permissive one. A community's own identity checks are
-`vetted/1` statements, not IDVCs, and carry no pseudonym, so listing its own
-C-DID here does not satisfy [one membership per
-person](#one-membership-per-person): that needs an outside provider that can
-deduplicate people.
+policy from a permissive one. A community that checks identities itself
+lists its own C-DID — it is acting as its own identity-verification
+provider. Its checks are `vetted/1` statements, which carry no pseudonym;
+the uniqueness half is the pseudonym binding it makes server-side when it
+records the check (see [the community's own
+check](#the-communitys-own-check-binding-at-issue)).
 
 ### One membership per person
 
@@ -317,15 +323,49 @@ one. This is the rate-limiting-identifier construction from [Personhood
 Credentials (Adler et al. 2024)](https://arxiv.org/abs/2408.07892), which
 the spec's PHC definition cites.
 
-The daemon reads it from `credentialSubject.pseudonym`, and **only from an
-issuer in `acceptedIdvps`** — a foreign IDVP's IDVC. The community's own
-`vetted/1` statement has a registry-fixed `object.value` with no pseudonym
-member, so it never supplies one.
+From an outside provider, the daemon reads it from
+`credentialSubject.pseudonym`, and **only from an issuer in
+`acceptedIdvps`** — a foreign IDVP's IDVC — and claims it at personhood
+assert.
 
-An assertion carrying no accepted pseudonym is refused with
-`personhood-pseudonym-missing`; one whose pseudonym another member already
-holds is refused as a conflict, worded so it does not disclose who that
-member is.
+#### The community's own check: binding at issue
+
+The community's own `vetted/1` statement has a registry-fixed
+`object.value` with no pseudonym member, and the community never writes one
+into anything it signs. Instead the operator who made the check hands the
+pseudonym to the community **at issue**, as a payload extension on
+`vtc/endorsements/issue/0.1`:
+
+```json
+{
+  "typeUri": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
+  "subjectDid": "did:key:zMember…",
+  "claim": { "community": "did:…community", "method": "inPerson", "…": "…" },
+  "ext": { "org.openvtc.uniqueness": { "pseudonym": "<per-person value>" } }
+}
+```
+
+(`cnm member endorse … --uniqueness-pseudonym <value>`; the console does not
+issue this check yet.) The community binds it to the subject in the same
+pseudonym store, before anything is minted:
+
+- a pseudonym already bound to a **different** member refuses the issue
+  (`taskFailed`, `details.reason` `conflict`), and no statement is minted;
+- the same member again succeeds;
+- the extension is read only under `vetted/1`, and only as
+  `{ "pseudonym": "<non-empty string>" }` — anything else is
+  `malformedRequest`.
+
+At personhood assert, the community's own `vetted/1` statement about the
+member satisfies `singleMembership` **only if** the community holds a
+binding for that member DID. Revoking the statement
+(`vtc/endorsements/revoke/0.1`) releases the binding it made; a binding an
+outside provider's credential made is not touched.
+
+An assertion with neither an accepted pseudonym nor a bound community check
+is refused with `personhood-pseudonym-missing`; one whose pseudonym another
+member already holds is refused as a conflict, worded so it does not
+disclose who that member is.
 
 **The pseudonym itself is never stored.** It is a stable per-person
 identifier, so a database full of them is the correlation target the
@@ -333,11 +373,13 @@ construction exists to avoid. What is stored is a salted digest keyed to
 this community, which answers "is this person already here" and nothing
 else.
 
-**Claims are released on purge only** — not on revoke, and not on leaving.
-Revoking personhood withdraws the community's assertion; it is not
+**Claims are released on purge** — not on personhood revoke, and not on
+leaving. Revoking personhood withdraws the community's assertion; it is not
 evidence that the human stopped existing, and they are still a member.
 If either released the claim, one-membership-per-person would be defeated
-by revoking and rejoining under a fresh DID.
+by revoking and rejoining under a fresh DID. The one other release is
+revoking the community's own `vetted/1` statement, which withdraws the check
+the binding was made on.
 
 #### What this still does not give you
 
@@ -345,14 +387,14 @@ The guarantee is the IDVP's, not the community's. Uniqueness is exactly as
 good as your accepted providers' deduplication — which is why the spec
 makes acceptable IDVPs part of what governance must publish.
 
-**The community's own check supplies no pseudonym.** A `vetted/1`
-statement the community issued records that it checked a person's identity;
-it carries no per-person identifier, so it cannot satisfy
-`singleMembership` on its own. A community that wants one membership per
-person relies on an outside provider that can deduplicate people, or — for a
-community small enough for an administrator to hold its members in their
-head — enforces it through its own governance and says so in its framework,
-rather than letting the flag imply more.
+**The community's own check is the weak case.** When the community binds
+the pseudonym itself, uniqueness is as good as the value the operator
+supplies: one derived from a document the operator saw (a hash of a national
+ID number, say) deduplicates as well as that document does; one that is an
+administrator's judgement that they have not met this person before supports
+one-membership-per-person only in a community small enough for one person to
+hold in their head. Say which in your governance framework rather than
+letting the flag imply more.
 
 Finally, this is per-community by definition — the spec's glossary says
 *"exactly one membership in that VTC"*. Personhood that means something

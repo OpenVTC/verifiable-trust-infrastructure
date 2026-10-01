@@ -2551,11 +2551,11 @@ export interface components {
              *     "including acceptable IDVPs and IDVCs" are the community's to define
              *     and are "published via trust registries".
              *
-             *     A community's own identity checks are not IDVCs: it records them as
-             *     `vetted/1` statements, whose registry-fixed `object.value` carries no
-             *     pseudonym. Listing its own C-DID here therefore establishes no
-             *     uniqueness under `singleMembership`; only an outside provider's
-             *     credential carrying a pseudonym does.
+             *     A community that checks identities itself lists its own C-DID — it is
+             *     acting as its own IDVP. Its checks are `vetted/1` statements, which
+             *     carry no pseudonym; under `singleMembership` their uniqueness is the
+             *     pseudonym binding the community makes server-side when it records the
+             *     check (`vtc/endorsements/issue/0.1`, `ext.org.openvtc.uniqueness`).
              *
              *     Advisory to verifiers, not a gate: `personhood.rego` decides what is
              *     actually accepted. An empty list means the community has not published
