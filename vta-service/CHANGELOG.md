@@ -2,6 +2,92 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.48.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.47.1...vta-service-v0.48.0) — 2026-10-01
+
+
+### Fixed
+
+- Take affinidi-messaging-sdk 0.31.1; the SDK routes a cross-mediator invite itself ([#1880](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1880))
+
+affinidi-messaging-sdk 0.31.1 (affinidi-tdk-rs #913) routes a TSP
+  relationship invite to a peer on another mediator through the mediator the
+  peer's DID document names, and keeps a Delivery-Request-collected message's
+  own id so a reply threads to it (VTI-49). The workspace floor moves to
+  0.31.1, because ^0.31 resolving 0.31.0 would bring the cross-mediator
+  refusal back.
+
+  So the set_peer_mediator half of vti_common::tsp_route ([#1873](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1873)) is gone. It
+  recorded the same DID-document mediator the SDK now reads.
+  tsp_route::send_reestablishing stays: the SDK's own sends the payload along
+  the route it is given, and [our_mediator, peer] cannot reach a peer on
+  another mediator. vti_56_a_cold_relationship_with_a_cross_mediator_peer_forms
+  now uses peers that name their mediator by DID, as a VTI-provisioned DID
+  does, and holds both halves.
+
+- **vta**: Mnemonic export on a DID-less VTA, and a CLI to open the bundle ([#1878](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1878))
+
+* fix(vta-service,pnm-cli): mnemonic export on a DID-less VTA, and a CLI to open the bundle
+
+  A TEE VTA can hold first-boot entropy (the export window active) before it
+  has a DID: tee.kms.vta_did_template unset, or auto-generation still
+  pending/failed-non-fatally. signed_by_the_caller already refuses the
+  export then (no DID to bind the request's `recipient` to, and the spec
+  requires `recipient` present and naming the recipient's own DID on both
+  channel paths) — but the refusal pointed operators at `vta setup`, which
+  doesn't apply to vta-enclave (built without the `setup` feature, the only
+  binary with a mnemonic guard). Point at the real remedy instead, and add
+  tests proving the refusal on either path leaves the window unspent.
+
+  Add `pnm vta mnemonic open <bundle>` to decrypt a sealed
+  mnemonic-export bundle locally: refuses any non-SeedMnemonic payload,
+  prints the words to the terminal only, consumes the local request
+  secret on success, and writes to a file only when `--out` is passed
+  explicitly (0600, via the existing write_secret_export helper).
+
+- Build clean on rustc 1.99 (CI) without raising the 1.95 MSRV ([#1877](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1877))
+
+CI picked up rustc 1.99.0 (2026-09-28) and builds with -D warnings, so two
+  new lints failed Clippy and Test (VTC) on every PR:
+
+  - Atomic*::fetch_update is deprecated in favour of try_update, which is
+    newer than the workspace rust-version (1.95.0). The two call sites
+    (vta-service test_support, vtc-service member_count_dec) keep
+    fetch_update under a statement-level #[allow(deprecated)].
+  - clippy needless_borrows_for_generic_args in vtc-service messaging:
+    .map(&absolutize) -> .map(absolutize).
+
+  cargo +1.99.0 clippy --workspace --all-targets -D warnings is clean.
+
+- A TSP relationship can be started with a peer on another mediator (VTI-56) ([#1873](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1873))
+
+A node that starts a TSP relationship with a peer on another mediator had
+  its invite refused by its own mediator (403 e.p.direct_delivery.denied,
+  "must be relayed through a routing envelope"), every attempt. The SDK
+  routes a control message across mediators only when it already knows the
+  peer's mediator, learned from a routed invite from the peer or set with
+  set_peer_mediator. An initiator has neither, and nothing here set it. That
+  is why the Farm VTC's TSP push to a member on the other mediator never left
+  its own mediator and fell back to DIDComm an hour later. The existing
+  cross-mediator tests pre-form the relationship (relate_directly), so they
+  never sent an invite.
+
+- Keyring findings round — proof sets, verify-as-received, VTC delivery (VTI-44, VTI-45, VTI-50, VTI-56) ([#1868](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1868))
+
+* fix(vta-cli-common): opening a bundle to inspect it keeps the request seed
+
+  pnm, cnm and vta `bootstrap open` consumed the single-use request seed
+  right after decrypting, even when they wrote nothing. The seed is the only
+  key that opens the bundle, so inspecting a template bundle destroyed the
+  integration's keys, and cnm's own follow-up hint (`cnm auth login
+  --credential-bundle`) could never succeed (VTI-53).
+
+  Inspection now opens with the seed kept and says where it is. pnm consumes
+  it only after a successful --out write, so a refused bundle no longer costs
+  a fresh request cycle either. open_armored_bundle_keeping_secret and
+  consume_request_secret are now public.
+
+
+
 ## [0.47.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.47.0...vta-service-v0.47.1) — 2026-10-01
 
 

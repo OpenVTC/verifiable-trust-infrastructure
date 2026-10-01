@@ -2,6 +2,45 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.11.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.10.0...vtc-client-v0.11.0) — 2026-10-01
+
+
+### Added
+
+- **vtc**: Bind the community's own check to a uniqueness pseudonym server-side ([#1876](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1876))
+
+A community enforcing `personhood.singleMembership` could not satisfy it with
+  its own `vetted/1` identity check, because the statement has no member for a
+  pseudonym. The binding now happens server-side, at issue.
+
+  - `vtc/endorsements/issue/0.1` under `vetted/1` reads the payload extension
+    `ext["org.openvtc.uniqueness"] = { "pseudonym": "<value>" }`. It is never
+    written into the credential. The pseudonym is bound to the subject in the
+    existing pseudonym store (`members::pseudonym::claim_for_statement`), which
+    stores only the community-scoped salted digest. The claim row is tagged
+    with the statement's endorsement id. The binding is made before anything is
+    minted, and released again if minting fails.
+  - A pseudonym already bound to another member refuses the issue with
+    `AppError::Conflict`: `taskFailed` with `details.reason` `conflict`, the
+    same collision semantics personhood assert already has. Nothing is minted.
+    No declared `endorsements/issue` code fits a duplicate person, and
+    `claimSchemaViolation` would tell the caller to fix a claim that is valid.
+  - The extension is read only under `vetted/1`, and only as
+    `{ "pseudonym": "<non-empty string>" }`. Anything else is
+    `malformedRequest`.
+  - At personhood assert under `singleMembership`, the community's own
+    `vetted/1` statement about the member satisfies uniqueness only when the
+    community holds a binding for that member DID (`pseudonym::is_bound`).
+    Credentials from an accepted IDVP still use `credentialSubject.pseudonym`.
+  - `vtc/endorsements/revoke/0.1` on a `vetted/1` row releases the binding it
+    made (`pseudonym::release_for_statement`). A binding an outside provider's
+    credential made is untagged and is kept. Purge still releases every binding
+    of the member.
+  - vtc-client gains `issue_endorsement_with_ext` (additive).
+    `cnm member endorse` gains `--uniqueness-pseudonym`.
+
+
+
 ## [0.10.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.9.0...vtc-client-v0.10.0) — 2026-09-30
 
 
