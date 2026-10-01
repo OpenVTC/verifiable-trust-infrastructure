@@ -2,6 +2,26 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.60.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.59.0...vta-sdk-v0.60.0) — 2026-10-01
+
+
+### Added
+
+- **vta-sdk**: A holder client's grant hint names persona-holder ([#1885](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1885))
+
+When the setup DID is not authorized, verify_authorization prints the
+  `pnm acl create` the operator should run. For a holder client — OpenVTC, a
+  personal agent — that grant also needs `--capabilities persona-holder`,
+  which no role carries: the hint without it gets the client through
+  provisioning and then refused the holder's attribute pool.
+
+  `ProvisionAsk` gains `holder` (set via `as_holder()`). It changes nothing on
+  the wire and is read only to word the hint, so an integration is never told
+  to take holder authority. verify_authorization now takes the ask rather than
+  its context.
+
+
+
 ## [0.59.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.58.1...vta-sdk-v0.59.0) — 2026-10-01
 
 
