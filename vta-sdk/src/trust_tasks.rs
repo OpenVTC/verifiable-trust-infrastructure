@@ -1623,6 +1623,13 @@ pub const TASK_WEBVH_DIDS_LIST_1_0: &str = "https://trusttasks.org/spec/vta/webv
 pub const TASK_WEBVH_DIDS_CREATE_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/create/1.0";
 
+/// `spec/vta/webvh/dids/create/1.1` — [`TASK_WEBVH_DIDS_CREATE_1_0`] whose
+/// response states `serverless`, so a client does not have to infer it from an
+/// absent `serverId` (Keyring VTI-20). Same payload and authorization. What
+/// [`crate::client::VtaClient::create_did_webvh`] sends.
+pub const TASK_WEBVH_DIDS_CREATE_1_1: &str =
+    "https://trusttasks.org/spec/vta/webvh/dids/create/1.1";
+
 /// `spec/vta/webvh/dids/get/1.0` — fetch the local record (context,
 /// server, key handles) for a DID this VTA knows, and optionally the
 /// raw `did.jsonl` alongside it (`includeLog`). Payload:
@@ -2290,6 +2297,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_SERVERS_RETIRE_ORPHAN_0_1,
     TASK_WEBVH_DIDS_LIST_1_0,
     TASK_WEBVH_DIDS_CREATE_1_0,
+    TASK_WEBVH_DIDS_CREATE_1_1,
     TASK_WEBVH_DIDS_GET_1_0,
     TASK_WEBVH_DIDS_DELETE_1_0,
     TASK_WEBVH_DIDS_UPDATE_1_0,

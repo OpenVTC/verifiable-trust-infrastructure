@@ -392,6 +392,11 @@ pub async fn cmd_webvh_did_create(
     if let Some(ref server_id) = result.server_id {
         println!("  Server:           {}", server_id);
     }
+    // Stated by the VTA from create/1.1 (VTI-20), so the summary says it even
+    // when no log entry is printed below.
+    if result.is_serverless() {
+        println!("  Hosting:          serverless (you must serve did.jsonl)");
+    }
     if let Some(ref mnemonic) = result.mnemonic {
         println!("  Mnemonic:         {}", mnemonic);
     }
@@ -415,7 +420,7 @@ pub async fn cmd_webvh_did_create(
         println!("Log Entry (did.jsonl):");
         println!("{}", log_entry);
         println!();
-        for line in hosting_guidance(result.server_id.as_deref()) {
+        for line in hosting_guidance(result.is_serverless(), result.server_id.as_deref()) {
             println!("{line}");
         }
     }
@@ -433,16 +438,20 @@ pub async fn cmd_webvh_did_create(
 /// resolve — the VTA that minted it does not serve it, so its URL answers 404
 /// until someone publishes the file by hand. For a server-managed mint it told
 /// the operator to do something the server had already done.
-fn hosting_guidance(server_id: Option<&str>) -> Vec<String> {
-    match server_id {
-        None => vec![
+///
+/// `serverless` is the VTA's own statement (`create/1.1`), read through
+/// `CreateDidWebvhResultBody::is_serverless` so a 1.0-era answer still falls
+/// back to an absent `server_id`.
+fn hosting_guidance(serverless: bool, server_id: Option<&str>) -> Vec<String> {
+    match (serverless, server_id) {
+        (true, _) | (false, None) => vec![
             "This DID is serverless: nothing is hosting it, and it will NOT resolve".to_string(),
             "until you publish the log entry above yourself. Save it as `did.jsonl`".to_string(),
             "at the location your DID encodes (the `--did-url` path, or".to_string(),
             "`/.well-known/did.jsonl` for a bare domain). The VTA that minted it does".to_string(),
             "not serve it — its URL answers 404 until you do.".to_string(),
         ],
-        Some(server) => vec![format!(
+        (false, Some(server)) => vec![format!(
             "Hosted by server `{server}`, which is already serving this log. \
              No action is needed; the entry is printed for your records."
         )],
@@ -792,7 +801,7 @@ mod tests {
     /// several, which is how the old text read.
     #[test]
     fn a_serverless_mint_says_the_operator_must_host_it() {
-        let text = hosting_guidance(None).join(" ");
+        let text = hosting_guidance(true, None).join(" ");
         assert!(text.contains("will NOT resolve"), "{text}");
         assert!(text.contains("404"), "{text}");
         assert!(text.contains("/.well-known/did.jsonl"), "{text}");
@@ -802,7 +811,7 @@ mod tests {
     /// server already did.
     #[test]
     fn a_server_managed_mint_does_not_ask_the_operator_to_host_it() {
-        let text = hosting_guidance(Some("prod-host")).join(" ");
+        let text = hosting_guidance(false, Some("prod-host")).join(" ");
         assert!(text.contains("prod-host"), "{text}");
         assert!(text.contains("No action is needed"), "{text}");
         assert!(!text.contains("will NOT resolve"), "{text}");

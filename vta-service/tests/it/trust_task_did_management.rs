@@ -825,6 +825,66 @@ async fn create_did_webvh_accepts_path_mode_field() {
     assert!(body["did"].as_str().is_some(), "response has did");
 }
 
+/// Keyring VTI-20: `create/1.1` states `serverless`, so a client need not infer
+/// it from an absent `serverId`. A serverless mint answers `serverless: true`
+/// with the log entry and no `serverId`, and the answer is a valid 1.1
+/// response. The same mint over 1.0 keeps 1.0's shape, whose response refuses
+/// unknown members.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn vti_20_create_1_1_states_serverless_and_1_0_keeps_its_shape() {
+    use trust_tasks_rs::specs::vta::webvh::dids::create::{v1_0, v1_1};
+
+    let (app, ctx) = TestApp::new().await;
+    let admin = setup_context(&app, &ctx, "test-serverless").await;
+    let payload = |host: &str| {
+        json!({
+            "contextId": "test-serverless",
+            "url": format!("https://{host}/.well-known/did/did.jsonl"),
+        })
+    };
+
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1,
+            payload("one.example.com"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["serverless"], json!(true), "{body}");
+    assert!(body.get("serverId").is_none(), "{body}");
+    assert!(body["logEntry"].as_str().is_some(), "{body}");
+    serde_json::from_value::<v1_1::Response>(body.clone())
+        .unwrap_or_else(|e| panic!("a valid create/1.1 response: {e}: {body}"));
+    let sdk: vta_sdk::protocols::did_management::create::CreateDidWebvhResultBody =
+        serde_json::from_value(body).expect("the SDK reads it");
+    assert!(sdk.is_serverless());
+
+    let (status, body) = app
+        .task(
+            &ctx,
+            &admin,
+            vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+            payload("two.example.com"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.get("serverless").is_none(),
+        "1.0 has no such member: {body}"
+    );
+    serde_json::from_value::<v1_0::Response>(body.clone())
+        .unwrap_or_else(|e| panic!("a valid create/1.0 response: {e}: {body}"));
+    let sdk: vta_sdk::protocols::did_management::create::CreateDidWebvhResultBody =
+        serde_json::from_value(body).expect("the SDK reads a 1.0 answer");
+    assert!(
+        sdk.is_serverless(),
+        "from a 1.0 answer, is_serverless falls back to the absent serverId"
+    );
+}
+
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn create_did_webvh_template_mode() {

@@ -375,6 +375,7 @@ pub const RETRY_SAFETY: &[(&str, RetrySafety)] = &[
     // An explicit path would collide and surface as a Conflict; auto-assign
     // silently orphans.
     (trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0, Keyed),
+    (trust_tasks::TASK_WEBVH_DIDS_CREATE_1_1, Keyed),
     (trust_tasks::TASK_WEBVH_DIDS_GET_1_0, ReadOnly),
     // Deleting an already-deleted DID answers not-found, which is deterministic
     // and therefore never retried.
