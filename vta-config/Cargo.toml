@@ -26,7 +26,7 @@ default = []
 tee = []
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.33" }
+vti-common = { path = "../vti-common", version = "0.34" }
 vti-secrets = { path = "../vti-secrets", version = "0.7" }
 # Types only: the declarative approvals rule shape, so a config seed and the
 # runtime row are the same struct rather than two that must be kept in step.

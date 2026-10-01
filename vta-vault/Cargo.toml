@@ -32,8 +32,8 @@ bbs = ["dep:affinidi-bbs", "affinidi-data-integrity/bbs-2023"]
 webvh = ["dep:reqwest", "vta-sdk/client"]
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.6" }
-vti-common = { path = "../vti-common", version = "0.33", features = ["encryption"] }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.7" }
+vti-common = { path = "../vti-common", version = "0.34", features = ["encryption"] }
 vta-sdk = { path = "../vta-sdk", version = "0.61", features = ["didcomm", "sealed-transfer", "proof-verify"] }
 affinidi-crypto = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }

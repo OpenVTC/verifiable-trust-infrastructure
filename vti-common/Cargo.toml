@@ -2,7 +2,7 @@
 name = "vti-common"
 description = "Shared server-side infrastructure for VTA and VTC services"
 readme = "README.md"
-version = "0.33.1"
+version = "0.34.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
