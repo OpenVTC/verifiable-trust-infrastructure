@@ -165,58 +165,99 @@ async fn preview_does_not_mutate() {
 }
 
 /// A crash mid-import (sentinel stamped, never cleared — the destructive
-/// replay never reached its final clear) must not wedge the VTC forever.
-/// `import_in_progress` is what boot consults to refuse starting on an
-/// interrupted import; a fresh stamp still must block it, and a stamp past
-/// the TTL must self-heal so a fresh install (or a retried import) can
-/// proceed without any manual sentinel surgery.
+/// replay never reached its final clear) must not wedge the VTC forever,
+/// but it must also not auto-heal: the half-applied state (a partial ACL,
+/// a partial member set, …) is exactly as unsafe to serve an hour later as
+/// it is a second later. `import_in_progress` blocks boot regardless of
+/// the sentinel's age; only the explicit `discard_interrupted_import`
+/// recovery (`vtc admin discard-interrupted-import`) clears it.
 #[tokio::test]
-async fn abandoned_import_releases_after_its_ttl_and_a_fresh_one_still_blocks() {
-    use chrono::Utc;
-    use vtc_service::backup::{
-        import_in_progress, import_in_progress_ttl_secs_for_test, stamp_import_in_progress_for_test,
-    };
+async fn a_set_sentinel_blocks_boot_regardless_of_age() {
+    use chrono::{Duration as ChronoDuration, Utc};
+    use vtc_service::backup::{import_in_progress, stamp_import_in_progress_for_test};
 
     let v = TestVtc::builder().vtc_did(VTC_DID).build().await;
 
     // No sentinel at all — boot proceeds.
     assert!(!import_in_progress(&v.state.config_ks).await.unwrap());
 
-    // A crash *just now* (e.g. the process died between the clear and the
-    // replay loop) must still block boot — the TTL is not a bypass for a
-    // genuinely in-flight import.
+    // A crash *just now* blocks boot.
     stamp_import_in_progress_for_test(&v.state.config_ks, Utc::now())
         .await
         .unwrap();
     assert!(
         import_in_progress(&v.state.config_ks).await.unwrap(),
-        "a fresh sentinel must still refuse boot"
+        "a fresh sentinel must refuse boot"
     );
 
-    // An abandoned import from well past the TTL: boot must self-heal and
-    // proceed, and the sentinel must actually be gone afterward (not just
-    // reported stale this one time).
-    let abandoned_at =
-        Utc::now() - chrono::Duration::seconds(import_in_progress_ttl_secs_for_test() + 1);
-    stamp_import_in_progress_for_test(&v.state.config_ks, abandoned_at)
+    // A crash from a week ago blocks boot exactly the same way — there is
+    // no TTL that quietly lets the daemon serve a half-restored keyspace
+    // set just because nobody has looked at it in a while.
+    stamp_import_in_progress_for_test(&v.state.config_ks, Utc::now() - ChronoDuration::days(7))
         .await
         .unwrap();
     assert!(
-        !import_in_progress(&v.state.config_ks).await.unwrap(),
-        "an import abandoned past its TTL must release boot"
+        import_in_progress(&v.state.config_ks).await.unwrap(),
+        "an old sentinel must refuse boot exactly like a fresh one — no auto-expiry"
     );
-    assert!(
-        !import_in_progress(&v.state.config_ks).await.unwrap(),
-        "the stale sentinel must have been cleaned up, not merely tolerated"
+}
+
+/// `discard_interrupted_import` is the explicit, operator-invoked recovery
+/// (`vtc admin discard-interrupted-import`) from an import a crash left
+/// interrupted: wipe every backed-up keyspace back to empty and clear the
+/// sentinel. After it runs, boot proceeds and a fresh import succeeds.
+#[tokio::test]
+async fn discard_interrupted_import_resets_and_clears_the_sentinel_so_a_new_import_succeeds() {
+    use vtc_service::backup::{discard_interrupted_import, import_in_progress};
+
+    let v = TestVtc::builder().vtc_did(VTC_DID).build().await;
+    set_config_path(&v.state, v.data_dir().join("config.toml")).await;
+    let v_store = PlaintextSecretStore::new(v.data_dir());
+    v_store.set(b"bundle").await.unwrap();
+
+    // Nothing to discard yet.
+    assert_eq!(
+        discard_interrupted_import(&v.store).await.unwrap(),
+        None,
+        "discard must be a no-op (and report so) when no import is in progress"
     );
 
-    // And a brand-new import succeeds immediately — no restart, no manual
-    // intervention, right after the abandoned one expired.
-    let a_store = PlaintextSecretStore::new(v.data_dir());
-    a_store.set(b"bundle").await.unwrap();
-    let envelope = export_backup(&v.state, &a_store, PW, false).await.unwrap();
-    set_config_path(&v.state, v.data_dir().join("config.toml")).await;
-    let result = import_backup(&v.state, &a_store, &envelope, PW, true)
+    // Simulate a crash mid-import: some rows from a would-be replay are
+    // already there (the clear ran, the replay was interrupted), and the
+    // sentinel is set.
+    v.state
+        .acl_ks
+        .insert_raw(b"acl:half-written".to_vec(), b"partial".to_vec())
+        .await
+        .unwrap();
+    vtc_service::backup::stamp_import_in_progress_for_test(&v.state.config_ks, chrono::Utc::now())
+        .await
+        .unwrap();
+    assert!(import_in_progress(&v.state.config_ks).await.unwrap());
+
+    // Recover: wipe to empty, clear the sentinel.
+    let since = discard_interrupted_import(&v.store).await.unwrap();
+    assert!(since.is_some(), "discard must report the stamp it cleared");
+
+    assert!(
+        !import_in_progress(&v.state.config_ks).await.unwrap(),
+        "boot must proceed once the operator has discarded the interrupted import"
+    );
+    let acl = v
+        .state
+        .acl_ks
+        .prefix_iter_raw(Vec::<u8>::new())
+        .await
+        .unwrap();
+    assert!(
+        acl.is_empty(),
+        "discard must wipe the partially-written row(s)"
+    );
+
+    // A brand-new import now succeeds — no restart required, no manual
+    // sentinel surgery.
+    let envelope = export_backup(&v.state, &v_store, PW, false).await.unwrap();
+    let result = import_backup(&v.state, &v_store, &envelope, PW, true)
         .await
         .unwrap();
     assert_eq!(result.status, "imported");

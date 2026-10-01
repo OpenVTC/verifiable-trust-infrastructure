@@ -522,6 +522,7 @@ impl TestVtcBuilder {
             router,
             state,
             jwt_keys,
+            store,
             _dir: dir,
         }
     }
@@ -541,6 +542,12 @@ pub struct TestVtc {
     pub state: AppState,
     /// JWT signing keys (audience `"VTC"`) for minting test tokens.
     pub jwt_keys: Arc<JwtKeys>,
+    /// The same [`Store`] every `AppState` keyspace handle was opened
+    /// from — exposed so a test can exercise an offline, store-level
+    /// recovery path (e.g. `backup::discard_interrupted_import`) the way
+    /// the `vtc` CLI's offline commands do, without opening a second
+    /// `Store` on the same data dir.
+    pub store: Store,
     _dir: tempfile::TempDir,
 }
 

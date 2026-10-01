@@ -37,7 +37,7 @@ use vti_common::store::KeyspaceHandle;
 use crate::config::MessagingConfig;
 use crate::keys::seed_store::SecretStore;
 use crate::server::AppState;
-use crate::store::keyspaces;
+use crate::store::{Store, keyspaces};
 
 // ── Crypto parameters (VTA-identical) ───────────────────────────────────
 const VERSION: u32 = 1;
@@ -60,21 +60,18 @@ const MAX_P_COST: u32 = 16;
 /// Sentinel key, written into the `config` keyspace (excluded from
 /// backup, so it survives the import-time clear) before the destructive
 /// replay and removed only on success. Boot refuses to start while it's
-/// present and fresh — see [`import_in_progress`]. The value is an
-/// RFC 3339 timestamp (when the in-flight import stamped it), not a bare
-/// marker: a sentinel with no expiry turns one crash mid-import into a
-/// permanent outage, since the daemon that would let an operator retry
-/// the import is the same daemon the sentinel refuses to boot.
+/// present — see [`import_in_progress`] — **regardless of its age**.
+///
+/// The value is an RFC 3339 timestamp (when the in-flight import stamped
+/// it), kept only so a refusal message or a recovery command can say
+/// *when* the interrupted import started — it carries no expiry. The
+/// sentinel means the backed-up keyspaces are in an indeterminate,
+/// partially-cleared-and-replayed state (a half-written ACL or member
+/// set is not "probably fine after a while"): only an explicit operator
+/// decision can safely clear it. See [`discard_interrupted_import`] (`vtc
+/// admin discard-interrupted-import`), the one thing that clears this
+/// outside of [`import_backup`] completing.
 const IMPORT_IN_PROGRESS_KEY: &[u8] = b"backup:import_in_progress";
-
-/// How long the sentinel blocks boot before it's treated as abandoned.
-/// `import_backup`'s destructive replay is in-process and synchronous —
-/// no network round trip once it starts — so completing it takes at most
-/// a handful of seconds even on a large community. This is generous
-/// headroom above that for a loaded disk, while still being short enough
-/// that an operator (or a supervisor's restart loop) sees the daemon
-/// recover on its own instead of needing manual sentinel surgery.
-const IMPORT_IN_PROGRESS_TTL_SECS: i64 = 600;
 
 // ── Wire types ──────────────────────────────────────────────────────────
 
@@ -320,7 +317,9 @@ pub async fn import_backup(
 
     // Crash-safety: stamp the sentinel (in the excluded `config`
     // keyspace, so it survives the clear) + flush before mutating. The
-    // value is *when*, not just *that* — see [`IMPORT_IN_PROGRESS_TTL_SECS`].
+    // value is *when*, not just *that* — purely informational (a refusal
+    // message or `discard-interrupted-import` names it); it carries no
+    // expiry, see [`IMPORT_IN_PROGRESS_KEY`].
     state
         .config_ks
         .insert_raw(
@@ -379,72 +378,74 @@ pub async fn import_backup(
     })
 }
 
-/// True if a previous import was interrupted before it finished *and*
-/// that happened within the last [`IMPORT_IN_PROGRESS_TTL_SECS`]. Boot
-/// consults this and refuses to start while it's set (the half-applied
-/// state is unsafe to serve). Cleared by a successful re-import.
-///
-/// A marker past its TTL self-heals here: it's removed (so this doesn't
-/// re-evaluate the clock on every future boot) and treated as absent, so
-/// an abandoned import — crash, disconnect, a finalize that never landed
-/// — releases the daemon instead of wedging it forever. The marker can't
-/// be used to *bypass* the half-applied-state guard: self-healing only
-/// ever makes boot *more* restrictive in the meantime (refused while
-/// fresh) and never skips the guard while it could still be live, since
-/// nothing but a fresh stamp from an in-flight [`import_backup`] can
-/// produce a value this treats as current.
+/// True if a previous import was interrupted before it finished. Boot
+/// consults this and refuses to start while it's set — **whatever its
+/// age** — because the half-applied state (a partially cleared, partially
+/// replayed keyspace set) is unsafe to serve. There is no TTL: a stale
+/// marker does not mean the state became any safer to serve, only that
+/// nobody has looked at it yet. Cleared by a successful re-import, or by
+/// the deliberate [`discard_interrupted_import`] recovery path.
 pub async fn import_in_progress(config_ks: &KeyspaceHandle) -> Result<bool, AppError> {
-    let Some((_, stamp)) = config_ks
+    Ok(import_in_progress_since(config_ks).await?.is_some())
+}
+
+/// When the interrupted import stamped the sentinel, as the raw RFC 3339
+/// string it was written with (not reparsed — this is for a human to
+/// read in a refusal message or a recovery command's confirmation
+/// prompt, never for an age comparison). `None` if no import is in
+/// progress.
+pub async fn import_in_progress_since(
+    config_ks: &KeyspaceHandle,
+) -> Result<Option<String>, AppError> {
+    let stamp = config_ks
         .prefix_iter_raw(IMPORT_IN_PROGRESS_KEY.to_vec())
         .await?
         .into_iter()
         .find(|(k, _)| k.as_slice() == IMPORT_IN_PROGRESS_KEY)
-    else {
-        return Ok(false);
-    };
-
-    let stamped_at = std::str::from_utf8(&stamp)
-        .ok()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&Utc));
-
-    let stale = match stamped_at {
-        // A value we can't read as our own timestamp format either
-        // predates this fix or is corrupt — either way it carries no
-        // trustworthy age, so treat it the same as an expired one rather
-        // than wedging the daemon on an unparseable byte string forever.
-        None => true,
-        Some(at) => {
-            Utc::now().signed_duration_since(at)
-                >= chrono::Duration::seconds(IMPORT_IN_PROGRESS_TTL_SECS)
-        }
-    };
-
-    if !stale {
-        return Ok(true);
-    }
-
-    tracing::warn!(
-        stamped_at = stamped_at.map(|at| at.to_rfc3339()),
-        "backup: import-in-progress sentinel past its TTL — treating the interrupted import as \
-         abandoned and releasing boot"
-    );
-    config_ks.remove(IMPORT_IN_PROGRESS_KEY.to_vec()).await?;
-    config_ks.persist().await?;
-    Ok(false)
+        .map(|(_, v)| v);
+    Ok(stamp.map(|v| {
+        String::from_utf8(v)
+            .unwrap_or_else(|e| format!("<unreadable stamp: {} bytes>", e.into_bytes().len()))
+    }))
 }
 
-/// Test-only: the sentinel's TTL, so a test can stamp a marker reliably
-/// past it without duplicating the constant.
-#[cfg(feature = "test-support")]
-pub fn import_in_progress_ttl_secs_for_test() -> i64 {
-    IMPORT_IN_PROGRESS_TTL_SECS
+/// Explicit operator recovery from an import a crash, a client disconnect,
+/// or a `finalize-import` that never landed left interrupted: wipe every
+/// backed-up keyspace back to empty and clear the sentinel. Fronted by
+/// `vtc admin discard-interrupted-import` — never invoked automatically,
+/// and never implied by the sentinel's age.
+///
+/// This is the "start over from empty" recovery, not a restore: it does
+/// not re-apply the original backup, because that bundle isn't
+/// necessarily still at hand (and this runs offline, with no password
+/// prompt). An operator who still has the bundle should prefer re-running
+/// the normal import with it once this clears the sentinel — that
+/// restores real state instead of leaving the community empty.
+///
+/// Returns the interrupted import's stamp (as read, unparsed) if a
+/// sentinel was present and has now been cleared; `None` if there was
+/// nothing to discard (left entirely untouched in that case).
+pub async fn discard_interrupted_import(store: &Store) -> Result<Option<String>, AppError> {
+    let config_ks = store.keyspace(keyspaces::CONFIG)?;
+    let Some(since) = import_in_progress_since(&config_ks).await? else {
+        return Ok(None);
+    };
+
+    for name in keyspaces::BACKED_UP {
+        let ks = store.keyspace(name)?;
+        clear_keyspace(&ks).await?;
+    }
+
+    config_ks.remove(IMPORT_IN_PROGRESS_KEY.to_vec()).await?;
+    config_ks.persist().await?;
+    Ok(Some(since))
 }
 
 /// Test-only: stamp the import-in-progress sentinel as if an import had
 /// started `at`, without actually running one — so a test can simulate a
-/// crash mid-import (stamped, never cleared) and assert the TTL releases
-/// it. Never compiled into a production build.
+/// crash mid-import (stamped, never cleared) and exercise the boot
+/// refusal / recovery path without a real one. Never compiled into a
+/// production build.
 #[cfg(feature = "test-support")]
 pub async fn stamp_import_in_progress_for_test(
     config_ks: &KeyspaceHandle,
