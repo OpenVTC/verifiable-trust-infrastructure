@@ -31,10 +31,12 @@
 //!   "code"}` body — and that it names the
 //!   constant the witness carries — so a witness cannot point at a test that
 //!   does not look at the code.
-//! - [`UNWITNESSED`] — the baseline of declared codes nothing yet shows the
+//! - [`unwitnessed`] — the baseline of declared codes nothing yet shows the
 //!   service emitting. **It only shrinks**: a code that gains a witness must
-//!   leave it (listing it in both fails), and its length is asserted, so a
-//!   newly bound task cannot add codes to it unnoticed.
+//!   leave it (listing it in both fails), and its length is checked against
+//!   [`UNWITNESSED_CEILING`] — a true ratchet, not a count: shrinking the
+//!   baseline needs no edit here, only growing it past the ceiling does, so
+//!   a newly bound task cannot add codes to it unnoticed.
 //!
 //! The reverse direction — codes this service emits that its specification
 //! does *not* declare — is [`CONSUMER_MINTED`]: each entry must stay
@@ -1037,10 +1039,15 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
     v
 }
 
-/// The length of [`unwitnessed`], asserted. Lower it as witnesses land; raising
-/// it means a newly bound task declares codes nothing tests, which is the
-/// thing this census exists to stop.
-const UNWITNESSED: usize = 10
+/// The ceiling [`unwitnessed`]'s length may never exceed. This is the one
+/// number in this file that is still hand-maintained, and deliberately so:
+/// it is a ratchet, not a count. A witness landing shrinks `unwitnessed()`
+/// and needs no edit here — the baseline is simply further below its
+/// ceiling, which the census reports but does not fail on. Only *growing*
+/// the baseline past the ceiling — a newly bound task declaring codes
+/// nothing tests — requires raising this constant, which is the point:
+/// that always wants a human decision, never a silent pass.
+const UNWITNESSED_CEILING: usize = 10
     + if cfg!(feature = "vetting-pcs") {
         // `vetting/hidden/publish`'s two codes, until a signed-document test
         // drives them (see `unwitnessed`).
@@ -1110,7 +1117,12 @@ fn every_declared_error_code_is_witnessed_or_baselined() {
          is broken, not the code"
     );
 
-    let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("it");
+    // #1862 consolidated every integration test file under `tests/it/` (one
+    // test binary per service); the witness paths below are unaffected since
+    // they are bare filenames, but this is where they now resolve.
+    let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("it");
     let mut witnessed: BTreeSet<&'static str> = BTreeSet::new();
     for w in witnesses() {
         let code = w.declared.code;
@@ -1152,14 +1164,13 @@ fn every_declared_error_code_is_witnessed_or_baselined() {
     for b in &baseline {
         assert!(
             declared.contains_key(b.code),
-            "baseline lists {}, which no bound, published task declares any more — \
-             remove it and lower UNWITNESSED",
+            "baseline lists {}, which no bound, published task declares any more — remove it",
             b.code
         );
         assert!(
             !witnessed.contains(b.code),
-            "{} is witnessed AND baselined — remove it from the baseline and lower \
-             UNWITNESSED; that is the baseline shrinking, which is the point",
+            "{} is witnessed AND baselined — remove it from the baseline; that is the \
+             baseline shrinking, which is the point",
             b.code
         );
         assert!(baselined.insert(b.code), "{} baselined twice", b.code);
@@ -1179,12 +1190,21 @@ fn every_declared_error_code_is_witnessed_or_baselined() {
         missing.join("\n  ")
     );
 
-    assert_eq!(
-        baseline.len(),
-        UNWITNESSED,
-        "the unwitnessed baseline changed size. Down: lower UNWITNESSED. Up: a bound \
-         task declares codes nothing shows this service emitting."
+    assert!(
+        baseline.len() <= UNWITNESSED_CEILING,
+        "the unwitnessed baseline grew past its ceiling ({} > {UNWITNESSED_CEILING}) — a bound \
+         task declares codes nothing shows this service emitting. Witness them, or — only if \
+         that is truly not yet possible — raise UNWITNESSED_CEILING with a reason.",
+        baseline.len()
     );
+    if baseline.len() < UNWITNESSED_CEILING {
+        eprintln!(
+            "error-code census: the unwitnessed baseline ({}) is below its ceiling \
+             (UNWITNESSED_CEILING = {UNWITNESSED_CEILING}) — lower the ceiling to lock in the \
+             improvement",
+            baseline.len()
+        );
+    }
     eprintln!(
         "error-code census: {} declared in scope, {} witnessed, {} baselined",
         declared.len(),

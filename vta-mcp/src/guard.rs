@@ -570,10 +570,10 @@ mod tests {
     /// fails here rather than quietly defaulting to `Mutating` forever.
     #[test]
     fn every_dispatchable_uri_has_a_known_verb() {
-        let mut unknown: Vec<&str> = Vec::new();
+        let mut unknown: Vec<(&str, &str)> = Vec::new(); // (uri, verb)
         for uri in vta_sdk::trust_tasks::dispatch_routed_uris() {
             let Some(slug) = slug_of(uri) else {
-                unknown.push(uri);
+                unknown.push((uri, uri));
                 continue;
             };
             if SLUG_OVERRIDES.iter().any(|(s, _)| *s == slug) {
@@ -584,13 +584,19 @@ mod tests {
                 || DESTRUCTIVE_VERBS.contains(&verb)
                 || MUTATING_VERBS.contains(&verb);
             if !known {
-                unknown.push(uri);
+                unknown.push((uri, verb));
             }
         }
+        let template: String = unknown
+            .iter()
+            .map(|(uri, verb)| format!("    \"{verb}\", // {uri}\n"))
+            .collect();
         assert!(
             unknown.is_empty(),
-            "unclassified Trust Task verbs — add each to READ_VERBS, DESTRUCTIVE_VERBS, \
-             MUTATING_VERBS or SLUG_OVERRIDES in guard.rs: {unknown:#?}"
+            "unclassified Trust Task verbs — decide whether each reads, destroys or merely \
+             mutates, then paste its line into READ_VERBS, DESTRUCTIVE_VERBS or MUTATING_VERBS \
+             in guard.rs (shown here ready to paste into whichever list is right — `classify` \
+             would otherwise default it to Mutating silently):\n{template}"
         );
     }
 

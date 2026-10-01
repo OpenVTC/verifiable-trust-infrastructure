@@ -1164,167 +1164,145 @@ mod openapi_tests {
         );
     }
 
-    #[test]
-    fn openapi_spec_covers_the_route_groups() {
-        let spec = openapi_spec();
-        let paths = &spec.paths.paths;
-        // A representative path (all nested under /v1) from each major group.
-        for p in [
-            "/v1/auth/refresh",
+    /// REST routes that are not public, health or WebAuthn-ceremony routes,
+    /// paired with the reason they still have a dedicated REST mount instead
+    /// of being Trust-Task-document only.
+    ///
+    /// This, together with [`is_public_health_or_webauthn`], replaces a path
+    /// floor (`paths.len() >= N`) and an ever-growing "must not exist" list of
+    /// every verb that has ever migrated off REST. Both needed an edit on
+    /// every migration even though nothing broke; this needs one only when a
+    /// route is *added* (or a REST-only reason changes), which is exactly the
+    /// moment a conscious decision should be recorded.
+    const REST_EXCEPTIONS: &[(&str, &str, &str)] = &[
+        (
+            "GET",
             "/v1/admin/passkeys",
-            "/v1/relationships/{id}/persona",
+            "lists the console's own registered WebAuthn credentials for its passkey-management UI",
+        ),
+        (
+            "POST",
+            "/v1/auth/admin-session",
+            "bootstraps the admin console's cookie session; no signed-document equivalent exists before a session does",
+        ),
+        (
+            "POST",
+            "/v1/auth/refresh",
+            "the admin console's cookie-bound session renewal; it has no signed-document equivalent",
+        ),
+        (
+            "POST",
+            "/v1/auth/sign-out",
+            "clears the console's cookie session; a browser action, not a protocol verb",
+        ),
+        (
+            "GET",
+            "/v1/auth/whoami",
+            "reads the caller's own cookie session for the console UI; not a Trust Task",
+        ),
+        (
+            "POST",
             "/v1/credential-exchange/request",
-        ] {
-            assert!(paths.contains_key(p), "spec missing documented path {p}");
+            "redeems a credential offer; the key-binding proof is the authority, kept on its own              governed mount alongside the generic Trust Task door",
+        ),
+        (
+            "DELETE",
+            "/v1/relationships/{id}/persona",
+            "`vtc/relationships/persona/0.1` is published but REST-only — the spine does not dispatch it",
+        ),
+        (
+            "POST",
+            "/v1/relationships/{id}/persona",
+            "`vtc/relationships/persona/0.1` is published but REST-only — the spine does not dispatch it",
+        ),
+        (
+            "POST",
+            "/v1/trust-tasks",
+            "the generic Trust Task document endpoint itself",
+        ),
+    ];
+
+    /// A WebAuthn ceremony step: the browser's `navigator.credentials` API
+    /// round-trips through `fetch`, so these can never be signed documents —
+    /// there is no key to sign with until the ceremony mints or proves one.
+    fn is_public_health_or_webauthn(method: &str, path: &str) -> bool {
+        const PUBLIC: &[(&str, &str)] = &[
+            ("GET", "/v1/community/public-profile"),
+            ("GET", "/v1/community/did-qr.svg"),
+            ("GET", "/v1/status-lists/{purpose}"),
+        ];
+        PUBLIC.contains(&(method, path))
+            || path.starts_with("/v1/health")
+            || path.contains("passkey")
+    }
+
+    /// Every REST route this service mounts is either a deliberate, reasoned
+    /// exception ([`REST_EXCEPTIONS`]) or self-evidently fine
+    /// ([`is_public_health_or_webauthn`]). A route that is neither — a new
+    /// one nobody reasoned about, or an old one regressing back from
+    /// Trust-Task-only — fails here by name.
+    #[test]
+    fn every_mounted_rest_route_is_justified() {
+        let spec = openapi_spec();
+        let mut unjustified = Vec::new();
+        for (path, item) in &spec.paths.paths {
+            for (method, op) in [
+                ("GET", &item.get),
+                ("POST", &item.post),
+                ("PATCH", &item.patch),
+                ("DELETE", &item.delete),
+                ("PUT", &item.put),
+            ] {
+                if op.is_none() {
+                    continue;
+                }
+                if is_public_health_or_webauthn(method, path) {
+                    continue;
+                }
+                if REST_EXCEPTIONS
+                    .iter()
+                    .any(|(m, p, _)| *m == method && *p == path)
+                {
+                    continue;
+                }
+                unjustified.push(format!("{method} {path}"));
+            }
         }
-        // A floor, not a count: it catches the spec losing whole groups, and
-        // falls as REST routes move to signed-only Trust Tasks — most
-        // recently pre-session auth, install claim + admin bootstrap,
-        // cross-community recognition, relationships publish, four website
-        // admin verbs, `auth/challenge`+`authenticate`, and the vetter grant
-        // listing / auto-grant / withdrawal notices / community branding /
-        // requested attributes (`trust_tasks::{auth_tasks,install_tasks,
-        // recognise_tasks,website_tasks,surface_tasks}` / `member_tasks`).
+        unjustified.sort();
         assert!(
-            paths.len() >= 15,
-            "expected the documented surface to be >= 15 paths, got {}",
-            paths.len()
+            unjustified.is_empty(),
+            "these REST routes are mounted but not reasoned about — add each to              REST_EXCEPTIONS with the reason it still needs a dedicated REST mount, or confirm              it belongs in `is_public_health_or_webauthn` and extend that instead:\n  {}",
+            unjustified.join("\n  ")
+        );
+
+        let stale: Vec<&str> = REST_EXCEPTIONS
+            .iter()
+            .filter(|(m, p, _)| {
+                !spec
+                    .paths
+                    .paths
+                    .get(*p)
+                    .is_some_and(|item| op_for(item, m).is_some())
+            })
+            .map(|(_, p, _)| *p)
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "REST_EXCEPTIONS entries for routes that are no longer mounted — remove them:              {stale:?}"
         );
     }
 
-    /// The verbs served only as signed documents at `POST /v1/trust-tasks`
-    /// have no REST route: no path, and no method on a path that stays for
-    /// another verb.
-    #[test]
-    fn signed_only_verbs_have_no_route() {
-        let spec = openapi_spec();
-        let paths = &spec.paths.paths;
-        for p in [
-            "/v1/acl",
-            "/v1/acl/{did}",
-            "/v1/members/me",
-            "/v1/members/{did}/purge",
-            "/v1/members/{did}/personhood/challenge",
-            "/v1/members/{did}/personhood",
-            "/v1/members/{did}/relationships",
-            "/v1/members/me/renew",
-            "/v1/members/me/rotate",
-            "/v1/members/me/rotate/challenge",
-            "/v1/endorsement-types/{type_uri}",
-            "/v1/vetting/vetters/list",
-            "/v1/join-requests/manifest",
-            "/v1/join-requests/{id}/status",
-            "/v1/health/diagnostics",
-            "/v1/registry/sync-jobs",
-            "/v1/registry/sync-jobs/retry",
-            "/v1/registry/sync-jobs/discard",
-            "/v1/registry/records",
-            "/v1/audit",
-            "/v1/admin/config",
-            "/v1/admin/config/reload",
-            "/v1/admin/config/restart",
-            "/v1/admin/invites",
-            "/v1/admin/invites/{jti}",
-            "/v1/auth/sessions",
-            "/v1/auth/sessions/{session_id}",
-            "/v1/git-ns/drift",
-            "/v1/git-ns/rights",
-            "/v1/git-ns/rights/issued-by-departed",
-            "/v1/git-ns/jobs",
-            "/v1/git-ns/projection",
-            "/v1/git-ns/accounts",
-            "/v1/git-ns/activity",
-            "/v1/community/profile",
-            "/v1/ceremonies",
-            "/v1/directory/{did}",
-            "/v1/recognition/check",
-            "/v1/members/removed",
-            "/v1/members/{did}/request-vmc",
-            "/v1/join-requests/{id}",
-            "/v1/relationships/graph",
-            "/v1/invitations",
-            "/v1/invitations/{id}",
-            "/v1/invitations/deliver",
-            "/v1/endorsement-types",
-            "/v1/members",
-            "/v1/members/{did}",
-            "/v1/members/{did}/credentials",
-            "/v1/join-requests",
-            "/v1/join-requests/{id}/decide",
-            "/v1/policies",
-            "/v1/policies/{id}",
-            "/v1/policies/{id}/activate",
-            "/v1/admin/did/register",
-            "/v1/audit/verify",
-            "/v1/vetting/vetters/show",
-            "/v1/community/join-discovery",
-            "/v1/join-requests/query",
-            "/v1/join-requests/{id}/vetting",
-            "/v1/relationships/{id}/suspend",
-            "/v1/relationships/{id}/restore",
-            "/v1/rooms",
-            "/v1/schemas",
-            "/v1/schemas/accepts",
-            "/v1/schemas/accepts/{id}",
-            "/v1/schemas/{type_uri}",
-            // Relationship revoke (`vtc/relationships/revoke/{0.1,0.2}`) lost
-            // its last route: `0.2`'s pairwise `pop` reaches the capacity the
-            // bearer route existed for (tt-tf#689).
-            "/v1/relationships/{id}",
-            // Endorsement retrieval and revocation
-            // (`vtc/endorsements/{list,show,revoke}/0.1`) had no caller left
-            // once the spine dispatched them (tt-tf#689).
-            "/v1/credentials/endorsements",
-            "/v1/credentials/endorsements/{id}",
-            // Admin resend of another member's vetter grant
-            // (`vtc/vetting/vetters/resend/0.2`'s `memberDid`) replaces the
-            // admin-only REST route (tt-tf#689).
-            "/v1/vetting/vetters/{memberDid}/resend",
-            // `auth/challenge/0.1` and `auth/authenticate/{0.1,0.2,0.3}`
-            // (`trust_tasks::auth_tasks`) are signed documents only now:
-            // `vta_sdk::auth_light` (shared by the VTA client and `cnm
-            // vetting`'s bearer-session login) switched to posting them
-            // against `/v1/trust-tasks` (#1858), so their dedicated,
-            // `Trust-Task`-header-gated REST mounts had no caller left.
-            "/v1/auth/challenge",
-            "/v1/auth/",
-            //
-            // First-admin onboarding (`trust_tasks::install_tasks`) and
-            // cross-community recognition (`trust_tasks::recognise_tasks`).
-            "/v1/install/claim/start",
-            "/v1/install/claim/finish",
-            "/v1/admin/bootstrap",
-            "/v1/auth/recognise/challenge",
-            "/v1/auth/recognise",
-            // `vtc/relationships/publish/0.2` — already served on the spine
-            // (`trust_tasks::member_tasks`); its bearer-less REST route had no
-            // caller left once `vtc-client` signed it instead (#1845).
-            "/v1/relationships",
-            // The website's listing, delete, generation history and rollback
-            // (`trust_tasks::website_tasks`) replace their dedicated,
-            // `Trust-Task`-header-gated REST mounts.
-            "/v1/website/files",
-            "/v1/website/files/{*path}",
-            "/v1/website/generations",
-            "/v1/website/rollback/{gen_num}",
-            // The vetter grant listing (`vtc/vetting/vetters/grants/list/0.1`),
-            // automatic-grant configuration
-            // (`vtc/vetting/auto-grant/{show,update}/0.1`), withdrawal notices
-            // (`vtc/vetting/revocations/list/0.1`), community branding
-            // (`vtc/community/branding/{show,update}/0.1`) and requested
-            // attributes (`vtc/community/requested-attributes/{show,update}/0.1`)
-            // are signed documents only (`trust_tasks::surface_tasks`) — their
-            // admin-only bearer REST mounts had no caller left once
-            // `vtc-client` and the admin console signed them instead. Naming a
-            // vetter (`vtc/vetting/vetters/grant/0.1`) was already spine-only,
-            // so this path never carried a `POST` either.
-            "/v1/vetting/vetters",
-            "/v1/vetting/auto-grant",
-            "/v1/vetting/revocations",
-            "/v1/community/branding",
-            "/v1/community/requested-attributes",
-        ] {
-            assert!(!paths.contains_key(p), "{p} is a signed document only");
+    fn op_for<'a>(
+        item: &'a utoipa::openapi::path::PathItem,
+        method: &str,
+    ) -> Option<&'a utoipa::openapi::path::Operation> {
+        match method {
+            "GET" => item.get.as_ref(),
+            "POST" => item.post.as_ref(),
+            "PATCH" => item.patch.as_ref(),
+            "DELETE" => item.delete.as_ref(),
+            "PUT" => item.put.as_ref(),
+            _ => None,
         }
     }
 
