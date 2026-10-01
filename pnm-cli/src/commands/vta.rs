@@ -203,6 +203,13 @@ pub(crate) async fn run_offline(
             true
         }
         VtaCommands::Restart => false,
+        VtaCommands::Mnemonic { command } => {
+            if let Err(e) = crate::commands::mnemonic::run(command).await {
+                eprintln!("Error: {e}");
+                std::process::exit(crate::exit::FAILURE);
+            }
+            true
+        }
     }
 }
 
