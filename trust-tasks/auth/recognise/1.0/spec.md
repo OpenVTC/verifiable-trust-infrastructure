@@ -2,7 +2,7 @@
 id: https://trusttasks.org/openvtc/vtc/auth/recognise/1.0
 title: VTC — Cross-Community Session Mint
 status: retired
-supersededBy: https://trusttasks.org/spec/vtc/auth/recognise/0.1
+supersededBy: https://trusttasks.org/spec/vtc/auth/recognise/0.2
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
@@ -16,7 +16,13 @@ Mints a session JWT for a holder presenting a foreign
 community's role credential — a DTG `AuthorityCredential` (VAC) conferring
 `role:<name>` at that community's DID — + `MembershipCredential` (VMC) pair.
 (The 1.0 body member `vec` predates roles becoming VACs; its successors carry
-the pair in a holder-signed VP.) Phase 3 M3.10; spec §8.4.
+the pair in a holder-signed VP.)
+
+> **Retired.** The VTC serves this as the Trust Task
+> `https://trusttasks.org/spec/vtc/auth/recognise/0.2` (0.1 is retired too),
+> preceded by `vtc/auth/recognise/challenge/0.1`. The REST route
+> `POST /v1/auth/recognise` is gone (#1858). This document is kept as the
+> record of the original shape. Phase 3 M3.10; spec §8.4.
 
 ## Semantics
 
