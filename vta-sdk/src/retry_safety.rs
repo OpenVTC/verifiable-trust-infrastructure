@@ -815,14 +815,19 @@ mod tests {
     #[test]
     fn every_uri_is_classified() {
         let classified: HashSet<&str> = RETRY_SAFETY.iter().map(|(u, _)| *u).collect();
-        let missing: Vec<_> = trust_tasks::ALL_URIS
+        let missing: Vec<&&str> = trust_tasks::ALL_URIS
             .iter()
             .filter(|u| !classified.contains(*u))
             .collect();
+        let template: String = missing
+            .iter()
+            .map(|uri| format!("    (\"{uri}\", RetrySafety::Keyed),\n"))
+            .collect();
         assert!(
             missing.is_empty(),
-            "these tasks have no retry-safety classification — add them to \
-             RETRY_SAFETY (when unsure, `Keyed` is the conservative answer): {missing:#?}"
+            "these tasks have no retry-safety classification — decide what a lost reply costs \
+             each one and paste a line into RETRY_SAFETY (shown here as the conservative \
+             default; change the variant if you know better):\n{template}"
         );
     }
 
