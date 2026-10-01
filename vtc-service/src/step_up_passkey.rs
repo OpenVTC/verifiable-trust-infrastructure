@@ -150,8 +150,11 @@ struct RedeemCeremony {
 /// A revocation between start and finish.
 #[derive(Serialize, Deserialize)]
 struct Revocation {
-    /// The administrator acting; the ceremony was over their own passkeys.
-    admin_did: String,
+    /// The party acting; the ceremony was over their own passkeys — the
+    /// member's own step-up passkeys for a self-revoke, an administrator's
+    /// session passkeys otherwise. `producer_did == subject` is how a
+    /// finish tells the two apart.
+    producer_did: String,
     subject: String,
     credential_id: String,
     uv_state: PasskeyAuthentication,
@@ -260,6 +263,16 @@ async fn audit(state: &AppState, actor: &str, data: StepUpPasskeyData) -> Result
     }
     Ok(())
 }
+
+// TODO(notify): tell the member, over the existing member-push mechanism,
+// when a step-up passkey is enrolled or revoked for them by someone else, so
+// a takeover through a compromised administrator key is not silent. Reverted
+// here (#1872 CI) because every Trust Task this service sends must be
+// spec-first: there is no published `vtc/members/*` notice for a step-up
+// passkey change (unlike `removal-notice` and `break-glass-notice`, which
+// already have one), and the registry census
+// (`trust_task_manifest::every_bound_canonical_task_exists_in_the_registry`)
+// refuses a type URI with nothing behind it. Land the spec, then this.
 
 // ── reading ─────────────────────────────────────────────────────────────────
 
@@ -924,7 +937,7 @@ pub async fn redeem_finish(
         StepUpPasskeyData {
             stage: "registered".into(),
             subject: c.subject.clone(),
-            invited_by: Some(c.invited_by),
+            invited_by: Some(c.invited_by.clone()),
             credential_id: Some(hex_id.clone()),
             expires_at: None,
         },
@@ -954,43 +967,38 @@ pub async fn redeem_finish(
 
 // ── revoke/start + finish 0.2, an administrator for the member ──────────────
 
-/// `auth/passkey/revoke/start/0.2` with `subject`: a community administrator
-/// begins revoking a member's step-up passkey. The ceremony is over the
-/// **administrator's own** passkeys: the person acting verifies.
+/// `auth/passkey/revoke/start/0.2`: the member revoking their own step-up
+/// passkey (`payload.subject` absent, or present and equal to `producer_did`),
+/// or a community administrator revoking one on a member's behalf
+/// (`payload.subject` present and naming someone else). Either way the
+/// ceremony is over the **producer's own** passkeys — the member's remaining
+/// step-up passkeys for a self-revoke, the administrator's session passkeys
+/// otherwise — because the person acting verifies, never the subject.
 pub async fn revoke_start(
     state: &AppState,
-    admin_did: &str,
+    producer_did: &str,
     payload: &revoke_start::Payload,
 ) -> Result<revoke_start::Response, TaskError> {
     use revoke_start::error_codes as codes;
 
     let webauthn = require_webauthn(state)?;
-    // Revoking one's own step-up passkey takes a gesture from it, answered
-    // from a browser that holds no key of theirs; it is not offered yet, and a
-    // community administrator revokes on the member's behalf.
-    let Some(subject) = payload
+    let subject = payload
         .subject
         .as_ref()
-        .map(|s| s.to_string())
-        .filter(|s| s != admin_did)
-    else {
-        return Err(refused(
-            codes::NOT_AUTHORIZED,
-            AppError::Forbidden(
-                "revoking your own step-up passkey is not offered here yet; a community \
-                 administrator revokes it for you"
-                    .into(),
-            ),
-        ));
-    };
-    if !crate::git_ns::ops::standing(state, admin_did)
-        .await?
-        .community_admin
+        .map_or_else(|| producer_did.to_string(), |s| s.to_string());
+    let self_revoke = subject == producer_did;
+    // Authorise before the credential is looked up (0.2 step 2): a producer
+    // acting for someone else must be a community administrator, decided
+    // from this service's own state, never from the document.
+    if !self_revoke
+        && !crate::git_ns::ops::standing(state, producer_did)
+            .await?
+            .community_admin
     {
         return Err(refused(
             codes::NOT_AUTHORIZED,
             AppError::Forbidden(
-                "only a community administrator revokes a member's step-up passkey".into(),
+                "only a community administrator revokes another member's step-up passkey".into(),
             ),
         ));
     }
@@ -1006,10 +1014,20 @@ pub async fn revoke_start(
             AppError::NotFound("no such step-up passkey for that member".into()),
         ));
     }
-    let own = get_passkey_user_by_did(&state.passkey_ks, admin_did)
-        .await?
-        .map(|u| u.credentials)
-        .unwrap_or_default();
+    // The credentials the producer may verify with (0.2 step 5): the
+    // subject's own remaining step-up passkeys — the one being revoked
+    // included, which is the whole premise of a step-up credential
+    // answering its own subject's operations (enroll/invite 0.2) — when the
+    // owner revokes their own; the administrator's session passkeys when
+    // they act for someone else.
+    let own = if self_revoke {
+        credentials_of(state, producer_did).await?
+    } else {
+        get_passkey_user_by_did(&state.passkey_ks, producer_did)
+            .await?
+            .map(|u| u.credentials)
+            .unwrap_or_default()
+    };
     if own.is_empty() {
         return Err(refused(
             codes::REAUTH_UNAVAILABLE,
@@ -1023,7 +1041,7 @@ pub async fn revoke_start(
     ks.insert(
         revoke_key(&revocation_id),
         &Revocation {
-            admin_did: admin_did.to_string(),
+            producer_did: producer_did.to_string(),
             subject,
             credential_id,
             uv_state,
@@ -1040,10 +1058,12 @@ pub async fn revoke_start(
     )?)
 }
 
-/// `auth/passkey/revoke/finish/0.2`, by the administrator who started it.
+/// `auth/passkey/revoke/finish/0.2`, by the producer who started it — the
+/// member, for a self-revoke, or the administrator who started it for someone
+/// else.
 pub async fn revoke_finish(
     state: &AppState,
-    admin_did: &str,
+    producer_did: &str,
     payload: &revoke_finish::Payload,
 ) -> Result<revoke_finish::Response, TaskError> {
     use revoke_finish::error_codes as codes;
@@ -1067,7 +1087,7 @@ pub async fn revoke_finish(
     let Some(r) = ks.get::<Revocation>(revoke_key(revocation_id)).await? else {
         return Err(not_found());
     };
-    if r.admin_did != admin_did {
+    if r.producer_did != producer_did {
         return Err(not_found());
     }
     ks.remove(revoke_key(revocation_id)).await?;
@@ -1085,21 +1105,37 @@ pub async fn revoke_finish(
     if !result.user_verified() {
         return Err(uv_failed("your passkey did not verify the user"));
     }
-    // WebAuthn's replay defence is the signature counter.
-    if let Some(mut own) = get_passkey_user_by_did(&state.passkey_ks, admin_did).await? {
-        for cred in &mut own.credentials {
-            cred.update_credential(&result);
+    let self_revoke = r.subject == r.producer_did;
+    // WebAuthn's replay defence is the signature counter, persisted on
+    // whichever store the verifying credential actually lives in: the
+    // member's own step-up passkeys for a self-revoke, the administrator's
+    // session passkeys otherwise — matching the credentials `revoke_start`
+    // offered the ceremony.
+    if self_revoke {
+        if let Some(mut own) = get_passkey_user_by_did(ks, producer_did).await? {
+            for cred in &mut own.credentials {
+                cred.update_credential(&result);
+            }
+            store_passkey_user(ks, &own).await?;
         }
-        store_passkey_user(&state.passkey_ks, &own).await?;
-    }
-    if !crate::git_ns::ops::standing(state, admin_did)
-        .await?
-        .community_admin
-    {
-        return Err(refused(
-            codes::NOT_AUTHORIZED,
-            AppError::Forbidden("you are no longer a community administrator".into()),
-        ));
+    } else {
+        if let Some(mut own) = get_passkey_user_by_did(&state.passkey_ks, producer_did).await? {
+            for cred in &mut own.credentials {
+                cred.update_credential(&result);
+            }
+            store_passkey_user(&state.passkey_ks, &own).await?;
+        }
+        // Re-checked at commit time (0.2 step 4); a self-revoke needs no
+        // administrator standing at all.
+        if !crate::git_ns::ops::standing(state, producer_did)
+            .await?
+            .community_admin
+        {
+            return Err(refused(
+                codes::NOT_AUTHORIZED,
+                AppError::Forbidden("you are no longer a community administrator".into()),
+            ));
+        }
     }
 
     let mut remaining = 0;
@@ -1116,7 +1152,7 @@ pub async fn revoke_finish(
     ks.remove(meta_key(&r.credential_id)).await?;
     audit(
         state,
-        admin_did,
+        producer_did,
         StepUpPasskeyData {
             stage: "revoked".into(),
             subject: r.subject.clone(),
@@ -1126,7 +1162,10 @@ pub async fn revoke_finish(
         },
     )
     .await?;
-    info!(admin = %admin_did, subject = %r.subject, credential_id = %r.credential_id, "step-up passkey revoked");
+    info!(producer = %producer_did, subject = %r.subject, credential_id = %r.credential_id, self_revoke, "step-up passkey revoked");
+    // TODO(notify): tell the member when somebody else did this to them —
+    // see the TODO above `credentials_of` for why this waits on a published
+    // notice spec.
     Ok(as_response(
         "revoke/finish",
         json!({

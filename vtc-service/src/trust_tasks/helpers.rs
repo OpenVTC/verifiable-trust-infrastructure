@@ -556,6 +556,7 @@ pub(crate) async fn verify_received_approval_proof(
 /// [`verify_trust_task_proof`].
 pub(crate) fn is_approval_type(type_uri: &str) -> bool {
     type_uri == super::STEP_UP_APPROVE_RESPONSE_TYPE
+        || type_uri == super::STEP_UP_APPROVE_RESPONSE_V0_5_TYPE
         || type_uri == crate::acl::admin_consent::DECISION_TYPE
 }
 
