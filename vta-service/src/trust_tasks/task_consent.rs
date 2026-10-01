@@ -125,37 +125,35 @@ pub(super) async fn handle_decision(
     // `assertionMethod` with a key listed under the approver's
     // `assertionMethod` (the did-hosting RP's `verify_approval` holds decisions
     // to the same rule). One made for `authentication` is refused.
-    let approver = match crate::auth::verify_approval_proof_with(
-        &doc,
-        &state.trust_task_vm_resolver(),
-    )
-    .await
-    {
-        Ok(did) => did,
-        Err(e) => {
-            // The only decision path that reaches no audit row: every later
-            // rejection records one, but this one has no *proven* actor to
-            // attribute it to, and an unverified `from` is not an identity.
-            //
-            // Log it anyway. Without this line, a decision that arrives and
-            // fails verification is indistinguishable from one that never
-            // arrived — and those have opposite causes: a broken proof (key
-            // rotated, wrong signer, malformed payload) versus wallet/routing.
-            // An operator watching an update loop needs to tell them apart.
-            tracing::warn!(
-                error = %e,
-                cause = e.cause().unwrap_or_default(),
-                "task-consent decision arrived but failed proof verification; \
-                 no approver could be attributed"
-            );
-            return reject_with(
-                &doc,
-                RejectReason::PermissionDenied {
-                    reason: format!("task-consent decision must carry a valid proof: {e}"),
-                },
-            );
-        }
-    };
+    //
+    // Over the document as received (VTI-45), which the spine recorded.
+    let approver =
+        match super::received::verify_approval_proof(&doc, &state.trust_task_vm_resolver()).await {
+            Ok(did) => did,
+            Err(e) => {
+                // The only decision path that reaches no audit row: every later
+                // rejection records one, but this one has no *proven* actor to
+                // attribute it to, and an unverified `from` is not an identity.
+                //
+                // Log it anyway. Without this line, a decision that arrives and
+                // fails verification is indistinguishable from one that never
+                // arrived — and those have opposite causes: a broken proof (key
+                // rotated, wrong signer, malformed payload) versus wallet/routing.
+                // An operator watching an update loop needs to tell them apart.
+                tracing::warn!(
+                    error = %e,
+                    cause = e.cause().unwrap_or_default(),
+                    "task-consent decision arrived but failed proof verification; \
+                     no approver could be attributed"
+                );
+                return reject_with(
+                    &doc,
+                    RejectReason::PermissionDenied {
+                        reason: format!("task-consent decision must carry a valid proof: {e}"),
+                    },
+                );
+            }
+        };
 
     let now = now_secs();
 

@@ -291,7 +291,7 @@ window from `AcceptanceWindow` rather than from two constants.
 | Dispatch policy | `vta-service/src/trust_tasks/idempotency.rs` |
 | Envelope-id replay dedup (the *other* layer) | `vta-service/src/trust_tasks/replay.rs` |
 | TTL sweep | `vta-sweepers/src/idempotency_sweeper.rs` |
-| Acceptance tests | `vta-service/tests/idempotency_trust_task.rs` |
+| Acceptance tests | `vta-service/tests/it/idempotency_trust_task.rs` |
 
 ### The two dedup layers are not the same thing
 

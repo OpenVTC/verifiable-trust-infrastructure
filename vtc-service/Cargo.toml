@@ -13,6 +13,13 @@ authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Every file under `tests/` used to be its own integration-test binary, each
+# one linking the whole crate again. `tests/it/main.rs` pulls them all in as
+# modules of one binary instead (see its header). `autotests = false` plus
+# the explicit `[[test]]` below is what makes that the crate's only
+# integration-test target, so a new `tests/*.rs` file has to be added as a
+# `mod` there rather than silently going back to its own binary.
+autotests = false
 
 [features]
 default = ["setup", "keyring", "website", "admin-ui", "tsp"]
@@ -125,13 +132,20 @@ vault-secrets = ["vti-secrets/vault-secrets"]
 name = "vtc"
 path = "src/main.rs"
 
+# The crate's one integration-test binary. See `autotests = false` above and
+# `tests/it/main.rs`'s header. Run a single module's tests with
+# `cargo test -p vtc-service --test it -- <module>::`.
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
 [dependencies]
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
-vti-rooms = { path = "../vti-rooms", version = "0.2" }
+vti-rooms = { path = "../vti-rooms", version = "0.3" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
-vti-common = { path = "../vti-common", version = "0.30", features = [
+vti-common = { path = "../vti-common", version = "0.31", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
@@ -148,8 +162,8 @@ vti-common = { path = "../vti-common", version = "0.30", features = [
 # Shared secret-store backend implementations (the VTC's `create_secret_store`
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
-vti-secrets = { path = "../vti-secrets", version = "0.4" }
-vta-sdk = { path = "../vta-sdk", version = "0.57", features = [
+vti-secrets = { path = "../vti-secrets", version = "0.5" }
+vta-sdk = { path = "../vta-sdk", version = "0.58", features = [
   "didcomm",
   "session",
   "config-session",

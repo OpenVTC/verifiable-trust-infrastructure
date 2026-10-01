@@ -840,16 +840,24 @@ fn tsp_sender(message: &affinidi_messaging_core::ReceivedMessage) -> Option<Stri
 /// Returns `Some` only for a `#response` or `trust-task-error` carrying a
 /// `threadId` — a request never qualifies, so no inbound work is diverted.
 #[cfg(feature = "tsp")]
-fn tsp_reply_document(payload: &[u8]) -> Option<trust_tasks_rs::TrustTask<serde_json::Value>> {
+fn tsp_reply_document(
+    payload: &[u8],
+) -> Option<(
+    trust_tasks_rs::TrustTask<serde_json::Value>,
+    serde_json::Value,
+)> {
     let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
     let inner = match value.get("document") {
         Some(document) => document.clone(),
         None => value,
     };
-    let doc: trust_tasks_rs::TrustTask<serde_json::Value> = serde_json::from_value(inner).ok()?;
+    let doc: trust_tasks_rs::TrustTask<serde_json::Value> =
+        serde_json::from_value(inner.clone()).ok()?;
     doc.thread_id.as_ref()?;
     let is_reply = doc.type_uri.is_response() || doc.type_uri.slug() == "trust-task-error";
-    is_reply.then_some(doc)
+    // The document as received travels with its parse: the reply's proof is
+    // verified over it (VTI-45).
+    is_reply.then_some((doc, inner))
 }
 
 #[cfg(feature = "tsp")]
@@ -902,11 +910,11 @@ async fn handle_tsp(
     // no message type to switch on, so the check is here. `tsp_reply_document`
     // reads through the binding envelope as well as around it, so this runs
     // before the envelope comes off.
-    if let Some(doc) = tsp_reply_document(&inbound.message.payload) {
+    if let Some((doc, received)) = tsp_reply_document(&inbound.message.payload) {
         let thread_id = doc.thread_id.clone().unwrap_or_default();
         if !state
             .pending_replies
-            .complete_verified(doc, &state.trust_task_vm_resolver())
+            .complete_verified(doc, &received, &state.trust_task_vm_resolver())
             .await
         {
             debug!(%thread_id, sender = %sender_vid, "TSP reply had no waiter — dropping");
@@ -1189,7 +1197,7 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
             vti_common::capability_client::parse_envelope_document(&msg.body)
         && state
             .pending_replies
-            .complete_verified(doc.clone(), &state.trust_task_vm_resolver())
+            .complete_verified(doc.clone(), &msg.body, &state.trust_task_vm_resolver())
             .await
     {
         return None;
@@ -1620,7 +1628,7 @@ mod tests {
         });
         let bare = serde_json::to_vec(&doc).unwrap();
         assert_eq!(
-            tsp_reply_document(&bare).and_then(|d| d.thread_id),
+            tsp_reply_document(&bare).and_then(|(d, _)| d.thread_id),
             Some("urn:uuid:request".to_string()),
         );
 
@@ -1630,7 +1638,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            tsp_reply_document(&enveloped).and_then(|d| d.thread_id),
+            tsp_reply_document(&enveloped).and_then(|(d, _)| d.thread_id),
             Some("urn:uuid:request".to_string()),
         );
     }

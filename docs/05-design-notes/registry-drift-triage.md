@@ -46,7 +46,7 @@ are *fold* and *delete*, not *alias*.
    annotated; the harness fails on any NEW unspecced URI, on any entry whose
    spec has since been published (the list only shrinks), and on any entry no
    longer served. This complements — not replaces — the workspace-wide census
-   in `vtc-service/tests/trust_task_manifest.rs` (#821), which scans source
+   in `vtc-service/tests/it/trust_task_manifest.rs` (#821), which scans source
    literals in four trees and counts per *family*; the new check is per *URI*,
    scoped to what the VTA dispatcher actually serves, and lives next to the
    forward harness so the two directions cannot drift apart.

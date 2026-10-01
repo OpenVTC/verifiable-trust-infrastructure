@@ -90,6 +90,7 @@ mod policy_gate;
 mod produced_census;
 #[cfg(feature = "webvh")]
 mod provision_integration;
+pub(crate) mod received;
 mod room_group;
 mod room_keys;
 mod room_owner;
@@ -1092,10 +1093,17 @@ pub(crate) async fn accept_from_proven_sender(
 /// The DID `doc`'s own Data Integrity proof verifies as, when that DID is also
 /// its in-band `issuer` (fragment ignored); `None` otherwise. What a reply
 /// waiter checks against the peer its request went to.
-pub(crate) async fn verified_issuer(state: &AppState, doc: &TrustTask<Value>) -> Option<String> {
+///
+/// The proof is verified over `received` — the document's JSON as it arrived,
+/// of which `doc` is the parse — never a re-serialisation of `doc` (VTI-45).
+pub(crate) async fn verified_issuer(
+    state: &AppState,
+    received: &Value,
+    doc: &TrustTask<Value>,
+) -> Option<String> {
     doc.proof.as_ref()?;
     let signer =
-        vti_common::auth::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver())
+        vti_common::auth::verify_trust_task_proof_value(received, &state.trust_task_vm_resolver())
             .await
             .ok()?;
     let signer = signer.split('#').next().unwrap_or(&signer).to_string();
@@ -1105,11 +1113,14 @@ pub(crate) async fn verified_issuer(state: &AppState, doc: &TrustTask<Value>) ->
 /// Hand a reply to its waiter, if the peer the request went to signed it.
 #[cfg(any(feature = "didcomm", feature = "tsp"))]
 async fn deliver_reply(state: &AppState, body: &[u8]) -> bool {
-    let Ok(doc) = serde_json::from_slice::<TrustTask<Value>>(body) else {
+    let Ok(received) = serde_json::from_slice::<Value>(body) else {
         return false;
     };
-    let signer = verified_issuer(state, &doc).await;
-    state.pending_replies.complete(&doc, signer.as_deref())
+    let Ok(doc) = serde_json::from_value::<TrustTask<Value>>(received.clone()) else {
+        return false;
+    };
+    let signer = verified_issuer(state, &received, &doc).await;
+    state.pending_replies.complete(&received, signer.as_deref())
 }
 
 /// Require `body` to carry a Data Integrity proof that verifies as its in-band
@@ -1124,10 +1135,13 @@ pub(crate) async fn bind_document_to_sender(
     body: &[u8],
 ) -> Result<(), RejectReason> {
     let sender = sender_vid.split('#').next().unwrap_or(sender_vid);
-    let doc: TrustTask<Value> =
-        serde_json::from_slice(body).map_err(|e| RejectReason::MalformedRequest {
-            reason: format!("not a Trust Task document: {e}"),
-        })?;
+    let malformed = |e: serde_json::Error| RejectReason::MalformedRequest {
+        reason: format!("not a Trust Task document: {e}"),
+    };
+    // The JSON as received is what the proof is verified over (VTI-45); the
+    // typed document is its parse, read for `issuer` and `type`.
+    let received: Value = serde_json::from_slice(body).map_err(malformed)?;
+    let doc: TrustTask<Value> = serde_json::from_value(received.clone()).map_err(malformed)?;
     if doc.proof.is_none() {
         // A public task's specification declares the request proof OPTIONAL,
         // and it is accepted unsigned over HTTPS; refusing the same document
@@ -1140,7 +1154,7 @@ pub(crate) async fn bind_document_to_sender(
         return Err(RejectReason::ProofRequired);
     }
     let signer =
-        vti_common::auth::verify_trust_task_proof_with(&doc, &state.trust_task_vm_resolver())
+        vti_common::auth::verify_trust_task_proof_value(&received, &state.trust_task_vm_resolver())
             .await
             .map_err(|e| RejectReason::ProofInvalid {
                 reason: e.to_string(),
@@ -1237,6 +1251,13 @@ async fn dispatch_trust_task_inner(
         // deprecation signal.
         Err(e) => return body_parse_error_response(&e.to_string()),
     };
+    // The same bytes as JSON, kept verbatim: every proof on this document is
+    // verified over what was received, never over a re-serialisation of `doc`
+    // (VTI-45). It parsed as a Trust Task, so it parses as JSON.
+    let received: std::sync::Arc<Value> = match serde_json::from_slice(body) {
+        Ok(v) => std::sync::Arc::new(v),
+        Err(e) => return body_parse_error_response(&e.to_string()),
+    };
 
     // 2. Is this an answer rather than a question?
     //
@@ -1254,10 +1275,10 @@ async fn dispatch_trust_task_inner(
     //
     // An empty body is the "nothing goes back" signal the transports already
     // understand: `handle_tsp` drops an empty reply rather than sealing one.
-    if state
-        .pending_replies
-        .complete(&doc, verified_issuer(state, &doc).await.as_deref())
-    {
+    if state.pending_replies.complete(
+        &received,
+        verified_issuer(state, &received, &doc).await.as_deref(),
+    ) {
         tracing::debug!(
             thread_id = ?doc.thread_id,
             "inbound document delivered to a waiting request"
@@ -1313,7 +1334,11 @@ async fn dispatch_trust_task_inner(
     // tomorrow inherits it, which is the only version of this that stays true.
     let dispatch_audit = DispatchAudit::capture(&doc);
 
-    let mut outcome = Box::pin(dispatch_trust_task_validated(state, auth, doc)).await;
+    let mut outcome = Box::pin(received::scope(
+        received,
+        dispatch_trust_task_validated(state, auth, doc),
+    ))
+    .await;
 
     dispatch_audit.record(state, &auth.did, &outcome).await;
 
@@ -1810,10 +1835,11 @@ async fn dispatch_trust_task_validated(
     // it is a slice with no proof checking at all. `step_up` and `task_consent`
     // keep their own calls — they bind the signer to a *specific* party (the
     // approver), which is a stronger claim than "the issuer signed this".
+    //
+    // Over the document as received (`received`, VTI-45): `doc` here is still
+    // the parse of the inbound bytes, so the recorded JSON is its received form.
     if doc.proof.is_some() {
-        match vti_common::auth::verify_trust_task_proof_with(&doc, &state.trust_task_vm_resolver())
-            .await
-        {
+        match received::verify_trust_task_proof(&doc, &state.trust_task_vm_resolver()).await {
             Ok(signer) => {
                 // A valid proof by some *other* DID is not a proof by the
                 // issuer; without this the signature would establish only that
@@ -4898,6 +4924,184 @@ mod response_coverage {
             v["payload"]["code"], "proofInvalid",
             "a proof from a key the issuer does not control must be refused: {v}"
         );
+    }
+
+    /// The `messaging/ping` request a JavaScript producer sends on a whole second:
+    /// `.000Z` timestamps and a `null` `threadId`, signed as received.
+    fn vti_45_javascript_ping(vta_did: &str) -> Value {
+        let now = crate::test_support::javascript_whole_second_now();
+        let mut doc = json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": t::TASK_MESSAGING_PING_0_1,
+            "issuer": crate::test_support::test_admin_did().0,
+            "recipient": vta_did,
+            "issuedAt": now,
+            "threadId": null,
+            "payload": {},
+        });
+        crate::test_support::sign_received_as(
+            crate::test_support::TEST_ADMIN_SEED[0],
+            "assertionMethod",
+            &now,
+            &mut doc,
+        );
+        doc
+    }
+
+    /// VTI-45, at the dispatch spine every transport converges on: the §7.2
+    /// item 7 proof check verifies the document as received, so a correctly
+    /// signed `.000Z` / `threadId: null` document is executed — and the same
+    /// document re-serialised through `TrustTask` would not have verified.
+    #[tokio::test]
+    async fn vti_45_a_javascript_whole_second_document_passes_the_spine_proof_check() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let doc = vti_45_javascript_ping(&vta_did);
+
+        let typed: TrustTask<Value> = serde_json::from_value(doc.clone()).unwrap();
+        assert!(
+            vti_common::auth::verify_trust_task_proof_with(&typed, &state.trust_task_vm_resolver())
+                .await
+                .is_err(),
+            "the typed re-serialisation must be what this document breaks, or the \
+             test below proves nothing"
+        );
+
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &serde_json::to_vec(&doc).unwrap(),
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let v: Value = serde_json::from_slice(&outcome.body).expect("a response");
+        assert_eq!(
+            v["type"],
+            format!("{}#response", t::TASK_MESSAGING_PING_0_1),
+            "{v}"
+        );
+        assert_ne!(v["payload"]["code"], "proofInvalid", "{v}");
+
+        // Tampered after signing: still refused at the proof.
+        let mut tampered = vti_45_javascript_ping(&vta_did);
+        tampered["issuedAt"] =
+            json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &serde_json::to_vec(&tampered).unwrap(),
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let v: Value = serde_json::from_slice(&outcome.body).expect("a response");
+        assert_eq!(v["payload"]["code"], "proofInvalid", "{v}");
+    }
+
+    /// VTI-45 through a handler that checks the proof itself: a
+    /// `task-consent/decision` signed on a JavaScript whole second gets past
+    /// the spine *and* the handler's own approval check, and is refused only for
+    /// having no pending request to decide.
+    #[tokio::test]
+    async fn vti_45_a_javascript_whole_second_decision_reaches_its_handler_verified() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let now = crate::test_support::javascript_whole_second_now();
+        let mut doc = json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1,
+            "issuer": crate::test_support::test_admin_did().0,
+            "recipient": vta_did,
+            "issuedAt": now,
+            "threadId": null,
+            "payload": {
+                "challenge": "9c1f4b7a2e6d80f35a4c9b1e7d2f6083",
+                "payloadDigest": "zQmSK9pGKFnmc77pqyNAPJyPKt8rMqctngfg3vwuMArwGYZ",
+                "decision": "approve",
+            },
+        });
+        crate::test_support::sign_received_as(
+            crate::test_support::TEST_ADMIN_SEED[0],
+            "assertionMethod",
+            &now,
+            &mut doc,
+        );
+        let outcome = super::dispatch_trust_task_core(
+            &state,
+            &crate::test_support::super_admin_claims(),
+            &serde_json::to_vec(&doc).unwrap(),
+            transport::TransportConfidentiality::HopByHop,
+        )
+        .await;
+        let v: Value = serde_json::from_slice(&outcome.body).expect("a response");
+        assert_ne!(v["payload"]["code"], "proofInvalid", "{v}");
+        assert!(!v.to_string().contains("valid proof"), "{v}");
+        assert!(v.to_string().contains("noPending"), "{v}");
+    }
+
+    /// VTI-45 on the intrinsic-sender ingress (DIDComm, TSP): binding the
+    /// document to its sender verifies the proof as received.
+    #[cfg(any(feature = "didcomm", feature = "tsp"))]
+    #[tokio::test]
+    async fn vti_45_a_javascript_whole_second_document_binds_to_its_sender() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let sender = crate::test_support::test_admin_did().0;
+
+        let doc = vti_45_javascript_ping(&vta_did);
+        assert_eq!(
+            super::bind_document_to_sender(&state, &sender, &serde_json::to_vec(&doc).unwrap())
+                .await,
+            Ok(())
+        );
+
+        let mut tampered = doc;
+        tampered["payload"] = json!({ "extra": true });
+        assert!(matches!(
+            super::bind_document_to_sender(
+                &state,
+                &sender,
+                &serde_json::to_vec(&tampered).unwrap()
+            )
+            .await,
+            Err(RejectReason::ProofInvalid { .. })
+        ));
+    }
+
+    /// VTI-45 on the pre-session auth family, which bypasses the spine: the
+    /// authenticate proof is verified as received. The challenge is unknown, so
+    /// the request is refused — for that, never for its proof.
+    #[tokio::test]
+    async fn vti_45_an_authenticate_document_is_verified_as_received() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let vta_did = state.config.read().await.vta_did.clone().expect("vta_did");
+        let now = crate::test_support::javascript_whole_second_now();
+        let mut doc = json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2,
+            "issuer": crate::test_support::test_admin_did().0,
+            "recipient": vta_did,
+            "issuedAt": now,
+            "threadId": null,
+            "payload": {
+                "sessionId": "00000000-0000-4000-8000-000000000000",
+                "challenge": "unknown-challenge",
+            },
+        });
+        crate::test_support::sign_received_as(
+            crate::test_support::TEST_ADMIN_SEED[0],
+            "authentication",
+            &now,
+            &mut doc,
+        );
+        let outcome = super::dispatch_auth_family(&state, &serde_json::to_vec(&doc).unwrap()).await;
+        let v: Value = serde_json::from_slice(&outcome.body).expect("a response");
+        assert!(!outcome.status.is_success(), "{v}");
+        assert_ne!(v["payload"]["code"], "proofInvalid", "{v}");
+
+        doc["payload"]["challenge"] = json!("tampered");
+        let outcome = super::dispatch_auth_family(&state, &serde_json::to_vec(&doc).unwrap()).await;
+        let v: Value = serde_json::from_slice(&outcome.body).expect("a response");
+        assert_eq!(v["payload"]["code"], "proofInvalid", "{v}");
     }
 
     /// The same family at its **canonical** 0.1 URIs, plus the two ends of the

@@ -41,7 +41,8 @@ pub use purpose::{
     ATTESTATION_SLUGS, ProofPurpose, PurposeBound, PurposeVmResolver, purpose_for_document_type,
 };
 pub use verify::{
-    APPROVAL_PROOF_PURPOSE, DiProofError, verify_approval_proof, verify_approval_proof_with,
-    verify_trust_task_proof, verify_trust_task_proof_with,
+    APPROVAL_PROOF_PURPOSE, DiProofError, verify_approval_proof, verify_approval_proof_value,
+    verify_approval_proof_with, verify_trust_task_proof, verify_trust_task_proof_value,
+    verify_trust_task_proof_with,
 };
 pub use vm_resolver::TrustTaskVmResolver;

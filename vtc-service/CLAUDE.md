@@ -146,7 +146,7 @@ regardless of whether its output changed (measured, not assumed).
 Not re-running the script is the only lever.
 
 Before adding anything to `build.rs`, ask what it writes and where.
-Guarded by `vtc-service/tests/no_rebuild.rs` and the "vtc-service
+Guarded by `vtc-service/tests/it/no_rebuild.rs` and the "vtc-service
 rebuild is a no-op" CI step — a cold-cache CI run never builds the
 same tree twice, so nothing else would catch a regression here.
 

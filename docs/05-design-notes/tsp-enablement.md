@@ -618,7 +618,7 @@ That assumption is the bug: **nothing enforced it**.
    because the caller waits on that correlation; VTC-initiated `send_to_member` stays
    DIDComm until Phase B (§14 Q4).
 3. **Compiling a transport path proves nothing about traversing it.**
-   `messaging::handle_tsp` compiled throughout. `vtc-service/tests/join_tsp.rs` now drives
+   `messaging::handle_tsp` compiled throughout. `vtc-service/tests/it/join_tsp.rs` now drives
    a real CESR frame through a real mediator into the dispatcher, in CI.
 
 **Enforcement** lives in `vtc-service/src/transport_capability.rs`: `server::run` refuses

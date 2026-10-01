@@ -86,13 +86,18 @@ impl PendingReplies {
 
     /// [`Self::complete`], verifying `document`'s proof first: the signer must
     /// be the document's `issuer`.
+    ///
+    /// `received` is the JSON the inbound frame parsed to, of which `document`
+    /// is the typed parse. The proof is verified over it, never over a
+    /// re-serialisation of `document` (VTI-45).
     pub async fn complete_verified(
         &self,
         document: TrustTask<Value>,
+        received: &Value,
         resolver: &vti_common::auth::TrustTaskVmResolver,
     ) -> bool {
         let signer = match document.proof.as_ref() {
-            Some(_) => vti_common::auth::verify_trust_task_proof_with(&document, resolver)
+            Some(_) => vti_common::auth::verify_trust_task_proof_value(received, resolver)
                 .await
                 .ok()
                 .map(|s| base_did(&s).to_string())

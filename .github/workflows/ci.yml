@@ -178,7 +178,12 @@ jobs:
           # repo's whole 10 GB allowance. Each job keeps its OWN prefix
           # fallback, which is what actually warms a branch build from main.
 
+      # A type-check never reads the baked admin-ui bundle's content, only
+      # that `include_dir!`'s target directory exists — the npm build is
+      # minutes this job doesn't need to spend.
       - run: cargo check --workspace
+        env:
+          VTC_SKIP_ADMIN_UI_BUILD: "1"
 
   test:
     name: Test (workspace)
@@ -242,7 +247,7 @@ jobs:
       - name: Disk after cache restore
         run: df -h /
 
-      - run: cargo test --workspace --exclude vtc-service --exclude vtc-client
+      - run: cargo test --workspace --exclude vtc-service --exclude vtc-client --no-fail-fast
 
   test-vtc:
     name: Test (VTC)
@@ -328,7 +333,7 @@ jobs:
       - name: Disk after cache restore
         run: df -h /
 
-      - run: cargo test -p vtc-service -p vtc-client
+      - run: cargo test -p vtc-service -p vtc-client --no-fail-fast
 
       # Hidden-vetter admission (development branch `zkp-pcs`). The feature is
       # off by default, which means the line above compiles none of it — about
@@ -535,7 +540,12 @@ jobs:
       # it clippy sees only the lib/bin targets, and dead code in `tests/`
       # accumulates unseen — a dead import sat on main after #1000 and only
       # surfaced when someone ran this flag by hand.
+      # Clippy lints the crate; it never runs it, so it never reads the baked
+      # admin-ui bundle's content — the npm build is minutes this job
+      # doesn't need to spend.
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        env:
+          VTC_SKIP_ADMIN_UI_BUILD: "1"
 
   fmt:
     name: Format
@@ -662,7 +672,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-msrv-${{ steps.msrv.outputs.msrv }}-
 
+      # Same reasoning as Check: a type-check never reads the baked admin-ui
+      # bundle's content, so the npm build buys this job nothing.
       - run: cargo check --workspace --locked
+        env:
+          VTC_SKIP_ADMIN_UI_BUILD: "1"
 
   deny:
     # cargo-deny enforces the advisory ignores documented in `deny.toml`
@@ -1109,8 +1123,8 @@ jobs:
       # hand. Run them, don't just build them.
       - name: vta-service setup wizard under extra secrets backends
         run: |
-          cargo test -p vta-service --bin vta --features config-seed setup::interactive
-          cargo test -p vta-service --bin vta --features config-seed,vault-secrets,k8s-secrets setup::interactive
+          cargo test -p vta-service --bin vta --features config-seed --no-fail-fast setup::interactive
+          cargo test -p vta-service --bin vta --features config-seed,vault-secrets,k8s-secrets --no-fail-fast setup::interactive
 
       # ("The `cargo check` step above" below is `vta-service tee + webvh`, now in
       # `Feature combos (vta-service builds)`.)
@@ -1122,7 +1136,7 @@ jobs:
       # ever minted, and a consumed carve-out refuses with 410 rather than a
       # code that invites a retry. Both were unrunnable in CI. Run them.
       - name: vta-service TEE Mode B carve-out
-        run: cargo test -p vta-service --no-default-features --features tee,rest,didcomm --lib routes::bootstrap
+        run: cargo test -p vta-service --no-default-features --features tee,rest,didcomm --no-fail-fast --lib routes::bootstrap
 
   features-sdk-tee:
     # vta-sdk's feature combinations and vta-tee's fleet path. ~10.5 min
@@ -1153,7 +1167,7 @@ jobs:
       # over a different card, one vetter counted twice) compiles perfectly.
       # `client` rides along because `trust_task_proof`'s own unit tests need it.
       - name: vta-sdk vetting
-        run: cargo test -p vta-sdk --features client,vetting --lib vetting
+        run: cargo test -p vta-sdk --features client,vetting --no-fail-fast --lib vetting
 
       # `-p vta-sdk`, not the workspace: `vtc-service`'s
       # `*_without_feature_is_config_error` tests assert the error you get when
@@ -1161,7 +1175,7 @@ jobs:
       # build where they cannot pass. That is the tests being right about the
       # feature, not a combination worth fixing.
       - name: vta-sdk all-features (test)
-        run: cargo test -p vta-sdk --all-features
+        run: cargo test -p vta-sdk --all-features --no-fail-fast
 
       # The fleet (`BAKE_CONFIG=false`) tenant-overlay path. `tenant-overlay` is
       # not a default feature of `vta-tee` and nothing in the default workspace
@@ -1171,7 +1185,7 @@ jobs:
       # unknown-field rejection and fail-closed behaviour are exactly the checks
       # that must not rot silently. Run them, don't just build them.
       - name: vta-tee fleet tenant-overlay path
-        run: cargo test -p vta-tee --features tenant-overlay tenant_overlay
+        run: cargo test -p vta-tee --features tenant-overlay --no-fail-fast tenant_overlay
 
   features-rooms:
     # The room member half, natively and on wasm32, and the wasm artifact.
@@ -1240,7 +1254,7 @@ jobs:
       # only checked: the bug it has already had was a reply threaded on the
       # wrong id, which compiles perfectly.
       - name: room-host didcomm + tsp
-        run: cargo test -p room-host --features didcomm
+        run: cargo test -p room-host --features didcomm --no-fail-fast
 
       # `transport-harness` is not a default feature, so `cargo test
       # --workspace` never compiles `MockVta::start_with_transports` — the
@@ -1250,7 +1264,7 @@ jobs:
       # runs a real embedded mediator and a real websocket handshake, so it is
       # a behaviour test, not a compile check — run it, don't just build it.
       - name: vta-service mediator-backed transport harness
-        run: cargo test -p vta-service --features transport-harness transport_harness_tests
+        run: cargo test -p vta-service --features transport-harness --no-fail-fast transport_harness_tests
 
       # The VTC's TSP **receive** path. `didcomm-harness` is not a default
       # feature, so `cargo test --workspace` never builds this; and compiling
@@ -1262,7 +1276,7 @@ jobs:
       # real CESR frame, and asserts the join lands in the dispatcher: a
       # behaviour test, not a compile check.
       - name: vtc-service TSP receive path over a real mediator
-        run: cargo test -p vtc-service --features didcomm-harness --test join_tsp
+        run: cargo test -p vtc-service --features didcomm-harness --no-fail-fast --test it -- join_tsp::
         env:
           # The admin-UI npm build is irrelevant to the messaging path and adds
           # minutes to this job.
@@ -1278,7 +1292,7 @@ jobs:
       # as the join tests: `didcomm-harness` is not a default feature, so
       # `cargo test --workspace` never builds this.
       - name: vtc-service trust-registry round trip over a real mediator
-        run: cargo test -p vtc-service --features didcomm-harness --test registry_didcomm
+        run: cargo test -p vtc-service --features didcomm-harness --no-fail-fast --test it -- registry_didcomm::
         env:
           VTC_SKIP_ADMIN_UI_BUILD: "1"
 
@@ -1360,8 +1374,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-features-all-
 
+      # Lint only, same as Clippy above — the npm build is minutes this job
+      # doesn't need to spend.
       - name: workspace all-features (lint)
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+        env:
+          VTC_SKIP_ADMIN_UI_BUILD: "1"
 
   affects:
     # Which package-scoped builds this change can possibly alter.
@@ -1650,7 +1668,7 @@ jobs:
       # — including libc's own, via `temp_dir()` or the tokio tests — is the
       # unsoundness edition 2024 made that call unsafe for. 23 tests, so
       # serialising them costs nothing.
-      - run: cargo test --release --locked -- --test-threads=1
+      - run: cargo test --release --locked --no-fail-fast -- --test-threads=1
 
   mobile:
     # Cross-compile vta-mobile-core for the iOS + Android targets the app repos

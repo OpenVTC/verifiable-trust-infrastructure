@@ -35,7 +35,7 @@ use affinidi_data_integrity::{DataIntegrityProof, prepare_sign_input};
 use multibase::Base;
 use serde::Serialize;
 use trust_tasks_rs::{Proof, TrustTask};
-use vta_sdk::trust_task_proof::{TrustTaskVmResolver, verify_trust_task_proof_with};
+use vta_sdk::trust_task_proof::{TrustTaskVmResolver, verify_trust_task_proof_value};
 
 use crate::error::FfiError;
 use crate::keys::Signer;
@@ -429,11 +429,13 @@ async fn verify_signature(
     if proof.cryptosuite != CryptoSuite::EddsaJcs2022 {
         return Err("the proof is not an eddsa-jcs-2022 proof".to_string());
     }
-    let doc: TrustTask<serde_json::Value> = serde_json::from_value(raw.clone())
+    // A shape check only: the proof is verified over `raw` as received, never over a
+    // re-serialisation of the typed document (VTI-45).
+    let _doc: TrustTask<serde_json::Value> = serde_json::from_value(raw.clone())
         .map_err(|e| format!("not a Trust Task document: {e}"))?;
     let client = crate::resolver::client().await.map_err(|e| e.to_string())?;
     let resolver = TrustTaskVmResolver::new(client.clone());
-    let proven = verify_trust_task_proof_with(&doc, &resolver)
+    let proven = verify_trust_task_proof_value(raw, &resolver)
         .await
         .map_err(|e| format!("proof verification failed: {e}"))?;
     if proven != signer {
