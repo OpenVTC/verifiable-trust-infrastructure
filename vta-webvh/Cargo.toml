@@ -2,7 +2,7 @@
 name = "vta-webvh"
 description = "WebVH hosting infrastructure for the VTA — the local did:webvh DID-record and hosting-server store"
 readme = "README.md"
-version = "0.6.0"
+version = "0.7.0"
 edition.workspace = true
 # Published, because `vta-service` is — and a crate cannot go to crates.io
 # without its whole dependency closure there too. Not published for its own
@@ -21,8 +21,8 @@ repository.workspace = true
 
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.6" }
-vti-common = { path = "../vti-common", version = "0.32" }
-vta-sdk = { path = "../vta-sdk", version = "0.59" }
+vti-common = { path = "../vti-common", version = "0.33" }
+vta-sdk = { path = "../vta-sdk", version = "0.60" }
 serde_json = { workspace = true }
 
 [dev-dependencies]

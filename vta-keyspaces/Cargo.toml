@@ -26,4 +26,4 @@ webvh = []
 
 [dependencies]
 # For `KeyspaceHandle` in the shared `Keyspaces` handle bundle.
-vti-common = { path = "../vti-common", version = "0.32" }
+vti-common = { path = "../vti-common", version = "0.33" }
