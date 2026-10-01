@@ -8,7 +8,6 @@
 //! - Unknown purpose → 404.
 //! - 503 path when the credential signer isn't initialised.
 
-
 use std::sync::Arc;
 
 use affinidi_status_list::StatusPurpose;

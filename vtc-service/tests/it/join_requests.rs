@@ -6,7 +6,6 @@
 //! DIDComm round-trip needs the mediator harness and lives in
 //! `vti-e2e-tests`.
 
-
 use std::sync::Arc;
 
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
@@ -328,7 +327,8 @@ async fn send_as_admin(
                 .unwrap_or(Body::empty()),
         )
         .unwrap();
-    crate::common::legacy::send_json(&fix._vtc, &[(fix.admin_token.as_str(), &fix.signer)], req).await
+    crate::common::legacy::send_json(&fix._vtc, &[(fix.admin_token.as_str(), &fix.signer)], req)
+        .await
 }
 
 async fn send(

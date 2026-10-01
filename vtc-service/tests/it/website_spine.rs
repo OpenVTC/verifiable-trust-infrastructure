@@ -9,7 +9,6 @@
 //! the identity that began it, is bounded per identity, and expires; and each
 //! refusal carries the code its specification declares.
 
-
 use axum::http::StatusCode;
 use base64::Engine as _;
 use serde_json::{Value, json};

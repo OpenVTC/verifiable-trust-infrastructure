@@ -1,7 +1,6 @@
 //! Integration coverage for `POST /v1/members/me/rotate/*`
 //! (Phase 2 M2.15.1, `did:key` path only).
 
-
 use std::sync::Arc;
 
 use affinidi_status_list::StatusPurpose;
@@ -199,7 +198,8 @@ async fn mint_challenge_with_reason(fix: &Fixture, reason: Option<&str>) -> (Str
         Some(r) => json!({ "reason": r }),
         None => json!({}),
     };
-    let (status, doc) = crate::common::signed::call(&fix._vtc, &fix.member, CHALLENGE_TASK, payload).await;
+    let (status, doc) =
+        crate::common::signed::call(&fix._vtc, &fix.member, CHALLENGE_TASK, payload).await;
     assert_eq!(status, StatusCode::OK, "{doc}");
     let body = &doc["payload"];
     let id = body["rotationId"].as_str().unwrap().to_string();
@@ -214,7 +214,8 @@ async fn mint_challenge_with_reason(fix: &Fixture, reason: Option<&str>) -> (Str
 /// `vtc/members/rotate/0.1`, signed by `fix.member`: the reply's status and
 /// `#response` payload (or a refusal's `{code, message}`).
 async fn finish_rotate(fix: &Fixture, payload: Value) -> (StatusCode, Value) {
-    let (status, doc) = crate::common::signed::call(&fix._vtc, &fix.member, ROTATE_TASK, payload).await;
+    let (status, doc) =
+        crate::common::signed::call(&fix._vtc, &fix.member, ROTATE_TASK, payload).await;
     (status, doc["payload"].clone())
 }
 

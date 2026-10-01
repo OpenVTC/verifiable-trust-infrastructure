@@ -9,7 +9,6 @@
 //! them (`trust_tasks::handle_step_up_approve_response`) is already covered
 //! by `signed_step_up.rs`, so nothing here needs a signed envelope.
 
-
 use serde_json::{Value, json};
 use vti_rooms_dtg::test_support::Party;
 use webauthn_rs::prelude::{

@@ -8,7 +8,6 @@
 //! (`tests/acl_canonical.rs`), and the passkey ceremony that elevates a
 //! session for it lives in `tests/passkey_step_up.rs`.
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

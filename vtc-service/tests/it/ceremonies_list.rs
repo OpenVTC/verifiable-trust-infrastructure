@@ -6,7 +6,6 @@
 //! router stack: the document endpoint → the spine → the signer's ACL row →
 //! handler.
 
-
 use axum::http::StatusCode;
 use serde_json::json;
 use vti_rooms_dtg::test_support::Party;

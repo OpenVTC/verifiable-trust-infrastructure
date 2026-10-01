@@ -5,7 +5,6 @@
 //! extractor → handler → community keyspace — through
 //! `Router::oneshot`.
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

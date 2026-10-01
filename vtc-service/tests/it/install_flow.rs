@@ -15,7 +15,6 @@
 //!
 //! Closes the Phase-0 behavioural gate (Checkpoint E in the plan).
 
-
 use std::sync::Arc;
 
 use axum::body::Body;

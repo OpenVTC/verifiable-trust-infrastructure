@@ -20,7 +20,6 @@
 //! - Missing bundle → clean `AppError::Config`.
 //! - `vtc://install?token=...` fallback when `public_url` is unset.
 
-
 use std::sync::Arc;
 
 use async_trait::async_trait;

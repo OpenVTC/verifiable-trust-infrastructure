@@ -11,7 +11,6 @@
 //! through [`reply`], which recovers the REST status the retired route
 //! answered with.
 
-
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use vti_rooms_dtg::test_support::Party;

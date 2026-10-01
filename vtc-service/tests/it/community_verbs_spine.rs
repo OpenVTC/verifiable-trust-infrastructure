@@ -10,7 +10,6 @@
 //! community does not know are refused; a signer whose role the bearer route
 //! refused is refused; and the bearer route is gone.
 
-
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use vti_rooms_dtg::test_support::Party;
@@ -419,7 +418,8 @@ async fn a_redelivered_issue_does_not_hand_the_credential_out_again() {
     let (vtc, _) = vtc().await;
     let admin = admin(&vtc).await;
     let doc =
-        crate::common::signed::signed(&admin, INVITATIONS_ISSUE, json!({ "subjectDid": INVITEE })).await;
+        crate::common::signed::signed(&admin, INVITATIONS_ISSUE, json!({ "subjectDid": INVITEE }))
+            .await;
     let (status, first) = post(&vtc, &doc).await;
     assert_eq!(status, StatusCode::OK, "{first}");
     assert!(payload(&first)["vic"].is_object(), "{first}");

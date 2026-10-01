@@ -10,7 +10,6 @@
 //! member-level projection is the assertion that proves the role comes from
 //! there.
 
-
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use vti_rooms_dtg::test_support::Party;

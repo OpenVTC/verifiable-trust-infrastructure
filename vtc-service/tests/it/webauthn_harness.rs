@@ -14,7 +14,6 @@
 //! `Passkey` — without that, callers can't reliably derive a `did:key`
 //! from the registered credential.
 
-
 use base64::Engine;
 use uuid::Uuid;
 use vti_common::auth::passkey::build_webauthn;
