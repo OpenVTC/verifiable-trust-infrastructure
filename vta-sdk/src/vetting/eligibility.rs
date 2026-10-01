@@ -29,7 +29,7 @@
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
 use affinidi_secrets_resolver::secrets::Secret;
 use chrono::{DateTime, Utc};
-use dtg_credentials::{DTGCredential, DTGCredentialType, IssuerScope};
+use dtg_credentials::{DTGCredentialType, IssuerScope};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -63,7 +63,9 @@ const VC_CONTEXT_V2: &str = "https://www.w3.org/ns/credentials/v2";
 /// Use it to pick candidates out of a wallet before presenting them.
 #[must_use]
 pub fn community_roles(credential: &Value) -> Option<(String, Vec<String>)> {
-    let vac = DTGCredential::try_from(credential.clone()).ok()?;
+    // Without its proof: a two-key community's grant carries a proof set
+    // (VTI-57), and this checks the shape only.
+    let vac = super::dtg_shape(credential).ok()?;
     if vac.type_() != DTGCredentialType::Authority {
         return None;
     }
@@ -302,8 +304,9 @@ async fn verify_role_credential(
     };
     // A strict DTG parse: the v1 context, exactly one concrete subtype, a
     // declared `issuerScope`.
-    let vac: DTGCredential =
-        serde_json::from_value(credential.clone()).map_err(|e| malformed(e.to_string()))?;
+    // The proof (one, or a set) is verified below over the credential as
+    // received; the shape parse sets it aside (VTI-57).
+    let vac = super::dtg_shape(credential).map_err(|e| malformed(e.to_string()))?;
     if vac.type_() != DTGCredentialType::Authority {
         return Err(malformed("not an AuthorityCredential".into()));
     }
@@ -436,6 +439,70 @@ mod tests {
             &TrustTaskVmResolver::did_key_only(),
         )
         .await
+    }
+
+    /// `vac` re-signed so its `proof` is a set of two, as a community holding
+    /// two signing keys writes it.
+    async fn with_proof_set(community: &Secret, mut vac: Value) -> Value {
+        let first = vac["proof"].clone();
+        let mut proofless = vac.clone();
+        proofless.as_object_mut().unwrap().remove("proof");
+        let second = affinidi_data_integrity::DataIntegrityProof::sign(
+            &proofless,
+            community,
+            affinidi_data_integrity::SignOptions::new().with_proof_purpose("assertionMethod"),
+        )
+        .await
+        .unwrap();
+        vac["proof"] = serde_json::json!([first, serde_json::to_value(second).unwrap()]);
+        vac
+    }
+
+    /// VTI-57: a vetter grant from a two-key community carries a proof set.
+    /// `community_roles` used to fail to parse it and answer `None`, so openvtc
+    /// filed the grant as a plain role and never seated the vetter.
+    #[tokio::test]
+    async fn vti_57_a_grant_carrying_a_proof_set_names_its_roles() {
+        let (community, vetter) = (secret(0xC7), secret(0x17));
+        let vac = with_proof_set(&community, live_vac(&community, &vetter, "vetter").await).await;
+        assert!(vac["proof"].is_array());
+        assert_eq!(
+            community_roles(&vac),
+            Some((did(&community), vec!["vetter".to_string()]))
+        );
+    }
+
+    /// VTI-57, presentation side: the same grant presented to an applicant
+    /// verifies; the strict shape parse refused it as malformed.
+    #[tokio::test]
+    async fn vti_57_an_eligibility_vp_over_a_proof_set_grant_verifies() {
+        let (community, vetter) = (secret(0xC8), secret(0x18));
+        let vac = with_proof_set(&community, live_vac(&community, &vetter, "vetter").await).await;
+        let vp = build_eligibility_vp(&vetter, vec![vac], CHALLENGE, DOMAIN)
+            .await
+            .unwrap();
+        verify(&vp, &did(&vetter), &did(&community), "vetter")
+            .await
+            .expect("a proof-set grant verifies");
+    }
+
+    /// Setting the proof aside for the shape parse loosens nothing: a set with
+    /// one tampered proof is still refused, by the proof check.
+    #[tokio::test]
+    async fn vti_57_a_tampered_proof_in_the_set_is_still_refused() {
+        let (community, vetter) = (secret(0xC9), secret(0x19));
+        let mut vac =
+            with_proof_set(&community, live_vac(&community, &vetter, "vetter").await).await;
+        vac["proof"][1]["proofValue"] = vac["proof"][0]["proofValue"].clone();
+        vac["proof"][1]["created"] = serde_json::json!("2020-01-01T00:00:00Z");
+        let vp = build_eligibility_vp(&vetter, vec![vac], CHALLENGE, DOMAIN)
+            .await
+            .unwrap();
+        assert!(
+            verify(&vp, &did(&vetter), &did(&community), "vetter")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

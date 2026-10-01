@@ -80,7 +80,7 @@
 //! window's edges are.
 
 use chrono::{DateTime, Utc};
-use dtg_credentials::{DTGCredential, DTGCredentialError, DTGCredentialType, IssuerScope};
+use dtg_credentials::{DTGCredentialError, DTGCredentialType, IssuerScope};
 use serde_json::Value as JsonValue;
 use vti_common::error::AppError;
 
@@ -190,7 +190,9 @@ pub fn classify_dtg(doc: &JsonValue) -> Result<DTGCredentialType, AppError> {
     // the missing binding is what lets a witness from one exchange be read as
     // evidence in another (Security Considerations 5).
     if matches!(subtype, DTGCredentialType::Statement) {
-        match DTGCredential::try_from(doc.clone()) {
+        // Shape only; a proof set would fail the catalog's one-proof model
+        // (VTI-57), and the proofs are verified on their own.
+        match vta_sdk::vetting::dtg_shape(doc) {
             Ok(_) => {}
             Err(DTGCredentialError::MissingTaskContext) => {
                 return Err(crate::credentials::task_context::missing());
