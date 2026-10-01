@@ -4928,6 +4928,17 @@ fn every_published_dispatched_uri_has_a_witness() {
     }
 
     let missing: Vec<_> = expected.difference(&covered).collect();
+    let template: String = missing
+        .iter()
+        .map(|uri| {
+            format!(
+                "    (\"{uri}\", checked!(\n        /* request payload type */,\n        \
+                 /* response payload type */,\n        json!({{ /* a schema-valid request */ \
+                 }}),\n        json!({{ /* a schema-valid response, or {{}} if fire-and-forget */ \
+                 }}),\n    )),\n"
+            )
+        })
+        .collect::<String>();
     assert!(
         missing.is_empty(),
         "these dispatched URIs are published in the registry but have no \
@@ -4935,7 +4946,8 @@ fn every_published_dispatched_uri_has_a_witness() {
          response built from the slice's wire types), or — only for a real, \
          understood non-conformance — a `KnownDrift` entry with a reason. If \
          this fired after a rebase, a sibling consolidation stream rebound a \
-         task onto a published URI; the sweep is asking for its witness.",
+         task onto a published URI; the sweep is asking for its witness.\n\n\
+         Ready-to-fill template for each:\n{template}",
         missing
             .iter()
             .map(|s| s.to_string())
