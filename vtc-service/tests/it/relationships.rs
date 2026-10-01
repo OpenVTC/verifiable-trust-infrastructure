@@ -524,7 +524,11 @@ async fn lifecycle_verbs_are_not_found_on_an_unknown_edge() {
         ("restore", "vtc/relationships/restore:notFound"),
     ] {
         let (_, v) = lifecycle_verb(&fix, Uuid::new_v4(), verb, &admin).await;
-        assert_eq!(crate::common::signed::error_code(&v), Some(code), "{verb}: {v}");
+        assert_eq!(
+            crate::common::signed::error_code(&v),
+            Some(code),
+            "{verb}: {v}"
+        );
     }
 }
 

@@ -15,7 +15,6 @@
 //! - it elevates in place — no new session, no new tokens;
 //! - and the elevation carries a deadline, which is the whole point.
 
-
 use std::sync::Arc;
 
 use axum::body::Body;

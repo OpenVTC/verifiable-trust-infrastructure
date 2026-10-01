@@ -1,7 +1,6 @@
 //! `vtc/admin/invites/{create,revoke}/0.1` as signed documents — the error
 //! codes they declare (#1600), read from the generated bindings.
 
-
 use std::sync::Arc;
 
 use serde_json::{Value, json};

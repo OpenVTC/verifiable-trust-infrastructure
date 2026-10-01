@@ -13,7 +13,6 @@
 //! /website/deploy`) were already gone before this batch: content moves as
 //! signed Trust Tasks (`tests/website_spine.rs`).
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
@@ -128,7 +127,8 @@ async fn delete_refuses_a_signer_with_no_acl_row() {
     let _root = configure_website(&vtc, "live").await;
     let stranger = Party::new();
     let (status, doc) =
-        crate::common::signed::call(&vtc, &stranger, DELETE_TASK, json!({ "path": "gone.txt" })).await;
+        crate::common::signed::call(&vtc, &stranger, DELETE_TASK, json!({ "path": "gone.txt" }))
+            .await;
     assert_ne!(status, StatusCode::OK, "{doc}");
 }
 
@@ -188,7 +188,8 @@ async fn the_generation_tasks_answer_with_the_codes_their_specs_declare() {
     let admin = crate::common::signed::admin(&vtc).await;
     let live = configure_website(&vtc, "live").await;
 
-    let (status, doc) = crate::common::signed::call(&vtc, &admin, GENERATIONS_TASK, json!({})).await;
+    let (status, doc) =
+        crate::common::signed::call(&vtc, &admin, GENERATIONS_TASK, json!({})).await;
     assert_ne!(status, StatusCode::OK, "{doc}");
     assert_eq!(
         tt_error_code(&doc),
@@ -197,14 +198,16 @@ async fn the_generation_tasks_answer_with_the_codes_their_specs_declare() {
     );
 
     let (status, doc) =
-        crate::common::signed::call(&vtc, &admin, ROLLBACK_TASK, json!({ "generation": "1" })).await;
+        crate::common::signed::call(&vtc, &admin, ROLLBACK_TASK, json!({ "generation": "1" }))
+            .await;
     assert_ne!(status, StatusCode::OK, "{doc}");
     assert_eq!(tt_error_code(&doc), Some(ROLLBACK_ERR_NOT_MANAGED), "{doc}");
     drop(live);
 
     let _managed = configure_website(&vtc, "managed").await;
     let (status, doc) =
-        crate::common::signed::call(&vtc, &admin, ROLLBACK_TASK, json!({ "generation": "99" })).await;
+        crate::common::signed::call(&vtc, &admin, ROLLBACK_TASK, json!({ "generation": "99" }))
+            .await;
     assert_ne!(status, StatusCode::OK, "{doc}");
     assert_eq!(
         tt_error_code(&doc),

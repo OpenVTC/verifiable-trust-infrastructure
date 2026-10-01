@@ -10,7 +10,6 @@
 //! relationship publish limiter is covered in `relationships.rs`, where a
 //! signed publish can be built.
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

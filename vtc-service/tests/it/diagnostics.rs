@@ -11,7 +11,6 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-
 use crate::common::signed::{admin, call, error_code, party_with_role};
 use vtc_service::acl::VtcRole;
 use vtc_service::registry::{SyncJob, SyncJobKind, SyncJobState, store_sync_job};

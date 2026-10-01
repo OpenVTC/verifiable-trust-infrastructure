@@ -13,7 +13,6 @@
 //! payload twice are refused; a console key cannot create a mark; a silent
 //! assertion and another admin's passkey are refused.
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

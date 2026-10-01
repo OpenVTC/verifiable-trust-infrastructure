@@ -7,7 +7,6 @@
 //! admin's `task-consent/decision/0.1`, and the identical operation re-sent.
 //! Design: `docs/05-design-notes/vtc-operation-bound-step-up.md` §4.
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

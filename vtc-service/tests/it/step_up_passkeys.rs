@@ -23,7 +23,6 @@
 
 #![cfg(all(feature = "didcomm-harness", feature = "tsp"))]
 
-
 use std::time::Duration;
 
 use axum::body::Body;

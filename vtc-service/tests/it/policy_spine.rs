@@ -7,7 +7,6 @@
 //! the role its bearer route took, and — where the route is gone — not served
 //! over bearer REST.
 
-
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 

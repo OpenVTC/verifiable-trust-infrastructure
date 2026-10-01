@@ -23,7 +23,6 @@
 //! key the legacy PATCH actually wrote, so the migration of that field is
 //! covered end to end.
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

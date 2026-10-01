@@ -6,7 +6,6 @@
 //! - `DELETE /v1/members/{did}` (admin-remove): admin auth,
 //!   self-target refused, last-admin protection.
 
-
 use std::sync::Arc;
 
 use axum::body::Body;

@@ -12,7 +12,6 @@
 //! No `Trust-Task` header is sent on either request — these aliases are
 //! deliberately exempt so the generic wallet extension works unchanged.
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::Engine;

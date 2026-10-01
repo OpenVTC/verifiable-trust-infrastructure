@@ -5,7 +5,6 @@
 //! management endpoints through `Router::oneshot`, with the soft
 //! EdDSA harness producing the WebAuthn assertions.
 
-
 use std::sync::Arc;
 
 use axum::body::Body;
