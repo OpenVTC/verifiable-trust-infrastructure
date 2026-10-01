@@ -36,4 +36,8 @@ pub mod trust_task_push;
 /// Which peers were recently seen sending over TSP, learned from inbound —
 /// how a node reaches over TSP a peer whose DID document advertises nothing.
 pub mod tsp_reach;
+/// Reaching a TSP peer on another mediator: the invite routed through its
+/// mediator and the payload nested (VTI-56).
+#[cfg(feature = "tsp")]
+pub mod tsp_route;
 pub mod vault;

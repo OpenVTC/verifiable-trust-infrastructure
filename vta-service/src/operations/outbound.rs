@@ -329,7 +329,7 @@ impl TspSender {
         framed: &[u8],
         type_uri: &str,
     ) -> Result<Value, AppError> {
-        self.recover_send_tsp(recipient, thread, framed, type_uri)
+        self.recover_send_tsp(recipient, None, thread, framed, type_uri)
             .await
     }
 
@@ -338,10 +338,9 @@ impl TspSender {
     ///
     /// `reestablish` picks the re-inviting send (`send_reestablishing`) over the
     /// plain routed send — the recovery path uses it after a reset. `peer_mediator`
-    /// is the recipient's advertised TSP mediator DID, used only on the ordinary
-    /// (non-reestablish) send to route nested for metadata privacy when the peer
-    /// is on a different mediator; `None` keeps the direct route. The reestablish
-    /// send stays direct regardless — see [`recover_send_tsp`](Self::recover_send_tsp).
+    /// is the recipient's advertised TSP mediator DID: when the peer is on a
+    /// different mediator the send nests, and a re-establishing send routes its
+    /// invite through that mediator (VTI-56). `None` keeps the direct route.
     async fn send_and_await(
         &self,
         recipient: &str,
@@ -354,7 +353,9 @@ impl TspSender {
         // sending and registering would find nothing waiting.
         let waiting = self.replies.register(thread, recipient);
         let sent = if reestablish {
-            self.transport.send_reestablishing(recipient, framed).await
+            self.transport
+                .send_reestablishing(recipient, peer_mediator, framed)
+                .await
         } else {
             self.transport
                 .send_metadata_private(recipient, peer_mediator, framed)
@@ -430,6 +431,13 @@ impl TspSender {
         if self.idle_reestablish_due(recipient).await {
             self.send_after_idle_reestablish(recipient, peer_mediator, thread, framed)
                 .await
+        } else if self.no_relationship(recipient).await {
+            // First contact (or our half was lost): the peer drops an
+            // application frame from a VID it holds no relationship with
+            // (§7.2.2), so a plain send would only wait out the reply timeout
+            // before D6 re-invites. Invite alongside the first send instead.
+            self.send_and_await(recipient, peer_mediator, thread, framed, true)
+                .await
         } else {
             self.send_and_await(recipient, peer_mediator, thread, framed, false)
                 .await
@@ -443,8 +451,7 @@ impl TspSender {
     ///
     /// This is the first send of `framed`, not a resend, so retry safety does not
     /// apply. It is not a D6 recovery either, and does not touch that
-    /// coordinator or its metrics. Direct rather than nested for a cross-mediator
-    /// peer, as on the D6 resend: the SDK has no nested re-establishing send.
+    /// coordinator or its metrics.
     async fn send_after_idle_reestablish(
         &self,
         recipient: &str,
@@ -467,8 +474,22 @@ impl TspSender {
             peer = recipient,
             "re-inviting an idle TSP relationship alongside the request"
         );
-        self.send_and_await(recipient, None, thread, framed, true)
+        self.send_and_await(recipient, peer_mediator, thread, framed, true)
             .await
+    }
+
+    /// Whether we hold no relationship with `recipient` at all, so a send would
+    /// have to (re)establish one. Unreadable counts as "has one": the ordinary
+    /// send and D6 behind it are what ran before this check existed.
+    async fn no_relationship(&self, recipient: &str) -> bool {
+        matches!(
+            self.transport
+                .atm()
+                .tsp()
+                .send_readiness(self.transport.profile(), recipient)
+                .await,
+            Ok(affinidi_messaging_sdk::protocols::tsp::SendReadiness::Reestablish)
+        )
     }
 
     /// D6 self-repair on a reply-timeout (design note `tsp-relationship-recovery.md`).
@@ -485,6 +506,7 @@ impl TspSender {
     async fn recover_send_tsp(
         &self,
         recipient: &str,
+        peer_mediator: Option<&str>,
         thread: &str,
         framed: &[u8],
         type_uri: &str,
@@ -521,15 +543,11 @@ impl TspSender {
                     )));
                 }
                 if resend_after_reform(type_uri) {
-                    // `None` peer-mediator: the re-establishing resend stays a
-                    // direct routed send even to a cross-mediator peer. Recovery
-                    // is the rare §7.2.2 drop path where re-forming the
-                    // relationship and getting the reply through matters more than
-                    // metadata privacy, and the SDK has no nested re-establishing
-                    // send to nest it with. The steady-state send above is the one
-                    // that nests.
+                    // A cross-mediator peer gets its invite routed through its
+                    // own mediator and the resend nested: a direct send to it
+                    // is refused by ours (VTI-56).
                     match self
-                        .send_and_await(recipient, None, thread, framed, true)
+                        .send_and_await(recipient, peer_mediator, thread, framed, true)
                         .await
                     {
                         TspAttempt::Reply(v) => {
@@ -565,7 +583,7 @@ impl TspSender {
                 } else {
                     // Not safe to blind-resend — a duplicate could double-execute.
                     // Re-invite so the caller's retry lands, then report.
-                    if let Err(e) = self.transport.relate(recipient).await {
+                    if let Err(e) = self.transport.relate(recipient, peer_mediator).await {
                         self.recovery
                             .settle_failure(&our, recipient, now, backoff())
                             .await;
@@ -982,7 +1000,7 @@ impl Outbound<'_> {
             // §7.2.2 D6: a silent reply-timeout may mean the peer lost the
             // relationship. Hand off to the coordinator-gated self-repair.
             TspAttempt::Timeout => {
-                tsp.recover_send_tsp(recipient, &thread, &framed, &type_uri)
+                tsp.recover_send_tsp(recipient, Some(peer_mediator), &thread, &framed, &type_uri)
                     .await
             }
         }
