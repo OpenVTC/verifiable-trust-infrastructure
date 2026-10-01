@@ -516,7 +516,7 @@ pub async fn resend(
             )
             .await?;
     }
-    info!(member = %member_did, endorsement_id = %row.id, "vetter grant credential delivered again");
+    info!(member = %member_did, endorsement_id = %row.id, "vetter grant credential queued for delivery again");
     resend_wire::Response::try_from(
         resend_wire::Response::builder()
             .credential_id(row.credential_id)
