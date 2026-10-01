@@ -77,9 +77,9 @@ pub fn g2_issuer_key_from_did_key(issuer_did: &str) -> Result<PublicKey, AppErro
 ///
 /// `did:key` issuers resolve locally; `did:webvh` / `did:web` issuers resolve
 /// through `did_resolver` (the verification method's `publicKeyMultibase`, a
-/// `0xeb` Multikey). The G2 analog of
-/// [`crate::di_verify::resolve_di_issuer_key`] — used by the wire layer
-/// (`store_issued_credential`) to receive a BBS credential delivered over
+/// `0xeb` Multikey). The BBS counterpart of
+/// [`crate::di_verify::verify_di_issuer_proofs`] (one G2 key, one proof) —
+/// used by the wire layer (`store_issued_credential`) to receive a BBS credential delivered over
 /// DIDComm.
 pub async fn resolve_bbs_issuer_key(
     did_resolver: Option<&DIDCacheClient>,

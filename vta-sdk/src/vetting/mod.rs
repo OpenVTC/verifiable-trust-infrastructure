@@ -35,7 +35,6 @@ pub mod statement;
 pub mod status;
 pub mod ticket_uri;
 
-use affinidi_data_integrity::DataIntegrityProof;
 use serde_json::Value;
 
 use crate::trust_task_proof::TrustTaskVmResolver;
@@ -128,57 +127,31 @@ pub(crate) fn did_of(vm: &str) -> &str {
     vm.split('#').next().unwrap_or_default()
 }
 
-/// Verify the Data Integrity proof on `signed` and return the proof's signer
-/// DID, which the caller binds to the party the artifact names.
+/// Verify the Data Integrity proof block on `signed` — one proof or a proof
+/// set (VTI-44: a multi-key community signs once per key) — and return the
+/// one signer DID, which the caller binds to the party the artifact names.
+///
+/// Every proof must declare `expected_purpose` and verify with a key its DID
+/// authorises for it; see [`crate::trust_task_proof::proof_set`] for the rule.
 pub(crate) async fn verify_attached_proof(
     what: &'static str,
     signed: &Value,
     expected_purpose: &str,
     resolver: &TrustTaskVmResolver,
 ) -> Result<String, VettingError> {
-    let proof_value = signed.get("proof").ok_or(VettingError::Proof {
+    use crate::trust_task_proof::{ProofPurpose, verify_proof_set};
+
+    let expected = ProofPurpose::parse(expected_purpose).map_err(|e| VettingError::Proof {
         what,
-        detail: "no proof".into(),
+        detail: e.to_string(),
     })?;
-    let proof: DataIntegrityProof =
-        serde_json::from_value(proof_value.clone()).map_err(|e| VettingError::Proof {
-            what,
-            detail: format!("not a Data Integrity proof: {e}"),
-        })?;
-    if proof.proof_purpose != expected_purpose {
-        return Err(VettingError::Proof {
-            what,
-            detail: format!(
-                "proofPurpose `{}`, expected `{expected_purpose}`",
-                proof.proof_purpose
-            ),
-        });
-    }
-    let mut unsigned = signed.clone();
-    if let Some(map) = unsigned.as_object_mut() {
-        map.remove("proof");
-    }
-    // The key must be listed under the purpose the proof declares (checked
-    // equal to `expected_purpose` above), not merely in the document.
-    let bound =
-        crate::trust_task_proof::PurposeBound::for_proof(resolver, &proof).map_err(|e| {
-            VettingError::Proof {
-                what,
-                detail: e.to_string(),
-            }
-        })?;
-    proof
-        .verify(
-            &unsigned,
-            &bound,
-            affinidi_data_integrity::VerifyOptions::new(),
-        )
+    verify_proof_set(signed, expected, resolver)
         .await
+        .map(|verified| verified.into_signer())
         .map_err(|e| VettingError::Proof {
             what,
             detail: e.to_string(),
-        })?;
-    Ok(did_of(&proof.verification_method).to_string())
+        })
 }
 
 /// `digestMultibase` per DTG Credentials §Digest Encoding (JCS without the
@@ -208,5 +181,128 @@ pub(crate) mod test_support {
 
     pub fn did(secret: &Secret) -> String {
         super::did_of(&secret.id).to_string()
+    }
+}
+
+#[cfg(test)]
+mod proof_set_tests {
+    use super::test_support::{did, secret};
+    use super::*;
+    use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+    use affinidi_secrets_resolver::secrets::Secret;
+    use serde_json::json;
+
+    fn statement() -> Value {
+        json!({
+            "type": ["VerifiableCredential", "StatementCredential"],
+            "credentialSubject": { "id": "did:example:applicant" }
+        })
+    }
+
+    async fn proof_over(doc: &Value, key: &Secret, created: &str) -> Value {
+        let proof = DataIntegrityProof::sign(
+            doc,
+            key,
+            SignOptions::new()
+                .with_proof_purpose("assertionMethod")
+                .with_created(created.parse().unwrap()),
+        )
+        .await
+        .unwrap();
+        serde_json::to_value(proof).unwrap()
+    }
+
+    /// VTI-44: a vetting artifact whose `proof` is an array — one proof per
+    /// signing key, as a multi-key issuer emits — verifies and names its one
+    /// signer. The single-object reader refused it outright.
+    #[tokio::test]
+    async fn vti_44_a_proof_set_verifies_and_names_one_signer() {
+        let key = secret(0x51);
+        let doc = statement();
+        let mut signed = doc.clone();
+        signed["proof"] = json!([
+            proof_over(&doc, &key, "2026-09-17T15:00:00Z").await,
+            proof_over(&doc, &key, "2026-09-17T15:00:01Z").await,
+        ]);
+        let signer = verify_attached_proof(
+            "statement",
+            &signed,
+            "assertionMethod",
+            &TrustTaskVmResolver::did_key_only(),
+        )
+        .await
+        .expect("a proof set verifies");
+        assert_eq!(signer, did(&key));
+    }
+
+    /// VTI-44: one proof in the set that does not verify refuses the set.
+    #[tokio::test]
+    async fn vti_44_one_tampered_proof_in_the_set_is_refused() {
+        let key = secret(0x52);
+        let doc = statement();
+        let mut signed = doc.clone();
+        let good = proof_over(&doc, &key, "2026-09-17T15:00:00Z").await;
+        let other = proof_over(&json!({"other": 1}), &key, "2026-09-17T15:00:00Z").await;
+        let mut bad = good.clone();
+        bad["proofValue"] = other["proofValue"].clone();
+        signed["proof"] = json!([good, bad]);
+        let err = verify_attached_proof(
+            "statement",
+            &signed,
+            "assertionMethod",
+            &TrustTaskVmResolver::did_key_only(),
+        )
+        .await
+        .expect_err("one bad proof refuses the set");
+        assert!(
+            err.cause().is_some_and(|c| c.contains("1 of 2 proofs")),
+            "{err:?}"
+        );
+    }
+
+    /// VTI-44: a genuine proof by a second party appended to the set is
+    /// refused rather than reported as one signer.
+    #[tokio::test]
+    async fn vti_44_a_proof_by_another_key_is_refused() {
+        let (key, other) = (secret(0x53), secret(0x54));
+        let doc = statement();
+        let mut signed = doc.clone();
+        signed["proof"] = json!([
+            proof_over(&doc, &key, "2026-09-17T15:00:00Z").await,
+            proof_over(&doc, &other, "2026-09-17T15:00:00Z").await,
+        ]);
+        let err = verify_attached_proof(
+            "statement",
+            &signed,
+            "assertionMethod",
+            &TrustTaskVmResolver::did_key_only(),
+        )
+        .await
+        .expect_err("two signers");
+        assert!(
+            err.cause()
+                .is_some_and(|c| c.contains("two different issuers")),
+            "{err:?}"
+        );
+    }
+
+    /// A single proof object — the shape every vetting artifact had before —
+    /// still verifies, and a wrong expected purpose is still refused.
+    #[tokio::test]
+    async fn vti_44_a_single_proof_object_still_verifies() {
+        let key = secret(0x55);
+        let doc = statement();
+        let mut signed = doc.clone();
+        signed["proof"] = proof_over(&doc, &key, "2026-09-17T15:00:00Z").await;
+        let resolver = TrustTaskVmResolver::did_key_only();
+        let signer = verify_attached_proof("statement", &signed, "assertionMethod", &resolver)
+            .await
+            .expect("verifies");
+        assert_eq!(signer, did(&key));
+        assert!(
+            verify_attached_proof("statement", &signed, "authentication", &resolver)
+                .await
+                .is_err()
+        );
     }
 }

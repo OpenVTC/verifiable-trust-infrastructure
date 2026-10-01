@@ -38,7 +38,7 @@ use crate::error::AppError;
 use crate::server::AppState;
 use crate::vault::model::{CredentialPurpose, CredentialStatus};
 use crate::vault::query::{CredentialDescriptor, CredentialQuery, search};
-use crate::vault::{di_verify, receive, storage};
+use crate::vault::{receive, storage};
 
 use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, success_response,
@@ -171,16 +171,11 @@ pub(super) async fn handle_receive(
 
             let id = resolve_storage_id(req.id, &credential);
 
-            // Resolve the issuer's signing key from the credential's DID
-            // (did:key locally, did:webvh / did:web via the cache) — the data
-            // plane verifies the proof against it.
-            let issuer_pub =
-                match di_verify::resolve_di_issuer_key(state.did_resolver.as_ref(), &credential)
-                    .await
-                {
-                    Ok(k) => k,
-                    Err(e) => return app_error_to_reject(&doc, e),
-                };
+            // The data plane verifies every proof — one, or the proof set a
+            // multi-key issuer emits (VTI-44), ML-DSA included — against keys
+            // resolved from the issuer's DID (did:key locally, did:webvh /
+            // did:web via the cache), each bound to the credential `issuer`.
+            let resolver = state.trust_task_vm_resolver();
 
             let body = match serde_json::to_vec(&credential) {
                 Ok(b) => b,
@@ -194,7 +189,7 @@ pub(super) async fn handle_receive(
                 }
             };
 
-            match receive::receive_di_vc(&state.vault_ks, &id, &body, &issuer_pub, provenance, now)
+            match receive::receive_di_vc(&state.vault_ks, &id, &body, &resolver, provenance, now)
                 .await
             {
                 Ok(s) => s,
