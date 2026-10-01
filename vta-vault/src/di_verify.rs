@@ -1,22 +1,26 @@
-//! Shared Data-Integrity issuer-key resolution.
+//! Shared Data-Integrity issuer-proof verification.
 //!
-//! Resolving the Ed25519 public key that signed a W3C Data-Integrity credential
-//! — **bound to the credential's stated `issuer`** — is needed in more than one
-//! place: receiving a DI credential into the vault
-//! (`credential-exchange`) and verifying a
+//! Verifying the proofs on a W3C Data-Integrity credential — **bound to the
+//! credential's stated `issuer`** — is needed in more than one place:
+//! receiving a DI credential into the vault (`credential-exchange`,
+//! `vault/credentials/receive`) and verifying a
 //! `BitstringStatusListCredential`'s own issuer signature before trusting it
-//! ([`crate::status`]). Both share the same binding rule (the signing key
-//! MUST belong to the stated issuer — otherwise a key from some *other* DID could
-//! sign a credential claiming a different issuer) and the same resolution path
-//! (`did:key` locally, `did:webvh` / `did:web` via the DID cache).
+//! ([`crate::status`]). Both share the same binding rule (every signing key
+//! MUST belong to the stated issuer — otherwise a key from some *other* DID
+//! could sign a credential claiming a different issuer), the same proof-set
+//! rule (VTI-44 — one proof or several, every checkable one verified) and the
+//! same resolution path (`did:key` locally, `did:webvh` / `did:web` via the DID
+//! cache).
 //!
-//! Consistent with the vault's dependency-injection style, the DID resolver is a
+//! Consistent with the vault's dependency-injection style, the resolver is a
 //! **caller-supplied parameter** — these helpers never own a network client; for
 //! `did:key` issuers no I/O happens at all, and for `did:webvh` / `did:web` the
 //! injected resolver does the lookup.
 
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use serde_json::Value;
+use vta_sdk::trust_task_proof::{
+    ProofPurpose, PurposeVmResolver, proof_set, proof_signer_did, verify_proof_set,
+};
 use vti_common::error::AppError;
 
 /// The issuer DID of a credential — its `issuer` field as a string, or the `id`
@@ -29,123 +33,94 @@ pub(crate) fn credential_issuer(credential: &Value) -> Option<String> {
         .or_else(|| issuer.get("id").and_then(Value::as_str).map(str::to_string))
 }
 
-/// Resolve the Ed25519 public key a Data-Integrity VC's proof is signed with,
-/// **binding it to the credential `issuer`**.
+/// Verify a Data-Integrity credential's issuer proofs, **bound to the
+/// credential `issuer`**, and return that issuer DID.
 ///
-/// The proof's `verificationMethod` names the signing key; its base DID MUST be
-/// the credential `issuer` — otherwise a key belonging to some *other* DID could
-/// sign a credential that claims a different issuer (issuer spoofing). `did:key`
-/// issuers resolve locally with no I/O even when a resolver is configured;
-/// `did:webvh` / `did:web` issuers are resolved through `did_resolver`, which
-/// must then be present.
-pub async fn resolve_di_issuer_key(
-    did_resolver: Option<&DIDCacheClient>,
+/// `proof` may be one proof object or a proof set (VTI-44): a VTC holding
+/// several signing keys signs each credential once per key —
+/// `[eddsa-jcs-2022 by #key-0, mldsa44-jcs-2024 by #key-2]` — and a verifier
+/// that read `proof` as one object refused every such credential. The
+/// acceptance rule is the workspace's one
+/// ([`vta_sdk::trust_task_proof::proof_set`]):
+///
+/// - **issuer binding first**: every checkable proof's `verificationMethod`
+///   MUST be under the credential `issuer`, checked before any key is resolved
+///   — otherwise a key belonging to some *other* DID could sign a credential
+///   that claims a different issuer (issuer spoofing), and a foreign DID would
+///   be resolved on the holder's behalf;
+/// - every proof in a suite this build implements (Ed25519 **and** ML-DSA-44)
+///   MUST verify for `assertionMethod` with a key the issuer's DID document
+///   authorises for that purpose (VTI-KEY-022), and at least one must be
+///   checkable. A proof in a suite this build does not implement is set aside;
+///   a malformed one is refused;
+/// - a `bbs-2023` proof is refused here — BBS credentials take the BBS path.
+///
+/// `resolver` is caller-supplied (the vault owns no network client): a
+/// `did:key` issuer resolves locally (its one method is `did:key:<id>#<id>`),
+/// a `did:webvh` / `did:web` one needs a resolver with network resolution,
+/// e.g. `TrustTaskVmResolver::from_optional(did_cache)`.
+pub async fn verify_di_issuer_proofs(
+    resolver: &(dyn PurposeVmResolver + '_),
     credential: &Value,
-) -> Result<Vec<u8>, AppError> {
+) -> Result<String, AppError> {
     let issuer_did = credential_issuer(credential)
         .ok_or_else(|| AppError::Validation("Data-Integrity credential has no `issuer`".into()))?;
-
-    let vm = credential
+    let proof_value = credential
         .get("proof")
-        .and_then(|p| p.get("verificationMethod"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            AppError::Validation("Data-Integrity proof has no `verificationMethod`".into())
-        })?;
+        .ok_or_else(|| AppError::Validation("Data-Integrity credential has no `proof`".into()))?;
 
-    // Binding: the signing key MUST belong to the stated issuer.
-    let vm_base = vm.split('#').next().unwrap_or_default();
-    if vm_base != issuer_did {
+    let is_bbs = |p: &Value| p.get("cryptosuite").and_then(Value::as_str) == Some("bbs-2023");
+    let bbs = match proof_value {
+        Value::Array(items) => items.iter().any(is_bbs),
+        single => is_bbs(single),
+    };
+    if bbs {
+        return Err(AppError::Validation(
+            "a bbs-2023 proof is not verified on the eddsa / ML-DSA Data-Integrity path \
+             (BBS+ is audit-gated and routed separately)"
+                .into(),
+        ));
+    }
+
+    // Binding, before parsing or resolving anything: every proof that names a
+    // key — checkable or not — MUST name one under the stated issuer.
+    let raw: Vec<&Value> = match proof_value {
+        Value::Array(items) => items.iter().collect(),
+        single => vec![single],
+    };
+    if let Some(foreign) = raw
+        .iter()
+        .filter_map(|p| p.get("verificationMethod").and_then(Value::as_str))
+        .find(|vm| vm.split('#').next().unwrap_or_default() != issuer_did)
+    {
         return Err(AppError::Validation(format!(
-            "DI proof verificationMethod `{vm}` is not under the credential issuer \
+            "DI proof verificationMethod `{foreign}` is not under the credential issuer \
              `{issuer_did}` — refusing a credential signed by a key outside the issuer DID"
         )));
     }
-
-    // `did:key` is its own key — resolve locally, no network even if configured.
-    if issuer_did.starts_with("did:key:") {
-        return affinidi_crypto::did_key::did_key_to_ed25519_pub(&issuer_did)
-            .map(|k| k.to_vec())
-            .map_err(|e| {
-                AppError::Validation(format!(
-                    "issuer `{issuer_did}` is not a resolvable did:key: {e}"
-                ))
-            });
+    let proofs = proof_set(proof_value)
+        .map_err(|e| AppError::Validation(format!("unreadable Data-Integrity proof: {e}")))?;
+    // The parsed form agrees (a proof without a string `verificationMethod`
+    // does not parse) — checked again so the binding does not rest on that.
+    if proofs.iter().any(|p| proof_signer_did(p) != issuer_did) {
+        return Err(AppError::Validation(
+            "DI proof is not under the credential issuer".into(),
+        ));
     }
 
-    let resolver = did_resolver.ok_or_else(|| {
-        AppError::Validation(format!(
-            "resolving issuer `{issuer_did}` needs a DID resolver, but none is configured — \
-             configure the DID cache client to receive Data-Integrity credentials from \
-             did:webvh / did:web issuers"
-        ))
-    })?;
-    resolve_vm_ed25519(resolver, &issuer_did, vm).await
-}
-
-/// Resolve a DID's verification method to its Ed25519 public-key bytes via the
-/// DID cache. Mirrors the DID-document JSON navigation in
-/// `passkey_login::VtaVmResolver` (in vta-service) but yields raw Ed25519
-/// bytes for Data-Integrity verification. Only `publicKeyMultibase`
-/// (Multikey-encoded) Ed25519 VMs are supported.
-async fn resolve_vm_ed25519(
-    resolver: &DIDCacheClient,
-    did: &str,
-    vm: &str,
-) -> Result<Vec<u8>, AppError> {
-    let resolved = resolver
-        .resolve(did)
+    let verified = verify_proof_set(credential, ProofPurpose::AssertionMethod, resolver)
         .await
-        .map_err(|e| AppError::Validation(format!("issuer DID `{did}` did not resolve: {e}")))?;
-
-    // Serialise to JSON for shape-agnostic navigation (the DID-Core JSON shape is
-    // the stable contract, decoupled from the resolver's struct version).
-    let doc: Value = serde_json::to_value(&resolved.doc)
-        .map_err(|e| AppError::Internal(format!("issuer DID document serialise failed: {e}")))?;
-
-    let vms = doc
-        .get("verificationMethod")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            AppError::Validation(format!(
-                "issuer DID `{did}` has no verificationMethod array"
-            ))
-        })?;
-
-    // VM ids can be absolute (`did:webvh:...#key-0`) or relative (`#key-0`).
-    let relative = vm
-        .split_once('#')
-        .map(|(_, frag)| format!("#{frag}"))
-        .unwrap_or_default();
-    let entry = vms
-        .iter()
-        .find(|e| {
-            let id = e.get("id").and_then(Value::as_str).unwrap_or("");
-            id == vm || id == relative
-        })
-        .ok_or_else(|| {
-            AppError::Validation(format!(
-                "verificationMethod `{vm}` not found in issuer DID `{did}`"
-            ))
-        })?;
-
-    let multibase = entry
-        .get("publicKeyMultibase")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            AppError::Validation(format!(
-                "verificationMethod `{vm}` has no publicKeyMultibase (only Multikey-encoded \
-                 Ed25519 VMs are supported)"
-            ))
-        })?;
-
-    // A `z`-prefixed Ed25519 Multikey is exactly the `did:key` suffix — reuse the
-    // canonical decoder, which also rejects a non-Ed25519 multicodec.
-    affinidi_crypto::did_key::did_key_to_ed25519_pub(&format!("did:key:{multibase}"))
-        .map(|k| k.to_vec())
         .map_err(|e| {
             AppError::Validation(format!(
-                "verificationMethod `{vm}` is not an Ed25519 Multikey: {e}"
+                "issuer Data-Integrity proof verification failed: {e}"
             ))
-        })
+        })?;
+    if verified.signer() != issuer_did {
+        // Unreachable after the binding check above; kept so the invariant does
+        // not rest on two functions agreeing about DID extraction.
+        return Err(AppError::Validation(
+            "DI proofs are not signed by the credential issuer".into(),
+        ));
+    }
+    Ok(issuer_did)
 }

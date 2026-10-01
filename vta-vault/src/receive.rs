@@ -45,7 +45,6 @@
 //! later task) and adds **no route / DIDComm handler** — the credential vault
 //! exposes no wire surface yet, so receive is a library operation only.
 
-use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions, crypto_suites::CryptoSuite};
 use affinidi_sd_jwt::SdJwt;
 use affinidi_sd_jwt::hasher::Sha256Hasher;
 use affinidi_sd_jwt::signer::JwtVerifier;
@@ -55,6 +54,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
+use vta_sdk::trust_task_proof::PurposeVmResolver;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -322,28 +322,33 @@ pub fn stored_claims(cred: &StoredCredential) -> Result<Value, AppError> {
     }
 }
 
-/// Receive a **W3C Data-Integrity VC** (`eddsa-jcs-2022`) into the vault: verify
-/// the issuer proof + temporal validity, map, and store (spec D4 — the
-/// format-agnostic bridge; the W3C-DI sibling of [`receive_sd_jwt_vc`]).
+/// Receive a **W3C Data-Integrity VC** (`eddsa-jcs-2022`, optionally beside
+/// further proofs such as `mldsa44-jcs-2024`) into the vault: verify the issuer
+/// proof set + temporal validity, map, and store (spec D4 — the format-agnostic
+/// bridge; the W3C-DI sibling of [`receive_sd_jwt_vc`]).
 ///
 /// `vc_json` is the credential as the holder received it (a W3C VC 2.0 JSON
-/// document with a `proof`). `issuer_pub` is the issuer's Ed25519 public key —
-/// **the caller resolves the issuer DID** (the vault stays network-free,
-/// mirroring the injected-signer pattern in [`super::present`]; the wire layer
-/// resolves a `did:webvh` / `did:web` issuer, a test passes the known key).
-/// `now` anchors the temporal check.
+/// document with a `proof` — one proof object, or the proof set a multi-key
+/// issuer emits, VTI-44). `resolver` resolves each proof's
+/// `verificationMethod` for `assertionMethod` — **the caller supplies it** (the
+/// vault stays network-free, mirroring the injected-signer pattern in
+/// [`super::present`]; the wire layer passes a `TrustTaskVmResolver` over its
+/// DID cache, a test a fixed key). `now` anchors the temporal check. See
+/// [`super::di_verify::verify_di_issuer_proofs`] for the proof-set rule.
 ///
 /// ## Failure modes (all reject **without** storing)
 /// - `id` empty, or `vc_json` not a JSON object → [`AppError::Validation`];
-/// - no `proof`, or a non-`eddsa-jcs-2022` cryptosuite (BBS+ is audit-gated and
-///   routed elsewhere) → [`AppError::Validation`];
-/// - the issuer proof does not verify against `issuer_pub` → [`AppError::Validation`];
+/// - no `issuer` or `proof`, a malformed proof, a `bbs-2023` proof (BBS+ is
+///   audit-gated and routed elsewhere), or no proof in a suite this build
+///   implements → [`AppError::Validation`];
+/// - a proof's key is not under the credential `issuer` → [`AppError::Validation`];
+/// - any checkable proof does not verify → [`AppError::Validation`];
 /// - `now` is outside `validFrom`/`validUntil` → [`AppError::Validation`].
 pub async fn receive_di_vc(
     vault: &KeyspaceHandle,
     id: &str,
     vc_json: &[u8],
-    issuer_pub: &[u8],
+    resolver: &(dyn PurposeVmResolver + '_),
     source: Provenance,
     now: DateTime<Utc>,
 ) -> Result<StoredCredential, AppError> {
@@ -356,36 +361,16 @@ pub async fn receive_di_vc(
     let vc: Value = serde_json::from_slice(vc_json)
         .map_err(|e| AppError::Validation(format!("malformed Data-Integrity VC JSON: {e}")))?;
 
-    // Pull the proof and require eddsa-jcs-2022 (BBS+ is audit-gated, routed by
-    // [`receive`] to an explicit error).
-    let proof_val = vc
-        .get("proof")
-        .cloned()
-        .ok_or_else(|| AppError::Validation("Data-Integrity VC has no `proof`".to_string()))?;
-    let proof: DataIntegrityProof = serde_json::from_value(proof_val)
-        .map_err(|e| AppError::Validation(format!("unparseable Data-Integrity proof: {e}")))?;
-    if !matches!(proof.cryptosuite, CryptoSuite::EddsaJcs2022) {
-        return Err(AppError::Validation(format!(
-            "unsupported cryptosuite {:?} (expected eddsa-jcs-2022; BBS+ is audit-gated)",
-            proof.cryptosuite
-        )));
+    if !vc.is_object() {
+        return Err(AppError::Validation(
+            "Data-Integrity VC is not a JSON object".to_string(),
+        ));
     }
 
-    // Verify over the document with `proof` removed — JCS is presence-sensitive,
-    // so sign-time and verify-time both strip it. A tampered credential fails
-    // here, before any trust is placed in the bytes.
-    let mut signing_doc = vc.clone();
-    signing_doc
-        .as_object_mut()
-        .ok_or_else(|| AppError::Validation("Data-Integrity VC is not a JSON object".to_string()))?
-        .remove("proof");
-    proof
-        .verify_with_public_key(&signing_doc, issuer_pub, VerifyOptions::new())
-        .map_err(|e| {
-            AppError::Validation(format!(
-                "issuer Data-Integrity proof verification failed: {e}"
-            ))
-        })?;
+    // Verify the issuer proof — or proof set (VTI-44) — bound to the credential
+    // `issuer`, over the received document with `proof` removed. A tampered
+    // credential fails here, before any trust is placed in the bytes.
+    super::di_verify::verify_di_issuer_proofs(resolver, &vc).await?;
 
     // Temporal validity over W3C VC 2.0 `validFrom` / `validUntil`.
     di_temporal_valid(&vc, now)?;
@@ -442,8 +427,8 @@ pub async fn receive_di_vc(
 /// Receive an ISO/IEC 18013-5 **mdoc** into the vault: verify, map, and store.
 ///
 /// `body` is the CBOR `IssuerSigned` wire form. `issuer_pub` is the **caller-
-/// resolved** Document Signer public key (SEC1, P-256) — deliberately the same
-/// shape as [`receive_di_vc`]'s issuer key, and for the same reason: resolving
+/// resolved** Document Signer public key (SEC1, P-256) — caller-supplied like
+/// [`receive_di_vc`]'s issuer resolver, and for the same reason: resolving
 /// *which* key to trust is a policy decision that belongs to the wire layer,
 /// not to the verifier.
 ///
@@ -566,19 +551,44 @@ pub async fn receive_mdoc(
     Ok(cred)
 }
 
+/// How [`receive`] verifies the issuer of an incoming credential — the one
+/// input that differs by format.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub enum IssuerKey<'a> {
+    /// No caller-supplied key: the format resolves its own issuer (an
+    /// SD-JWT-VC's `did:key` `iss`), or none applies.
+    None,
+    /// Resolves each Data-Integrity proof's `verificationMethod` — one proof
+    /// or a proof set (VTI-44) — for the `EddsaJcs2022` format.
+    Resolver(&'a (dyn PurposeVmResolver + 'a)),
+    /// A caller-resolved raw public key — the 96-byte G2 key for `Bbs2023`.
+    PublicKey(&'a [u8]),
+}
+
+impl std::fmt::Debug for IssuerKey<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("None"),
+            Self::Resolver(_) => f.write_str("Resolver(..)"),
+            Self::PublicKey(k) => write!(f, "PublicKey({} bytes)", k.len()),
+        }
+    }
+}
+
 /// Format-dispatching receive — the vault's single entry point for storing an
 /// incoming credential of any format (spec D4).
 ///
-/// `SdJwtVc` resolves its issuer `did:key` internally; the Data-Integrity
-/// formats take a caller-resolved `issuer_pub` (the wire layer resolves the
-/// issuer DID). `Bbs2023` is audit-gated and `Zkp` is Phase-0-gated; `Other`
-/// is rejected.
+/// `SdJwtVc` resolves its issuer `did:key` internally; `EddsaJcs2022` takes a
+/// caller-supplied [`IssuerKey::Resolver`] (the wire layer resolves the issuer
+/// DID); `Bbs2023` takes a caller-resolved [`IssuerKey::PublicKey`] and is
+/// audit-gated; `Zkp` is Phase-0-gated; `Other` is rejected.
 pub async fn receive(
     vault: &KeyspaceHandle,
     id: &str,
     format: &CredentialFormat,
     body: &[u8],
-    issuer_pub: Option<&[u8]>,
+    issuer: IssuerKey<'_>,
     source: Provenance,
     now: DateTime<Utc>,
 ) -> Result<StoredCredential, AppError> {
@@ -590,22 +600,23 @@ pub async fn receive(
             receive_sd_jwt_vc(vault, id, compact, source, now.timestamp().max(0) as u64).await
         }
         CredentialFormat::EddsaJcs2022 => {
-            let pubkey = issuer_pub.ok_or_else(|| {
-                AppError::Validation(
-                    "a Data-Integrity credential needs a caller-resolved issuer key".to_string(),
-                )
-            })?;
-            receive_di_vc(vault, id, body, pubkey, source, now).await
+            let IssuerKey::Resolver(resolver) = issuer else {
+                return Err(AppError::Validation(
+                    "a Data-Integrity credential needs a caller-supplied issuer resolver"
+                        .to_string(),
+                ));
+            };
+            receive_di_vc(vault, id, body, resolver, source, now).await
         }
         CredentialFormat::Bbs2023 => {
             #[cfg(feature = "bbs")]
             {
-                let pubkey = issuer_pub.ok_or_else(|| {
-                    AppError::Validation(
+                let IssuerKey::PublicKey(pubkey) = issuer else {
+                    return Err(AppError::Validation(
                         "a BBS (bbs-2023) credential needs a caller-resolved 96-byte G2 issuer key"
                             .to_string(),
-                    )
-                })?;
+                    ));
+                };
                 super::bbs::receive_bbs(vault, id, body, pubkey, source, now).await
             }
             #[cfg(not(feature = "bbs"))]
@@ -1048,26 +1059,75 @@ mod tests {
 
     // ---- Data-Integrity (eddsa-jcs-2022) receive ------------------------
 
+    use affinidi_data_integrity::{DataIntegrityError, ResolvedKey};
     use affinidi_data_integrity::{
         DataIntegrityProof as DiProof, SignOptions, crypto_suites::CryptoSuite as Suite,
     };
     use affinidi_secrets_resolver::secrets::Secret;
+    use vta_sdk::trust_task_proof::ProofPurpose;
 
-    /// Build + sign a W3C-DI VC (eddsa-jcs-2022); returns `(vc_bytes,
-    /// issuer_public_key_bytes)`.
-    async fn signed_di_vc(seed: u8, valid_until: Option<&str>) -> (Vec<u8>, Vec<u8>) {
-        let secret =
-            Secret::generate_ed25519(Some("did:web:issuer.example#key-0"), Some(&[seed; 32]));
+    const DI_ISSUER: &str = "did:web:issuer.example";
+
+    /// The issuer's DID document, without the network: resolves the listed
+    /// verification methods, and only for `assertionMethod`.
+    struct FixedKeys(Vec<(String, ResolvedKey)>);
+
+    impl FixedKeys {
+        fn of(secrets: &[&Secret]) -> Self {
+            Self(
+                secrets
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.id.clone(),
+                            ResolvedKey::new(s.get_key_type(), s.get_public_bytes().to_vec()),
+                        )
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PurposeVmResolver for FixedKeys {
+        async fn resolve_vm_for_purpose(
+            &self,
+            vm: &str,
+            purpose: ProofPurpose,
+        ) -> Result<ResolvedKey, DataIntegrityError> {
+            if purpose != ProofPurpose::AssertionMethod {
+                return Err(DataIntegrityError::Resolver(format!(
+                    "{vm} is not authorised for {purpose}"
+                )));
+            }
+            self.0
+                .iter()
+                .find(|(id, _)| id == vm)
+                .map(|(_, k)| k.clone())
+                .ok_or_else(|| DataIntegrityError::Resolver(format!("unknown method {vm}")))
+        }
+    }
+
+    fn di_vc_doc(valid_until: Option<&str>) -> Value {
         let mut vc = json!({
             "@context": ["https://www.w3.org/ns/credentials/v2"],
             "type": ["VerifiableCredential", "MembershipCredential"],
-            "issuer": "did:web:issuer.example",
+            "issuer": DI_ISSUER,
             "validFrom": "2020-01-01T00:00:00Z",
             "credentialSubject": { "id": "did:key:zMember", "givenName": "Alice" }
         });
         if let Some(u) = valid_until {
             vc["validUntil"] = json!(u);
         }
+        vc
+    }
+
+    /// Build + sign a W3C-DI VC (eddsa-jcs-2022, one proof object); returns
+    /// `(vc_bytes, issuer_resolver)`.
+    async fn signed_di_vc(seed: u8, valid_until: Option<&str>) -> (Vec<u8>, FixedKeys) {
+        let secret =
+            Secret::generate_ed25519(Some(&format!("{DI_ISSUER}#key-0")), Some(&[seed; 32]));
+        let mut vc = di_vc_doc(valid_until);
         let proof = DiProof::sign(
             &vc,
             &secret,
@@ -1078,17 +1138,179 @@ mod tests {
         .await
         .expect("sign DI VC");
         vc["proof"] = serde_json::to_value(&proof).unwrap();
+        (serde_json::to_vec(&vc).unwrap(), FixedKeys::of(&[&secret]))
+    }
+
+    /// The field shape (VTI-44): a VTC with `#key-0` Ed25519 and `#key-2`
+    /// ML-DSA-44 signs once per key, so `proof` is an array.
+    fn hybrid_issuer_keys() -> (Secret, Secret) {
         (
-            serde_json::to_vec(&vc).unwrap(),
-            secret.get_public_bytes().to_vec(),
+            Secret::generate_ed25519(Some(&format!("{DI_ISSUER}#key-0")), Some(&[0x61; 32])),
+            Secret::generate_ml_dsa_44(Some(&format!("{DI_ISSUER}#key-2")), Some(&[0x62; 32])),
         )
+    }
+
+    async fn proof_set_over(doc: &Value, secrets: &[&Secret]) -> Value {
+        let signers: Vec<&dyn affinidi_data_integrity::signer::Signer> = secrets
+            .iter()
+            .map(|s| *s as &dyn affinidi_data_integrity::signer::Signer)
+            .collect();
+        let proofs = DiProof::sign_multi(
+            doc,
+            &signers,
+            SignOptions::new().with_proof_purpose("assertionMethod"),
+        )
+        .await
+        .expect("sign_multi");
+        serde_json::to_value(&proofs).unwrap()
+    }
+
+    /// VTI-44: a two-proof (Ed25519 + ML-DSA-44) membership card is received
+    /// and stored — the single-object reader refused every one in the field.
+    #[tokio::test]
+    async fn vti_44_a_hybrid_proof_set_credential_is_received() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (ed, pq) = hybrid_issuer_keys();
+        let mut vc = di_vc_doc(Some("2100-01-01T00:00:00Z"));
+        vc["proof"] = proof_set_over(&vc, &[&ed, &pq]).await;
+        assert_eq!(vc["proof"].as_array().map(Vec::len), Some(2));
+        let body = serde_json::to_vec(&vc).unwrap();
+
+        let cred = receive_di_vc(
+            &vault,
+            "c1",
+            &body,
+            &FixedKeys::of(&[&ed, &pq]),
+            None,
+            Utc::now(),
+        )
+        .await
+        .expect("a hybrid proof set is received");
+        assert_eq!(cred.issuer_did.as_deref(), Some(DI_ISSUER));
+        assert_eq!(cred.body, body, "stored as received");
+        assert!(crate::storage::get(&vault, "c1").await.unwrap().is_some());
+
+        // The format-dispatching entry point takes the same path.
+        receive(
+            &vault,
+            "c2",
+            &CredentialFormat::EddsaJcs2022,
+            &body,
+            IssuerKey::Resolver(&FixedKeys::of(&[&ed, &pq])),
+            None,
+            Utc::now(),
+        )
+        .await
+        .expect("dispatch a hybrid proof set");
+    }
+
+    /// VTI-44: the ML-DSA proof is verified, not ignored — tampering with it
+    /// alone refuses the credential, even though the Ed25519 proof is good.
+    #[tokio::test]
+    async fn vti_44_one_tampered_proof_in_the_set_is_refused() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (ed, pq) = hybrid_issuer_keys();
+        let mut vc = di_vc_doc(None);
+        vc["proof"] = proof_set_over(&vc, &[&ed, &pq]).await;
+        let other = proof_set_over(&json!({"other": 1}), &[&ed, &pq]).await;
+        vc["proof"][1]["proofValue"] = other[1]["proofValue"].clone();
+
+        let err = receive_di_vc(
+            &vault,
+            "c1",
+            &serde_json::to_vec(&vc).unwrap(),
+            &FixedKeys::of(&[&ed, &pq]),
+            None,
+            Utc::now(),
+        )
+        .await
+        .expect_err("one bad proof refuses the set");
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("1 of 2 proofs")),
+            "{err:?}"
+        );
+        assert!(crate::storage::get(&vault, "c1").await.unwrap().is_none());
+    }
+
+    /// VTI-44 issuer binding: a genuine proof by a key under another DID,
+    /// appended to the issuer's proof, is refused before anything resolves it.
+    #[tokio::test]
+    async fn vti_44_a_proof_by_a_key_not_under_the_issuer_is_refused() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (ed, _) = hybrid_issuer_keys();
+        let stranger =
+            Secret::generate_ed25519(Some("did:web:stranger.example#key-0"), Some(&[0x63; 32]));
+        let mut vc = di_vc_doc(None);
+        vc["proof"] = proof_set_over(&vc, &[&ed, &stranger]).await;
+
+        let err = receive_di_vc(
+            &vault,
+            "c1",
+            &serde_json::to_vec(&vc).unwrap(),
+            &FixedKeys::of(&[&ed, &stranger]),
+            None,
+            Utc::now(),
+        )
+        .await
+        .expect_err("a key outside the issuer DID");
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("not under the credential issuer")),
+            "{err:?}"
+        );
+
+        // A single proof by the stranger alone is refused the same way.
+        let mut vc = di_vc_doc(None);
+        vc["proof"] = proof_set_over(&vc, &[&stranger]).await[0].clone();
+        let err = receive_di_vc(
+            &vault,
+            "c2",
+            &serde_json::to_vec(&vc).unwrap(),
+            &FixedKeys::of(&[&stranger]),
+            None,
+            Utc::now(),
+        )
+        .await
+        .expect_err("issuer spoofing");
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("not under the credential issuer")),
+            "{err:?}"
+        );
+    }
+
+    /// A proof for another purpose is refused: a credential is relied on as an
+    /// attestation (VTI-KEY-022).
+    #[tokio::test]
+    async fn di_vc_with_an_authentication_proof_is_refused() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (ed, _) = hybrid_issuer_keys();
+        let mut vc = di_vc_doc(None);
+        let proof = DiProof::sign(
+            &vc,
+            &ed,
+            SignOptions::new().with_proof_purpose("authentication"),
+        )
+        .await
+        .unwrap();
+        vc["proof"] = serde_json::to_value(&proof).unwrap();
+        assert!(
+            receive_di_vc(
+                &vault,
+                "c1",
+                &serde_json::to_vec(&vc).unwrap(),
+                &FixedKeys::of(&[&ed]),
+                None,
+                Utc::now(),
+            )
+            .await
+            .is_err()
+        );
     }
 
     #[tokio::test]
     async fn di_vc_verifies_and_stores() {
         let (_dir, _store, vault) = fresh_vault();
-        let (vc, issuer_pub) = signed_di_vc(9, Some("2100-01-01T00:00:00Z")).await;
-        let cred = receive_di_vc(&vault, "c1", &vc, &issuer_pub, None, Utc::now())
+        let (vc, keys) = signed_di_vc(9, Some("2100-01-01T00:00:00Z")).await;
+        let cred = receive_di_vc(&vault, "c1", &vc, &keys, None, Utc::now())
             .await
             .expect("receive DI VC");
         assert_eq!(cred.format, CredentialFormat::EddsaJcs2022);
@@ -1101,11 +1323,11 @@ mod tests {
     #[tokio::test]
     async fn di_vc_tampered_is_rejected_and_not_stored() {
         let (_dir, _store, vault) = fresh_vault();
-        let (vc, issuer_pub) = signed_di_vc(9, None).await;
+        let (vc, keys) = signed_di_vc(9, None).await;
         let mut v: Value = serde_json::from_slice(&vc).unwrap();
         v["credentialSubject"]["givenName"] = json!("Mallory"); // tamper after signing
         let tampered = serde_json::to_vec(&v).unwrap();
-        let err = receive_di_vc(&vault, "c1", &tampered, &issuer_pub, None, Utc::now())
+        let err = receive_di_vc(&vault, "c1", &tampered, &keys, None, Utc::now())
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
@@ -1115,8 +1337,8 @@ mod tests {
     #[tokio::test]
     async fn di_vc_expired_is_rejected() {
         let (_dir, _store, vault) = fresh_vault();
-        let (vc, issuer_pub) = signed_di_vc(9, Some("2001-01-01T00:00:00Z")).await;
-        let err = receive_di_vc(&vault, "c1", &vc, &issuer_pub, None, Utc::now())
+        let (vc, keys) = signed_di_vc(9, Some("2001-01-01T00:00:00Z")).await;
+        let err = receive_di_vc(&vault, "c1", &vc, &keys, None, Utc::now())
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
@@ -1125,7 +1347,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_routes_di_requires_key_and_gates_bbs() {
         let (_dir, _store, vault) = fresh_vault();
-        let (vc, issuer_pub) = signed_di_vc(9, None).await;
+        let (vc, keys) = signed_di_vc(9, None).await;
         // DI without a resolved issuer key → rejected.
         assert!(
             receive(
@@ -1133,7 +1355,7 @@ mod tests {
                 "c1",
                 &CredentialFormat::EddsaJcs2022,
                 &vc,
-                None,
+                IssuerKey::None,
                 None,
                 Utc::now()
             )
@@ -1146,7 +1368,7 @@ mod tests {
             "c1",
             &CredentialFormat::EddsaJcs2022,
             &vc,
-            Some(&issuer_pub),
+            IssuerKey::Resolver(&keys),
             None,
             Utc::now(),
         )
@@ -1160,7 +1382,7 @@ mod tests {
                 "c2",
                 &CredentialFormat::Bbs2023,
                 &vc,
-                Some(&issuer_pub),
+                IssuerKey::None,
                 None,
                 Utc::now()
             )
@@ -1173,7 +1395,7 @@ mod tests {
             "c3",
             &CredentialFormat::Zkp,
             &vc,
-            Some(&issuer_pub),
+            IssuerKey::None,
             None,
             Utc::now(),
         )
@@ -1191,7 +1413,7 @@ mod tests {
             "c4",
             &CredentialFormat::MsoMdoc,
             &vc,
-            None,
+            IssuerKey::None,
             None,
             Utc::now(),
         )

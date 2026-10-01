@@ -72,7 +72,7 @@ pub use model::{
 };
 pub use present::{present_di_vc, present_sd_jwt_vc};
 pub use query::{CredentialDescriptor, CredentialQuery, search};
-pub use receive::{receive, receive_di_vc, receive_sd_jwt_vc};
+pub use receive::{IssuerKey, receive, receive_di_vc, receive_sd_jwt_vc};
 pub use status::{
     RefreshOutcome, ResolvedStatusList, StatusListRef, StatusListResolver, extract_status_ref,
     refresh_status,

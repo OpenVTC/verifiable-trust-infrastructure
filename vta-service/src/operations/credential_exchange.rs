@@ -116,7 +116,7 @@ async fn store_issued_credential(
                 &id,
                 &CredentialFormat::SdJwtVc,
                 compact.as_bytes(),
-                None,
+                vault::IssuerKey::None,
                 source,
                 now,
             )
@@ -138,7 +138,7 @@ async fn store_issued_credential(
                     &id,
                     &CredentialFormat::Bbs2023,
                     &body,
-                    Some(&issuer_pub),
+                    vault::IssuerKey::PublicKey(&issuer_pub),
                     source,
                     now,
                 )
@@ -154,12 +154,13 @@ async fn store_issued_credential(
                 ))
             }
         }
-        // A JSON object carrying a `proof` → a W3C Data-Integrity VC. Resolve the
-        // issuer's signing key (binding it to the credential `issuer`) and store
-        // via the DI path. The vault stays network-free — resolution happens here.
+        // A JSON object carrying a `proof` → a W3C Data-Integrity VC — one proof,
+        // or the proof set a multi-key issuer emits (VTI-44). The vault verifies
+        // every proof, bound to the credential `issuer`, through a resolver over
+        // this VTA's DID cache; the vault itself stays network-free.
         Value::Object(_) if credential.get("proof").is_some() => {
-            let issuer_pub =
-                crate::vault::di_verify::resolve_di_issuer_key(did_resolver, credential).await?;
+            let resolver =
+                vti_common::auth::TrustTaskVmResolver::from_optional(did_resolver.cloned());
             let body = serde_json::to_vec(credential)
                 .map_err(|e| AppError::Internal(format!("credential -> bytes: {e}")))?;
             vault::receive(
@@ -167,7 +168,7 @@ async fn store_issued_credential(
                 &id,
                 &CredentialFormat::EddsaJcs2022,
                 &body,
-                Some(&issuer_pub),
+                vault::IssuerKey::Resolver(&resolver),
                 source,
                 now,
             )
@@ -1788,7 +1789,10 @@ mod tests {
             "proof": {
                 "type": "DataIntegrityProof",
                 "cryptosuite": "eddsa-jcs-2022",
-                "verificationMethod": "did:web:issuer.example#key-0"
+                "created": "2026-01-01T00:00:00Z",
+                "verificationMethod": "did:web:issuer.example#key-0",
+                "proofPurpose": "assertionMethod",
+                "proofValue": "z2V1p3vLnQ8kZ9YbW3xJ5tR7mN4qS6dF8gH1jK2lM3nP"
             }
         });
         let err = receive_issued_credential(&vault, &issue_body(vc, None), None, None, Utc::now())
