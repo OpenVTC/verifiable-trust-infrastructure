@@ -1110,7 +1110,7 @@ fn every_declared_error_code_is_witnessed_or_baselined() {
          is broken, not the code"
     );
 
-    let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("it");
     let mut witnessed: BTreeSet<&'static str> = BTreeSet::new();
     for w in witnesses() {
         let code = w.declared.code;
