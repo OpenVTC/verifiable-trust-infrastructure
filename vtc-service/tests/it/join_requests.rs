@@ -2164,10 +2164,10 @@ async fn vetting_statement_from(
                 document_classes: vec!["passport".try_into().unwrap()],
                 claims_verified: vec!["name.legal".try_into().unwrap()],
                 liveness_confirmed: true,
-                identity_commitment: "zSameCommitment".into(),
+                identity_commitment: Some("zSameCommitment".into()),
                 // base58btc has no `0`: spell the card by letter.
-                card_digest_multibase: format!("zCard{}", char::from(b'a' + n % 26)),
-                declared_relationship: VettingRelationship::None,
+                card_digest_multibase: Some(format!("zCard{}", char::from(b'a' + n % 26))),
+                declared_relationship: Some(VettingRelationship::None),
                 attestation_text_digest: None,
             },
             valid_from: now,

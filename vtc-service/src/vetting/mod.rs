@@ -282,6 +282,15 @@ pub async fn vetting_facts(
         if requirements.statement_type != VETTED_PREDICATE {
             failures.push("wrong-statement-type".to_string());
         }
+        // A vetter's statement carries the vetter-only members
+        // (`identityCommitment`, `cardDigestMultibase`, `declaredRelationship`).
+        // One without them is a statement the community issued for itself
+        // (registry `vetted/1`): evidence for personhood, never a vetter's
+        // statement to count toward admission.
+        let vetter = vetted.vetter_members();
+        if vetter.is_none() {
+            failures.push("not-a-vetter-statement".to_string());
+        }
         let predicate_accepted = dtg_credentials::DTGCredential::try_from(vc.clone())
             .is_ok_and(|parsed| accepted.accept(&parsed).is_ok());
         if !predicate_accepted {
@@ -312,14 +321,14 @@ pub async fn vetting_facts(
             eligible,
             revoked,
             method: Some(vetted.method.to_string()),
-            declared_relationship: Some(vetted.declared_relationship.to_string()),
+            declared_relationship: vetted.declared_relationship.map(|r| r.to_string()),
             counted: false,
             failures,
         };
         // A statement about someone else, or of a type this criterion does not
         // count, is not evidence about this applicant at all — keep it out of the
         // count *and* out of the commitment-consistency check.
-        if fact.failures.is_empty() {
+        if let (true, Some(vetter)) = (fact.failures.is_empty(), vetter) {
             to_count.push(StatementFacts {
                 statement_id: verified.id().to_string(),
                 vetter: verified.issuer().to_string(),
@@ -334,8 +343,8 @@ pub async fn vetting_facts(
                     .iter()
                     .map(|d| d.as_str().to_owned())
                     .collect(),
-                declared_relationship: vetted.declared_relationship,
-                identity_commitment: vetted.identity_commitment.clone(),
+                declared_relationship: vetter.declared_relationship,
+                identity_commitment: vetter.identity_commitment.to_owned(),
                 valid_from: verified.valid_from(),
                 community_matches: vetted.community == community_did,
                 eligible,
