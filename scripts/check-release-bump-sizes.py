@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guard two release invariants that, broken, publish a crate its own earlier
+"""Guard three release invariants that, broken, publish a crate its own earlier
 versions cannot build against — and halt the release partway.
 
 Both bit the same release (2026-09-27, #1795): the release job stopped at
@@ -42,12 +42,29 @@ This runs only for packages whose Cargo.toml version is not yet on crates.io —
 i.e. what a Release PR is about to publish. On a feature PR every version is
 already published and the check is a no-op.
 
+## 3. A crate whose manifest moved still needs a new version  (Release PRs)
+
+Rule 2 skips a crate whose Cargo.toml version is already on crates.io, because
+nothing new of it is about to ship. That is exactly the hole #1888 fell into:
+release-plz moved `vti-rooms` to `vti-common ^0.33` but left it at 0.4.0, which
+was already published on `^0.32`. A sibling released in the same run
+(`vti-rooms-dtg`) is packaged against the *published* 0.4.0, so its tarball
+build saw two `vti_common::AppError` types and the release halted part-way.
+
+So for a crate whose current version is already published, its manifest's
+internal requirements must still fall in the same compatibility range as that
+published release's. If one moved, the crate needs a new (breaking) version.
+Like rule 2 this only reports when something is about to publish (some member's
+version is not on crates.io yet), so a feature PR that moves a floor is not
+held to a version the Release PR will set.
+
 ## Fixing a failure
 
 - Rule 1: drop `version` from the dev-dependency, keeping `path`.
 - Rule 2: in the Release PR, raise the named crate to the next breaking version
   it names (e.g. 0.3.26 -> 0.4.0), and update its dependents' requirements (the
   workspace-version-reqs guard will point at any you miss).
+- Rule 3: same fix as rule 2 — give the named crate its next breaking version.
 """
 
 import json
@@ -103,6 +120,29 @@ def get(url):
     return None
 
 
+def moved_reqs(pkg, members, name, version):
+    """Internal normal/build deps whose caret range differs from `name@version` on crates.io."""
+    deps = get(f"https://crates.io/api/v1/crates/{name}/{version}/dependencies")
+    if deps is None:
+        return []
+    base_reqs = {
+        d["crate_id"]: d["req"]
+        for d in deps["dependencies"]
+        if d["kind"] in ("normal", "build") and d["crate_id"] in members
+    }
+    moved = []
+    for dep in pkg["dependencies"]:
+        if dep.get("kind") not in (None, "build") or dep["name"] not in members:
+            continue
+        before = base_reqs.get(dep["name"])
+        if before is None:
+            continue
+        b, a = req_compat(before), req_compat(dep["req"])
+        if b is not None and a is not None and b != a:
+            moved.append((dep["name"], before, dep["req"]))
+    return moved
+
+
 def main():
     out = subprocess.run(
         ["cargo", "metadata", "--no-deps", "--format-version", "1"],
@@ -119,6 +159,8 @@ def main():
     published = {n: p for n, p in members.items() if p.get("publish") is None}
 
     problems = []
+    stale = []  # rule 3, reported only when this is a release
+    releasing = False
 
     # ── Rule 1 ──────────────────────────────────────────────────────────
     for name, pkg in sorted(published.items()):
@@ -146,40 +188,43 @@ def main():
         current = pkg["version"]
         info = get(f"https://crates.io/api/v1/crates/{name}")
         if info is None:
+            releasing = True
             continue  # a crate's first release has no baseline to break
         versions = [v for v in info["versions"] if not v["yanked"]]
         if any(v["num"] == current for v in info["versions"]):
-            continue  # already published — nothing is about to ship
+            # ── Rule 3 ──────────────────────────────────────────────────
+            # Nothing new of this crate ships, but a sibling that does is
+            # packaged against the published copy, so the manifest must not
+            # have moved away from it.
+            for dep_name, before, after in moved_reqs(pkg, members, name, current):
+                stale.append(
+                    f"{name} {current} is already on crates.io with `{dep_name}` at `{before}`, "
+                    f"but its Cargo.toml now asks for `{after}` without a new version. A sibling "
+                    f"released alongside it is packaged against the published {current} and "
+                    f"resolves a second `{dep_name}` (#1888: vti-rooms 0.4.0 halted the release "
+                    f"at vti-rooms-dtg). Raise {name} to its next breaking version."
+                )
+            time.sleep(0.5)
+            continue
+        releasing = True
         older = [v["num"] for v in versions if parts(v["num"]) < parts(current)]
         if not older:
             continue
         baseline = max(older, key=parts)
         if compat(baseline) != compat(current):
             continue  # already a breaking bump; any dependency move is covered
-        deps = get(f"https://crates.io/api/v1/crates/{name}/{baseline}/dependencies")
-        if deps is None:
-            continue
-        base_reqs = {
-            d["crate_id"]: d["req"]
-            for d in deps["dependencies"]
-            if d["kind"] in ("normal", "build") and d["crate_id"] in members
-        }
-        for dep in pkg["dependencies"]:
-            if dep.get("kind") not in (None, "build") or dep["name"] not in members:
-                continue
-            before = base_reqs.get(dep["name"])
-            if before is None:
-                continue
-            b, a = req_compat(before), req_compat(dep["req"])
-            if b is not None and a is not None and b != a:
-                problems.append(
-                    f"{name} {baseline} -> {current} is not a breaking bump, but it moves "
-                    f"`{dep['name']}` from `{before}` to `{dep['req']}`. Every published "
-                    f"dependent that asks for `{name}` by caret would resolve this release "
-                    f"and a second `{dep['name']}` (vta-service 0.44.0, #1795). Raise {name} "
-                    f"to its next breaking version in this Release PR."
-                )
+        for dep_name, before, after in moved_reqs(pkg, members, name, baseline):
+            problems.append(
+                f"{name} {baseline} -> {current} is not a breaking bump, but it moves "
+                f"`{dep_name}` from `{before}` to `{after}`. Every published "
+                f"dependent that asks for `{name}` by caret would resolve this release "
+                f"and a second `{dep_name}` (vta-service 0.44.0, #1795). Raise {name} "
+                f"to its next breaking version in this Release PR."
+            )
         time.sleep(0.5)
+
+    if releasing:
+        problems += stale
 
     if problems:
         print("Release guard failed:\n", file=sys.stderr)
