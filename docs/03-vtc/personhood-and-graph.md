@@ -51,7 +51,7 @@ sequenceDiagram
     VTC->>VTC: 1) Load Member row (404 if missing)
     VTC->>VTC: 2) Consume challenge<br/>(400 on missing/expired/wrong-DID)
     VTC->>VTC: 3) Verify VP.holder == path-DID
-    VTC->>VTC: 4) Evaluate personhood.rego<br/>(default: a digest-bound witnessed/1 statement, or this<br/>community's own IdentityVerificationCredential)
+    VTC->>VTC: 4) Evaluate personhood.rego<br/>(default: a digest-bound witnessed/1 statement, or this<br/>community's own vetted/1 statement)
     alt policy allows
         VTC->>VTC: Set personhood=true<br/>Set asserted_at=now
         VTC->>VTC: Re-mint VMC with new flag
@@ -110,85 +110,118 @@ allow if {
 ```
 
 A VTC whose personhood policy is still a default an earlier release
-installed — one that accepted any witness with a non-empty issuer, or one
+installed — one that accepted any witness with a non-empty issuer, one
 written for the credential shapes before the DTG v1 context, which recognises
-no current witness statement — has it replaced by the current default at boot
+no current witness statement, or one that reads the community's own identity
+check as the retired plain `IdentityVerificationCredential` rather than as its
+`vetted/1` statement — has it replaced by the current default at boot
 (`policy::default::upgrade_stale_personhood_default`, decided by evaluating
 the stored policy, not by its bytes). A personhood
 policy an operator uploaded is never replaced.
 
-### In-person vetting
+### The community's own identity check
 
-The default policy accepts a second evidence shape: an
-**Identity Verification Credential** (IDVC) **this community issued to this
-member**. That is the in-person ceremony — an administrator meets the
-person, satisfies themselves that the DID they present is theirs, and
-issues the record to that DID. The member later presents it over a
+The default policy accepts a second evidence shape: a **`vetted/1` statement
+this community issued about this member**. That is the community's own
+identity check — an administrator meets the person (at a desk or in person),
+satisfies themselves that the DID they present is theirs, and the community
+records the check under its own DID. The member later presents it over a
 single-use challenge, and the community's own signature is the evidence.
 
-DTG Credentials §Identity Verification Credentials defines an IDVC as *"any
-W3C VC satisfying a VTC/VTN's identity-proofing requirements"* and explicitly
-**not** a `DTGCredential` subtype, so the VTC issues it as a plain W3C VC — the
-credentials v2 context alone, no `DTGCredential`, no `issuerScope`:
+The DTG VSC registry's `vetted/1`
+(`https://registry.trustoverip.org/dtg/vsc/vetted/1`) admits two issuers: an
+eligible member vetter, whose statement counts toward admission
+([vetting](vetting.md)), and the community itself. The community does not mint
+a separate credential type for its own check, so every identity check in the
+graph has one shape, whoever made it:
 
 ```json
 {
-  "@context": ["https://www.w3.org/ns/credentials/v2"],
+  "@context": ["https://www.w3.org/ns/credentials/v2",
+               "https://registry.trustoverip.org/dtg/context/v1"],
   "id": "urn:uuid:…",
-  "type": ["VerifiableCredential", "IdentityVerificationCredential"],
+  "type": ["VerifiableCredential", "DTGCredential", "StatementCredential"],
   "issuer": "did:…community",
+  "issuerScope": "public",
   "validFrom": "…", "validUntil": "…",
-  "credentialSubject": { "id": "did:key:zMember…", "method": "inPerson",
-                         "verifiedBy": "did:key:zAdmin…" },
+  "taskContext": "urn:uuid:<the issue request's id>",
+  "taskDigestMultibase": "z…",
+  "credentialSubject": {
+    "id": "did:key:zMember…",
+    "predicate": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
+    "object": { "value": {
+      "community": "did:…community",
+      "method": "inPerson",
+      "documentClasses": ["nationalId"],
+      "claimsVerified": ["name.legal"],
+      "livenessConfirmed": true
+    } }
+  },
   "credentialStatus": { "type": "BitstringStatusListEntry", "statusPurpose": "revocation", "…": "…" }
 }
 ```
 
-**No setup.** `IdentityVerificationCredential` is not a predicate and is never
-registered as an endorsement type — it is reserved, and registering it is
-refused with `reserved`.
+**No setup.** `vetted/1` is one of the core predicates every community accepts
+from first boot. A community that deleted it from its accept list re-registers
+it before recording checks.
 
 **Per member** — after meeting them, a signed `vtc/endorsements/issue/0.1`
-document with the reserved `typeUri`:
+document with `typeUri` `vetted/1`:
 
 ```json
 {
   "type": "https://trusttasks.org/spec/vtc/endorsements/issue/0.1",
   "payload": {
     "subjectDid": "did:key:zMember...",
-    "typeUri": "IdentityVerificationCredential",
-    "claim": { "method": "inPerson", "verifiedBy": "did:key:zAdmin..." }
+    "typeUri": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
+    "claim": {
+      "community": "did:…community",
+      "method": "inPerson",
+      "documentClasses": ["nationalId"],
+      "claimsVerified": ["name.legal"],
+      "livenessConfirmed": true
+    }
   }
 }
 ```
 
-The `claim` members are copied into `credentialSubject` beside `id` (a claim
-naming `id` is refused), and are opaque to the policy — the default rule reads
-only the credential's `type`, its issuer and its subject, so what an operator
-records about *how* they verified is theirs to decide. Issuance is
+The `claim` is the statement's `object.value`, held to the registry's object
+schema (`claimSchemaViolation` otherwise), and its `community` must be this
+community's DID: a community records only its own checks. It carries none
+of the three vetter-only members — `identityCommitment`,
+`cardDigestMultibase`, `declaredRelationship` — and a claim with any of them is
+refused: the salt behind `identityCommitment` travels to vetters inside the
+card and must never reach the community, and the community is the party
+weighing statements, not a related or unrelated vetter. A vetter's statement
+always carries all three. The profile requires a task citation, and the exchange the community
+recorded its check in is this issue request: `taskContext` is the request
+document's `id` and `taskDigestMultibase` its task digest. Issuance is
 admin-or-issuer gated, consumes a slot on the community's revocation status
-list and is recorded as an endorsement row, so withdrawing a vetting later is
+list and is recorded as an endorsement row, so withdrawing a check later is
 `vtc/endorsements/revoke/0.1` rather than anything personhood-specific
-(`vtc-service/src/credentials/idvc.rs`).
+(`vtc-service/src/routes/endorsements.rs`,
+`credentials::dtg::issue_vetted_statement`).
 
-> **Recorded divergence.** `vtc/endorsements/issue/0.1` says the task mints a
-> Verifiable Statement Credential under the registered predicate `typeUri`.
-> For the one reserved `typeUri` `IdentityVerificationCredential` this VTC
-> mints an IDVC instead — a plain W3C VC, not a statement. It is the only
-> administrator issuance path that keeps the community's revocation machinery
-> and needs no unspecified Trust Task. The intended resolution is a dedicated
-> identity-verification issuance task in dtgwg-trust-tasks-tf; until it lands,
-> this reuse is the divergence.
+**The statement is evidence, not a status.** Personhood remains this
+community's decision, recorded on the member's VMC (the `PersonhoodCredential`
+hint) when the assertion succeeds. A verifier acts on that decision, not on
+the statement.
 
 The member then runs the normal challenge + assert flow, presenting that
-credential. Three bindings have to hold, and each is enforced by the
-default policy:
+statement. Four bindings have to hold, and each is enforced by the default
+policy:
 
 | Binding | Why it is there |
 |---|---|
-| `issuer` == this community's DID | A type is a *name*, not an authority. Without this, any issuer anywhere could mint an `IdentityVerificationCredential` and unlock personhood here. |
-| `credentialSubject.id` == the asserting member | The route's holder-match binds the *presenter*; this binds the *credential*, so a member cannot present a vetting record about someone else. |
-| `type` includes `IdentityVerificationCredential`, and not `DTGCredential` | A role VAC and a VMC are also community-issued and also name the member. Without the type check, every member holding one would satisfy the policy — which is every member. |
+| `issuer` == this community's DID | Anyone can sign a statement under a public predicate — a member vetter included, whose statement is admission evidence, not this community's check. Without this, any issuer anywhere could unlock personhood here. |
+| `credentialSubject.id` == the asserting member | The route's holder-match binds the *presenter*; this binds the *statement*, so a member cannot present a check made of someone else. |
+| `object.value.community` == this community's DID | `vetted/1` counts for the one community it names. |
+| `credentialSubject.predicate` is `vetted/1` | A role VAC, a VMC and an `endorses/1` statement are also community-issued and also name the member. Without the predicate check, every member holding one would satisfy the policy — which is every member. |
+
+Identity credentials from outside providers (`acceptedIdvps`) are not
+`vetted/1` statements and are unchanged: they are any W3C credential meeting
+the community's identity-proofing rules, read for a pseudonym under
+[One membership per person](#one-membership-per-person).
 
 #### The spoken match code
 
@@ -222,7 +255,7 @@ member is `match-code` and not `matchCode`.
 
 DTG Credentials §Personhood Credentials requires governance enforcing
 **both** real human personhood **and exactly one membership per
-person**. In-person vetting is evidence for the first only — see
+person**. The community's own identity check is evidence for the first only — see
 [Declaring personhood governance](#declaring-personhood-governance) for
 publishing the claim, and [One membership per
 person](#one-membership-per-person) for the second half.
@@ -258,9 +291,11 @@ verifier may act on.
 **Setting both requires naming at least one accepted IDVP.** A community
 claiming PHC status while naming nobody it trusts to verify identity has
 not written its governance down, and a verifier cannot tell an unwritten
-policy from a permissive one. A community that vets in person lists its
-own C-DID — §IDVC permits acting as your own identity-verification
-provider.
+policy from a permissive one. A community's own identity checks are
+`vetted/1` statements, not IDVCs, and carry no pseudonym, so listing its own
+C-DID here does not satisfy [one membership per
+person](#one-membership-per-person): that needs an outside provider that can
+deduplicate people.
 
 ### One membership per person
 
@@ -283,9 +318,9 @@ Credentials (Adler et al. 2024)](https://arxiv.org/abs/2408.07892), which
 the spec's PHC definition cites.
 
 The daemon reads it from `credentialSubject.pseudonym`, and **only from an
-issuer in `acceptedIdvps`** — a foreign IDVP's IDVC, or this community's own
-`IdentityVerificationCredential`, whose `claim` members (a `pseudonym` among
-them) are copied into `credentialSubject`.
+issuer in `acceptedIdvps`** — a foreign IDVP's IDVC. The community's own
+`vetted/1` statement has a registry-fixed `object.value` with no pseudonym
+member, so it never supplies one.
 
 An assertion carrying no accepted pseudonym is refused with
 `personhood-pseudonym-missing`; one whose pseudonym another member already
@@ -310,12 +345,14 @@ The guarantee is the IDVP's, not the community's. Uniqueness is exactly as
 good as your accepted providers' deduplication — which is why the spec
 makes acceptable IDVPs part of what governance must publish.
 
-**In-person vetting is the weak case.** When a community is its own IDVP,
-the "pseudonym" is an administrator's judgement that they have not met this
-person before. That genuinely supports one-membership-per-person in a
-community small enough for one person to hold in their head, and genuinely
-does not beyond it. Say so in your governance framework rather than
-letting the flag imply more.
+**The community's own check supplies no pseudonym.** A `vetted/1`
+statement the community issued records that it checked a person's identity;
+it carries no per-person identifier, so it cannot satisfy
+`singleMembership` on its own. A community that wants one membership per
+person relies on an outside provider that can deduplicate people, or — for a
+community small enough for an administrator to hold its members in their
+head — enforces it through its own governance and says so in its framework,
+rather than letting the flag imply more.
 
 Finally, this is per-community by definition — the spec's glossary says
 *"exactly one membership in that VTC"*. Personhood that means something
@@ -537,13 +574,16 @@ for the issuance + revocation flow. Three pieces compose:
    statements.
 2. **Issuance** — Issuer role (or admin) sends
    `vtc/endorsements/issue/0.1` with predicate (`typeUri`) + subject +
-   claim; the VTC mints a `StatementCredential` (a VEC under `endorses/1`).
+   claim; the VTC mints a `StatementCredential` (a VEC under `endorses/1`,
+   or the community's own identity check under `vetted/1`, citing the issue
+   request — see [the community's own identity
+   check](#the-communitys-own-identity-check)). `witnessed/1` and
+   `presented/1` are `predicateNotIssuable`.
 3. **Revocation** — `vtc/endorsements/revoke/0.1` flips the shared
    status-list slot.
 
-Reserved type URIs (`role:vetter`, `IdentityVerificationCredential`) are
-blocked from registration: they are the workspace's own row kinds, and roles
-are VACs, never endorsement types.
+The reserved type URI `role:vetter` is blocked from registration: it is the
+workspace's own row kind, and roles are VACs, never endorsement types.
 
 ## Audit events
 

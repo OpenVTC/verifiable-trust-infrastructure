@@ -9,15 +9,16 @@
 //!   keyed by UUID. The name is kept from when every such credential was an
 //!   endorsement; `endorsement_type` says which kind of row it is:
 //!   - a registered **predicate IRI** — a statement (VSC) minted by
-//!     `vtc/endorsements/issue/0.1`, a VEC under `endorses/1`;
+//!     `vtc/endorsements/issue/0.1`: a VEC under `endorses/1`, or the
+//!     community's own identity check under `vetted/1`;
 //!   - `role:vetter` ([`VETTER_GRANT_ROW_TYPE`]) — a vetter role **VAC**
 //!     issued by `vtc/vetting/vetters/grant/0.1`, which keeps its record
-//!     here so the same revoke task withdraws it;
-//!   - `IdentityVerificationCredential` — an IDVC
-//!     (`crate::credentials::idvc`), a plain W3C VC.
+//!     here so the same revoke task withdraws it.
 //!
-//!   None of the latter two is a predicate IRI, so neither can collide with a
-//!   registered predicate.
+//!   `role:vetter` is not a predicate IRI, so it cannot collide with a
+//!   registered predicate. (Historical: rows typed
+//!   `IdentityVerificationCredential` were written by releases that minted the
+//!   community's identity check as a plain W3C VC; they still list and revoke.)
 //! - Storage helpers: round-trip, list (paginated), mark
 //!   revoked, find live-by-type.
 //! - **Live-by-type check** is load-bearing for the type
@@ -60,7 +61,8 @@ pub struct Endorsement {
     /// What the row records: a registered predicate IRI (a statement, which
     /// must match a row in the `endorsement_types:` keyspace at issue time —
     /// route-layer invariant; storage trusts it), [`VETTER_GRANT_ROW_TYPE`]
-    /// for a vetter grant, or the IDVC type. See the module docs. Wire
+    /// for a vetter grant, or — on rows older releases wrote — the retired
+    /// identity-verification type. See the module docs. Wire
     /// `typeUri`.
     pub endorsement_type: String,
     /// The community DID (always `signer.issuer_did()` at

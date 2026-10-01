@@ -50,9 +50,12 @@ pub enum MemberCommands {
     /// under a registered predicate — a Verifiable Endorsement Credential for
     /// `https://registry.trustoverip.org/dtg/vsc/endorses/1`. Admin or Issuer.
     ///
-    /// `--type IdentityVerificationCredential` issues the in-person
-    /// identity-verification credential the default personhood policy
-    /// accepts instead (a plain W3C VC, not a statement).
+    /// `--type https://registry.trustoverip.org/dtg/vsc/vetted/1` records the
+    /// community's own identity check — the statement the default personhood
+    /// policy accepts. Its claim is the `vetted/1` object value and names this
+    /// community, e.g. `{"community":"<community DID>","method":"inPerson",
+    /// "claimsVerified":["name.legal"],"livenessConfirmed":true,
+    /// "declaredRelationship":"none"}`.
     Endorse {
         /// The DID the statement is about.
         subject: String,

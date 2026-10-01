@@ -406,7 +406,7 @@ active_from, active_to, last_synced_at
 | Invitation | **VIC** | community DID (admin/issuer) | applicant DID | Required by gated communities' join policies. |
 | Member ↔ member trust edge | **VRC** | member DID | other member DID | Self-issued, optionally published (§12.3). |
 | Event/proximity witness | **VWC** — a `StatementCredential` under `witnessed/1` | external | issuer of the witnessed edge | Consumed in join VPs; VTC does not issue. |
-| Community statement (badges, attestations) | **VSC** (a VEC under `endorses/1`) | community (issuer role), `issuerScope` public | any DID | Claim as `object.value` under a registered predicate. **Operator-registered predicate accept list** (Phase 4 M4.8.1, planning-review D4) — only accepted predicates are issuable, and presented statements under any other are refused. Workspace-reserved `role:vetter` / `IdentityVerificationCredential` refused at registration time. |
+| Community statement (badges, attestations) | **VSC** (a VEC under `endorses/1`) | community (issuer role), `issuerScope` public | any DID | Claim as `object.value` under a registered predicate. **Operator-registered predicate accept list** (Phase 4 M4.8.1, planning-review D4) — only accepted predicates are issuable, and presented statements under any other are refused. Workspace-reserved `role:vetter` refused at registration time. The community's own identity check is a VSC under `vetted/1`, citing the issue request. |
 | Persona | VPC | community | member | **v2**. Not in MVP. |
 
 **Predicate accept list (Phase 4 M4.8.1).** Operators register

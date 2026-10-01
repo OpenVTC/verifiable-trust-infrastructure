@@ -41,13 +41,10 @@ pub use storage::{
 
 /// `typeUri`s this implementation reserves for its own `endorsements:` rows,
 /// refused at registration (`vtc/endorsement-types/register:reserved`): the
-/// vetter-grant row type (`role:vetter`) and the identity-verification
-/// credential type. Neither is a predicate IRI, so the IRI check would refuse
-/// them too; naming them here gives the operator the more useful answer.
-pub const RESERVED_TYPE_URIS: &[&str] = &[
-    crate::endorsements::VETTER_GRANT_ROW_TYPE,
-    crate::credentials::idvc::IDENTITY_VERIFICATION_CREDENTIAL_TYPE,
-];
+/// vetter-grant row type (`role:vetter`). It is not a predicate IRI, so the
+/// IRI check would refuse it too; naming it here gives the operator the more
+/// useful answer.
+pub const RESERVED_TYPE_URIS: &[&str] = &[crate::endorsements::VETTER_GRANT_ROW_TYPE];
 
 /// The predicates a fresh community accepts: the four core profiles of the
 /// DTG VSC predicate registry. Seeded once, like the schema registry

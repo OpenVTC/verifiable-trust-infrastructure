@@ -15,11 +15,12 @@
 #     (a VWC) — from a non-empty issuer, whose digest the host has
 #     bound to an edge this community holds — a third party vouching
 #     for the applicant; or
-#   - an `IdentityVerificationCredential` **this community itself
-#     issued to this applicant** — the in-person vetting ceremony,
-#     where an administrator met the person and issued the record to
-#     the DID they presented. A plain W3C VC, deliberately not a DTG
-#     credential.
+#   - a `vetted/1` statement **this community itself issued about this
+#     applicant** — the community recording its own identity check
+#     (an administrator met the person, at a desk or in person, and the
+#     community recorded the check under its own DID). A DTG
+#     `StatementCredential` under the predicate
+#     `https://registry.trustoverip.org/dtg/vsc/vetted/1`.
 #
 # Both are intentionally permissive — operators with stricter
 # requirements upload a custom rego. The default lets the
@@ -112,41 +113,47 @@ allow if {
 	cred.witness_binding.state == "bound"
 }
 
-# ── In-person vetting by this community ────────────────────
+# ── Identity check by this community ───────────────────────
 
-# Allow when the applicant presents an identity-verification credential
-# **this community itself issued** recording that a human verified their
-# identity.
+# Allow when the applicant presents a `vetted/1` statement **this
+# community itself issued** recording that it checked their identity.
 #
-# This is the in-person ceremony: an administrator meets the person,
-# satisfies themselves the DID in front of them is theirs, and issues an
-# `IdentityVerificationCredential` to that DID
-# (`vtc/endorsements/issue/0.1` with `typeUri`
-# `IdentityVerificationCredential`, the one reserved type that mints a
-# plain W3C VC rather than a statement). The member later presents it
-# here, over a single-use challenge, and the community's own signature on
-# the credential is the evidence.
+# This is the community's own check: an administrator meets the person,
+# satisfies themselves the DID in front of them is theirs, and the
+# community records that check as a statement under the registry
+# predicate `vetted/1`, issued under its own DID (`issuerScope`
+# `public`) to that DID — `vtc/endorsements/issue/0.1` with `typeUri`
+# `https://registry.trustoverip.org/dtg/vsc/vetted/1`. Every identity
+# check in the graph then has one shape, whoever made it. The member
+# later presents it here, over a single-use challenge, and the
+# community's own signature on the statement is the evidence.
 #
-# Three conditions, and each one is load-bearing:
+# Four conditions, and each one is load-bearing:
 #
-#   1. `issuer == input.community_did` — otherwise any issuer anywhere
-#      could mint a credential whose type happens to read
-#      `IdentityVerificationCredential` and unlock personhood in this
-#      community. The type is a *name*, not an authority.
-#   2. `credentialSubject.id == input.applicant_did` — the credential
+#   1. `issuer == input.community_did` — a vetter's `vetted/1` statement
+#      is evidence for admission, weighed against the community's
+#      vetting criterion, not a personhood decision; and any issuer
+#      anywhere can sign a statement under a public predicate. Only the
+#      community's own statement is the community's own check.
+#   2. `credentialSubject.id == input.applicant_did` — the statement
 #      names the party asserting, not somebody else. The route's
 #      holder-match already binds the presenter; this binds the
-#      credential, so a member cannot present a vetting record issued
-#      about another member.
-#   3. the type is the identity-verification one — a role VAC or a VMC
+#      statement, so a member cannot present a check made of another
+#      member.
+#   3. `object.value.community == input.community_did` — the statement
+#      was made *for this community*. `vetted/1` counts for the one
+#      community it names, and a community's statement naming another
+#      community is not a check this community made for itself.
+#   4. the predicate is `vetted/1` — classified by the predicate, never
+#      by a type string. A role VAC, a VMC or an `endorses/1` statement
 #      is also community-issued and also names the member, and must not
-#      double as proof that someone met them.
+#      double as proof that someone checked their identity.
 #
-# DTG Credentials §Identity Verification Credentials puts this squarely
-# in scope: "IDVCs are **not** DTGCredential subtypes — any W3C VC
-# satisfying a VTC/VTN's identity-proofing requirements". A community
-# acting as its own identity-verification provider is the simplest case
-# of that.
+# The statement is evidence, not a status: personhood stays this
+# community's decision, recorded on the membership credential
+# (`PersonhoodCredential`). Identity credentials from outside providers
+# (`personhood.acceptedIdvps`) are not statements under this predicate
+# and are not read by this rule.
 #
 # Note what this rule does **not** establish. DTG Credentials
 # §Personhood Credentials requires governance enforcing *both* real
@@ -168,10 +175,11 @@ allow if {
 allow if {
 	some i
 	cred := input.vp_claims.credentials[i]
-	"IdentityVerificationCredential" in cred.type
-	not "DTGCredential" in cred.type
+	"StatementCredential" in cred.type
+	cred.credentialSubject.predicate == "https://registry.trustoverip.org/dtg/vsc/vetted/1"
 	cred.issuer == input.community_did
 	cred.credentialSubject.id == input.applicant_did
+	cred.credentialSubject.object.value.community == input.community_did
 }
 
 # ── Renewal-time re-eval (preserve existing assertion) ─────

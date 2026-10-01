@@ -714,7 +714,19 @@ async fn handle_endorsements_issue(
         Ok(b) => b,
         Err(reject) => return reject,
     };
-    match crate::routes::endorsements::issue_inner(state, &actor, body).await {
+    // The document as received — a community `vetted/1` statement cites it by
+    // `taskContext` and `taskDigestMultibase`. The spine verified the proof
+    // over this same serialisation.
+    let request = match serde_json::to_value(&doc) {
+        Ok(v) => v,
+        Err(e) => {
+            return app_error_to_reject(
+                &doc,
+                &AppError::Internal(format!("serialise the issue request: {e}")),
+            );
+        }
+    };
+    match crate::routes::endorsements::issue_inner(state, &actor, body, &request).await {
         Ok(res) => respond_as::<end_issue::Response>(&doc, res),
         Err(e) => task_error_to_reject(&doc, &e),
     }

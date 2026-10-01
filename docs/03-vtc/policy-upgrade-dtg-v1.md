@@ -20,7 +20,7 @@ allow if { input.foreign_vac.issuer == "did:webvh:…:partner" ; input.foreign_v
 
 `issuer`, `role` and `subject_did` are as before, and `action` is still `"mint_session"`. The shipped default is deny-all and doesn't read this key, so only uploaded policies are affected.
 
-### 2. `personhood`: witness and identity-verification evidence have new shapes
+### 2. `personhood`: witness and identity-check evidence have new shapes
 
 `input.vp_claims.credentials[]` carries the presented credentials, and two of them changed.
 
@@ -37,7 +37,7 @@ cred.credentialSubject.predicate == "https://registry.trustoverip.org/dtg/vsc/wi
 
 The witnessed credential's digest moved from `credentialSubject.digestMultibase` to `credentialSubject.object.digestMultibase`.
 
-**In-person identity verification.** This is no longer an `EndorsementCredential` with `endorsement.type: "IdentityVerification"`. It's a plain W3C credential of type `IdentityVerificationCredential`, deliberately not a DTG credential, with its claims directly in `credentialSubject`:
+**The community's own identity check.** This is no longer an `EndorsementCredential` with `endorsement.type: "IdentityVerification"`. It's a `StatementCredential` under the `vetted/1` predicate, issued by the community under its own DID, about the member, with `object.value.community` naming the community. A vetter's `vetted/1` statement has the same predicate but another issuer, so the issuer comparison is what tells the community's own check apart:
 
 ```rego
 # before
@@ -45,9 +45,14 @@ The witnessed credential's digest moved from `credentialSubject.digestMultibase`
 cred.credentialSubject.endorsement.type == "IdentityVerification"
 
 # after
-"IdentityVerificationCredential" in cred.type
-not "DTGCredential" in cred.type
+"StatementCredential" in cred.type
+cred.credentialSubject.predicate == "https://registry.trustoverip.org/dtg/vsc/vetted/1"
+cred.issuer == input.community_did
+cred.credentialSubject.id == input.applicant_did
+cred.credentialSubject.object.value.community == input.community_did
 ```
+
+Historical: an earlier build of this upgrade (#1859) issued that check as a plain W3C credential of type `IdentityVerificationCredential`, and this page told operators to match `"IdentityVerificationCredential" in cred.type`. The VTC no longer issues that credential. A custom policy written against it recognises nothing the VTC now issues, so rewrite the rule as above. The shipped default is replaced automatically.
 
 ### 3. Any policy that reads role or endorsement credentials
 

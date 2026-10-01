@@ -8,7 +8,19 @@
 //! records a check it carried out, and the predicate — not a type string —
 //! carries that meaning.
 //!
-//! Issued from the **vetter's member DID** (accountable within the community),
+//! [`sign_statement`] issues a vetter's statement. The registry's `vetted/1`
+//! also admits the community itself as issuer, recording its own identity
+//! check under its own DID; [`verify_statement`] reads either. The two differ
+//! in the three vetter-only members (`identityCommitment`,
+//! `cardDigestMultibase`, `declaredRelationship`): a vetter's statement carries
+//! all three and the community's own carries none. Everything that treats a
+//! statement as a vetter's — [`sign_statement`],
+//! [`VerifiedVettingStatement::check_against_card`],
+//! [`VerifiedVettingStatement::check_against_session`] and the community's
+//! admission counting, through `VettedObjectValue::vetter_members` — requires
+//! all three.
+//!
+//! A vetter's statement is issued from the **vetter's member DID** (accountable within the community),
 //! declaring `issuerScope` `directed` or `public` — the profile's minimum is
 //! `directed` — to the applicant's join DID, with a bounded `validUntil`, and
 //! citing the `vetting/session` document by both `taskContext` (its `id`) and
@@ -79,6 +91,17 @@ pub async fn sign_statement(draft: StatementDraft, signer: &Secret) -> Result<Va
         .value
         .check_shape()
         .map_err(|e| malformed(e.to_string()))?;
+    // A vetter's statement is always made over a card and declares the
+    // vetter's relationship. Only a statement the community issues for itself
+    // carries none of the vetter-only members, and it does not issue through
+    // here.
+    if draft.value.vetter_members().is_none() {
+        return Err(malformed(
+            "a vetter's statement carries identityCommitment, cardDigestMultibase and \
+             declaredRelationship"
+                .into(),
+        ));
+    }
     if draft.valid_until <= draft.valid_from {
         return Err(VettingError::Expired(WHAT));
     }
@@ -195,22 +218,33 @@ impl VerifiedVettingStatement {
         if self.value.community != c.community.as_str() {
             return Err(VettingError::Binding("community"));
         }
-        if self.value.identity_commitment != c.identity_commitment.as_str() {
+        let Some(vetter) = self.value.vetter_members() else {
+            return Err(VettingError::Binding("identityCommitment"));
+        };
+        if vetter.identity_commitment != c.identity_commitment.as_str() {
             return Err(VettingError::Binding("identityCommitment"));
         }
-        if self.value.card_digest_multibase != card.digest_multibase() {
+        if vetter.card_digest_multibase != card.digest_multibase() {
             return Err(VettingError::Binding("cardDigestMultibase"));
         }
         Ok(())
     }
 
     /// Check this statement cites `session` — the `vetting/session` document
-    /// the vetter sent — by both `taskContext` and `taskDigestMultibase`.
+    /// the vetter sent — by both `taskContext` and `taskDigestMultibase`, and,
+    /// being a vetter's statement, carries the vetter-only members
+    /// (`identityCommitment`, `cardDigestMultibase`, `declaredRelationship`).
+    /// A vetting session is always run over a card, so a statement without
+    /// them did not come out of it.
     ///
     /// # Errors
     ///
-    /// [`VettingError::Binding`] naming `taskContext` or `taskDigestMultibase`.
+    /// [`VettingError::Binding`] naming `identityCommitment` (no vetter-only
+    /// members), `taskContext` or `taskDigestMultibase`.
     pub fn check_against_session(&self, session: &Value) -> Result<(), VettingError> {
+        if self.value.vetter_members().is_none() {
+            return Err(VettingError::Binding("identityCommitment"));
+        }
         if session.get("id").and_then(Value::as_str) != Some(self.task_context.as_str()) {
             return Err(VettingError::Binding("taskContext"));
         }
@@ -328,9 +362,9 @@ pub(crate) mod tests {
             document_classes: vec!["passport".try_into().unwrap()],
             claims_verified: vec!["name.legal".try_into().unwrap()],
             liveness_confirmed: true,
-            identity_commitment: commitment.into(),
-            card_digest_multibase: card_digest.into(),
-            declared_relationship: VettingRelationship::CommunityColleague,
+            identity_commitment: Some(commitment.into()),
+            card_digest_multibase: Some(card_digest.into()),
+            declared_relationship: Some(VettingRelationship::CommunityColleague),
             attestation_text_digest: None,
         }
     }
@@ -530,6 +564,118 @@ pub(crate) mod tests {
                 .await
                 .unwrap_err(),
             VettingError::Malformed { .. }
+        ));
+    }
+
+    /// A community recording its own identity check: none of the vetter-only
+    /// members.
+    async fn community_desk_check(community: &Secret, subject: &str) -> Value {
+        let now = Utc::now();
+        let mut value = vetted_value("zC", "zD");
+        value.community = did(community);
+        value.identity_commitment = None;
+        value.card_digest_multibase = None;
+        value.declared_relationship = None;
+        let request = json!({
+            "id": "urn:uuid:issue-request-1",
+            "type": "https://trusttasks.org/spec/vtc/endorsements/issue/0.1",
+            "issuer": "did:key:z6MkAdmin",
+            "recipient": did(community),
+            "issuedAt": "2026-10-01T09:30:00Z",
+            "payload": { "subjectDid": subject }
+        });
+        let mut vsc = DTGCredential::new_vetted_vsc(
+            did(community),
+            IssuerScope::Public,
+            subject.into(),
+            serde_json::to_value(&value).unwrap(),
+            &request,
+            now,
+            Some(now + Duration::days(365)),
+        )
+        .unwrap()
+        .with_id("urn:uuid:desk-check-1".to_string());
+        vsc.sign(community, None).await.unwrap();
+        serde_json::to_value(&vsc).unwrap()
+    }
+
+    /// Registry `vetted/1`: the community may issue for itself, and its
+    /// statement carries none of `identityCommitment`, `cardDigestMultibase`
+    /// and `declaredRelationship`. It parses and verifies — but it is not a
+    /// vetter's statement, so it has no vetter members and no session check
+    /// accepts it.
+    #[tokio::test]
+    async fn a_community_statement_without_vetter_members_verifies_but_binds_no_session() {
+        let (community, applicant) = (secret(5), secret(1));
+        let signed = community_desk_check(&community, &did(&applicant)).await;
+        let value = &signed["credentialSubject"]["object"]["value"];
+        for member in [
+            "identityCommitment",
+            "cardDigestMultibase",
+            "declaredRelationship",
+        ] {
+            assert!(value.get(member).is_none(), "{member}");
+        }
+
+        let verified = verify_statement(&signed, Utc::now(), &TrustTaskVmResolver::did_key_only())
+            .await
+            .unwrap();
+        assert_eq!(verified.issuer(), did(&community));
+        assert_eq!(verified.issuer_scope(), IssuerScope::Public);
+        assert!(verified.value().has_no_vetter_members());
+        assert_eq!(verified.value().vetter_members(), None);
+        assert!(matches!(
+            verified.check_against_session(&session_document(&did(&community), &did(&applicant))),
+            Err(VettingError::Binding("identityCommitment"))
+        ));
+    }
+
+    /// A vetter's statement is always made over a card: one without the
+    /// vetter-only members is refused at issue, and fails the session check.
+    #[tokio::test]
+    async fn a_vetter_statement_without_the_vetter_members_is_refused() {
+        let (applicant, vetter) = (secret(1), secret(2));
+        let without = || {
+            let mut value = vetted_value("zC", "zD");
+            value.identity_commitment = None;
+            value.card_digest_multibase = None;
+            value.declared_relationship = None;
+            value
+        };
+        assert!(matches!(
+            sign_statement(
+                statement_draft(&vetter, &did(&applicant), without()),
+                &vetter
+            )
+            .await
+            .unwrap_err(),
+            VettingError::Malformed { .. }
+        ));
+
+        // Signed by hand, bypassing `sign_statement`: the session check still
+        // refuses it, even though the citation itself is right.
+        let now = Utc::now();
+        let session = session_document(&did(&vetter), &did(&applicant));
+        let value = without();
+        let mut vsc = DTGCredential::new_vetted_vsc(
+            did(&vetter),
+            IssuerScope::Directed,
+            did(&applicant),
+            serde_json::to_value(&value).unwrap(),
+            &session,
+            now,
+            Some(now + Duration::days(30)),
+        )
+        .unwrap()
+        .with_id("urn:uuid:no-card".to_string());
+        vsc.sign(&vetter, None).await.unwrap();
+        let signed = serde_json::to_value(&vsc).unwrap();
+        let verified = verify_statement(&signed, now, &TrustTaskVmResolver::did_key_only())
+            .await
+            .unwrap();
+        assert!(matches!(
+            verified.check_against_session(&session),
+            Err(VettingError::Binding("identityCommitment"))
         ));
     }
 

@@ -828,6 +828,16 @@ pub fn has_event_filter(body: &vetters::list::v0_1::Payload) -> bool {
 /// There is no `type` member: the statement's `predicate`
 /// ([`VETTED_PREDICATE`]) carries its meaning.
 ///
+/// The issuer is an eligible member vetter, or the community itself recording
+/// its own identity check under its own DID. The three **vetter-only**
+/// members — `identityCommitment`, `cardDigestMultibase` and
+/// `declaredRelationship` — are all-or-nothing (the registry schema's
+/// `dependentRequired`, held by [`CheckShape::check_shape`]): a vetter's
+/// statement carries all three, and a statement the community issues for
+/// itself carries none, since the salt behind `identityCommitment` must never
+/// reach the community and the community is the party weighing statements,
+/// not a related or unrelated vetter. [`Self::vetter_members`] reads them.
+///
 /// Written here because nothing generates it: it is a credential body, not a
 /// Trust Task, and the codegen skips shared definitions. Its members take the
 /// generated vocabulary, so a statement and the requirements it is counted
@@ -847,24 +857,81 @@ pub struct VettedObjectValue {
     pub claims_verified: Vec<ClaimType>,
     /// The match code was confirmed with the person present.
     pub liveness_confirmed: bool,
-    /// Copied from the card: multibase base58btc.
-    pub identity_commitment: String,
+    /// Copied from the card: multibase base58btc. Vetter-only.
+    ///
+    /// A vetter's statement always carries it (`vetting::statement::sign_statement`
+    /// and every session-bound check refuse one without it); a statement the
+    /// community issues for itself never does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_commitment: Option<String>,
     /// `digestMultibase` of the card the vetter checked: multibase base58btc.
-    pub card_digest_multibase: String,
-    /// The vetter's declared relationship to the applicant.
-    pub declared_relationship: VettingRelationship,
+    /// Vetter-only, on the same terms as `identityCommitment`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card_digest_multibase: Option<String>,
+    /// The vetter's declared relationship to the applicant. Vetter-only, on
+    /// the same terms as `identityCommitment`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declared_relationship: Option<VettingRelationship>,
     /// `digestMultibase` of the attestation text the vetter was shown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_text_digest: Option<String>,
 }
 
+/// The three vetter-only members of a [`VettedObjectValue`], present together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VetterMembers<'a> {
+    /// `identityCommitment`, copied from the card.
+    pub identity_commitment: &'a str,
+    /// `cardDigestMultibase` of the card the vetter checked.
+    pub card_digest_multibase: &'a str,
+    /// `declaredRelationship` to the applicant.
+    pub declared_relationship: VettingRelationship,
+}
+
+impl VettedObjectValue {
+    /// The vetter-only members, when the value carries all three — a vetter's
+    /// statement. `None` for a statement the community issued for itself, and
+    /// for a value that carries only some (which [`CheckShape::check_shape`]
+    /// refuses).
+    #[must_use]
+    pub fn vetter_members(&self) -> Option<VetterMembers<'_>> {
+        Some(VetterMembers {
+            identity_commitment: self.identity_commitment.as_deref()?,
+            card_digest_multibase: self.card_digest_multibase.as_deref()?,
+            declared_relationship: self.declared_relationship?,
+        })
+    }
+
+    /// Whether the value carries none of the vetter-only members — the shape
+    /// of a statement the community issues for itself.
+    #[must_use]
+    pub fn has_no_vetter_members(&self) -> bool {
+        self.identity_commitment.is_none()
+            && self.card_digest_multibase.is_none()
+            && self.declared_relationship.is_none()
+    }
+}
+
 impl CheckShape for VettedObjectValue {
     /// The shared definition's rules beyond what the member types enforce. No
-    /// schema for it is embedded anywhere, so they are checked here.
+    /// schema for it is embedded anywhere, so they are checked here — the
+    /// vetter-only members' all-or-nothing rule (`dependentRequired`) among
+    /// them.
     fn check_shape(&self) -> Result<(), ShapeError> {
         shape::did("community", &self.community)?;
-        shape::base58btc("identityCommitment", &self.identity_commitment)?;
-        shape::base58btc("cardDigestMultibase", &self.card_digest_multibase)?;
+        if self.vetter_members().is_none() && !self.has_no_vetter_members() {
+            return Err(ShapeError::Field {
+                field: "identityCommitment",
+                rule: "identityCommitment, cardDigestMultibase and declaredRelationship are \
+                       present together or not at all",
+            });
+        }
+        if let Some(commitment) = &self.identity_commitment {
+            shape::base58btc("identityCommitment", commitment)?;
+        }
+        if let Some(digest) = &self.card_digest_multibase {
+            shape::base58btc("cardDigestMultibase", digest)?;
+        }
         if let Some(digest) = &self.attestation_text_digest {
             shape::base58btc("attestationTextDigest", digest)?;
         }
@@ -1821,8 +1888,26 @@ mod tests {
         };
         assert!(broken(&|e| e.community = "vtc.example".into()));
         // The registry schema admits base58btc only.
-        assert!(broken(&|e| e.identity_commitment = "uNotBase58".into()));
-        assert!(broken(&|e| e.card_digest_multibase = "z0OIl".into()));
+        assert!(broken(
+            &|e| e.identity_commitment = Some("uNotBase58".into())
+        ));
+        assert!(broken(&|e| e.card_digest_multibase = Some("z0OIl".into())));
+        // The vetter-only members are all-or-nothing: a statement the
+        // community issues for itself carries none of them, a vetter's all
+        // three, and anything between is refused.
+        assert!(!broken(&|e| {
+            e.identity_commitment = None;
+            e.card_digest_multibase = None;
+            e.declared_relationship = None;
+        }));
+        assert!(broken(&|e| e.identity_commitment = None));
+        assert!(broken(&|e| e.card_digest_multibase = None));
+        assert!(broken(&|e| e.declared_relationship = None));
+        assert!(broken(&|e| {
+            e.identity_commitment = None;
+            e.card_digest_multibase = None;
+        }));
+        assert!(vetted_value().vetter_members().is_some());
         assert!(broken(&|e| e.attestation_text_digest = Some("z".into())));
         assert!(broken(&|e| {
             e.document_classes

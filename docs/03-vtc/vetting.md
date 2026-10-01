@@ -507,6 +507,7 @@ For every Vetting Statement in the join presentation — every credential whose
 | Proof by the issuer; v1 context and `StatementCredential` type; the `vetted/1` profile (`taskContext` + `taskDigestMultibase`, `issuerScope` at least `directed`); bounded validity; strict `object.value` | `unverified` |
 | The predicate is one the community accepts (fail-closed accept list) | `predicate-not-accepted` |
 | Subject is the proven holder of the presentation | `subject-not-applicant` |
+| The statement is a vetter's: it carries the vetter-only members (`identityCommitment`, `cardDigestMultibase`, `declaredRelationship`). A statement the community issued for itself carries none and is personhood evidence, not admission evidence | `not-a-vetter-statement` |
 | The criterion's `statementType` is `vetted/1`, the predicate this implementation counts | `wrong-statement-type` |
 | Issuer is a current member, admitted before issuing, holding a vetter grant recorded by the statement's `validFrom`, unexpired then, and not revoked | `issuer-not-vetter` |
 | Statement is for this community | `wrong-community` |

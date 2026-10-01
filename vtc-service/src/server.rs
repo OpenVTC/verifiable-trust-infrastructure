@@ -154,7 +154,7 @@ pub struct AppState {
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
     /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
-    /// Community-issued statement, vetter-grant and IDVC rows (Phase 4
+    /// Community-issued statement and vetter-grant rows (Phase 4
     /// M4.7). Tracked here for list + revoke surfaces; a statement's body
     /// itself is signed + returned at issuance time.
     pub endorsements_ks: KeyspaceHandle,
@@ -523,9 +523,11 @@ pub async fn run(
     }
 
     // The personhood default an earlier binary installed either admitted any
-    // witness with a non-empty issuer, digest unchecked (#1068), or was
-    // written for the credential shapes before the DTG v1 context and
-    // recognises no current witness statement or IDVC. Replace it if — and
+    // witness with a non-empty issuer, digest unchecked (#1068), was written
+    // for the credential shapes before the DTG v1 context and recognises no
+    // current witness statement, or reads the community's own identity check
+    // as the retired plain credential (#1859) rather than as its `vetted/1`
+    // statement. Replace it if — and
     // only if — it is still the workspace's own row; an operator-authored
     // personhood policy is left alone.
     if let Err(e) =

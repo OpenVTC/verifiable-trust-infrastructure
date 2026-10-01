@@ -195,11 +195,11 @@ pub async fn release_for_member(
 /// Pull the pseudonyms out of a presentation's credentials, keeping only those
 /// issued by a provider this community accepts.
 ///
-/// One shape is read: `credentialSubject.pseudonym` of an IDVC, whatever its
-/// schema. That covers a foreign IDVP and this community acting as its own —
-/// the community's `IdentityVerificationCredential`
-/// (`crate::credentials::idvc`) carries its claim members directly in
-/// `credentialSubject`.
+/// One shape is read: `credentialSubject.pseudonym` of an identity credential
+/// from an accepted provider, whatever its schema. The community's own
+/// identity check is a `vetted/1` statement, whose `object.value` the registry
+/// fixes and which has no pseudonym member, so it never establishes
+/// uniqueness here — only an accepted provider's credential does.
 ///
 /// The issuer filter is the load-bearing part. Without it, any issuer could
 /// mint a credential carrying whatever pseudonym they liked — including one
@@ -423,15 +423,24 @@ mod tests {
         assert_eq!(extract(&vp, &[IDVP.into()]), vec!["p-1".to_string()]);
     }
 
-    /// This community as its own IDVP: its `IdentityVerificationCredential`
-    /// carries claim members directly on the subject.
+    /// The community's own identity check is a `vetted/1` statement: its
+    /// `object.value` carries no pseudonym, so it establishes no uniqueness —
+    /// even when the community lists itself as an accepted provider.
     #[test]
-    fn a_community_idvc_pseudonym_is_read() {
-        let vp = vp_with(
-            COMMUNITY,
-            json!({ "id": ALICE, "method": "inPerson", "pseudonym": "p-2" }),
-        );
-        assert_eq!(extract(&vp, &[COMMUNITY.into()]), vec!["p-2".to_string()]);
+    fn a_community_vetted_statement_carries_no_pseudonym() {
+        let vp = json!({
+            "holder": ALICE,
+            "credentials": [{
+                "type": ["VerifiableCredential", "DTGCredential", "StatementCredential"],
+                "issuer": COMMUNITY,
+                "credentialSubject": {
+                    "id": ALICE,
+                    "predicate": dtg_credentials::VETTED_V1,
+                    "object": { "value": { "community": COMMUNITY, "method": "inPerson" } }
+                }
+            }]
+        });
+        assert!(extract(&vp, &[COMMUNITY.into()]).is_empty());
     }
 
     /// **The load-bearing filter.** Without it, any issuer could mint a

@@ -10,9 +10,9 @@
 //!   `role:<name>` at the community's DID. Re-issued on every role change.
 //!
 //! Beside them: community statements ([`statement`], a VSC under a
-//! registered predicate — what `vtc/endorsements/issue` mints), invitations,
-//! and the identity-verification credential ([`idvc`]), which is deliberately
-//! a plain W3C VC rather than a DTG credential.
+//! registered predicate — what `vtc/endorsements/issue` mints, the
+//! community's own identity check under `vetted/1` among them) and
+//! invitations.
 //!
 //! Both are signed locally via [`LocalSigner`] — plan §D1's
 //! "cached-locally, VTA-controlled" model. The VTC's `#key-0`
@@ -55,7 +55,6 @@
 pub mod delivery;
 pub mod dtg;
 pub mod exchange;
-pub mod idvc;
 pub mod ingress;
 pub mod invitation;
 pub mod invitation_registry;
