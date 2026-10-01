@@ -35,11 +35,20 @@ tokio::task_local! {
 
 /// Run `f` with `received` — the inbound document parsed from its wire bytes —
 /// recorded for its duration.
-pub(crate) async fn scope<F, T>(received: Arc<Value>, f: F) -> T
+///
+/// A plain function returning tokio's future, not an `async fn` around it. An
+/// `async fn` wrapper moves `f` — the whole dispatch future — through a
+/// temporary in its own poll frame on first poll, and in a debug build that
+/// frame stays live under every handler: about 64 KiB, enough to put
+/// `contexts/create` past the VTI-08 stack budget.
+pub(crate) fn scope<F>(
+    received: Arc<Value>,
+    f: F,
+) -> tokio::task::futures::TaskLocalFuture<Arc<Value>, F>
 where
-    F: std::future::Future<Output = T>,
+    F: std::future::Future,
 {
-    RECEIVED.scope(received, f).await
+    RECEIVED.scope(received, f)
 }
 
 /// The received JSON, when it is `doc` as received.

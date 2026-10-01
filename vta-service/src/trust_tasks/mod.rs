@@ -1334,11 +1334,12 @@ async fn dispatch_trust_task_inner(
     // tomorrow inherits it, which is the only version of this that stays true.
     let dispatch_audit = DispatchAudit::capture(&doc);
 
-    let mut outcome = Box::pin(received::scope(
-        received,
-        dispatch_trust_task_validated(state, auth, doc),
-    ))
-    .await;
+    // Built in `boxed_task`'s frame rather than this one (VTI-08): inline, a
+    // debug build keeps a slot here for the validated future and another for
+    // the task-local wrapper around it.
+    let mut outcome =
+        boxed_task(|| received::scope(received, dispatch_trust_task_validated(state, auth, doc)))
+            .await;
 
     dispatch_audit.record(state, &auth.did, &outcome).await;
 
