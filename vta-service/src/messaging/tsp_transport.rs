@@ -214,7 +214,8 @@ impl TspTransport {
     /// first so a stale `Bidirectional` local half actually re-invites rather
     /// than sending straight into the drop again.
     ///
-    /// Delegates, and that is a decision with history. #1582 spelled the three
+    /// For a peer on our mediator it delegates, and that is a decision with
+    /// history. #1582 spelled the three
     /// steps out here — readiness, invite, payload — because the SDK's readiness
     /// read and its `SendInvite` are two separate awaits on the relationship
     /// store, and the peer can move our half between them: its own invite
@@ -229,20 +230,45 @@ impl TspTransport {
     /// same bump rather than needing its own copy. The floor in `Cargo.toml` is
     /// `0.26.12` and not `0.26` precisely because of this: on `^0.26` a lockfile
     /// resolving 0.26.11 would put the race back with nothing here to catch it.
+    ///
+    /// A peer on another mediator (`peer_mediator` set and not ours) cannot use
+    /// the SDK's form: its payload route ends at our mediator.
+    /// [`vti_common::tsp_route::send_reestablishing`] spells the steps out
+    /// there, with the same benign-refusal re-read, and nests the payload.
     pub async fn send_reestablishing(
         &self,
         recipient: &str,
+        peer_mediator: Option<&str>,
         body: &[u8],
     ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
-        self.atm
-            .tsp()
-            .send_reestablishing(
-                &self.profile,
-                recipient,
-                &[self.mediator_did.clone(), recipient.to_string()],
-                body,
-            )
-            .await
+        vti_common::tsp_route::send_reestablishing(
+            &self.atm,
+            &self.profile,
+            &self.mediator_did,
+            recipient,
+            peer_mediator,
+            body,
+        )
+        .await
+    }
+
+    /// Tell the SDK which mediator `recipient` lives behind when it is not
+    /// ours, so the relationship control messages it sends route through it —
+    /// see [`vti_common::tsp_route`] for why an initiator has to (VTI-56).
+    pub async fn note_peer_mediator(
+        &self,
+        recipient: &str,
+        peer_mediator: Option<&str>,
+    ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
+        vti_common::tsp_route::note_peer_mediator(
+            &self.atm,
+            &self.profile,
+            &self.mediator_did,
+            recipient,
+            peer_mediator,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Re-invite `recipient` **without** sending a payload — heal the
@@ -253,7 +279,9 @@ impl TspTransport {
     pub async fn relate(
         &self,
         recipient: &str,
+        peer_mediator: Option<&str>,
     ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
+        self.note_peer_mediator(recipient, peer_mediator).await?;
         self.atm
             .tsp()
             .form_relationship_routed(&self.profile, recipient)

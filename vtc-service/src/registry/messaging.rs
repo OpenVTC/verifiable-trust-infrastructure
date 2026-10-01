@@ -128,6 +128,11 @@ pub struct MessagingRegistryClient {
     /// A `std::sync::RwLock` and not a tokio one on purpose — every critical
     /// section here is a field assignment with no `await` inside it (R1.3).
     transport: Arc<RwLock<RegistryTransport>>,
+    /// The registry's TSP mediator — its `#tsp` endpoint — as the last
+    /// selection read it from the DID document. A TSP send routes through it
+    /// when it is not ours (VTI-56, `vti_common::tsp_route`). Same lock
+    /// discipline as `transport`.
+    tsp_mediator: RwLock<Option<String>>,
 }
 
 impl std::fmt::Debug for MessagingRegistryClient {
@@ -165,6 +170,7 @@ impl MessagingRegistryClient {
             reply_timeout: Duration::from_secs(DEFAULT_REPLY_TIMEOUT_SECONDS),
             http,
             transport,
+            tsp_mediator: RwLock::new(None),
         }
     }
 
@@ -247,6 +253,9 @@ impl MessagingRegistryClient {
             )
         })?;
         let theirs = ServiceCapabilities::from_did_document(&doc);
+        if let Ok(mut slot) = self.tsp_mediator.write() {
+            slot.clone_from(&theirs.tsp);
+        }
         let advertised = theirs.advertised();
         let ours = self.our_capabilities();
         let matched = select_protocol(&ours, &theirs, &self.registry_did).map_err(|e| {
@@ -433,10 +442,10 @@ impl MessagingRegistryClient {
         doc: &TrustTask<Value>,
     ) -> Result<(), RegistryError> {
         let body = tsp_envelope(doc)?;
-        // Route: our mediator, then the registry. TSP send is an HTTP post
-        // through the same profile the pickup socket is bound to — no second
-        // websocket (the mediator permits one per DID).
-        let route = vec![messaging.mediator_did.clone(), self.registry_did.clone()];
+        // TSP send is an HTTP post through the same profile the pickup socket
+        // is bound to — no second websocket (the mediator permits one per DID).
+        // A registry on another mediator is reached through it (VTI-56).
+        let registry_mediator = self.tsp_mediator.read().ok().and_then(|m| m.clone());
         // Recovery-aware send (Rev 3 §7.2.2). The registry drops an application
         // frame from a VID it holds no relationship with, so a bare send is
         // silently discarded on first contact — or after the registry restarts
@@ -449,12 +458,16 @@ impl MessagingRegistryClient {
         // waiter should `reset_relationship` and retry through here, so a stale
         // local half re-invites. Wired at the wait site, not here, where there is
         // no reply to time out.
-        messaging
-            .atm
-            .tsp()
-            .send_reestablishing(&messaging.profile, &self.registry_did, &route, &body)
-            .await
-            .map_err(|e| RegistryError::Unreachable(format!("TSP send failed: {e}")))?;
+        vti_common::tsp_route::send_reestablishing(
+            &messaging.atm,
+            &messaging.profile,
+            &messaging.mediator_did,
+            &self.registry_did,
+            registry_mediator.as_deref(),
+            &body,
+        )
+        .await
+        .map_err(|e| RegistryError::Unreachable(format!("TSP send failed: {e}")))?;
         Ok(())
     }
 

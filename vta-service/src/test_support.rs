@@ -3633,6 +3633,107 @@ mod transport_harness_tests {
         topology.shutdown().await.expect("shutdown the topology");
     }
 
+    /// VTI-56: a relationship started **from cold** with a peer on another
+    /// mediator. Every other cross-mediator test here pre-forms the relationship
+    /// (`relate_directly`), which skips the invite entirely — which is how this
+    /// went unseen.
+    ///
+    /// The SDK routes an invite across mediators only when it already knows the
+    /// peer's mediator. An initiator does not, so the invite went to our own
+    /// mediator as a Direct message and was refused
+    /// (`e.p.direct_delivery.denied`) on every attempt. The first half pins that
+    /// SDK behaviour, so the day it learns to route by the DID document this
+    /// test says the workaround can go; the second half is our send.
+    #[tokio::test]
+    async fn vti_56_a_cold_relationship_with_a_cross_mediator_peer_forms() {
+        use affinidi_messaging_sdk::messages::fetch::FetchOptions;
+        use affinidi_messaging_test_mediator::topology::TestTopology;
+
+        let topology = TestTopology::builder()
+            .mediators(2)
+            .spawn()
+            .await
+            .expect("spawn a two-mediator topology");
+        let mediator_b = topology.mediator_did(1).expect("mediator B").to_string();
+        let alice = topology.add_user(0, "alice").await.expect("alice on A");
+        let bob = topology.add_user(1, "bob").await.expect("bob on B");
+        let carol = topology.add_user(1, "carol").await.expect("carol on B");
+        let node_a = topology.node(0).expect("node A");
+        let node_b = topology.node(1).expect("node B");
+
+        // The SDK alone: a cold invite to bob is refused by mediator A.
+        let refused = node_a
+            .atm
+            .tsp()
+            .form_relationship_routed(&alice.profile, &bob.did)
+            .await
+            .expect_err("a cold invite to a peer on another mediator is refused");
+        assert!(
+            refused.to_string().contains("direct_delivery.denied"),
+            "{refused}"
+        );
+
+        // Ours: the re-establishing send names carol's mediator, as every caller
+        // does from her DID document's `#tsp` endpoint.
+        let transport = crate::messaging::tsp_transport::TspTransport::new(
+            node_a.atm.clone(),
+            alice.profile.clone(),
+        )
+        .expect("alice's profile carries a mediator");
+        let body = vta_sdk::tsp_binding::wrap_envelope(br#"{"probe":"cold cross-mediator"}"#);
+        transport
+            .send_reestablishing(&carol.did, Some(&mediator_b), &body)
+            .await
+            .expect("invite and payload are accepted for delivery");
+        assert_eq!(
+            node_a
+                .atm
+                .tsp()
+                .relationship_state(&alice.profile, &carol.did)
+                .await
+                .expect("read alice's state"),
+            affinidi_messaging_sdk::protocols::tsp::RelationshipState::Pending,
+            "the invite left"
+        );
+
+        // Carol receives the invite and, behind it, the payload.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut got = None;
+        while got.is_none() && std::time::Instant::now() < deadline {
+            let fetched = node_b
+                .atm
+                .fetch_messages(&carol.profile, &FetchOptions::default())
+                .await
+                .expect("fetch carol's inbox");
+            // As an inbound loop does: a control frame advances the relationship
+            // (the invite admits what follows it), then application frames
+            // unpack. In fetch order the invite comes first.
+            let tsp_b = node_b.atm.tsp();
+            for m in fetched.success.iter().filter_map(|e| e.msg.as_ref()) {
+                let Ok(qb2) = tsp_b.decode(m) else { continue };
+                if let Ok((control, sender, _)) = tsp_b.unpack_control(&carol.profile, &qb2).await {
+                    tsp_b
+                        .record_incoming_control(&carol.profile, &sender, &control)
+                        .await
+                        .expect("carol records alice's invite");
+                } else if let Ok((plain, sender)) = tsp_b.unpack_bytes(&carol.profile, &qb2).await
+                    && plain == body
+                {
+                    got = Some(sender);
+                }
+            }
+            if got.is_none() {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
+        topology.shutdown().await.expect("shutdown");
+        assert_eq!(
+            got.as_deref(),
+            Some(alice.did.as_str()),
+            "carol, on another mediator, receives alice's payload with no prior relationship"
+        );
+    }
+
     /// The same-mediator path stays the plain routed send: when the peer shares
     /// our mediator there is no intermediary to hide it from, so
     /// `send_metadata_private` must **not** nest — it falls back to the direct

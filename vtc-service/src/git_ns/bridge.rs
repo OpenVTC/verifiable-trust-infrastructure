@@ -41,7 +41,7 @@ use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::git_ns::bridge::{
     event::v0_3 as event_wire, job::v0_4 as job_wire, result::v0_1 as result_wire,
 };
-use vta_sdk::protocol::matching::{Protocol, ServiceCapabilities, select_protocol};
+use vta_sdk::protocol::matching::{Protocol, ProtocolMatch, ServiceCapabilities, select_protocol};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -532,7 +532,7 @@ impl MessagingBridgeClient {
         }
     }
 
-    async fn select(&self, bridge_did: &str) -> Result<Protocol, BridgeSendError> {
+    async fn select(&self, bridge_did: &str) -> Result<ProtocolMatch, BridgeSendError> {
         let resolver = self.resolver.as_ref().ok_or_else(|| {
             BridgeSendError::Transient(
                 "no DID resolver configured — cannot read the bridge's advertised transports"
@@ -559,12 +559,10 @@ impl MessagingBridgeClient {
                 "VTC messaging is not running yet".into(),
             ));
         }
-        select_protocol(&ours, &theirs, bridge_did)
-            .map(|m| m.protocol)
-            .map_err(|e| BridgeSendError::Rejected {
-                code: "noMatchingProtocol".into(),
-                message: e.to_string(),
-            })
+        select_protocol(&ours, &theirs, bridge_did).map_err(|e| BridgeSendError::Rejected {
+            code: "noMatchingProtocol".into(),
+            message: e.to_string(),
+        })
     }
 }
 
@@ -654,7 +652,8 @@ impl MessagingBridgeClient {
             .signer
             .as_ref()
             .ok_or_else(|| BridgeSendError::Transient("this VTC has no signing key yet".into()))?;
-        let protocol = self.select(bridge_did).await?;
+        let matched = self.select(bridge_did).await?;
+        let protocol = matched.protocol;
 
         let doc = vti_common::capability_client::build_document(
             &messaging.vtc_did,
@@ -677,14 +676,19 @@ impl MessagingBridgeClient {
             Protocol::Tsp => {
                 let body = crate::outbound::seal_trust_task_tsp(&doc)
                     .map_err(|e| BridgeSendError::Transient(e.to_string()))?;
-                let route = vec![messaging.mediator_did.clone(), bridge_did.to_string()];
-                messaging
-                    .atm
-                    .tsp()
-                    .send_reestablishing(&messaging.profile, bridge_did, &route, &body)
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| BridgeSendError::Transient(format!("TSP send failed: {e}")))
+                // `peer_endpoint` is the bridge's TSP mediator; a bridge on
+                // another mediator is reached through it (VTI-56).
+                vti_common::tsp_route::send_reestablishing(
+                    &messaging.atm,
+                    &messaging.profile,
+                    &messaging.mediator_did,
+                    bridge_did,
+                    Some(matched.peer_endpoint.as_str()),
+                    &body,
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| BridgeSendError::Transient(format!("TSP send failed: {e}")))
             }
             Protocol::Didcomm => {
                 crate::outbound::send_trust_task_didcomm(messaging, bridge_did, &doc)
