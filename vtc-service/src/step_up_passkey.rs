@@ -264,129 +264,15 @@ async fn audit(state: &AppState, actor: &str, data: StepUpPasskeyData) -> Result
     Ok(())
 }
 
-// ── notifying the member ───────────────────────────────────────────────────
-
-/// An informational notice this service pushes to a member about their own
-/// step-up passkey. Not a published Trust Task specification — nothing
-/// dispatches on this type, so it answers to no schema or registry entry —
-/// which is why it stays local to this module rather than joining the
-/// generated `trust_tasks_rs::specs::*` family `crate::ceremony::removal_notice`
-/// and `crate::git_ns::break_glass` draw their own notices from.
-const STEP_UP_PASSKEY_NOTICE_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/members/step-up-passkey-notice/0.1";
-
-/// What happened, for [`notify_step_up_passkey_changed`].
-#[derive(Clone, Copy)]
-enum NoticeEvent {
-    Enrolled,
-    Revoked,
-}
-
-impl NoticeEvent {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Enrolled => "enrolled",
-            Self::Revoked => "revoked",
-        }
-    }
-}
-
-/// Tell `subject` that a step-up passkey was enrolled or revoked for them,
-/// naming who acted (`by` — an administrator, invariably someone else: an
-/// invite is never self-issued, and a self-revoke never reaches this
-/// function). A takeover that enrols a passkey of its own, or strips the
-/// member's, on a compromised administrator's say-so must not be silent.
-///
-/// Best-effort, deliberately, exactly as
-/// [`crate::ceremony::removal_notice::send`]: the change this reports has
-/// already happened and is durable, and refusing it because a notice could
-/// not be *queued* would be worse than the member finding out late. A failure
-/// is logged and swallowed.
-async fn notify_step_up_passkey_changed(
-    state: &AppState,
-    subject: &str,
-    event: NoticeEvent,
-    by: &str,
-    credential_id: &str,
-) {
-    if let Err(e) =
-        try_notify_step_up_passkey_changed(state, subject, event, by, credential_id).await
-    {
-        warn!(
-            error = %e,
-            subject,
-            by,
-            event = event.as_str(),
-            "step-up passkey notice could not be queued — the member was not told"
-        );
-    }
-}
-
-/// The notice payload, built without touching `AppState` so its wire shape
-/// can be asserted without a running service.
-fn step_up_passkey_notice_payload(
-    subject: &str,
-    event: NoticeEvent,
-    by: &str,
-    credential_id: &str,
-) -> Value {
-    json!({
-        "subject": subject,
-        "event": event.as_str(),
-        "credentialId": credential_id,
-        "by": by,
-        "occurredAt": Utc::now(),
-    })
-}
-
-async fn try_notify_step_up_passkey_changed(
-    state: &AppState,
-    subject: &str,
-    event: NoticeEvent,
-    by: &str,
-    credential_id: &str,
-) -> Result<(), AppError> {
-    let vtc_did = state
-        .config
-        .read()
-        .await
-        .vtc_did
-        .clone()
-        .filter(|d| !d.is_empty())
-        .ok_or_else(|| AppError::Internal("VTC DID not configured".into()))?;
-    let signer = state
-        .credential_signer
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
-
-    let payload = step_up_passkey_notice_payload(subject, event, by, credential_id);
-    let doc = vti_common::capability_client::build_document(
-        &vtc_did,
-        subject,
-        STEP_UP_PASSKEY_NOTICE_TYPE,
-        payload,
-    );
-    let mut doc_value = serde_json::to_value(&doc)
-        .map_err(|e| AppError::Internal(format!("serialise step-up passkey notice: {e}")))?;
-    signer.sign_operational_doc(&mut doc_value).await?;
-
-    // Over whichever transport the member speaks — TSP, DIDComm or REST —
-    // with escalation, exactly as every other member-facing push.
-    crate::member_push::push_trust_task(
-        state,
-        subject,
-        doc_value,
-        crate::server::REMOVAL_NOTICE_DELIVER_BY,
-    )
-    .await?;
-    info!(
-        subject,
-        by,
-        event = event.as_str(),
-        "step-up passkey notice queued"
-    );
-    Ok(())
-}
+// TODO(notify): tell the member, over the existing member-push mechanism,
+// when a step-up passkey is enrolled or revoked for them by someone else, so
+// a takeover through a compromised administrator key is not silent. Reverted
+// here (#1872 CI) because every Trust Task this service sends must be
+// spec-first: there is no published `vtc/members/*` notice for a step-up
+// passkey change (unlike `removal-notice` and `break-glass-notice`, which
+// already have one), and the registry census
+// (`trust_task_manifest::every_bound_canonical_task_exists_in_the_registry`)
+// refuses a type URI with nothing behind it. Land the spec, then this.
 
 // ── reading ─────────────────────────────────────────────────────────────────
 
@@ -1067,18 +953,6 @@ pub async fn redeem_finish(
     // lapse on its own bounded window.
     revoke_session_elevation(&state.sessions_ks, &c.subject).await?;
     info!(subject = %c.subject, credential_id = %hex_id, "step-up passkey registered");
-    // Enrolling a step-up passkey always starts with someone else's invite
-    // (`check_invite` refuses self-invites), so the member always learns of
-    // it from here — a takeover that enrols a passkey of its own on a
-    // compromised administrator's say-so must not be silent.
-    notify_step_up_passkey_changed(
-        state,
-        &c.subject,
-        NoticeEvent::Enrolled,
-        &c.invited_by,
-        &hex_id,
-    )
-    .await;
     let mut response = json!({
         "credentialId": hex_id,
         "subject": c.subject,
@@ -1289,19 +1163,9 @@ pub async fn revoke_finish(
     )
     .await?;
     info!(producer = %producer_did, subject = %r.subject, credential_id = %r.credential_id, self_revoke, "step-up passkey revoked");
-    // Tell the member when somebody else did this to them: a takeover through
-    // a stolen admin key, or an admin acting in error, must not be silent
-    // (revoke/finish 0.2, *Notice*).
-    if !self_revoke {
-        notify_step_up_passkey_changed(
-            state,
-            &r.subject,
-            NoticeEvent::Revoked,
-            producer_did,
-            &r.credential_id,
-        )
-        .await;
-    }
+    // TODO(notify): tell the member when somebody else did this to them —
+    // see the TODO above `credentials_of` for why this waits on a published
+    // notice spec.
     Ok(as_response(
         "revoke/finish",
         json!({
@@ -1356,29 +1220,6 @@ mod tests {
         let name = authenticator_name(&long);
         assert!(name.chars().count() <= 64, "{name}");
         assert!(name.starts_with("did:peer:2."));
-    }
-
-    #[test]
-    fn the_step_up_passkey_notice_names_the_event_and_who_acted() {
-        let p = step_up_passkey_notice_payload(
-            "did:key:zMember",
-            NoticeEvent::Revoked,
-            "did:key:zAdmin",
-            "deadbeef",
-        );
-        assert_eq!(p["subject"], "did:key:zMember");
-        assert_eq!(p["event"], "revoked");
-        assert_eq!(p["by"], "did:key:zAdmin");
-        assert_eq!(p["credentialId"], "deadbeef");
-        assert!(p.get("occurredAt").is_some());
-
-        let p = step_up_passkey_notice_payload(
-            "did:key:zMember",
-            NoticeEvent::Enrolled,
-            "did:key:zAdmin",
-            "c0ffee",
-        );
-        assert_eq!(p["event"], "enrolled");
     }
 
     #[test]
