@@ -2523,8 +2523,8 @@ export interface components {
          *
          *     They are separate fields because they are separately achievable, and a
          *     community that has one without the other should be able to say so. This
-         *     daemon's in-person vetting supports the first — an administrator meets
-         *     someone and issues them an identity-verification endorsement — and does
+         *     daemon's own identity check supports the first — an administrator meets
+         *     someone and the community records it as a `vetted/1` statement — and does
          *     nothing at all for the second. Collapsing them into one `is_phc` flag
          *     would force every such community to either overclaim or stay silent.
          *
@@ -2549,9 +2549,13 @@ export interface components {
              *
              *     §Governance Considerations item 1: identity-proofing requirements
              *     "including acceptable IDVPs and IDVCs" are the community's to define
-             *     and are "published via trust registries". A community that vets its
-             *     own members in person lists its own C-DID here — it is acting as its
-             *     own IDVP, which §IDVC permits.
+             *     and are "published via trust registries".
+             *
+             *     A community's own identity checks are not IDVCs: it records them as
+             *     `vetted/1` statements, whose registry-fixed `object.value` carries no
+             *     pseudonym. Listing its own C-DID here therefore establishes no
+             *     uniqueness under `singleMembership`; only an outside provider's
+             *     credential carrying a pseudonym does.
              *
              *     Advisory to verifiers, not a gate: `personhood.rego` decides what is
              *     actually accepted. An empty list means the community has not published

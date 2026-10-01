@@ -13,7 +13,7 @@ use chrono::Utc;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
-use super::{SchemaEntry, SchemaKind, schema_exists, store_schema};
+use super::{SchemaEntry, SchemaKind, delete_schema, get_schema, schema_exists, store_schema};
 
 /// The built-in credential types the VTC issues, keyed by the short type name
 /// stamped in a credential's `type` array (what [`super::validate_issued`]
@@ -23,18 +23,21 @@ use super::{SchemaEntry, SchemaKind, schema_exists, store_schema};
 /// The DTG types are the four the community mints: grants (VMC), role
 /// credentials (VAC), statements (VSC — which statement is its predicate, the
 /// set `crate::endorsement_types` accepts, never a subtype) and invitations
-/// (VIC). The identity-verification credential is a plain W3C VC, so it is
-/// registered with no DTG type.
+/// (VIC). The community's own identity check is a statement under `vetted/1`,
+/// so it needs no entry of its own.
 pub const DEFAULT_ISSUES_TYPES: &[(&str, Option<&str>)] = &[
     ("MembershipCredential", Some("MembershipCredential")),
     ("AuthorityCredential", Some("AuthorityCredential")),
     ("StatementCredential", Some("StatementCredential")),
     ("InvitationCredential", Some("InvitationCredential")),
-    (
-        crate::credentials::idvc::IDENTITY_VERIFICATION_CREDENTIAL_TYPE,
-        None,
-    ),
 ];
+
+/// Defaults an earlier release seeded for a type the VTC no longer mints.
+/// Historical: the plain `IdentityVerificationCredential` the community issued
+/// for its own identity check until that check became a `vetted/1` statement.
+/// Removed at boot only where the seed wrote it, so an operator's own
+/// registration of the name is kept.
+const RETIRED_ISSUES_TYPES: &[&str] = &["IdentityVerificationCredential"];
 
 /// The DID recorded as the registrant of a seeded default.
 const SEED_AUTHOR: &str = "did:vtc:system";
@@ -42,6 +45,14 @@ const SEED_AUTHOR: &str = "did:vtc:system";
 /// Seed the default Issues registrations for the catalog types the VTC mints,
 /// for any not already registered. Idempotent — safe to call on every boot.
 pub async fn seed_default_issues(schemas_ks: &KeyspaceHandle) -> Result<(), AppError> {
+    for type_uri in RETIRED_ISSUES_TYPES {
+        if let Some(entry) = get_schema(schemas_ks, type_uri).await?
+            && entry.created_by_did == SEED_AUTHOR
+            && entry.kind == SchemaKind::Issues
+        {
+            delete_schema(schemas_ks, type_uri).await?;
+        }
+    }
     let now = Utc::now();
     for (type_uri, dtg_type) in DEFAULT_ISSUES_TYPES {
         if schema_exists(schemas_ks, type_uri).await? {
@@ -92,6 +103,39 @@ mod tests {
                 "{type_uri} must be seeded as an Issues type"
             );
         }
+    }
+
+    /// A type an earlier release seeded and the VTC no longer mints is
+    /// withdrawn where the seed wrote it, and kept where an operator did.
+    #[tokio::test]
+    async fn a_retired_seeded_default_is_withdrawn_but_an_operator_row_is_kept() {
+        let (_d, _s, ks) = ks().await;
+        let row = |by: &str| SchemaEntry {
+            type_uri: RETIRED_ISSUES_TYPES[0].into(),
+            dtg_type: None,
+            credential_schema: None,
+            kind: SchemaKind::Issues,
+            description: None,
+            created_at: Utc::now(),
+            created_by_did: by.into(),
+        };
+        store_schema(&ks, &row(SEED_AUTHOR)).await.unwrap();
+        seed_default_issues(&ks).await.unwrap();
+        assert!(
+            get_schema(&ks, RETIRED_ISSUES_TYPES[0])
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        store_schema(&ks, &row("did:key:zAdmin")).await.unwrap();
+        seed_default_issues(&ks).await.unwrap();
+        assert!(
+            get_schema(&ks, RETIRED_ISSUES_TYPES[0])
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]

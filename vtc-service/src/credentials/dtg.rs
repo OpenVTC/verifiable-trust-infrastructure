@@ -16,9 +16,9 @@
 //! recognise. That is `public` in the DTG Credentials Core Specification, and
 //! it is the only scope the VTC declares.
 //!
-//! The one credential the VTC issues that is *not* a DTG credential is the
-//! identity-verification credential ([`super::idvc`]), a plain
-//! W3C VC.
+//! The community's own identity check is a DTG credential too: a statement
+//! under the registry predicate `vetted/1` ([`issue_vetted_statement`]),
+//! issued under the community's DID like every other credential here.
 //!
 //! ## Signing covers `id` + `credentialStatus`
 //!
@@ -226,6 +226,42 @@ pub async fn issue_statement(
     )
     .map_err(|e| AppError::Validation(format!("statement credential: {e}")))?;
     finalize(signer, dtg, id, status_ref, &[]).await
+}
+
+/// Issue the community's own **identity check** as a signed `vetted/1`
+/// statement (registry `https://registry.trustoverip.org/dtg/vsc/vetted/1`).
+///
+/// The community is the issuer, under its own DID (`issuerScope` `public`),
+/// recording that it checked `subject_did`'s identity. `value` is the
+/// statement's `object.value`, already checked by the caller as a
+/// `VettedObjectValue` naming this community. The profile REQUIRES a task
+/// citation, and for a community-issued statement the exchange is the
+/// `vtc/endorsements/issue` request in which the community recorded the check:
+/// `request` is that document, and `taskContext` is its `id` and
+/// `taskDigestMultibase` its task digest, both read from it by
+/// `DTGCredential::new_vetted_vsc` so the two cannot disagree. Always
+/// revocable, so `status_ref` is required.
+pub async fn issue_vetted_statement(
+    signer: &LocalSigner,
+    subject_did: &str,
+    value: Value,
+    request: &Value,
+    id: &str,
+    status_ref: &CredentialStatusRef,
+    validity: Duration,
+) -> Result<Value, AppError> {
+    let (valid_from, valid_until) = window(validity);
+    let dtg = DTGCredential::new_vetted_vsc(
+        signer.issuer_did().to_string(),
+        IssuerScope::Public,
+        subject_did.to_string(),
+        value,
+        request,
+        valid_from,
+        Some(valid_until),
+    )
+    .map_err(|e| AppError::Validation(format!("vetted/1 statement: {e}")))?;
+    finalize(signer, dtg, Some(id), Some(status_ref), &[]).await
 }
 
 /// Issue a signed **Invitation** credential (VIC) as JSON to a `subject_did`

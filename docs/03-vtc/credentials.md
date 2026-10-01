@@ -16,9 +16,8 @@ are refused on ingress with no alias (`credentials/ingress.rs`).
 |---|---|---|---|---|
 | **VMC** — Verifiable Membership Credential (the grant) | `MembershipCredential` (+ optional `PersonhoodCredential` hint) | Member DID | VTC | On join approval, on renewal, on DID rotation |
 | **Role VAC** — Verifiable Authority Credential | `AuthorityCredential`, `authority` `{ scope: <community DID>, actions: ["role:<role>"], maxAttenuation: 0 }` | Member DID | VTC | On admission with a role, role change, renewal, rotation; a vetter grant (`role:vetter`) |
-| **VSC** — Verifiable Statement Credential | `StatementCredential`, `predicate` = a registered predicate, `object.value` = the claim | Member DID | VTC on behalf of Issuer role | `vtc/endorsements/issue/0.1`; a VEC under `endorses/1` |
+| **VSC** — Verifiable Statement Credential | `StatementCredential`, `predicate` = a registered predicate, `object.value` = the claim | Member DID | VTC on behalf of Issuer role | `vtc/endorsements/issue/0.1`; a VEC under `endorses/1`, or the community's own identity check under `vetted/1` (see [personhood](personhood-and-graph.md#the-communitys-own-identity-check)) |
 | **VIC** — Verifiable Invitation Credential | `InvitationCredential` | Invitee DID | VTC | `vtc/invitations/issue` |
-| **IDVC** — Identity Verification Credential | `IdentityVerificationCredential` — a plain W3C VC, **not** a DTG credential | Member DID | VTC | `vtc/endorsements/issue/0.1` with the reserved `typeUri` (see [personhood](personhood-and-graph.md#in-person-vetting)) |
 | **VRC** — Verifiable Relationship Credential | `RelationshipCredential`, with the issuer's own `issuerScope` | Other member's DID | Member (self-issued) | `vtc/relationships/publish` |
 
 A role VAC's action is `role:` followed by the ACL role's wire name —
@@ -169,9 +168,8 @@ kept from before) are the **predicates it accepts**:
 - A registered `typeUri` must be an absolute predicate IRI — a DTG VSC
   predicate registry IRI (`https://registry.trustoverip.org/dtg/vsc/…/1`) or
   one in a namespace the community controls. Anything else is `invalidUri`;
-  the workspace's own row kinds (`role:vetter`,
-  `IdentityVerificationCredential`) are `reserved`. Roles are VACs and are
-  never registered here.
+  the workspace's own row kind (`role:vetter`) is `reserved`. Roles are VACs
+  and are never registered here.
 - A new community accepts the registry's four core predicates — `endorses/1`,
   `witnessed/1`, `vetted/1`, `presented/1` — seeded once at first boot
   (`endorsement_types::seed_defaults`, guarded by a marker so a default an
@@ -184,9 +182,13 @@ kept from before) are the **predicates it accepts**:
 - **Issuance** (`vtc/endorsements/issue/0.1`) mints a VSC under a registered
   predicate: issuer the community, `issuerScope` `public`, `object.value` the
   claim, validated against the predicate's `claimSchema`, with a revocation
-  slot. A predicate whose profile requires `taskContext` (`vetted/1`,
-  `witnessed/1`, `presented/1`) is refused with `predicateNotIssuable`: those
-  are made by the party that ran the exchange, never the community.
+  slot. Under `vetted/1` the community records its own identity check: the
+  claim is a `vetted/1` object value naming this community, and the profile's
+  required citation names the issue request (`taskContext` its `id`,
+  `taskDigestMultibase` its task digest). The other predicates whose profile
+  requires `taskContext` (`witnessed/1`, `presented/1`) are refused with
+  `predicateNotIssuable`: those are made by the party that ran the exchange,
+  never the community.
 
 ```mermaid
 sequenceDiagram
@@ -232,8 +234,7 @@ Reader, per the Phase 1 deviation).
 
 Revocation is the signed Trust Task `vtc/endorsements/revoke/0.1` with the
 `endorsementId`, or the member's page in the admin console. The same task
-revokes a vetter grant's VAC and an IDVC, which are recorded under the same
-kind of row.
+revokes a vetter grant's VAC, which is recorded under the same kind of row.
 
 This emits a paired audit:
 
@@ -266,9 +267,9 @@ bearer token:
 |---|---|---|
 | List accepted predicates | `GET /endorsement-types` | admin |
 | Register, delete accepted predicates | signed `vtc/endorsement-types/{register,delete}/0.1` documents at `POST /trust-tasks` (no REST route) | admin |
-| Issue a statement (or an IDVC) | signed `vtc/endorsements/issue/0.1` (no REST route) | issuer or admin |
+| Issue a statement (including the community's own `vetted/1` identity check) | signed `vtc/endorsements/issue/0.1` (no REST route) | issuer or admin |
 | List, show statements | signed `vtc/endorsements/{list,show}/0.1` (no REST route) | issuer or admin |
-| Revoke a statement, vetter grant or IDVC | signed `vtc/endorsements/revoke/0.1` (no REST route) | issuer or admin |
+| Revoke a statement or vetter grant | signed `vtc/endorsements/revoke/0.1` (no REST route) | issuer or admin |
 | Renew membership | `POST /members/me/renew` | the member |
 | Rotate the member's DID | `POST /members/me/rotate/challenge`, then `POST /members/me/rotate` | the member |
 

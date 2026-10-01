@@ -16,7 +16,7 @@ applies_to:
 
 - **Auth**: Admin role.
 - **Body**: `{ typeUri, claimSchema?, description? }`.
-- Refuses workspace-reserved URIs (`role:vetter`, `IdentityVerificationCredential`) with `409 endorsement-type-reserved`; a registered `typeUri` is a predicate IRI.
+- Refuses the workspace-reserved URI `role:vetter` with `409 endorsement-type-reserved`; a registered `typeUri` is a predicate IRI.
 - Refuses duplicates with `409 endorsement-type-exists`.
 - Refuses empty / oversized URIs (> 512 bytes) with `400`.
 - Emits `EndorsementTypeRegistered { typeUri, description }`.

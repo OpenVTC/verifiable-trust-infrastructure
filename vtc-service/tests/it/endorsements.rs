@@ -165,6 +165,17 @@ async fn signed_task(
     task: &str,
     payload: Value,
 ) -> (StatusCode, Value) {
+    let (status, payload, _) = signed_task_with_doc(fix, from, task, payload).await;
+    (status, payload)
+}
+
+/// [`signed_task`], also handing back the signed request document.
+async fn signed_task_with_doc(
+    fix: &Fixture,
+    from: &Party,
+    task: &str,
+    payload: Value,
+) -> (StatusCode, Value, Value) {
     let mut doc = vta_sdk::trust_task_sign::build_unsigned(
         task,
         payload,
@@ -184,7 +195,11 @@ async fn signed_task(
         .body(Body::from(serde_json::to_vec(&doc).unwrap()))
         .unwrap();
     let (status, body) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
-    (status, body["payload"].clone())
+    (
+        status,
+        body["payload"].clone(),
+        serde_json::to_value(&doc).unwrap(),
+    )
 }
 
 #[tokio::test]
@@ -833,14 +848,14 @@ async fn the_core_predicates_are_seeded() {
     }
 }
 
-/// `vetted/1` is registered — the community counts vetting statements under
-/// it — but its profile requires a `taskContext` citing the vetting session,
-/// and its issuer is an eligible vetter, never the community. So it is
-/// `predicateNotIssuable` here.
+/// `witnessed/1` and `presented/1` are registered — the community counts
+/// statements under them — but their profiles require a `taskContext` citing
+/// the exchange the statement was made in, and their issuer is the party that
+/// ran it, never the community. So they are `predicateNotIssuable` here.
 #[tokio::test]
 async fn a_task_bound_predicate_is_the_declared_predicate_not_issuable() {
     let fix = build().await;
-    for iri in [dtg_credentials::VETTED_V1, dtg_credentials::WITNESSED_V1] {
+    for iri in [dtg_credentials::WITNESSED_V1, dtg_credentials::PRESENTED_V1] {
         let (status, body) = issue(&fix, iri, json!({ "community": "did:web:x" })).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{iri}: {body}");
         assert_eq!(
@@ -851,56 +866,151 @@ async fn a_task_bound_predicate_is_the_declared_predicate_not_issuable() {
     }
 }
 
-/// The reserved `IdentityVerificationCredential` type mints an IDVC — a plain
-/// W3C VC, not a DTG statement — on the community's status list, revocable
-/// through `vtc/endorsements/revoke/0.1` like any other row. No registration.
+/// The community's own identity check, as registry `vetted/1` defines it: none
+/// of the vetter-only members.
+fn community_check_claim(community: &str) -> Value {
+    json!({
+        "community": community,
+        "method": "inPerson",
+        "documentClasses": ["nationalId"],
+        "claimsVerified": ["name.legal"],
+        "livenessConfirmed": true
+    })
+}
+
+/// Under `vetted/1` the community records its own identity check: a DTG
+/// statement issued by the community (`public`), citing this issue request
+/// by `taskContext` and `taskDigestMultibase`, on the community's status list
+/// and revocable through `vtc/endorsements/revoke/0.1` like any other row.
 #[tokio::test]
-async fn the_reserved_idvc_type_mints_an_identity_verification_credential() {
+async fn the_community_records_its_own_identity_check_as_a_vetted_statement() {
     let fix = build().await;
-    let (status, v) = issue(
+    let community = vtc_service::test_support::TEST_VTC_DID;
+    let (status, v, request) = signed_task_with_doc(
         &fix,
-        "IdentityVerificationCredential",
-        json!({ "method": "inPerson" }),
+        &fix.issuer,
+        ISSUE_TASK,
+        json!({
+            "subjectDid": SUBJECT_DID,
+            "typeUri": dtg_credentials::VETTED_V1,
+            "claim": community_check_claim(community)
+        }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{v}");
     let credential = &v["credential"];
     assert_eq!(
         credential["type"],
-        json!(["VerifiableCredential", "IdentityVerificationCredential"])
+        json!([
+            "VerifiableCredential",
+            "DTGCredential",
+            "StatementCredential"
+        ])
+    );
+    assert_eq!(credential["issuer"], community);
+    assert_eq!(credential["issuerScope"], "public");
+    assert_eq!(credential["credentialSubject"]["id"], SUBJECT_DID);
+    assert_eq!(
+        credential["credentialSubject"]["predicate"],
+        dtg_credentials::VETTED_V1
     );
     assert_eq!(
-        credential["@context"],
-        json!([dtg_credentials::W3C_VC_V2_CONTEXT])
+        credential["credentialSubject"]["object"]["value"],
+        community_check_claim(community)
     );
-    assert!(credential.get("issuerScope").is_none());
-    assert_eq!(credential["credentialSubject"]["id"], SUBJECT_DID);
-    assert_eq!(credential["credentialSubject"]["method"], "inPerson");
     assert!(credential["credentialStatus"].is_object());
 
-    // It cannot be registered as a predicate.
-    let (status, body) =
-        register(&fix, json!({ "typeUri": "IdentityVerificationCredential" })).await;
-    assert!(status.is_client_error(), "{body}");
-    assert_eq!(rest_error_code(&body), REGISTER_ERR_RESERVED, "{body}");
+    // The citation names the request the community recorded the check in.
+    assert_eq!(credential["taskContext"], request["id"]);
+    assert_eq!(
+        credential["taskDigestMultibase"],
+        dtg_credentials::task_digest_multibase_json(&request).unwrap()
+    );
+    // And it parses as the catalog's own vetted/1 statement, citing that
+    // request.
+    let parsed: dtg_credentials::DTGCredential =
+        serde_json::from_value(credential.clone()).unwrap();
+    assert!(parsed.cites_task(&request).unwrap());
+
+    // Revocable like any other row.
+    let id = v["endorsement"]["endorsementId"].as_str().unwrap();
+    let (status, body) = signed_task(
+        &fix,
+        &fix.admin,
+        REVOKE_TASK,
+        json!({ "endorsementId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
-/// An IDVC claim that names `id` is the declared `claimSchemaViolation`: the
-/// subject is `subjectDid`, never the claim. (A claim that is not an object
-/// never reaches the handler; the payload schema refuses it as malformedRequest.)
+/// The community records only its own checks, and carries none of the
+/// vetter-only members: a claim naming another community, carrying any of
+/// `identityCommitment`, `cardDigestMultibase` or `declaredRelationship`, or
+/// not a `vetted/1` object value at all, is the declared
+/// `claimSchemaViolation`, and nothing is minted.
 #[tokio::test]
-async fn an_idvc_claim_naming_id_is_the_declared_claim_schema_violation() {
+async fn a_vetted_claim_the_community_cannot_make_is_the_declared_claim_schema_violation() {
     let fix = build().await;
-    {
-        let claim = json!({ "id": "did:example:other", "method": "inPerson" });
-        let (status, body) = issue(&fix, "IdentityVerificationCredential", claim).await;
-        assert!(status.is_client_error(), "{body}");
+    let ours = || community_check_claim(vtc_service::test_support::TEST_VTC_DID);
+    let with = |member: &str, value: Value| {
+        let mut claim = ours();
+        claim[member] = value;
+        claim
+    };
+    let mut all_three = ours();
+    all_three["identityCommitment"] = json!("zCommitment");
+    all_three["cardDigestMultibase"] = json!("zCard");
+    all_three["declaredRelationship"] = json!("none");
+    for claim in [
+        community_check_claim("did:webvh:other-community.example"),
+        with("pseudonym", json!("p-1")),
+        with("identityCommitment", json!("zCommitment")),
+        with("cardDigestMultibase", json!("zCard")),
+        with("declaredRelationship", json!("none")),
+        all_three,
+        json!({ "method": "inPerson" }),
+    ] {
+        let (status, body) = issue(&fix, dtg_credentials::VETTED_V1, claim.clone()).await;
+        assert!(status.is_client_error(), "{claim}: {body}");
         assert_eq!(
             rest_error_code(&body),
             ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
-            "{body}"
+            "{claim}: {body}"
         );
     }
+    assert!(
+        fix.endorsements_ks
+            .prefix_iter_raw(Vec::new())
+            .await
+            .unwrap()
+            .is_empty(),
+        "a refused claim mints nothing"
+    );
+}
+
+/// The retired `IdentityVerificationCredential` type is neither reserved nor
+/// issuable any more: it is not a predicate IRI, so registration refuses it as
+/// such, and issuance finds no predicate by that name.
+#[tokio::test]
+async fn the_retired_identity_verification_type_is_not_issuable() {
+    let fix = build().await;
+    let (status, body) = issue(
+        &fix,
+        "IdentityVerificationCredential",
+        json!({ "method": "inPerson" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        rest_error_code(&body),
+        ISSUE_ERR_TYPE_NOT_REGISTERED,
+        "{body}"
+    );
+    let (status, body) =
+        register(&fix, json!({ "typeUri": "IdentityVerificationCredential" })).await;
+    assert!(status.is_client_error(), "{body}");
+    assert_eq!(rest_error_code(&body), REGISTER_ERR_INVALID_URI, "{body}");
 }
 
 /// A claim over 8 KiB is `claimTooLarge` (400, unchanged).

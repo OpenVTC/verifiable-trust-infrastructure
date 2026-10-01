@@ -838,11 +838,11 @@ async fn enforce_single_membership(
 ///
 /// `community_did` is the DID the community signs its own credentials
 /// with. It is passed in — rather than left for the policy to hardcode —
-/// because the default policy's identity-verification rule has to
-/// distinguish "this community vetted the applicant" from "*somebody*
-/// issued a credential that says `IdentityVerification`". Without the
-/// comparison, any issuer in the world could mint the endorsement that
-/// unlocks personhood here.
+/// because the default policy's identity-check rule has to distinguish
+/// "this community checked the applicant's identity" from "*somebody*
+/// signed a `vetted/1` statement about them". Without the comparison, any
+/// issuer in the world could mint the statement that unlocks personhood
+/// here.
 async fn evaluate_personhood_assert(
     state: &AppState,
     applicant_did: &str,

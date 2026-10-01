@@ -33,7 +33,7 @@ The VTC tracks every state transition in the audit log
 |---|---|---|---|
 | `join.rego` | `POST /v1/join-requests` | deny-all | `join` |
 | `removal.rego` | `DELETE /v1/members/{did}` | deny-all | `removal` |
-| `personhood.rego` | `POST /v1/members/{did}/personhood/assert` | allow if VP carries a `witnessed/1` statement (VWC) whose digest binds to an edge this community holds, or this community's own `IdentityVerificationCredential` | `personhood` |
+| `personhood.rego` | `POST /v1/members/{did}/personhood/assert` | allow if VP carries a `witnessed/1` statement (VWC) whose digest binds to an edge this community holds, or a `vetted/1` statement this community issued about the member, for this community | `personhood` |
 | `relationships.rego` | `POST /v1/relationships` | allow if both parties are current members | `relationships` |
 | `registry.rego` | `MembershipSyncer` reconciliation | `publish_on_join: true; default_departure: tombstone` — publishes only members whose `publishConsent` is true; the rule can narrow that, never override it ([trust-registry.md](trust-registry.md#who-is-published-member-consent)) | `registry` |
 | `cross_community_roles.rego` | `POST /v1/auth/recognise` | deny-all (no peer recognition) | `crossCommunityRoles` |

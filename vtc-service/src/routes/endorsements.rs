@@ -7,19 +7,23 @@
 //! - `vtc/endorsements/issue/0.1` — issue. Auth: Admin OR Issuer role.
 //!   `typeUri` is a predicate IRI the community registered
 //!   (`vtc/endorsement-types/register/0.1`); anything else is
-//!   `typeNotRegistered`, and a registered predicate whose profile requires
-//!   `taskContext` (`vetted/1`, `witnessed/1`, `presented/1`) is
-//!   `predicateNotIssuable`. Allocates a slot on the shared `Revocation`
-//!   status list (D8 review), builds + signs a DTG **Verifiable Statement
+//!   `typeNotRegistered`. Allocates a slot on the shared `Revocation` status
+//!   list (D8 review), builds + signs a DTG **Verifiable Statement
 //!   Credential** — issuer the community, `issuerScope` `public`,
 //!   `credentialSubject.predicate` = `typeUri`, `object.value` = `claim` —
 //!   persists the row, emits `CustomEndorsementIssued` + `VecIssued`.
 //!
-//!   One reserved `typeUri`, [`IDENTITY_VERIFICATION_CREDENTIAL_TYPE`], mints
-//!   an identity-verification credential instead: a plain W3C VC, deliberately
-//!   not a DTG credential, on the same status list and revocable through the
-//!   same task (see [`crate::credentials::idvc`] for why this path, and the
-//!   divergence it records).
+//!   Under `vetted/1` the community records **its own identity check** (the
+//!   registry admits the community as issuer). The claim is the statement's
+//!   `VettedObjectValue`, must name this community and carries none of the
+//!   vetter-only members (`identityCommitment`, `cardDigestMultibase`,
+//!   `declaredRelationship`); the profile's REQUIRED
+//!   task citation names this issue request document — `taskContext` its
+//!   `id`, `taskDigestMultibase` its task digest — the exchange in which the
+//!   community recorded the check. Any other registered predicate whose
+//!   profile requires `taskContext` (`witnessed/1`, `presented/1`) is
+//!   `predicateNotIssuable`: those statements are made by the party that ran
+//!   the exchange, and the community ran none here.
 //! - `vtc/endorsements/list/0.1` — paginated list. Auth: Admin OR Issuer.
 //! - `vtc/endorsements/show/0.1` — one endorsement by id.
 //! - `vtc/endorsements/revoke/0.1` — revoke. Auth: Admin OR the original
@@ -40,9 +44,6 @@ use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated};
 
 use crate::acl::get_acl_entry;
-use crate::credentials::idvc::{
-    IDENTITY_VERIFICATION_CREDENTIAL_TYPE, issue_identity_verification,
-};
 use crate::credentials::statement::DEFAULT_STATEMENT_VALIDITY;
 use crate::credentials::{CredentialStatusRef, StatementParams, build_statement};
 use crate::endorsement_types::get_type;
@@ -188,15 +189,54 @@ pub struct IssueResponse {
     pub credential: JsonValue,
 }
 
+/// Refuse a `vetted/1` claim the community cannot issue as its own identity
+/// check: one that is not a `VettedObjectValue` (the registry's object schema),
+/// that carries any vetter-only member, or that names a community other than
+/// `community_did`.
+fn check_community_vetted_claim(community_did: &str, claim: &JsonValue) -> Result<(), TaskError> {
+    use vta_sdk::protocols::vetting::{CheckShape, VettedObjectValue};
+    let violation = |msg: String| {
+        TaskError::declared(ISSUE_ERR_CLAIM_SCHEMA_VIOLATION, AppError::Validation(msg))
+    };
+    let value: VettedObjectValue = serde_json::from_value(claim.clone())
+        .map_err(|e| violation(format!("claim is not a vetted/1 object value: {e}")))?;
+    value
+        .check_shape()
+        .map_err(|e| violation(format!("claim is not a vetted/1 object value: {e}")))?;
+    // A statement the community issues for itself carries none of the
+    // vetter-only members (registry `vetted/1`): the salt behind
+    // `identityCommitment` must never reach the community, and the community
+    // is the party weighing statements, not a related or unrelated vetter.
+    if !value.has_no_vetter_members() {
+        return Err(violation(
+            "a statement the community issues for itself carries none of \
+             identityCommitment, cardDigestMultibase and declaredRelationship"
+                .into(),
+        ));
+    }
+    if value.community != community_did {
+        return Err(violation(format!(
+            "claim.community is `{}`, but this community is `{community_did}`: the community \
+             records only its own identity checks",
+            value.community
+        )));
+    }
+    Ok(())
+}
+
 /// Issue a custom endorsement on behalf of `actor_did` — the operation behind
 /// the `vtc/endorsements/issue/0.1` Trust Task. Issuance has no bearer REST
 /// route: it is a signed document only, reached over TSP, DIDComm or HTTPS
 /// `/trust-tasks`. The door has already established that `actor_did` is an
 /// admin or issuer.
+///
+/// `request` is the issue request document as received: a `vetted/1`
+/// statement cites it as the exchange the community recorded its check in.
 pub(crate) async fn issue_inner(
     state: &AppState,
     actor_did: &str,
     body: IssueBody,
+    request: &JsonValue,
 ) -> Result<IssueResponse, TaskError> {
     let audit_writer = state
         .audit_writer
@@ -207,67 +247,41 @@ pub(crate) async fn issue_inner(
         .as_ref()
         .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
 
-    let identity_verification = body.endorsement_type == IDENTITY_VERIFICATION_CREDENTIAL_TYPE;
-
-    // The IDVC's claim sits beside `credentialSubject.id`, so it must not name
-    // `id` itself. The spec declares that refusal as `claimSchemaViolation`, the
-    // same code a registered claimSchema raises. (The payload schema already
-    // requires an object; the first arm is defence in depth.)
-    if identity_verification {
-        let problem = match body.claim.as_object() {
-            None => Some("an identity-verification claim must be a JSON object"),
-            Some(c) if c.contains_key("id") => {
-                Some("an identity-verification claim cannot name `id`: the subject is `subjectDid`")
-            }
-            Some(_) => None,
-        };
-        if let Some(msg) = problem {
-            return Err(TaskError::declared(
-                ISSUE_ERR_CLAIM_SCHEMA_VIOLATION,
-                AppError::Validation(msg.into()),
-            ));
-        }
-    }
-
-    // 2. Predicate registry consultation (D4 review). The IDVC type is
-    //    reserved — never registrable, since it is not a predicate — and is
-    //    dispatched before the lookup.
-    let registered = if identity_verification {
-        None
-    } else {
-        let Some(registered) =
-            get_type(&state.endorsement_types_ks, &body.endorsement_type).await?
-        else {
-            return Err(TaskError::declared(
-                ISSUE_ERR_TYPE_NOT_REGISTERED,
-                AppError::Validation(format!(
-                    "endorsement-type-not-registered: '{}' is not a predicate registered with \
-                     this community",
-                    body.endorsement_type
-                )),
-            ));
-        };
-        // A registered predicate whose profile requires `taskContext` (and
-        // `taskDigestMultibase`) cannot be minted here: this task carries no
-        // task citation, and those statements are made by the party that ran
-        // the exchange — `vetted/1` by an eligible vetter, never by the
-        // community (vtc/endorsements/issue/0.1, Conformance 2).
-        if crate::credentials::task_context::requirement_for_predicate(Some(&body.endorsement_type))
-            == crate::credentials::task_context::Requirement::Required
-        {
-            return Err(TaskError::declared(
-                ISSUE_ERR_PREDICATE_NOT_ISSUABLE,
-                AppError::Validation(format!(
-                    "'{}' is registered, but its profile requires a taskContext citing the \
-                     exchange the statement was made in; the community cannot issue it \
-                     through vtc/endorsements/issue",
-                    body.endorsement_type
-                )),
-            ));
-        }
-        Some(registered)
+    // 2. Predicate registry consultation (D4 review).
+    let Some(registered) = get_type(&state.endorsement_types_ks, &body.endorsement_type).await?
+    else {
+        return Err(TaskError::declared(
+            ISSUE_ERR_TYPE_NOT_REGISTERED,
+            AppError::Validation(format!(
+                "endorsement-type-not-registered: '{}' is not a predicate registered with \
+                 this community",
+                body.endorsement_type
+            )),
+        ));
     };
-
+    // `vetted/1` is the community's own identity check: the registry admits
+    // the community as its issuer, and the task citation it requires is this
+    // request. Every other registered predicate whose profile requires
+    // `taskContext` (and `taskDigestMultibase`) cannot be minted here: this
+    // task carries no citation for them, and those statements are made by the
+    // party that ran the exchange — `witnessed/1` by a witness,
+    // `presented/1` by the observer (vtc/endorsements/issue/0.1,
+    // Conformance 2).
+    let community_check = body.endorsement_type == dtg_credentials::VETTED_V1;
+    if !community_check
+        && crate::credentials::task_context::requirement_for_predicate(Some(&body.endorsement_type))
+            == crate::credentials::task_context::Requirement::Required
+    {
+        return Err(TaskError::declared(
+            ISSUE_ERR_PREDICATE_NOT_ISSUABLE,
+            AppError::Validation(format!(
+                "'{}' is registered, but its profile requires a taskContext citing the \
+                 exchange the statement was made in; the community cannot issue it \
+                 through vtc/endorsements/issue",
+                body.endorsement_type
+            )),
+        ));
+    }
     // 3. Body-side validation. The builder enforces the same
     //    cap; we check here too so 400 surfaces cleanly
     //    before any state mutation.
@@ -294,7 +308,7 @@ pub(crate) async fn issue_inner(
     // schema since this change, so reaching here means a row written before it;
     // the answer names the type and says the type must be re-registered, so the
     // operator is not left reading "internal error" against a well-formed claim.
-    if let Some(schema) = registered.as_ref().and_then(|t| t.claim_schema.as_ref()) {
+    if let Some(schema) = registered.claim_schema.as_ref() {
         if let Err(detail) = crate::schemas::check_schema(schema) {
             error!(
                 type_uri = %body.endorsement_type,
@@ -320,6 +334,16 @@ pub(crate) async fn issue_inner(
             ),
             e => TaskError::App(e),
         })?;
+    }
+
+    // The community's own identity check: the claim is the `vetted/1`
+    // statement's `object.value`, so it must be one — the registry's schema,
+    // which `VettedObjectValue` and its shape check carry — and it must be made
+    // for this community. A statement naming another community would be one
+    // this community has no standing to make (`vetted/1`: a statement counts
+    // for the one community it names).
+    if community_check {
+        check_community_vetted_claim(signer.issuer_did(), &body.claim)?;
     }
 
     // 4. Subject must be a current ACL member — operators
@@ -356,25 +380,26 @@ pub(crate) async fn issue_inner(
     };
     let status_ref = CredentialStatusRef::revocation(list_credential_id, slot);
 
-    // 6. Build + sign the credential: a VSC under the registered predicate,
-    //    or — for the reserved type — an IDVC.
+    // 6. Build + sign the credential: a VSC under the registered predicate —
+    //    for `vetted/1`, citing this request as the exchange the community
+    //    recorded its check in.
     let id = Uuid::new_v4();
     let credential_id = format!("urn:uuid:{id}");
     let validity = body
         .validity_seconds
         .map(|s| Duration::seconds(s as i64))
         .unwrap_or(DEFAULT_STATEMENT_VALIDITY);
-    let (credential_value, credential_type) = if identity_verification {
-        let idvc = issue_identity_verification(
+    let credential_value = if community_check {
+        crate::credentials::dtg::issue_vetted_statement(
             signer,
             &body.subject_did,
-            &body.claim,
+            body.claim.clone(),
+            request,
             &credential_id,
             &status_ref,
             validity,
         )
-        .await?;
-        (idvc, IDENTITY_VERIFICATION_CREDENTIAL_TYPE)
+        .await?
     } else {
         let params = StatementParams::new(
             &body.subject_did,
@@ -385,10 +410,10 @@ pub(crate) async fn issue_inner(
         .with_id(&credential_id)
         .with_validity(validity);
         let vsc = build_statement(signer, params).await?;
-        let vsc = serde_json::to_value(&vsc)
-            .map_err(|e| AppError::Internal(format!("serialise statement: {e}")))?;
-        (vsc, STATEMENT_CREDENTIAL_TYPE)
+        serde_json::to_value(&vsc)
+            .map_err(|e| AppError::Internal(format!("serialise statement: {e}")))?
     };
+    let credential_type = STATEMENT_CREDENTIAL_TYPE;
 
     // Issue-time schema validation: enforce a registered credentialSchema for
     // this credential type, if any (no-op when none is registered).
