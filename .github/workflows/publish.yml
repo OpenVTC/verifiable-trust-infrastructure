@@ -186,7 +186,11 @@ jobs:
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The Actions token cannot create tag refs here: on 2026-10-01 every
+          # tag for the #1861 release failed with 403 "Resource not accessible
+          # by integration" after its crate published, so each pass published
+          # one crate and stopped. The PR job below already prefers this PAT.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
       - name: Re-authenticate to crates.io (attempt 2)
@@ -202,7 +206,11 @@ jobs:
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The Actions token cannot create tag refs here: on 2026-10-01 every
+          # tag for the #1861 release failed with 403 "Resource not accessible
+          # by integration" after its crate published, so each pass published
+          # one crate and stopped. The PR job below already prefers this PAT.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth2.outputs.token }}
 
       - name: Re-authenticate to crates.io (attempt 3)
@@ -217,7 +225,11 @@ jobs:
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The Actions token cannot create tag refs here: on 2026-10-01 every
+          # tag for the #1861 release failed with 403 "Resource not accessible
+          # by integration" after its crate published, so each pass published
+          # one crate and stopped. The PR job below already prefers this PAT.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth3.outputs.token }}
 
   release-plz-pr:
