@@ -42,7 +42,7 @@ serde_json = "1"
 # did:webvh resolution refuses non-public hosts by default. This proxy resolves
 # DIDs on the parent instance, outside the enclave, so it is exactly the place a
 # did:webvh DID naming an internal host would be fetched from.
-affinidi-did-resolver-cache-sdk = "0.8.37"
+affinidi-did-resolver-cache-sdk = "0.8.39"
 fjall = "3"
 # The inbound channel terminates HTTP/1.1 so it can replace the client's
 # `X-Forwarded-For` with the address it actually accepted the connection from
