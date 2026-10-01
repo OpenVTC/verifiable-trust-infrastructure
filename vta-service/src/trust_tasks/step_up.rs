@@ -101,19 +101,23 @@ pub(super) async fn verify_did_signed_gate(
     use crate::auth::DiProofError;
 
     // Verify the eddsa-jcs-2022 proof via the single shared verifier (P1.4),
-    // which returns the cryptographically-proven signer DID.
-    let signer_did = crate::auth::verify_approval_proof(doc)
-        .await
-        .map_err(|e| match e {
-            DiProofError::NoProof => GateError::NoGate,
-            DiProofError::NotDataIntegrity => {
-                GateError::ProofInvalid("not a Data Integrity proof".to_string())
-            }
-            DiProofError::NoDid
-            | DiProofError::ResolverFailed(_)
-            | DiProofError::VerifyFailed(_)
-            | DiProofError::WrongPurpose { .. } => GateError::ProofInvalid(e.to_string()),
-        })?;
+    // which returns the cryptographically-proven signer DID — over the document
+    // as received when the spine recorded it (VTI-45).
+    let signer_did = super::received::verify_approval_proof(
+        doc,
+        &crate::auth::TrustTaskVmResolver::did_key_only(),
+    )
+    .await
+    .map_err(|e| match e {
+        DiProofError::NoProof => GateError::NoGate,
+        DiProofError::NotDataIntegrity => {
+            GateError::ProofInvalid("not a Data Integrity proof".to_string())
+        }
+        DiProofError::NoDid
+        | DiProofError::ResolverFailed(_)
+        | DiProofError::VerifyFailed(_)
+        | DiProofError::WrongPurpose { .. } => GateError::ProofInvalid(e.to_string()),
+    })?;
 
     // Bind identity: the proven signer must be the expected signer (the document
     // `issuer`), so a valid proof by some *other* DID can't stand in for the

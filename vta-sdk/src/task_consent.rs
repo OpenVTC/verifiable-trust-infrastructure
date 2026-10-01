@@ -194,7 +194,9 @@ impl ConsentRequest {
             )));
         }
 
-        let signer = crate::trust_task_proof::verify_trust_task_proof_with(&doc, resolver)
+        // Over the request as received, never a re-serialisation of `doc`
+        // (VTI-45).
+        let signer = crate::trust_task_proof::verify_trust_task_proof_value(&self.raw, resolver)
             .await
             .map_err(|_| TaskConsentError::ProofInvalid)?;
         // The purpose is part of the signed proof configuration, so once the

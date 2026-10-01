@@ -1700,6 +1700,48 @@ pub const STUB_WEBVH_SERVER_DID: &str = "did:webvh:stubscid0000000000000000:webv
 #[cfg(feature = "webvh")]
 const STUB_WEBVH_SERVER_SEED: u8 = 0x5E;
 
+/// Sign `doc` **exactly as it stands** — the JSON a non-Rust producer sends —
+/// as [`did_for_seed`]`(seed)`, for `purpose`, with the proof's `created` set to
+/// the string given, verbatim (VTI-45).
+///
+/// [`sign_with_vm`] signs a `TrustTask`, which can only ever carry the
+/// spellings `trust-tasks-rs` writes. A JavaScript producer writes `.000Z` on
+/// every whole second and keeps `null` members; this is how a test sends what
+/// it would.
+pub fn sign_received_as(seed: u8, purpose: &str, created: &str, doc: &mut serde_json::Value) {
+    use affinidi_data_integrity::DataIntegrityProof;
+    use affinidi_data_integrity::crypto_suites::CryptoSuite;
+    use affinidi_data_integrity::prepare_sign_input;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let (_did, vm) = did_for_seed(seed);
+    let mut di = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        vm,
+        purpose.to_string(),
+        None,
+        Some(created.to_string()),
+        None,
+    );
+    doc.as_object_mut()
+        .expect("a document is an object")
+        .remove("proof");
+    let input = prepare_sign_input(&*doc, &di, CryptoSuite::EddsaJcs2022)
+        .expect("the test document prepares for signing");
+    let sk = SigningKey::from_bytes(&[seed; 32]);
+    di.proof_value = Some(multibase::encode(
+        multibase::Base::Base58Btc,
+        sk.sign(&input).to_bytes(),
+    ));
+    doc["proof"] = serde_json::to_value(&di).expect("proof serialises");
+}
+
+/// Now, on a whole second, as JavaScript's `toISOString()` writes it:
+/// `2026-09-25T12:37:33.000Z` (VTI-45).
+pub fn javascript_whole_second_now() -> String {
+    format!("{}.000Z", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S"))
+}
+
 /// Attach an `eddsa-jcs-2022` proof made by `seed`'s key under the
 /// verification method `vm`, for `purpose`.
 pub fn sign_with_vm(

@@ -2218,7 +2218,9 @@ impl VtaClient {
         // resolver's own error — the honest outcome, and a legible one.
         let vm_resolver =
             crate::trust_task_proof::TrustTaskVmResolver::from_optional(resolver.clone());
-        let signer = crate::trust_task_proof::verify_trust_task_proof_with(&parsed, &vm_resolver)
+        // Over the reply as received, never a re-serialisation of `parsed`
+        // (VTI-45).
+        let signer = crate::trust_task_proof::verify_trust_task_proof_value(doc, &vm_resolver)
             .await
             .map_err(|e| match e {
                 crate::trust_task_proof::DiProofError::ResolverFailed(_) => {

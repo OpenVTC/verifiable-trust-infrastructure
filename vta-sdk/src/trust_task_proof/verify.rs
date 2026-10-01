@@ -146,6 +146,10 @@ fn classify(e: DataIntegrityError) -> DiProofError {
 /// trigger DID resolution. Anything that must accept a provisioned
 /// integration's `did:webvh` holder wants
 /// [`verify_trust_task_proof_with`] and a configured resolver.
+///
+/// Typed, so it re-serialises: for a document this process built. A document
+/// that arrived over the network goes through [`verify_trust_task_proof_value`]
+/// (see [`verify_trust_task_proof_with`] for why).
 pub async fn verify_trust_task_proof(doc: &TrustTask<Value>) -> Result<String, DiProofError> {
     verify_trust_task_proof_with(doc, &TrustTaskVmResolver::did_key_only()).await
 }
@@ -161,36 +165,140 @@ pub async fn verify_trust_task_proof(doc: &TrustTask<Value>) -> Result<String, D
 /// however the verification method resolved. A proof by
 /// `did:webvh:…:someone-else#key-0` verifies perfectly well; that it is not the
 /// party you expected is a separate check, and not one this function makes.
-/// # Generic over the payload, and why that is the point
+///
+/// # Only for a document this process built (VTI-45)
+///
+/// This form verifies a **re-serialisation** of `doc`, not the JSON that was
+/// signed. That is exact for a document serialised by this workspace, and
+/// wrong for one that arrived over the wire: `trust-tasks-rs` parses
+/// `issuedAt`, `expiresAt` and the proof's `created` as `DateTime<Utc>` and
+/// writes them back in its own spelling, so a producer that signed
+/// `2026-09-25T12:37:33.000Z` (JavaScript's `toISOString()` on every whole
+/// second), `+00:00`, a one-digit fraction or a lowercase `z` is refused as
+/// "signature invalid". A `null` on a known optional member, an unknown member
+/// of the proof and a payload member the type `P` does not keep are lost the
+/// same way. Each of those breaks a correctly signed document.
+///
+/// Every network ingress verifies the received JSON instead, with
+/// [`verify_trust_task_proof_value`]. This form remains for documents this
+/// process produced and checks against itself (its own signing, tests).
+///
+/// # Generic over the payload
 ///
 /// A proof is taken over the document, and the payload's Rust *shape* is not
-/// part of it — `eddsa-jcs-2022` canonicalises whatever serialises. Pinning this
-/// to `TrustTask<Value>` therefore constrained nothing cryptographically while
-/// forcing every typed caller to convert first.
-///
-/// That conversion is not free and not safe-by-inspection: re-serialising a
-/// document *before* checking its signature is the one place in the path that
-/// could change what was signed. `vta_sdk::tsp_binding::wrap_envelope` hand-rolls
-/// its JSON specifically to avoid the same hazard on the carriage side. A
-/// dispatcher that hands handlers `TrustTask<P>` (which is what registering by
-/// type gives you) would have made that round trip mandatory on every
-/// proof-checking handler.
-///
-/// Existing `&TrustTask<Value>` call sites are unaffected — `P` infers to
-/// `Value`.
+/// part of it — `eddsa-jcs-2022` canonicalises whatever serialises. Existing
+/// `&TrustTask<Value>` call sites are unaffected — `P` infers to `Value`.
 pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
     doc: &TrustTask<P>,
     resolver: &TrustTaskVmResolver,
 ) -> Result<String, DiProofError> {
-    let proof = doc.proof.as_ref().ok_or(DiProofError::NoProof)?;
+    let (unsigned, di) = split_typed(doc)?;
+    verify_core(&unsigned, &di, resolver).await
+}
 
+/// Verify the `eddsa-jcs-2022` Data-Integrity proof on a Trust Task document
+/// **as it was received** — `received` parsed straight from the wire bytes —
+/// and return the proven signer DID.
+///
+/// This is the form for every network ingress (VTI-45). `serde_json::Value`
+/// keeps every string verbatim, so what is canonicalised here is exactly the
+/// members the producer signed: only the top-level `proof` member is removed,
+/// and the proof itself is read from the received JSON rather than from a typed
+/// `trust_tasks_rs::Proof` (which would rewrite `created`).
+///
+/// Everything else is as [`verify_trust_task_proof_with`]: the same purpose
+/// binding (VTI-KEY-022), the same cached-DID refresh-and-retry (VTI-KEY-134),
+/// the same error classification and wire text. Binding the signer to the
+/// party you expected remains the caller's job.
+///
+/// The typed document a handler then acts on must be parsed from this same
+/// `received`, so that what was verified is what is executed.
+///
+/// # The proof configuration
+///
+/// `affinidi-data-integrity` hashes a proof configuration rebuilt from its
+/// typed `DataIntegrityProof` (`type`, `cryptosuite`, `created`,
+/// `verificationMethod`, `proofPurpose`, `nonce`, `@context`), not the proof
+/// object as received. A proof member outside that set (`challenge`, `domain`,
+/// `expires`, `id`, `previousProof`), or a `null` on one of its optional
+/// members, would be dropped from what is hashed. Such a proof is refused here
+/// as [`DiProofError::VerifyFailed`], with the members named in
+/// [`DiProofError::cause`]: either the producer signed them, and the signature
+/// cannot verify without them, or it did not, and a proof member the signature
+/// does not cover is not one this verifier should appear to have checked.
+/// Lifting the limitation belongs in `affinidi-data-integrity` (hash the proof
+/// configuration as received), not here.
+pub async fn verify_trust_task_proof_value(
+    received: &Value,
+    resolver: &TrustTaskVmResolver,
+) -> Result<String, DiProofError> {
+    let (unsigned, di) = split_received(received)?;
+    verify_core(&unsigned, &di, resolver).await
+}
+
+/// The proofless document and its parsed proof, from a typed document — by
+/// re-serialising it (see [`verify_trust_task_proof_with`]).
+fn split_typed<P: Serialize>(
+    doc: &TrustTask<P>,
+) -> Result<(Value, DataIntegrityProof), DiProofError> {
+    let proof = doc.proof.as_ref().ok_or(DiProofError::NoProof)?;
     // The framework `Proof` round-trips into a `DataIntegrityProof` (same shape;
     // the mobile engine builds it the same way).
-    let di: DataIntegrityProof = serde_json::to_value(proof)
-        .ok()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .ok_or(DiProofError::NotDataIntegrity)?;
+    let proof = serde_json::to_value(proof).map_err(|_| DiProofError::NotDataIntegrity)?;
+    let di = parse_proof(&proof)?;
+    let mut unsigned = serde_json::to_value(doc).map_err(|_| DiProofError::NotDataIntegrity)?;
+    if let Some(obj) = unsigned.as_object_mut() {
+        obj.remove("proof");
+    }
+    Ok((unsigned, di))
+}
 
+/// The proofless document and its parsed proof, from the received JSON — only
+/// the top-level `proof` member removed, nothing re-serialised.
+fn split_received(received: &Value) -> Result<(Value, DataIntegrityProof), DiProofError> {
+    let obj = received.as_object().ok_or(DiProofError::NoProof)?;
+    let proof = match obj.get("proof") {
+        None | Some(Value::Null) => return Err(DiProofError::NoProof),
+        Some(proof) => proof,
+    };
+    let di = parse_proof(proof)?;
+    let mut unsigned = obj.clone();
+    unsigned.remove("proof");
+    Ok((Value::Object(unsigned), di))
+}
+
+/// Parse a proof object, refusing one whose members the verifier would not
+/// carry into the proof configuration it hashes (see
+/// [`verify_trust_task_proof_value`], *The proof configuration*).
+fn parse_proof(proof: &Value) -> Result<DataIntegrityProof, DiProofError> {
+    let di: DataIntegrityProof =
+        serde_json::from_value(proof.clone()).map_err(|_| DiProofError::NotDataIntegrity)?;
+    let carried = serde_json::to_value(&di).map_err(|_| DiProofError::NotDataIntegrity)?;
+    if &carried != proof {
+        let carried = carried.as_object();
+        let mut lost: Vec<&str> = proof
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(k, v)| carried.and_then(|c| c.get(k.as_str())) != Some(*v))
+            .map(|(k, _)| k.as_str())
+            .collect();
+        lost.sort_unstable();
+        return Err(DiProofError::VerifyFailed(format!(
+            "the proof carries members the verifier cannot include in the proof \
+             configuration it hashes: {}",
+            lost.join(", ")
+        )));
+    }
+    Ok(di)
+}
+
+/// The one verification both the typed and the received-JSON forms run.
+async fn verify_core(
+    unsigned: &Value,
+    di: &DataIntegrityProof,
+    resolver: &TrustTaskVmResolver,
+) -> Result<String, DiProofError> {
     let signer_did = di
         .verification_method
         .split('#')
@@ -201,12 +309,10 @@ pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
         return Err(DiProofError::NoDid);
     }
 
-    let mut unsigned = doc.clone();
-    unsigned.proof = None;
     // VTI-KEY-022: the key must be one the signer authorised for the purpose
     // the proof declares, not merely a key its DID document lists.
-    let bound = PurposeBound::for_proof(resolver, &di).map_err(classify)?;
-    if let Err(first) = di.verify(&unsigned, &bound, VerifyOptions::new()).await {
+    let bound = PurposeBound::for_proof(resolver, di).map_err(classify)?;
+    if let Err(first) = di.verify(unsigned, &bound, VerifyOptions::new()).await {
         // Checked against a cached document, a failure may only mean the
         // signer rotated since it was cached — the key id kept, its material
         // replaced. Re-resolve once, fresh, and verify again; fail closed on
@@ -218,7 +324,7 @@ pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
         if !resolver.refresh_if_cached(&signer_did).await {
             return Err(classify(first));
         }
-        di.verify(&unsigned, &bound, VerifyOptions::new())
+        di.verify(unsigned, &bound, VerifyOptions::new())
             .await
             .map_err(classify)?;
     }
@@ -229,6 +335,16 @@ pub async fn verify_trust_task_proof_with<P: Serialize + Clone + Sync>(
 /// The `proofPurpose` of a human approver's own decision: a
 /// `task-consent/decision` or a step-up `approve-response`.
 pub const APPROVAL_PROOF_PURPOSE: &str = "assertionMethod";
+
+/// Refuse a proof not made for [`APPROVAL_PROOF_PURPOSE`].
+fn require_approval_purpose(di: &DataIntegrityProof) -> Result<(), DiProofError> {
+    if ProofPurpose::parse(&di.proof_purpose).ok() != Some(ProofPurpose::AssertionMethod) {
+        return Err(DiProofError::WrongPurpose {
+            expected: APPROVAL_PROOF_PURPOSE,
+        });
+    }
+    Ok(())
+}
 
 /// Verify a human approver's decision (`task-consent/decision`, step-up
 /// `approve-response`) and return the proven signer DID.
@@ -247,26 +363,35 @@ pub const APPROVAL_PROOF_PURPOSE: &str = "assertionMethod";
 ///
 /// Binding the signer to the approver the caller expects remains the caller's
 /// job, as with [`verify_trust_task_proof_with`].
+///
+/// Typed, so for a document this process built; a received decision goes
+/// through [`verify_approval_proof_value`] (VTI-45).
 pub async fn verify_approval_proof_with<P: Serialize + Clone + Sync>(
     doc: &TrustTask<P>,
     resolver: &TrustTaskVmResolver,
 ) -> Result<String, DiProofError> {
-    let proof = doc.proof.as_ref().ok_or(DiProofError::NoProof)?;
-    let di: DataIntegrityProof = serde_json::to_value(proof)
-        .ok()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .ok_or(DiProofError::NotDataIntegrity)?;
-    if ProofPurpose::parse(&di.proof_purpose).ok() != Some(ProofPurpose::AssertionMethod) {
-        return Err(DiProofError::WrongPurpose {
-            expected: APPROVAL_PROOF_PURPOSE,
-        });
-    }
+    let (unsigned, di) = split_typed(doc)?;
+    require_approval_purpose(&di)?;
     // The declared purpose is now `assertionMethod`, so the general verifier
     // binds the resolver to exactly that relationship.
-    verify_trust_task_proof_with(doc, resolver).await
+    verify_core(&unsigned, &di, resolver).await
+}
+
+/// [`verify_approval_proof_with`] over the document **as received** — the form
+/// for every network ingress, for the reasons
+/// [`verify_trust_task_proof_value`] gives.
+pub async fn verify_approval_proof_value(
+    received: &Value,
+    resolver: &TrustTaskVmResolver,
+) -> Result<String, DiProofError> {
+    let (unsigned, di) = split_received(received)?;
+    require_approval_purpose(&di)?;
+    verify_core(&unsigned, &di, resolver).await
 }
 
 /// [`verify_approval_proof_with`] against `did:key` only, with no network I/O.
+///
+/// Typed: for a document this process built.
 pub async fn verify_approval_proof(doc: &TrustTask<Value>) -> Result<String, DiProofError> {
     verify_approval_proof_with(doc, &TrustTaskVmResolver::did_key_only()).await
 }

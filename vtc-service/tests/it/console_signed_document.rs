@@ -84,3 +84,17 @@ async fn re_addressing_the_document_breaks_the_proof() {
         "a document re-addressed to another recipient must not verify"
     );
 }
+
+/// VTI-45: the console's document verifies over the JSON as received — the
+/// form every ingress now uses — not only through a typed re-serialisation.
+#[tokio::test]
+async fn vti_45_the_console_document_verifies_as_received() {
+    let received: Value = serde_json::from_str(FIXTURE).expect("the fixture is JSON");
+    let signer = vta_sdk::trust_task_proof::verify_trust_task_proof_value(
+        &received,
+        &vta_sdk::trust_task_proof::TrustTaskVmResolver::did_key_only(),
+    )
+    .await
+    .expect("the console's proof verifies as received");
+    assert_eq!(Some(signer.as_str()), received["issuer"].as_str());
+}

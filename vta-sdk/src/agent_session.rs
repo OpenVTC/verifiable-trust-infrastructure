@@ -238,7 +238,8 @@ async fn verified_issuer(
 ) -> Option<String> {
     let doc: trust_tasks_rs::TrustTask<Value> = serde_json::from_value(body.clone()).ok()?;
     doc.proof.as_ref()?;
-    let signer = crate::trust_task_proof::verify_trust_task_proof_with(&doc, resolver)
+    // Over `body` as received, never a re-serialisation of `doc` (VTI-45).
+    let signer = crate::trust_task_proof::verify_trust_task_proof_value(body, resolver)
         .await
         .ok()?;
     let signer = signer.split('#').next().unwrap_or(&signer).to_string();

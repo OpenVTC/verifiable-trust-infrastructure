@@ -73,6 +73,12 @@ pub(crate) async fn dispatch_pre_session(state: &AppState, body: &[u8]) -> Trust
         Ok(d) => d,
         Err(e) => return body_parse_error_response(&e.to_string()),
     };
+    // The same bytes, verbatim: the authenticate proof is verified over the
+    // JSON as received, never a re-serialisation of `doc` (VTI-45).
+    let received: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(e) => return body_parse_error_response(&e.to_string()),
+    };
     let type_uri = doc.type_uri.to_string();
 
     // SPEC §7.2's flag-driven checks this family still owes a caller:
@@ -91,10 +97,10 @@ pub(crate) async fn dispatch_pre_session(state: &AppState, body: &[u8]) -> Trust
             dispatch_challenge(state, doc).await
         }
         t if t == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_2 => {
-            dispatch_authenticate_v2(state, doc).await
+            dispatch_authenticate_v2(state, &received, doc).await
         }
         t if t == vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_3 => {
-            dispatch_authenticate_v3(state, doc).await
+            dispatch_authenticate_v3(state, &received, doc).await
         }
         t if t == vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_2 => {
             dispatch_refresh_v2(state, doc).await
@@ -156,21 +162,30 @@ async fn dispatch_challenge(state: &AppState, doc: TrustTask<Value>) -> TrustTas
 
 /// Handler for `spec/auth/authenticate/0.2`. The holder's Data-Integrity
 /// proof IS the authentication; `sessionKey` is not yet honoured.
-async fn dispatch_authenticate_v2(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
-    let signer_did =
-        match vti_common::auth::verify_trust_task_proof_with(&doc, &state.trust_task_vm_resolver())
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                return reject_with(
-                    &doc,
-                    RejectReason::ProofInvalid {
-                        reason: e.to_string(),
-                    },
-                );
-            }
-        };
+///
+/// `received` is the document's JSON as it arrived, of which `doc` is the
+/// parse; the proof is verified over it (VTI-45).
+async fn dispatch_authenticate_v2(
+    state: &AppState,
+    received: &Value,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let signer_did = match vti_common::auth::verify_trust_task_proof_value(
+        received,
+        &state.trust_task_vm_resolver(),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::ProofInvalid {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
     let payload: authenticate_v2::Payload = match serde_json::from_value(doc.payload.clone()) {
         Ok(p) => p,
         Err(e) => {
@@ -203,21 +218,30 @@ async fn dispatch_authenticate_v2(state: &AppState, doc: TrustTask<Value>) -> Tr
 /// (`principal` + `delegationEvidence`) shape — refused, since this VTA
 /// recognizes no delegation-evidence kind; the ordinary case (no `principal`,
 /// or one equal to the document's own signer) behaves exactly like 0.2.
-async fn dispatch_authenticate_v3(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
-    let signer_did =
-        match vti_common::auth::verify_trust_task_proof_with(&doc, &state.trust_task_vm_resolver())
-            .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                return reject_with(
-                    &doc,
-                    RejectReason::ProofInvalid {
-                        reason: e.to_string(),
-                    },
-                );
-            }
-        };
+///
+/// `received` is the document's JSON as it arrived, of which `doc` is the
+/// parse; the proof is verified over it (VTI-45).
+async fn dispatch_authenticate_v3(
+    state: &AppState,
+    received: &Value,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let signer_did = match vti_common::auth::verify_trust_task_proof_value(
+        received,
+        &state.trust_task_vm_resolver(),
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::ProofInvalid {
+                    reason: e.to_string(),
+                },
+            );
+        }
+    };
     let payload: authenticate_v3::Payload = match serde_json::from_value(doc.payload.clone()) {
         Ok(p) => p,
         Err(e) => {

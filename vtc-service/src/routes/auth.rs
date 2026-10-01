@@ -352,8 +352,14 @@ async fn authenticate_trust_task(
     }
 
     // From here the caller's intent is unambiguous; failures are real.
+    //
+    // The proof is verified over the body as received, never over a
+    // re-serialisation of `doc` (VTI-45). It parsed as a Trust Task, so it
+    // parses as JSON.
+    let received: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| AppError::Authentication(format!("invalid authenticate document: {e}")))?;
     let signer_did =
-        vti_common::auth::verify_trust_task_proof_with(&doc, &state.trust_task_vm_resolver())
+        vti_common::auth::verify_trust_task_proof_value(&received, &state.trust_task_vm_resolver())
             .await
             .map_err(|e| AppError::Authentication(e.to_string()))?;
     let payload: authenticate::Payload = serde_json::from_value(doc.payload.clone())
