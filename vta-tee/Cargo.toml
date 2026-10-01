@@ -27,11 +27,11 @@ repository.workspace = true
 tenant-overlay = ["dep:tokio-vsock"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.32", features = ["encryption", "openapi"] }
+vti-common = { path = "../vti-common", version = "0.33", features = ["encryption", "openapi"] }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.6" }
-vta-config = { path = "../vta-config", version = "0.10", features = ["tee"] }
-vta-keys = { path = "../vta-keys", version = "0.10" }
-vta-support = { path = "../vta-support", version = "0.7" }
+vta-config = { path = "../vta-config", version = "0.11", features = ["tee"] }
+vta-keys = { path = "../vta-keys", version = "0.11" }
+vta-support = { path = "../vta-support", version = "0.8" }
 aes-gcm = { workspace = true }
 utoipa = { workspace = true }
 rand = { workspace = true }

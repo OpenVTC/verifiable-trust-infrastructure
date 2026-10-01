@@ -20,10 +20,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.32" }
-vta-audit = { path = "../vta-audit", version = "0.5" }
+vti-common = { path = "../vti-common", version = "0.33" }
+vta-audit = { path = "../vta-audit", version = "0.6" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.6" }
-vta-vault = { path = "../vta-vault", version = "0.8" }
+vta-vault = { path = "../vta-vault", version = "0.9" }
 tracing = { workspace = true }
 chrono = { workspace = true }
 serde_json = { workspace = true }
