@@ -2,6 +2,9 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.24.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.23.0...cnm-cli-v0.24.0) — 2026-10-01
+
+
 ## [0.23.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.22.0...cnm-cli-v0.23.0) — 2026-10-01
 
 

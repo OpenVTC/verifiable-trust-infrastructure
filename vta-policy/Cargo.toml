@@ -20,12 +20,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.33" }
+vti-common = { path = "../vti-common", version = "0.34" }
 vta-config = { path = "../vta-config", version = "0.11" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.6" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.7" }
 # Types only (default features off): the declarative approvals model + its Rego
 # synthesizer, shared with the CLI so both sides derive the same module.
-vta-sdk = { path = "../vta-sdk", version = "0.60", default-features = false }
+vta-sdk = { path = "../vta-sdk", version = "0.61", default-features = false }
 regorus = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

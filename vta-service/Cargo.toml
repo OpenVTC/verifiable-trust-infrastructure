@@ -156,12 +156,12 @@ name = "it"
 path = "tests/it/main.rs"
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.33", features = ["encryption", "passkey", "openapi", "rate-limit"] }
+vti-common = { path = "../vti-common", version = "0.34", features = ["encryption", "passkey", "openapi", "rate-limit"] }
 # Seed-store backends + `create_seed_store` factory + `SecretsConfig` (lifted
 # from this crate into a shared crate so external integrations can reuse them).
 # Per-backend features are activated by this crate's matching features below.
 vti-secrets = { path = "../vti-secrets", version = "0.7" }
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.6" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.7" }
 # Structured audit logging (the `audit!` macro + audit-keyspace helpers),
 # extracted and re-exported as `crate::audit`.
 vta-audit = { path = "../vta-audit", version = "0.6" }
@@ -180,7 +180,7 @@ vta-keys = { path = "../vta-keys", version = "0.11" }
 # Holder credential vault (storage/query/receive/present/status), extracted to
 # its own crate and re-exported as `crate::vault`. Feature edges: this crate's
 # `bbs` / `webvh` features enable `vta-vault/bbs` / `vta-vault/webvh`.
-vta-persona = { path = "../vta-persona", version = "0.10" }
+vta-persona = { path = "../vta-persona", version = "0.11" }
 vta-vault = { path = "../vta-vault", version = "0.9" }
 
 # The room presentation oracle attenuates a member VAC and signs it.
@@ -191,13 +191,13 @@ dtg-credentials = { workspace = true }
 # The member half only. A VTA holds room keys, seals and opens records; it is
 # never a room's host, so it has no use for `storage`, `authz` or `audit` and
 # does not compile them. `default-features = false` is what says so.
-vti-rooms = { path = "../vti-rooms", version = "0.4", default-features = false, features = [
+vti-rooms = { path = "../vti-rooms", version = "0.5", default-features = false, features = [
   "mls",
 ] }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", version = "0.7" }
 # Background TTL sweepers (acl/consent/vault), extracted and re-exported as
 # crate::{acl_sweeper,consent_sweeper,vault_sweeper}.
-vta-sweepers = { path = "../vta-sweepers", version = "0.5" }
+vta-sweepers = { path = "../vta-sweepers", version = "0.6" }
 # Backup/restore subsystem (export/import ops + backup-bundle store/sweeper),
 # extracted and re-exported as crate::operations::backup +
 # crate::{backup_bundle_store,backup_bundle_sweeper}. Feature edges: this
@@ -205,14 +205,14 @@ vta-sweepers = { path = "../vta-sweepers", version = "0.5" }
 vta-backup = { path = "../vta-backup", version = "0.10" }
 # TEE bootstrap subsystem (attestation, KMS, anchor MAC, DID autogen),
 # extracted and re-exported as crate::tee behind this crate's `tee` feature.
-vta-tee = { path = "../vta-tee", version = "0.9", optional = true }
+vta-tee = { path = "../vta-tee", version = "0.10", optional = true }
 # Policy subsystem (regorus engine, default bundle, consent model), extracted
 # and re-exported as crate::policy.
 vta-policy = { path = "../vta-policy", version = "0.6" }
 # The local did:webvh store, extracted to its own crate and re-exported as
 # crate::webvh_store behind this crate's `webvh` feature.
 vta-webvh = { path = "../vta-webvh", version = "0.7", optional = true }
-vta-sdk = { path = "../vta-sdk", version = "0.60", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
+vta-sdk = { path = "../vta-sdk", version = "0.61", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider", "acl-setup"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -234,7 +234,7 @@ trust-tasks-proof = { workspace = true }
 # generation, bundle opening). Used by `vta bootstrap request` /
 # `vta bootstrap open` so cold-start clients can run the offline flow
 # without depending on `pnm`.
-vta-cli-common = { path = "../vta-cli-common", version = "0.30" }
+vta-cli-common = { path = "../vta-cli-common", version = "0.31" }
 affinidi-crypto = { workspace = true }
 # Low-level `Secret` type for loading the VTA's signing key at
 # provision time. Already transitively present via affinidi-tdk; made
@@ -422,7 +422,7 @@ vta-service = { path = ".", features = ["test-support", "config-seed"] }
 # here rather than from `vta-sdk`'s own tests — the workspace patches `vta-sdk`
 # onto itself, so `-p vta-sdk --features test-loopback` leaves the built unit
 # Fresh and the feature never reaches the compiler.
-vta-sdk = { path = "../vta-sdk", version = "0.60", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.61", features = [
   "provision-client",
   "test-loopback",
 ] }

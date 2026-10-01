@@ -20,8 +20,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.33" }
-vta-sdk = { path = "../vta-sdk", version = "0.60" }
+vti-common = { path = "../vti-common", version = "0.34" }
+vta-sdk = { path = "../vta-sdk", version = "0.61" }
 async-trait = "0.1"
 chrono = { workspace = true }
 hex = { workspace = true }
