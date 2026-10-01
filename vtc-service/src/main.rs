@@ -180,6 +180,24 @@ enum AdminCommands {
         #[arg(long, default_value_t = 900)]
         ttl: u64,
     },
+    /// Recover from a backup import interrupted mid-flight (offline,
+    /// irreversible).
+    ///
+    /// The daemon refuses to boot while a backup import's crash-safety
+    /// sentinel is set — a crash, a client disconnect, or a
+    /// `finalize-import` that never landed can leave the backed-up
+    /// keyspaces partially cleared and partially replayed, and that
+    /// refusal has no expiry (its boot-refusal message names this
+    /// command). This does NOT restore anything: it wipes every
+    /// backed-up keyspace back to empty and clears the sentinel so the
+    /// daemon can boot again. If the original backup bundle is still at
+    /// hand, prefer re-running `cnm backup import` with it instead — that
+    /// finishes the restore rather than discarding it.
+    DiscardInterruptedImport {
+        /// Skip the "are you sure?" confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -287,6 +305,12 @@ async fn main() {
                     AdminCommands::Invite { did, ttl } => {
                         if let Err(e) = run_invite_cli(cli.config, did, ttl).await {
                             eprintln!("Invite failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                    AdminCommands::DiscardInterruptedImport { yes } => {
+                        if let Err(e) = run_discard_interrupted_import_cli(cli.config, yes).await {
+                            eprintln!("Discard failed: {e}");
                             std::process::exit(1);
                         }
                     }
@@ -594,6 +618,71 @@ async fn run_invite_cli(
     eprintln!();
     eprintln!("Restart the daemon (`vtc`) before claiming — the daemon must be running");
     eprintln!("for the browser to reach `/admin/install` and `/v1/install/claim/*`.");
+    Ok(())
+}
+
+/// `vtc admin discard-interrupted-import` — the irreversible "start over
+/// from empty" recovery for a backup import a crash, a client disconnect,
+/// or a `finalize-import` that never landed left interrupted. The
+/// daemon's boot-refusal message (`server::run`, P3.9) names this command.
+///
+/// Runs offline (fjall lock) like the other `admin` recovery commands.
+/// Does NOT restore the interrupted import's data — it has no decryption
+/// password and no access to the original bundle. An operator who still
+/// has the bundle should answer "no" at the prompt and run `cnm backup
+/// import` with it instead; that finishes the restore rather than
+/// discarding it.
+#[cfg(feature = "setup")]
+async fn run_discard_interrupted_import_cli(
+    config_path: Option<std::path::PathBuf>,
+    skip_confirm: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use dialoguer::Confirm;
+    use vtc_service::backup;
+    use vtc_service::config::AppConfig;
+    use vtc_service::store::keyspaces;
+
+    let config = AppConfig::load(config_path)?;
+    let store = vtc_service::store::offline::open_offline(&config.store)?;
+
+    let config_ks = store.keyspace(keyspaces::CONFIG)?;
+    let Some(since) = backup::import_in_progress_since(&config_ks).await? else {
+        println!("No interrupted import found — nothing to discard.");
+        return Ok(());
+    };
+
+    eprintln!();
+    eprintln!("⚠️  DISCARD INTERRUPTED IMPORT");
+    eprintln!(
+        "An import started at {since} was interrupted before it finished. The ACL, \n\
+         members, policies, status lists, and every other backed-up keyspace are in a \n\
+         partially cleared, partially replayed state — the daemon refuses to boot while \n\
+         that's true.\n\
+         \n\
+         This command WIPES all of that back to completely empty. It does NOT restore \n\
+         the interrupted import. If you still have the original backup bundle, answer no \n\
+         below and run `cnm backup import` with it instead — that finishes the restore.\n"
+    );
+
+    if !skip_confirm {
+        let ok = Confirm::new()
+            .with_prompt("Wipe to empty and clear the marker? (irreversible)")
+            .default(false)
+            .interact()?;
+        if !ok {
+            eprintln!("aborted — the daemon will still refuse to boot until this is resolved.");
+            return Ok(());
+        }
+    }
+
+    backup::discard_interrupted_import(&store).await?;
+
+    eprintln!();
+    eprintln!("✅ wiped to empty and cleared the interrupted-import marker.");
+    eprintln!(
+        "   The daemon will boot now, with no community state. Run `cnm backup import` \
+         (a different backup) or re-provision to repopulate it."
+    );
     Ok(())
 }
 

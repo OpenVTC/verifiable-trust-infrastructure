@@ -405,14 +405,23 @@ pub async fn run(
     // before the destructive replay and removed only on success — its
     // presence means a prior import crashed mid-flight and the keyspaces
     // are in an indeterminate state. Serving that would surface partial
-    // community state; re-run the import to finish (or roll forward).
+    // community state. This refusal has no TTL — a stale sentinel is
+    // exactly as unsafe to serve past as a fresh one, so only an explicit
+    // operator decision (not the clock) clears it.
     if crate::backup::import_in_progress(&config_ks).await? {
-        return Err(AppError::Config(
-            "a backup import was interrupted before it completed — the datastore is in a \
-             half-restored state. Re-run the import (`cnm backup import`) with the same \
-             backup to finish it; the daemon will not serve partial state."
-                .into(),
-        ));
+        let since = crate::backup::import_in_progress_since(&config_ks)
+            .await?
+            .unwrap_or_else(|| "an unknown time".into());
+        return Err(AppError::Config(format!(
+            "a backup import was interrupted before it completed (started {since}) — the \
+             datastore is in a half-restored state and the daemon will not serve it. \
+             Recover with one of:\n\
+             • if you still have the original backup bundle: re-run the import \
+               (`cnm backup import`) with it to finish the restore\n\
+             • otherwise: `vtc admin discard-interrupted-import` wipes the partially \
+               restored state back to empty and clears this marker (irreversible — the \
+               community has no state left until a fresh import or re-provision)"
+        )));
     }
 
     // P1.1: `config_store` (the db overlay) is canonical for the runtime

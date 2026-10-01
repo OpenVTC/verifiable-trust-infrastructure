@@ -37,7 +37,7 @@ use vti_common::store::KeyspaceHandle;
 use crate::config::MessagingConfig;
 use crate::keys::seed_store::SecretStore;
 use crate::server::AppState;
-use crate::store::keyspaces;
+use crate::store::{Store, keyspaces};
 
 // ── Crypto parameters (VTA-identical) ───────────────────────────────────
 const VERSION: u32 = 1;
@@ -60,7 +60,17 @@ const MAX_P_COST: u32 = 16;
 /// Sentinel key, written into the `config` keyspace (excluded from
 /// backup, so it survives the import-time clear) before the destructive
 /// replay and removed only on success. Boot refuses to start while it's
-/// present — see [`import_in_progress`].
+/// present — see [`import_in_progress`] — **regardless of its age**.
+///
+/// The value is an RFC 3339 timestamp (when the in-flight import stamped
+/// it), kept only so a refusal message or a recovery command can say
+/// *when* the interrupted import started — it carries no expiry. The
+/// sentinel means the backed-up keyspaces are in an indeterminate,
+/// partially-cleared-and-replayed state (a half-written ACL or member
+/// set is not "probably fine after a while"): only an explicit operator
+/// decision can safely clear it. See [`discard_interrupted_import`] (`vtc
+/// admin discard-interrupted-import`), the one thing that clears this
+/// outside of [`import_backup`] completing.
 const IMPORT_IN_PROGRESS_KEY: &[u8] = b"backup:import_in_progress";
 
 // ── Wire types ──────────────────────────────────────────────────────────
@@ -306,10 +316,16 @@ pub async fn import_backup(
     }
 
     // Crash-safety: stamp the sentinel (in the excluded `config`
-    // keyspace, so it survives the clear) + flush before mutating.
+    // keyspace, so it survives the clear) + flush before mutating. The
+    // value is *when*, not just *that* — purely informational (a refusal
+    // message or `discard-interrupted-import` names it); it carries no
+    // expiry, see [`IMPORT_IN_PROGRESS_KEY`].
     state
         .config_ks
-        .insert_raw(IMPORT_IN_PROGRESS_KEY.to_vec(), b"1".to_vec())
+        .insert_raw(
+            IMPORT_IN_PROGRESS_KEY.to_vec(),
+            Utc::now().to_rfc3339().into_bytes(),
+        )
         .await?;
     state.config_ks.persist().await?;
 
@@ -363,14 +379,86 @@ pub async fn import_backup(
 }
 
 /// True if a previous import was interrupted before it finished. Boot
-/// consults this and refuses to start while it's set (the half-applied
-/// state is unsafe to serve). Cleared by a successful re-import.
+/// consults this and refuses to start while it's set — **whatever its
+/// age** — because the half-applied state (a partially cleared, partially
+/// replayed keyspace set) is unsafe to serve. There is no TTL: a stale
+/// marker does not mean the state became any safer to serve, only that
+/// nobody has looked at it yet. Cleared by a successful re-import, or by
+/// the deliberate [`discard_interrupted_import`] recovery path.
 pub async fn import_in_progress(config_ks: &KeyspaceHandle) -> Result<bool, AppError> {
-    Ok(config_ks
+    Ok(import_in_progress_since(config_ks).await?.is_some())
+}
+
+/// When the interrupted import stamped the sentinel, as the raw RFC 3339
+/// string it was written with (not reparsed — this is for a human to
+/// read in a refusal message or a recovery command's confirmation
+/// prompt, never for an age comparison). `None` if no import is in
+/// progress.
+pub async fn import_in_progress_since(
+    config_ks: &KeyspaceHandle,
+) -> Result<Option<String>, AppError> {
+    let stamp = config_ks
         .prefix_iter_raw(IMPORT_IN_PROGRESS_KEY.to_vec())
         .await?
-        .iter()
-        .any(|(k, _)| k.as_slice() == IMPORT_IN_PROGRESS_KEY))
+        .into_iter()
+        .find(|(k, _)| k.as_slice() == IMPORT_IN_PROGRESS_KEY)
+        .map(|(_, v)| v);
+    Ok(stamp.map(|v| {
+        String::from_utf8(v)
+            .unwrap_or_else(|e| format!("<unreadable stamp: {} bytes>", e.into_bytes().len()))
+    }))
+}
+
+/// Explicit operator recovery from an import a crash, a client disconnect,
+/// or a `finalize-import` that never landed left interrupted: wipe every
+/// backed-up keyspace back to empty and clear the sentinel. Fronted by
+/// `vtc admin discard-interrupted-import` — never invoked automatically,
+/// and never implied by the sentinel's age.
+///
+/// This is the "start over from empty" recovery, not a restore: it does
+/// not re-apply the original backup, because that bundle isn't
+/// necessarily still at hand (and this runs offline, with no password
+/// prompt). An operator who still has the bundle should prefer re-running
+/// the normal import with it once this clears the sentinel — that
+/// restores real state instead of leaving the community empty.
+///
+/// Returns the interrupted import's stamp (as read, unparsed) if a
+/// sentinel was present and has now been cleared; `None` if there was
+/// nothing to discard (left entirely untouched in that case).
+pub async fn discard_interrupted_import(store: &Store) -> Result<Option<String>, AppError> {
+    let config_ks = store.keyspace(keyspaces::CONFIG)?;
+    let Some(since) = import_in_progress_since(&config_ks).await? else {
+        return Ok(None);
+    };
+
+    for name in keyspaces::BACKED_UP {
+        let ks = store.keyspace(name)?;
+        clear_keyspace(&ks).await?;
+    }
+
+    config_ks.remove(IMPORT_IN_PROGRESS_KEY.to_vec()).await?;
+    config_ks.persist().await?;
+    Ok(Some(since))
+}
+
+/// Test-only: stamp the import-in-progress sentinel as if an import had
+/// started `at`, without actually running one — so a test can simulate a
+/// crash mid-import (stamped, never cleared) and exercise the boot
+/// refusal / recovery path without a real one. Never compiled into a
+/// production build.
+#[cfg(feature = "test-support")]
+pub async fn stamp_import_in_progress_for_test(
+    config_ks: &KeyspaceHandle,
+    at: DateTime<Utc>,
+) -> Result<(), AppError> {
+    config_ks
+        .insert_raw(
+            IMPORT_IN_PROGRESS_KEY.to_vec(),
+            at.to_rfc3339().into_bytes(),
+        )
+        .await?;
+    config_ks.persist().await?;
+    Ok(())
 }
 
 /// `vtc_did` guard — a configured VTC refuses a backup from a different
