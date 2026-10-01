@@ -1630,87 +1630,282 @@ mod spine_proof_tests {
         }
     }
 
-    /// The proof-REQUIRED tasks this dispatcher serves, named by the registry
-    /// rather than by a literal list here. A task that stops declaring a proof
-    /// — or one that starts — moves this number, and moving it should be a
-    /// decision somebody took rather than a diff nobody read.
+    /// Every dispatched URI whose specification declares no proof — named here
+    /// with the reason an unsigned caller is still refused, so that adding (or
+    /// removing) a task from this list is a decision somebody took rather than
+    /// a side effect of editing a specification.
     ///
-    /// It also counts the migration. #1641 phase 2 moves the VTC's bearer-token
-    /// tasks onto this binding in batches, and each batch adds its tasks here;
-    /// the first added four (`members/{credentials,update,admin-remove,purge}`)
-    /// to the nine the spine already served.
+    /// A URI belongs here only because its *handler* enforces identity some
+    /// other way — an ACL row, a WebAuthn assertion, a bearer refresh token —
+    /// not because nobody got round to it. [`the_dispatched_set_declares_the_proofs_the_design_note_records`]
+    /// fails the build the moment a listed URI starts declaring a proof (a
+    /// stale entry) or an unlisted one stops (an unreasoned one).
+    const DISPATCHED_WITHOUT_PROOF: &[(&str, &str)] = &[
+        (
+            jr::JOIN_REQUEST_MANIFEST_TYPE,
+            "a public read of the community's vetting manifest; names no identity to authorize",
+        ),
+        (
+            jr::JOIN_REQUEST_MANIFEST_0_2_TYPE,
+            "a public read of the community's vetting manifest; names no identity to authorize",
+        ),
+        (
+            vetting_wire::VETTING_VETTER_LIST_TYPE,
+            "a public read of the vetter registry",
+        ),
+        (
+            vetting_wire::VETTING_VETTER_SHOW_TYPE,
+            "a public read of the vetter registry",
+        ),
+        (
+            admin_tasks::AUDIT_VERIFY_TYPE,
+            "a read; the handler's admin bearer/ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            install_tasks::CLAIM_START_TYPE,
+            "first-admin onboarding, before any ACL entry exists to sign with; the one-time install token the handler requires is the credential",
+        ),
+        (
+            install_tasks::CLAIM_FINISH_TYPE,
+            "first-admin onboarding, before any ACL entry exists to sign with; the one-time install token the handler requires is the credential",
+        ),
+        (
+            install_tasks::BOOTSTRAP_TYPE,
+            "first-admin onboarding, before any ACL entry exists to sign with; the one-time install token the handler requires is the credential",
+        ),
+        (
+            recognise_tasks::CHALLENGE_TYPE,
+            "names no identity to authorize — it is the first message of the cross-community handshake",
+        ),
+        (
+            recognise_tasks::RECOGNISE_TYPE,
+            "the peer VTC's answer is authenticated via the Trust Registry lookup the handler performs, not a request-level proof",
+        ),
+        (
+            discovery::DISCOVERY_V0_3_TYPE,
+            "a public discovery read; names no identity to authorize",
+        ),
+        (
+            ACL_SHOW_TYPE,
+            "reads the caller's own ACL row; the handler authorizes from the signer's entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            ACL_LIST_TYPE,
+            "reads ACL rows; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            member_tasks::RELATIONSHIPS_LIST_TYPE,
+            "a read; the handler refuses an unsigned caller regardless",
+        ),
+        (
+            member_tasks::ENDORSEMENTS_LIST_TYPE,
+            "a read; the handler refuses an unsigned caller regardless",
+        ),
+        (
+            member_tasks::ENDORSEMENTS_SHOW_TYPE,
+            "a read; the handler refuses an unsigned caller regardless",
+        ),
+        (
+            STEP_UP_APPROVE_RESPONSE_TYPE,
+            "its gate is the WebAuthn assertion it carries — the handler still requires the approver's assertionMethod proof via `verify_approval_proof`, which is not the request-level `proof` this flag governs",
+        ),
+        (
+            step_up_passkey_tasks::REDEEM_START_TYPE,
+            "redeems a single-use invite token; the handler requires a proof regardless (VTI-APV passkey redemption), the token itself being the thing that makes an unsigned attempt refusable",
+        ),
+        (
+            step_up_passkey_tasks::REDEEM_FINISH_TYPE,
+            "redeems a single-use invite token; the handler requires a proof regardless (VTI-APV passkey redemption), the token itself being the thing that makes an unsigned attempt refusable",
+        ),
+        (
+            admin_tasks::DIAGNOSTICS_TYPE,
+            "a read; the handler's admin bearer/ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            admin_tasks::SYNC_JOBS_LIST_TYPE,
+            "a read; the handler's admin bearer/ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            admin_tasks::RECORDS_LIST_TYPE,
+            "a read; the handler's admin bearer/ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            admin_tasks::CONFIG_SHOW_TYPE,
+            "a read; the handler's admin bearer/ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            admin_tasks::INVITES_LIST_TYPE,
+            "a read; the handler's admin bearer/ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            community_tasks::PROFILE_SHOW_TYPE,
+            "a public/community read; the handler refuses an unsigned caller where that read is gated at all",
+        ),
+        (
+            community_tasks::CEREMONIES_LIST_TYPE,
+            "a community read; the handler refuses an unsigned caller where that read is gated at all",
+        ),
+        (
+            community_tasks::DIRECTORY_QUERY_TYPE,
+            "a community read; the handler refuses an unsigned caller where that read is gated at all",
+        ),
+        (
+            community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
+            "a community read; the handler refuses an unsigned caller where that read is gated at all",
+        ),
+        (
+            community_tasks::RECOGNITION_CHECK_TYPE,
+            "a community read; the handler refuses an unsigned caller where that read is gated at all",
+        ),
+        (
+            community_tasks::MEMBERS_LIST_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            community_tasks::MEMBERS_REMOVED_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            community_tasks::MEMBERS_SHOW_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            community_tasks::MEMBERS_SOLICIT_VMC_TYPE,
+            "an admin action; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            community_tasks::JOIN_REQUESTS_LIST_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            community_tasks::JOIN_REQUESTS_SHOW_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            community_tasks::RELATIONSHIPS_GRAPH_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            community_tasks::INVITATIONS_LIST_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            policy_tasks::POLICY_LIST_TYPE,
+            "a read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            policy_tasks::POLICY_GET_TYPE,
+            "a read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            policy_tasks::POLICY_ACTIVE_TYPE,
+            "a read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            policy_tasks::POLICY_TEST_TYPE,
+            "a dry-run read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            policy_tasks::DID_REGISTER_TYPE,
+            "declares no request-level proof as a specification matter; the handler's own authorization refuses an unsigned caller regardless",
+        ),
+        (surface_tasks::BRANDING_SHOW_TYPE, "a public read"),
+        (surface_tasks::REQUESTED_SHOW_TYPE, "a public read"),
+        (surface_tasks::JOIN_DISCOVERY_SHOW_TYPE, "a public read"),
+        (surface_tasks::SCHEMAS_LIST_TYPE, "a public read"),
+        (surface_tasks::SCHEMAS_SHOW_TYPE, "a public read"),
+        (surface_tasks::ACCEPTS_LIST_TYPE, "a public read"),
+        (surface_tasks::ACCEPTS_SHOW_TYPE, "a public read"),
+        (
+            surface_tasks::VETTER_GRANTS_LIST_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            surface_tasks::AUTO_GRANT_SHOW_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            surface_tasks::REVOCATIONS_LIST_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (
+            surface_tasks::JOIN_VETTING_SHOW_TYPE,
+            "an admin read; the handler's admin ACL check refuses an unsigned caller regardless",
+        ),
+        (surface_tasks::ROOMS_LIST_TYPE, "a public read"),
+        (
+            auth_tasks::CHALLENGE_TYPE,
+            "names no identity to authorize — it is the first message of the handshake",
+        ),
+        (
+            auth_tasks::REFRESH_V0_2_TYPE,
+            "the refresh token itself is the credential, not a request-level proof",
+        ),
+        #[cfg(feature = "website")]
+        (website_tasks::FILES_SHOW_TYPE, "a public read"),
+        #[cfg(feature = "website")]
+        (
+            website_tasks::FILES_LIST_TYPE,
+            "an admin read; `admin_signer` refuses an unsigned caller regardless",
+        ),
+        #[cfg(feature = "website")]
+        (
+            website_tasks::GENERATIONS_LIST_TYPE,
+            "an admin read; `admin_signer` refuses an unsigned caller regardless",
+        ),
+    ];
+
+    /// Every dispatched URI either has its spec's `is_proof_required` enforced
+    /// by the universal check `dispatch_trust_task_core` runs — once, before
+    /// any handler, for every type with a published policy (see the long
+    /// comment above `spec_policy_for` in this module) — or is named in
+    /// [`DISPATCHED_WITHOUT_PROOF`] with the reason it is refused some other
+    /// way when unsigned.
+    ///
+    /// This replaces a hand-counted total that broke on every addition or
+    /// removal whether or not the change was reasoned about. The property it
+    /// keeps is the one that mattered: nothing is dispatched unsigned by
+    /// accident.
     #[test]
     fn the_dispatched_set_declares_the_proofs_the_design_note_records() {
-        let required: Vec<&str> = DISPATCHED_URIS
+        let dispatched: Vec<&str> = DISPATCHED_URIS
             .iter()
             .copied()
             .chain(crate::rooms::handlers::served_uris())
-            .filter(|uri| {
-                trust_tasks_rs::schema_index::spec_policy_for(uri)
-                    .is_some_and(|p| p.is_proof_required)
-            })
             .collect();
 
-        // Hidden vetting's five tasks (`zkp-pcs`, and `vetting/hidden/publish`
-        // since #1858) declare a proof; they are bound only with `vetting-pcs`.
-        let hidden_vetting = if cfg!(feature = "vetting-pcs") { 5 } else { 0 };
-        assert_eq!(
-            required.len(),
-            100 + hidden_vetting,
-            "the design note records 9 `vtc/*` + 11 `rooms/*` + the 4 admin \
-             member verbs #1641 phase 2 batch 1 moved + the 2 batch 2 moved \
-             (`join-requests/decide`, `community/profile/update`) + the 2 batch 3 \
-             moved (`config/export`, `config/import`) + the 2 batch 4 moved \
-             (`endorsement-types/register`, `endorsement-types/delete`) + batch \
-             5's `backup/export` + `acl/grant` + `acl/change-role` + the 7 \
-             `backup/*` chunked-transfer tasks + `task-consent/decision/0.1` (VTI-APV-014) \
-             + the 3 trust-tasks 0.23 made proof-REQUIRED (`vetting/vetters/profile`, \
-             `vetting/vetters/resend`, `members/personhood/challenge`) + the 2 \
-             credential-exchange steps a holder sends (`request`, `present`) + \
-             `acl/update` and `acl/revoke` (`acl/show` and `acl/list` declare no \
-             proof; their handlers authorize from the signer's ACL row, so an \
-             unsigned one is refused regardless) + the 4 step-up passkey tasks \
-             that declare one (`auth/passkey/enroll/invite/0.2`, \
-             `auth/passkey/revoke/start/0.2`, `revoke/finish/0.2`, and — new since \
-             trust-tasks-rs 0.23.4 generates it — `admin-list/0.1`; `enroll/redeem/*` \
-             declares none, and `redeem/start`'s handler requires one regardless). \
-             `auth/step-up/approve-response/0.4` \
-             is dispatched and declares no proof: its gate is the WebAuthn \
-             assertion it carries (its handler still requires the approver's \
-             assertionMethod proof) + the 8 member-facing verbs `member_tasks` \
-             moved that declare one (`members/{{renew,rotate-challenge,rotate}}`, \
-             `members/personhood/revoke`, `relationships/{{publish,revoke}}`, \
-             `endorsements/{{issue,revoke}}`, and the 0.2 versions of \
-             `relationships/revoke` and `vetting/vetters/resend`; `relationships/list` and \
-             `endorsements/{{list,show}}` declare none, and their handlers refuse \
-             an unsigned one regardless) + the 10 operational verbs `admin_tasks` \
-             moved that declare one (`vtc/registry/sync-jobs/{{retry,discard}}`, \
-             `audit/list`, `config/{{patch,reload,restart}}`, \
-             `vtc/admin/invites/{{create,revoke}}`, `auth/sessions/list`, \
-             `auth/revoke-session/0.2`; the reads that declare none refuse an \
-             unsigned one in their handlers regardless) + the 3 invitation verbs \
-             `community_tasks` moved that declare one (`vtc/invitations/{{issue,revoke,deliver}}`; \
-             the community reads declare none and their handlers refuse an unsigned \
-             one regardless) + the 2 policy verbs `policy_tasks` moved that declare one \
-             (`policy/{{upsert,activate}}`; the policy reads, `vtc/policies/test` and \
-             `did-management/did/register` declare none as a request requirement, and \
-             their handlers refuse an unsigned one regardless) + the 11 verbs \
-             `surface_tasks` moved that declare one (`vtc/community/{{branding,\
-             requested-attributes,join-discovery}}/update`, `vtc/schemas/{{register,delete}}`, \
-             `vtc/schemas/accepts/{{register,delete}}`, `vtc/vetting/auto-grant/update`, \
-             `vtc/relationships/{{suspend,restore}}`, `vtc/join-requests/query`; the reads \
-             declare none and their handlers refuse an unsigned one regardless) + the 3 \
-             `auth/signing-key/{{enroll,list,revoke}}` tasks + the 5 website content \
-             verbs (`vtc/website/upload/{{begin,chunk,commit,abort}}`, `vtc/website/deploy`; \
-             `files/show` declares none and its handler refuses an unsigned one \
-             regardless) + the 2 website admin verbs that declare one \
-             (`vtc/website/files/delete`, `vtc/website/rollback`; `files/list` and \
-             `generations/list` declare none and `admin_signer` refuses an unsigned \
-             one regardless) + `auth/authenticate/{{0.2,0.3}}` (`auth/challenge` and \
-             `auth/refresh/0.2` declare none — the challenge names no identity to \
-             authorize, and the refresh token itself is the credential) + the 4 \
-             hidden-vetting tasks under `vetting-pcs`; got {required:?}"
+        let mut unexplained = Vec::new();
+        let mut stale = Vec::new();
+        for &uri in &dispatched {
+            let required = trust_tasks_rs::schema_index::spec_policy_for(uri)
+                .is_some_and(|p| p.is_proof_required);
+            let allow_listed = DISPATCHED_WITHOUT_PROOF.iter().any(|&(u, _)| u == uri);
+            match (required, allow_listed) {
+                (false, false) => unexplained.push(uri),
+                (true, true) => stale.push(uri),
+                _ => {}
+            }
+        }
+        assert!(
+            unexplained.is_empty(),
+            "dispatched, no proof required by spec, and not reasoned about in \
+             DISPATCHED_WITHOUT_PROOF — either its specification should require a proof, or \
+             add an entry there with the reason an unsigned caller is refused some other way: \
+             {unexplained:#?}"
         );
+        assert!(
+            stale.is_empty(),
+            "DISPATCHED_WITHOUT_PROOF entries whose specification now requires a proof — \
+             remove the stale entries: {stale:#?}"
+        );
+
+        for &(uri, reason) in DISPATCHED_WITHOUT_PROOF {
+            assert!(
+                dispatched.contains(&uri),
+                "`{uri}` is in DISPATCHED_WITHOUT_PROOF ({reason}) but is not dispatched any \
+                 more — remove the stale entry"
+            );
+        }
     }
 
     // ── An approver's decision is an attestation ────────────────────────────
@@ -4621,218 +4816,30 @@ mod tests {
         }
     }
 
-    /// Every URI the dispatcher declares as routed must be a member-facing
-    /// request URI declared elsewhere, and vice-versa — so a new verb can't
-    /// be added to one side without the other.
+    /// Every URI the dispatcher declares as routed must be a known Trust Task
+    /// request URI — one the spec registry can answer a policy for — so a
+    /// typo or a URI nobody published can never silently reach `dispatch_typed`.
     ///
-    /// The two personhood entries come from `trust_tasks_rs::specs` rather
-    /// than `vta_sdk::protocols`: they have no hand-written SDK constant
-    /// because their wire types are generated from the published schema.
-    /// Naming the generated `TYPE_URI` keeps the same property — the URI
-    /// this dispatcher answers on is the one the spec publishes, not a
-    /// string that happens to match today.
+    /// This used to also assert `DISPATCHED_URIS` against a second,
+    /// hand-retyped copy of itself (`declared`), which caught nothing a
+    /// typo in one of the two copies couldn't equally cause to agree by
+    /// accident. There is no registry API to enumerate every published URI
+    /// (only to look one up), so the derivable half of the old check — ask
+    /// the registry, don't retype it — is what is left, and it is the half
+    /// that actually protects a member: an unrouted URI already fails in
+    /// `dispatch_typed`, but a routed one the registry has never heard of
+    /// would route a document none of the framework's SPEC §7.2 checks
+    /// (`is_proof_required`, `recipient`, `issuedAt`, ...) are enforced for.
     #[test]
     fn dispatcher_routes_every_dispatched_uri() {
-        let declared = [
-            jr::JOIN_REQUEST_SUBMIT_TYPE,
-            jr::JOIN_REQUEST_MANIFEST_TYPE,
-            jr::JOIN_REQUEST_MANIFEST_0_2_TYPE,
-            jr::JOIN_REQUEST_STATUS_TYPE,
-            jr::JOIN_REQUEST_WITHDRAW_TYPE,
-            jr::JOIN_REQUEST_SUPPLEMENT_TYPE,
-            jr::MEMBER_SELF_REMOVE_TYPE,
-            mem::MEMBER_VMC_TYPE,
-            <trust_tasks_rs::specs::credential_exchange::request::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::credential_exchange::present::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            vetting_wire::VETTING_REVOKE_STATEMENT_TYPE,
-            vetting_wire::VETTING_VETTER_GRANT_TYPE,
-            vetting_wire::VETTING_VETTER_PROFILE_TYPE,
-            vetting_wire::VETTING_VETTER_LIST_TYPE,
-            vetting_wire::VETTING_VETTER_SHOW_TYPE,
-            vetting_wire::VETTING_VETTER_RESEND_TYPE,
-            <vetting_wire::vetters::resend::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <pc::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <pa::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <member_credentials::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <member_update::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <member_admin_remove::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <member_purge::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <join_decide::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <community_profile_update::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <config_export::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <config_import::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <endorsement_type_register::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <endorsement_type_delete::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <backup_export::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <acl_grant::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <acl_change_role::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <acl_show::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <acl_list::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <acl_update::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <acl_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            crate::acl::admin_consent::DECISION_TYPE,
-            step_up_passkey_tasks::INVITE_TYPE,
-            step_up_passkey_tasks::REDEEM_START_TYPE,
-            step_up_passkey_tasks::REDEEM_FINISH_TYPE,
-            step_up_passkey_tasks::REVOKE_START_TYPE,
-            step_up_passkey_tasks::REVOKE_FINISH_TYPE,
-            step_up_passkey_tasks::ADMIN_LIST_TYPE,
-            backup_tasks::INITIATE_EXPORT_TYPE,
-            backup_tasks::GET_CHUNK_TYPE,
-            backup_tasks::COMPLETE_EXPORT_TYPE,
-            backup_tasks::INITIATE_IMPORT_TYPE,
-            backup_tasks::PUT_CHUNK_TYPE,
-            backup_tasks::FINALIZE_IMPORT_TYPE,
-            backup_tasks::ABORT_TYPE,
-            <trust_tasks_rs::specs::vtc::members::renew::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::members::rotate_challenge::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::members::rotate::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::members::personhood::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::relationships::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::relationships::publish::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::relationships::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::relationships::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::endorsements::issue::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::endorsements::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::endorsements::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::endorsements::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            discovery::DISCOVERY_V0_3_TYPE,
-            <trust_tasks_rs::specs::vtc::registry::diagnostics::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::registry::sync_jobs::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::registry::sync_jobs::retry::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::registry::sync_jobs::discard::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::registry::records::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::audit::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::audit::verify::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::config::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::config::patch::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::config::reload::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::config::restart::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::admin::invites::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::admin::invites::create::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::vtc::admin::invites::revoke::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::auth::sessions::list::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            <trust_tasks_rs::specs::auth::revoke_session::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI,
-            auth_tasks::CHALLENGE_TYPE,
-            auth_tasks::AUTHENTICATE_V0_2_TYPE,
-            auth_tasks::AUTHENTICATE_V0_3_TYPE,
-            auth_tasks::REFRESH_V0_2_TYPE,
-            install_tasks::CLAIM_START_TYPE,
-            install_tasks::CLAIM_FINISH_TYPE,
-            install_tasks::BOOTSTRAP_TYPE,
-            recognise_tasks::CHALLENGE_TYPE,
-            recognise_tasks::RECOGNISE_TYPE,
-            community_tasks::PROFILE_SHOW_TYPE,
-            community_tasks::CEREMONIES_LIST_TYPE,
-            community_tasks::DIRECTORY_QUERY_TYPE,
-            community_tasks::ENDORSEMENT_TYPES_LIST_TYPE,
-            community_tasks::RECOGNITION_CHECK_TYPE,
-            community_tasks::MEMBERS_LIST_TYPE,
-            community_tasks::MEMBERS_REMOVED_TYPE,
-            community_tasks::MEMBERS_SHOW_TYPE,
-            community_tasks::MEMBERS_SOLICIT_VMC_TYPE,
-            community_tasks::JOIN_REQUESTS_LIST_TYPE,
-            community_tasks::JOIN_REQUESTS_SHOW_TYPE,
-            community_tasks::RELATIONSHIPS_GRAPH_TYPE,
-            community_tasks::INVITATIONS_ISSUE_TYPE,
-            community_tasks::INVITATIONS_LIST_TYPE,
-            community_tasks::INVITATIONS_REVOKE_TYPE,
-            community_tasks::INVITATIONS_DELIVER_TYPE,
-            policy_tasks::POLICY_LIST_TYPE,
-            policy_tasks::POLICY_GET_TYPE,
-            policy_tasks::POLICY_ACTIVE_TYPE,
-            policy_tasks::POLICY_UPSERT_TYPE,
-            policy_tasks::POLICY_ACTIVATE_TYPE,
-            policy_tasks::POLICY_TEST_TYPE,
-            policy_tasks::DID_REGISTER_TYPE,
-            surface_tasks::BRANDING_SHOW_TYPE,
-            surface_tasks::BRANDING_UPDATE_TYPE,
-            surface_tasks::REQUESTED_SHOW_TYPE,
-            surface_tasks::REQUESTED_UPDATE_TYPE,
-            surface_tasks::JOIN_DISCOVERY_SHOW_TYPE,
-            surface_tasks::JOIN_DISCOVERY_UPDATE_TYPE,
-            surface_tasks::SCHEMAS_REGISTER_TYPE,
-            surface_tasks::SCHEMAS_LIST_TYPE,
-            surface_tasks::SCHEMAS_SHOW_TYPE,
-            surface_tasks::SCHEMAS_DELETE_TYPE,
-            surface_tasks::ACCEPTS_REGISTER_TYPE,
-            surface_tasks::ACCEPTS_LIST_TYPE,
-            surface_tasks::ACCEPTS_SHOW_TYPE,
-            surface_tasks::ACCEPTS_DELETE_TYPE,
-            surface_tasks::VETTER_GRANTS_LIST_TYPE,
-            surface_tasks::AUTO_GRANT_SHOW_TYPE,
-            surface_tasks::AUTO_GRANT_UPDATE_TYPE,
-            surface_tasks::REVOCATIONS_LIST_TYPE,
-            surface_tasks::RELATIONSHIPS_SUSPEND_TYPE,
-            surface_tasks::RELATIONSHIPS_RESTORE_TYPE,
-            surface_tasks::JOIN_VETTING_SHOW_TYPE,
-            surface_tasks::JOIN_QUERY_TYPE,
-            surface_tasks::ROOMS_LIST_TYPE,
-            signing_key_tasks::ENROLL_TYPE,
-            signing_key_tasks::LIST_TYPE,
-            signing_key_tasks::REVOKE_TYPE,
-            #[cfg(feature = "website")]
-            website_tasks::BEGIN_TYPE,
-            #[cfg(feature = "website")]
-            website_tasks::CHUNK_TYPE,
-            #[cfg(feature = "website")]
-            website_tasks::COMMIT_TYPE,
-            #[cfg(feature = "website")]
-            website_tasks::ABORT_TYPE,
-            #[cfg(feature = "website")]
-            website_tasks::DEPLOY_TYPE,
-            #[cfg(feature = "website")]
-            website_tasks::FILES_SHOW_TYPE,
-            #[cfg(feature = "website")]
-            website_tasks::FILES_LIST_TYPE,
-            #[cfg(feature = "website")]
-            website_tasks::FILES_DELETE_TYPE,
-            #[cfg(feature = "website")]
-            website_tasks::GENERATIONS_LIST_TYPE,
-            #[cfg(feature = "website")]
-            website_tasks::ROLLBACK_TYPE,
-            // Hidden vetting. These four name a string constant rather than a generated
-            // `TYPE_URI` because the pinned `trust-tasks-rs` does not carry their modules yet.
-            // The specifications are merged (#618, #620) and the bindings generate as 0.22;
-            // this graph resolves 0.21.17 because affinidi-messaging-sdk, the mediator and the
-            // four trust-tasks companions re-export trust-tasks-rs types from the 0.21 line.
-            // `pcs_tasks::tests` holds what the generated type would have held: that the
-            // payloads match the published schemas.
-            #[cfg(feature = "vetting-pcs")]
-            crate::vetting::pcs_tasks::PCS_ROOT_TYPE,
-            #[cfg(feature = "vetting-pcs")]
-            crate::vetting::pcs_tasks::PCS_TOKENS_TYPE,
-            #[cfg(feature = "vetting-pcs")]
-            crate::vetting::pcs_tasks::EVENT_MODE_TYPE,
-            #[cfg(feature = "vetting-pcs")]
-            crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE,
-            #[cfg(feature = "vetting-pcs")]
-            crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE,
-        ];
-        // `rooms/*` is no longer checked here, because there is no longer a copy
-        // to check.
-        //
-        // This assertion used to compare `DISPATCHED_URIS` against
-        // `ROOMS_DISPATCHED_URIS` — two hand-maintained lists of the same fact,
-        // which is exactly the shape that had already failed:
-        // `rooms/records/curate` was dispatched by the `match` and named in
-        // neither array, so the census passed while curate was missing from
-        // every version hint this VTC emitted.
-        //
-        // The rooms family now routes through `rooms::handlers::dispatcher()`,
-        // where the URI is derived from each registered payload type. The served
-        // list *is* `registered_uris()`, so there is nothing for a census to
-        // disagree with — and `rooms_dispatcher_serves_every_wire_uri` below
-        // holds the one claim that still needs holding: that the registrations
-        // cover the family.
-        for u in DISPATCHED_URIS {
+        for uri in DISPATCHED_URIS {
             assert!(
-                declared.contains(u),
-                "dispatched URI is not a declared request URI: {u}"
+                trust_tasks_rs::schema_index::spec_policy_for(uri).is_some(),
+                "`{uri}` is dispatched but the spec registry has no policy for it — either it \
+                 is misspelled, or its specification is not published where \
+                 `trust_tasks_rs::schema_index` can answer `spec_policy_for` for it"
             );
         }
-        assert_eq!(DISPATCHED_URIS.len(), declared.len());
     }
 
     /// The rooms dispatcher serves every URI `vti_rooms` puts on the wire.
