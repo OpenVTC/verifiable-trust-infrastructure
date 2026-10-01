@@ -1,10 +1,11 @@
 //! Members' step-up passkeys on the signed-document spine —
 //! `auth/passkey/enroll/invite/0.2` (`purpose: stepUp`),
 //! `auth/passkey/enroll/redeem/{start,finish}/0.1` and
-//! `auth/passkey/revoke/{start,finish}/0.2` for an administrator revoking on a
-//! member's behalf, and `auth/passkey/admin-list/0.1` for an administrator
-//! listing them. The operations are [`crate::step_up_passkey`]'s; this file
-//! decides only who is asking.
+//! `auth/passkey/revoke/{start,finish}/0.2` for a member revoking their own,
+//! or an administrator revoking one on a member's behalf, and
+//! `auth/passkey/admin-list/0.1` for an administrator listing them. The
+//! operations are [`crate::step_up_passkey`]'s; this file decides only who is
+//! asking.
 //!
 //! Every one arrives here the same way over TSP, DIDComm or HTTPS, and there is
 //! no other door: no REST route issues, redeems, revokes or lists one.
@@ -14,7 +15,7 @@
 //! | `enroll/invite` | a community administrator ([`admin_signer`]) | their ACL row, **and** a passkey gesture of theirs bound to this document ([`crate::acl::bound_step_up`]) |
 //! | `enroll/redeem/start` | the member the invite names — required here, although the specification makes the proof optional | the invite token, the claim code and the signer, together |
 //! | `enroll/redeem/finish` | the member, or nobody (the browser that ran the ceremony) | the ceremony a signed start opened |
-//! | `revoke/start`, `revoke/finish` | a community administrator | their ACL row, and a user-verified assertion from their own passkey |
+//! | `revoke/start`, `revoke/finish` | the member revoking their own step-up passkey, or a community administrator revoking one for a member | a user-verified assertion from the producer's own passkeys — the subject's remaining step-up passkeys for a self-revoke, the administrator's session passkeys otherwise — plus, for an administrator, their ACL row |
 //! | `admin-list` | an administrator with authority over the member — community-wide, or scoped to a context the member's entry names | their ACL row |
 
 use serde_json::Value;
@@ -178,42 +179,82 @@ async fn handle_redeem_finish(
     }
 }
 
-/// `auth/passkey/revoke/start/0.2` with `subject`: a community administrator
-/// revoking a member's step-up passkey.
+/// Who may act for `revoke/start` and `revoke/finish`: the verified signer,
+/// or — when that signer holds no ACL row of their own and signed through a
+/// delegated console key — the administrator that key acts for.
+///
+/// Unlike [`admin_signer`], this never refuses a signer for lacking
+/// administrator standing: a member revoking their own step-up passkey needs
+/// none, and [`crate::step_up_passkey::revoke_start`] is where "acting for
+/// someone else needs administrator standing" is actually enforced, against
+/// this service's own state rather than anything the document claims.
+async fn revoke_producer(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+) -> Result<String, TrustTaskOutcome> {
+    let Some(signer) = ctx.verified_signer.clone() else {
+        return Err(reject_with(doc, RejectReason::ProofRequired));
+    };
+    let has_own_row = crate::acl::get_acl_entry(&state.acl_ks, &signer)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?
+        .is_some();
+    if !has_own_row
+        && let Some(delegation) =
+            crate::acl::console_key::resolve_delegated_admin(&state.console_keys_ks, &signer)
+                .await
+                .map_err(|e| app_error_to_reject(doc, &e))?
+    {
+        crate::acl::console_key::touch_last_used(&state.console_keys_ks, &delegation).await;
+        tracing::info!(
+            console_did = %signer,
+            admin_did = %delegation.admin_did,
+            task = %doc.type_uri,
+            "authorizing a signed document under a console-key delegation"
+        );
+        return Ok(delegation.admin_did);
+    }
+    Ok(signer)
+}
+
+/// `auth/passkey/revoke/start/0.2`: the member revoking their own step-up
+/// passkey (`payload.subject` absent), or a community administrator revoking
+/// one for a member (`payload.subject` present, naming someone else).
 async fn handle_revoke_start(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
+    let producer = match revoke_producer(state, ctx, &doc).await {
+        Ok(p) => p,
         Err(reject) => return reject,
     };
     let payload: revoke_start::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::step_up_passkey::revoke_start(state, &actor.did, &payload).await {
+    match crate::step_up_passkey::revoke_start(state, &producer, &payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
 }
 
-/// `auth/passkey/revoke/finish/0.2`, by the administrator who started it.
+/// `auth/passkey/revoke/finish/0.2`, by the producer who started it.
 async fn handle_revoke_finish(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
+    let producer = match revoke_producer(state, ctx, &doc).await {
+        Ok(p) => p,
         Err(reject) => return reject,
     };
     let payload: revoke_finish::Payload = match parse_spec_payload(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match crate::step_up_passkey::revoke_finish(state, &actor.did, &payload).await {
+    match crate::step_up_passkey::revoke_finish(state, &producer, &payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
     }
@@ -276,7 +317,8 @@ mod tests {
     use super::super::members_admin_tests::{error_code, payload_of, seed_acl, signed, unsigned};
     use super::super::soft_authenticator::SoftEd25519Authenticator;
     use super::super::{
-        JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, TrustTaskOutcome, dispatch_trust_task_core,
+        JoinAuthCtx, STEP_UP_APPROVE_RESPONSE_TYPE, STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
+        TrustTaskOutcome, dispatch_trust_task_core,
     };
     use super::revoke_start;
     use super::{ADMIN_LIST_TYPE, admin_list};
@@ -451,11 +493,11 @@ mod tests {
             })
     }
 
-    /// The approve-response `signer` sends for `request`, carrying an
-    /// assertion from `key`.
-    async fn approve(
+    /// [`approve`], against whichever approve-response version `uri` names.
+    async fn approve_as(
         fix: &Fixture,
         transport: JoinTransport,
+        uri: &str,
         signer: &Party,
         request: &Value,
         assertion: &PublicKeyCredential,
@@ -464,13 +506,33 @@ mod tests {
             fix,
             transport,
             signer,
-            STEP_UP_APPROVE_RESPONSE_TYPE,
+            uri,
             json!({
                 "subject": request["subject"],
                 "challenge": request["challenge"],
                 "decision": "approved",
                 "evidence": { "kind": "webauthn", "assertion": published(assertion) },
             }),
+        )
+        .await
+    }
+
+    /// The `auth/step-up/approve-response/0.4` `signer` sends for `request`,
+    /// carrying an assertion from `key`.
+    async fn approve(
+        fix: &Fixture,
+        transport: JoinTransport,
+        signer: &Party,
+        request: &Value,
+        assertion: &PublicKeyCredential,
+    ) -> TrustTaskOutcome {
+        approve_as(
+            fix,
+            transport,
+            STEP_UP_APPROVE_RESPONSE_TYPE,
+            signer,
+            request,
+            assertion,
         )
         .await
     }
@@ -949,6 +1011,66 @@ mod tests {
         }
     }
 
+    /// `auth/step-up/approve-response/0.5`, served alongside 0.4: a webauthn
+    /// gate alone is never enough — unlike 0.4, which still admits an
+    /// unsigned console-passkey answer, 0.5 requires the approver's proof on
+    /// every response, so an unsigned 0.5 document is refused before its
+    /// evidence is even looked at. Signed by the subject, it is recorded
+    /// exactly as 0.4 records it.
+    #[tokio::test]
+    async fn approve_response_0_5_requires_the_subjects_proof_even_for_a_webauthn_gate() {
+        for t in TRANSPORTS {
+            let mut fix = fixture().await;
+            let member = fix.member.did.clone();
+            let issued = invite_over(&mut fix, t, &member).await;
+            redeem_over(&mut fix, t, &issued).await;
+
+            let request = bound_request(&fix, &member).await;
+            let assertion = fix
+                .member_key
+                .authenticate(&request_options(&request["webauthn"]), RP_ORIGIN);
+            let evidence = json!({
+                "subject": request["subject"],
+                "challenge": request["challenge"],
+                "decision": "approved",
+                "evidence": { "kind": "webauthn", "assertion": published(&assertion) },
+            });
+
+            let bare = unsigned(&fix.member, STEP_UP_APPROVE_RESPONSE_V0_5_TYPE, evidence);
+            let out = dispatch_doc(&fix, t, &fix.member, &bare).await;
+            assert_code(
+                &out,
+                "proofRequired",
+                "0.5 admits no unsigned answer, webauthn evidence or not",
+            );
+
+            let out = approve_as(
+                &fix,
+                t,
+                STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
+                &fix.member,
+                &request,
+                &assertion,
+            )
+            .await;
+            assert_eq!(
+                ok(&out, "0.5, signed by the subject")["status"],
+                "recorded",
+                "{t:?}"
+            );
+            let spent = bound_step_up::redeem_or_request(
+                &fix.vtc.state,
+                &member,
+                BREAK_GLASS,
+                &break_glass(),
+                "break the glass",
+            )
+            .await
+            .unwrap();
+            assert!(matches!(spent, Gate::Satisfied), "{t:?}");
+        }
+    }
+
     /// A step-up passkey answers only its own member's step-ups: the ceremony
     /// an administrator is asked for never offers it, and an assertion from it
     /// over the administrator's challenge does not verify.
@@ -1026,18 +1148,20 @@ mod tests {
             let cred = redeem_over(&mut fix, t, &issued).await;
             let pending = bound_request(&fix, &member).await;
 
-            // Nobody but a community administrator starts one.
-            for (from, subject) in [(&fix.member, &member), (&fix.other, &member)] {
-                let out = send(
-                    &fix,
-                    t,
-                    from,
-                    REVOKE_START_TYPE,
-                    json!({ "credentialId": cred, "subject": subject }),
-                )
-                .await;
-                assert_code(&out, "permissionDenied", "not an admin");
-            }
+            // Nobody but the owner or a community administrator starts one.
+            let out = send(
+                &fix,
+                t,
+                &fix.other,
+                REVOKE_START_TYPE,
+                json!({ "credentialId": cred, "subject": member }),
+            )
+            .await;
+            assert_code(
+                &out,
+                "auth/passkey/revoke/start:notAuthorized",
+                "neither the owner nor an admin",
+            );
             let out = send(
                 &fix,
                 t,
@@ -1092,6 +1216,81 @@ mod tests {
                 "{t:?}"
             );
         }
+    }
+
+    /// A member revokes their own step-up passkey: no `subject` in the
+    /// payload, no administrator standing needed, verified with the
+    /// credential being revoked itself — the only one they hold.
+    #[tokio::test]
+    async fn a_member_revokes_their_own_step_up_passkey() {
+        for t in TRANSPORTS {
+            let mut fix = fixture().await;
+            let member = fix.member.did.clone();
+            let issued = invite_over(&mut fix, t, &member).await;
+            let cred = redeem_over(&mut fix, t, &issued).await;
+
+            let started = send(
+                &fix,
+                t,
+                &fix.member,
+                REVOKE_START_TYPE,
+                json!({ "credentialId": cred }),
+            )
+            .await;
+            let started = ok(&started, "self revoke/start");
+            revoke_start::Response::validate_value(&started).expect("conforms");
+            let uv = fix
+                .member_key
+                .authenticate(&request_options(&started["uvOptions"]), RP_ORIGIN);
+            let finish = json!({
+                "revocationId": started["revocationId"],
+                "uvCredential": published(&uv),
+            });
+            let done = send(&fix, t, &fix.member, REVOKE_FINISH_TYPE, finish).await;
+            let done = ok(&done, "self revoke/finish");
+            revoke_finish::Response::validate_value(&done).expect("conforms");
+            assert_eq!(done["subject"], member);
+            assert_eq!(done["purpose"], "stepUp");
+            assert_eq!(done["remaining"], 0);
+
+            let held = crate::step_up_passkey::credentials_of(&fix.vtc.state, &member)
+                .await
+                .unwrap();
+            assert!(held.is_empty(), "{t:?}");
+            assert_eq!(
+                audited_stages(&fix).await,
+                ["invited", "registered", "revoked"],
+                "{t:?}"
+            );
+        }
+    }
+
+    /// A member with no step-up passkey of their own cannot start a
+    /// self-revoke against someone else's, and a member who holds two cannot
+    /// verify a revocation of the first with a gesture from the second alone
+    /// — `revoke_start` offers exactly the subject's own credentials, which
+    /// here is just the one being revoked.
+    #[tokio::test]
+    async fn self_revoke_is_refused_for_a_credential_the_producer_does_not_own() {
+        let mut fix = fixture().await;
+        let member = fix.member.did.clone();
+        let issued = invite_over(&mut fix, JoinTransport::Rest, &member).await;
+        let cred = redeem_over(&mut fix, JoinTransport::Rest, &issued).await;
+
+        // `fix.other` holds no step-up passkey at all, let alone this one.
+        let out = send(
+            &fix,
+            JoinTransport::Rest,
+            &fix.other,
+            REVOKE_START_TYPE,
+            json!({ "credentialId": cred }),
+        )
+        .await;
+        assert_code(
+            &out,
+            "auth/passkey/revoke/start:credentialNotFound",
+            "not the owner",
+        );
     }
 
     // ── admin-list ───────────────────────────────────────────────────────

@@ -172,6 +172,11 @@ use trust_tasks_rs::specs::acl::{
     update::v0_1 as acl_update,
 };
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as step_up_approve_response;
+// 0.5 requires the approver's proof on every response (no more unsigned
+// webauthn answers); served alongside 0.4, never in place of it, because the
+// console still answers an unsigned session-passkey gesture on 0.4 — see
+// `handle_step_up_approve_response_v0_5`.
+use trust_tasks_rs::specs::auth::step_up::approve_response::v0_5 as step_up_approve_response_v0_5;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
@@ -1129,6 +1134,9 @@ async fn dispatch_typed(
         ACL_UPDATE_TYPE => acl_tasks::handle_update(state, ctx, doc).await,
         ACL_REVOKE_TYPE => acl_tasks::handle_revoke(state, ctx, doc).await,
         STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, ctx, doc).await,
+        STEP_UP_APPROVE_RESPONSE_V0_5_TYPE => {
+            handle_step_up_approve_response_v0_5(state, ctx, doc).await
+        }
         crate::acl::admin_consent::DECISION_TYPE => {
             handle_task_consent_decision(state, ctx, doc).await
         }
@@ -1990,6 +1998,10 @@ mod spine_proof_tests {
                 STEP_UP_APPROVE_RESPONSE_TYPE,
                 approve_response_payload(&did),
             ),
+            (
+                STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
+                approve_response_payload(&did),
+            ),
         ] {
             let doc = approval(uri, payload, &did, &secret, "authentication").await;
             let out = dispatch(&tv.state, &doc).await;
@@ -2011,6 +2023,10 @@ mod spine_proof_tests {
             (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
             (
                 STEP_UP_APPROVE_RESPONSE_TYPE,
+                approve_response_payload(&did),
+            ),
+            (
+                STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
                 approve_response_payload(&did),
             ),
         ] {
@@ -2042,6 +2058,10 @@ mod spine_proof_tests {
         for (uri, payload) in [
             (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
             (STEP_UP_APPROVE_RESPONSE_TYPE, approve_response_payload(did)),
+            (
+                STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
+                approve_response_payload(did),
+            ),
         ] {
             let doc = approval(uri, payload, did, &secret, "assertionMethod").await;
             let out = dispatch(&tv.state, &doc).await;
@@ -2064,6 +2084,10 @@ mod spine_proof_tests {
             for (uri, payload) in [
                 (crate::acl::admin_consent::DECISION_TYPE, decision_payload()),
                 (STEP_UP_APPROVE_RESPONSE_TYPE, approve_response_payload(did)),
+                (
+                    STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
+                    approve_response_payload(did),
+                ),
             ] {
                 let doc = approval(uri, payload, did, secret, "assertionMethod").await;
                 let out = dispatch(&tv.state, &doc).await;
@@ -2083,17 +2107,59 @@ mod spine_proof_tests {
     async fn an_unsigned_approve_response_is_refused() {
         let tv = build_test_vtc().await;
         let h = holder();
-        let doc = unsigned(
-            &h,
+        for uri in [
             STEP_UP_APPROVE_RESPONSE_TYPE,
-            approve_response_payload(&h.did),
-        );
-        let out = dispatch(&tv.state, &doc).await;
+            STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
+        ] {
+            let doc = unsigned(&h, uri, approve_response_payload(&h.did));
+            let out = dispatch(&tv.state, &doc).await;
+            assert_eq!(
+                error_code(&out).as_deref(),
+                Some("proofRequired"),
+                "{uri}: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+    }
+
+    /// 0.5's payload schema is the same wire document as 0.4's — only the
+    /// `Response` schema's description text differs — which is what licenses
+    /// [`super::handle_step_up_approve_response_v0_5`] to convert a 0.5
+    /// payload into 0.4's generated type and reach the one verifier rather
+    /// than forking it.
+    #[test]
+    fn the_0_5_payload_schema_is_wire_identical_to_0_4() {
+        let filled = json!({
+            "subject": "did:key:zAlice",
+            "challenge": "Y2hhbGxlbmdlLWNoYWxsZW5nZS1jaGFsbGVuZ2U",
+            "sessionId": "9c2e1f7a-6b3d-4c8e-9a1b-2d3e4f5a6b7c",
+            "decision": "approved",
+            "grantedAcr": "aal2",
+            "evidence": {
+                "kind": "webauthn",
+                "assertion": {
+                    "id": "Y3JlZF8xYTJiM2M",
+                    "rawId": "Y3JlZF8xYTJiM2M",
+                    "type": "public-key",
+                    "response": {
+                        "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0In0",
+                        "authenticatorData": "SZYN5YgOjGh0NBcPZHZgW4_krrmihjLHmVzzuoMdl2MFAAAAAQ",
+                        "signature": "MEUCIQDx",
+                    },
+                },
+            },
+        });
+        let v5: step_up_approve_response_v0_5::Payload =
+            serde_json::from_value(filled.clone()).expect("a 0.5 payload parses");
+        let v4: step_up_approve_response::Payload = serde_json::to_value(&v5)
+            .and_then(serde_json::from_value)
+            .unwrap_or_else(|e| {
+                panic!("0.5 payload does not convert to 0.4's shape: {e}\n{filled:#}")
+            });
         assert_eq!(
-            error_code(&out).as_deref(),
-            Some("proofRequired"),
-            "{}",
-            String::from_utf8_lossy(&out.body)
+            serde_json::to_value(&v4).unwrap(),
+            filled,
+            "round-tripping through 0.4's type must not drop or rename a member"
         );
     }
 }
@@ -2278,6 +2344,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     ACL_REVOKE_TYPE,
     // The gesture that operation-bound step-up asks for.
     STEP_UP_APPROVE_RESPONSE_TYPE,
+    // 0.5: identical wire shape, but every response now carries the
+    // approver's own proof — the spine's `is_proof_required` enforces that
+    // before this ever dispatches.
+    STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
     // Another admin's consent to an unrestricted grant (VTI-APV-014). The
     // request it answers is pushed by this service, never dispatched here.
     crate::acl::admin_consent::DECISION_TYPE,
@@ -2518,6 +2588,13 @@ pub(crate) const ACL_REVOKE_TYPE: &str = <acl_revoke::Payload as trust_tasks_rs:
 /// operation-bound step-up asks for.
 pub(crate) const STEP_UP_APPROVE_RESPONSE_TYPE: &str =
     <step_up_approve_response::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `auth/step-up/approve-response/0.5` — same wire shape as 0.4, but the
+/// approver's `assertionMethod` proof is REQUIRED on every response, webauthn
+/// evidence included. Served alongside 0.4; see
+/// [`handle_step_up_approve_response_v0_5`].
+pub(crate) const STEP_UP_APPROVE_RESPONSE_V0_5_TYPE: &str =
+    <step_up_approve_response_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
@@ -4464,6 +4541,108 @@ async fn unsigned_answer_admissible(
         .await,
         Ok(Some(_))
     )
+}
+
+/// `auth/step-up/approve-response/0.5`, served alongside 0.4.
+///
+/// The wire shape is unchanged from 0.4 (only the schema's `description`
+/// text differs — verified by `the_0_5_payload_schema_is_wire_identical_to_0_4`
+/// below); the one behavioural change is that 0.5 declares its framework
+/// `proof` REQUIRED (`step_up_approve_response_v0_5::Payload::IS_PROOF_REQUIRED`),
+/// so the spine's own policy check already refused an unsigned 0.5 document
+/// before dispatch ever reaches here — there is no `unsigned_answer_admissible`
+/// path to repeat. Every other check is [`handle_step_up_approve_response`]'s:
+/// the signer must be the step-up's own subject (self step-up is all this
+/// service implements), and the gate is [`bound_step_up::approve`].
+///
+/// The payload is converted to the 0.4 generated type to reach that one
+/// verifier rather than forking it: the two schemas describe the same wire
+/// document, and a second copy of the verification logic is exactly the kind
+/// of drift a spec bump should not risk.
+async fn handle_step_up_approve_response_v0_5(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::acl::bound_step_up::{self, ApproveError, Approved};
+    use step_up_approve_response_v0_5::error_codes as codes;
+
+    let payload: step_up_approve_response_v0_5::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let refuse = |code: trust_tasks_rs::DeclaredErrorCode, message: &str, hint: Option<&str>| {
+        reject_with_code(
+            &doc,
+            extended_code(code.code),
+            message,
+            hint.map(|h| serde_json::json!({ "reason": h })),
+        )
+    };
+    // The spine's `spec_policy_for` already refused an unsigned document
+    // (0.5 declares `proof` REQUIRED), so `ctx.verified_signer` is always
+    // `Some` here in practice; the `None` arm is defence in depth, not a
+    // reachable path.
+    match ctx.verified_signer.as_deref() {
+        Some(signer) if signer == payload.subject.as_str() => {}
+        Some(_) => {
+            return refuse(
+                codes::SUBJECT_MISMATCH,
+                "the approve-response is not signed by the subject of the step-up",
+                None,
+            );
+        }
+        None => return reject_with(&doc, RejectReason::ProofRequired),
+    }
+    let v0_4_payload: step_up_approve_response::Payload =
+        match serde_json::to_value(&payload).and_then(serde_json::from_value) {
+            Ok(p) => p,
+            Err(e) => {
+                return app_error_to_reject(
+                    &doc,
+                    &AppError::Internal(format!(
+                        "approve-response 0.5 payload does not convert to 0.4's shape: {e}"
+                    )),
+                );
+            }
+        };
+    match bound_step_up::approve(state, &v0_4_payload, true).await {
+        Ok(Approved::Recorded { bound_to }) => success_response(
+            &doc,
+            serde_json::json!({ "status": "recorded", "boundTo": bound_to }),
+        ),
+        Ok(Approved::Declined { reason }) => success_response(
+            &doc,
+            serde_json::json!({ "status": "rejected", "reason": reason }),
+        ),
+        Err(ApproveError::ChallengeUnknown) => refuse(
+            codes::CHALLENGE_UNKNOWN,
+            "no pending step-up matches this challenge",
+            None,
+        ),
+        Err(ApproveError::ChallengeExpired) => refuse(
+            codes::CHALLENGE_EXPIRED,
+            "the step-up this challenge belonged to has expired; send the operation again",
+            None,
+        ),
+        Err(ApproveError::SubjectMismatch) => refuse(
+            codes::SUBJECT_MISMATCH,
+            "the subject or session does not match the pending step-up",
+            None,
+        ),
+        Err(ApproveError::NoGate) => refuse(
+            codes::NO_GATE,
+            "this step-up accepts only a passkey assertion (evidence.kind = webauthn)",
+            None,
+        ),
+        Err(ApproveError::AssertionInvalid(hint)) => refuse(
+            codes::ASSERTION_INVALID,
+            "the passkey assertion did not verify",
+            Some(hint),
+        ),
+        Err(ApproveError::ProofRequired) => reject_with(&doc, RejectReason::ProofRequired),
+        Err(ApproveError::Internal(e)) => app_error_to_reject(&doc, &e),
+    }
 }
 
 /// `task-consent/decision/0.1` — another admin's answer to a request for
