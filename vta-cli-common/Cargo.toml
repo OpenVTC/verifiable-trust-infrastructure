@@ -33,7 +33,7 @@ vti-common = { path = "../vti-common", version = "0.32" }
 # and `room-host`'s own example drives itself with this crate. Taking a second
 # copy of the `rooms/*` wire types into this crate is what the type duplication
 # in `vtc-client` was deleted to avoid.
-vtc-client = { path = "../vtc-client", version = "0.10" }
+vtc-client = { path = "../vtc-client", version = "0.11" }
 affinidi-crypto = { workspace = true }
 chrono = { workspace = true }
 ed25519-dalek = { workspace = true }
