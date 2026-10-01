@@ -69,6 +69,13 @@ pub struct ProvisionAsk {
     pub label: Option<String>,
     /// VP freshness window. Defaults to [`DEFAULT_VALIDITY`].
     pub validity: Duration,
+    /// The client is the holder's own (OpenVTC, a personal agent) and its
+    /// setup grant needs the `persona-holder` capability. Changes nothing on
+    /// the wire — the grant is the operator's — and is read only to word the
+    /// `pnm acl create` hint when the setup DID is not authorized, so that
+    /// hint names the grant this client actually needs. Set via
+    /// [`Self::as_holder`]; `false` for an integration.
+    pub holder: bool,
 }
 
 impl ProvisionAsk {
@@ -88,6 +95,7 @@ impl ProvisionAsk {
             admin_template_vars: BTreeMap::new(),
             label: None,
             validity: DEFAULT_VALIDITY,
+            holder: false,
         }
     }
 
@@ -211,12 +219,19 @@ impl ProvisionAsk {
             admin_template_vars: BTreeMap::new(),
             label: None,
             validity: DEFAULT_VALIDITY,
+            holder: false,
         }
     }
 
     /// Attach a human-readable audit label.
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
+        self
+    }
+
+    /// Mark this as a holder client's ask — see [`Self::holder`].
+    pub fn as_holder(mut self) -> Self {
+        self.holder = true;
         self
     }
 

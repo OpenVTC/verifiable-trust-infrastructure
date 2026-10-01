@@ -44,6 +44,7 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::ask::ProvisionAsk;
 use super::diagnostics::{DiagCheck, DiagStatus};
 use super::event::VtaEvent;
 use crate::client::VtaClient;
@@ -67,21 +68,30 @@ use crate::error::VtaError;
 /// hand-off (VTI-ACL-054): without the marker, the rollover is refused
 /// (VTI-ACL-053). A flow that mints nothing keeps the setup DID as the admin,
 /// so its grant is a scoped one with no expiry.
-pub(super) fn grant_hint(setup_did: &str, context: &str, rolls_over: bool) -> String {
-    if rolls_over {
+pub(super) fn grant_hint(setup_did: &str, ask: &ProvisionAsk, rolls_over: bool) -> String {
+    let context = &ask.context;
+    let mut hint = if rolls_over {
         format!(
             "pnm acl create --did {setup_did} --role admin --contexts {context} --expires 1h --handoff"
         )
     } else {
         format!("pnm acl create --did {setup_did} --role admin --contexts {context}")
+    };
+    // A holder client needs `persona-holder` on the grant, and no role carries
+    // it — a hint without it gets the client through provisioning and then
+    // refused the holder's attribute pool. Only when the caller said so: an
+    // integration must not be told to take holder authority.
+    if ask.holder {
+        hint.push_str(" --capabilities persona-holder");
     }
+    hint
 }
 
 pub(super) async fn verify_authorization(
     client: &VtaClient,
     setup_did: &str,
     vta_did: &str,
-    context: &str,
+    ask: &ProvisionAsk,
     required_task: Option<&str>,
     tx: &UnboundedSender<VtaEvent>,
 ) -> Result<(), String> {
@@ -119,7 +129,7 @@ pub(super) async fn verify_authorization(
                 "{setup_did} is not authorized on {vta_did}. Run `{}` against that VTA \
                  — an ACL grant is per-VTA and one made on a different VTA does not \
                  carry — and confirm {vta_did} is the VTA you meant. ({detail})",
-                grant_hint(setup_did, context, required_task.is_some())
+                grant_hint(setup_did, ask, required_task.is_some())
             );
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::VerifyAuthorization,
@@ -286,6 +296,7 @@ mod tests {
 
 #[cfg(test)]
 mod grant_hint_tests {
+    use super::ProvisionAsk;
     use super::grant_hint;
 
     /// A flow that rolls over is told the scoped, time-boxed hand-off grant
@@ -294,15 +305,34 @@ mod grant_hint_tests {
     /// admin.
     #[test]
     fn the_grant_hint_is_scoped_and_carries_the_handoff_when_it_rolls_over() {
-        let rolling = grant_hint("did:key:zSetup", "vtc", true);
+        let ask = ProvisionAsk::vta_admin_rotated("vtc");
+        let rolling = grant_hint("did:key:zSetup", &ask, true);
         assert_eq!(
             rolling,
             "pnm acl create --did did:key:zSetup --role admin --contexts vtc --expires 1h --handoff"
         );
-        let staying = grant_hint("did:key:zSetup", "vtc", false);
+        let staying = grant_hint("did:key:zSetup", &ask, false);
         assert_eq!(
             staying,
             "pnm acl create --did did:key:zSetup --role admin --contexts vtc"
+        );
+    }
+
+    /// A holder client (`ProvisionAsk::as_holder`) is told the grant carries
+    /// `persona-holder` — without it, provisioning succeeds and the client is
+    /// then refused the holder's attribute pool.
+    #[test]
+    fn a_holder_ask_is_told_the_holder_capability() {
+        let ask = ProvisionAsk::vta_admin_rotated("vtc").as_holder();
+        assert_eq!(
+            grant_hint("did:key:zSetup", &ask, true),
+            "pnm acl create --did did:key:zSetup --role admin --contexts vtc --expires 1h \
+             --handoff --capabilities persona-holder"
+        );
+        assert_eq!(
+            grant_hint("did:key:zSetup", &ask, false),
+            "pnm acl create --did did:key:zSetup --role admin --contexts vtc \
+             --capabilities persona-holder"
         );
     }
 }
