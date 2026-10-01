@@ -193,7 +193,14 @@ affinidi-messaging-core = "0.1"
 # Tasks only now, its legacy bare `mediator/1.0/{admin,account,acl}-management`
 # protocols removed). A `0.29` copy here alongside `trust-tasks-rs` 0.24 splits
 # the graph on `MediatorAcl` exactly as the comment above describes.
-affinidi-messaging-sdk = { version = "0.31", default-features = false }
+#
+# 0.31.1 is a floor, not a lockfile accident (affinidi-tdk-rs #913). It routes a
+# TSP relationship invite to a peer on another mediator through the mediator
+# the peer's DID document names, which `vti_common::tsp_route` now relies on
+# (VTI-56). And a request collected by Delivery-Request keeps its sender's
+# id, so a reply threads to it (VTI-49). On `^0.31` a lockfile resolving 0.31.0
+# would bring the cross-mediator refusal back with nothing here to catch it.
+affinidi-messaging-sdk = { version = "0.31.1", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.

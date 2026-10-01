@@ -583,7 +583,7 @@ impl TspSender {
                 } else {
                     // Not safe to blind-resend — a duplicate could double-execute.
                     // Re-invite so the caller's retry lands, then report.
-                    if let Err(e) = self.transport.relate(recipient, peer_mediator).await {
+                    if let Err(e) = self.transport.relate(recipient).await {
                         self.recovery
                             .settle_failure(&our, recipient, now, backoff())
                             .await;

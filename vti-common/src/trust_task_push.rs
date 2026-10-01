@@ -1202,19 +1202,6 @@ impl MessageTransport for TspPushTransport {
             MessagingError::Transport(format!("TSP send to {dest}: {e}"))
         };
 
-        // Without this the invite to a member on another mediator went to ours
-        // as a Direct message, was refused, and every attempt failed until the
-        // push fell back an hour later (VTI-56; see `crate::tsp_route`).
-        crate::tsp_route::note_peer_mediator(
-            &self.atm,
-            &self.profile,
-            &self.mediator_did,
-            dest,
-            record.peer_tsp_mediator.as_deref(),
-        )
-        .await
-        .map_err(err)?;
-
         // Re-establish a relationship the peer (or this node) lost, as
         // `send_reestablishing` does — open-coded because that call seals
         // internally and so gives no access to the bytes the evidence id is
