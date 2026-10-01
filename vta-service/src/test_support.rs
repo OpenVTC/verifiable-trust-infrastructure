@@ -1954,10 +1954,13 @@ async fn stub_host_answer(
             json!({ "available": true, "reserved": true, "record": record("stub-mnemonic") }),
         ),
         "did/register/0.1" => {
-            if fail_puts
+            // `fetch_update` is deprecated in rustc 1.99 in favour of `try_update`,
+            // which is newer than the workspace's 1.95 MSRV.
+            #[allow(deprecated)]
+            let take_failure = fail_puts
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                .is_ok()
-            {
+                .is_ok();
+            if take_failure {
                 // A transient outage: the publish did not land.
                 return error("internalError", "the host is unavailable");
             }

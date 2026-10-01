@@ -232,7 +232,7 @@ async fn vtc_key_ids(
         .first()
         .map(|vr| vr.get_id())
         .or_else(|| doc.verification_method.first().map(|vm| vm.id.as_str()))
-        .map(&absolutize);
+        .map(absolutize);
     let ka = doc.key_agreement.first().map(|vr| absolutize(vr.get_id()));
 
     match signing {

@@ -333,6 +333,9 @@ impl AppState {
     /// double-decrement can never wrap the count around to `u64::MAX` and
     /// poison every size-gated policy.
     pub fn member_count_dec(&self) {
+        // `fetch_update` is deprecated in rustc 1.99 in favour of `try_update`,
+        // which is newer than the workspace's 1.95 MSRV.
+        #[allow(deprecated)]
         let _ = self
             .member_count_cache
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
