@@ -143,9 +143,9 @@ path = "tests/it/main.rs"
 # Hidden-vetter admission (ZKP), development branch `zkp-pcs`: off by default.
 vti-vetting-pcs = { path = "../vti-vetting-pcs", optional = true }
 predicate-credential-system = { version = "0.1", optional = true }
-vti-rooms = { path = "../vti-rooms", version = "0.4" }
+vti-rooms = { path = "../vti-rooms", version = "0.5" }
 vti-rooms-dtg = { path = "../vti-rooms-dtg" }
-vti-common = { path = "../vti-common", version = "0.33", features = [
+vti-common = { path = "../vti-common", version = "0.34", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.

@@ -34,11 +34,11 @@ tenant-overlay = ["dep:vta-tee", "vta-tee/tenant-overlay"]
 
 [dependencies]
 vta-service = { path = "../vta-service", version = "0.49", default-features = false, features = ["tee"] }
-vti-common = { path = "../vti-common", version = "0.33", features = ["encryption"] }
+vti-common = { path = "../vti-common", version = "0.34", features = ["encryption"] }
 # Direct dep only for the `tenant-overlay` fetch entry point; the rest of the
 # TEE bootstrap is reached through `vta_service::tee`. Optional so a baked build
 # links no overlay code.
-vta-tee = { path = "../vta-tee", version = "0.9", optional = true }
+vta-tee = { path = "../vta-tee", version = "0.10", optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

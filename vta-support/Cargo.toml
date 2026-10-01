@@ -20,7 +20,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-keyspaces = { path = "../vta-keyspaces", version = "0.6" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.7" }
 vta-config = { path = "../vta-config", version = "0.11" }
 # `encryption` is REQUIRED, not optional: `seal.rs` calls
 # `KeyspaceHandle::with_encryption`, which is `#[cfg(feature = "encryption")]`.
@@ -29,7 +29,7 @@ vta-config = { path = "../vta-config", version = "0.11" }
 # verifies each crate in isolation, where nothing enables it, so the method
 # does not exist and the tarball fails to compile. That is what broke the
 # publish run for 0.2.0.
-vti-common = { path = "../vti-common", version = "0.33", features = ["encryption"] }
+vti-common = { path = "../vti-common", version = "0.34", features = ["encryption"] }
 vta-sdk = { path = "../vta-sdk", version = "0.61", features = ["sealed-transfer"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

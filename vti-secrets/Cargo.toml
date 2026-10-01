@@ -47,7 +47,7 @@ onboarding = [
 ]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.33" }
+vti-common = { path = "../vti-common", version = "0.34" }
 serde = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
