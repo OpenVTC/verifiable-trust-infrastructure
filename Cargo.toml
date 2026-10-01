@@ -97,7 +97,10 @@ uniffi = "0.32"
 # 0.11 re-exports `affinidi-mdoc` 0.3 — see the coupling note on `coset` below.
 # 0.20 moves in lockstep with `trust-tasks-rs` 0.24 and `affinidi-messaging-sdk`
 # 0.30 (affinidi-tdk-rs #901/#902, the mediator-onto-Trust-Tasks-only cut).
-affinidi-tdk = "0.21"
+# 0.22 is the affinidi-data-integrity 0.8 / affinidi-bbs 0.4 cascade
+# (affinidi-tdk-rs #918), in lockstep with `affinidi-messaging-sdk` 0.32 and
+# `trust-tasks-rs` 0.26.
+affinidi-tdk = "0.22"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -112,11 +115,9 @@ affinidi-vc = "0.2"
 # post-quantum key cannot sign a credential at all, and says so by naming
 # Ed25519. The same trap was caught for `affinidi-secrets-resolver` (which
 # carries the feature below) and missed here.
-# Pinned to 0.7.13: 0.7.14 moved its public affinidi-bbs dependency to 0.4 in a
-# patch release (affinidi-tdk-rs #912), which breaks a fresh resolve beside this
-# workspace's affinidi-bbs 0.3 (two affinidi_bbs::PublicKey types in vta-vault).
-# Drop the pin when VTI moves to affinidi-data-integrity 0.8 + affinidi-bbs 0.4.
-affinidi-data-integrity = { version = "=0.7.13", features = ["ml-dsa"] }
+# 0.8 carries `affinidi-bbs` 0.4 in its public API, so the two move together
+# (the `=0.7.13` pin that held 0.7.14's patch-level bbs bump off is gone).
+affinidi-data-integrity = { version = "0.8", features = ["ml-dsa"] }
 affinidi-status-list = "0.1.3"
 
 # Credential formats for the credential-centric VTI architecture
@@ -143,7 +144,7 @@ affinidi-status-list = "0.1.3"
 # to avoid a duplicate-version split.
 affinidi-sd-jwt-vc = "0.2"
 affinidi-sd-jwt = "0.1.2"
-affinidi-bbs = "0.3"
+affinidi-bbs = "0.4"
 affinidi-openid4vp = "0.1.2"
 affinidi-mdoc = { version = "0.3", default-features = false, features = ["es256"] }
 # Both already enter the graph through `affinidi-mdoc`; declared here because
@@ -198,20 +199,22 @@ affinidi-messaging-core = "0.1"
 # protocols removed). A `0.29` copy here alongside `trust-tasks-rs` 0.24 splits
 # the graph on `MediatorAcl` exactly as the comment above describes.
 #
-# 0.31.1 is a floor, not a lockfile accident (affinidi-tdk-rs #913). It routes a
+# 0.32 is the affinidi-data-integrity 0.8 cascade (affinidi-tdk-rs #918); it
+# keeps 0.31.1's behaviour, which this workspace relies on (affinidi-tdk-rs #913):
+# it routes a
 # TSP relationship invite to a peer on another mediator through the mediator
 # the peer's DID document names, which `vti_common::tsp_route` now relies on
 # (VTI-56). And a request collected by Delivery-Request keeps its sender's
 # id, so a reply threads to it (VTI-49). On `^0.31` a lockfile resolving 0.31.0
 # would bring the cross-mediator refusal back with nothing here to catch it.
-affinidi-messaging-sdk = { version = "0.31.1", default-features = false }
+affinidi-messaging-sdk = { version = "0.32", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
 futures-util = "0.3"
 
 # Decentralized Trust Graph Credentials
-dtg-credentials = "0.12"
+dtg-credentials = "0.13"
 
 # JSON Schema validation (issue-time credentialSchema checks).
 #
@@ -291,7 +294,10 @@ pgp = { version = "0.20", default-features = false }
 # Local webvh stacks (`local-dev/vta-*-webvh-setup.toml`, which publish
 # `http://localhost:3000`) and tests that resolve a listener on 127.0.0.1 must
 # now opt in explicitly with `HostPolicy::AllowPrivate`.
-didwebvh-rs = "0.7"
+#
+# 0.8 is the affinidi-data-integrity 0.8 release (its proof types are 0.8's);
+# it moves with `affinidi-did-resolver-cache-sdk` 0.8.41, which resolves on it.
+didwebvh-rs = "0.8"
 
 # URL parsing
 url = "2"
@@ -501,12 +507,15 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # 0.25.4 raises it again: it is the first release carrying
 # `vta/webvh/dids/create/1.1` (dtgwg-trust-tasks-tf#702), whose response states
 # `serverless` (Keyring VTI-20) and which `trust_tasks::webvh` serves.
-trust-tasks-rs = { version = "0.25.4", default-features = false, features = [
+#
+# 0.26 is the affinidi-data-integrity 0.8 cascade (trust-tasks-tf #705) and
+# carries #702 too, so the floor above holds on this line.
+trust-tasks-rs = { version = "0.26", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.25.3"
-trust-tasks-https = { version = "0.25", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-capability-client = "0.26"
+trust-tasks-https = { version = "0.26", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —
 # and the `pack_trust_task`/`unpack_trust_task` pair that enforce it.
@@ -517,7 +526,7 @@ trust-tasks-https = { version = "0.25", default-features = false, features = ["s
 # A conformant peer rejects that, silently, because "not an envelope" is
 # indistinguishable from "not addressed to me". One constant, from the crate
 # that defines it.
-trust-tasks-didcomm = { version = "0.25", default-features = false }
+trust-tasks-didcomm = { version = "0.26", default-features = false }
 # The TSP binding. Carries `ENVELOPE_TYPE` — the payload wrapper every
 # Trust-Task TSP frame must use: `{"type": …, "document": …}`.
 #
@@ -536,8 +545,8 @@ trust-tasks-didcomm = { version = "0.25", default-features = false }
 # keys in that shape; it signs through `operations::keys::sign_payload`, where
 # the context gates live. Using the crate's sealing API needs a signer seam
 # upstream, of the shape `affinidi_data_integrity::Signer` already provides.
-trust-tasks-tsp = { version = "0.25", default-features = false }
-trust-tasks-proof = { version = "0.25", default-features = false, features = ["affinidi"] }
+trust-tasks-tsp = { version = "0.26", default-features = false }
+trust-tasks-proof = { version = "0.26", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }
@@ -640,7 +649,7 @@ k8s-openapi = { version = "0.28", features = ["latest"] }
 # current. 0.8.35 did the same for did:web; 0.8.37 makes one
 # `DIDCacheConfigBuilder::with_host_policy` setting govern both.
 # 0.8.39 is the floor: earlier releases resolve a deactivated did:webvh to its last document (SEC-4045 / VGI-04).
-affinidi-did-resolver-cache-sdk = { version = "0.8.39", features = ["network"] }
+affinidi-did-resolver-cache-sdk = { version = "0.8.41", features = ["network"] }
 # The local-only resolvers, for methods that carry their keys in the identifier. Not a
 # second resolver: the cache SDK already depends on this and uses the same types, but does
 # not re-export them, and a verifier promising "no I/O" needs to reach them directly.
