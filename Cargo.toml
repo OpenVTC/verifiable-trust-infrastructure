@@ -480,11 +480,17 @@ aws-smithy-types = ">=1.6.1, <1.7"
 #
 # 0.25 is the DTG Credentials v1 release (trustoverip/dtgwg-trust-tasks-tf#691:
 # role VACs, vetted/1 statements, roleVac) and carries the 0.24.9 specs above.
-trust-tasks-rs = { version = "0.25.0", default-features = false, features = [
+#
+# 0.25.3 raises it again: it is the first release carrying
+# `vtc/members/step-up-passkey-notice/0.1` (dtgwg-trust-tasks-tf#700) — the
+# notice `vtc-service/src/ceremony/step_up_passkey_notice.rs` sends.
+# `trust-tasks-capability-client` published its own 0.25.3 alongside it, still
+# on `trust-tasks-rs = "^0.25"`, and is pinned to match.
+trust-tasks-rs = { version = "0.25.3", default-features = false, features = [
   "validate",
   "all-specs",
 ] }
-trust-tasks-capability-client = "0.25.0"
+trust-tasks-capability-client = "0.25.3"
 trust-tasks-https = { version = "0.25", default-features = false, features = ["server", "client", "jwt"] }
 # The DIDComm binding. Carries `ENVELOPE_TYPE` — the one `type` every
 # Trust-Task DIDComm message must use, with the `TrustTask<P>` as its body —

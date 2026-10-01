@@ -264,16 +264,6 @@ async fn audit(state: &AppState, actor: &str, data: StepUpPasskeyData) -> Result
     Ok(())
 }
 
-// TODO(notify): tell the member, over the existing member-push mechanism,
-// when a step-up passkey is enrolled or revoked for them by someone else, so
-// a takeover through a compromised administrator key is not silent. Reverted
-// here (#1872 CI) because every Trust Task this service sends must be
-// spec-first: there is no published `vtc/members/*` notice for a step-up
-// passkey change (unlike `removal-notice` and `break-glass-notice`, which
-// already have one), and the registry census
-// (`trust_task_manifest::every_bound_canonical_task_exists_in_the_registry`)
-// refuses a type URI with nothing behind it. Land the spec, then this.
-
 // ── reading ─────────────────────────────────────────────────────────────────
 
 /// The member's step-up passkeys — what [`crate::acl::bound_step_up`] offers
@@ -953,6 +943,20 @@ pub async fn redeem_finish(
     // lapse on its own bounded window.
     revoke_session_elevation(&state.sessions_ks, &c.subject).await?;
     info!(subject = %c.subject, credential_id = %hex_id, "step-up passkey registered");
+    // Tell the member, best-effort and after the fact: an invite is always an
+    // administrator acting (`check_invite` refuses one to oneself), so `by`
+    // here is always someone other than the subject — the case
+    // `vtc/members/step-up-passkey-notice/0.1` exists to surface.
+    crate::ceremony::step_up_passkey_notice::send(
+        state,
+        &c.subject,
+        crate::ceremony::step_up_passkey_notice::Event::Enrolled,
+        &hex_id,
+        &c.invited_by,
+        registered_at,
+        None,
+    )
+    .await;
     let mut response = json!({
         "credentialId": hex_id,
         "subject": c.subject,
@@ -1163,16 +1167,28 @@ pub async fn revoke_finish(
     )
     .await?;
     info!(producer = %producer_did, subject = %r.subject, credential_id = %r.credential_id, self_revoke, "step-up passkey revoked");
-    // TODO(notify): tell the member when somebody else did this to them —
-    // see the TODO above `credentials_of` for why this waits on a published
-    // notice spec.
+    let revoked_at = Utc::now();
+    // Tell the member, best-effort and after the fact: `by` is the producer —
+    // the member's own DID for a self-revoke, the administrator's otherwise —
+    // so the recipient can tell which this was (step-up-passkey-notice/0.1,
+    // producer requirement 3).
+    crate::ceremony::step_up_passkey_notice::send(
+        state,
+        &r.subject,
+        crate::ceremony::step_up_passkey_notice::Event::Revoked,
+        &r.credential_id,
+        producer_did,
+        revoked_at,
+        None,
+    )
+    .await;
     Ok(as_response(
         "revoke/finish",
         json!({
             "credentialId": r.credential_id,
             "subject": r.subject,
             "purpose": "stepUp",
-            "revokedAt": Utc::now(),
+            "revokedAt": revoked_at,
             "remaining": remaining,
         }),
     )?)
