@@ -62,6 +62,7 @@ VTA via the `vtc-host` DID template.
 | Understand the consent ceremony (DTTE) end to end | [Task consent](02-vta/task-consent.md) |
 | Create or run a data room | [Data rooms](02-vta/data-rooms.md) |
 | Configure community membership policy | [VTC community lifecycle](03-vtc/community-lifecycle.md) |
+| Update a custom Rego policy for the DTG Credentials v1 shapes | [Custom policies after the DTG v1 upgrade](03-vtc/policy-upgrade-dtg-v1.md) |
 | Host a public community website | [VTC website + admin UX](03-vtc/website-and-admin.md) |
 | Deploy a trust registry and wire a VTC to it | [Trust-registry deployment](03-vtc/trust-registry-deployment.md) |
 | Look up a BIP-32 path | [BIP-32 paths](04-reference/bip32-paths.md) |
@@ -160,6 +161,9 @@ How to operate and integrate against a VTC.
   member CRUD, join requests, removal dispositions, policies.
 - **[Credentials](03-vtc/credentials.md)** — VMC, role VAC, statements (VSC), status
   lists, renewal, DID rotation, custom endorsements.
+- **[Custom policies after the DTG v1 upgrade](03-vtc/policy-upgrade-dtg-v1.md)** —
+  what an uploaded Rego policy must change: `foreign_vac`, witness and
+  identity-verification shapes, role VACs, statement VSCs.
 - **[Credential delivery](03-vtc/credential-delivery.md)** — how an
   admitted member receives its credentials, and the Eucalyptus
   migration note for clients that read them from the verdict.
