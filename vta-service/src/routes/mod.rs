@@ -567,38 +567,119 @@ mod cors_tests {
         );
     }
 
-    #[test]
-    fn openapi_spec_covers_the_route_groups() {
-        let spec = openapi_spec();
-        let paths = &spec.paths.paths;
-        // A representative path from each surviving route group must be
-        // documented. ACL, audit, config, contexts, did-templates, keys and
-        // the webvh server/DID management routes are gone — Trust Tasks only
-        // now, on `/trust-tasks` (not `routes!()`-registered, so it is not a
-        // documented *path* here at all; see `dispatch_trust_task`'s plain
-        // `.route()` mount).
-        for p in [
+    /// REST routes that are not public, health or WebAuthn-ceremony routes,
+    /// paired with the reason they still have a dedicated REST mount instead
+    /// of being Trust-Task-document only.
+    ///
+    /// This, together with [`is_public_health_or_webauthn`], replaces a
+    /// representative-path list plus a path floor (`paths.len() >= N`): ACL,
+    /// audit, config, contexts, did-templates, keys and the webvh
+    /// server/DID-management routes all moved onto Trust Tasks in one pass
+    /// (#1858), and a floor only catches a *bulk* loss, never a route that
+    /// quietly regresses back from Trust-Task-only. This needs an edit only
+    /// when a route is *added*, which is exactly the moment a conscious
+    /// decision should be recorded.
+    const REST_EXCEPTIONS: &[(&str, &str, &str)] = &[
+        (
+            "POST",
             "/bootstrap/request",
-            "/auth/passkey-login/start",
+            "sealed-bootstrap Mode B; there is no identity yet to sign a Trust Task document with",
+        ),
+        (
+            "GET",
             "/backup/blob/{bundle_id}",
-            // webvh (default feature) groups. (Service management is the
-            // `vta/services/*` Trust Tasks, with no REST paths to document.)
-            "/did/{did}/log",
-            "/did/verification-methods/passkey",
-            "/.well-known/did.jsonl",
-        ] {
-            assert!(paths.contains_key(p), "spec missing documented path {p}");
+            "a raw sealed-bootstrap blob transfer, not representable as a Trust Task document",
+        ),
+        (
+            "POST",
+            "/backup/blob/{bundle_id}",
+            "a raw sealed-bootstrap blob transfer, not representable as a Trust Task document",
+        ),
+    ];
+
+    /// A WebAuthn ceremony step (the browser's `navigator.credentials` API
+    /// round-trips through `fetch`, so these can never be signed documents),
+    /// or a public, unauthenticated DID-log read (did:webvh's world-readable
+    /// log model — security is cryptographic, not access-gated).
+    fn is_public_health_or_webauthn(path: &str) -> bool {
+        path.starts_with("/health")
+            || path.contains("passkey")
+            || path == "/.well-known/did.jsonl"
+            || path == "/did/{did}/log"
+            || path == "/attestation/did-log"
+    }
+
+    /// Every REST route this service mounts is either a deliberate, reasoned
+    /// exception ([`REST_EXCEPTIONS`]) or self-evidently fine
+    /// ([`is_public_health_or_webauthn`]). A route that is neither — a new
+    /// one nobody reasoned about, or an old one regressing back from
+    /// Trust-Task-only — fails here by name.
+    #[test]
+    fn every_mounted_rest_route_is_justified() {
+        let spec = openapi_spec();
+        let mut unjustified = Vec::new();
+        for (path, item) in &spec.paths.paths {
+            for (method, op) in [
+                ("GET", &item.get),
+                ("POST", &item.post),
+                ("PATCH", &item.patch),
+                ("DELETE", &item.delete),
+                ("PUT", &item.put),
+            ] {
+                if op.is_none() {
+                    continue;
+                }
+                if is_public_health_or_webauthn(path) {
+                    continue;
+                }
+                if REST_EXCEPTIONS
+                    .iter()
+                    .any(|(m, p, _)| *m == method && *p == path)
+                {
+                    continue;
+                }
+                unjustified.push(format!("{method} {path}"));
+            }
         }
-        // A much smaller floor than this test used to assert — the REST
-        // surface shrank on purpose as most of it moved onto Trust Tasks
-        // (#1858 retired ACL/audit/config/contexts/did-templates/keys/webvh
-        // server-and-DID-management REST routes in one pass). Still a floor
-        // against a bulk loss, not a count to keep constant.
+        unjustified.sort();
         assert!(
-            paths.len() >= 8,
-            "expected the documented surface to be >= 8 paths, got {}",
-            paths.len()
+            unjustified.is_empty(),
+            "these REST routes are mounted but not reasoned about — add each to \
+             REST_EXCEPTIONS with the reason it still needs a dedicated REST mount, or confirm \
+             it belongs in `is_public_health_or_webauthn` and extend that instead:\n  {}",
+            unjustified.join("\n  ")
         );
+
+        let stale: Vec<&str> = REST_EXCEPTIONS
+            .iter()
+            .filter(|(m, p, _)| {
+                !spec
+                    .paths
+                    .paths
+                    .get(*p)
+                    .is_some_and(|item| op_for(item, m).is_some())
+            })
+            .map(|(_, p, _)| *p)
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "REST_EXCEPTIONS entries for routes that are no longer mounted — remove them: \
+             {stale:?}"
+        );
+    }
+
+    fn op_for<'a>(
+        item: &'a utoipa::openapi::path::PathItem,
+        method: &str,
+    ) -> Option<&'a utoipa::openapi::path::Operation> {
+        match method {
+            "GET" => item.get.as_ref(),
+            "POST" => item.post.as_ref(),
+            "PATCH" => item.patch.as_ref(),
+            "DELETE" => item.delete.as_ref(),
+            "PUT" => item.put.as_ref(),
+            _ => None,
+        }
     }
 
     #[test]
