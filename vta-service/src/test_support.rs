@@ -2813,27 +2813,18 @@ mod transport_harness_tests {
         );
 
         let candidate_did = candidate.did().to_string();
-        let mut proof = Box::pin(mock.prove_candidate_mediator(&candidate_did, true));
-        let connected = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                tokio::select! {
-                    result = &mut proof => panic!("proof finished before candidate connected: {result:?}"),
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
-                        if matches!(
-                            mock.candidate_transport_state(&candidate_did),
-                            Some(affinidi_messaging_core::ConnState::Connected)
-                        ) {
-                            break;
-                        }
-                    }
-                }
-            }
-        })
+        // Judged after the proof, not by sampling the transport during it. The
+        // prover leaves the candidate transport installed on success and has
+        // just trust-pinged through it, so "installed and connected" is read
+        // once, deterministically. Sampling every 20 ms used to fail a proof
+        // that connected and finished inside one interval ("proof finished
+        // before candidate connected: Ok(())").
+        let proof = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            mock.prove_candidate_mediator(&candidate_did, true),
+        )
         .await
-        .is_ok();
-        assert!(connected, "candidate transport must become connected");
-
-        let proof = proof.await;
+        .expect("the candidate proof completes");
         let transport_state = mock.candidate_transport_state(&candidate_did);
         let inbox_status = candidate.inbox_status(mock.vta_did()).await;
 
@@ -2849,6 +2840,12 @@ mod transport_harness_tests {
                  transport_state={transport_state:?}; inbox_status={inbox_status:?}"
             )
         });
+        assert_eq!(
+            transport_state,
+            Some(affinidi_messaging_core::ConnState::Connected),
+            "a successful proof leaves the candidate transport installed and connected; \
+             inbox_status={inbox_status:?}"
+        );
     }
 
     /// The point of the whole harness: the mock's DID must advertise both
