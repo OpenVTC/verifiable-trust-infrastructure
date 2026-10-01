@@ -119,7 +119,7 @@ pub(crate) mod step_up_passkey_tasks;
 // drive a real passkey ceremony.
 #[cfg(test)]
 #[allow(dead_code)]
-#[path = "../../tests/common/webauthn_harness.rs"]
+#[path = "../../tests/it/common/webauthn_harness.rs"]
 mod soft_authenticator;
 
 // The schema-conformance sweep (#1059): every bound, published `spec/vtc/*`

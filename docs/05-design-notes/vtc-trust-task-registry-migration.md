@@ -5,7 +5,7 @@
 `trust-tasks/index.json` are `retired`, each carrying a `supersededBy`, so
 that file is now a redirect table rather than a live manifest.
 `AWAITING_CANONICAL_FOLD` and `UNBOUND_OK` in
-`vtc-service/tests/trust_task_manifest.rs` are both empty, and
+`vtc-service/tests/it/trust_task_manifest.rs` are both empty, and
 `no_new_bindings_on_the_retired_authority` is what keeps it that way.
 
 The last two — `admin/config/{export,import}` — were repointed to
@@ -616,7 +616,7 @@ acceptance test for the whole migration.
    repo it is no longer a publication source of truth. Its `description`
    already claims a CI publication step that does not exist.
 
-   `vtc-service/tests/trust_task_manifest.rs` is written against that
+   `vtc-service/tests/it/trust_task_manifest.rs` is written against that
    manifest and must be retargeted, not deleted — it is the only thing
    holding the surface together. The natural successor asserts that every
    task the router binds resolves to a spec in the registry repo.

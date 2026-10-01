@@ -288,7 +288,7 @@ upstream spec and a `trust-tasks-rs` bump first).
   `step_up_marks`, excluded from backup, swept by the retention sweeper.
   Audit: `OperationStepUpRecorded` names the task, the salted `boundTo` and
   the credential.
-- **Tests:** `vtc-service/tests/signed_step_up.rs` drives the loop with the
+- **Tests:** `vtc-service/tests/it/signed_step_up.rs` drives the loop with the
   soft authenticator and holds every refusal §6 step 2 lists.
 - **Where the gate sits — one difference from §2 item 1.** The gate is not a
   spine step in front of `dispatch_typed`. Whether an `acl/grant` needs a
@@ -382,7 +382,7 @@ upstream spec and a `trust-tasks-rs` bump first).
   It is advisory and best-effort: the grant found when the operation is re-sent
   is the authorization, a failed send is logged and never fails the decision,
   and a denial sends no notice, as the specification requires.
-- **Tests:** `vtc-service/tests/unrestricted_admin_consent.rs`.
+- **Tests:** `vtc-service/tests/it/unrestricted_admin_consent.rs`.
 
 ## 10. As built (step 4.3: attrition and invites)
 
