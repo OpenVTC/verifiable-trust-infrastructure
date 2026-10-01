@@ -2,6 +2,28 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.30.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.29.0...pnm-cli-v0.30.0) — 2026-10-01
+
+
+### Chore
+
+- **deps**: Affinidi-data-integrity 0.8 / affinidi-tdk 0.22 cascade ([#1891](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1891))
+
+Move the workspace onto the data-integrity 0.8 stack in one step:
+
+  - affinidi-data-integrity =0.7.13 -> 0.8 (the pin is gone), affinidi-bbs 0.3 -> 0.4
+  - affinidi-tdk 0.21 -> 0.22, affinidi-messaging-sdk 0.31.1 -> 0.32,
+    affinidi-tdk-common 0.6.11 -> 0.7
+  - affinidi-messaging-test-mediator 0.15 -> 0.16, mediator-admin/-tui 0.6 -> 0.7
+  - didwebvh-rs 0.7 -> 0.8, affinidi-did-resolver-cache-sdk floor 0.8.41
+  - trust-tasks-* 0.25 -> 0.26
+  - dtg-credentials 0.12 -> 0.13 (the same crate on data-integrity 0.8)
+
+  No source change. cargo tree -d shows no duplicate affinidi, trust-tasks,
+  didwebvh, vta, vti or dtg crate.
+
+
+
 ## [0.29.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.28.0...pnm-cli-v0.29.0) — 2026-10-01
 
 

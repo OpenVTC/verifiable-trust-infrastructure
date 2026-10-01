@@ -22,7 +22,7 @@ repository.workspace = true
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.6" }
 vti-common = { path = "../vti-common", version = "0.33" }
-vta-sdk = { path = "../vta-sdk", version = "0.60" }
+vta-sdk = { path = "../vta-sdk", version = "0.61" }
 serde_json = { workspace = true }
 
 [dev-dependencies]

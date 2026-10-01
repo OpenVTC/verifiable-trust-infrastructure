@@ -2,6 +2,37 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.61.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.60.0...vta-sdk-v0.61.0) — 2026-10-01
+
+
+### Added
+
+- Serve vta/webvh/dids/create/1.1, whose response states `serverless` (VTI-20) ([#1886](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1886))
+
+A serverless did:webvh exists only in the VTA until the caller serves its
+  first log entry. create/1.0 said so only by leaving out `serverId`, so a
+  client could infer it but not be told. The Keyring report met a persona
+  minted on a VTA with no hosting server get through whoami, contexts, mint
+  and key borrow, then fail resolving a document nobody published, with an
+  error naming the persona rather than the cause.
+
+  create/1.1 (dtgwg-trust-tasks-tf#702, trust-tasks-rs 0.25.4) REQUIRES
+  `serverless` in its response. The VTA serves both. 1.1 states it. 1.0 is
+  answered in 1.0's shape, whose response refuses unknown members.
+  VtaClient::create_did_webvh sends 1.1. CreateDidWebvhResultBody gains
+  `serverless: Option<bool>` (None from a 1.0 answer or a bundle written
+  before 1.1) and `is_serverless()`, which falls back to an absent
+  `server_id`. `pnm did-mgmt dids create` reads it: the summary says
+  "Hosting: serverless" and the hosting guidance keys off it.
+
+  The VTA already refuses a create that names neither `serverId` nor `url`,
+  so a serverless mint is always one the caller asked for. Choosing it when no
+  hosting server is registered is a client decision.
+
+  trust-tasks-rs floor 0.25.4.
+
+
+
 ## [0.60.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.59.0...vta-sdk-v0.60.0) — 2026-10-01
 
 
