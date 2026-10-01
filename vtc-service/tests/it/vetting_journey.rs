@@ -62,7 +62,7 @@ use vta_sdk::vetting::requirements::requirements_digest;
 use vta_sdk::vetting::statement::{IssuerScope, StatementDraft, sign_statement, verify_statement};
 use vta_sdk::vetting::status::{StatusCheck, check_credential_status};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
-use vtc_service::test_support::{MockVtcDidcomm, TestJoinClient, TestVtc};
+use vtc_service::test_support::{MockVtcTransport, TestJoinClient, TestVtc};
 
 const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
 const JOIN_VETTING_SHOW_TASK: &str =
@@ -513,7 +513,7 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
 /// in-process mediator harness; the vetter is a connected DIDComm peer.
 #[tokio::test]
 async fn a_resend_delivers_the_live_grant_credential_again() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let vetter = mock.connect_registry_peer().await;
     let vetter_did = vetter.did().to_string();
     let state = &mock.vtc.state;

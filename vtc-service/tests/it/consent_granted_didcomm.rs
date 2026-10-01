@@ -5,9 +5,9 @@
 //! notice leaves. A `send` returning `Ok` means only that the mediator took
 //! the frame (R1.1), so the only evidence is a peer holding the document.
 //!
-//! Requires `--features didcomm-harness`; CI runs it.
+//! Requires `--features transport-harness`; CI runs it.
 
-#![cfg(feature = "didcomm-harness")]
+#![cfg(feature = "transport-harness")]
 
 use std::time::Duration;
 
@@ -15,12 +15,12 @@ use serde_json::{Value, json};
 
 use vtc_service::acl::admin_consent::{self, Decided, Operation};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
-use vtc_service::test_support::MockVtcDidcomm;
+use vtc_service::test_support::MockVtcTransport;
 
 const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 const GRANTED: &str = "https://trusttasks.org/spec/task-consent/granted/0.1";
 
-async fn unrestricted_admin(mock: &MockVtcDidcomm, did: &str) {
+async fn unrestricted_admin(mock: &MockVtcTransport, did: &str) {
     store_acl_entry(
         &mock.vtc.state.acl_ks,
         &VtcAclEntry {
@@ -43,7 +43,7 @@ async fn unrestricted_admin(mock: &MockVtcDidcomm, did: &str) {
 /// the correlator its refusal carried, naming the digest it is waiting on.
 #[tokio::test]
 async fn vti_apv_014_the_requester_is_told_when_consent_is_granted() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let requester = mock.connect_registry_peer().await;
     let requester_did = requester.did().to_string();
     let approver_did = "did:key:z6MkGrantedNoticeApprover";

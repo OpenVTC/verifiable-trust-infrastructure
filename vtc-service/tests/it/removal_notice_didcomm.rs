@@ -13,9 +13,9 @@
 //! — so the only thing that demonstrates the feature works is a peer holding
 //! the document.
 //!
-//! Requires `--features didcomm-harness`; CI runs it.
+//! Requires `--features transport-harness`; CI runs it.
 
-#![cfg(feature = "didcomm-harness")]
+#![cfg(feature = "transport-harness")]
 
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ use vta_sdk::protocols::members::MEMBER_REMOVAL_NOTICE_TYPE;
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::ceremony::{purge_member, remove_inner};
 use vtc_service::members::{Member, store_member};
-use vtc_service::test_support::MockVtcDidcomm;
+use vtc_service::test_support::MockVtcTransport;
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -39,7 +39,7 @@ fn init_tracing() {
 /// `remove_inner` consults `removal.rego` and an empty policy set fails closed
 /// — which is why the purge test does not need this and the removal ones do:
 /// a purge deliberately skips the removal policy.
-async fn install_policies(mock: &MockVtcDidcomm) {
+async fn install_policies(mock: &MockVtcTransport) {
     vtc_service::policy::default::install_defaults(
         &mock.vtc.state.policies_ks,
         &mock.vtc.state.active_policies_ks,
@@ -50,7 +50,7 @@ async fn install_policies(mock: &MockVtcDidcomm) {
 
 /// Seed `did` as a current member with an ACL row, so a removal has something
 /// to remove.
-async fn seed_member(mock: &MockVtcDidcomm, did: &str, role: VtcRole) {
+async fn seed_member(mock: &MockVtcTransport, did: &str, role: VtcRole) {
     let state = &mock.vtc.state;
     let now = vtc_service::auth::session::now_epoch();
     store_acl_entry(
@@ -82,7 +82,7 @@ fn payload_of(doc: &Value) -> &Value {
 #[tokio::test]
 async fn an_admin_removal_reaches_the_member_signed() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let member = mock.connect_registry_peer().await;
     let member_did = member.did().to_string();
     let admin_did = "did:key:zRemovalAdmin";
@@ -161,7 +161,7 @@ async fn an_admin_removal_reaches_the_member_signed() {
 #[tokio::test]
 async fn a_purge_says_it_was_a_purge() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let member = mock.connect_registry_peer().await;
     let member_did = member.did().to_string();
     let super_admin = "did:key:zPurgeSuperAdmin";
@@ -200,7 +200,7 @@ async fn a_purge_says_it_was_a_purge() {
 #[tokio::test]
 async fn a_self_leave_sends_no_removal_notice() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let member = mock.connect_registry_peer().await;
     let member_did = member.did().to_string();
 

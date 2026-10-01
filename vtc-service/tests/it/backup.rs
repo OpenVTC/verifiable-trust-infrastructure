@@ -491,7 +491,7 @@ async fn the_inline_backup_routes_are_gone() {
 // ---------------------------------------------------------------------------
 
 /// The end-to-end transports a backup is served on.
-#[cfg(feature = "didcomm-harness")]
+#[cfg(feature = "transport-harness")]
 #[derive(Debug, Clone, Copy)]
 enum Transport {
     DIDComm,
@@ -499,7 +499,7 @@ enum Transport {
     Tsp,
 }
 
-#[cfg(feature = "didcomm-harness")]
+#[cfg(feature = "transport-harness")]
 impl Transport {
     const ALL: &[Transport] = &[
         Transport::DIDComm,
@@ -508,19 +508,19 @@ impl Transport {
     ];
 
     /// A VTC reachable on this transport.
-    async fn start(self) -> vtc_service::test_support::MockVtcDidcomm {
-        use vtc_service::test_support::MockVtcDidcomm;
+    async fn start(self) -> vtc_service::test_support::MockVtcTransport {
+        use vtc_service::test_support::MockVtcTransport;
         match self {
-            Transport::DIDComm => MockVtcDidcomm::start().await,
+            Transport::DIDComm => MockVtcTransport::start().await,
             #[cfg(feature = "tsp")]
-            Transport::Tsp => MockVtcDidcomm::start_with_tsp().await,
+            Transport::Tsp => MockVtcTransport::start_with_tsp().await,
         }
     }
 
     /// A session to `mock` on this transport, as `did` holding `key`.
     async fn connect(
         self,
-        mock: &vtc_service::test_support::MockVtcDidcomm,
+        mock: &vtc_service::test_support::MockVtcTransport,
         did: &str,
         key: &str,
     ) -> vta_sdk::client::VtaClient {
@@ -536,7 +536,7 @@ impl Transport {
 }
 
 /// A deterministic `did:key` and its multibase private key.
-#[cfg(feature = "didcomm-harness")]
+#[cfg(feature = "transport-harness")]
 fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     let seed = [seed_byte; 32];
     let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
@@ -551,7 +551,7 @@ fn did_key_from_seed(seed_byte: u8) -> (String, String) {
 
 /// The declared code a session reported a refusal under: the client surfaces
 /// an undeclared-by-it code as `trust task failed [<code>]: <message>`.
-#[cfg(feature = "didcomm-harness")]
+#[cfg(feature = "transport-harness")]
 fn tt_error_code(err: &vta_sdk::error::VtaError) -> Option<String> {
     let text = err.to_string();
     let rest = text.split_once("trust task failed [")?.1;
@@ -561,7 +561,7 @@ fn tt_error_code(err: &vta_sdk::error::VtaError) -> Option<String> {
 /// A super-admin's export with a password under the minimum is answered with
 /// `vtc/backup/export:passwordTooShort` — the code its spec declares — on
 /// every end-to-end transport, and nothing is exported.
-#[cfg(feature = "didcomm-harness")]
+#[cfg(feature = "transport-harness")]
 #[tokio::test]
 async fn the_export_task_answers_with_the_code_its_spec_declares() {
     use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};

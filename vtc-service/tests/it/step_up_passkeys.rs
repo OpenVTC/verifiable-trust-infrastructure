@@ -19,9 +19,9 @@
 //!    **signed** `auth/step-up/approve-response` carrying that passkey's
 //!    assertion — the passkey beside the member's proof, never instead of it.
 //!
-//! Requires `--features tsp,didcomm-harness`; CI runs it.
+//! Requires `--features tsp,transport-harness`; CI runs it.
 
-#![cfg(all(feature = "didcomm-harness", feature = "tsp"))]
+#![cfg(all(feature = "transport-harness", feature = "tsp"))]
 
 use std::time::Duration;
 
@@ -35,7 +35,7 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use vtc_service::acl::bound_step_up::{self, Gate};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
-use vtc_service::test_support::{MockVtcDidcomm, ReplyOutcome, TestTspPeer};
+use vtc_service::test_support::{MockVtcTransport, ReplyOutcome, TestTspPeer};
 
 use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
@@ -43,20 +43,20 @@ const REDEEM_START: &str = "https://trusttasks.org/spec/auth/passkey/enroll/rede
 const REDEEM_FINISH: &str = "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1";
 const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
 const BREAK_GLASS: &str = "https://trusttasks.org/spec/git-ns/right/break-glass/0.1";
-/// `MockVtcDidcomm`'s WebAuthn relying party.
+/// `MockVtcTransport`'s WebAuthn relying party.
 const RP_ORIGIN: &str = "https://vtc.test";
 const WAIT: Duration = Duration::from_secs(20);
 const TRANSPORTS: [&str; 3] = ["didcomm", "tsp", "https"];
 
 struct Harness {
-    mock: MockVtcDidcomm,
+    mock: MockVtcTransport,
     tsp: TestTspPeer,
     https: Party,
     /// A community administrator, who issues the invites.
     admin: Party,
 }
 
-async fn seed(mock: &MockVtcDidcomm, did: &str, role: VtcRole) {
+async fn seed(mock: &MockVtcTransport, did: &str, role: VtcRole) {
     store_acl_entry(
         &mock.vtc.state.acl_ks,
         &VtcAclEntry {
@@ -76,7 +76,7 @@ async fn seed(mock: &MockVtcDidcomm, did: &str, role: VtcRole) {
 }
 
 async fn harness() -> Harness {
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let tsp = mock.connect_tsp_peer().await;
     let (https, admin) = (Party::new(), Party::new());
     for did in [

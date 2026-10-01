@@ -8,9 +8,9 @@
 //! attempt produces no evidence inside its window gets it by REST next
 //! (VTI-TRN-042).
 //!
-//! Requires `--features didcomm-harness`; CI runs it.
+//! Requires `--features transport-harness`; CI runs it.
 
-#![cfg(feature = "didcomm-harness")]
+#![cfg(feature = "transport-harness")]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,7 +34,7 @@ fn init_tracing() {
 
 use vta_sdk::protocol::matching::Protocol;
 use vtc_service::member_push;
-use vtc_service::test_support::MockVtcDidcomm;
+use vtc_service::test_support::MockVtcTransport;
 
 /// A peer's Trust-Task HTTPS endpoint: records what is POSTed to
 /// `/trust-tasks` and answers `204`, which the binding gives a task that
@@ -96,7 +96,7 @@ fn document(recipient: &str) -> Value {
 
 /// Sweep until the push has an outcome, or give up after `limit`.
 async fn settle(
-    mock: &MockVtcDidcomm,
+    mock: &MockVtcTransport,
     id: &str,
     limit: Duration,
 ) -> Option<(bool, Protocol, String)> {
@@ -125,7 +125,7 @@ async fn a_tsp_peer_gets_the_document_over_tsp_and_its_collection_is_recorded() 
     use affinidi_messaging_delivery::OutboxStore as _;
 
     init_tracing();
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let pending = mock.register_tsp_peer().await;
     let doc = document(pending.did());
 
@@ -191,7 +191,7 @@ async fn a_tsp_peer_gets_the_document_over_tsp_and_its_collection_is_recorded() 
 #[tokio::test]
 async fn a_live_peer_that_collects_at_once_is_confirmed_not_re_sent() {
     init_tracing();
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let peer = mock.connect_tsp_peer().await;
     let doc = document(peer.did());
 
@@ -234,7 +234,7 @@ async fn a_silent_peer_seen_on_tsp_is_pushed_to_over_tsp() {
     use affinidi_messaging_delivery::OutboxStore as _;
 
     init_tracing();
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let peer = mock.connect_silent_tsp_peer().await;
     // What `handle_tsp` records for every verified inbound TSP frame.
     mock.vtc.state.tsp_reach.record(peer.did());
@@ -272,7 +272,7 @@ async fn a_silent_peer_seen_on_tsp_is_pushed_to_over_tsp() {
 /// recorded delivered on the recipient's own acknowledgement (class 2).
 #[tokio::test]
 async fn a_rest_only_peer_gets_the_document_by_post() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let (base, received) = trust_task_server().await;
     let peer = mint_peer(vec![service("TrustTaskHTTPS", &base)]);
     let doc = document(&peer);
@@ -296,7 +296,7 @@ async fn a_rest_only_peer_gets_the_document_by_post() {
 /// of the deadline passes and REST delivers.
 #[tokio::test]
 async fn vti_trn_042_no_evidence_on_didcomm_escalates_to_rest() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let (base, received) = trust_task_server().await;
     let peer = mint_peer(vec![
         service("DIDCommMessaging", "did:web:unreachable-mediator.invalid"),
@@ -331,7 +331,7 @@ async fn vti_trn_042_no_evidence_on_didcomm_escalates_to_rest() {
 #[tokio::test]
 async fn vti_trn_042_a_refused_tsp_hand_off_escalates_before_its_window() {
     init_tracing();
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let (base, received) = trust_task_server().await;
     let peer = mint_peer(vec![
         service("TSPTransport", "did:web:unreachable-mediator.invalid"),
@@ -379,7 +379,7 @@ async fn vti_trn_042_a_refused_tsp_hand_off_escalates_before_its_window() {
 /// and never REST under a type other than `TrustTaskHTTPS`.
 #[tokio::test]
 async fn an_unrecognised_transport_falls_back_to_the_shared_mediator() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let peer = mint_peer(vec![service("SomeOtherTransport", "https://peer.invalid")]);
     let queued = member_push::push_trust_task(
         &mock.vtc.state,
@@ -403,7 +403,7 @@ async fn an_unrecognised_transport_falls_back_to_the_shared_mediator() {
 
 /// A document as a push holds it once it has outlived its acceptance window:
 /// signed by the VTC, issued more than `ACCEPTANCE_WINDOW` ago, keyed.
-async fn stale_signed_document(mock: &MockVtcDidcomm, recipient: &str) -> Value {
+async fn stale_signed_document(mock: &MockVtcTransport, recipient: &str) -> Value {
     let issued = chrono::Utc::now()
         - vti_common::trust_task::ACCEPTANCE_WINDOW
         - chrono::TimeDelta::minutes(5);
@@ -459,7 +459,7 @@ fn assert_new_attempt_at(got: &Value, original: &Value) {
 /// way — is delivered as a new attempt the recipient accepts, once.
 #[tokio::test]
 async fn a_rest_push_past_its_freshness_window_is_delivered_once_as_a_new_attempt() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let (base, received) = trust_task_server().await;
     let peer = mint_peer(vec![service("TrustTaskHTTPS", &base)]);
     let original = stale_signed_document(&mock, &peer).await;
@@ -486,7 +486,7 @@ async fn a_rest_push_past_its_freshness_window_is_delivered_once_as_a_new_attemp
 #[tokio::test]
 async fn a_didcomm_push_past_its_freshness_window_is_delivered_once_as_a_new_attempt() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let member = mock.client.did().to_string();
     let original = stale_signed_document(&mock, &member).await;
 
@@ -518,7 +518,7 @@ async fn a_didcomm_push_past_its_freshness_window_is_delivered_once_as_a_new_att
 #[tokio::test]
 async fn a_tsp_push_past_its_freshness_window_is_delivered_once_as_a_new_attempt() {
     init_tracing();
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let peer = mock.connect_tsp_peer().await;
     let original = stale_signed_document(&mock, peer.did()).await;
 
@@ -547,7 +547,7 @@ async fn a_tsp_push_past_its_freshness_window_is_delivered_once_as_a_new_attempt
 /// recipient's replay record dedupes its copies by `id` as before.
 #[tokio::test]
 async fn a_push_inside_its_freshness_window_is_sent_unchanged() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let (base, received) = trust_task_server().await;
     let peer = mint_peer(vec![service("TrustTaskHTTPS", &base)]);
     let mut doc = document(&peer);

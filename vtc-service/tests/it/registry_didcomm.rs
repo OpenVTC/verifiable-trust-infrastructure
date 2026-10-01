@@ -20,9 +20,9 @@
 //! `did:peer` advertises `DIDCommMessaging`, so the VTC has to resolve it and
 //! choose a transport rather than be handed one.
 //!
-//! Requires `--features didcomm-harness`; CI runs it.
+//! Requires `--features transport-harness`; CI runs it.
 
-#![cfg(feature = "didcomm-harness")]
+#![cfg(feature = "transport-harness")]
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +33,7 @@ use vtc_service::registry::{
     MessagingRegistryClient, RECOGNISE_ACTION, RegistryRecord, RegistryStatus,
     TRUST_GRAPH_RESOURCE, TrustRegistryClient,
 };
-use vtc_service::test_support::{MockVtcDidcomm, TestJoinClient};
+use vtc_service::test_support::{MockVtcTransport, TestJoinClient};
 
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
@@ -44,7 +44,7 @@ fn init_tracing() {
 
 /// Build the client under test against `registry_did`, wired to the same
 /// messaging handle, signer, resolver and reply demux the daemon wires at boot.
-fn client_for(mock: &MockVtcDidcomm, registry_did: &str) -> MessagingRegistryClient {
+fn client_for(mock: &MockVtcTransport, registry_did: &str) -> MessagingRegistryClient {
     let state = &mock.vtc.state;
     MessagingRegistryClient::new(
         registry_did.to_string(),
@@ -116,7 +116,7 @@ fn rejection(code: &str) -> Value {
 #[tokio::test]
 async fn a_member_record_reaches_the_registry_and_the_reply_completes_the_write() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let registry = mock.connect_registry_peer().await;
     let client = client_for(&mock, registry.did());
 
@@ -177,7 +177,7 @@ async fn a_member_record_reaches_the_registry_and_the_reply_completes_the_write(
 #[tokio::test]
 async fn the_boot_race_is_retriable_not_a_permanent_config_fault() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let registry = mock.connect_registry_peer().await;
 
     // Exactly the boot ordering: the registry client is constructed before the
@@ -217,7 +217,7 @@ async fn the_boot_race_is_retriable_not_a_permanent_config_fault() {
 #[tokio::test]
 async fn a_failed_selection_is_visible_on_the_transport_snapshot() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     // The applicant advertises no service block, so there is nothing to match.
     let client = client_for(&mock, mock.client.did());
 
@@ -241,7 +241,7 @@ async fn a_failed_selection_is_visible_on_the_transport_snapshot() {
 #[tokio::test]
 async fn a_rejection_is_a_permanent_failure_not_a_retry_loop() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let registry = mock.connect_registry_peer().await;
     let client = client_for(&mock, registry.did());
 
@@ -266,7 +266,7 @@ async fn a_rejection_is_a_permanent_failure_not_a_retry_loop() {
 #[tokio::test]
 async fn health_follows_the_round_trip_not_a_url() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let registry = mock.connect_registry_peer().await;
     let client = client_for(&mock, registry.did());
 
@@ -306,7 +306,7 @@ async fn health_follows_the_round_trip_not_a_url() {
 #[tokio::test]
 async fn silence_is_unhealthy_and_retriable() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let registry = mock.connect_registry_peer().await;
     // Deliberately no `serve_once`: the peer is connected but never answers.
     // This is the case the old HTTP probe could not represent — the registry's
@@ -326,7 +326,7 @@ async fn silence_is_unhealthy_and_retriable() {
 #[tokio::test]
 async fn a_member_record_round_trips_through_query() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let registry = mock.connect_registry_peer().await;
     let client = client_for(&mock, registry.did());
 
@@ -373,7 +373,7 @@ async fn a_member_record_round_trips_through_query() {
 #[tokio::test]
 async fn a_peer_advertising_no_transport_is_refused_by_name() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     // The applicant's `did:peer` carries no service block, so there is nothing
     // to match on. The point is that this fails as a *typed* refusal naming
     // both sides' advertised sets, rather than defaulting to DIDComm because

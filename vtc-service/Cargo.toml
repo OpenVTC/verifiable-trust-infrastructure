@@ -77,7 +77,7 @@ test-support = ["dep:tempfile", "vti-common/test-support"]
 # credential-delivery push so an issued VMC lands back over DIDComm. Pulls the
 # test mediator + the SDK's `vp` helper (for the worked manifest -> VP leg).
 # Implies `test-support`. Test-only — never in a production build.
-didcomm-harness = [
+transport-harness = [
   "test-support",
   "dep:affinidi-messaging-test-mediator",
   "vta-sdk/vp",
@@ -241,7 +241,7 @@ subtle = { workspace = true }
 # accepts `Message` / `UnpackMetadata` by value but doesn't
 # re-export them.
 affinidi-messaging-didcomm = "0.15.9"
-# Embedded in-process test mediator for the `didcomm-harness` feature
+# Embedded in-process test mediator for the `transport-harness` feature
 # (`MockVtc::start_didcomm`, #436). Optional + feature-gated so it never
 # enters a production build; same crate the e2e suite uses.
 # `tsp` so the embedded mediator routes raw-TSP frames, not just DIDComm.
@@ -353,7 +353,7 @@ trust-tasks-rs = { workspace = true }
 vti-rooms-dtg = { path = "../vti-rooms-dtg", features = ["test-support"] }
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
-vtc-service = { path = ".", features = ["test-support", "didcomm-harness"] }
+vtc-service = { path = ".", features = ["test-support", "transport-harness"] }
 # The VTC's own client SDK, driven against `MockVtc` in
 # `tests/vtc_client_live.rs`. Testing it here (rather than in `vtc-client`,
 # which cannot see `MockVtc`) is what makes client/server drift a build
