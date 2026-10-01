@@ -989,6 +989,122 @@ async fn a_vetted_claim_the_community_cannot_make_is_the_declared_claim_schema_v
     );
 }
 
+/// Issue the community's own check about `subject`, carrying `ext`.
+async fn issue_check_with_ext(fix: &Fixture, subject: &str, ext: Value) -> (StatusCode, Value) {
+    signed_task(
+        fix,
+        &fix.issuer,
+        ISSUE_TASK,
+        json!({
+            "subjectDid": subject,
+            "typeUri": dtg_credentials::VETTED_V1,
+            "claim": community_check_claim(vtc_service::test_support::TEST_VTC_DID),
+            "ext": ext
+        }),
+    )
+    .await
+}
+
+fn uniqueness(pseudonym: &str) -> Value {
+    json!({ "org.openvtc.uniqueness": { "pseudonym": pseudonym } })
+}
+
+/// `ext.org.openvtc.uniqueness` binds the person's pseudonym to the subject
+/// server-side at issue — never in the credential. The same pseudonym for a
+/// second member is refused (`taskFailed`, reason `conflict`) with nothing
+/// minted, and revoking the statement releases the binding.
+#[tokio::test]
+async fn a_uniqueness_pseudonym_is_bound_at_issue_and_released_on_revoke() {
+    use vtc_service::members::pseudonym;
+    let fix = build().await;
+    let members = fix._vtc.state.members_ks.clone();
+
+    let (status, v) = issue_check_with_ext(&fix, SUBJECT_DID, uniqueness("person-1")).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(
+        !v["credential"].to_string().contains("person-1"),
+        "the pseudonym is never written into the credential: {v}"
+    );
+    assert!(pseudonym::is_bound(&members, SUBJECT_DID).await.unwrap());
+    let held = pseudonym::holder(
+        &members,
+        vtc_service::test_support::TEST_VTC_DID,
+        "person-1",
+    )
+    .await
+    .unwrap()
+    .expect("bound");
+    assert_eq!(held.member_did, SUBJECT_DID);
+
+    // The same person under another member DID.
+    let rows_before = fix
+        .endorsements_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .len();
+    let (status, body) = issue_check_with_ext(&fix, MEMBER_DID, uniqueness("person-1")).await;
+    assert!(!status.is_success(), "{body}");
+    assert_eq!(body["details"]["reason"], "conflict", "{body}");
+    assert!(!pseudonym::is_bound(&members, MEMBER_DID).await.unwrap());
+    assert_eq!(
+        fix.endorsements_ks
+            .prefix_iter_raw(Vec::new())
+            .await
+            .unwrap()
+            .len(),
+        rows_before,
+        "a refused binding mints nothing"
+    );
+
+    // Revoking the community's check releases the binding.
+    let id = v["endorsement"]["endorsementId"].as_str().unwrap();
+    let (status, body) = signed_task(
+        &fix,
+        &fix.admin,
+        REVOKE_TASK,
+        json!({ "endorsementId": id }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!pseudonym::is_bound(&members, SUBJECT_DID).await.unwrap());
+}
+
+/// The extension is read only under `vetted/1`, and only in its one shape.
+#[tokio::test]
+async fn a_misplaced_or_malformed_uniqueness_extension_is_refused() {
+    let fix = build().await;
+    let uri = "https://example.com/v1/skills/rust";
+    register_type(&fix, uri).await;
+    let (status, body) = signed_task(
+        &fix,
+        &fix.issuer,
+        ISSUE_TASK,
+        json!({
+            "subjectDid": SUBJECT_DID,
+            "typeUri": uri,
+            "claim": { "level": "expert" },
+            "ext": uniqueness("person-1")
+        }),
+    )
+    .await;
+    assert!(status.is_client_error(), "{body}");
+    for ext in [
+        json!({ "org.openvtc.uniqueness": { "pseudonym": "" } }),
+        json!({ "org.openvtc.uniqueness": { "pseudonym": 7 } }),
+        json!({ "org.openvtc.uniqueness": { "pseudonym": "p", "extra": 1 } }),
+        json!({ "org.openvtc.uniqueness": "p" }),
+    ] {
+        let (status, body) = issue_check_with_ext(&fix, SUBJECT_DID, ext.clone()).await;
+        assert!(status.is_client_error(), "{ext}: {body}");
+    }
+    assert!(
+        !vtc_service::members::pseudonym::is_bound(&fix._vtc.state.members_ks, SUBJECT_DID)
+            .await
+            .unwrap()
+    );
+}
+
 /// The retired `IdentityVerificationCredential` type is neither reserved nor
 /// issuable any more: it is not a predicate IRI, so registration refuses it as
 /// such, and issuance finds no predicate by that name.

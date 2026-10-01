@@ -105,6 +105,59 @@ pub struct IssueBody {
     /// Optional override; defaults to 30d.
     #[serde(default)]
     pub validity_seconds: Option<u64>,
+    /// The payload's vendor-namespaced extensions. Under `vetted/1` the
+    /// community reads [`UNIQUENESS_EXT`] from it; nothing in it is written
+    /// into the credential.
+    #[serde(default)]
+    pub ext: Option<serde_json::Map<String, JsonValue>>,
+}
+
+/// `ext` namespace on a `vtc/endorsements/issue/0.1` payload under `vetted/1`
+/// carrying the person's **uniqueness pseudonym** —
+/// `{ "org.openvtc.uniqueness": { "pseudonym": "<value>" } }`.
+///
+/// The community binds it to the subject in the pseudonym store
+/// (`members::pseudonym::claim_for_statement`) when it records its own
+/// identity check, so `personhood.singleMembership` can be satisfied by that
+/// check. It is never written into the statement: the registry fixes the
+/// `vetted/1` value and has no member for it, and a stable per-person
+/// identifier in a signed credential is the correlation handle the pseudonym
+/// construction exists to avoid. Only a digest is stored.
+pub const UNIQUENESS_EXT: &str = "org.openvtc.uniqueness";
+
+/// The uniqueness pseudonym an issue request carries under [`UNIQUENESS_EXT`],
+/// if any. Refused (`malformedRequest`) when the namespace is present but is
+/// not `{ "pseudonym": "<non-empty string>" }`, or when it rides a predicate
+/// other than `vetted/1`, which binds nothing.
+fn uniqueness_pseudonym(
+    body: &IssueBody,
+    community_check: bool,
+) -> Result<Option<String>, AppError> {
+    let Some(ns) = body.ext.as_ref().and_then(|ext| ext.get(UNIQUENESS_EXT)) else {
+        return Ok(None);
+    };
+    if !community_check {
+        return Err(AppError::Validation(format!(
+            "ext.{UNIQUENESS_EXT} is read only under {}: it binds a pseudonym to the \
+             community's own identity check",
+            dtg_credentials::VETTED_V1
+        )));
+    }
+    let malformed = || {
+        AppError::Validation(format!(
+            "ext.{UNIQUENESS_EXT} must be {{ \"pseudonym\": \"<non-empty string>\" }}"
+        ))
+    };
+    let obj = ns.as_object().ok_or_else(malformed)?;
+    if obj.keys().any(|k| k != "pseudonym") {
+        return Err(malformed());
+    }
+    let pseudonym = obj
+        .get("pseudonym")
+        .and_then(JsonValue::as_str)
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(malformed)?;
+    Ok(Some(pseudonym.to_string()))
 }
 
 /// One endorsement as the canonical `Endorsement` component names it.
@@ -345,6 +398,7 @@ pub(crate) async fn issue_inner(
     if community_check {
         check_community_vetted_claim(signer.issuer_did(), &body.claim)?;
     }
+    let pseudonym = uniqueness_pseudonym(&body, community_check)?;
 
     // 4. Subject must be a current ACL member — operators
     //    that want cross-community endorsements layer their
@@ -360,6 +414,54 @@ pub(crate) async fn issue_inner(
         .into());
     }
 
+    // 4b. The uniqueness pseudonym, bound before anything is minted so a
+    //     person already here is refused without spending a status slot. The
+    //     row id is fixed now so the binding names the statement that will
+    //     carry it; if a later step fails, a binding made here is released.
+    let id = Uuid::new_v4();
+    let bound_here = match &pseudonym {
+        Some(p) => {
+            let outcome = crate::members::pseudonym::claim_for_statement(
+                &state.members_ks,
+                signer.issuer_did(),
+                p,
+                &body.subject_did,
+                id,
+            )
+            .await?;
+            outcome == crate::members::pseudonym::StatementClaim::Bound
+        }
+        None => false,
+    };
+    let minted = mint_and_record(state, actor_did, body, request, signer, audit_writer, id).await;
+    if minted.is_err()
+        && bound_here
+        && let Err(e) =
+            crate::members::pseudonym::release_for_statement(&state.members_ks, id).await
+    {
+        error!(
+            endorsement_id = %id,
+            error = %e,
+            "could not release the uniqueness binding of a failed issue"
+        );
+    }
+    minted
+}
+
+/// Steps 5–8 of [`issue_inner`]: allocate the revocation slot, mint, persist
+/// the row and audit. Split out so a failure here can release a uniqueness
+/// binding made before it.
+#[allow(clippy::too_many_arguments)]
+async fn mint_and_record(
+    state: &AppState,
+    actor_did: &str,
+    body: IssueBody,
+    request: &JsonValue,
+    signer: &crate::credentials::LocalSigner,
+    audit_writer: &vti_common::audit::AuditWriter,
+    id: Uuid,
+) -> Result<IssueResponse, TaskError> {
+    let community_check = body.endorsement_type == dtg_credentials::VETTED_V1;
     // 5. Allocate status-list slot — locked RMW so a concurrent
     //    allocate/flip can't clobber this allocation (P0.1).
     let allocated = status_list::with_locked(
@@ -383,7 +485,6 @@ pub(crate) async fn issue_inner(
     // 6. Build + sign the credential: a VSC under the registered predicate —
     //    for `vetted/1`, citing this request as the exchange the community
     //    recorded its check in.
-    let id = Uuid::new_v4();
     let credential_id = format!("urn:uuid:{id}");
     let validity = body
         .validity_seconds
@@ -656,6 +757,13 @@ pub(crate) async fn revoke_inner(
     let updated = mark_revoked(&state.endorsements_ks, id)
         .await?
         .ok_or_else(|| AppError::Internal("row disappeared mid-revoke".into()))?;
+
+    // The community's own identity check is withdrawn, so the uniqueness
+    // binding it made at issue goes with it. A binding an accepted provider's
+    // credential made is not tagged with a statement and stays.
+    if row.endorsement_type == dtg_credentials::VETTED_V1 {
+        crate::members::pseudonym::release_for_statement(&state.members_ks, id).await?;
+    }
 
     // Two paired envelopes — CustomEndorsementRevoked
     // (semantic) + StatusListFlipped (bit-flip accounting).

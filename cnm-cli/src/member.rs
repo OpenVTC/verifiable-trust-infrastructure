@@ -68,6 +68,12 @@ pub enum MemberCommands {
         /// Override the community's default validity (30 days): N[s|m|h|d|w].
         #[arg(long)]
         valid_for: Option<String>,
+        /// With `--type …/vetted/1`: the person's uniqueness pseudonym, bound
+        /// to the subject server-side (`ext.org.openvtc.uniqueness`) so the
+        /// community's one-membership-per-person rule is satisfied by this
+        /// check. Never written into the credential.
+        #[arg(long)]
+        uniqueness_pseudonym: Option<String>,
     },
 }
 
@@ -166,6 +172,7 @@ async fn run_command(command: MemberCommands, vtc: &VtcClient) -> CliResult {
             type_uri,
             claim,
             valid_for,
+            uniqueness_pseudonym,
         } => {
             let claim: Value = serde_json::from_str(&claim)
                 .map_err(|e| format!("--claim is not valid JSON: {e}"))?;
@@ -173,8 +180,11 @@ async fn run_command(command: MemberCommands, vtc: &VtcClient) -> CliResult {
                 .as_deref()
                 .map(vta_cli_common::duration::parse_duration_secs)
                 .transpose()?;
+            let ext = uniqueness_pseudonym.map(|pseudonym| {
+                serde_json::json!({ "org.openvtc.uniqueness": { "pseudonym": pseudonym } })
+            });
             let issued = vtc
-                .issue_endorsement(&subject, &type_uri, claim, valid_for_seconds)
+                .issue_endorsement_with_ext(&subject, &type_uri, claim, valid_for_seconds, ext)
                 .await
                 .map_err(member_error)?;
             report(&serde_json::to_value(&issued)?, "issued")

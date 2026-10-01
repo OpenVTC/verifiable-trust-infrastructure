@@ -785,9 +785,16 @@ async fn policy_projection(state: &AppState, presentation: &JsonValue) -> JsonVa
 /// Enforce one-membership-per-person, if this community's governance claims it.
 ///
 /// A no-op when `personhood.singleMembership` is unset, which is every
-/// community that has not published the claim. When it *is* set, the assertion
-/// must carry a pseudonym from a provider the community accepts, and that
-/// pseudonym must not already belong to somebody else.
+/// community that has not published the claim. When it *is* set, uniqueness is
+/// satisfied one of two ways:
+///
+/// - the assertion carries a pseudonym from a provider the community accepts,
+///   and that pseudonym does not already belong to somebody else; or
+/// - the evidence is the community's own `vetted/1` statement about this
+///   member, and the community bound a pseudonym to the member when it issued
+///   that statement (`vtc/endorsements/issue/0.1` with the
+///   `org.openvtc.uniqueness` extension). The statement itself carries no
+///   pseudonym — the binding is held server-side.
 ///
 /// ## Why absence is a refusal
 ///
@@ -816,10 +823,17 @@ async fn enforce_single_membership(
 
     let pseudonyms = crate::members::pseudonym::extract(vp_claims, &governance.accepted_idvps);
     if pseudonyms.is_empty() {
+        if presents_community_check(vp_claims, community_did, member_did)
+            && crate::members::pseudonym::is_bound(&state.members_ks, member_did).await?
+        {
+            return Ok(());
+        }
         return Err(AppError::Forbidden(
             "personhood-pseudonym-missing: this community enforces one membership per person, \
              so an assertion must carry a pseudonym from an accepted identity-verification \
-             provider (see the community profile's personhood.acceptedIdvps)"
+             provider (see the community profile's personhood.acceptedIdvps), or present the \
+             community's own vetted/1 statement issued with a uniqueness pseudonym \
+             (ext.org.openvtc.uniqueness on vtc/endorsements/issue)"
                 .into(),
         ));
     }
@@ -832,6 +846,29 @@ async fn enforce_single_membership(
             .await?;
     }
     Ok(())
+}
+
+/// Whether `vp_claims` carries this community's own `vetted/1` statement about
+/// `member_did`, for this community — the evidence shape the default policy's
+/// identity-check rule reads, matched on the same four bindings.
+fn presents_community_check(vp_claims: &JsonValue, community_did: &str, member_did: &str) -> bool {
+    let Some(credentials) = vp_claims.get("credentials").and_then(JsonValue::as_array) else {
+        return false;
+    };
+    credentials.iter().any(|cred| {
+        let issuer = cred.get("issuer").and_then(|i| {
+            i.as_str()
+                .or_else(|| i.get("id").and_then(JsonValue::as_str))
+        });
+        let subject = &cred["credentialSubject"];
+        cred["type"]
+            .as_array()
+            .is_some_and(|t| t.iter().any(|v| v == "StatementCredential"))
+            && subject["predicate"] == dtg_credentials::VETTED_V1
+            && issuer == Some(community_did)
+            && subject["id"] == member_did
+            && subject["object"]["value"]["community"] == community_did
+    })
 }
 
 /// Evaluate the active `personhood.rego` over the presented claims.
@@ -961,6 +998,73 @@ mod single_membership_tests {
             err.to_string().contains("personhood-pseudonym-missing"),
             "the operator needs to be sent to acceptedIdvps, not to the rego: {err}"
         );
+    }
+
+    /// The community's own `vetted/1` statement about `member`, as projected.
+    fn claims_with_community_check(member: &str) -> JsonValue {
+        json!({
+            "holder": member,
+            "credentials": [{
+                "type": ["VerifiableCredential", "DTGCredential", "StatementCredential"],
+                "issuer": COMMUNITY,
+                "credentialSubject": {
+                    "id": member,
+                    "predicate": dtg_credentials::VETTED_V1,
+                    "object": { "value": { "community": COMMUNITY, "method": "inPerson" } }
+                }
+            }]
+        })
+    }
+
+    /// The community's own check satisfies `singleMembership` when — and only
+    /// when — the community bound a pseudonym to the member at issue.
+    #[tokio::test]
+    async fn a_community_check_satisfies_uniqueness_only_with_a_binding() {
+        let vtc = vtc_with(enforcing()).await;
+
+        let err = enforce_single_membership(
+            &vtc.state,
+            ALICE,
+            COMMUNITY,
+            &claims_with_community_check(ALICE),
+        )
+        .await
+        .expect_err("no binding, no uniqueness");
+        assert!(
+            err.to_string().contains("personhood-pseudonym-missing"),
+            "{err}"
+        );
+
+        crate::members::pseudonym::claim_for_statement(
+            &vtc.state.members_ks,
+            COMMUNITY,
+            "person-1",
+            ALICE,
+            uuid::Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        enforce_single_membership(
+            &vtc.state,
+            ALICE,
+            COMMUNITY,
+            &claims_with_community_check(ALICE),
+        )
+        .await
+        .expect("bound at issue");
+
+        // The binding is Alice's: Bob presenting a check about himself has
+        // none, and presenting Alice's check about Alice is not his evidence.
+        for claims in [
+            claims_with_community_check(BOB),
+            claims_with_community_check(ALICE),
+        ] {
+            assert!(
+                enforce_single_membership(&vtc.state, BOB, COMMUNITY, &claims)
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     /// The happy path: an accepted provider's pseudonym is claimed.

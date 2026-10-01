@@ -46,6 +46,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -68,6 +69,13 @@ pub struct PseudonymClaim {
     /// The member this pseudonym is bound to.
     pub member_did: String,
     pub claimed_at: DateTime<Utc>,
+    /// The `vetted/1` statement the community issued when it bound this
+    /// pseudonym itself ([`claim_for_statement`]): the row
+    /// `vtc/endorsements/revoke/0.1` withdraws, which releases the binding.
+    /// Absent for a claim made from an accepted provider's credential at
+    /// personhood assert, and on every claim written before this existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endorsement_id: Option<Uuid>,
 }
 
 /// Storage key for a pseudonym in a community.
@@ -130,9 +138,120 @@ pub async fn claim(
             &PseudonymClaim {
                 member_did: member_did.to_string(),
                 claimed_at: Utc::now(),
+                endorsement_id: None,
             },
         )
         .await
+}
+
+/// Whether [`claim_for_statement`] wrote a new binding or found one already
+/// held by the same member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatementClaim {
+    /// No one held the pseudonym; it is now bound to the member.
+    Bound,
+    /// The member already held it. A binding from an accepted provider's
+    /// credential is left as it was; one from an earlier statement now
+    /// follows this one.
+    AlreadyHeld,
+}
+
+/// Bind `pseudonym` to `member_did` at the moment the community records its
+/// own identity check (`vtc/endorsements/issue/0.1` under `vetted/1`), tagged
+/// with that statement's `endorsement_id`.
+///
+/// The pseudonym comes from the operator who made the check, never from the
+/// credential: a `vetted/1` value has no member for it, and the community
+/// does not write one into anything it signs. Like [`claim`], only a digest is
+/// stored, and the same member re-claiming succeeds.
+///
+/// A same-member binding from an accepted provider's credential is left
+/// untagged, so revoking the statement does not release uniqueness the
+/// provider established. A same-member binding from an earlier statement is
+/// re-tagged to this one.
+///
+/// # Errors
+///
+/// `AppError::Conflict` when another member holds the pseudonym, worded as
+/// [`claim`] words it.
+pub async fn claim_for_statement(
+    members_ks: &KeyspaceHandle,
+    community_did: &str,
+    pseudonym: &str,
+    member_did: &str,
+    endorsement_id: Uuid,
+) -> Result<StatementClaim, AppError> {
+    let existing = holder(members_ks, community_did, pseudonym).await?;
+    let outcome = match &existing {
+        Some(c) if c.member_did != member_did => {
+            return Err(AppError::Conflict(
+                "this person already holds a membership in this community".into(),
+            ));
+        }
+        Some(c) if c.endorsement_id.is_none() => return Ok(StatementClaim::AlreadyHeld),
+        Some(_) => StatementClaim::AlreadyHeld,
+        None => StatementClaim::Bound,
+    };
+    members_ks
+        .insert(
+            key(community_did, pseudonym),
+            &PseudonymClaim {
+                member_did: member_did.to_string(),
+                claimed_at: Utc::now(),
+                endorsement_id: Some(endorsement_id),
+            },
+        )
+        .await?;
+    Ok(outcome)
+}
+
+/// Every readable claim, with its storage key.
+async fn all_claims(
+    members_ks: &KeyspaceHandle,
+) -> Result<Vec<(Vec<u8>, PseudonymClaim)>, AppError> {
+    let rows = members_ks
+        .prefix_iter_raw(PSEUDONYM_PREFIX.as_bytes())
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(key, bytes)| {
+            serde_json::from_slice::<PseudonymClaim>(&bytes)
+                .ok()
+                .map(|c| (key, c))
+        })
+        .collect())
+}
+
+/// Whether the community holds a pseudonym binding for `member_did` — the
+/// uniqueness fact a personhood assertion over the community's own `vetted/1`
+/// statement relies on, since that statement carries no pseudonym itself.
+///
+/// Scans, for the reason [`release_for_member`] does: the key is a digest of
+/// a pseudonym nobody kept, so there is no index from member back to key.
+pub async fn is_bound(members_ks: &KeyspaceHandle, member_did: &str) -> Result<bool, AppError> {
+    Ok(all_claims(members_ks)
+        .await?
+        .iter()
+        .any(|(_, c)| c.member_did == member_did))
+}
+
+/// Release the binding the community made when it issued the `vetted/1`
+/// statement `endorsement_id` — the statement was revoked, so the check it
+/// recorded no longer stands. Returns how many were freed (0 or 1 in
+/// practice). Claims from an accepted provider's credential are untagged and
+/// never released here.
+pub async fn release_for_statement(
+    members_ks: &KeyspaceHandle,
+    endorsement_id: Uuid,
+) -> Result<usize, AppError> {
+    let mut freed = 0usize;
+    for (key, claim) in all_claims(members_ks).await? {
+        if claim.endorsement_id == Some(endorsement_id) {
+            members_ks.remove(key).await?;
+            freed += 1;
+        }
+    }
+    Ok(freed)
 }
 
 /// Release a claim by pseudonym, so that person may join again.
@@ -198,8 +317,9 @@ pub async fn release_for_member(
 /// One shape is read: `credentialSubject.pseudonym` of an identity credential
 /// from an accepted provider, whatever its schema. The community's own
 /// identity check is a `vetted/1` statement, whose `object.value` the registry
-/// fixes and which has no pseudonym member, so it never establishes
-/// uniqueness here — only an accepted provider's credential does.
+/// fixes and which has no pseudonym member: its uniqueness is the binding the
+/// community made server-side when it issued the statement
+/// ([`claim_for_statement`], read back by [`is_bound`]).
 ///
 /// The issuer filter is the load-bearing part. Without it, any issuer could
 /// mint a credential carrying whatever pseudonym they liked — including one
@@ -389,6 +509,52 @@ mod tests {
     /// The raw pseudonym must not appear in the key. It is a stable
     /// per-person identifier; a store full of them is the correlation target
     /// the whole construction exists to avoid.
+    /// The community's own binding: a first statement binds, a second member
+    /// presenting the same pseudonym is refused, the binding is found by
+    /// member DID, and revoking the statement releases it — but not a binding
+    /// an accepted provider's credential made.
+    #[tokio::test]
+    async fn a_statement_binding_is_found_by_member_and_released_by_its_statement() {
+        let (ks, _dir) = temp_ks();
+        let first = Uuid::new_v4();
+        assert_eq!(
+            claim_for_statement(&ks, COMMUNITY, "p-1", ALICE, first)
+                .await
+                .unwrap(),
+            StatementClaim::Bound
+        );
+        assert!(is_bound(&ks, ALICE).await.unwrap());
+        assert!(!is_bound(&ks, BOB).await.unwrap());
+        assert!(matches!(
+            claim_for_statement(&ks, COMMUNITY, "p-1", BOB, Uuid::new_v4()).await,
+            Err(AppError::Conflict(_))
+        ));
+
+        // A second statement for the same member takes the binding over.
+        let second = Uuid::new_v4();
+        assert_eq!(
+            claim_for_statement(&ks, COMMUNITY, "p-1", ALICE, second)
+                .await
+                .unwrap(),
+            StatementClaim::AlreadyHeld
+        );
+        assert_eq!(release_for_statement(&ks, first).await.unwrap(), 0);
+        assert_eq!(release_for_statement(&ks, second).await.unwrap(), 1);
+        assert!(!is_bound(&ks, ALICE).await.unwrap());
+
+        // A provider's binding is left untagged, so no statement releases it.
+        claim(&ks, COMMUNITY, "p-2", ALICE).await.unwrap();
+        let third = Uuid::new_v4();
+        assert_eq!(
+            claim_for_statement(&ks, COMMUNITY, "p-2", ALICE, third)
+                .await
+                .unwrap(),
+            StatementClaim::AlreadyHeld
+        );
+        assert_eq!(release_for_statement(&ks, third).await.unwrap(), 0);
+        assert!(is_bound(&ks, ALICE).await.unwrap());
+    }
+
     #[test]
     fn the_stored_key_does_not_contain_the_pseudonym() {
         let k = key(COMMUNITY, "national-id-hash-12345");
