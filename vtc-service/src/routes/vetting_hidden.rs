@@ -21,9 +21,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use vti_common::error::AppError;
 
+use crate::error::TaskError;
 use crate::schemas::accepts::{get_accepts, store_accepts};
 use crate::server::AppState;
 use crate::vetting::pcs::{HiddenVettingConfig, HiddenVettingEvent};
+use crate::vetting::pcs_tasks::{
+    HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION, HIDDEN_PUBLISH_ERR_NO_VETTING,
+};
 
 /// What an operator asks for when they turn hidden vetting on for a criterion.
 ///
@@ -99,7 +103,7 @@ pub(crate) async fn publish_hidden_vetting_core(
     live_token_labels: Option<Vec<String>>,
     drip_per_tick: Option<usize>,
     events: Option<Value>,
-) -> Result<PublishHiddenVettingResponse, AppError> {
+) -> Result<PublishHiddenVettingResponse, TaskError> {
     let community_did = state
         .config
         .read()
@@ -111,12 +115,20 @@ pub(crate) async fn publish_hidden_vetting_core(
 
     let mut criterion = get_accepts(&state.schemas_ks, &criterion_id)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("no criterion `{criterion_id}`")))?;
+        .ok_or_else(|| {
+            TaskError::declared(
+                HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION,
+                AppError::NotFound(format!("no criterion `{criterion_id}`")),
+            )
+        })?;
     if criterion.vetting.is_none() {
-        return Err(AppError::Validation(format!(
-            "criterion `{criterion_id}` asks for no vetting, so there is nothing for \
-             hidden-vetting parameters to qualify — give it `vetting` requirements first",
-        )));
+        return Err(TaskError::declared(
+            HIDDEN_PUBLISH_ERR_NO_VETTING,
+            AppError::Validation(format!(
+                "criterion `{criterion_id}` asks for no vetting, so there is nothing for \
+                 hidden-vetting parameters to qualify — give it `vetting` requirements first",
+            )),
+        ));
     }
 
     let period = this_month();

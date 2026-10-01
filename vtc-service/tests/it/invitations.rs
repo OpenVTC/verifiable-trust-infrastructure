@@ -41,6 +41,10 @@ const INVITATION_DELIVER_ERR_REVOKED: &str =
     trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes::REVOKED.code;
 const INVITATION_DELIVER_ERR_NO_ROUTE: &str =
     trust_tasks_rs::specs::vtc::invitations::deliver::v0_1::error_codes::NO_ROUTE.code;
+const INVITATION_ISSUE_ERR_UNKNOWN_ROLE: &str =
+    trust_tasks_rs::specs::vtc::invitations::issue::v0_1::error_codes::UNKNOWN_ROLE.code;
+const INVITATION_REVOKE_ERR_NOT_FOUND: &str =
+    trust_tasks_rs::specs::vtc::invitations::revoke::v0_1::error_codes::NOT_FOUND.code;
 
 /// The extended error code carried by a REST error body (`{"error", "code"}`).
 fn rest_error_code(body: &Value) -> &str {
@@ -385,8 +389,9 @@ async fn revoke_unknown_invitation_is_404() {
         .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
-    let (status, _) = body_value(fix.send(del).await).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, v) = body_value(fix.send(del).await).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
+    assert_eq!(rest_error_code(&v), INVITATION_REVOKE_ERR_NOT_FOUND, "{v}");
 }
 
 #[tokio::test]
@@ -397,11 +402,34 @@ async fn invite_refuses_admin_role() {
         json!({ "subjectDid": INVITEE_DID, "role": "admin" }),
     );
     let resp = fix.send(req).await;
-    let (status, _) = body_value(resp).await;
+    let (status, v) = body_value(resp).await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
         "an invite may not grant admin"
+    );
+    // `admin` is a role this community defines; refusing it is the privilege
+    // ceiling, not `unknownRole`.
+    assert_ne!(
+        rest_error_code(&v),
+        INVITATION_ISSUE_ERR_UNKNOWN_ROLE,
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn invite_refuses_a_role_the_community_does_not_define() {
+    let fix = build().await;
+    let req = issue_req(
+        &fix.admin_token,
+        json!({ "subjectDid": INVITEE_DID, "role": "godmode" }),
+    );
+    let (status, v) = body_value(fix.send(req).await).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(
+        rest_error_code(&v),
+        INVITATION_ISSUE_ERR_UNKNOWN_ROLE,
+        "{v}"
     );
 }
 

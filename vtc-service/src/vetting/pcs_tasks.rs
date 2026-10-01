@@ -73,6 +73,12 @@ pub const EVENT_ERR_UNKNOWN_EVENT: &str = "vtc/vetting/vetters/event-mode:unknow
 pub const EVENT_ERR_UNKNOWN_TIER: &str = "vtc/vetting/vetters/event-mode:unknownTier";
 /// `vtc/vetting/vetters/event-mode:badWindow`
 pub const EVENT_ERR_BAD_WINDOW: &str = "vtc/vetting/vetters/event-mode:badWindow";
+/// `vtc/vetting/hidden/publish:noSuchCriterion`, read from the generated bindings.
+pub const HIDDEN_PUBLISH_ERR_NO_SUCH_CRITERION: &str =
+    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_SUCH_CRITERION.code;
+/// `vtc/vetting/hidden/publish:noVetting`, read from the generated bindings.
+pub const HIDDEN_PUBLISH_ERR_NO_VETTING: &str =
+    trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::error_codes::NO_VETTING.code;
 /// `vtc/vetting/vetters/event-mode:alreadyRequested`
 pub const EVENT_ERR_ALREADY_REQUESTED: &str = "vtc/vetting/vetters/event-mode:alreadyRequested";
 /// `vtc/vetting/vetters/event-mode:eventClosed`
