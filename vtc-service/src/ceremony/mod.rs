@@ -64,6 +64,7 @@ pub mod facts;
 pub mod invariant;
 pub mod orchestrate;
 pub mod removal_notice;
+pub mod step_up_passkey_notice;
 pub mod verdict;
 pub mod verify;
 

@@ -85,6 +85,7 @@ mod routing_modes;
 mod session_idle_timeout;
 mod signed_step_up;
 mod status_lists;
+mod step_up_passkey_notice_didcomm;
 mod step_up_passkey_priority;
 mod step_up_passkeys;
 mod surface_verbs_spine;
