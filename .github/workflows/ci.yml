@@ -1276,7 +1276,7 @@ jobs:
       # real CESR frame, and asserts the join lands in the dispatcher: a
       # behaviour test, not a compile check.
       - name: vtc-service TSP receive path over a real mediator
-        run: cargo test -p vtc-service --features didcomm-harness --no-fail-fast --test it -- join_tsp::
+        run: 'cargo test -p vtc-service --features didcomm-harness --no-fail-fast --test it -- join_tsp::'
         env:
           # The admin-UI npm build is irrelevant to the messaging path and adds
           # minutes to this job.
@@ -1292,7 +1292,7 @@ jobs:
       # as the join tests: `didcomm-harness` is not a default feature, so
       # `cargo test --workspace` never builds this.
       - name: vtc-service trust-registry round trip over a real mediator
-        run: cargo test -p vtc-service --features didcomm-harness --no-fail-fast --test it -- registry_didcomm::
+        run: 'cargo test -p vtc-service --features didcomm-harness --no-fail-fast --test it -- registry_didcomm::'
         env:
           VTC_SKIP_ADMIN_UI_BUILD: "1"
 
