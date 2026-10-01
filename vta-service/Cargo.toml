@@ -286,11 +286,11 @@ futures-util = "0.3"
 # table pins; this entry adds no new code when `tsp` is off (optional + default-features off).
 affinidi-messaging-sdk = { workspace = true, optional = true }
 async-trait = "0.1"
-# 0.6.11 moves in lockstep with `affinidi-did-resolver-cache-sdk` 0.8.37: it is
+# 0.7 is the data-integrity 0.8 cascade (affinidi-tdk-rs #918). 0.6.11 moved in lockstep with `affinidi-did-resolver-cache-sdk` 0.8.37: it is
 # the release built against that resolver, so a floor below it can resolve a
 # second, pre-host-policy resolver-cache copy into the graph through
 # `TDKSharedState`.
-affinidi-tdk-common = "0.6.11"
+affinidi-tdk-common = "0.7"
 affinidi-did-resolver-cache-sdk = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
 base64 = { workspace = true }
@@ -361,7 +361,7 @@ tempfile = { version = "3", optional = true }
 # A real dependency rather than a dev-dependency: `test-support` exists to serve
 # *external* consumers, and a dev-dependency would not be available to them.
 # `tsp` so the mediator routes raw-TSP frames, not just DIDComm.
-affinidi-messaging-test-mediator = { version = "0.15", optional = true, features = [
+affinidi-messaging-test-mediator = { version = "0.16", optional = true, features = [
     "tsp",
 ] }
 libc = { workspace = true, optional = true }
