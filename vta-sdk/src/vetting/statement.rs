@@ -278,8 +278,9 @@ pub async fn verify_statement(
     resolver: &TrustTaskVmResolver,
 ) -> Result<VerifiedVettingStatement, VettingError> {
     let malformed = |detail: String| VettingError::Malformed { what: WHAT, detail };
-    let credential: DTGCredential =
-        serde_json::from_value(value.clone()).map_err(|e| malformed(e.to_string()))?;
+    // Shape without the proof, which may be a set (VTI-57) and is verified
+    // over the statement as received.
+    let credential = super::dtg_shape(value).map_err(|e| malformed(e.to_string()))?;
     let statement = credential
         .statement()
         .ok_or_else(|| malformed("not a StatementCredential".into()))?;
@@ -628,6 +629,30 @@ pub(crate) mod tests {
             verified.check_against_session(&session_document(&did(&community), &did(&applicant))),
             Err(VettingError::Binding("identityCommitment"))
         ));
+    }
+
+    /// VTI-57: a two-key community signs its statement once per key, so its
+    /// `proof` is a set. The shape parse used to refuse the array as malformed.
+    #[tokio::test]
+    async fn vti_57_a_statement_carrying_a_proof_set_verifies() {
+        let (community, applicant) = (secret(6), secret(1));
+        let mut signed = community_desk_check(&community, &did(&applicant)).await;
+        let first = signed["proof"].clone();
+        let mut proofless = signed.clone();
+        proofless.as_object_mut().unwrap().remove("proof");
+        let second = affinidi_data_integrity::DataIntegrityProof::sign(
+            &proofless,
+            &community,
+            affinidi_data_integrity::SignOptions::new().with_proof_purpose("assertionMethod"),
+        )
+        .await
+        .unwrap();
+        signed["proof"] = json!([first, serde_json::to_value(second).unwrap()]);
+
+        let verified = verify_statement(&signed, Utc::now(), &TrustTaskVmResolver::did_key_only())
+            .await
+            .expect("a proof-set statement verifies");
+        assert_eq!(verified.issuer(), did(&community));
     }
 
     /// A vetter's statement is always made over a card: one without the

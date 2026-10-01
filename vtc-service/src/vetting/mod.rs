@@ -291,8 +291,8 @@ pub async fn vetting_facts(
         if vetter.is_none() {
             failures.push("not-a-vetter-statement".to_string());
         }
-        let predicate_accepted = dtg_credentials::DTGCredential::try_from(vc.clone())
-            .is_ok_and(|parsed| accepted.accept(&parsed).is_ok());
+        let predicate_accepted =
+            vta_sdk::vetting::dtg_shape(vc).is_ok_and(|parsed| accepted.accept(&parsed).is_ok());
         if !predicate_accepted {
             failures.push("predicate-not-accepted".to_string());
         }

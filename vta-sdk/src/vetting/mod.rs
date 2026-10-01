@@ -154,6 +154,31 @@ pub(crate) async fn verify_attached_proof(
         })
 }
 
+/// Parse `credential`'s shape as a DTG credential, without its `proof`.
+///
+/// `dtg-credentials` 0.12 models `proof` as a single object, so a credential
+/// carrying a proof set fails the whole parse. A community with two signing keys
+/// signs each credential once per key and writes an array (Keyring VTI-57: its
+/// vetter grant could not be read, so openvtc never seated a vetter). The parse
+/// here is a shape check: the classification, the subtype's members, the
+/// predicate profile. It needs nothing from the proof. Every proof is verified
+/// separately, over the credential as received ([`verify_attached_proof`],
+/// which reads a set). So the proof is set aside before parsing rather than
+/// read as one.
+///
+/// Every shape parse of a credential that may carry a proof set goes through
+/// this: here, and the VTC's intake and predicate check. When `dtg-credentials`
+/// models `proof` as one-or-many, this becomes a plain parse.
+pub fn dtg_shape(
+    credential: &Value,
+) -> Result<dtg_credentials::DTGCredential, dtg_credentials::DTGCredentialError> {
+    let mut proofless = credential.clone();
+    if let Some(map) = proofless.as_object_mut() {
+        map.remove("proof");
+    }
+    dtg_credentials::DTGCredential::try_from(proofless)
+}
+
 /// `digestMultibase` per DTG Credentials §Digest Encoding (JCS without the
 /// top-level `proof`, SHA-256 multihash, base58btc).
 pub(crate) fn digest(value: &Value) -> Result<String, VettingError> {
