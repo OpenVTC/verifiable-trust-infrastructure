@@ -2385,13 +2385,25 @@ fn every_bound_published_uri_has_a_witness() {
     }
 
     let missing: Vec<_> = expected.difference(&covered).cloned().collect();
+    let template: String = missing
+        .iter()
+        .map(|uri| {
+            format!(
+                "    checked!(\n        /* the generated Payload type for {uri} */,\n        \
+                 /* the generated Response type */,\n        json!({{ /* a schema-valid \
+                 request */ }}),\n        json!({{ /* a schema-valid response, or {{}} if \
+                 fire-and-forget */ }}),\n    ),\n"
+            )
+        })
+        .collect::<String>();
     assert!(
         missing.is_empty(),
         "these bound URIs are published in the registry but have no \
          conformance witness:\n  {}\n\nAdd a `checked!` entry (request + \
          response built from the wire types the handler actually emits), or \
          — only for a real, understood non-conformance — a `drift!` entry \
-         with a reason.",
+         with a reason.\n\nReady-to-fill template for each (the URI is read off the Payload \
+         type, never typed by hand):\n{template}",
         missing.join("\n  ")
     );
 
