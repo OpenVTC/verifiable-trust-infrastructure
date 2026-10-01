@@ -65,7 +65,7 @@ long-term admin DID the VTA mints, bounded by your own authority. Without
 `--admin-handoff` the VTA refuses that rollover, and phase 2 fails with
 `provision-integration call failed: forbidden: … carries no one-time hand-off`.
 The marker can only be set when the entry is created, so the error prints the
-re-grant — `pnm acl delete --did <setup-did>`, then the `pnm acl create … --handoff`
+re-grant — `pnm acl delete <setup-did>`, then the `pnm acl create … --handoff`
 above — after which you rerun phase 2 unchanged. See
 [the hand-off](../02-vta/provision-integration.md#who-writes-the-long-term-row-the-one-time-hand-off).
 

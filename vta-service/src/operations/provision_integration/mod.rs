@@ -1052,12 +1052,30 @@ async fn refuse_unmarked_expiring_rollover(
         vti_common::acl::ActScope::All => String::new(),
         vti_common::acl::ActScope::None => format!(" --contexts {context}"),
     };
+    // And the capabilities it holds: deleting the row drops them, so a
+    // re-grant that left them out would trade one refusal for another — a
+    // holder client (`--admin-holder`) would come back without
+    // `persona-holder`. Echoed from the row, never added, so an integration
+    // is not told to take holder authority it was never given.
+    let capabilities = if entry.capabilities.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> = entry
+            .capabilities
+            .iter()
+            .filter_map(|c| serde_json::to_value(c).ok())
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect();
+        format!(" --capabilities {}", names.join(","))
+    };
+    // `pnm acl delete` takes the DID positionally; `pnm acl create` takes it
+    // as `--did`.
     Err(AppError::Forbidden(format!(
         "{client_did}'s entry expires at {expires_at} and carries no one-time hand-off, so \
          it cannot roll over to the permanent long-term admin (VTI-ACL-053, VTI-ACL-054). \
          The hand-off is set only when the entry is created — re-grant it, then retry: \
-         `pnm acl delete --did {client_did}` then `pnm acl create --did {client_did} \
-         --role admin{contexts} --expires 1h --handoff`"
+         `pnm acl delete {client_did}` then `pnm acl create --did {client_did} \
+         --role admin{contexts} --expires 1h --handoff{capabilities}`"
     )))
 }
 
@@ -2950,15 +2968,17 @@ mod tests {
             unreachable!()
         };
         assert!(msg.contains("VTI-ACL-054"), "{msg}");
+        // `did` is positional on `pnm acl delete`; a `--did` there is
+        // rejected by clap before it reaches the VTA.
         assert!(
-            msg.contains(&format!("pnm acl delete --did {client_did}")),
+            msg.contains(&format!("pnm acl delete {client_did}`")),
             "{msg}"
         );
         assert!(
             msg.contains(&format!(
-                "pnm acl create --did {client_did} --role admin --contexts ctx-eph --expires 1h --handoff"
+                "pnm acl create --did {client_did} --role admin --contexts ctx-eph --expires 1h --handoff`"
             )),
-            "{msg}"
+            "an entry with no capabilities is not told to take any: {msg}"
         );
 
         let kept = crate::acl::get_acl_entry(&deps.acl_ks, &client_did)
@@ -2966,6 +2986,63 @@ mod tests {
             .expect("acl get")
             .expect("the ephemeral is not retired by a refused rollover");
         assert_eq!(kept.expires_at, Some(expires));
+    }
+
+    /// A holder client's entry (`pnm contexts create --admin-holder`) carries
+    /// `persona-holder`. Deleting the row drops it, so the re-grant the refusal
+    /// prints must carry it back — or the retry succeeds and the client is then
+    /// refused the holder's attribute pool instead.
+    #[tokio::test]
+    async fn the_regrant_hint_carries_the_entrys_capabilities() {
+        use crate::acl::{AclEntry, Role, store_acl_entry};
+        use vti_common::acl::Capability;
+
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "ctx-eph", "Ephemeral ctx")
+            .await
+            .expect("create context");
+
+        let request = signed_admin_rotation_request("vta-admin", "ctx-eph").await;
+        let client_did = request.holder().to_string();
+        let expires = vti_common::auth::session::now_epoch() + 3600;
+        let ephemeral_row = AclEntry::new(client_did.clone(), Role::Admin, "operator")
+            .with_contexts(vec!["ctx-eph".into()])
+            .with_expires_at(Some(expires))
+            .with_capabilities(vec![Capability::PersonaHolder]);
+        store_acl_entry(&deps.acl_ks, &ephemeral_row)
+            .await
+            .expect("seed ephemeral ACL row");
+
+        let auth = AuthClaims {
+            did: client_did.clone(),
+            allowed_contexts: vec!["ctx-eph".into()],
+            ..super_admin_claims()
+        };
+        let err = provision_integration(
+            &deps,
+            &auth,
+            ProvisionIntegrationParams {
+                request,
+                context: "ctx-eph".into(),
+                admin_scope: AdminScope::Context,
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .err()
+        .expect("an unmarked expiring ephemeral cannot roll over");
+        let AppError::Forbidden(msg) = &err else {
+            panic!("{err:?}")
+        };
+        assert!(
+            msg.contains(&format!(
+                "pnm acl create --did {client_did} --role admin --contexts ctx-eph --expires 1h \
+                 --handoff --capabilities persona-holder`"
+            )),
+            "{msg}"
+        );
     }
 
     /// The same flow with the granter's hand-off marker (VTI-ACL-054): the
