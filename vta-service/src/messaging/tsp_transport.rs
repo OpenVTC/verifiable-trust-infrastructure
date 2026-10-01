@@ -142,6 +142,25 @@ impl TspTransport {
             .await
     }
 
+    /// Answer `recipient`, which just sent us a verified frame, through its own
+    /// mediator when that is not ours ([`vti_common::tsp_route::send_reply`]).
+    /// [`send_to`](Self::send_to) alone ends at our mediator, which refuses a
+    /// recipient it does not host.
+    pub async fn send_reply(
+        &self,
+        recipient: &str,
+        body: &[u8],
+    ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
+        vti_common::tsp_route::send_reply(
+            &self.atm,
+            &self.profile,
+            &self.mediator_did,
+            recipient,
+            body,
+        )
+        .await
+    }
+
     /// Route `body` to `recipient` with **metadata privacy** when the topology
     /// allows it, and by the plain routed send when it does not.
     ///

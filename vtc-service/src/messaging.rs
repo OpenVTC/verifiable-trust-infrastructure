@@ -967,12 +967,18 @@ async fn handle_tsp(
         outcome.body
     };
 
-    let route = vec![mediator_did.to_string(), sender_vid.clone()];
-    if let Err(e) = messaging
-        .atm
-        .tsp()
-        .send_routed(&messaging.profile, &route, &reply)
-        .await
+    // Routed through the sender's mediator when it is not ours. `[ours,
+    // sender]` ended at a mediator that does not host a sender on another one,
+    // which refused it: the request arrived and the answer never did — a join
+    // stayed Pending, and every status poll it sent went unanswered.
+    if let Err(e) = vti_common::tsp_route::send_reply(
+        &messaging.atm,
+        &messaging.profile,
+        mediator_did,
+        &sender_vid,
+        &reply,
+    )
+    .await
     {
         warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
     }

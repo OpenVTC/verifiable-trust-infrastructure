@@ -746,7 +746,10 @@ async fn handle_tsp(inbound: Inbound, messaging: &Arc<VtaMessaging>, app_state: 
     if reply.is_empty() {
         return;
     }
-    if let Err(e) = messaging.tsp.send_to(&sender_vid, &reply).await {
+    // Routed through the sender's mediator when it is not ours — see
+    // `vti_common::tsp_route::send_reply`. `send_to` routes `[ours, sender]`,
+    // which a sender on another mediator never receives.
+    if let Err(e) = messaging.tsp.send_reply(&sender_vid, &reply).await {
         warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
     }
 }
