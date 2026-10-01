@@ -495,6 +495,10 @@ pub(crate) fn unrouted_error_response(payload: ErrorPayload) -> TrustTaskOutcome
 /// (`eddsa-jcs-2022` canonicalises the proofless document via JCS). The
 /// returned DID is *proven*, not merely claimed — binding it to an expected
 /// identity is the caller's job. `did:key` resolution is local (no network).
+///
+/// Typed, so it verifies a re-serialisation of `doc`: for a document this
+/// service built. A document that arrived over the network is verified as
+/// received, with [`verify_received_trust_task_proof`] (VTI-45).
 pub(crate) async fn verify_trust_task_proof(
     state: &AppState,
     doc: &TrustTask<Value>,
@@ -504,8 +508,23 @@ pub(crate) async fn verify_trust_task_proof(
         .map_err(|e| AppError::Unauthorized(format!("Trust Task {e}")))
 }
 
+/// [`verify_trust_task_proof`] over the document **as received** — `received`
+/// is the JSON the inbound bytes parsed to, unmodified. Only this form sees the
+/// members exactly as the producer signed them: a typed `TrustTask` rewrites
+/// timestamps (`.000Z`, `+00:00`) and drops `null` optional members, either of
+/// which refuses a correctly signed document (VTI-45).
+pub(crate) async fn verify_received_trust_task_proof(
+    state: &AppState,
+    received: &Value,
+) -> Result<String, AppError> {
+    vti_common::auth::verify_trust_task_proof_value(received, &state.trust_task_vm_resolver())
+        .await
+        .map_err(|e| AppError::Unauthorized(format!("Trust Task {e}")))
+}
+
 /// Verify a human approver's own decision (a `task-consent/decision` or a
-/// step-up `approve-response`) and return the proven signer DID.
+/// step-up `approve-response`) — **as received**, see
+/// [`verify_received_trust_task_proof`] — and return the proven signer DID.
 ///
 /// [`verify_trust_task_proof`], plus the rule every approval verifier in the
 /// mesh holds (the VTA, the did-hosting RP's `verify_approval`): the proof is
@@ -513,16 +532,17 @@ pub(crate) async fn verify_trust_task_proof(
 /// `assertionMethod`. An approval is the approver's attestation, not an
 /// operational message, so a proof made for `authentication` is refused. A
 /// signer DID that does not resolve is refused, never passed through.
-pub(crate) async fn verify_approval_proof(
+pub(crate) async fn verify_received_approval_proof(
     state: &AppState,
-    doc: &TrustTask<Value>,
+    received: &Value,
+    type_uri: &str,
 ) -> Result<String, AppError> {
-    vti_common::auth::verify_approval_proof_with(doc, &state.trust_task_vm_resolver())
+    vti_common::auth::verify_approval_proof_value(received, &state.trust_task_vm_resolver())
         .await
         .map_err(|e| {
             // The cause stays in the operator's log; the wire gets `Display`.
             tracing::warn!(
-                type_uri = %doc.type_uri,
+                type_uri,
                 error = %e,
                 cause = e.cause().unwrap_or_default(),
                 "approval refused at its proof"
@@ -532,7 +552,7 @@ pub(crate) async fn verify_approval_proof(
 }
 
 /// Whether `type_uri` is a human approver's own decision, whose proof the
-/// spine holds to [`verify_approval_proof`] rather than
+/// spine holds to [`verify_received_approval_proof`] rather than
 /// [`verify_trust_task_proof`].
 pub(crate) fn is_approval_type(type_uri: &str) -> bool {
     type_uri == super::STEP_UP_APPROVE_RESPONSE_TYPE

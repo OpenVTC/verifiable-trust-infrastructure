@@ -27,16 +27,22 @@
 //! returns the proven signer precisely so the caller can make that comparison
 //! itself. A proof by somebody else's key verifies perfectly well.
 
+pub mod proof_set;
 pub mod purpose;
 pub mod verify;
 pub mod vm_resolver;
 
 pub use crate::did_refresh::{FRESH_RESOLVE_MIN_INTERVAL, evict_for_fresh_resolve, resolve_for_vm};
+pub use proof_set::{
+    ProofSetError, VerifiedProofSet, accept_all, proof_set, proof_signer_did, require_suites,
+    verify_one, verify_proof_set,
+};
 pub use purpose::{
     ATTESTATION_SLUGS, ProofPurpose, PurposeBound, PurposeVmResolver, purpose_for_document_type,
 };
 pub use verify::{
-    APPROVAL_PROOF_PURPOSE, DiProofError, verify_approval_proof, verify_approval_proof_with,
-    verify_trust_task_proof, verify_trust_task_proof_with,
+    APPROVAL_PROOF_PURPOSE, DiProofError, verify_approval_proof, verify_approval_proof_value,
+    verify_approval_proof_with, verify_trust_task_proof, verify_trust_task_proof_value,
+    verify_trust_task_proof_with,
 };
 pub use vm_resolver::TrustTaskVmResolver;

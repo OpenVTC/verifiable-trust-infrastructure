@@ -198,7 +198,8 @@ pub(crate) use helpers::framework_error_type_uri;
 use helpers::{
     app_error_to_reject, body_parse_error_response, extended_code, parse_payload, reject_with,
     reject_with_code, reject_with_code_because, success_response, task_error_to_reject,
-    verdict_response, verify_approval_proof, verify_trust_task_proof,
+    verdict_response, verify_received_approval_proof, verify_received_trust_task_proof,
+    verify_trust_task_proof,
 };
 
 /// The transport-resolved caller identity threaded into the dispatcher.
@@ -376,6 +377,14 @@ async fn dispatch_trust_task_validated(
         Ok(d) => d,
         Err(e) => return body_parse_error_response(&e.to_string()),
     };
+    // The same bytes as JSON, kept verbatim: the proof at step 3 is verified
+    // over what was received, never over a re-serialisation of `doc`, which
+    // rewrites the timestamps a producer signed (VTI-45). It parsed as a Trust
+    // Task, so it parses as JSON.
+    let received: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(e) => return body_parse_error_response(&e.to_string()),
+    };
 
     // One instant for every temporal decision in this dispatch. The acceptance
     // window and the replay record's retention are the *same* bound (SPEC
@@ -488,12 +497,16 @@ async fn dispatch_trust_task_validated(
     //    A human approver's own decision (a step-up `approve-response`, a
     //    `task-consent/decision`) is an attestation, not an operational
     //    message: its proof must be made for `assertionMethod` by a key the
-    //    approver lists under `assertionMethod` ([`verify_approval_proof`]).
+    //    approver lists under `assertionMethod`
+    //    ([`verify_received_approval_proof`]).
+    //
+    //    "As received" literally: over `received`, the JSON the bytes parsed
+    //    to, not over `doc` re-serialised (VTI-45).
     let ctx = if doc.proof.is_some() {
         let verified = if helpers::is_approval_type(&type_uri) {
-            verify_approval_proof(state, &doc).await
+            verify_received_approval_proof(state, &received, &type_uri).await
         } else {
-            verify_trust_task_proof(state, &doc).await
+            verify_received_trust_task_proof(state, &received).await
         };
         match verified {
             Ok(signer) => {
@@ -1980,6 +1993,153 @@ mod spine_proof_tests {
         error_code(out).as_deref() == Some("permissionDenied") && body.contains("proof")
     }
 
+    // ── VTI-45: the proof is verified over the document as received ─────────
+
+    /// Sign `doc` **exactly as it stands** — the JSON a JavaScript producer sends —
+    /// with seed `seed`'s Ed25519 key under `vm`, for `purpose`, the proof's
+    /// `created` set to the string given, verbatim (VTI-45).
+    fn sign_received(doc: &mut Value, seed: u8, vm: &str, purpose: &str, created: &str) {
+        use affinidi_data_integrity::crypto_suites::CryptoSuite;
+        use affinidi_data_integrity::{DataIntegrityProof, prepare_sign_input};
+        use ed25519_dalek::Signer as _;
+        let mut di = DataIntegrityProof::new(
+            CryptoSuite::EddsaJcs2022,
+            vm.to_string(),
+            purpose.to_string(),
+            None,
+            Some(created.to_string()),
+            None,
+        );
+        doc.as_object_mut().expect("an object").remove("proof");
+        let input = prepare_sign_input(&*doc, &di, CryptoSuite::EddsaJcs2022).expect("sign input");
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        di.proof_value = Some(multibase::encode(
+            multibase::Base::Base58Btc,
+            sk.sign(&input).to_bytes(),
+        ));
+        doc["proof"] = serde_json::to_value(&di).expect("proof serialises");
+    }
+
+    /// Now, on a whole second, as JavaScript's `toISOString()` writes it.
+    fn javascript_whole_second_now() -> String {
+        format!("{}.000Z", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S"))
+    }
+
+    /// `uri` from `issuer` as a JavaScript producer sends it on a whole second
+    /// — `.000Z` timestamps, a `null` `threadId` — signed as received.
+    fn vti_45_document(
+        uri: &str,
+        payload: Value,
+        issuer: &str,
+        seed: u8,
+        vm: &str,
+        purpose: &str,
+    ) -> Value {
+        let now = javascript_whole_second_now();
+        let mut doc = json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": uri,
+            "issuer": issuer,
+            "recipient": TEST_VTC_DID,
+            "issuedAt": now,
+            "threadId": null,
+            "payload": payload,
+        });
+        sign_received(&mut doc, seed, vm, purpose, &now);
+        doc
+    }
+
+    async fn dispatch_received(state: &AppState, doc: &Value) -> TrustTaskOutcome {
+        let body = serde_json::to_vec(doc).expect("a document serialises");
+        dispatch_trust_task_core(state, &JoinAuthCtx::rest(), &body).await
+    }
+
+    /// VTI-45 at the spine: a correctly signed `.000Z` / `threadId: null`
+    /// document reaches its handler — and the typed re-serialisation the spine
+    /// used to verify would have refused it.
+    #[tokio::test]
+    async fn vti_45_a_javascript_whole_second_document_passes_the_spine() {
+        let tv = build_test_vtc().await;
+        let (did, secret) = key_signer(0x45);
+        let doc = vti_45_document(
+            UNDER_TEST,
+            json!({}),
+            &did,
+            0x45,
+            &secret.id,
+            "assertionMethod",
+        );
+
+        let typed: TrustTask<Value> = serde_json::from_value(doc.clone()).unwrap();
+        assert!(
+            vti_common::auth::verify_trust_task_proof(&typed)
+                .await
+                .is_err(),
+            "the typed form must be what this document breaks"
+        );
+
+        let out = dispatch_received(&tv.state, &doc).await;
+        for code in ["proofRequired", "proofInvalid"] {
+            assert_ne!(
+                error_code(&out).as_deref(),
+                Some(code),
+                "{}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+
+        let mut tampered = doc;
+        tampered["payload"] = json!({ "requestId": "someone-elses" });
+        let out = dispatch_received(&tv.state, &tampered).await;
+        assert!(
+            refused_at_the_proof(&out),
+            "{}",
+            String::from_utf8_lossy(&out.body)
+        );
+    }
+
+    /// VTI-45 on the approval path, which holds a proof to `assertionMethod`:
+    /// a `.000Z` decision gets past the proof, and an `authentication` one is
+    /// still refused there.
+    #[tokio::test]
+    async fn vti_45_a_javascript_whole_second_approval_is_held_to_its_purpose() {
+        let tv = build_test_vtc().await;
+        let (did, secret) = peer('A', 0x46);
+        for uri in [
+            crate::acl::admin_consent::DECISION_TYPE,
+            STEP_UP_APPROVE_RESPONSE_TYPE,
+        ] {
+            let payload = if uri == STEP_UP_APPROVE_RESPONSE_TYPE {
+                approve_response_payload(&did)
+            } else {
+                decision_payload()
+            };
+            let ok = vti_45_document(
+                uri,
+                payload.clone(),
+                &did,
+                0x46,
+                &secret.id,
+                "assertionMethod",
+            );
+            let out = dispatch_received(&tv.state, &ok).await;
+            assert!(
+                !refused_at_the_proof(&out),
+                "{uri}: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+
+            let operational =
+                vti_45_document(uri, payload, &did, 0x46, &secret.id, "authentication");
+            let out = dispatch_received(&tv.state, &operational).await;
+            assert!(
+                refused_at_the_proof(&out),
+                "{uri}: {}",
+                String::from_utf8_lossy(&out.body)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn an_approval_signed_for_authentication_is_refused() {
         let tv = build_test_vtc().await;
@@ -2532,9 +2692,15 @@ async fn resolve_holder(
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
 ) -> Result<String, TrustTaskOutcome> {
-    let proven = match &ctx.sender_did {
-        Some(did) => did.clone(),
-        None => match verify_trust_task_proof(state, doc).await {
+    // REST: the spine has already verified the document's proof over the JSON
+    // as received and bound it to the issuer (`verified_signer`). Verifying it
+    // again here, over the typed `doc`, would re-serialise it and refuse what
+    // the producer actually signed (VTI-45). With no verified signer there is
+    // no proof, and the typed call refuses that the same way it always has.
+    let proven = match (&ctx.sender_did, &ctx.verified_signer) {
+        (Some(did), _) => did.clone(),
+        (None, Some(signer)) => signer.clone(),
+        (None, None) => match verify_trust_task_proof(state, doc).await {
             Ok(did) => did,
             Err(e) => return Err(app_error_to_reject(doc, &e)),
         },
@@ -4343,7 +4509,7 @@ async fn handle_acl_change_role(
 /// own authenticator — a session passkey, or a member's step-up passkey
 /// (`crate::step_up_passkey`) — can produce over this service's challenge. And
 /// the document's own proof where it has one: an `assertionMethod` proof
-/// ([`verify_approval_proof`], checked by the spine) by the subject itself —
+/// ([`verify_received_approval_proof`], checked by the spine) by the subject itself —
 /// never by a delegated signing key, which the spine refuses. A member's
 /// step-up passkey is always beside the member's proof; a console user's
 /// session passkey may answer unsigned, the one gate its browser holds. What the gesture authorizes is read from this

@@ -144,10 +144,23 @@ impl HostState {
     /// Split out from [`Self::presenter_and_verifier`] because `rooms/create` needs this half
     /// and only this half: a room that does not exist yet has issued no credentials, so there
     /// is no chain to judge and nothing for a verifier to do.
+    ///
+    /// Verified over the document as received when [`dispatch`] recorded it — `doc` is then
+    /// that JSON's parse — and never over a re-serialisation of `doc`, which rewrites the
+    /// timestamps a producer signed (VTI-45). A `doc` that is not the recorded document (a
+    /// direct call in a test) is verified in its typed form, which can only refuse more.
     async fn presenter(&self, doc: &TrustTask<Value>) -> Result<String, AppError> {
-        vti_common::auth::verify_trust_task_proof_with(doc, &self.resolver)
-            .await
-            .map_err(|e| AppError::Forbidden(format!("request proof: {e}")))
+        let received = RECEIVED.try_with(Arc::clone).ok().filter(|received| {
+            serde_json::from_value::<TrustTask<Value>>((**received).clone())
+                .is_ok_and(|parsed| &parsed == doc)
+        });
+        match received {
+            Some(received) => {
+                vti_common::auth::verify_trust_task_proof_value(&received, &self.resolver).await
+            }
+            None => vti_common::auth::verify_trust_task_proof_with(doc, &self.resolver).await,
+        }
+        .map_err(|e| AppError::Forbidden(format!("request proof: {e}")))
     }
 
     /// The presenter — proven, not claimed — and the verifier to judge their chain with.
@@ -284,6 +297,13 @@ async fn trust_task(State(state): State<Arc<HostState>>, body: Bytes) -> Answer 
     dispatch(&state, &body).await
 }
 
+// The inbound document as received, for the duration of its dispatch: the request proof is
+// verified over this JSON, never over a re-serialised `TrustTask` (VTI-45). A task-local
+// rather than a parameter so the eleven handlers keep one signature.
+tokio::task_local! {
+    static RECEIVED: Arc<Value>;
+}
+
 /// **The one entry point**: a `rooms/*` document, routed by its own `type`, whatever carried
 /// it here.
 ///
@@ -299,6 +319,16 @@ async fn trust_task(State(state): State<Arc<HostState>>, body: Bytes) -> Answer 
 /// authenticated its sender confers nothing extra, which is the property that lets this be
 /// one function at all.
 pub async fn dispatch(state: &Arc<HostState>, body: &[u8]) -> Answer {
+    // It parsed as a Trust Task below, so it parses as JSON; `Null` only if it did not, in
+    // which case the typed parse refuses it first.
+    let received = Arc::new(serde_json::from_slice::<Value>(body).unwrap_or(Value::Null));
+    RECEIVED
+        .scope(received, dispatch_received(state, body))
+        .await
+}
+
+/// [`dispatch`], inside the scope that records the received document.
+async fn dispatch_received(state: &Arc<HostState>, body: &[u8]) -> Answer {
     // A body that is not a Trust Task document cannot be *routed* — there is no issuer to
     // address a rejection to and no thread to correlate it with — so this one case answers
     // with an unrouted error, exactly as the VTC's `body_parse_error_response` does.

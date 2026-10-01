@@ -346,6 +346,12 @@ fn print_setup_summary_terse(outcome: &SetupOutcome) {
     println!("data_dir={}", outcome.data_dir.display());
     println!("install_url={}", outcome.install_url);
     println!("claim_code={}", outcome.claim_code);
+    // VTI-11: the ACL is empty until the install is claimed; this is the
+    // headless way to seed the admin (run with the daemon stopped).
+    println!(
+        "offline_admin_grant={}",
+        super::wizard::offline_acl_add_command(outcome)
+    );
     if outcome.admin_key_json.is_some() {
         println!(
             "admin_key=<not printed in non-interactive mode; re-run interactively if you need it>"

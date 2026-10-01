@@ -339,8 +339,8 @@ async fn signed_by_the_caller(
             "the request's proof must be made for authentication",
         ));
     }
-    match vti_common::auth::verify_trust_task_proof_with(doc, &state.trust_task_vm_resolver()).await
-    {
+    // Over the document as received (VTI-45), which the spine recorded.
+    match super::received::verify_trust_task_proof(doc, &state.trust_task_vm_resolver()).await {
         Ok(signer) if doc.issuer.as_deref() == Some(signer.as_str()) && signer == auth.did => {}
         Ok(signer) => {
             tracing::warn!(

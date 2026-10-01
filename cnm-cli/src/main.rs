@@ -1001,7 +1001,9 @@ fn bootstrap_open(
     }
     let config_dir =
         config::config_dir().map_err(|e| format!("could not resolve config dir: {e}"))?;
-    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+    // Showing a bundle installs nothing, so the request seed stays: the
+    // `cnm auth login --credential-bundle` printed below needs it (VTI-53).
+    let (opened, secret) = vta_cli_common::sealed_consumer::open_armored_bundle_keeping_secret(
         bundle_path,
         &config_dir,
         expect_digest,
@@ -1044,6 +1046,11 @@ fn bootstrap_open(
             println!("Payload: {other:?}");
         }
     }
+    println!();
+    println!(
+        "The request seed was kept at {} so the bundle can still be installed.",
+        secret.display()
+    );
     Ok(())
 }
 

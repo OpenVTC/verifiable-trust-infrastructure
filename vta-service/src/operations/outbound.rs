@@ -365,13 +365,12 @@ impl TspSender {
             return TspAttempt::SendFailed(e.to_string());
         }
         match tokio::time::timeout(self.reply_timeout, waiting).await {
-            Ok(Ok(reply)) => match serde_json::to_value(reply) {
-                Ok(v) => {
-                    self.mark_active(recipient).await;
-                    TspAttempt::Reply(v)
-                }
-                Err(e) => TspAttempt::SendFailed(format!("re-serialise the reply: {e}")),
-            },
+            // The reply as received, never re-serialised: `verify_reply` checks
+            // its proof over exactly these members (VTI-45).
+            Ok(Ok(reply)) => {
+                self.mark_active(recipient).await;
+                TspAttempt::Reply(reply)
+            }
             Ok(Err(_)) => {
                 self.replies.abandon(thread);
                 TspAttempt::Cancelled
@@ -1048,7 +1047,7 @@ async fn verify_reply(
         return Ok(());
     }
 
-    let doc: trust_tasks_rs::TrustTask<Value> =
+    let _doc: trust_tasks_rs::TrustTask<Value> =
         serde_json::from_value(reply.clone()).map_err(|e| {
             bad_gateway_error(format!(
                 "`{recipient}` sent a reply this agent cannot read as a Trust-Task \
@@ -1056,8 +1055,9 @@ async fn verify_reply(
             ))
         })?;
 
+    // Over the reply as received, never a re-serialisation of `_doc` (VTI-45).
     let vm_resolver = vti_common::auth::TrustTaskVmResolver::from_optional(Some(resolver.clone()));
-    let signer = vti_common::auth::verify_trust_task_proof_with(&doc, &vm_resolver)
+    let signer = vti_common::auth::verify_trust_task_proof_value(reply, &vm_resolver)
         .await
         .map_err(|e| match e {
             // Still a refusal, and deliberately not a 5xx: the SDK retries a

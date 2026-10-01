@@ -32,7 +32,6 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tokio::sync::oneshot;
-use trust_tasks_rs::TrustTask;
 
 /// The `threadId` a reply to `request` will carry.
 ///
@@ -61,7 +60,10 @@ struct Waiter {
     /// Base DID of the party the request was sent to. Only a reply whose
     /// verified signer is this DID releases the waiter.
     peer: String,
-    tx: oneshot::Sender<TrustTask<Value>>,
+    /// Receives the reply **as received** — the JSON its bytes parsed to, not
+    /// a re-serialised `TrustTask` — so a waiter that verifies the reply's proof
+    /// itself verifies what the peer signed (VTI-45).
+    tx: oneshot::Sender<Value>,
 }
 
 /// Reply waiters, keyed on the thread the reply will name.
@@ -88,7 +90,7 @@ impl PendingReplies {
     /// request goes to: only a reply that party verifiably signed releases the
     /// waiter.
     #[must_use]
-    pub fn register(&self, thread: &str, peer: &str) -> oneshot::Receiver<TrustTask<Value>> {
+    pub fn register(&self, thread: &str, peer: &str) -> oneshot::Receiver<Value> {
         let (tx, rx) = oneshot::channel();
         self.lock().insert(
             thread.to_string(),
@@ -107,7 +109,8 @@ impl PendingReplies {
         self.lock().remove(thread);
     }
 
-    /// Hand `document` to whoever is waiting for it, if anyone is — and only
+    /// Hand `document` — the JSON an inbound document's bytes parsed to,
+    /// unmodified — to whoever is waiting for it, if anyone is — and only
     /// when `verified_signer` (the DID the document's own proof verifies as,
     /// bound to its `issuer`; `None` when it carries no such proof) is the peer
     /// the request went to.
@@ -124,8 +127,8 @@ impl PendingReplies {
     /// here would let an unrelated *request* whose id happened to collide with
     /// an outstanding one be swallowed as a reply, which is the same document
     /// disappearing rather than being answered.
-    pub fn complete(&self, document: &TrustTask<Value>, verified_signer: Option<&str>) -> bool {
-        let Some(thread_id) = document.thread_id.as_deref() else {
+    pub fn complete(&self, document: &Value, verified_signer: Option<&str>) -> bool {
+        let Some(thread_id) = document.get("threadId").and_then(Value::as_str) else {
             return false;
         };
         let Some(signer) = verified_signer.map(base_did) else {
@@ -168,7 +171,7 @@ impl PendingReplies {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trust_tasks_rs::TypeUri;
+    use trust_tasks_rs::{TrustTask, TypeUri};
 
     const PEER: &str = "did:key:z6MkPeer";
 
@@ -179,7 +182,7 @@ mod tests {
     async fn only_the_peer_releases_its_waiter() {
         let replies = PendingReplies::new();
         let waiting = replies.register("urn:uuid:thread-p", PEER);
-        let reply = request("urn:uuid:res-p", Some("urn:uuid:thread-p"));
+        let reply = received("urn:uuid:res-p", Some("urn:uuid:thread-p"));
         assert!(!replies.complete(&reply, None), "unsigned");
         assert!(
             !replies.complete(&reply, Some("did:key:z6MkSomeoneElse")),
@@ -187,7 +190,7 @@ mod tests {
         );
         assert_eq!(replies.outstanding(), 1, "the waiter is still there");
         assert!(replies.complete(&reply, Some(&format!("{PEER}#key-0"))));
-        assert_eq!(waiting.await.expect("woken").id, "urn:uuid:res-p");
+        assert_eq!(waiting.await.expect("woken")["id"], "urn:uuid:res-p");
     }
 
     fn request(id: &str, thread: Option<&str>) -> TrustTask<Value> {
@@ -197,6 +200,11 @@ mod tests {
         let mut doc = TrustTask::new(id, type_uri, serde_json::json!({}));
         doc.thread_id = thread.map(str::to_string);
         doc
+    }
+
+    /// [`request`], as the JSON a transport hands the registry.
+    fn received(id: &str, thread: Option<&str>) -> Value {
+        serde_json::to_value(request(id, thread)).expect("serialise")
     }
 
     /// **The registration key is read off the reply the framework actually
@@ -256,14 +264,14 @@ mod tests {
         let waiting = replies.register("urn:uuid:thread-c", PEER);
         assert_eq!(replies.outstanding(), 1);
 
-        let reply = request("urn:uuid:res-4", Some("urn:uuid:thread-c"));
+        let reply = received("urn:uuid:res-4", Some("urn:uuid:thread-c"));
         assert!(
             replies.complete(&reply, Some(PEER)),
             "`true` is what tells the spine not to dispatch this as a request"
         );
 
         let received = waiting.await.expect("the waiter is woken");
-        assert_eq!(received.id, "urn:uuid:res-4");
+        assert_eq!(received["id"], "urn:uuid:res-4");
         assert_eq!(
             replies.outstanding(),
             0,
@@ -282,13 +290,13 @@ mod tests {
         let _waiting = replies.register("urn:uuid:thread-d", PEER);
 
         // Right shape, wrong thread.
-        let other = request("urn:uuid:req-5", Some("urn:uuid:thread-elsewhere"));
+        let other = received("urn:uuid:req-5", Some("urn:uuid:thread-elsewhere"));
         assert!(!replies.complete(&other, Some(PEER)));
 
         // No thread at all — an opening request. Note its `id` deliberately
         // collides with the outstanding thread: matching on `id` as a fallback
         // would swallow this, which is why `complete` reads `threadId` only.
-        let opening = request("urn:uuid:thread-d", None);
+        let opening = received("urn:uuid:thread-d", None);
         assert!(
             !replies.complete(&opening, Some(PEER)),
             "a request whose id collides with an outstanding thread is still a request"
@@ -304,7 +312,7 @@ mod tests {
         replies.abandon("urn:uuid:thread-e");
         assert_eq!(replies.outstanding(), 0);
 
-        let late = request("urn:uuid:res-6", Some("urn:uuid:thread-e"));
+        let late = received("urn:uuid:res-6", Some("urn:uuid:thread-e"));
         assert!(
             !replies.complete(&late, Some(PEER)),
             "after a timeout the entry is gone, so a late answer is not claimed"
@@ -319,7 +327,7 @@ mod tests {
         let replies = PendingReplies::new();
         drop(replies.register("urn:uuid:thread-f", PEER));
 
-        let reply = request("urn:uuid:res-7", Some("urn:uuid:thread-f"));
+        let reply = received("urn:uuid:res-7", Some("urn:uuid:thread-f"));
         assert!(replies.complete(&reply, Some(PEER)));
         assert_eq!(replies.outstanding(), 0);
     }

@@ -47,6 +47,12 @@
 //! - **Failed or unconfirmed** at the attempt's window — no evidence — re-resolves
 //!   the recipient and queues the next transport it offers. With none left, the
 //!   push is marked failed and logged for the operator.
+//! - **Refused** — the attempt's hand-off has failed
+//!   [`FAILED_SENDS_BEFORE_ESCALATION`] times inside its window — moves to the
+//!   next transport the recipient offers at once. The window is for silence
+//!   (an accepted message not yet collected); a transport that keeps saying no
+//!   is not silent, and waiting out an hour of its refusals delays the push for
+//!   nothing.
 //!
 //! Each attempt but the last gets at most [`ATTEMPT_WINDOW`]; the last gets
 //! what remains of the deadline. The recipient may receive a document more than
@@ -212,6 +218,39 @@ pub struct PushMessaging<'a> {
 /// hourly; short enough that a transport the recipient stopped reading does
 /// not hold a removal notice for its whole thirty-day window.
 pub const ATTEMPT_WINDOW: Duration = Duration::from_secs(60 * 60);
+
+/// How many failed hand-offs an attempt may have before the push moves to the
+/// next transport without waiting out [`ATTEMPT_WINDOW`].
+///
+/// The window exists for *silence*: an attempt the next hop accepted whose
+/// recipient has not collected it yet, which may simply be offline. A
+/// hand-off that **fails** — the transport's `send` returns an error, such as
+/// a TSP relay to a peer's mediator this node's mediator cannot reach — is not
+/// silence. It is the transport saying no, and the delivery layer retries it
+/// with backoff capped at a minute, so an hour's window is sixty refusals
+/// before the next transport is tried. Five failed sends span roughly fifteen
+/// to thirty seconds of the delivery layer's backoff (1 s, 2 s, 4 s, 8 s): long
+/// enough that a mediator restart or a dropped socket does not move a push off
+/// its preferred transport, short enough that a transport that cannot send at
+/// all does not hold it for the hour.
+///
+/// A destination queue-full refusal is back-pressure, not failure — the
+/// delivery layer does not count it in `attempts` — so it never triggers this.
+/// And the last transport a recipient offers keeps retrying to the deadline:
+/// there is nothing to move to, and the peer's advertisement is never
+/// downgraded past.
+pub const FAILED_SENDS_BEFORE_ESCALATION: u32 = 5;
+
+/// Whether an attempt has failed often enough to move on before its window
+/// closes ([`FAILED_SENDS_BEFORE_ESCALATION`]). Only a `Queued` attempt — one
+/// still being retried because its hand-off failed — qualifies: a `Sent` one is
+/// silence, which is the window's to judge, and a terminal one is handled on
+/// its own arm. `has_next` is whether the push has a transport left to try.
+fn failed_before_window(state: Option<OutboxState>, failed_sends: u32, has_next: bool) -> bool {
+    has_next
+        && matches!(state, Some(OutboxState::Queued))
+        && failed_sends >= FAILED_SENDS_BEFORE_ESCALATION
+}
 
 /// How long an attempt may be missing from the outbox before the sweep
 /// concludes it was never queued. The record is written before the entry, so a
@@ -843,9 +882,22 @@ pub async fn sweep(ctx: &PushContext<'_>) -> Result<(), AppError> {
         let expired = entry.as_ref().is_some_and(|e| now >= e.deliver_by_ms);
         let observed = entry.as_ref().is_some_and(|e| e.outbox_observed);
         let window_end_ms = entry.as_ref().map(|e| e.deliver_by_ms);
+        let failed_sends = entry.as_ref().map_or(0, |e| e.attempts);
         let entry_state = entry.map(|e| e.state);
         let clock = Utc::now();
         match entry_state {
+            // The transport keeps refusing the hand-off. That is a definitive
+            // answer, not silence, so the push moves on now rather than at the
+            // end of its window (`FAILED_SENDS_BEFORE_ESCALATION`). Ahead of the
+            // re-issue arm below: re-signing a document for a transport that
+            // cannot send it gains nothing, and the escalated attempt re-issues
+            // anyway if it has to.
+            state
+                if !expired
+                    && failed_before_window(state, failed_sends, !record.remaining.is_empty()) =>
+            {
+                escalate_after_failures(ctx, &outbox, &mut record, failed_sends).await?;
+            }
             // Collected, but only after every VTI consumer had stopped
             // accepting the document: the recipient was offline past the
             // window, is online now, and refused what it collected. Collection
@@ -953,27 +1005,84 @@ async fn escalate(ctx: &PushContext<'_>, record: &mut PushRecord) -> Result<(), 
         return finish(ctx, record, false, "none").await;
     }
     // A recipient that now offers nothing we speak leaves nothing to escalate to.
-    let (fresh, reach) = plan(ctx, &record.recipient).await.unwrap_or_default();
+    let (next, reach) = next_transports(ctx, record).await;
     record.peer_tsp_mediator = reach.tsp_mediator;
     record.rest_base = reach.rest_base;
-    // What is left of the original plan, kept only where the recipient still
-    // offers it, and never the transport that just failed to produce evidence.
-    let tried = record.current;
-    let next: Vec<Protocol> = record
-        .remaining
-        .iter()
-        .copied()
-        .filter(|p| *p != tried && fresh.contains(p))
-        .collect();
     if next.is_empty() {
         return finish(ctx, record, false, "none").await;
     }
     warn!(
         recipient = %record.recipient,
-        from = %tried,
+        from = %record.current,
         to = %next[0],
         "push produced no delivery evidence in its window; escalating"
     );
+    move_to(ctx, record, next).await
+}
+
+/// The attempt in flight has failed [`FAILED_SENDS_BEFORE_ESCALATION`] hand-offs
+/// inside its window: move to the next transport the recipient still offers
+/// now, rather than when the window closes (VTI-TRN-042 — a transport that
+/// refuses is one that "yields no evidence", and there is no reason to wait for
+/// more refusals).
+///
+/// Unlike [`escalate`], running out of transports here does not finish the
+/// push: the attempt in flight is still being retried and still inside its
+/// window, so it is left to carry on, and the window decides as it always did.
+async fn escalate_after_failures(
+    ctx: &PushContext<'_>,
+    outbox: &crate::outbox_store::VtiOutboxStore,
+    record: &mut PushRecord,
+    failed_sends: u32,
+) -> Result<(), AppError> {
+    let (next, reach) = next_transports(ctx, record).await;
+    if next.is_empty() {
+        debug!(
+            push = %record.id,
+            via = %record.current,
+            failed_sends,
+            "push attempt keeps failing but the recipient offers no other transport; retrying it"
+        );
+        return Ok(());
+    }
+    // Stop the delivery layer retrying the attempt being left, so the push has
+    // one attempt in flight. A hand-off racing this can still land; the
+    // recipient deduplicates by document id (VTI-TRN-043), and that attempt's
+    // evidence is no longer read.
+    abandon_attempt(outbox, &record.attempt_key).await;
+    record.peer_tsp_mediator = reach.tsp_mediator;
+    record.rest_base = reach.rest_base;
+    warn!(
+        recipient = %record.recipient,
+        from = %record.current,
+        to = %next[0],
+        failed_sends,
+        "push attempt's hand-off keeps failing; escalating before its window closes"
+    );
+    move_to(ctx, record, next).await
+}
+
+/// What is left of the push's plan, kept only where the recipient — resolved
+/// again, since "a dead mediator is not a dead peer" — still offers it, and
+/// never the transport of the attempt in flight. With what it resolved to.
+async fn next_transports(ctx: &PushContext<'_>, record: &PushRecord) -> (Vec<Protocol>, Reach) {
+    let (fresh, reach) = plan(ctx, &record.recipient).await.unwrap_or_default();
+    let tried = record.current;
+    let next = record
+        .remaining
+        .iter()
+        .copied()
+        .filter(|p| *p != tried && fresh.contains(p))
+        .collect();
+    (next, reach)
+}
+
+/// Queue the first of `next` as the push's attempt in flight.
+async fn move_to(
+    ctx: &PushContext<'_>,
+    record: &mut PushRecord,
+    next: Vec<Protocol>,
+) -> Result<(), AppError> {
     record.remaining = next;
     record.current = record.remaining.remove(0);
     record.attempt += 1;
@@ -982,6 +1091,27 @@ async fn escalate(ctx: &PushContext<'_>, record: &mut PushRecord) -> Result<(), 
         return finish(ctx, record, false, "none").await;
     }
     Ok(())
+}
+
+/// Settle an attempt the push has moved on from, so the delivery layer stops
+/// retrying it. Only a `Queued` attempt is touched: one already handed off is
+/// the mediator's, and a terminal one is already settled. Best-effort — a
+/// failure leaves the attempt retrying until its own window closes, which is
+/// what happened before a push could move on early.
+async fn abandon_attempt(outbox: &crate::outbox_store::VtiOutboxStore, attempt_key: &str) {
+    use affinidi_messaging_delivery::OutboxStore as _;
+    match outbox.get(attempt_key).await {
+        Ok(Some(mut entry)) if entry.state == OutboxState::Queued => {
+            entry.state = OutboxState::Failed;
+            if let Err(e) = outbox.put(entry).await {
+                warn!(attempt = %attempt_key, error = %e, "could not settle the abandoned push attempt");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            warn!(attempt = %attempt_key, error = %e, "could not read the abandoned push attempt")
+        }
+    }
 }
 
 async fn finish(
@@ -1427,6 +1557,79 @@ mod tests {
         let mut previous = signed_at(now - chrono::TimeDelta::hours(1));
         previous["expiresAt"] = json!((now - chrono::TimeDelta::minutes(1)).to_rfc3339());
         assert!(new_attempt(&previous, now).is_err());
+    }
+
+    /// VTI-TRN-042: an attempt whose hand-off keeps failing moves on after
+    /// `FAILED_SENDS_BEFORE_ESCALATION` refusals, not at the end of its window.
+    #[test]
+    fn vti_trn_042_repeated_failed_hand_offs_escalate_before_the_window() {
+        let queued = Some(OutboxState::Queued);
+        assert!(!failed_before_window(
+            queued,
+            FAILED_SENDS_BEFORE_ESCALATION - 1,
+            true
+        ));
+        assert!(failed_before_window(
+            queued,
+            FAILED_SENDS_BEFORE_ESCALATION,
+            true
+        ));
+        assert!(failed_before_window(
+            queued,
+            FAILED_SENDS_BEFORE_ESCALATION + 10,
+            true
+        ));
+    }
+
+    /// The last transport a recipient offers is never abandoned early: there is
+    /// nothing to move to, and it keeps retrying to the deadline.
+    #[test]
+    fn the_last_transport_keeps_retrying_however_often_it_fails() {
+        assert!(!failed_before_window(
+            Some(OutboxState::Queued),
+            u32::MAX,
+            false
+        ));
+    }
+
+    /// Only a refused hand-off counts. An attempt the next hop accepted (`Sent`)
+    /// is silence, the window's to judge; a terminal one has its own arm; one
+    /// not in the outbox yet has no failures to count.
+    #[test]
+    fn only_a_queued_attempt_escalates_on_failures() {
+        for state in [
+            None,
+            Some(OutboxState::Sent),
+            Some(OutboxState::Delivered),
+            Some(OutboxState::Unconfirmed),
+            Some(OutboxState::Failed),
+        ] {
+            assert!(
+                !failed_before_window(state, u32::MAX, true),
+                "{state:?} must not escalate on its failure count"
+            );
+        }
+    }
+
+    /// The default leaves room for a mediator restart and stays well inside a
+    /// minute of the delivery layer's backoff (1 s, 2 s, 4 s, 8 s, …), far short of
+    /// `ATTEMPT_WINDOW`.
+    #[test]
+    fn the_failure_threshold_is_bounded_well_inside_the_window() {
+        let backoff_to_threshold: u64 = (1..FAILED_SENDS_BEFORE_ESCALATION)
+            .map(affinidi_messaging_delivery::drain::backoff_ms)
+            .sum();
+        const {
+            assert!(
+                FAILED_SENDS_BEFORE_ESCALATION >= 3,
+                "one blip must not escalate"
+            )
+        };
+        assert!(
+            backoff_to_threshold < 60_000,
+            "escalation after failures must not take a minute: {backoff_to_threshold} ms"
+        );
+        assert!(Duration::from_millis(backoff_to_threshold) < ATTEMPT_WINDOW / 60);
     }
 
     #[test]

@@ -364,3 +364,88 @@ async fn a_document_with_no_recipient_is_malformed() {
 
     mock.shutdown().await;
 }
+
+/// Sign `doc` **exactly as it stands** — the JSON a JavaScript producer sends —
+/// with seed `seed`'s Ed25519 key under `vm`, for `purpose`, the proof's
+/// `created` set to the string given, verbatim (VTI-45).
+fn sign_received(doc: &mut Value, seed: u8, vm: &str, purpose: &str, created: &str) {
+    use affinidi_data_integrity::crypto_suites::CryptoSuite;
+    use affinidi_data_integrity::{DataIntegrityProof, prepare_sign_input};
+    use ed25519_dalek::Signer as _;
+    let mut di = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        vm.to_string(),
+        purpose.to_string(),
+        None,
+        Some(created.to_string()),
+        None,
+    );
+    doc.as_object_mut().expect("an object").remove("proof");
+    let input = prepare_sign_input(&*doc, &di, CryptoSuite::EddsaJcs2022).expect("sign input");
+    let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    di.proof_value = Some(multibase::encode(
+        multibase::Base::Base58Btc,
+        sk.sign(&input).to_bytes(),
+    ));
+    doc["proof"] = serde_json::to_value(&di).expect("proof serialises");
+}
+
+/// Now, on a whole second, as JavaScript's `toISOString()` writes it.
+fn javascript_whole_second_now() -> String {
+    format!("{}.000Z", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S"))
+}
+
+/// VTI-45, over HTTP: a login document as a JavaScript producer signs it on a
+/// whole second — `.000Z` in `issuedAt` and in the proof's `created`, a `null`
+/// `threadId` — authenticates. Before the fix the spine verified a typed
+/// re-serialisation, which writes the timestamps without the fraction, and
+/// answered `proofInvalid`.
+#[tokio::test]
+async fn vti_45_a_javascript_whole_second_authenticate_document_logs_in() {
+    let mock = MockVtc::start().await;
+    let base = mock.base_url().to_string();
+    let client = reqwest::Client::new();
+
+    let (did, _) = did_key_from_seed(0x45);
+    store_acl_entry(&mock.vtc.state.acl_ks, &admin_entry(&did))
+        .await
+        .expect("seed admin acl row");
+    let vta_did = vtc_did(&mock).await;
+    let (challenge, session_id) = get_challenge(&client, &base, &vta_did, &did).await;
+
+    let now = javascript_whole_second_now();
+    let mb = did.trim_start_matches("did:key:");
+    let mut doc = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": AUTHENTICATE_TASK,
+        "issuer": did,
+        "recipient": vta_did,
+        "issuedAt": now,
+        "threadId": null,
+        "payload": { "challenge": challenge, "sessionId": session_id },
+    });
+    sign_received(
+        &mut doc,
+        0x45,
+        &format!("{did}#{mb}"),
+        "authentication",
+        &now,
+    );
+
+    let mut tampered = doc.clone();
+    tampered["issuedAt"] = json!(now.replace(".000Z", "Z"));
+    let (status, body) = post_trust_task(&client, &base, tampered.to_string()).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a re-spelled timestamp is not what was signed: {body}"
+    );
+
+    let (status, body) = post_trust_task(&client, &base, doc.to_string()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let parsed =
+        vta_sdk::auth_di::parse_auth_response(&body.to_string()).expect("authenticate response");
+    assert_eq!(parsed.session.subject, did);
+
+    mock.shutdown().await;
+}

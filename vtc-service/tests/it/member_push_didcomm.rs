@@ -321,6 +321,59 @@ async fn vti_trn_042_no_evidence_on_didcomm_escalates_to_rest() {
     assert_eq!(received.lock().await.clone(), vec![doc]);
 }
 
+/// A TSP attempt whose hand-off keeps failing moves to the next transport the
+/// peer offers after a few refusals, not after its hour-long window
+/// (VTI-TRN-042, `FAILED_SENDS_BEFORE_ESCALATION`). The peer's TSP mediator is
+/// one nothing can resolve, so every TSP send fails; with a two-hour deadline
+/// the TSP attempt's window is the full `ATTEMPT_WINDOW`, so delivery over REST
+/// inside a minute can only come from the early escalation.
+#[cfg(feature = "tsp")]
+#[tokio::test]
+async fn vti_trn_042_a_refused_tsp_hand_off_escalates_before_its_window() {
+    init_tracing();
+    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let (base, received) = trust_task_server().await;
+    let peer = mint_peer(vec![
+        service("TSPTransport", "did:web:unreachable-mediator.invalid"),
+        service("TrustTaskHTTPS", &base),
+    ]);
+    let doc = document(&peer);
+
+    let id = member_push::push_trust_task(
+        &mock.vtc.state,
+        &peer,
+        doc.clone(),
+        Duration::from_secs(2 * 60 * 60),
+    )
+    .await
+    .expect("queued");
+
+    let outcome = settle(&mock, &id, Duration::from_secs(60))
+        .await
+        .expect("the push settled inside a minute, not at the end of the TSP window");
+    assert_eq!(
+        outcome,
+        (true, Protocol::Rest, "reply".to_string()),
+        "escalated from TSP to REST on repeated refusals"
+    );
+    assert_eq!(received.lock().await.clone(), vec![doc]);
+
+    // The TSP attempt was settled when the push left it, so the delivery layer
+    // is no longer retrying it.
+    use affinidi_messaging_delivery::OutboxStore as _;
+    let outbox = vti_common::outbox_store::VtiOutboxStore::new(mock.vtc.state.outbox_ks.clone());
+    let abandoned = outbox
+        .get(&format!("{id}:0:tsp"))
+        .await
+        .expect("read outbox")
+        .expect("the TSP attempt was queued");
+    assert!(
+        abandoned.state.is_terminal(),
+        "the abandoned TSP attempt is settled, not still retrying: {:?}",
+        abandoned.state
+    );
+}
+
 /// A service type nothing recognises reads as advertising nothing, so the push
 /// takes the shared mediator over DIDComm, as every member push did before —
 /// and never REST under a type other than `TrustTaskHTTPS`.
