@@ -363,12 +363,32 @@ async fn signed_by_the_caller(
             )));
         }
     }
+    // A VTA with no DID yet (`tee.kms.vta_did_template` unset, or
+    // auto-generation has not completed) can hold first-boot entropy and an
+    // open export window like any other — `maybe_generate_vta_did` runs
+    // before the TEE context (and its mnemonic guard) is attached, but on a
+    // non-Nitro build a failure there is only warned, not fatal, and a
+    // deployment that mints its identity by another means (e.g. a did:peer
+    // minted out-of-band) may never populate `vta_did` at all.
+    //
+    // The specification requires `recipient` to be present and *name the
+    // recipient's own DID* on both channel paths (not only this one) — a
+    // requirement no request can satisfy when the recipient has no DID to
+    // name. So this stays a refusal, not a bypass: there is no clientDid that
+    // would make the request conformant, and the guard is never touched.
+    // `vta setup` is the non-TEE daemon's config wizard and does not apply
+    // here (vta-enclave, the only binary with a mnemonic guard, is built
+    // without the `setup` feature) — point at the actual remedy instead.
     let vta_did = state.config.read().await.vta_did.clone();
     match (vta_did.as_deref(), doc.recipient.as_deref()) {
         (Some(mine), Some(named)) if mine == named => {}
         (None, _) => {
             return Err(refuse(
-                "this VTA has no DID to bind the request to. Run `vta setup` first",
+                "this VTA has no DID yet, so no request can name it as `recipient` — the \
+                 specification requires that on both channel paths. Configure \
+                 `tee.kms.vta_did_template` (or otherwise establish the VTA's identity) so it \
+                 has a DID before asking for the mnemonic; the export window stays open and \
+                 unspent until then",
             ));
         }
         _ => return Err(refuse("the request's recipient must be this VTA's DID")),
@@ -682,6 +702,68 @@ mod tests {
             String::from_utf8_lossy(&replay.body)
         );
         assert_ne!(replay.status, axum::http::StatusCode::OK);
+    }
+
+    // ── first boot, no DID yet ──────────────────────────────────────────
+
+    /// A TEE VTA that holds first-boot entropy (the guard is active) but has
+    /// not yet established a DID — `tee.kms.vta_did_template` unset, or
+    /// auto-generation still pending. Unlike [`state_with_guard`], which
+    /// always provisions a `vta_did` via `build_signing_test_app_state`, this
+    /// clears it back out so the scenario is reachable in a test.
+    async fn state_with_guard_and_no_did() -> (
+        crate::server::AppState,
+        Arc<MnemonicExportGuard>,
+        tempfile::TempDir,
+    ) {
+        let (state, guard, dir) = state_with_guard().await;
+        state.config.write().await.vta_did = None;
+        (state, guard, dir)
+    }
+
+    /// Over both channel paths, a DID-less VTA refuses the export: the
+    /// specification requires `recipient` to name the recipient's own DID,
+    /// and there is none to name. The refusal must not spend the one-time
+    /// release — a later request, once the VTA has a DID, must still find
+    /// the window open.
+    #[tokio::test]
+    async fn a_mnemonic_export_on_a_did_less_vta_is_refused_on_either_path() {
+        let (state, guard, _dir) = state_with_guard_and_no_did().await;
+        // `request_doc` addresses `recipient` from `state.config.vta_did`,
+        // which is `None` here, so these requests carry no `recipient` —
+        // exactly what an operator talking to a not-yet-identified VTA would
+        // send.
+        let req = Request::signed_to(the_admins_did());
+        for channel in [
+            TransportConfidentiality::HopByHop,
+            TransportConfidentiality::EndToEnd,
+        ] {
+            let doc = export_over(&state, channel, &super_admin_claims(), &req).await;
+            assert_refused_untouched(&doc, &guard, "permissionDenied");
+            assert!(
+                doc.to_string().contains("no DID yet"),
+                "refusal should name the actual gap: {doc}"
+            );
+        }
+    }
+
+    /// A request naming some *other* DID as `recipient` is refused the same
+    /// way as one naming none — a DID-less VTA is never a match, so this must
+    /// not be mistaken for "the right VTA, wrong proof" and treated any more
+    /// permissively.
+    #[tokio::test]
+    async fn a_mnemonic_export_on_a_did_less_vta_with_a_named_recipient_is_refused() {
+        let (state, guard, _dir) = state_with_guard_and_no_did().await;
+        let mut doc = request_doc(&state, &Request::signed_to(the_admins_did())).await;
+        doc.recipient = Some("did:example:not-this-vta".to_string());
+        sign_as_for(TEST_ADMIN_SEED[0], "authentication", &mut doc);
+        let outcome = with_confidentiality(
+            TransportConfidentiality::EndToEnd,
+            Box::pin(handle_mnemonic_export(&state, &super_admin_claims(), doc)),
+        )
+        .await;
+        let doc: Value = serde_json::from_slice(&outcome.body).expect("a response document");
+        assert_refused_untouched(&doc, &guard, "permissionDenied");
     }
 
     // ── the public reads ────────────────────────────────────────────────

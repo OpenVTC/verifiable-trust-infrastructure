@@ -1050,6 +1050,45 @@ pub(crate) enum VtaCommands {
     },
     /// Restart the VTA service (soft restart — reloads config and reconnects)
     Restart,
+    /// Open a sealed `vta/attestation/mnemonic-export/1.0` backup bundle.
+    Mnemonic {
+        #[command(subcommand)]
+        command: MnemonicCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum MnemonicCommands {
+    /// Decrypt a sealed mnemonic-export bundle with the local key that
+    /// requested it, and print the words to this terminal.
+    ///
+    /// Fully offline: the bundle was sealed to an ephemeral key this machine
+    /// generated (`pnm bootstrap request` / the VTA's signed first-boot
+    /// response), and that key's seed is read from the same
+    /// `bootstrap-secrets` store `pnm bootstrap open` uses.
+    Open {
+        /// Path to the armored sealed bundle.
+        #[arg(long)]
+        bundle: std::path::PathBuf,
+        /// The SHA-256 digest the VTA printed out-of-band when it exported
+        /// the bundle. Confirm it before trusting what decrypts.
+        #[arg(long)]
+        expect_digest: Option<String>,
+        /// Skip the out-of-band digest check. The HPKE seal still limits who
+        /// can read the bundle, but nothing then confirms this is the exact
+        /// bundle the VTA produced rather than one swapped in transit.
+        #[arg(long)]
+        no_verify_digest: bool,
+        /// Also write the mnemonic to this file (0600). Omit this: the
+        /// words then go to the terminal only, which is the safer default
+        /// for a root secret — a file can be synced, backed up or copied
+        /// without your noticing.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+        /// Overwrite `--out` if it already exists.
+        #[arg(long, requires = "out")]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
