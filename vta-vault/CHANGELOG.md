@@ -2,6 +2,28 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.8.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.7.0...vta-vault-v0.8.0) — 2026-10-01
+
+
+### Fixed
+
+- Keyring findings round — proof sets, verify-as-received, VTC delivery (VTI-44, VTI-45, VTI-50, VTI-56) ([#1868](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1868))
+
+* fix(vta-cli-common): opening a bundle to inspect it keeps the request seed
+
+  pnm, cnm and vta `bootstrap open` consumed the single-use request seed
+  right after decrypting, even when they wrote nothing. The seed is the only
+  key that opens the bundle, so inspecting a template bundle destroyed the
+  integration's keys, and cnm's own follow-up hint (`cnm auth login
+  --credential-bundle`) could never succeed (VTI-53).
+
+  Inspection now opens with the seed kept and says where it is. pnm consumes
+  it only after a successful --out write, so a refused bundle no longer costs
+  a fresh request cycle either. open_armored_bundle_keeping_secret and
+  consume_request_secret are now public.
+
+
+
 ## [0.7.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-vault-v0.6.7...vta-vault-v0.7.0) — 2026-09-30
 
 

@@ -2,6 +2,58 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.31.0...vti-common-v0.32.0) — 2026-10-01
+
+
+### Fixed
+
+- Take affinidi-messaging-sdk 0.31.1; the SDK routes a cross-mediator invite itself ([#1880](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1880))
+
+affinidi-messaging-sdk 0.31.1 (affinidi-tdk-rs #913) routes a TSP
+  relationship invite to a peer on another mediator through the mediator the
+  peer's DID document names, and keeps a Delivery-Request-collected message's
+  own id so a reply threads to it (VTI-49). The workspace floor moves to
+  0.31.1, because ^0.31 resolving 0.31.0 would bring the cross-mediator
+  refusal back.
+
+  So the set_peer_mediator half of vti_common::tsp_route ([#1873](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1873)) is gone. It
+  recorded the same DID-document mediator the SDK now reads.
+  tsp_route::send_reestablishing stays: the SDK's own sends the payload along
+  the route it is given, and [our_mediator, peer] cannot reach a peer on
+  another mediator. vti_56_a_cold_relationship_with_a_cross_mediator_peer_forms
+  now uses peers that name their mediator by DID, as a VTI-provisioned DID
+  does, and holds both halves.
+
+- A TSP relationship can be started with a peer on another mediator (VTI-56) ([#1873](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1873))
+
+A node that starts a TSP relationship with a peer on another mediator had
+  its invite refused by its own mediator (403 e.p.direct_delivery.denied,
+  "must be relayed through a routing envelope"), every attempt. The SDK
+  routes a control message across mediators only when it already knows the
+  peer's mediator, learned from a routed invite from the peer or set with
+  set_peer_mediator. An initiator has neither, and nothing here set it. That
+  is why the Farm VTC's TSP push to a member on the other mediator never left
+  its own mediator and fell back to DIDComm an hour later. The existing
+  cross-mediator tests pre-form the relationship (relate_directly), so they
+  never sent an invite.
+
+- Keyring findings round — proof sets, verify-as-received, VTC delivery (VTI-44, VTI-45, VTI-50, VTI-56) ([#1868](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1868))
+
+* fix(vta-cli-common): opening a bundle to inspect it keeps the request seed
+
+  pnm, cnm and vta `bootstrap open` consumed the single-use request seed
+  right after decrypting, even when they wrote nothing. The seed is the only
+  key that opens the bundle, so inspecting a template bundle destroyed the
+  integration's keys, and cnm's own follow-up hint (`cnm auth login
+  --credential-bundle`) could never succeed (VTI-53).
+
+  Inspection now opens with the seed kept and says where it is. pnm consumes
+  it only after a successful --out write, so a refused bundle no longer costs
+  a fresh request cycle either. open_armored_bundle_keeping_secret and
+  consume_request_secret are now public.
+
+
+
 ## [0.31.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.30.0...vti-common-v0.31.0) — 2026-09-30
 
 

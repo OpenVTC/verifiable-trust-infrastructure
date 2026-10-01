@@ -2,6 +2,48 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.28.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.27.0...pnm-cli-v0.28.0) — 2026-10-01
+
+
+### Fixed
+
+- **vta**: Mnemonic export on a DID-less VTA, and a CLI to open the bundle ([#1878](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1878))
+
+* fix(vta-service,pnm-cli): mnemonic export on a DID-less VTA, and a CLI to open the bundle
+
+  A TEE VTA can hold first-boot entropy (the export window active) before it
+  has a DID: tee.kms.vta_did_template unset, or auto-generation still
+  pending/failed-non-fatally. signed_by_the_caller already refuses the
+  export then (no DID to bind the request's `recipient` to, and the spec
+  requires `recipient` present and naming the recipient's own DID on both
+  channel paths) — but the refusal pointed operators at `vta setup`, which
+  doesn't apply to vta-enclave (built without the `setup` feature, the only
+  binary with a mnemonic guard). Point at the real remedy instead, and add
+  tests proving the refusal on either path leaves the window unspent.
+
+  Add `pnm vta mnemonic open <bundle>` to decrypt a sealed
+  mnemonic-export bundle locally: refuses any non-SeedMnemonic payload,
+  prints the words to the terminal only, consumes the local request
+  secret on success, and writes to a file only when `--out` is passed
+  explicitly (0600, via the existing write_secret_export helper).
+
+- Keyring findings round — proof sets, verify-as-received, VTC delivery (VTI-44, VTI-45, VTI-50, VTI-56) ([#1868](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1868))
+
+* fix(vta-cli-common): opening a bundle to inspect it keeps the request seed
+
+  pnm, cnm and vta `bootstrap open` consumed the single-use request seed
+  right after decrypting, even when they wrote nothing. The seed is the only
+  key that opens the bundle, so inspecting a template bundle destroyed the
+  integration's keys, and cnm's own follow-up hint (`cnm auth login
+  --credential-bundle`) could never succeed (VTI-53).
+
+  Inspection now opens with the seed kept and says where it is. pnm consumes
+  it only after a successful --out write, so a refused bundle no longer costs
+  a fresh request cycle either. open_armored_bundle_keeping_secret and
+  consume_request_secret are now public.
+
+
+
 ## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.26.3...pnm-cli-v0.27.0) — 2026-09-30
 
 
