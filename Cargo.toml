@@ -112,7 +112,11 @@ affinidi-vc = "0.2"
 # post-quantum key cannot sign a credential at all, and says so by naming
 # Ed25519. The same trap was caught for `affinidi-secrets-resolver` (which
 # carries the feature below) and missed here.
-affinidi-data-integrity = { version = "0.7", features = ["ml-dsa"] }
+# Pinned to 0.7.13: 0.7.14 moved its public affinidi-bbs dependency to 0.4 in a
+# patch release (affinidi-tdk-rs #912), which breaks a fresh resolve beside this
+# workspace's affinidi-bbs 0.3 (two affinidi_bbs::PublicKey types in vta-vault).
+# Drop the pin when VTI moves to affinidi-data-integrity 0.8 + affinidi-bbs 0.4.
+affinidi-data-integrity = { version = "=0.7.13", features = ["ml-dsa"] }
 affinidi-status-list = "0.1.3"
 
 # Credential formats for the credential-centric VTI architecture
