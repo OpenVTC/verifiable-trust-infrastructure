@@ -252,36 +252,18 @@ impl TspTransport {
         .await
     }
 
-    /// Tell the SDK which mediator `recipient` lives behind when it is not
-    /// ours, so the relationship control messages it sends route through it —
-    /// see [`vti_common::tsp_route`] for why an initiator has to (VTI-56).
-    pub async fn note_peer_mediator(
-        &self,
-        recipient: &str,
-        peer_mediator: Option<&str>,
-    ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
-        vti_common::tsp_route::note_peer_mediator(
-            &self.atm,
-            &self.profile,
-            &self.mediator_did,
-            recipient,
-            peer_mediator,
-        )
-        .await
-        .map(|_| ())
-    }
-
     /// Re-invite `recipient` **without** sending a payload — heal the
     /// relationship for a later send. Used on the recovery path for a task that
     /// is not safe to blind-resend, where re-forming the relationship (so the
     /// caller's retry lands) is right but re-sending the Trust Task could
     /// double-execute. Valid only from `None`, so callers reset first.
+    ///
+    /// A peer on another mediator is invited through the mediator its DID
+    /// document names; the SDK does that from 0.31.1 (VTI-56).
     pub async fn relate(
         &self,
         recipient: &str,
-        peer_mediator: Option<&str>,
     ) -> Result<(), affinidi_messaging_sdk::errors::ATMError> {
-        self.note_peer_mediator(recipient, peer_mediator).await?;
         self.atm
             .tsp()
             .form_relationship_routed(&self.profile, recipient)

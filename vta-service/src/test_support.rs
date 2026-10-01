@@ -3638,15 +3638,15 @@ mod transport_harness_tests {
 
     /// VTI-56: a relationship started **from cold** with a peer on another
     /// mediator. Every other cross-mediator test here pre-forms the relationship
-    /// (`relate_directly`), which skips the invite entirely — which is how this
+    /// (`relate_directly`), which skips the invite entirely, which is how this
     /// went unseen.
     ///
-    /// The SDK routes an invite across mediators only when it already knows the
-    /// peer's mediator. An initiator does not, so the invite went to our own
-    /// mediator as a Direct message and was refused
-    /// (`e.p.direct_delivery.denied`) on every attempt. The first half pins that
-    /// SDK behaviour, so the day it learns to route by the DID document this
-    /// test says the workaround can go; the second half is our send.
+    /// The peers name their mediator by DID in their `TSPTransport` service, as
+    /// a VTI-provisioned DID does. Both halves of a cold send have to cross: the
+    /// invite, which the SDK routes through that mediator from 0.31.1
+    /// (affinidi-tdk-rs #913; before, mediator A refused it as
+    /// `e.p.direct_delivery.denied` on every attempt), and the payload, which
+    /// `vti_common::tsp_route` nests.
     #[tokio::test]
     async fn vti_56_a_cold_relationship_with_a_cross_mediator_peer_forms() {
         use affinidi_messaging_sdk::messages::fetch::FetchOptions;
@@ -3659,22 +3659,25 @@ mod transport_harness_tests {
             .expect("spawn a two-mediator topology");
         let mediator_b = topology.mediator_did(1).expect("mediator B").to_string();
         let alice = topology.add_user(0, "alice").await.expect("alice on A");
-        let bob = topology.add_user(1, "bob").await.expect("bob on B");
-        let carol = topology.add_user(1, "carol").await.expect("carol on B");
+        let bob = topology
+            .add_tsp_mediated_user(1, "bob")
+            .await
+            .expect("bob on B, naming mediator B by DID");
+        let carol = topology
+            .add_tsp_mediated_user(1, "carol")
+            .await
+            .expect("carol on B, naming mediator B by DID");
         let node_a = topology.node(0).expect("node A");
         let node_b = topology.node(1).expect("node B");
 
-        // The SDK alone: a cold invite to bob is refused by mediator A.
-        let refused = node_a
+        // The SDK alone (the floor this workspace pins): a cold invite to bob
+        // crosses to the mediator his document names.
+        node_a
             .atm
             .tsp()
             .form_relationship_routed(&alice.profile, &bob.did)
             .await
-            .expect_err("a cold invite to a peer on another mediator is refused");
-        assert!(
-            refused.to_string().contains("direct_delivery.denied"),
-            "{refused}"
-        );
+            .expect("a cold invite to a peer on another mediator is routed through it");
 
         // Ours: the re-establishing send names carol's mediator, as every caller
         // does from her DID document's `#tsp` endpoint.
