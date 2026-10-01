@@ -351,7 +351,7 @@
       "status": "retired",
       "path": "auth/recognise/1.0",
       "rest": "POST /v1/auth/recognise",
-      "supersededBy": "https://trusttasks.org/spec/vtc/auth/recognise/0.1"
+      "supersededBy": "https://trusttasks.org/spec/vtc/auth/recognise/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/personhood/challenge/1.0",
