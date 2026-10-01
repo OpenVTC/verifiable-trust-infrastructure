@@ -13,7 +13,6 @@
 //!   route asked for an unrestricted one;
 //! - the bearer route is gone.
 
-
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use vti_rooms_dtg::test_support::Party;

@@ -5,7 +5,6 @@
 //! signer's ACL row → handler → three-layer effective view → db-overlay
 //! persistence — via `Router::oneshot`.
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};

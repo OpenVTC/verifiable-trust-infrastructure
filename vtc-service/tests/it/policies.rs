@@ -15,7 +15,6 @@
 //! route answered with — success from the verb's own contract, and a
 //! refusal from the error code the signed door still carries.
 
-
 use serde_json::{Value, json};
 use uuid::Uuid;
 use vti_common::store::KeyspaceHandle;
@@ -155,7 +154,8 @@ async fn activate(fix: &Fixture, id: &str, purpose: Option<&str>) -> (StatusCode
             }
         }
     }
-    let (_, doc) = crate::common::signed::call(&fix._vtc, &fix.signer, ACTIVATE_TASK, payload).await;
+    let (_, doc) =
+        crate::common::signed::call(&fix._vtc, &fix.signer, ACTIVATE_TASK, payload).await;
     reply(&doc, StatusCode::OK)
 }
 

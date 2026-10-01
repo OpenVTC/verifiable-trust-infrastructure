@@ -17,7 +17,6 @@
 //! and `500` for anything else (including the old bespoke `503`s this ported
 //! from — `AppError::ServiceError` has no dedicated arm in that taxonomy).
 
-
 use std::sync::Arc;
 
 use axum::body::Body;

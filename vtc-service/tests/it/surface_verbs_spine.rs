@@ -8,7 +8,6 @@
 //! matching the published `#response` schema), refused unsigned and below
 //! that role, and — where the route is gone — not served over bearer REST.
 
-
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 

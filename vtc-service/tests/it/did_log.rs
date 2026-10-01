@@ -10,7 +10,6 @@
 //! - 404 when the configured DID's SCID is malformed (no path
 //!   traversal reaches the filesystem).
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

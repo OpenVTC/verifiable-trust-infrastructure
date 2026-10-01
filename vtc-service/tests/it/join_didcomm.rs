@@ -30,7 +30,6 @@
 //! means a silent send failure and a lost frame look identical from the
 //! assertion. [`init_tracing`] installs the subscriber so they don't.
 
-
 use std::time::Duration;
 
 /// Install a `RUST_LOG`-driven subscriber once per test binary.

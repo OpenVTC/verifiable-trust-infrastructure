@@ -4,7 +4,6 @@
 //! this covers the task: authority, slot, and that an accepted log is what
 //! `/.well-known/did.jsonl` then serves.
 
-
 use std::sync::Arc;
 
 use axum::body::Body;

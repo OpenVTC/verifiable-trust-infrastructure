@@ -23,7 +23,6 @@
 //! `Conflict`/`NotFound` taxonomy, which also lands on `422` (the standard
 //! `taskFailed` code, discriminated by `payload.details.reason`).
 
-
 use std::sync::Arc;
 
 use axum::body::Body;

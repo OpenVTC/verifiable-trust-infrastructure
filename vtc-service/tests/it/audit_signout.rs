@@ -4,7 +4,6 @@
 //! stop" is a question the audit log has to be able to answer. It was
 //! the one session-lifecycle mutation still writing only an `info!`.
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;

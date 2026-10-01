@@ -10,7 +10,6 @@
 //! reports a `skipped` entry, discard returns 409 — so a shared unit test
 //! cannot cover it. These are the wire-level half.
 
-
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 

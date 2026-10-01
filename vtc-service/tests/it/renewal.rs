@@ -12,7 +12,6 @@
 //! - The declared `notMember` for a caller whose ACL row is gone.
 //! - Both signed VCs verify against the daemon's signer.
 
-
 use std::sync::Arc;
 
 use affinidi_status_list::StatusPurpose;
@@ -98,7 +97,8 @@ async fn build_fixture() -> Fixture {
 /// Renew, signed by `fix.member`: the reply's status and `#response` payload
 /// (or a refusal's `{code, message}`).
 async fn renew(fix: &Fixture) -> (StatusCode, Value) {
-    let (status, doc) = crate::common::signed::call(&fix._vtc, &fix.member, RENEW_TASK, json!({})).await;
+    let (status, doc) =
+        crate::common::signed::call(&fix._vtc, &fix.member, RENEW_TASK, json!({})).await;
     (status, doc["payload"].clone())
 }
 

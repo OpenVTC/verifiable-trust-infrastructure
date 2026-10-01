@@ -11,7 +11,6 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 use vti_rooms_dtg::test_support::Party;
@@ -217,9 +216,12 @@ async fn a_dropped_envelope_breaks_the_link() {
 async fn non_super_admin_is_refused() {
     let fix = build().await;
     // Context-scoped admin: Admin role, but not community-wide.
-    let scoped =
-        crate::common::signed::party_with_role(&fix.vtc, vtc_service::acl::VtcRole::Admin, &["some-ctx"])
-            .await;
+    let scoped = crate::common::signed::party_with_role(
+        &fix.vtc,
+        vtc_service::acl::VtcRole::Admin,
+        &["some-ctx"],
+    )
+    .await;
     let (_, doc) = verify(&fix, &scoped).await;
     assert_eq!(
         crate::common::signed::error_code(&doc),

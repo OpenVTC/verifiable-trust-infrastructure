@@ -6,7 +6,6 @@
 //! that are actually applied (rather than accepted and ignored), and a
 //! cursor that refuses to be reused under a different filter set.
 
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
@@ -55,7 +54,8 @@ async fn list(fix: &Fixture, who: &str, query: &str) -> (StatusCode, Value) {
     let party = if who == "admin" {
         crate::common::signed::admin(&fix.vtc).await
     } else {
-        crate::common::signed::party_with_role(&fix.vtc, vtc_service::acl::VtcRole::Member, &[]).await
+        crate::common::signed::party_with_role(&fix.vtc, vtc_service::acl::VtcRole::Member, &[])
+            .await
     };
     let (status, doc) =
         crate::common::signed::call(&fix.vtc, &party, LIST_TASK, Value::Object(payload)).await;

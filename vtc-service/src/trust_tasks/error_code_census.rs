@@ -65,7 +65,7 @@ struct Witness {
     /// name a different code.
     via: &'static str,
     via_value: &'static str,
-    /// `tests/<file>`.
+    /// `tests/it/<file>`.
     file: &'static str,
     test_fn: &'static str,
 }
@@ -1110,7 +1110,9 @@ fn every_declared_error_code_is_witnessed_or_baselined() {
          is broken, not the code"
     );
 
-    let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    // One integration-test binary since #1862: every test file is a module
+    // under `tests/it/`.
+    let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/it");
     let mut witnessed: BTreeSet<&'static str> = BTreeSet::new();
     for w in witnesses() {
         let code = w.declared.code;
@@ -1131,14 +1133,14 @@ fn every_declared_error_code_is_witnessed_or_baselined() {
             .unwrap_or_else(|e| panic!("witness for {code}: read {}: {e}", path.display()));
         let body = fn_body(&text, w.test_fn).unwrap_or_else(|| {
             panic!(
-                "witness for {code}: tests/{} has no `fn {}`",
+                "witness for {code}: tests/it/{} has no `fn {}`",
                 w.file, w.test_fn
             )
         });
         assert!(
             (body.contains("tt_error_code(") || body.contains("rest_error_code("))
                 && body.contains(w.via),
-            "witness for {code}: `{}` in tests/{} must assert on the emitted code \
+            "witness for {code}: `{}` in tests/it/{} must assert on the emitted code \
              (`tt_error_code(` or `rest_error_code(`) and name `{}` — a witness that \
              does not look at the code proves nothing",
             w.test_fn,

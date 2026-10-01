@@ -17,7 +17,6 @@
 //!   now that a cookie alone can authenticate it — while the body-token
 //!   refresh that SDK and CLI clients use stays exempt.
 
-
 use std::sync::Arc;
 
 use axum::body::Body;
