@@ -26,16 +26,16 @@
 //! the production listener unpacks, dispatches, and stores — so a build or
 //! wiring change that re-breaks it fails here instead of in production.
 //!
-//! Requires `--features tsp,didcomm-harness`; CI runs it (see `ci.yml`).
+//! Requires `--features tsp,transport-harness`; CI runs it (see `ci.yml`).
 
-#![cfg(all(feature = "tsp", feature = "didcomm-harness"))]
+#![cfg(all(feature = "tsp", feature = "transport-harness"))]
 
 use std::time::Duration;
 
 use serde_json::json;
 
 use vtc_service::join::storage::list_join_requests;
-use vtc_service::test_support::{Carriage, MockVtcDidcomm};
+use vtc_service::test_support::{Carriage, MockVtcTransport};
 use vtc_service::transport_capability::{
     MessagingVerdict, NON_TSP_BUILD, TSP_BUILD, classify_against,
 };
@@ -53,7 +53,7 @@ fn init_tracing() {
 /// Seed just enough ceremony state for `submit` to reach a verdict: the default
 /// policy bundle (without it `join.rego` fails closed and nothing is stored)
 /// and both status lists.
-async fn seed_for_submit(mock: &MockVtcDidcomm) {
+async fn seed_for_submit(mock: &MockVtcTransport) {
     let state = &mock.vtc.state;
 
     vtc_service::policy::default::install_defaults(&state.policies_ks, &state.active_policies_ks)
@@ -81,7 +81,7 @@ async fn seed_for_submit(mock: &MockVtcDidcomm) {
 /// a bound generous enough for a real mediator round trip and short enough that
 /// a genuine break fails rather than hangs.
 async fn await_recorded_join(
-    mock: &MockVtcDidcomm,
+    mock: &MockVtcTransport,
     applicant_did: &str,
 ) -> vtc_service::join::JoinRequest {
     const LIMIT: Duration = Duration::from_secs(30);
@@ -112,7 +112,7 @@ async fn await_recorded_join(
 #[tokio::test]
 async fn a_join_submitted_over_tsp_is_dispatched_and_recorded() {
     init_tracing();
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     seed_for_submit(&mock).await;
 
     let vtc_did = mock.vtc_did().to_string();
@@ -169,7 +169,7 @@ async fn a_join_over_tsp_is_recorded_in_either_carriage() {
     init_tracing();
 
     for carriage in [Carriage::BindingEnvelope, Carriage::BareDocument] {
-        let mock = MockVtcDidcomm::start_with_tsp().await;
+        let mock = MockVtcTransport::start_with_tsp().await;
         seed_for_submit(&mock).await;
 
         let vtc_did = mock.vtc_did().to_string();
@@ -217,7 +217,7 @@ async fn a_join_over_tsp_is_recorded_in_either_carriage() {
 #[tokio::test]
 async fn the_mock_advertises_tsp_and_didcomm_and_serves_both() {
     init_tracing();
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
 
     let resolver = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
         affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
@@ -272,7 +272,7 @@ async fn the_public_profile_publishes_a_usable_connectivity_view() {
     use tower::ServiceExt;
 
     init_tracing();
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
 
     // `public-profile` 404s without a profile row; the community DID must be
     // the harness's resolvable did:peer so the view is built from its document.

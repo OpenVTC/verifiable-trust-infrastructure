@@ -10,10 +10,10 @@
 //! a call whose key names another DID is refused before anything is sent —
 //! the counterpart of `git_ns_vtc_client.rs`'s same check for `git-ns/*`.
 //!
-//! Requires `--features didcomm-harness` (and `tsp` for the TSP case); CI runs
+//! Requires `--features transport-harness` (and `tsp` for the TSP case); CI runs
 //! it.
 
-#![cfg(feature = "didcomm-harness")]
+#![cfg(feature = "transport-harness")]
 
 use vtc_client::acl::{AclGrant, AclUpdate};
 use vtc_client::{HolderKey, VtcClient, VtcError};
@@ -171,9 +171,9 @@ async fn another_signer_is_refused_on_a_session(client: &VtcClient, over: &str) 
 #[cfg(feature = "tsp")]
 #[tokio::test]
 async fn acl_tasks_answer_over_tsp() {
-    use vtc_service::test_support::MockVtcDidcomm;
+    use vtc_service::test_support::MockVtcTransport;
 
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let (did, key) = did_key_from_seed(0x71);
     seed(&mock.vtc.state, &did).await;
     mock.register_local_did(&did).await;
@@ -191,9 +191,9 @@ async fn acl_tasks_answer_over_tsp() {
 
 #[tokio::test]
 async fn acl_tasks_answer_over_didcomm() {
-    use vtc_service::test_support::MockVtcDidcomm;
+    use vtc_service::test_support::MockVtcTransport;
 
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let (did, key) = did_key_from_seed(0x72);
     seed(&mock.vtc.state, &did).await;
     mock.register_local_did(&did).await;

@@ -11,10 +11,10 @@
 //! document is bound to its sender, so a call whose key names another DID is
 //! refused before anything is sent.
 //!
-//! Requires `--features didcomm-harness` (and `tsp` for the TSP case); CI runs
+//! Requires `--features transport-harness` (and `tsp` for the TSP case); CI runs
 //! it.
 
-#![cfg(feature = "didcomm-harness")]
+#![cfg(feature = "transport-harness")]
 
 use serde_json::Value;
 
@@ -180,9 +180,9 @@ async fn another_signer_is_refused_on_a_session(client: &VtcClient, over: &str) 
 #[cfg(feature = "tsp")]
 #[tokio::test]
 async fn git_ns_tasks_answer_over_tsp() {
-    use vtc_service::test_support::MockVtcDidcomm;
+    use vtc_service::test_support::MockVtcTransport;
 
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let (did, key) = did_key_from_seed(0x61);
     seed(&mock.vtc.state, &did).await;
     mock.register_local_did(&did).await;
@@ -200,9 +200,9 @@ async fn git_ns_tasks_answer_over_tsp() {
 
 #[tokio::test]
 async fn git_ns_tasks_answer_over_didcomm() {
-    use vtc_service::test_support::MockVtcDidcomm;
+    use vtc_service::test_support::MockVtcTransport;
 
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let (did, key) = did_key_from_seed(0x62);
     seed(&mock.vtc.state, &did).await;
     mock.register_local_did(&did).await;

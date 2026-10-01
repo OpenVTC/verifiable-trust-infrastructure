@@ -177,7 +177,7 @@ impl MessagingRegistryClient {
     /// Shorten the reply window. Test-only: the production window is a
     /// deliberate 60s, and the silence case would otherwise take that long to
     /// assert.
-    #[cfg(any(test, feature = "didcomm-harness"))]
+    #[cfg(any(test, feature = "transport-harness"))]
     pub fn with_reply_timeout(mut self, timeout: Duration) -> Self {
         self.reply_timeout = timeout;
         self

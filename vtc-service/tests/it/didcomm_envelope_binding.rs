@@ -41,15 +41,15 @@
 //! problem-report `unsupported message type`, which is the router saying it has
 //! never heard of a verb this service implements.
 //!
-//! Requires `--features tsp,didcomm-harness` like its sibling `join_tsp`.
+//! Requires `--features tsp,transport-harness` like its sibling `join_tsp`.
 
-#![cfg(all(feature = "tsp", feature = "didcomm-harness"))]
+#![cfg(all(feature = "tsp", feature = "transport-harness"))]
 
 use std::time::Duration;
 
 use serde_json::json;
 
-use vtc_service::test_support::{MockVtcDidcomm, ReplyOutcome, served_trust_task_uris};
+use vtc_service::test_support::{MockVtcTransport, ReplyOutcome, served_trust_task_uris};
 use vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -76,7 +76,7 @@ fn is_unsupported_type(outcome: &ReplyOutcome) -> bool {
 #[tokio::test]
 async fn every_served_uri_is_reachable_in_the_envelope() {
     init_tracing();
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let vtc_did = mock.vtc_did().to_string();
 
     let mut failures = Vec::new();
@@ -113,7 +113,7 @@ async fn every_served_uri_is_reachable_in_the_envelope() {
 #[tokio::test]
 async fn every_served_uri_typed_as_itself_is_refused_naming_the_envelope() {
     init_tracing();
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let vtc_did = mock.vtc_did().to_string();
 
     let mut failures = Vec::new();

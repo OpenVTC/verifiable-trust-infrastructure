@@ -801,24 +801,24 @@ pub fn served_trust_task_uris() -> Vec<&'static str> {
         .collect()
 }
 
-#[cfg(all(feature = "didcomm-harness", feature = "tsp"))]
-pub use didcomm_harness::Carriage;
-#[cfg(feature = "didcomm-harness")]
-pub use didcomm_harness::{MockVtcDidcomm, ProblemReport, ReplyOutcome, TestJoinClient};
-#[cfg(all(feature = "didcomm-harness", feature = "tsp"))]
-pub use didcomm_harness::{PendingTspPeer, TestTspPeer};
+#[cfg(all(feature = "transport-harness", feature = "tsp"))]
+pub use transport_harness::Carriage;
+#[cfg(feature = "transport-harness")]
+pub use transport_harness::{MockVtcTransport, ProblemReport, ReplyOutcome, TestJoinClient};
+#[cfg(all(feature = "transport-harness", feature = "tsp"))]
+pub use transport_harness::{PendingTspPeer, TestTspPeer};
 
 /// In-process DIDComm join-requests harness (#436).
 ///
-/// [`MockVtcDidcomm`] stands up an embedded `affinidi-messaging-test-mediator`,
+/// [`MockVtcTransport`] stands up an embedded `affinidi-messaging-test-mediator`,
 /// a VTC DIDComm responder bound to the **real** join-requests handlers, and a
 /// ready-connected [`TestJoinClient`] applicant — all sharing the one mediator,
 /// the way OpenVTC's e2e drives a community join. A test can then run a genuine
 /// `submit → receipt → manifest → status → (admin approve) → VMC-over-DIDComm`
 /// round-trip, exercising `submit_inner` / `manifest_inner` / `status_inner` and
 /// the credential-delivery push rather than canned responses.
-#[cfg(feature = "didcomm-harness")]
-mod didcomm_harness {
+#[cfg(feature = "transport-harness")]
+mod transport_harness {
     use std::collections::VecDeque;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1186,7 +1186,7 @@ mod didcomm_harness {
 
         /// Stop this applicant's mediator websocket and the ATM behind it.
         ///
-        /// Called by [`MockVtcDidcomm::shutdown`]; dropping the client instead
+        /// Called by [`MockVtcTransport::shutdown`]; dropping the client instead
         /// does nothing, because the websocket transport task owns the only
         /// `Sender` for its own command channel. `graceful_shutdown` reaches it
         /// only because `connect` registered the profile with the ATM.
@@ -2140,7 +2140,7 @@ mod didcomm_harness {
 
     /// A mock VTC serving the join-requests protocol over DIDComm, plus a
     /// connected applicant client. See module docs.
-    pub struct MockVtcDidcomm {
+    pub struct MockVtcTransport {
         mediator: TestMediatorHandle,
         vtc_did: String,
         /// The VTC under test (state + router): seed policies / status-lists /
@@ -2168,12 +2168,12 @@ mod didcomm_harness {
         panic!("VTC DIDComm listener did not start within {LIMIT:?}");
     }
 
-    impl MockVtcDidcomm {
+    impl MockVtcTransport {
         /// Spin up the mediator, the DIDComm-listening VTC (signers + audit +
         /// messaging wired), and a connected applicant. Returns once everything
         /// is bound and the dispatch loop is running.
-        pub async fn start() -> MockVtcDidcomm {
-            MockVtcDidcomm::start_inner(false).await
+        pub async fn start() -> MockVtcTransport {
+            MockVtcTransport::start_inner(false).await
         }
 
         /// As [`start`](Self::start), but the VTC's DID additionally advertises
@@ -2185,11 +2185,11 @@ mod didcomm_harness {
         /// suite has no reason to carry that risk. See
         /// [`TestJoinClient::send_tsp`] for the sending half.
         #[cfg(feature = "tsp")]
-        pub async fn start_with_tsp() -> MockVtcDidcomm {
-            MockVtcDidcomm::start_inner(true).await
+        pub async fn start_with_tsp() -> MockVtcTransport {
+            MockVtcTransport::start_inner(true).await
         }
 
-        async fn start_inner(advertise_tsp: bool) -> MockVtcDidcomm {
+        async fn start_inner(advertise_tsp: bool) -> MockVtcTransport {
             // Transport identities. The applicant's is generated up front so it
             // can be registered LOCAL on the mediator (needed to open inbound).
             //
@@ -2311,7 +2311,7 @@ mod didcomm_harness {
             // it makes `start()` mean "ready to send and receive".
             await_listener(&vtc.state).await;
 
-            MockVtcDidcomm {
+            MockVtcTransport {
                 mediator,
                 vtc_did,
                 vtc,

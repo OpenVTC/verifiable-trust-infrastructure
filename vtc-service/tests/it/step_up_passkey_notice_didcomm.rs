@@ -9,9 +9,9 @@
 //! accepts, and whether `by` actually distinguishes an administrator's
 //! invite/revoke from the member's own.
 //!
-//! Requires `--features didcomm-harness`; CI runs it.
+//! Requires `--features transport-harness`; CI runs it.
 
-#![cfg(feature = "didcomm-harness")]
+#![cfg(feature = "transport-harness")]
 
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::step_up_passkey;
-use vtc_service::test_support::MockVtcDidcomm;
+use vtc_service::test_support::MockVtcTransport;
 
 use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
@@ -33,7 +33,7 @@ const RP_ORIGIN: &str = "https://vtc.test";
 const WAIT: Duration = Duration::from_secs(20);
 const NOTICE_TYPE: &str = "https://trusttasks.org/spec/vtc/members/step-up-passkey-notice/0.1";
 
-async fn seed(mock: &MockVtcDidcomm, did: &str, role: VtcRole) {
+async fn seed(mock: &MockVtcTransport, did: &str, role: VtcRole) {
     store_acl_entry(
         &mock.vtc.state.acl_ks,
         &VtcAclEntry {
@@ -78,7 +78,7 @@ fn payload_of(doc: &Value) -> &Value {
 /// covered elsewhere). Returns the bound credential's hex id and the soft
 /// authenticator holding its key, for a later revoke.
 async fn enrol(
-    mock: &MockVtcDidcomm,
+    mock: &MockVtcTransport,
     member_did: &str,
     admin_did: &str,
 ) -> (String, SoftEd25519Authenticator) {
@@ -118,7 +118,7 @@ async fn enrol(
 
 #[tokio::test]
 async fn enrolling_for_a_member_notifies_them_with_by_the_admin() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let member = mock.connect_registry_peer().await;
     let member_did = member.did().to_string();
     let admin_did = "did:key:zEnrolNoticeAdmin";
@@ -159,7 +159,7 @@ async fn enrolling_for_a_member_notifies_them_with_by_the_admin() {
 
 #[tokio::test]
 async fn a_self_revoke_notifies_the_member_with_by_themselves() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let member = mock.connect_registry_peer().await;
     let member_did = member.did().to_string();
     let admin_did = "did:key:zSelfRevokeNoticeAdmin";
@@ -218,7 +218,7 @@ async fn a_self_revoke_notifies_the_member_with_by_themselves() {
 /// about it late (or from the admin console) rather than not at all.
 #[tokio::test]
 async fn a_notice_that_cannot_be_queued_does_not_block_the_revoke() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let member = mock.connect_registry_peer().await;
     let member_did = member.did().to_string();
     let admin_did = "did:key:zBrokenNoticeAdmin";

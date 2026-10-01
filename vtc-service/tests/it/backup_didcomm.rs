@@ -8,15 +8,15 @@
 //! that the upload the client builds is one the VTC accepts. This runs the
 //! real client against the real listener, through a mediator.
 //!
-//! Requires `--features didcomm-harness`; CI runs it.
+//! Requires `--features transport-harness`; CI runs it.
 
-#![cfg(feature = "didcomm-harness")]
+#![cfg(feature = "transport-harness")]
 
 use serde_json::Value;
 
 use vtc_client::VtcClient;
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
-use vtc_service::test_support::MockVtcDidcomm;
+use vtc_service::test_support::MockVtcTransport;
 use vti_common::audit::{AuditEnvelope, AuditEvent};
 
 const PASSWORD: &str = "a-long-enough-backup-password";
@@ -34,7 +34,7 @@ fn did_key_from_seed(seed_byte: u8) -> (String, String) {
     (did, multibase::encode(multibase::Base::Base58Btc, &buf))
 }
 
-async fn backup_exports(mock: &MockVtcDidcomm) -> usize {
+async fn backup_exports(mock: &MockVtcTransport) -> usize {
     mock.vtc
         .state
         .audit_ks
@@ -54,7 +54,7 @@ async fn backup_exports(mock: &MockVtcDidcomm) -> usize {
 /// counts the rows it would restore without writing any.
 #[tokio::test]
 async fn a_backup_round_trips_over_didcomm() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
 
     // Everything an export needs: a secret store holding the signing bundle,
     // and somewhere for a restore to write its config.

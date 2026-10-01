@@ -11,9 +11,9 @@
 //! Every task is answered the same on every transport, which is the property
 //! under test: each one is driven over all three, and the answers compared.
 //!
-//! Requires `--features tsp,didcomm-harness`; CI runs it.
+//! Requires `--features tsp,transport-harness`; CI runs it.
 
-#![cfg(all(feature = "didcomm-harness", feature = "tsp"))]
+#![cfg(all(feature = "transport-harness", feature = "tsp"))]
 
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ use tower::ServiceExt;
 use vti_rooms_dtg::test_support::Party;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
-use vtc_service::test_support::{MockVtcDidcomm, ReplyOutcome, TestTspPeer};
+use vtc_service::test_support::{MockVtcTransport, ReplyOutcome, TestTspPeer};
 
 const SHOW: &str = "https://trusttasks.org/spec/acl/show/0.1";
 const LIST: &str = "https://trusttasks.org/spec/acl/list/0.1";
@@ -37,12 +37,12 @@ const WAIT: Duration = Duration::from_secs(20);
 /// The three principals — one per transport — each an unrestricted admin, and
 /// the VTC they administer.
 struct Harness {
-    mock: MockVtcDidcomm,
+    mock: MockVtcTransport,
     tsp: TestTspPeer,
     https: Party,
 }
 
-async fn seed(mock: &MockVtcDidcomm, did: &str, role: VtcRole, scopes: &[&str]) {
+async fn seed(mock: &MockVtcTransport, did: &str, role: VtcRole, scopes: &[&str]) {
     store_acl_entry(
         &mock.vtc.state.acl_ks,
         &VtcAclEntry {
@@ -62,7 +62,7 @@ async fn seed(mock: &MockVtcDidcomm, did: &str, role: VtcRole, scopes: &[&str]) 
 }
 
 async fn harness() -> Harness {
-    let mock = MockVtcDidcomm::start_with_tsp().await;
+    let mock = MockVtcTransport::start_with_tsp().await;
     let tsp = mock.connect_tsp_peer().await;
     let https = Party::new();
     for did in [

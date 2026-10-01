@@ -86,7 +86,7 @@ jobs:
       # workspace on every iteration and most of the wall-clock would be cargo,
       # not the code under investigation.
       - name: Build the test binary
-        run: cargo test -p vtc-service --features didcomm-harness --test join_didcomm --no-run
+        run: cargo test -p vtc-service --features transport-harness --test join_didcomm --no-run
         env:
           VTC_SKIP_ADMIN_UI_BUILD: "1"
 
@@ -107,7 +107,7 @@ jobs:
             || { echo "::error::parallel must be an integer from 1 to 99"; exit 1; }
           runs="$RUNS"
           streams="$STREAMS"
-          bin=$(cargo test -p vtc-service --features didcomm-harness --test join_didcomm \
+          bin=$(cargo test -p vtc-service --features transport-harness --test join_didcomm \
                   --no-run --message-format=json 2>/dev/null \
                 | jq -r 'select(.executable != null and (.target.name == "join_didcomm")) | .executable' \
                 | tail -1)

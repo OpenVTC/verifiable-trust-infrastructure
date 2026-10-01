@@ -1,7 +1,7 @@
 //! Worked example for the DIDComm join-requests harness (#436).
 //!
 //! Drives a genuine community-join round-trip against a **real** `vtc-service`
-//! over DIDComm — not canned responses — using [`MockVtcDidcomm`]: an embedded
+//! over DIDComm — not canned responses — using [`MockVtcTransport`]: an embedded
 //! test mediator carrying both a `did:peer` applicant and the VTC, with the
 //! VTC's DIDComm responder bound to the production `submit_inner` /
 //! `manifest_inner` / `status_inner` handlers and the credential-delivery push.
@@ -91,7 +91,7 @@ use serde_json::json;
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::auth::session::now_epoch;
 use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
-use vtc_service::test_support::{MockVtcDidcomm, ReplyOutcome};
+use vtc_service::test_support::{MockVtcTransport, ReplyOutcome};
 
 use vta_sdk::protocols::credential_exchange::{ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody};
 use vta_sdk::protocols::join_requests::{
@@ -117,7 +117,7 @@ const DECIDE_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/decide/
 /// lists (so the approve handler can allocate a VMC revocation slot), an admin
 /// ACL entry, and one DCQL Accepts criterion (so the manifest advertises a
 /// `presentation_definition`). Returns an admin bearer token.
-async fn seed_join_ceremony(mock: &MockVtcDidcomm) -> String {
+async fn seed_join_ceremony(mock: &MockVtcTransport) -> String {
     let state = &mock.vtc.state;
 
     vtc_service::policy::default::install_defaults(&state.policies_ks, &state.active_policies_ks)
@@ -184,7 +184,7 @@ async fn seed_join_ceremony(mock: &MockVtcDidcomm) -> String {
 #[tokio::test]
 async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_delivery() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let admin_token = seed_join_ceremony(&mock).await;
     let vtc_did = mock.vtc_did().to_string();
     let applicant_did = mock.client.did().to_string();
@@ -441,7 +441,7 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
 /// problem-report = clean reject, timeout = hang/crash).
 #[tokio::test]
 async fn didcomm_try_request_classifies_reject_and_keeps_going() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let _admin_token = seed_join_ceremony(&mock).await;
     let vtc_did = mock.vtc_did().to_string();
 
@@ -505,7 +505,7 @@ async fn didcomm_try_request_classifies_reject_and_keeps_going() {
 /// `e.p.msg.conflict` end-to-end through the real DIDComm handler.
 #[tokio::test]
 async fn didcomm_duplicate_submit_rejects_with_conflict_not_internal_error() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let _admin_token = seed_join_ceremony(&mock).await;
     let vtc_did = mock.vtc_did().to_string();
     let applicant_did = mock.client.did().to_string();
@@ -600,7 +600,7 @@ async fn didcomm_duplicate_submit_rejects_with_conflict_not_internal_error() {
 /// HTTPS in `tests/invitations.rs`.
 #[tokio::test]
 async fn a_delivered_invitation_arrives_as_an_offer() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let admin_token = seed_join_ceremony(&mock).await;
     let vtc_did = mock.vtc_did().to_string();
     let invitee = mock.client.did().to_string();
@@ -737,7 +737,7 @@ async fn a_delivered_invitation_arrives_as_an_offer() {
 #[tokio::test]
 async fn a_join_query_is_answered_by_a_present_on_its_thread() {
     init_tracing();
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     seed_join_ceremony(&mock).await;
     let vtc_did = mock.vtc_did().to_string();
     let holder = mock.client.did().to_string();
@@ -866,7 +866,7 @@ async fn a_join_query_is_answered_by_a_present_on_its_thread() {
 /// that were the last bare arms, so reintroducing one fails by name.
 #[tokio::test]
 async fn a_bare_credential_exchange_step_is_refused_naming_the_envelope() {
-    let mock = MockVtcDidcomm::start().await;
+    let mock = MockVtcTransport::start().await;
     let vtc_did = mock.vtc_did().to_string();
     for uri in [
         vta_sdk::protocols::credential_exchange::REQUEST,
