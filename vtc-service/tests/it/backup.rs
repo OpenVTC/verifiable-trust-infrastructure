@@ -164,6 +164,65 @@ async fn preview_does_not_mutate() {
     assert_eq!(acl[0].0, b"acl:pre-existing");
 }
 
+/// A crash mid-import (sentinel stamped, never cleared — the destructive
+/// replay never reached its final clear) must not wedge the VTC forever.
+/// `import_in_progress` is what boot consults to refuse starting on an
+/// interrupted import; a fresh stamp still must block it, and a stamp past
+/// the TTL must self-heal so a fresh install (or a retried import) can
+/// proceed without any manual sentinel surgery.
+#[tokio::test]
+async fn abandoned_import_releases_after_its_ttl_and_a_fresh_one_still_blocks() {
+    use chrono::Utc;
+    use vtc_service::backup::{
+        import_in_progress, import_in_progress_ttl_secs_for_test, stamp_import_in_progress_for_test,
+    };
+
+    let v = TestVtc::builder().vtc_did(VTC_DID).build().await;
+
+    // No sentinel at all — boot proceeds.
+    assert!(!import_in_progress(&v.state.config_ks).await.unwrap());
+
+    // A crash *just now* (e.g. the process died between the clear and the
+    // replay loop) must still block boot — the TTL is not a bypass for a
+    // genuinely in-flight import.
+    stamp_import_in_progress_for_test(&v.state.config_ks, Utc::now())
+        .await
+        .unwrap();
+    assert!(
+        import_in_progress(&v.state.config_ks).await.unwrap(),
+        "a fresh sentinel must still refuse boot"
+    );
+
+    // An abandoned import from well past the TTL: boot must self-heal and
+    // proceed, and the sentinel must actually be gone afterward (not just
+    // reported stale this one time).
+    let abandoned_at =
+        Utc::now() - chrono::Duration::seconds(import_in_progress_ttl_secs_for_test() + 1);
+    stamp_import_in_progress_for_test(&v.state.config_ks, abandoned_at)
+        .await
+        .unwrap();
+    assert!(
+        !import_in_progress(&v.state.config_ks).await.unwrap(),
+        "an import abandoned past its TTL must release boot"
+    );
+    assert!(
+        !import_in_progress(&v.state.config_ks).await.unwrap(),
+        "the stale sentinel must have been cleaned up, not merely tolerated"
+    );
+
+    // And a brand-new import succeeds immediately — no restart, no manual
+    // intervention, right after the abandoned one expired.
+    let a_store = PlaintextSecretStore::new(v.data_dir());
+    a_store.set(b"bundle").await.unwrap();
+    let envelope = export_backup(&v.state, &a_store, PW, false).await.unwrap();
+    set_config_path(&v.state, v.data_dir().join("config.toml")).await;
+    let result = import_backup(&v.state, &a_store, &envelope, PW, true)
+        .await
+        .unwrap();
+    assert_eq!(result.status, "imported");
+    assert!(!import_in_progress(&v.state.config_ks).await.unwrap());
+}
+
 #[tokio::test]
 async fn import_rejects_foreign_vtc_did() {
     let a = TestVtc::builder()
