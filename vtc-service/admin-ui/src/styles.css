@@ -697,6 +697,8 @@ button.primary:focus-visible {
   border-color: var(--danger);
   background: var(--danger-tint);
   color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .card.error h3 {
@@ -1247,6 +1249,8 @@ select {
   border-left: 3px solid var(--border);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   background: color-mix(in srgb, var(--border) 22%, transparent);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .finding > strong {
@@ -1735,9 +1739,13 @@ dd .copy-icon-btn {
   border-left-color: var(--danger);
 }
 
+/* Error text carries DIDs and digests with no break opportunity, so let a
+ * line break anywhere; `min-width: 0` lets the flex item shrink below that
+ * unbroken token instead of overflowing the toast. */
 .toast-message {
   flex: 1 1 auto;
-  word-wrap: break-word;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .toast-dismiss {
@@ -2835,6 +2843,7 @@ a.stat-tile:hover {
   color: var(--danger);
   font-size: var(--text-sm);
   font-weight: 500;
+  overflow-wrap: anywhere;
 }
 input[aria-invalid="true"],
 select[aria-invalid="true"] {
@@ -3616,6 +3625,7 @@ a.button.primary:hover {
   border: 2px solid var(--danger);
   border-radius: var(--radius-sm);
   background: var(--danger-tint);
+  overflow-wrap: anywhere;
 }
 .breakglass-banner > strong {
   color: var(--danger);
@@ -3638,6 +3648,7 @@ a.button.primary:hover {
   border: 1px solid var(--warning);
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--warning) 10%, transparent);
+  overflow-wrap: anywhere;
 }
 .signing-renew-banner a {
   font-weight: 600;
