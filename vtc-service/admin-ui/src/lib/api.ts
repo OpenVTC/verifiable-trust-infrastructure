@@ -9,7 +9,12 @@
 // call when the access token is nearly out, so an operator who is using
 // the console is not signed out mid-task. See `lib/session.ts`.
 
-import { renewIfNeeded, resetSession, setSessionExpiry } from "@/lib/session";
+import {
+  renewIfNeeded,
+  resetSession,
+  setSessionExpiry,
+  watchSessionDeadline,
+} from "@/lib/session";
 
 // `GET /health` is unauth and deliberately minimal: it carries only
 // `{status, version, vtc_did}`. The `vta_did` / `mediator_url` /
@@ -1038,6 +1043,21 @@ export interface RecognitionCheck {
  * DID — the operator's per-DID window into the recognition graph. */
 export const checkRecognition = (did: string): Promise<RecognitionCheck> =>
   postSignedRead<RecognitionCheck>(RECOGNITION_CHECK_TASK, { did });
+
+/**
+ * Renew the cookie session ahead of its deadline while the console is open,
+ * and raise `vtc-session-expired` once the deadline passes with renewal
+ * refused — so an idle console shows Login instead of waiting for the
+ * operator's next click to fail. See `watchSessionDeadline`.
+ */
+export const watchSession = (): (() => void) =>
+  watchSessionDeadline(renewSession, () => {
+    window.dispatchEvent(
+      new CustomEvent("vtc-session-expired", {
+        detail: { path: "(deadline)", status: 401 },
+      }),
+    );
+  });
 
 /** Probe: returns the whoami response when signed in, null when not. */
 export async function probeSession(): Promise<WhoamiResponse | null> {

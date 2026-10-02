@@ -10,6 +10,7 @@ import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import {
   probeSession,
   signOut,
+  watchSession,
   SIGNING_KEY_REFUSED_EVENT,
   WhoamiResponse,
 } from "@/lib/api";
@@ -170,6 +171,20 @@ export default function App() {
     if (probe.data) {
       expiryNotifiedRef.current = false;
     }
+  }, [probe.data]);
+
+  // Keep the session's deadline in view while signed in: renew ahead of it,
+  // and once it passes with renewal refused, raise the expiry event above so
+  // the shell flips to Login on its own. Without this an idle dashboard kept
+  // looking signed in after its cookie lapsed, and the operator learned of it
+  // from the next click — "Sign-out failed", in the report that prompted it.
+  //
+  // Keyed on the payload, not on "signed in": the watcher stops once it has
+  // raised the event, and when the re-probe finds the session alive after
+  // all (another tab renewed it) it lands a fresh payload, which re-arms it.
+  useEffect(() => {
+    if (!probe.data) return;
+    return watchSession();
   }, [probe.data]);
 
   // Once the operator is signed in, watch for new plugins:

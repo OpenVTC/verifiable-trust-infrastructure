@@ -101,3 +101,60 @@ export async function renewIfNeeded(renew: () => Promise<number | null>): Promis
   })();
   return inFlight;
 }
+
+/**
+ * Keep the session's deadline in view while the console is open, and say
+ * when it has passed.
+ *
+ * Renewal used to ride only on requests, and an idle dashboard sends almost
+ * none that carry the cookie — `/health` is unauthenticated and signed reads
+ * authenticate by their proof. So the cookie lapsed unseen, the console went
+ * on looking signed in, and the operator found out from the next click that
+ * failed (the sign-out that prompted this reported "Sign-out failed").
+ *
+ * This wakes ahead of the deadline and renews, exactly as a request would.
+ * It does not make a session immortal: a renewal is not activity, so once
+ * the daemon's idle timeout passes it refuses, the expiry stays put, and the
+ * next wake — just after it — calls `onExpired`. The daemon still decides.
+ *
+ * Returns a cancel function. Nothing is scheduled while no expiry is known.
+ */
+export function watchSessionDeadline(
+  renew: () => Promise<number | null>,
+  onExpired: () => void,
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let cancelled = false;
+
+  const schedule = (afterAttempt: boolean) => {
+    if (cancelled || expiresAtEpoch === null) return;
+    const now = Date.now() / 1000;
+    if (afterAttempt && now >= expiresAtEpoch) {
+      onExpired();
+      return;
+    }
+    const renewAt = expiresAtEpoch - RENEW_WITHIN_SECS;
+    // Before the renewal window, wake at its start. Inside it, try at once
+    // unless this wake just tried — then a renewal was refused (or held
+    // back by the retry gap), so wake just after the deadline to see
+    // whether it moved.
+    let wakeAt: number;
+    if (now < renewAt) wakeAt = renewAt;
+    else if (!afterAttempt) wakeAt = now;
+    else wakeAt = expiresAtEpoch + 1;
+    timer = setTimeout(() => void tick(), Math.max(0, (wakeAt - now) * 1000));
+  };
+
+  const tick = async () => {
+    timer = null;
+    if (cancelled) return;
+    await renewIfNeeded(renew);
+    schedule(true);
+  };
+
+  schedule(false);
+  return () => {
+    cancelled = true;
+    if (timer !== null) clearTimeout(timer);
+  };
+}
