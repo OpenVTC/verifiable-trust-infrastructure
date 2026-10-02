@@ -98,9 +98,10 @@ pub static DELEGATION_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// What a delegated key may be accepted for. `console` in this version: the
 /// operations the identity performs through the administration console.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum DelegationScope {
+    #[default]
     Console,
 }
 
@@ -129,7 +130,10 @@ pub struct ConsoleKeyDelegation {
     /// The identity this key acts as — the enrolment's `identityDid`, which a
     /// passkey gesture by that identity, bound to the enrolment, established.
     pub admin_did: String,
-    /// What the key may be accepted for.
+    /// What the key may be accepted for. Rows stored before #1836 carry no
+    /// `scope`; every such delegation was a console key, and `console` is the
+    /// only scope there is, so reading one as `console` widens nothing.
+    #[serde(default)]
     pub scope: DelegationScope,
     /// Operator-supplied, e.g. `"Work laptop — Chrome"`. Absent rather than
     /// empty when nobody chose one: an invented label is indistinguishable
