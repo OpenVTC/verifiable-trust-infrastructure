@@ -2,6 +2,20 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.62.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.61.0...vta-sdk-v0.62.0) — 2026-10-02
+
+
+### Added
+
+- **vtc**: An approved applicant can ask for its credentials again (tf#709) ([#1900](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1900))
+
+A join can be approved while its credentials are lost in delivery: the
+  persona is a member, its client stays Pending, and nothing ever re-sends a
+  failed push. `join-requests/status/0.1` now lets the applicant ask for the
+  credentials again, and the VTC answers.
+
+
+
 ## [0.61.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.60.0...vta-sdk-v0.61.0) — 2026-10-01
 
 
