@@ -2,6 +2,9 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.13.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.13.0...vta-persona-v0.13.1) — 2026-10-02
+
+
 ## [0.13.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-persona-v0.12.1...vta-persona-v0.13.0) — 2026-10-02
 
 
