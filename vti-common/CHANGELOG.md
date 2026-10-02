@@ -2,6 +2,43 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.35.1...vti-common-v0.36.0) — 2026-10-02
+
+
+### Added
+
+- **vtc**: Join criteria state their own admission (Keyring VTI-13) ([#1907](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1907))
+
+A community's join criteria are its join rules, and the VTC now decides a
+  submission by them as vtc/join-requests/submit/0.3 specifies
+  (dtgwg-trust-tasks-tf#710, trust-tasks-rs 0.26.1). Nothing in the service
+  assumes a criterion: open admission, review only, invitation only and any
+  combination are all criteria an administrator registers.
+
+  - Criteria (vtc/schemas/accepts/{register,list,show}/0.2) carry `admission`
+    (automatic | review), an optional DCQL query with `credentialIssuers`
+    (community | recognised | any), `invitationRequired` and `vetting`.
+    `recognised` without a trust registry is `unsupportedRequirement`.
+  - The manifest (vtc/join-requests/manifest/0.3) publishes them in the order
+    the community decides by — registration order, kept on replacement.
+  - A submission is decided under the criterion it names by digest, else the
+    first it meets, else the first published. No criteria → `notAccepting`;
+    an unpublished digest → `criterionUnknown`. Superseded versions are kept
+    and govern while their `requirementsGrace` lasts.
+  - The host verifies the presentation's embedded credentials (proof set,
+    validity window, revocation, subject = applicant) and matches the query,
+    applying DCQL `type_values`, which the matcher alone ignores.
+  - The host holds the policy to the criterion: unmet → never admitted or
+    referred (requestMore naming what is missing); met review → refer; met
+    automatic → the policy's verdict. Policy may tighten, never loosen.
+    The default join.rego follows the criterion.
+  - A new community is seeded once with `invited` (automatic) →
+    `member-credential` (automatic) → `review`.
+  - The criterion and version that governed are recorded beside the request;
+    a supplement re-decides under it.
+
+
+
 ## [0.35.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.35.0...vti-common-v0.35.1) — 2026-10-02
 
 
