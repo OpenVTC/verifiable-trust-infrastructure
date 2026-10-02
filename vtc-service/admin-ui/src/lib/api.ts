@@ -529,6 +529,18 @@ export async function postSignedDocument<T>(signed: SignedTrustTaskDocument): Pr
 }
 
 /**
+ * An unsigned document of `typeUri` from `issuer`, addressed to this
+ * community — for a signer other than this browser's key (the wallet).
+ */
+export async function addressedDocument(
+  typeUri: string,
+  payload: unknown,
+  issuer: string,
+): Promise<UnsignedTrustTaskDocument> {
+  return buildTrustTaskDocument({ typeUri, payload, issuer, recipient: await communityDid() });
+}
+
+/**
  * Post `payload` as an **unsigned** Trust Task document naming `issuer`.
  *
  * For two cases, each of which carries its own gate and takes nothing from the

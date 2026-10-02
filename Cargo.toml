@@ -521,7 +521,11 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # carries `resendCredentials` and the delivery members of its response
 # (trust-tasks-tf #709), which `routes::join_requests::status` serves. 0.26.0's
 # generated schema refuses the request member.
-trust-tasks-rs = { version = "0.26.1", default-features = false, features = [
+#
+# 0.26.2 raises it: it is the first release carrying
+# `auth/signing-key/enroll/0.2` and `auth/signing-key/authorize/0.1`
+# (trust-tasks-tf #712), which `trust_tasks::signing_key_tasks` serves.
+trust-tasks-rs = { version = "0.26.2", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

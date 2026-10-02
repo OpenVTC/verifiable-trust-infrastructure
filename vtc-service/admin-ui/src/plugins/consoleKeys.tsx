@@ -31,10 +31,12 @@ import {
   enrolThisBrowser,
   explainEnrolError,
   listConsoleKeys,
+  preferredEvidence,
   revokeConsoleKey,
   type ConsoleKey,
 } from "@/lib/console-keys-api";
 import { gestureFromConfirm } from "@/lib/signed-act";
+import { useViewerAmr } from "@/lib/viewer";
 import { SIGNING_STATUS_KEY, suggestedLabel } from "@/pages/SetupSigning";
 
 /** What this browser holds, and whether it could hold one at all. */
@@ -77,6 +79,7 @@ function useLocalKey(): [LocalState | null, () => void] {
 export function ConsoleKeys() {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
+  const amr = useViewerAmr();
   const [local, rereadLocalKey] = useLocalKey();
   const [label, setLabel] = useState("");
 
@@ -94,7 +97,9 @@ export function ConsoleKeys() {
   };
 
   const enrol = useMutation({
-    mutationFn: (l: string) => enrolThisBrowser(l, gestureFromConfirm(confirm)),
+    // A wallet-signed-in operator renews with the wallet, as they set up.
+    mutationFn: (l: string) =>
+      enrolThisBrowser(l, gestureFromConfirm(confirm), { evidence: preferredEvidence(amr) }),
     onSuccess: () => {
       setLabel("");
       settled();

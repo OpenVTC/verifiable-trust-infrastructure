@@ -20,12 +20,16 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { signOut, type WhoamiResponse } from "@/lib/api";
 import {
+  type EnrolEvidence,
   enrolThisBrowser,
   explainEnrolError,
+  preferredEvidence,
   type SigningStatus,
+  TooManyKeysError,
 } from "@/lib/console-keys-api";
-import { shortenDid } from "@/lib/format";
+import { formatIso, shortenDid } from "@/lib/format";
 import { gestureFromConfirm } from "@/lib/signed-act";
+import { isWalletSigningAvailable } from "@/lib/wallet";
 
 /** The query key the shell keeps this browser's signing status under. */
 export const SIGNING_STATUS_KEY = "signing-status";
@@ -84,14 +88,28 @@ export function SetupSigning({
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const [label, setLabel] = useState(() => suggestedLabel());
+  const [evidence, setEvidence] = useState<EnrolEvidence>(() =>
+    preferredEvidence(whoami.session.amr),
+  );
+  const [replaces, setReplaces] = useState<string | null>(null);
+  const canUseWallet = isWalletSigningAvailable();
 
   const enrol = useMutation({
-    mutationFn: () => enrolThisBrowser(label, gestureFromConfirm(confirm)),
+    mutationFn: (opts: { replaces?: string }) =>
+      enrolThisBrowser(label, gestureFromConfirm(confirm), {
+        evidence,
+        replaces: opts.replaces,
+      }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: [SIGNING_STATUS_KEY] });
       void queryClient.invalidateQueries({ queryKey: ["console-keys"] });
     },
   });
+  // At the cap the VTC lists the active keys; the least recently used comes
+  // first and is the one offered by default.
+  const atCap = enrol.error instanceof TooManyKeysError ? enrol.error : null;
+  const chosen = replaces ?? atCap?.activeKeys[0]?.signingKeyDid ?? null;
+  const waiting = evidence === "wallet" ? "Waiting for your wallet…" : "Waiting for your passkey…";
 
   const signOutMut = useMutation({
     mutationFn: signOut,
@@ -120,35 +138,90 @@ export function SetupSigning({
         <h2>Set up signing</h2>
         <p className="lead">
           Everything you do in this console is signed by a key that never leaves
-          this browser. Setting it up takes one passkey confirmation, and lasts
-          up to 30 days — the console reminds you to renew before then.
+          this browser.{" "}
+          {evidence === "wallet"
+            ? "Setting it up takes one approval in your VTA wallet"
+            : "Setting it up takes one passkey confirmation"}
+          , and lasts up to 30 days — the console reminds you to renew before then.
         </p>
         <p className="lead">{whyLine(status)}</p>
         <p className="login-did">
           <span className="muted">Signed in as</span>
           <code title={whoami.session.subject}>{whoami.session.subject}</code>
         </p>
-        <form
-          className="form-stack"
-          onSubmit={(e) => {
-            e.preventDefault();
-            enrol.mutate();
-          }}
-        >
-          <label className="field">
-            <span className="field-label">Name this browser</span>
-            <input
-              type="text"
-              value={label}
-              maxLength={128}
-              onChange={(e) => setLabel(e.target.value)}
-            />
-          </label>
-          <button type="submit" className="primary" disabled={enrol.isPending}>
-            {enrol.isPending ? "Waiting for your passkey…" : "Set up signing"}
-          </button>
-        </form>
-        {enrol.error && (
+        {atCap ? (
+          <form
+            className="form-stack"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (chosen) enrol.mutate({ replaces: chosen });
+            }}
+          >
+            <p className="lead">
+              You already have {atCap.maxActiveKeys ?? "the maximum number of"} active
+              signing keys, from other browsers. Choose one you no longer use to
+              replace — it stops working immediately. This asks for your{" "}
+              {evidence === "wallet" ? "wallet" : "passkey"} once more.
+            </p>
+            {atCap.activeKeys.map((k) => (
+              <label key={k.signingKeyDid} className="login-option">
+                <span>
+                  <input
+                    type="radio"
+                    name="replaces"
+                    value={k.signingKeyDid}
+                    checked={chosen === k.signingKeyDid}
+                    onChange={() => setReplaces(k.signingKeyDid)}
+                  />{" "}
+                  {k.deviceLabel ?? shortenDid(k.signingKeyDid)}
+                </span>
+                <span className="login-option-note">
+                  Last used {k.lastUsedAt ? formatIso(k.lastUsedAt) : "never"} · set up{" "}
+                  {formatIso(k.createdAt)}
+                </span>
+              </label>
+            ))}
+            <button type="submit" className="primary" disabled={enrol.isPending || !chosen}>
+              {enrol.isPending ? waiting : "Replace it and set up signing"}
+            </button>
+          </form>
+        ) : (
+          <form
+            className="form-stack"
+            onSubmit={(e) => {
+              e.preventDefault();
+              enrol.mutate({});
+            }}
+          >
+            <label className="field">
+              <span className="field-label">Name this browser</span>
+              <input
+                type="text"
+                value={label}
+                maxLength={128}
+                onChange={(e) => setLabel(e.target.value)}
+              />
+            </label>
+            <button type="submit" className="primary" disabled={enrol.isPending}>
+              {enrol.isPending
+                ? waiting
+                : evidence === "wallet"
+                  ? "Set up signing with your wallet"
+                  : "Set up signing with your passkey"}
+            </button>
+            {canUseWallet && (
+              <button
+                type="button"
+                className="link"
+                disabled={enrol.isPending}
+                onClick={() => setEvidence(evidence === "wallet" ? "passkey" : "wallet")}
+              >
+                {evidence === "wallet" ? "Use a passkey instead" : "Use your VTA wallet instead"}
+              </button>
+            )}
+          </form>
+        )}
+        {enrol.error && !atCap && (
           <section className="card error" role="alert">
             <h3>Signing was not set up</h3>
             <p>{explainEnrolError(enrol.error)}</p>
