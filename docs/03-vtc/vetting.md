@@ -11,7 +11,7 @@ Design: OpenVTC `docs/design/vetting-process.md`.
 **Wire types.** Every vetting Trust Task payload and response — `vetting/request`,
 `vetting/session` (with the Vetting Card), `vetting/decline`,
 `vtc/vetting/revoke-statement`, `vtc/vetting/vetters/{grant,profile,list,resend}`
-and `vtc/join-requests/manifest/0.2` (with `VettingRequirements` and
+and `vtc/join-requests/manifest/0.3` (with `VettingRequirements` and
 `CommunityBranding`) — is the type generated from its published specification
 in dtgwg-trust-tasks-tf, shipped in `trust-tasks-rs` and re-exported from
 `vta_sdk::protocols::vetting` (the manifest from
@@ -95,18 +95,17 @@ does is what the refusal exists to protect, since registering a criterion whose
 
 ### 2. Say what you require
 
-Add a `vetting` object to an Accepts criterion — "Add a criterion" on the
-Requirements page, or `POST /v1/schemas/accepts`. Every number is **your**
-policy — there are no defaults:
+Add a `vetting` object to a [join criterion](join-criteria.md) — "Add a
+criterion" on the Requirements page, or `vtc/schemas/accepts/register/0.2`.
+The criterion's `admission` says what meeting it does: `automatic` admits,
+`review` refers to an administrator. Every number is **your** policy — there
+are no defaults:
 
 ```json
 {
   "id": "kernel-developer",
   "description": "Two vetters, at least one in person",
-  "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
-             "meta": { "type_values": ["StatementCredential"] },
-             "claims": [ { "path": ["credentialSubject", "predicate"],
-                           "values": ["https://registry.trustoverip.org/dtg/vsc/vetted/1"] } ] } ] },
+  "admission": "automatic",
   "vetting": {
     "version": "0.1",
     "statementType": "https://registry.trustoverip.org/dtg/vsc/vetted/1",
@@ -132,9 +131,9 @@ What documentation a vetter accepts is **the vetter's decision**. Set
 `acceptedDocumentClasses` only if the community needs a floor; a
 `priorAcquaintance` statement with no documentation is exempt from it.
 
-Applicants read the requirements from `vtc/join-requests/manifest/0.2`, which
-adds `vetting` and a `requirementsDigest` to each criterion. `manifest/0.1` is
-unchanged.
+Applicants read the requirements from `vtc/join-requests/manifest/0.3`, which
+carries each criterion's `admission`, its `vetting` and its
+`requirementsDigest`, in the order the community decides by.
 
 The manifest is served over `POST /v1/trust-tasks` with no session, so someone
 considering applying can read it before they have any relationship with the
@@ -482,12 +481,13 @@ key revoked later does not revoke the grant — revoke it with
 - **Vetting → Withdrawals** lists withdrawal notices with their review state,
   linking to the join requests and members they touch.
 - **Vetting → Requirements** is where admission criteria are written: it adds,
-  edits and removes them (`/v1/schemas/accepts`), registers and removes the
+  edits and removes them (`vtc/schemas/accepts/*`), in decision order, with
+  each one's admission and requirements; it registers and removes the
   predicates the community accepts, which a criterion may count (signed
   `vtc/endorsement-types/{register,delete}/0.1`) — saying under each which
   criteria require it, and leaving Remove disabled while any do — and reads
   each criterion's `requirementsDigest` from the signed
-  `vtc/join-requests/manifest/0.2` document applicants send, so a change is
+  `vtc/join-requests/manifest/0.3` document applicants send, so a change is
   visible as applicants will see it. Every requirement is checked in the
   browser against the same rules the daemon applies before it can be saved, and
   the page says in sentences what applicants will be told.
@@ -514,9 +514,11 @@ For every Vetting Statement in the join presentation — every credential whose
 | Method accepted; required claims verified; within `maxStatementAge`; documentation within any floor | `method-not-accepted`, `claim-not-verified`, `too-old`, `documentation-not-accepted` |
 | One statement per vetter (the most recent) | `same-vetter` |
 
-The criterion applied is the one whose current `requirementsDigest` the
-applicant sent in `extensions.requirementsDigest`, otherwise the first vetting
-criterion.
+The criterion applied is the one the submission is decided under
+([Join criteria](join-criteria.md)): the one whose `requirementsDigest` the
+applicant names as the submission's `criterion` — at that version while its
+`requirementsGrace` lasts — otherwise the first criterion, in published order,
+that the submission meets.
 
 The facts are recorded beside the join request, and an admin reads them with
 `GET /v1/join-requests/{id}/vetting` — the same facts in lowerCamelCase, each

@@ -14,6 +14,7 @@
 //! - VMC + role VAC issuance via the VTA oracle on approve.
 //!   Phase 1's approve writes ACL + Member only.
 
+pub mod criteria;
 pub mod orchestrate;
 pub mod retention;
 pub mod storage;
@@ -34,9 +35,10 @@ pub use orchestrate::{
 pub use retention::{JoinRequestsConfig, RetentionSweeper, default_retention_days};
 pub use storage::{
     CredentialResends, JOIN_REQUEST_EXTENSIONS_MAX_BYTES, JOIN_REQUEST_VP_MAX_BYTES,
-    StoredVettingFacts, delete_join_request, get_credential_resends, get_join_request,
-    get_vetting_facts, list_join_requests, list_join_requests_paginated, store_credential_resends,
-    store_join_request, store_vetting_facts,
+    StoredCriterion, StoredVettingFacts, delete_join_request, get_credential_resends,
+    get_criterion, get_join_request, get_vetting_facts, list_join_requests,
+    list_join_requests_paginated, store_credential_resends, store_criterion, store_join_request,
+    store_vetting_facts,
 };
 
 /// State of a join request through its lifecycle.

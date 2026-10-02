@@ -63,8 +63,8 @@ const TASK_REVOCATIONS_LIST = "https://trusttasks.org/spec/vtc/vetting/revocatio
 const TASK_JOIN_VETTING_SHOW = "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1";
 const TASK_BRANDING_SHOW = "https://trusttasks.org/spec/vtc/community/branding/show/0.1";
 const TASK_BRANDING_UPDATE = "https://trusttasks.org/spec/vtc/community/branding/update/0.1";
-const TASK_ACCEPTS_LIST = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.1";
-const TASK_ACCEPTS_REGISTER = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
+const TASK_ACCEPTS_LIST = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2";
+const TASK_ACCEPTS_REGISTER = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
 const TASK_ACCEPTS_DELETE = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
 
 /** How many pages of a signed listing the console reads before it stops. */
@@ -85,8 +85,8 @@ async function allItems<T>(task: string): Promise<T[]> {
   }
   return out;
 }
-export const TASK_MANIFEST_V0_2 =
-  "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2";
+export const TASK_MANIFEST_V0_3 =
+  "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
 
 /** Query keys. Everything under `["vetting"]` is refreshed after a change. */
 export const vettingKeys = {
@@ -207,12 +207,13 @@ export async function fetchPendingWithVetting(): Promise<PendingWithVetting> {
 export type { JoinManifest, ManifestCriterion };
 
 /**
- * `join-requests/manifest/0.2` as applicants receive it — each criterion with
- * its vetting requirements and `requirementsDigest` — read as the same signed
- * document an applicant sends. The shape is the manifest specification's own.
+ * `join-requests/manifest/0.3` as applicants receive it — each criterion with
+ * its admission, its requirements and its `requirementsDigest`, in the order
+ * the community decides by — read as the same signed document an applicant
+ * sends. The shape is the manifest specification's own.
  */
 export const fetchManifest = (): Promise<JoinManifest> =>
-  postSignedRead<JoinManifest>(TASK_MANIFEST_V0_2, {});
+  postSignedRead<JoinManifest>(TASK_MANIFEST_V0_3, {});
 
 // ── Admission criteria ──────────────────────────────────────────────────
 //
@@ -226,10 +227,11 @@ export const fetchCriteria = (): Promise<AcceptsCriterion[]> =>
   allItems<AcceptsCriterion>(TASK_ACCEPTS_LIST);
 
 /**
- * Store a criterion. The route registers **or replaces** by id, so this is both
- * "add" and "save"; the daemon checks the DCQL query, every credential type it
- * references, the vetting requirements against the manifest schema, and that
- * the `statementType` is registered.
+ * Store a criterion. The task registers **or replaces** by id, so this is both
+ * "add" and "save"; a replaced criterion keeps its place in the decision order.
+ * The daemon checks the DCQL query, every credential type it references, the
+ * vetting requirements against the manifest schema, that the `statementType`
+ * is registered, and that it can evaluate every requirement stated.
  */
 export const saveCriterion = async (body: RegisterAcceptsBody): Promise<AcceptsCriterion> =>
   (await postSignedTrustTask<{ criterion: AcceptsCriterion }>(TASK_ACCEPTS_REGISTER, body))

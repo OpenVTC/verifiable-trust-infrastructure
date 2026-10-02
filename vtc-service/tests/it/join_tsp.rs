@@ -131,6 +131,7 @@ async fn a_join_submitted_over_tsp_is_dispatched_and_recorded() {
             JOIN_REQUEST_SUBMIT_TYPE,
             serde_json::to_value(JoinRequestSubmitBody {
                 vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
+                criterion: None,
                 registry_consent: false,
                 extensions: json!({}),
                 attributes: Vec::new(),
@@ -188,6 +189,7 @@ async fn a_join_over_tsp_is_recorded_in_either_carriage() {
                 JOIN_REQUEST_SUBMIT_TYPE,
                 serde_json::to_value(JoinRequestSubmitBody {
                     vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
+                    criterion: None,
                     registry_consent: false,
                     extensions: json!({}),
                     attributes: Vec::new(),

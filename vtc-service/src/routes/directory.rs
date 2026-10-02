@@ -196,6 +196,7 @@ async fn assemble_directory_facts(
                 invitation: None,
                 presentation: None,
                 request,
+                criterion: None,
             },
             // A directory read is synchronous and unthreaded, and presents no
             // credentials to bind.

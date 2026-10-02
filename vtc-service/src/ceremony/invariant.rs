@@ -32,6 +32,29 @@
 //! gate, and then the invariant would only be checking that somebody
 //! said so.
 //!
+//! ## The join criterion (`vtc/join-requests/submit/0.3`)
+//!
+//! A join is decided under one published criterion
+//! ([`crate::join::criteria`]), and what that criterion says binds the
+//! decision whatever the policy proposes. [`hold_to_criterion`] applies it:
+//!
+//! - a submission that does **not meet** its criterion is never admitted, and
+//!   never referred either — a referral is how an administrator admits, so
+//!   referring an unmet submission would admit outside the criteria. An
+//!   `allow` or `refer` becomes `requestMore`, naming what is missing;
+//! - one meeting a **`review`** criterion is referred; an `allow` becomes
+//!   `refer`, because meeting a review criterion never admits by itself;
+//! - one meeting an **`automatic`** criterion keeps the policy's verdict. The
+//!   policy may still refuse or refer it on grounds of its own (an applicant
+//!   the community has excluded) — tightening is the policy's to do, and the
+//!   verdict it returns records the ground;
+//! - a join with **no criterion** is never admitted or referred: every join
+//!   path decides under one, so its absence is a fault, not an open door.
+//!
+//! Unlike [`enforce`] this rewrites rather than vetoes: the outcome is still
+//! the one the specification requires for the case, not a refusal of the
+//! policy.
+//!
 //! ## Where the other §5 invariants live
 //!
 //! [`enforce`] is intentionally pure over `(Facts, Verdict)` — it is
@@ -53,6 +76,7 @@
 
 use super::facts::{Facts, Purpose};
 use super::verdict::Verdict;
+use crate::schemas::accepts::Admission;
 
 /// The community role that ceremonies may never self-grant through
 /// the join path, and may grant through role-change only behind
@@ -142,6 +166,63 @@ pub fn enforce(facts: &Facts, verdict: Verdict) -> Result<Verdict, InvariantViol
     }
 }
 
+/// Hold a `join` verdict to the criterion the submission is decided under —
+/// see the module docs. Other purposes pass through untouched. Returns the
+/// verdict to act on and, when it differs from the policy's, why.
+pub fn hold_to_criterion(facts: &Facts, verdict: Verdict) -> (Verdict, Option<&'static str>) {
+    if facts.purpose != Purpose::Join {
+        return (verdict, None);
+    }
+    let admits = matches!(verdict, Verdict::Allow(_) | Verdict::Refer(_));
+    let Some(criterion) = facts.evidence.criterion.as_ref() else {
+        if !admits {
+            return (verdict, None);
+        }
+        return (
+            Verdict::Deny(super::verdict::Deny {
+                code: CRITERION_ABSENT.into(),
+                reason: Some("a join is decided under a published criterion, and none was".into()),
+            }),
+            Some(CRITERION_ABSENT),
+        );
+    };
+    if !criterion.met {
+        if !admits {
+            return (verdict, None);
+        }
+        return (
+            Verdict::RequestMore(super::verdict::RequestMore {
+                needs: criterion.needs.clone(),
+                presentation_definition: serde_json::Value::Null,
+            }),
+            Some(CRITERION_UNMET),
+        );
+    }
+    match (criterion.admission, verdict) {
+        (Admission::Review, Verdict::Allow(_)) => (
+            Verdict::Refer(super::verdict::Refer {
+                queue: REVIEW_QUEUE.into(),
+                reason: Some(format!(
+                    "criterion `{}` admits after an administrator's review",
+                    criterion.id
+                )),
+            }),
+            Some(CRITERION_REVIEW),
+        ),
+        (_, verdict) => (verdict, None),
+    }
+}
+
+/// Why [`hold_to_criterion`] rewrote a verdict: the submission does not meet
+/// its criterion.
+pub const CRITERION_UNMET: &str = "criterion-unmet";
+/// Why [`hold_to_criterion`] rewrote a verdict: the criterion admits by review.
+pub const CRITERION_REVIEW: &str = "criterion-review";
+/// Why [`hold_to_criterion`] refused: the join carried no criterion.
+pub const CRITERION_ABSENT: &str = "no-criterion";
+/// The queue a submission meeting a `review` criterion is referred to.
+pub const REVIEW_QUEUE: &str = "admin-review";
+
 /// Whether the facts carry a verified step-up signal
 /// (`evidence.request.step_up == true`). Absent / non-`true` reads as
 /// "not stepped up" — the host defaults to refusing admin promotion.
@@ -185,6 +266,7 @@ mod tests {
                 invitation: None,
                 presentation: None,
                 request: Some(request),
+                criterion: None,
             },
             state: State {
                 subject_member: None,
@@ -301,5 +383,94 @@ mod tests {
             reason: None,
         });
         assert_eq!(enforce(&f, refer.clone()).unwrap(), refer);
+    }
+
+    fn with_criterion(admission: Admission, met: bool) -> Facts {
+        let mut f = facts(Purpose::Join, json!({}));
+        f.evidence.criterion = Some(crate::join::criteria::CriterionFact {
+            id: "kernel".into(),
+            requirements_digest: "zKernel".into(),
+            admission,
+            met,
+            needs: if met {
+                vec![]
+            } else {
+                vec!["invitation".into()]
+            },
+            cited: false,
+            superseded: false,
+        });
+        f
+    }
+
+    fn refer() -> Verdict {
+        Verdict::Refer(super::super::verdict::Refer {
+            queue: "moderator".into(),
+            reason: None,
+        })
+    }
+
+    /// Submit 0.3 decision rule 3: a met automatic criterion keeps the
+    /// policy's verdict — an admission, or a tightening the policy chose.
+    #[test]
+    fn a_met_automatic_criterion_keeps_the_policys_verdict() {
+        let f = with_criterion(Admission::Automatic, true);
+        assert_eq!(
+            hold_to_criterion(&f, allow_role("member")).0,
+            allow_role("member")
+        );
+        assert_eq!(hold_to_criterion(&f, refer()).0, refer());
+    }
+
+    /// Rule 2: meeting a review criterion never admits by itself.
+    #[test]
+    fn a_met_review_criterion_turns_an_admission_into_a_referral() {
+        let f = with_criterion(Admission::Review, true);
+        let (v, why) = hold_to_criterion(&f, allow_role("member"));
+        assert_eq!(why, Some(CRITERION_REVIEW));
+        match v {
+            Verdict::Refer(r) => assert_eq!(r.queue, REVIEW_QUEUE),
+            other => panic!("expected refer, got {other:?}"),
+        }
+    }
+
+    /// Rule 1: an unmet criterion is never admitted — nor referred, which is
+    /// how an administrator would admit it.
+    #[test]
+    fn an_unmet_criterion_is_neither_admitted_nor_referred() {
+        for admission in [Admission::Automatic, Admission::Review] {
+            let f = with_criterion(admission, false);
+            for proposed in [allow_role("member"), refer()] {
+                let (v, why) = hold_to_criterion(&f, proposed);
+                assert_eq!(why, Some(CRITERION_UNMET));
+                match v {
+                    Verdict::RequestMore(m) => assert_eq!(m.needs, ["invitation"]),
+                    other => panic!("expected requestMore, got {other:?}"),
+                }
+            }
+            let deny = Verdict::Deny(super::super::verdict::Deny {
+                code: "closed".into(),
+                reason: None,
+            });
+            assert_eq!(hold_to_criterion(&f, deny.clone()).0, deny);
+        }
+    }
+
+    #[test]
+    fn a_join_without_a_criterion_is_never_admitted() {
+        let f = facts(Purpose::Join, json!({}));
+        match hold_to_criterion(&f, allow_role("member")).0 {
+            Verdict::Deny(d) => assert_eq!(d.code, CRITERION_ABSENT),
+            other => panic!("expected deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn other_purposes_are_not_held_to_a_criterion() {
+        let f = facts(Purpose::RoleChange, json!({ "target_role": "member" }));
+        assert_eq!(
+            hold_to_criterion(&f, allow_role("member")).0,
+            allow_role("member")
+        );
     }
 }

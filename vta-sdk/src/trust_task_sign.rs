@@ -312,7 +312,7 @@ mod tests {
         (did, multibase::encode(multibase::Base::Base58Btc, &buf))
     }
 
-    const TYPE: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.2";
+    const TYPE: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.3";
 
     /// The whole point of [`HolderKey`]: a holder that is not a `did:key`
     /// signs, and the document it produces is well-formed — `issuer` is the

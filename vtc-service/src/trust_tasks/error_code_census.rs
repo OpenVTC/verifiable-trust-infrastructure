@@ -129,13 +129,13 @@ fn witnesses() -> Vec<Witness> {
             "the_supplement_task_answers_with_the_codes_its_spec_declares"
         ),
         witness!(
-            s::join_requests::submit::v0_2::error_codes::ATTRIBUTES_MISSING,
+            s::join_requests::submit::v0_3::error_codes::ATTRIBUTES_MISSING,
             jr::JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_MISSING,
             "join_requests.rs",
             "requested_attributes_are_published_enforced_and_kept_with_the_request"
         ),
         witness!(
-            s::join_requests::submit::v0_2::error_codes::ATTRIBUTES_UNREQUESTED,
+            s::join_requests::submit::v0_3::error_codes::ATTRIBUTES_UNREQUESTED,
             jr::JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_UNREQUESTED,
             "join_requests.rs",
             "requested_attributes_are_published_enforced_and_kept_with_the_request"
@@ -215,10 +215,22 @@ fn witnesses() -> Vec<Witness> {
             "status_is_not_found_alike_for_an_unknown_and_a_foreign_request"
         ),
         witness!(
-            s::join_requests::submit::v0_2::error_codes::PRESENTATION_INVALID,
+            s::join_requests::submit::v0_3::error_codes::PRESENTATION_INVALID,
             super::SUBMIT_ERR_PRESENTATION_INVALID,
             "join_requests.rs",
             "a_submitted_presentation_held_by_someone_else_is_presentation_invalid"
+        ),
+        witness!(
+            s::join_requests::submit::v0_3::error_codes::NOT_ACCEPTING,
+            jr::JOIN_REQUEST_SUBMIT_ERR_NOT_ACCEPTING,
+            "join_requests.rs",
+            "a_community_with_no_criteria_is_not_accepting"
+        ),
+        witness!(
+            s::join_requests::submit::v0_3::error_codes::CRITERION_UNKNOWN,
+            jr::JOIN_REQUEST_SUBMIT_ERR_CRITERION_UNKNOWN,
+            "join_requests.rs",
+            "a_submission_naming_an_unpublished_criterion_is_criterion_unknown"
         ),
         witness!(
             s::members::self_remove::v0_1::error_codes::NOT_MEMBER,
@@ -643,31 +655,37 @@ fn witnesses() -> Vec<Witness> {
             "the_presentation_and_registry_codes_are_answered"
         ),
         witness!(
-            s::schemas::accepts::register::v0_1::error_codes::INVALID_QUERY,
+            s::schemas::accepts::register::v0_2::error_codes::INVALID_QUERY,
             crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_ERR_INVALID_QUERY,
             "surface_verbs_spine.rs",
             "the_presentation_and_registry_codes_are_answered"
         ),
         witness!(
-            s::schemas::accepts::register::v0_1::error_codes::UNREGISTERED_TYPE,
+            s::schemas::accepts::register::v0_2::error_codes::UNREGISTERED_TYPE,
             crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_ERR_UNREGISTERED_TYPE,
             "surface_verbs_spine.rs",
             "the_presentation_and_registry_codes_are_answered"
         ),
         witness!(
-            s::schemas::accepts::register::v0_1::error_codes::UNREGISTERED_STATEMENT_TYPE,
+            s::schemas::accepts::register::v0_2::error_codes::UNREGISTERED_STATEMENT_TYPE,
             crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_ERR_UNREGISTERED_STATEMENT_TYPE,
             "surface_verbs_spine.rs",
             "the_presentation_and_registry_codes_are_answered"
         ),
         witness!(
-            s::schemas::accepts::register::v0_1::error_codes::INVALID_VETTING,
+            s::schemas::accepts::register::v0_2::error_codes::INVALID_VETTING,
             crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_ERR_INVALID_VETTING,
             "surface_verbs_spine.rs",
             "the_presentation_and_registry_codes_are_answered"
         ),
         witness!(
-            s::schemas::accepts::show::v0_1::error_codes::NOT_FOUND,
+            s::schemas::accepts::register::v0_2::error_codes::UNSUPPORTED_REQUIREMENT,
+            crate::trust_tasks::surface_tasks::ACCEPTS_REGISTER_ERR_UNSUPPORTED_REQUIREMENT,
+            "surface_verbs_spine.rs",
+            "the_presentation_and_registry_codes_are_answered"
+        ),
+        witness!(
+            s::schemas::accepts::show::v0_2::error_codes::NOT_FOUND,
             crate::trust_tasks::surface_tasks::ACCEPTS_SHOW_ERR_NOT_FOUND,
             "surface_verbs_spine.rs",
             "the_presentation_and_registry_codes_are_answered"
@@ -1033,7 +1051,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // at the registry pre-flight and the gate never runs. Witnessing it
         // means building a registry stub.
         s::auth::recognise::v0_2::error_codes::ISSUER_NOT_RECOGNISED,
-        s::join_requests::submit::v0_2::error_codes::POLICY_UNSATISFIED,
+        s::join_requests::submit::v0_3::error_codes::POLICY_UNSATISFIED,
         s::vetting::revoke_statement::v0_1::error_codes::DIGEST_MISMATCH,
         s::vetting::revoke_statement::v0_1::error_codes::ISSUER_MISMATCH,
         // `notPublishable` is the join manifest refusing a criterion every
@@ -1041,7 +1059,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // `description` exactly as the manifest's `Criterion` does, and the
         // query is an object once DCQL has parsed it, so no schema-valid
         // registration reaches it; the arm stays for a manifest that narrows.
-        s::schemas::accepts::register::v0_1::error_codes::NOT_PUBLISHABLE,
+        s::schemas::accepts::register::v0_2::error_codes::NOT_PUBLISHABLE,
         // `alreadyStored` is different bytes at an index already held. Every
         // chunk is checked against the digest `begin` committed for its index
         // before anything else, so different bytes are `chunkMismatch` first;

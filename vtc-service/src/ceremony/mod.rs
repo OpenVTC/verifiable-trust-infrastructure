@@ -105,6 +105,20 @@ use vti_common::error::AppError;
 /// (pipeline §11).
 pub fn decide(verified: &VerifiedFacts, policy: &CompiledPolicy) -> Result<Verdict, AppError> {
     let proposed = evaluate(verified, policy)?;
+    let (proposed, rewritten) = invariant::hold_to_criterion(verified.facts(), proposed);
+    if let Some(why) = rewritten {
+        tracing::info!(
+            purpose = verified.purpose().as_str(),
+            rule = why,
+            criterion = verified
+                .facts()
+                .evidence
+                .criterion
+                .as_ref()
+                .map_or("<none>", |c| c.id.as_str()),
+            "join verdict held to its criterion",
+        );
+    }
     match invariant::enforce(verified.facts(), proposed) {
         Ok(verdict) => Ok(verdict),
         Err(violation) => {
@@ -144,7 +158,18 @@ mod tests {
                 member_count: 10,
                 thread_id: None,
             },
-            evidence: Evidence::default(),
+            evidence: Evidence {
+                criterion: Some(crate::join::criteria::CriterionFact {
+                    id: "open".into(),
+                    requirements_digest: "zOpen".into(),
+                    admission: crate::schemas::accepts::Admission::Automatic,
+                    met: true,
+                    needs: vec![],
+                    cited: false,
+                    superseded: false,
+                }),
+                ..Evidence::default()
+            },
             state: State::default(),
         };
         VerifiedFacts::assemble(facts).expect("verified")

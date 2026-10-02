@@ -161,13 +161,17 @@ async fn seed_join_ceremony(mock: &MockVtcTransport) -> String {
         &state.schemas_ks,
         &AcceptsCriterion {
             id: "membership".into(),
-            query: json!({
+            admission: vtc_service::schemas::Admission::Automatic,
+            credential_issuers: Some(vtc_service::schemas::CredentialIssuers::Any),
+            invitation_required: false,
+            position: 0,
+            query: Some(json!({
                 "credentials": [{
                     "id": "membership",
                     "format": "ldp_vc",
                     "claims": [ { "path": ["givenName"] } ]
                 }]
-            }),
+            })),
             description: Some("Join evidence".into()),
             vetting: None,
             hidden_vetting: None,
@@ -194,6 +198,7 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     //    `submit_inner`; the default policy defers to a pending decision.
     let submit = JoinRequestSubmitBody {
         vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
+        criterion: None,
         registry_consent: false,
         extensions: json!({}),
         attributes: Vec::new(),
@@ -217,7 +222,7 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
 
     // 2. Discover the community's join evidence over DIDComm (real
     //    manifest read) — the seeded DCQL Accepts criterion.
-    let manifest: manifest::v0_1::Response = serde_json::from_value(response_payload(
+    let manifest: manifest::v0_3::Response = serde_json::from_value(response_payload(
         mock.client
             .request(&vtc_did, JOIN_REQUEST_MANIFEST_TYPE, json!({}))
             .await,
@@ -474,6 +479,7 @@ async fn didcomm_try_request_classifies_reject_and_keeps_going() {
     let applicant_did = mock.client.did().to_string();
     let good = JoinRequestSubmitBody {
         vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
+        criterion: None,
         registry_consent: false,
         extensions: json!({}),
         attributes: Vec::new(),
@@ -517,6 +523,7 @@ async fn didcomm_duplicate_submit_rejects_with_conflict_not_internal_error() {
 
     let submit = JoinRequestSubmitBody {
         vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
+        criterion: None,
         registry_consent: false,
         extensions: json!({}),
         attributes: Vec::new(),

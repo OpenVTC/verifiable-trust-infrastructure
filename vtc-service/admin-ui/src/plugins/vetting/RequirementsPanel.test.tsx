@@ -13,7 +13,7 @@ vi.mock("@/lib/api", async (original) => ({
   postSignedTrustTask: (await import("@/test/signed-read")).unsignedTask,
 }));
 
-const MANIFEST_TASK = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.2";
+const MANIFEST_TASK = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
 
 const STATEMENT_TYPE =
   "https://registry.trustoverip.org/dtg/vsc/vetted/1";
@@ -33,44 +33,41 @@ const REQUIREMENTS = {
   },
 };
 
-const QUERY = {
-  credentials: [
-    { id: "vetting", format: "ldp_vc", meta: { type_values: ["StatementCredential"] } },
-  ],
-};
-
 const criterion = (
   id: string,
   vetting: unknown,
   description?: string,
+  admission: "automatic" | "review" = "automatic",
 ): AcceptsCriterion =>
   ({
     id,
-    query: QUERY,
+    admission,
     description,
     vetting,
     createdAt: "2026-01-01T00:00:00Z",
     createdByDid: "did:key:zAdmin",
   }) as unknown as AcceptsCriterion;
 
-const ACCEPTS_LIST_TASK = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.1";
+const ACCEPTS_LIST_TASK = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2";
 const ACCEPTS_DELETE_TASK = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
 
 function routes(extra: MockRoute[] = []): MockRoute[] {
   return [
     taskRoute(ACCEPTS_LIST_TASK, {
+      // In id order, as the list task answers.
       items: [
         criterion("kernel-developer", REQUIREMENTS, "Two vetters, at least one in person"),
         criterion("legacy", { ...REQUIREMENTS, minStatements: 0 }),
-        criterion("open-door", undefined),
+        criterion("open-door", undefined, undefined, "review"),
       ],
     }),
     taskRoute(MANIFEST_TASK, {
       communityDid: "did:web:vtc.example.org",
+      // In the order the community decides by.
       criteria: [
-        { id: "kernel-developer", presentationDefinition: {}, vetting: REQUIREMENTS, requirementsDigest: "zQmKernelDigest" },
-        { id: "legacy", presentationDefinition: {}, requirementsDigest: "zQmLegacyDigest" },
-        { id: "open-door", presentationDefinition: {} },
+        { id: "open-door", admission: "review", requirementsDigest: "zQmOpenDigest" },
+        { id: "kernel-developer", admission: "automatic", vetting: REQUIREMENTS, requirementsDigest: "zQmKernelDigest" },
+        { id: "legacy", admission: "automatic", requirementsDigest: "zQmLegacyDigest" },
       ],
     }),
     taskRoute("https://trusttasks.org/spec/vtc/endorsement-types/list/0.1", {
@@ -98,12 +95,35 @@ describe("RequirementsPanel", () => {
     expect(screen.getByText("At least 1 of them made in person.")).toBeTruthy();
     expect(screen.getByText("zQmKernelDigest")).toBeTruthy();
     expect(screen.getByText(/^Require at least 1 statement/)).toBeTruthy();
-    expect(screen.getByText("This criterion requires no vetting.")).toBeTruthy();
+    expect(screen.getByText("Nothing: every applicant meets it.")).toBeTruthy();
+    expect(
+      screen.getAllByText("A submission that meets it is admitted automatically.").length,
+    ).toBe(2);
+    expect(
+      screen.getByText(
+        "A submission that meets it is referred to an administrator, who decides.",
+      ),
+    ).toBeTruthy();
 
     // The criteria are read from the schema store, and the digests from the
     // manifest the applicant receives.
     await waitFor(() => expect(sentPayloads(requests, ACCEPTS_LIST_TASK).length).toBe(1));
     expect(sentPayloads(requests, MANIFEST_TASK)).toContainEqual({});
+  });
+
+  it("lists the criteria in the order the community decides by", async () => {
+    mockFetch(routes());
+    renderWithProviders(<RequirementsPanel />);
+    await screen.findByRole("heading", { name: "3. Criterion legacy" });
+    const headings = screen
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent)
+      .filter((t) => t?.includes(". Criterion"));
+    expect(headings).toEqual([
+      "1. Criterion open-door",
+      "2. Criterion kernel-developer",
+      "3. Criterion legacy",
+    ]);
   });
 
   it("removes a criterion once the admin confirms what it costs", async () => {
@@ -113,7 +133,7 @@ describe("RequirementsPanel", () => {
     renderWithProviders(<RequirementsPanel />);
 
     const card = (
-      await screen.findByRole("heading", { name: "Criterion legacy" })
+      await screen.findByRole("heading", { name: "3. Criterion legacy" })
     ).closest("section")!;
     fireEvent.click(within(card).getByRole("button", { name: "Remove" }));
 
@@ -133,7 +153,7 @@ describe("RequirementsPanel", () => {
     renderWithProviders(<RequirementsPanel />);
 
     const card = (
-      await screen.findByRole("heading", { name: "Criterion kernel-developer" })
+      await screen.findByRole("heading", { name: "2. Criterion kernel-developer" })
     ).closest("section")!;
     fireEvent.click(within(card).getByRole("button", { name: "Edit" }));
     expect(

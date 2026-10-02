@@ -57,6 +57,7 @@ use trust_tasks_rs::specs::vtc::invitations::deliver as invitation_deliver;
 use trust_tasks_rs::specs::vtc::join_requests::manifest;
 use trust_tasks_rs::specs::vtc::members::credentials as member_credentials;
 use trust_tasks_rs::specs::vtc::registry::{records, sync_jobs};
+use trust_tasks_rs::specs::vtc::schemas::accepts;
 
 /// Transparent wrappers documenting generated types, one per line.
 macro_rules! spec_types {
@@ -160,10 +161,13 @@ spec_types! {
     /// `vtc/vetting/vetters/profile/0.1`'s `VettingMethod`.
     VetterProfile01VettingMethod(vetters::profile::v0_1::VettingMethod)
         in vetters::profile::v0_1::Payload as "VettingMethod";
-    /// `vtc/join-requests/manifest/0.1#response`.
-    JoinManifest01Response(manifest::v0_1::Response);
-    /// `vtc/join-requests/manifest/0.2#response`.
-    JoinManifest02Response(manifest::v0_2::Response);
+    /// `vtc/join-requests/manifest/0.3#response`.
+    JoinManifest03Response(manifest::v0_3::Response);
+    /// `vtc/schemas/accepts/register/0.2` payload — one join criterion as an
+    /// administrator states it.
+    AcceptsRegister02Payload(accepts::register::v0_2::Payload);
+    /// `vtc/schemas/accepts/list/0.2#response` — the criteria as stored.
+    AcceptsList02Response(accepts::list::v0_2::Response);
     /// `vtc/join-requests/manifest/0.2`'s `VettingRequirements`.
     JoinManifest02VettingRequirements(manifest::v0_2::VettingRequirements)
         in manifest::v0_2::Response as "VettingRequirements";
@@ -521,8 +525,9 @@ mod tests {
         check::<VetterResend01Response>();
         check::<EndorsementTypeDelete01Response>();
         check::<VetterProfile01VettingMethod>();
-        check::<JoinManifest01Response>();
-        check::<JoinManifest02Response>();
+        check::<JoinManifest03Response>();
+        check::<AcceptsRegister02Payload>();
+        check::<AcceptsList02Response>();
         check::<JoinManifest02VettingRequirements>();
         check::<JoinManifest02CommunityBranding>();
         check::<JoinManifest02RequestedAttribute>();

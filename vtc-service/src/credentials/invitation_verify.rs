@@ -35,7 +35,7 @@ use vti_common::auth::PurposeVmResolver;
 use vti_common::error::AppError;
 
 use crate::ceremony::facts::Invitation;
-use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
+use crate::credentials::vm_resolver::DidVmResolver;
 use crate::recognition::{HttpStatusListFetcher, StatusListFetcher};
 use crate::registry::TrustRegistryClient;
 use crate::server::AppState;
@@ -410,46 +410,10 @@ async fn verify_invitation_proof(
     issuer_did: &str,
     resolver: &dyn PurposeVmResolver,
 ) -> Result<(), AppError> {
-    let proof_value = vic_json
-        .get("proof")
-        .ok_or_else(|| forbidden("invitation has no proof".into()))?;
-    // A proof *set*: a hybrid invitation carries one proof per suite, and this
-    // read used to take the whole block as a single proof — so an array failed
-    // to parse and the invitation was refused as malformed rather than checked.
-    let proofs = crate::credentials::proof_set::proof_set(proof_value)
-        .map_err(|e| forbidden(format!("invitation proof did not parse: {e}")))?;
-
-    // Every proof must be bound to the issuer, checked BEFORE any signature is
-    // verified. A proof naming someone else is not a failed signature, it is a
-    // document claiming the wrong author, and it must not be reachable by
-    // simply being the one that happens to verify.
-    for proof in &proofs {
-        check_issuer_binding(&proof.verification_method, issuer_did)
-            .map_err(|e| forbidden(e.to_string()))?;
-    }
-
-    let mut unsigned = vic_json.clone();
-    unsigned
-        .as_object_mut()
-        .ok_or_else(|| forbidden("invitation is not a JSON object".into()))?
-        .remove("proof");
-
-    let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
-    for proof in &proofs {
-        let did = crate::credentials::proof_set::proof_signer_did(proof).to_string();
-        let r = crate::credentials::proof_set::verify_one(
-            proof,
-            &unsigned,
-            resolver,
-            vti_common::auth::ProofPurpose::AssertionMethod,
-        )
-        .await;
-        outcomes.push((did, r));
-    }
-
-    crate::credentials::proof_set::accept_all(&outcomes)
-        .map_err(|e| forbidden(format!("invitation signature did not verify: {e}")))?;
-    Ok(())
+    // A proof *set*: a hybrid invitation carries one proof per suite.
+    crate::credentials::proof_set::verify_issued(vic_json, issuer_did, resolver)
+        .await
+        .map_err(|e| forbidden(format!("invitation {e}")))
 }
 
 /// Fail-closed revocation check. A missing `credentialStatus` is treated as

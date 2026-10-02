@@ -22,8 +22,8 @@ pub mod storage;
 pub mod validate;
 
 pub use accepts::{
-    AcceptsCriterion, delete_accepts, get_accepts, list_accepts, store_accepts,
-    validate_accepts_query,
+    AcceptsCriterion, Admission, CredentialIssuers, delete_accepts, get_accepts, list_accepts,
+    published_criteria, seed_default_criteria, store_accepts, validate_accepts_query,
 };
 pub use defaults::{DEFAULT_ISSUES_TYPES, seed_default_issues};
 pub use validate::{check_schema, validate_instance, validate_issued};

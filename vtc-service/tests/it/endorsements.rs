@@ -35,7 +35,7 @@ const ISSUE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/show/0.1";
 const SCHEMA_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/register/0.1";
-const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
+const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
 const ACCEPTS_DELETE_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/delete/0.1";
 const ADMIN_DID: &str = "did:key:zEndAdmin";
 const ISSUER_DID: &str = "did:key:zEndIssuer";
@@ -594,8 +594,7 @@ async fn register_vetting_criterion(fix: &Fixture, id: &str, statement_type: &st
         json!({
                 "id": id,
                 "description": "Two vetters, at least one in person",
-                "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
-                           "meta": { "type_values": ["StatementCredential"] } } ] },
+                "admission": "automatic",
                 "vetting": {
                     "version": "0.1",
                     "statementType": statement_type,

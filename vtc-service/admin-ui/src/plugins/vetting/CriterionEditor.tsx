@@ -1,9 +1,11 @@
-// The admission criterion editor — what a community asks of an applicant, and
-// the vetting it requires.
+// The admission criterion editor — one way into this community: how a
+// submission meeting it is decided, and what it asks of an applicant.
 //
 // Every control here writes one member of the criterion the daemon stores
-// (`POST /v1/schemas/accepts`). Two things the form does that a JSON body
-// cannot:
+// (`vtc/schemas/accepts/register/0.2`). A criterion may state any of its
+// requirements — credentials, an invitation, vetting — or none: a criterion
+// asking for nothing is how a community admits, or reviews, everyone who
+// applies. Two things the form does that a JSON body cannot:
 //
 //   - it only offers a per-method minimum for a method the criterion accepts,
 //     so the commonest refusal ("a minimum is set for a method this criterion
@@ -23,6 +25,7 @@ import { Link } from "react-router-dom";
 
 import { useToast } from "@/lib/toast";
 import {
+  admissionSentence,
   criterionBody,
   criterionDraft,
   criterionProblems,
@@ -36,6 +39,8 @@ import {
   relationshipLabel,
   summarizeRequirements,
   VETTING_METHODS,
+  type Admission,
+  type CredentialIssuers,
   type CriterionDraft,
   type RequirementsDraft,
 } from "@/lib/vetting";
@@ -70,8 +75,8 @@ export function CriterionEditor({
       toast.push(
         "success",
         stored.vetting
-          ? `Saved "${stored.id}". Applicants read the new requirements the next time they ask for the join manifest; an application already gathering statements keeps the requirements it started under.`
-          : `Saved "${stored.id}". It asks for no vetting.`,
+          ? `Saved "${stored.id}". Applicants read the new requirements the next time they ask for the join manifest; an application already gathering statements is judged by the requirements it started under while their grace lasts.`
+          : `Saved "${stored.id}". ${admissionSentence(stored.admission)}`,
       );
       onDone();
     },
@@ -97,9 +102,10 @@ export function CriterionEditor({
         {isNew ? "Add a criterion" : `Editing ${criterion.id}`}
       </h3>
       <p className="lead">
-        A criterion is one way into this community. An applicant satisfies any
-        one of them; what it asks for is this community's decision, and every
-        number below is yours to set.
+        A criterion is one way into this community. What it asks for — and
+        whether meeting it admits an applicant or sends them to an administrator
+        — is this community's decision, and every number below is yours to set.
+        A criterion that asks for nothing is met by everyone who applies.
       </p>
 
       <div className="form-stack">
@@ -142,6 +148,106 @@ export function CriterionEditor({
           />
         </FormField>
 
+        <fieldset className="vet-fieldset">
+          <legend>When an applicant meets this criterion</legend>
+          {(
+            [
+              ["automatic", "Admit them automatically"],
+              ["review", "Refer them to an administrator, who decides"],
+            ] as const
+          ).map(([value, label]) => (
+            <label key={value} className="switch-field">
+              <input
+                type="radio"
+                name="criterion-admission"
+                value={value}
+                checked={draft.admission === value}
+                onChange={() => set({ admission: value as Admission })}
+              />
+              <span className="switch-text">{label}</span>
+            </label>
+          ))}
+          <p className="muted">
+            An applicant who names no criterion is decided under the first one
+            they meet, in the order the criteria are listed. A new criterion
+            goes last; to move one, remove it and add it again.
+          </p>
+        </fieldset>
+
+        <label className="switch-field" htmlFor="criterion-invitation">
+          <input
+            id="criterion-invitation"
+            type="checkbox"
+            role="switch"
+            checked={draft.invitationRequired}
+            onChange={(e) => set({ invitationRequired: e.target.checked })}
+          />
+          <span className="switch-text">
+            <strong>Applicants must hold an invitation this community issued</strong>
+            <span className="muted">
+              Off, an invitation plays no part in meeting this criterion.
+            </span>
+          </span>
+        </label>
+
+        <label className="switch-field" htmlFor="criterion-credentials">
+          <input
+            id="criterion-credentials"
+            type="checkbox"
+            role="switch"
+            checked={draft.asksCredentials}
+            onChange={(e) => set({ asksCredentials: e.target.checked })}
+          />
+          <span className="switch-text">
+            <strong>Applicants must present credentials</strong>
+            <span className="muted">
+              Off, the criterion asks for no credential.
+            </span>
+          </span>
+        </label>
+
+        {draft.asksCredentials && (
+          <>
+            <FormField
+              id="criterion-issuers"
+              label="Whose credentials count"
+              hint="A credential that does not verify — signature, validity, revocation — never counts."
+            >
+              <select
+                id="criterion-issuers"
+                value={draft.credentialIssuers}
+                onChange={(e) =>
+                  set({ credentialIssuers: e.target.value as CredentialIssuers })
+                }
+                aria-describedby={describedBy("criterion-issuers", true)}
+              >
+                <option value="community">Issued by this community</option>
+                <option value="recognised">
+                  Issued by this community, or one it recognises
+                </option>
+                <option value="any">From any issuer</option>
+              </select>
+            </FormField>
+            <FormField
+              id="criterion-query"
+              label="Credentials this criterion asks for (DCQL)"
+              hint="The community checks the query and every credential type it names when it stores the criterion."
+              error={problems.query}
+            >
+              <textarea
+                id="criterion-query"
+                rows={10}
+                spellCheck={false}
+                className="code-input"
+                value={draft.query}
+                onChange={(e) => set({ query: e.target.value })}
+                aria-invalid={Boolean(problems.query)}
+                aria-describedby={describedBy("criterion-query", true, problems.query)}
+              />
+            </FormField>
+          </>
+        )}
+
         <label className="switch-field" htmlFor="criterion-vets">
           <input
             id="criterion-vets"
@@ -153,7 +259,7 @@ export function CriterionEditor({
           <span className="switch-text">
             <strong>Applicants taking this route must be vetted by members</strong>
             <span className="muted">
-              Off, the criterion asks only for the credentials its query names.
+              Off, the criterion asks for no vetting.
             </span>
           </span>
         </label>
@@ -166,26 +272,6 @@ export function CriterionEditor({
           />
         )}
 
-        <details className="vet-details">
-          <summary>DCQL query</summary>
-          <FormField
-            id="criterion-query"
-            label="Credentials this criterion asks for"
-            hint="The community checks the query and every credential type it names when it stores the criterion."
-            error={problems.query}
-          >
-            <textarea
-              id="criterion-query"
-              rows={10}
-              spellCheck={false}
-              className="code-input"
-              value={draft.query}
-              onChange={(e) => set({ query: e.target.value })}
-              aria-invalid={Boolean(problems.query)}
-              aria-describedby={describedBy("criterion-query", true, problems.query)}
-            />
-          </FormField>
-        </details>
       </div>
 
       {problems.requirements.length > 0 && (
@@ -528,7 +614,7 @@ function VettingFields({
           <DurationField
             id="req-grace"
             label="Earlier requirements keep counting for"
-            hint="How long an application started under older requirements is judged by them. Published for applicants; this community does not apply it yet. Optional."
+            hint="How long an application started under older requirements is judged by them, once they change. Optional; without it, the current requirements always govern."
             value={draft.requirementsGrace}
             placeholder="P30D"
             onChange={(requirementsGrace) => onChange({ requirementsGrace })}

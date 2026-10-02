@@ -40,15 +40,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
+/// The generated `vtc/join-requests/submit` module.
+pub use trust_tasks_rs::specs::vtc::join_requests::submit;
+
 /// Trust Task `type` for a join-request submission (the ceremony `request`
-/// verb). Payload [`JoinRequestSubmitBody`]; response [`VerdictResponse`].
+/// verb): `vtc/join-requests/submit/0.3`, which decides a submission under one
+/// of the community's published criteria. Payload [`JoinRequestSubmitBody`];
+/// response [`VerdictResponse`].
 pub const JOIN_REQUEST_SUBMIT_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/join-requests/submit/0.2";
+    <submit::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `#response` variant of [`JOIN_REQUEST_SUBMIT_TYPE`] — the type of the
 /// success document `respond_with` mints; carries a [`VerdictResponse`].
 pub const JOIN_REQUEST_SUBMIT_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/join-requests/submit/0.2#response";
+    <submit::v0_3::Response as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Reply `type` used by the **credential-exchange** join close-the-loop
 /// (`credential-exchange/present`), which results in a join and echoes this
@@ -83,6 +88,12 @@ pub struct JoinRequestSubmitReceiptBody {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JoinRequestSubmitBody {
     pub vp: JsonValue,
+    /// The `requirementsDigest` of the criterion this submission is made
+    /// under, as `vtc/join-requests/manifest/0.3` published it. Absent: the
+    /// community decides it under the first criterion, in the order it
+    /// publishes them, that the submission meets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criterion: Option<String>,
     #[serde(default)]
     pub registry_consent: bool,
     /// Omitted rather than sent as `null` when unset. The payload schema
@@ -101,7 +112,7 @@ pub struct JoinRequestSubmitBody {
 }
 
 /// One answer to a requested attribute on
-/// `vtc/join-requests/submit/0.2` — a claim type and the value the applicant
+/// `vtc/join-requests/submit/0.3` — a claim type and the value the applicant
 /// gives for it.
 ///
 /// No `deny_unknown_fields`, and no `ext` either, because the published item
@@ -130,10 +141,11 @@ pub struct JoinRequestAttribute {
 // ---------------------------------------------------------------------------
 
 /// The published `vtc/join-requests/manifest` types, generated from the
-/// specification: [`manifest::v0_1`] (criteria) and [`manifest::v0_2`]
-/// (criteria with their vetting requirements and `requirementsDigest`, and the
-/// community's branding). Their `Payload` and `Response` are the manifest's wire
-/// types; nothing in this crate restates them.
+/// specification. [`manifest::v0_3`] is the version a VTC serves: each
+/// criterion states its `admission` and the requirements it has, in the order
+/// the community decides by, with a `requirementsDigest`. Its `Payload` and
+/// `Response` are the manifest's wire types; nothing in this crate restates
+/// them.
 ///
 /// `manifest::v0_2::CommunityBranding` is also the body of the VTC's admin
 /// `GET`/`PUT /v1/community/branding`: what an admin stores is exactly what the
@@ -228,14 +240,29 @@ pub const JOIN_REQUEST_SUBMIT_ERR_REQUEST_ALREADY_OPEN: &str =
 /// `vtc/join-requests/submit:attributesMissing` — a required requested
 /// attribute was not answered. `details.types` names them.
 pub const JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_MISSING: &str =
-    trust_tasks_rs::specs::vtc::join_requests::submit::v0_2::error_codes::ATTRIBUTES_MISSING.code;
+    submit::v0_3::error_codes::ATTRIBUTES_MISSING.code;
 
 /// `vtc/join-requests/submit:attributesUnrequested` — an answer named a type
 /// the manifest does not request; refused, not stored. `details.types` names
 /// them.
 pub const JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_UNREQUESTED: &str =
-    trust_tasks_rs::specs::vtc::join_requests::submit::v0_2::error_codes::ATTRIBUTES_UNREQUESTED
-        .code;
+    submit::v0_3::error_codes::ATTRIBUTES_UNREQUESTED.code;
+
+/// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
+/// the applicant's own.
+pub const JOIN_REQUEST_SUBMIT_ERR_PRESENTATION_INVALID: &str =
+    submit::v0_3::error_codes::PRESENTATION_INVALID.code;
+
+/// `vtc/join-requests/submit:notAccepting` — the community publishes no
+/// criteria, so it accepts no applications at present.
+pub const JOIN_REQUEST_SUBMIT_ERR_NOT_ACCEPTING: &str =
+    submit::v0_3::error_codes::NOT_ACCEPTING.code;
+
+/// `vtc/join-requests/submit:criterionUnknown` — the submission's `criterion`
+/// names no criterion the community publishes, nor an earlier version still
+/// within its `requirementsGrace`. Read the manifest again and resubmit.
+pub const JOIN_REQUEST_SUBMIT_ERR_CRITERION_UNKNOWN: &str =
+    submit::v0_3::error_codes::CRITERION_UNKNOWN.code;
 
 /// Extended error code: the caller has no open request to withdraw.
 ///
@@ -254,27 +281,16 @@ pub const JOIN_REQUEST_WITHDRAW_ERR_NOT_FOUND: &str = withdraw::v0_1::error_code
 pub const JOIN_REQUEST_WITHDRAW_ERR_ALREADY_DECIDED: &str =
     withdraw::v0_1::error_codes::ALREADY_DECIDED.code;
 
-/// Trust Task `type` for a join-request manifest request: discover the
-/// community's join evidence requirements. Public read; empty payload.
+/// Trust Task `type` for a join-request manifest request
+/// (`vtc/join-requests/manifest/0.3`): discover the community's join criteria.
+/// Public read; empty payload.
 pub const JOIN_REQUEST_MANIFEST_TYPE: &str =
-    <manifest::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <manifest::v0_3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `#response` variant of [`JOIN_REQUEST_MANIFEST_TYPE`] — carries a
-/// [`manifest::v0_1::Response`].
+/// [`manifest::v0_3::Response`].
 pub const JOIN_REQUEST_MANIFEST_RESPONSE_TYPE: &str =
-    <manifest::v0_1::Response as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// Manifest 0.2: 0.1 plus an optional `vetting` requirements object and a
-/// `requirementsDigest` on each criterion, and the community's `branding`. A
-/// community answers both versions; a 0.1 reader simply does not see the new
-/// members.
-pub const JOIN_REQUEST_MANIFEST_0_2_TYPE: &str =
-    <manifest::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
-
-/// `#response` variant of [`JOIN_REQUEST_MANIFEST_0_2_TYPE`] — carries a
-/// [`manifest::v0_2::Response`].
-pub const JOIN_REQUEST_MANIFEST_0_2_RESPONSE_TYPE: &str =
-    <manifest::v0_2::Response as trust_tasks_rs::Payload>::TYPE_URI;
+    <manifest::v0_3::Response as trust_tasks_rs::Payload>::TYPE_URI;
 
 // ---------------------------------------------------------------------------
 // Status — applicant poll (join-requests/status/1.0)

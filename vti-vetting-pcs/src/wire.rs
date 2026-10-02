@@ -23,8 +23,8 @@ use crate::{
 };
 
 /// The member of `extensions` this occupies. `extensions` is an open object on
-/// `vtc/join-requests/submit/0.2`; a first-class `vettingProof` member of `submit/0.3` is what
-/// the design asks for before this ships.
+/// `vtc/join-requests/submit/0.3`; a first-class `vettingProof` member of a later `submit` is
+/// what the design asks for before this ships.
 pub const EXTENSIONS_MEMBER: &str = "hiddenVetting";
 
 /// The only suite this branch implements: `Σ-PS` with `Tag_DDH` over BLS12-381.

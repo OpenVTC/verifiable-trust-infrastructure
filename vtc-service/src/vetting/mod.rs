@@ -106,18 +106,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::warn;
 
-use vta_sdk::protocols::join_requests::manifest::v0_2::Criterion as ManifestCriterion;
 use vta_sdk::protocols::vetting::{
     VETTED_PREDICATE, VettingRequirements, VettingRequirementsInvitation,
 };
-use vta_sdk::vetting::requirements::{REQUIREMENTS_DIGEST_MEMBER, StatementFacts, evaluate};
+use vta_sdk::vetting::requirements::{StatementFacts, evaluate};
 use vta_sdk::vetting::statement::verify_statement;
 use vti_common::error::AppError;
 
 use crate::endorsements::{VETTER_GRANT_ROW_TYPE, endorsements_for_subject};
 use crate::members::storage::get_member;
-use crate::routes::join_requests::manifest::manifest_criterion;
-use crate::schemas::accepts::list_accepts;
+use crate::routes::join_requests::manifest::ServedCriterion;
 use crate::server::AppState;
 
 /// The generic need a policy returns when vetting is incomplete. The host
@@ -184,29 +182,33 @@ pub struct VettingStatementFact {
     pub failures: Vec<String>,
 }
 
-/// Build the vetting facts for a join presentation, or `None` when no
-/// criterion this community publishes requires vetting.
+/// Build the vetting facts for a join presentation under `criterion` — the
+/// criterion the submission is decided under — or `None` when that criterion
+/// requires no vetting.
 ///
-/// `extensions` is the submission's `extensions` object; an applicant names the
-/// `requirementsDigest` it gathered against there.
+/// `cited` says the applicant named this criterion's `requirementsDigest` in
+/// its submission: it gathered its statements against the requirements as they
+/// stand. `extensions` is the submission's `extensions` object, where a
+/// hidden-vetting proof rides.
+#[cfg_attr(not(feature = "vetting-pcs"), allow(unused_variables))]
 pub async fn vetting_facts(
     state: &AppState,
     applicant_did: &str,
     vp: &JsonValue,
     extensions: &JsonValue,
+    criterion: &ServedCriterion,
+    cited: bool,
     now: DateTime<Utc>,
 ) -> Result<Option<VettingFacts>, AppError> {
-    let mut projected = Vec::new();
-    for stored in list_accepts(&state.schemas_ks).await? {
-        if stored.vetting.is_some() {
-            projected.push(manifest_criterion(stored)?.criterion);
-        }
-    }
-    let applicant_digest = extensions
-        .get(REQUIREMENTS_DIGEST_MEMBER)
-        .and_then(JsonValue::as_str);
-    let Some(selected) = select_criterion(projected, applicant_digest) else {
+    let Some(requirements) = criterion.stored.vetting.clone() else {
         return Ok(None);
+    };
+    let selected = Selected {
+        criterion_id: criterion.stored.id.clone(),
+        requirements,
+        digest: criterion.digest.clone(),
+        applicant_digest_matches: cited,
+        hidden_vetting: criterion.stored.hidden_vetting.clone(),
     };
     let requirements = &selected.requirements;
 
@@ -404,12 +406,7 @@ async fn hidden_facts(
     extensions: &JsonValue,
     now: DateTime<Utc>,
 ) -> Result<Option<VettingFacts>, AppError> {
-    let Some(stored) =
-        crate::schemas::accepts::get_accepts(&state.schemas_ks, &selected.criterion_id).await?
-    else {
-        return Ok(None);
-    };
-    let Some(raw) = stored.hidden_vetting else {
+    let Some(raw) = selected.hidden_vetting.clone() else {
         return Ok(None);
     };
     let config: crate::vetting::pcs::HiddenVettingConfig = serde_json::from_value(raw)
@@ -485,41 +482,16 @@ pub fn expand_needs(needs: &mut Vec<String>, facts: Option<&VettingFacts>) {
     }
 }
 
-/// The criterion a submission is evaluated under.
+/// The criterion a submission is evaluated under, as the vetting count needs it.
 #[derive(Debug, Clone)]
 struct Selected {
     criterion_id: String,
     requirements: VettingRequirements,
     digest: String,
     applicant_digest_matches: bool,
-}
-
-/// Pick the criterion: the one whose current digest the applicant named, else
-/// the first vetting criterion (criteria are listed in id order). A community
-/// with more than one vetting criterion should expect applicants to name one.
-fn select_criterion(
-    projected: Vec<ManifestCriterion>,
-    applicant_digest: Option<&str>,
-) -> Option<Selected> {
-    let named = applicant_digest.and_then(|d| {
-        projected
-            .iter()
-            .position(|c| c.requirements_digest.as_ref().map(|r| r.as_str()) == Some(d))
-    });
-    let (index, matches) = match named {
-        Some(i) => (i, true),
-        None => (0, false),
-    };
-    let chosen = projected.into_iter().nth(index)?;
-    Some(Selected {
-        criterion_id: chosen.id.as_str().to_owned(),
-        requirements: chosen.vetting?,
-        digest: chosen
-            .requirements_digest
-            .map(String::from)
-            .unwrap_or_default(),
-        applicant_digest_matches: matches,
-    })
+    /// Read only by the hidden-vetter path.
+    #[cfg_attr(not(feature = "vetting-pcs"), allow(dead_code))]
+    hidden_vetting: Option<JsonValue>,
 }
 
 /// Vetting Statements in a VP's `verifiableCredential`: statements whose
@@ -624,51 +596,6 @@ mod tests {
         // And a submission that is not an object at all is not a panic.
         let mut odd = json!("not an object");
         assert!(!redact_hidden_submission(&mut odd));
-    }
-
-    /// A digest-shaped value per criterion id.
-    fn digest(id: &str) -> String {
-        format!("zQm{}", id.repeat(20))
-    }
-
-    fn criterion(id: &str, min: u32) -> ManifestCriterion {
-        serde_json::from_value(json!({
-            "id": id,
-            "presentationDefinition": {},
-            "vetting": {
-                "version": "0.1",
-                "statementType": VETTED_PREDICATE,
-                "minStatements": min,
-                "acceptedMethods": ["inPerson"],
-                "eligibleVetters": { "role": "vetter" }
-            },
-            "requirementsDigest": digest(id),
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn the_criterion_the_applicant_named_is_the_one_applied() {
-        let s = select_criterion(
-            vec![criterion("a", 1), criterion("b", 2)],
-            Some(&digest("b")),
-        )
-        .unwrap();
-        assert_eq!(s.criterion_id, "b");
-        assert!(s.applicant_digest_matches);
-        assert_eq!(s.requirements.min_statements.get(), 2);
-    }
-
-    #[test]
-    fn an_unknown_or_absent_digest_falls_back_to_the_first_and_says_so() {
-        let s = select_criterion(
-            vec![criterion("a", 1), criterion("b", 2)],
-            Some(&digest("c")),
-        )
-        .unwrap();
-        assert_eq!(s.criterion_id, "a");
-        assert!(!s.applicant_digest_matches);
-        assert!(select_criterion(vec![], Some(&digest("a"))).is_none());
     }
 
     fn facts_with_needs(needs: &[&str]) -> VettingFacts {

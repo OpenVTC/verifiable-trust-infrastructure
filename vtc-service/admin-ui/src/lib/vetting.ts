@@ -663,40 +663,46 @@ export interface RequirementsDraft {
   governanceFrameworkUrl: string;
 }
 
-/** The whole criterion: what it is called, what it asks, and its DCQL query. */
+/** How a submission meeting a criterion is decided. */
+export type Admission = "automatic" | "review";
+
+/** Whose credentials meet a criterion's query. */
+export type CredentialIssuers = "community" | "recognised" | "any";
+
+/**
+ * The whole criterion: what it is called, how a submission meeting it is
+ * decided, and the requirements it states — credentials, vetting, an
+ * invitation — any of them, or none.
+ */
 export interface CriterionDraft {
   id: string;
   description: string;
+  admission: Admission;
+  /** Whether this criterion asks for credentials at all. */
+  asksCredentials: boolean;
+  /** The DCQL query, as JSON text. Kept verbatim unless the admin edits it. */
+  query: string;
+  credentialIssuers: CredentialIssuers;
+  /** Whether this criterion requires an invitation this community issued. */
+  invitationRequired: boolean;
   /** Whether this criterion asks for vetting at all. */
   vets: boolean;
   requirements: RequirementsDraft;
-  /** The DCQL query, as JSON text. Kept verbatim unless the admin edits it. */
-  query: string;
 }
 
 /**
- * The query a new vetting criterion starts from: statements are
- * `StatementCredential`s whose `credentialSubject.predicate` is
- * {@link VETTED_PREDICATE}, and the criterion may count more than one.
- *
- * It is a starting point, not a rule. The daemon validates the query
- * structurally and checks every type it references, so an edited one is still
- * checked; this is only what an admin who has no opinion about DCQL should not
- * have to write.
+ * The query a criterion that asks for credentials starts from: a membership
+ * credential. It is a starting point, not a rule. The daemon validates the
+ * query structurally and checks every type it references, so an edited one is
+ * still checked; this is only what an admin who has no opinion about DCQL
+ * should not have to write.
  */
 export const DEFAULT_ACCEPTS_QUERY = {
   credentials: [
     {
-      id: "vetting",
+      id: "membership",
       format: "ldp_vc",
-      multiple: true,
-      meta: { type_values: ["StatementCredential"] },
-      claims: [
-        {
-          path: ["credentialSubject", "predicate"],
-          values: [VETTED_PREDICATE],
-        },
-      ],
+      meta: { type_values: [["MembershipCredential"]] },
     },
   ],
 };
@@ -872,19 +878,21 @@ export function draftToRequirements(draft: RequirementsDraft): VettingRequiremen
 export function criterionDraft(
   criterion: AcceptsCriterion | null | undefined,
 ): CriterionDraft {
+  const query = criterion?.query ?? null;
   return {
     id: criterion?.id ?? "",
     description: criterion?.description ?? "",
+    // A new criterion starts out reviewed: admitting automatically is a choice
+    // the administrator makes, never one the form makes for them.
+    admission: criterion?.admission ?? "review",
+    asksCredentials: query !== null,
+    query: JSON.stringify(query ?? DEFAULT_ACCEPTS_QUERY, null, 2),
+    credentialIssuers: criterion?.credentialIssuers ?? "community",
+    invitationRequired: Boolean(criterion?.invitationRequired),
     // A stored criterion is opened as it is; a new one starts out vetting,
-    // because this form is reached from the vetting pages and a criterion that
-    // asks for no vetting is the thing already being replaced.
+    // because this form is reached from the vetting pages.
     vets: criterion ? Boolean(criterion.vetting) : true,
     requirements: requirementsDraft(criterion?.vetting),
-    query: JSON.stringify(
-      criterion ? (criterion.query ?? {}) : DEFAULT_ACCEPTS_QUERY,
-      null,
-      2,
-    ),
   };
 }
 
@@ -902,6 +910,9 @@ export interface CriterionProblems {
  * What stops this draft being saved. The id and the query are the form's own
  * (the daemon refuses an empty id, and a query it cannot parse); the
  * requirements list is `validateRequirements`, unchanged.
+ *
+ * A criterion stating no requirement at all is not a problem: it is how a
+ * community admits — or reviews — everyone who applies.
  */
 export function criterionProblems(
   draft: CriterionDraft,
@@ -918,24 +929,27 @@ export function criterionProblems(
     problems.id = `A criterion called "${id}" already exists. Edit that one, or choose another name.`;
   }
 
-  const query = draft.query.trim();
-  if (!query) {
-    problems.query = "A criterion needs a DCQL query saying which credentials it asks for.";
-  } else {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(query);
-    } catch (err) {
-      problems.query = `That is not JSON the community can read: ${
-        err instanceof Error ? err.message : String(err)
-      }`;
-    }
-    if (
-      problems.query === undefined &&
-      (!isObject(parsed) || !Array.isArray((parsed as { credentials?: unknown }).credentials))
-    ) {
-      problems.query =
-        "A DCQL query is an object with a `credentials` list. The community checks the rest when it stores the criterion.";
+  if (draft.asksCredentials) {
+    const query = draft.query.trim();
+    if (!query) {
+      problems.query = "Say which credentials this criterion asks for, as a DCQL query.";
+    } else {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(query);
+      } catch (err) {
+        problems.query = `That is not JSON the community can read: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+      }
+      if (
+        problems.query === undefined &&
+        (!isObject(parsed) ||
+          !Array.isArray((parsed as { credentials?: unknown }).credentials))
+      ) {
+        problems.query =
+          "A DCQL query is an object with a `credentials` list. The community checks the rest when it stores the criterion.";
+      }
     }
   }
 
@@ -954,15 +968,54 @@ export function criterionSavable(problems: CriterionProblems): boolean {
   );
 }
 
-/** The body `POST /v1/schemas/accepts` stores. */
+/** The `vtc/schemas/accepts/register/0.2` payload the draft states. */
 export function criterionBody(draft: CriterionDraft): RegisterAcceptsBody {
   const description = draft.description.trim();
   return {
     id: draft.id.trim(),
-    query: JSON.parse(draft.query) as unknown,
+    admission: draft.admission,
     ...(description ? { description } : {}),
+    ...(draft.asksCredentials
+      ? {
+          query: JSON.parse(draft.query) as unknown,
+          credentialIssuers: draft.credentialIssuers,
+        }
+      : {}),
+    ...(draft.invitationRequired ? { invitationRequired: true } : {}),
     ...(draft.vets ? { vetting: draftToRequirements(draft.requirements) } : {}),
   } as RegisterAcceptsBody;
+}
+
+/** How a criterion admits, in one sentence an administrator reads. */
+export function admissionSentence(admission: Admission | undefined): string {
+  return admission === "automatic"
+    ? "A submission that meets it is admitted automatically."
+    : "A submission that meets it is referred to an administrator, who decides.";
+}
+
+/** What a criterion asks for, one line per requirement it states. */
+export function criterionRequirementLines(criterion: {
+  query?: unknown;
+  credentialIssuers?: CredentialIssuers | null;
+  invitationRequired?: boolean | null;
+  vetting?: unknown;
+}): string[] {
+  const lines: string[] = [];
+  if (criterion.query) {
+    const whose =
+      criterion.credentialIssuers === "any"
+        ? "from any issuer whose credential verifies"
+        : criterion.credentialIssuers === "recognised"
+          ? "issued by this community or one it recognises"
+          : "issued by this community";
+    lines.push(`Credentials its query names, ${whose}.`);
+  }
+  if (criterion.invitationRequired) {
+    lines.push("An invitation this community issued to the applicant.");
+  }
+  if (criterion.vetting) lines.push("Peer identity vetting, as below.");
+  if (lines.length === 0) lines.push("Nothing: every applicant meets it.");
+  return lines;
 }
 
 // ── Vetter grants ───────────────────────────────────────────────────────

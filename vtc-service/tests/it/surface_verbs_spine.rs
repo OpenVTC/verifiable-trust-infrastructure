@@ -59,7 +59,7 @@ fn verbs() -> Vec<(String, Value, bool)> {
             false,
         ),
         (t("schemas/list/0.1"), json!({}), false),
-        (t("schemas/accepts/list/0.1"), json!({}), false),
+        (t("schemas/accepts/list/0.2"), json!({}), false),
         (t("vetting/vetters/grants/list/0.1"), json!({}), false),
         (t("vetting/auto-grant/show/0.1"), json!({}), false),
         (
@@ -162,9 +162,11 @@ async fn the_schema_registry_round_trips_with_its_declared_codes() {
     let (_, doc) = call(
         &vtc,
         &admin,
-        &t("schemas/accepts/register/0.1"),
+        &t("schemas/accepts/register/0.2"),
         json!({
             "id": "membership",
+            "admission": "automatic",
+            "credentialIssuers": "any",
             "query": { "credentials": [ { "id": "m", "format": "ldp_vc",
                        "meta": { "type_values": ["StatementCredential"] } } ] },
         }),
@@ -174,7 +176,7 @@ async fn the_schema_registry_round_trips_with_its_declared_codes() {
     let (_, doc) = call(
         &vtc,
         &admin,
-        &t("schemas/accepts/show/0.1"),
+        &t("schemas/accepts/show/0.2"),
         json!({ "id": "membership" }),
     )
     .await;
@@ -190,7 +192,7 @@ async fn the_schema_registry_round_trips_with_its_declared_codes() {
     let (_, doc) = call(
         &vtc,
         &admin,
-        &t("schemas/accepts/show/0.1"),
+        &t("schemas/accepts/show/0.2"),
         json!({ "id": "membership" }),
     )
     .await;
@@ -358,6 +360,8 @@ const ACCEPTS_REGISTER_ERR_UNREGISTERED_TYPE: &str =
 const ACCEPTS_REGISTER_ERR_UNREGISTERED_STATEMENT_TYPE: &str =
     "vtc/schemas/accepts/register:unregisteredStatementType";
 const ACCEPTS_REGISTER_ERR_INVALID_VETTING: &str = "vtc/schemas/accepts/register:invalidVetting";
+const ACCEPTS_REGISTER_ERR_UNSUPPORTED_REQUIREMENT: &str =
+    "vtc/schemas/accepts/register:unsupportedRequirement";
 const ACCEPTS_SHOW_ERR_NOT_FOUND: &str = "vtc/schemas/accepts/show:notFound";
 const ACCEPTS_DELETE_ERR_NOT_FOUND: &str = "vtc/schemas/accepts/delete:notFound";
 const SUSPEND_ERR_NOT_FOUND: &str = "vtc/relationships/suspend:notFound";
@@ -437,7 +441,7 @@ async fn the_presentation_and_registry_codes_are_answered() {
     let (_, doc) = call(
         &vtc,
         &admin,
-        &t("schemas/accepts/show/0.1"),
+        &t("schemas/accepts/show/0.2"),
         json!({ "id": "none" }),
     )
     .await;
@@ -463,18 +467,18 @@ async fn the_presentation_and_registry_codes_are_answered() {
     let register = |body: Value| {
         let (vtc, admin) = (&vtc, &admin);
         async move {
-            call(vtc, admin, &t("schemas/accepts/register/0.1"), body)
+            call(vtc, admin, &t("schemas/accepts/register/0.2"), body)
                 .await
                 .1
         }
     };
-    let doc = register(json!({ "id": "c", "query": { "credentials": "not a list" } })).await;
+    let doc = register(json!({ "id": "c", "admission": "review", "credentialIssuers": "any", "query": { "credentials": "not a list" } })).await;
     assert_eq!(
         tt_error_code(&doc),
         Some(ACCEPTS_REGISTER_ERR_INVALID_QUERY),
         "{doc}"
     );
-    let doc = register(json!({ "id": "c", "query": query_for("Unregistered") })).await;
+    let doc = register(json!({ "id": "c", "admission": "review", "credentialIssuers": "any", "query": query_for("Unregistered") })).await;
     assert_eq!(
         tt_error_code(&doc),
         Some(ACCEPTS_REGISTER_ERR_UNREGISTERED_TYPE),
@@ -489,6 +493,8 @@ async fn the_presentation_and_registry_codes_are_answered() {
     .await;
     let doc = register(json!({
         "id": "c",
+        "admission": "review",
+        "credentialIssuers": "any",
         "query": query_for("Vetted"),
         "vetting": vetting(STATEMENT_TYPE, json!({})),
     }))
@@ -508,6 +514,8 @@ async fn the_presentation_and_registry_codes_are_answered() {
     assert_eq!(status, StatusCode::OK, "{doc}");
     let doc = register(json!({
         "id": "c",
+        "admission": "review",
+        "credentialIssuers": "any",
         "query": query_for("Vetted"),
         "vetting": vetting(STATEMENT_TYPE, json!({ "inPerson": 1 })),
     }))
@@ -517,9 +525,23 @@ async fn the_presentation_and_registry_codes_are_answered() {
         Some(ACCEPTS_REGISTER_ERR_INVALID_VETTING),
         "{doc}"
     );
+    // A requirement this community cannot evaluate: it recognises no other
+    // community without a trust registry.
+    let doc = register(json!({
+        "id": "c",
+        "admission": "automatic",
+        "credentialIssuers": "recognised",
+        "query": query_for("Vetted"),
+    }))
+    .await;
+    assert_eq!(
+        tt_error_code(&doc),
+        Some(ACCEPTS_REGISTER_ERR_UNSUPPORTED_REQUIREMENT),
+        "{doc}"
+    );
 
     // A type a criterion's query names cannot be deleted from under it.
-    let doc = register(json!({ "id": "c", "query": query_for("Vetted") })).await;
+    let doc = register(json!({ "id": "c", "admission": "review", "credentialIssuers": "any", "query": query_for("Vetted") })).await;
     assert_eq!(payload(&doc)["criterion"]["id"], "c", "{doc}");
     let (_, doc) = call(
         &vtc,

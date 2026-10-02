@@ -45,7 +45,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
 use vta_sdk::protocols::credential_exchange::{ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody};
-use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_0_2_TYPE;
+use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_TYPE;
 use vta_sdk::protocols::vetting::session::v0_1::VettingCardClaim;
 use vta_sdk::protocols::vetting::{
     VETTED_PREDICATE, VETTER_ROLE_ACTION, VETTING_REVOKE_STATEMENT_TYPE, VETTING_VETTER_LIST_TYPE,
@@ -64,7 +64,7 @@ use vta_sdk::vetting::status::{StatusCheck, check_credential_status};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::test_support::{MockVtcTransport, TestJoinClient, TestVtc};
 
-const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1";
+const ACCEPTS_REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2";
 const JOIN_VETTING_SHOW_TASK: &str =
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1";
 const AUTO_GRANT_UPDATE_TASK: &str =
@@ -84,7 +84,7 @@ const BOB_SEED: [u8; 32] = [0xB0; 32];
 /// The administrator's key, for the admin verbs that are signed documents.
 const ADMIN_SEED: [u8; 32] = [0xAD; 32];
 
-const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.2";
+const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.3";
 const GRANT_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/grant/0.1";
 const RESEND_0_2_TASK: &str = "https://trusttasks.org/spec/vtc/vetting/vetters/resend/0.2";
 const ENDORSEMENT_REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
@@ -145,8 +145,7 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
             json!({
                 "id": "kernel-developer",
                 "description": "Two vetters, at least one in person",
-                "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
-                           "meta": { "type_values": ["StatementCredential"] } } ] },
+                "admission": "automatic",
                 "vetting": {
                     "version": "0.1",
                     "statementType": VETTED_PREDICATE,
@@ -294,13 +293,19 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
     // 4. Alice gathers two statements.
     // -----------------------------------------------------------------------
 
-    // She reads the requirements from manifest 0.2 and records their digest,
-    // recomputing it to be sure it describes what she received.
+    // She reads the requirements from manifest 0.3 and records the digest of
+    // the criterion she applies under, recomputing it to be sure it describes
+    // what she received.
     let (status, manifest) = c
-        .post_document(ALICE_SEED, JOIN_REQUEST_MANIFEST_0_2_TYPE, json!({}))
+        .post_document(ALICE_SEED, JOIN_REQUEST_MANIFEST_TYPE, json!({}))
         .await;
     assert_eq!(status, StatusCode::OK, "manifest: {manifest}");
-    let criterion = &manifest["payload"]["criteria"][0];
+    let criterion = manifest["payload"]["criteria"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "kernel-developer")
+        .expect("the vetting criterion is published");
     let digest = criterion["requirementsDigest"]
         .as_str()
         .unwrap()
@@ -344,7 +349,7 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
                     "verifiableCredential": [from_carol.clone(), from_dave.clone()],
                 },
                 "registryConsent": false,
-                "extensions": { "requirementsDigest": digest },
+                "criterion": digest,
             }),
         )
         .await;
@@ -471,7 +476,7 @@ async fn a_community_vets_applicants_through_members_it_names_vetters() {
                     "verifiableCredential": [bob_from_carol, bob_from_dave],
                 },
                 "registryConsent": false,
-                "extensions": { "requirementsDigest": digest },
+                "criterion": digest,
             }),
         )
         .await;

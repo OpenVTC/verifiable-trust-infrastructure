@@ -33,12 +33,12 @@ use crate::credentials::invitation_verify::{
 };
 use crate::credentials::vac::VAC_TYPE;
 use crate::credentials::vmc::VMC_TYPE;
+use crate::join::criteria::{self, CriterionRefusal, Governing, Presented};
 use crate::join::{
     JoinDecision, JoinRequest, JoinStatus, JoinTransport, list_join_requests, store_join_request,
 };
 use crate::policy::{PolicyPurpose, extract::extract_vp_claims, load_active_compiled};
 use crate::server::AppState;
-use crate::vetting::VettingFacts;
 
 pub const JOIN_REQUEST_SUBMIT_DOMAIN_TAG: &[u8] = b"vtc-join-request/v1\0";
 
@@ -91,8 +91,25 @@ pub enum SubmitRefusal {
     /// The presentation cannot be the applicant's own: its `holder` names a
     /// party other than the proven submitter (`submit:presentationInvalid`).
     PresentationInvalid(String),
+    /// The community publishes no criteria, so it accepts no applications
+    /// (`submit:notAccepting`).
+    NotAccepting,
+    /// The `criterion` named no criterion the community publishes, nor a
+    /// superseded version within its grace (`submit:criterionUnknown`).
+    /// Carries the digest.
+    CriterionUnknown(String),
     /// Everything else, unchanged.
     Other(AppError),
+}
+
+impl From<CriterionRefusal> for SubmitRefusal {
+    fn from(r: CriterionRefusal) -> Self {
+        match r {
+            CriterionRefusal::NotAccepting => Self::NotAccepting,
+            CriterionRefusal::Unknown(digest) => Self::CriterionUnknown(digest),
+            CriterionRefusal::Other(e) => Self::Other(e),
+        }
+    }
 }
 
 impl From<AppError> for SubmitRefusal {
@@ -121,6 +138,15 @@ impl From<SubmitRefusal> for AppError {
                 types.join(", ")
             )),
             SubmitRefusal::PresentationInvalid(reason) => AppError::Validation(reason),
+            SubmitRefusal::NotAccepting => AppError::Validation(
+                "this community publishes no join criteria, so it is not accepting applications \
+                 at present"
+                    .into(),
+            ),
+            SubmitRefusal::CriterionUnknown(digest) => AppError::Validation(format!(
+                "criterion {digest} names no join criterion this community publishes; read \
+                 vtc/join-requests/manifest/0.3 again and resubmit under a current one"
+            )),
             SubmitRefusal::Other(e) => e,
         }
     }
@@ -134,13 +160,17 @@ impl From<SubmitRefusal> for AppError {
 /// the DIDComm envelope's authcrypt sender already authenticates
 /// `applicant_did`).
 ///
-/// The active `join` decision policy classifies the verified
-/// submission:
+/// The submission is decided under one of the community's published criteria
+/// (`vtc/join-requests/submit/0.3`): the one `criterion` names by its
+/// `requirementsDigest`, or else the first it meets ([`criteria::govern`]).
+/// The active `join` decision policy then classifies it, held to that
+/// criterion by the host ([`crate::ceremony::invariant::hold_to_criterion`]):
 /// - `allow` → **auto-admit** via the [`EffectPlan::Admit`] executor;
 ///   the request lands `Approved` and the credentials are returned.
 /// - `refer` → `Pending` (queued for admin review → the approve route).
 /// - `request_more` → `Deferred` (more evidence needed).
 /// - `deny` → `Rejected`, with the verdict stored on `policy_decision`.
+#[allow(clippy::too_many_arguments)]
 pub async fn submit_inner(
     state: &AppState,
     applicant_did: String,
@@ -148,6 +178,7 @@ pub async fn submit_inner(
     registry_consent: bool,
     extensions: JsonValue,
     attributes: Vec<super::SubmittedAttribute>,
+    criterion: Option<String>,
     binding: Option<HolderBinding<'_>>,
     transport: JoinTransport,
 ) -> Result<JoinSubmitOutcome, SubmitRefusal> {
@@ -327,31 +358,42 @@ pub async fn submit_inner(
         }
     }
 
-    // 5. Decide: assemble verified Facts (the route-layer holder-binding
+    // 5. Which criterion governs, and whether the submission meets it. The
+    // embedded credentials are verified once here — the raw presentation
+    // carries them unverified — and every criterion reads the same result.
+    // Peer vetting is counted under each criterion that asks for it.
+    let now = chrono::Utc::now();
+    let presented = Presented {
+        credentials: criteria::verify_embedded_credentials(state, &applicant_did, &vp, now).await?,
+        invitation: invitation.clone(),
+        vp: Some(vp.clone()),
+        extensions: extensions.clone(),
+    };
+    let governing =
+        criteria::govern(state, &applicant_did, &presented, criterion.as_deref(), now).await?;
+    let consume_invitation_id = consume_invitation_id.filter(|_| uses_invitation(&governing));
+
+    // 6. Decide: assemble verified Facts (the route-layer holder-binding
     // makes this presentation `verified`) and run the active join policy.
     let presentation = presentation_from_vp(&applicant_did, &vp);
     // No thread: this is a synchronous REST submission, not a trust task
     // exchange. Nothing here can be `sameExchange`, which is the honest answer
     // — there is no exchange to be the same as.
-    // Peer vetting: verify and count any identity-vetting statements against the
-    // criterion the applicant gathered for (OpenVTC vetting design §10). `None`
-    // when no published criterion requires vetting.
-    let vetting =
-        crate::vetting::vetting_facts(state, &applicant_did, &vp, &extensions, chrono::Utc::now())
-            .await?;
-    let vetting_record = vetting.clone();
+    let vetting_record = governing.vetting.clone();
     let verdict = decide_join(
         state,
         &applicant_did,
         presentation,
         invitation,
-        vetting,
+        &governing,
         None,
     )
     .await?;
 
-    // 6. Realize the verdict (store + audit + auto-admit on allow). On an
-    // invitation-driven admit the VIC is burned in the single-use ledger.
+    // 7. Realize the verdict (store + audit + auto-admit on allow). On an
+    // admit under a criterion that asked for the invitation, the VIC is burned
+    // in the single-use ledger; one the criterion did not ask for is left
+    // unspent, because it played no part.
     let outcome = realize_join_verdict(
         state,
         &applicant_did,
@@ -366,10 +408,11 @@ pub async fn submit_inner(
     )
     .await?;
 
-    // 7. Keep the vetting facts the decision read, beside the request. After
-    // the request is durable, and best effort: the decision already stands,
-    // and a missing record costs the admin view and the vetter sweep the
-    // detail (the member reads as admitted without vetting), not the admission.
+    // 8. Keep which criterion governed, and the vetting facts the decision
+    // read, beside the request. After the request is durable, and best effort:
+    // the decision already stands, and a missing record costs the admin view
+    // and the vetter sweep the detail, not the admission.
+    record_criterion(state, outcome.request.id, &governing).await;
     if let Some(facts) = vetting_record
         && let Err(e) = super::storage::store_vetting_facts(
             &state.join_requests_ks,
@@ -398,22 +441,24 @@ pub async fn submit_inner(
 /// the unthreaded REST path. It is what each credential's `taskContext` verdict
 /// is resolved against, so passing `None` where a thread exists would not error
 /// — it would quietly make every credential unbindable.
+///
+/// `governing` is the criterion the submission is decided under
+/// ([`criteria::govern`]); its vetting facts and its [`criteria::CriterionFact`]
+/// become the policy's evidence, and the host holds the verdict to it.
 pub async fn decide_join(
     state: &AppState,
     applicant_did: &str,
     presentation: Presentation,
     invitation: Option<Invitation>,
-    vetting: Option<VettingFacts>,
+    governing: &Governing,
     thread_id: Option<&str>,
 ) -> Result<Verdict, AppError> {
-    // Kept to expand a generic `vetting` need after the policy decides.
-    let vetting_for_needs = vetting.clone();
     let facts = assemble_join_facts(
         state,
         applicant_did,
         presentation,
         invitation,
-        vetting,
+        governing,
         thread_id,
     )
     .await?;
@@ -426,9 +471,59 @@ pub async fn decide_join(
     .await?;
     let mut verdict = crate::ceremony::decide(&verified, &policy)?;
     if let Verdict::RequestMore(more) = &mut verdict {
-        crate::vetting::expand_needs(&mut more.needs, vetting_for_needs.as_ref());
+        criteria::expand_needs(&mut more.needs, Some(&governing.fact));
+        crate::vetting::expand_needs(&mut more.needs, governing.vetting.as_ref());
+        // The credentials still to present, as the query that asks for them.
+        if more.presentation_definition.is_null()
+            && let Some(query) = governing.presentation_definition()
+        {
+            more.presentation_definition = query;
+        }
     }
     Ok(verdict)
+}
+
+/// Whether the governing criterion asks for the invitation — and so whether an
+/// admission under it spends one.
+fn uses_invitation(governing: &Governing) -> bool {
+    let stored = &governing.served.stored;
+    stored.invitation_required
+        || stored.vetting.as_ref().is_some_and(|v| {
+            matches!(
+                v.invitation,
+                Some(vta_sdk::protocols::vetting::VettingRequirementsInvitation::Required)
+            )
+        })
+}
+
+/// Record which criterion, and which version of it, governed a decided
+/// request (submit 0.3 decision rule 4). Best effort, after the request is
+/// durable: the decision already stands.
+pub(crate) async fn record_criterion(state: &AppState, request_id: Uuid, governing: &Governing) {
+    if let Err(e) = super::storage::store_criterion(
+        &state.join_requests_ks,
+        request_id,
+        &governing.fact,
+        chrono::Utc::now(),
+    )
+    .await
+    {
+        warn!(
+            request = %request_id,
+            criterion = %governing.fact.id,
+            error = %e,
+            "governing criterion not recorded for a decided join request"
+        );
+    }
+    info!(
+        request = %request_id,
+        criterion = %governing.fact.id,
+        digest = %governing.fact.requirements_digest,
+        admission = governing.fact.admission.as_str(),
+        met = governing.fact.met,
+        superseded = governing.fact.superseded,
+        "join request decided under criterion"
+    );
 }
 
 /// Realize a join [`Verdict`]: build + persist the [`JoinRequest`], auto-admit on
@@ -671,7 +766,7 @@ async fn assemble_join_facts(
     applicant_did: &str,
     presentation: Presentation,
     invitation: Option<Invitation>,
-    vetting: Option<VettingFacts>,
+    governing: &Governing,
     thread_id: Option<&str>,
 ) -> Result<Facts, AppError> {
     // The applicant proved holder-binding (route-layer for the VP path,
@@ -688,10 +783,11 @@ async fn assemble_join_facts(
             subject_did: applicant_did.to_string(),
             subject_member: None,
             evidence: Evidence {
-                vetting,
+                vetting: governing.vetting.clone(),
                 invitation,
                 presentation: Some(presentation),
                 request: None,
+                criterion: Some(governing.fact.clone()),
             },
             thread_id: thread_id.map(str::to_string),
         },
@@ -1136,17 +1232,64 @@ pub async fn supplement_inner(
     // evidence. `supplement/0.1` declares no code for it, so it is the
     // framework's `malformedRequest`.
     check_presentation_holder(applicant_did, &vp).map_err(AppError::Validation)?;
+
+    // Re-decided under the criterion the request was first decided under: a
+    // supplement answers what that criterion still lacked.
+    let now = chrono::Utc::now();
+    let recorded = super::storage::get_criterion(ks, id).await?;
+    let presented = Presented {
+        credentials: criteria::verify_embedded_credentials(state, applicant_did, &vp, now).await?,
+        invitation: invitation.clone(),
+        vp: Some(vp.clone()),
+        extensions: extensions.clone(),
+    };
+    // The record is written best effort after the first decision, so a
+    // request can lack one; it is then decided as a submission naming no
+    // criterion is.
+    let recorded_id = recorded
+        .as_ref()
+        .map_or_else(|| "<unrecorded>".to_string(), |r| r.criterion.id.clone());
+    let governed = match &recorded {
+        Some(r) => {
+            criteria::govern_again(
+                state,
+                applicant_did,
+                &presented,
+                &r.criterion.id,
+                &r.criterion.requirements_digest,
+                now,
+            )
+            .await
+        }
+        None => criteria::govern(state, applicant_did, &presented, None, now).await,
+    };
+    let governing = match governed {
+        Ok(g) => g,
+        // The criterion it was decided under is gone, and its grace with it:
+        // there is nothing left to supplement against.
+        Err(CriterionRefusal::Unknown(_)) => {
+            return Err(SupplementRefusal::Other(AppError::Gone(format!(
+                "the criterion join request {id} was decided under (`{}`) is no longer \
+                 published; withdraw it and submit again under a current criterion",
+                recorded_id
+            ))));
+        }
+        Err(CriterionRefusal::NotAccepting) => {
+            return Err(SupplementRefusal::Other(AppError::Gone(
+                "this community is no longer accepting applications".into(),
+            )));
+        }
+        Err(CriterionRefusal::Other(e)) => return Err(e.into()),
+    };
+    let consume_invitation_id = consume_invitation_id.filter(|_| uses_invitation(&governing));
     let presentation = presentation_from_vp(applicant_did, &vp);
-    let vetting =
-        crate::vetting::vetting_facts(state, applicant_did, &vp, &extensions, chrono::Utc::now())
-            .await?;
-    let vetting_record = vetting.clone();
+    let vetting_record = governing.vetting.clone();
     let verdict = decide_join(
         state,
         applicant_did,
         presentation,
         invitation,
-        vetting,
+        &governing,
         None,
     )
     .await?;
@@ -1187,8 +1330,9 @@ pub async fn supplement_inner(
         )
         .await?;
 
-    // The vetting record follows the evidence: after the request is durable,
-    // and best effort, exactly as the submit spine does it.
+    // The criterion and vetting records follow the evidence: after the request
+    // is durable, and best effort, exactly as the submit spine does it.
+    record_criterion(state, id, &governing).await;
     if let Some(facts) = vetting_record
         && let Err(e) =
             super::storage::store_vetting_facts(ks, id, &facts, chrono::Utc::now()).await

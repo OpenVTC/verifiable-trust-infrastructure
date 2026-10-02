@@ -607,16 +607,18 @@ fn dcql_query() -> Value {
     })
 }
 
+/// As `accepts/{register,list,show}/0.2` answer it: the store's wire form.
 fn accepts_criterion() -> Value {
-    to_v(crate::schemas::accepts::AcceptsCriterion {
-        id: "membership".into(),
-        query: dcql_query(),
-        description: Some("A membership credential".into()),
-        vetting: None,
-        hidden_vetting: None,
-        created_at: TS.parse().expect("fixture timestamp"),
-        created_by_did: OTHER_DID.into(),
-    })
+    let mut c = crate::schemas::accepts::AcceptsCriterion::new(
+        "membership",
+        crate::schemas::accepts::Admission::Automatic,
+        OTHER_DID,
+    );
+    c.query = Some(dcql_query());
+    c.credential_issuers = Some(crate::schemas::accepts::CredentialIssuers::Recognised);
+    c.description = Some("A membership credential".into());
+    c.created_at = TS.parse().expect("fixture timestamp");
+    c.to_wire()
 }
 
 fn auto_grant_status() -> Value {
@@ -1115,34 +1117,14 @@ fn table() -> Vec<Conformance> {
                     "vmc": credential(), "roleVac": credential() })
         ),
         checked!(
-            s::join_requests::manifest::v0_1::Payload,
-            s::join_requests::manifest::v0_1::Response,
-            json!({}),
-            // Projected by the manifest read the dispatcher answers with, not
-            // transcribed.
-            to_v(
-                crate::routes::join_requests::manifest::response_v0_1(
-                    COMMUNITY_DID.into(),
-                    vec![crate::schemas::accepts::AcceptsCriterion {
-                        id: "email-verified".into(),
-                        query: json!({ "credentials": [] }),
-                        description: Some("A verified email credential".into()),
-                        vetting: None,
-                        hidden_vetting: None,
-                        created_at: chrono::Utc::now(),
-                        created_by_did: "did:key:zAdmin".into(),
-                    }],
-                )
-                .expect("the manifest projects the criterion"),
-            )
-        ),
-        checked!(
-            s::join_requests::submit::v0_2::Payload,
-            s::join_requests::submit::v0_2::Response,
+            s::join_requests::submit::v0_3::Payload,
+            s::join_requests::submit::v0_3::Response,
             // From the SDK producer type, with `extensions` left at its
-            // `Default` — the shape a minimal client actually sends.
+            // `Default` — the shape a minimal client actually sends — naming
+            // the criterion it applies under.
             to_v(jr::JoinRequestSubmitBody {
                 vp: json!({ "type": ["VerifiablePresentation"] }),
+                criterion: Some("zQmbGXRT3v1RmfWkQ7Y3Z5Uj9pKq2NcXhLd8sVtA4eB6nMw".into()),
                 registry_consent: true,
                 extensions: Value::Null,
                 attributes: Vec::new(),
@@ -1742,22 +1724,28 @@ fn table() -> Vec<Conformance> {
                 "complete": true,
             })
         ),
-        // ─── join manifest 0.2 and peer identity vetting ─────────────
+        // ─── join manifest 0.3 and peer identity vetting ─────────────
         //
         // Every one of these handlers speaks the generated types. The
         // responses are built the way the handlers build them — through the
         // generated builders, or the manifest read itself — so a response the
         // service could not produce cannot stand in for one it does.
         checked!(
-            s::join_requests::manifest::v0_2::Payload,
-            s::join_requests::manifest::v0_2::Response,
+            s::join_requests::manifest::v0_3::Payload,
+            s::join_requests::manifest::v0_3::Response,
             json!({}),
             to_v(
-                crate::routes::join_requests::manifest::response_v0_2(
+                crate::routes::join_requests::manifest::response_v0_3(
                     COMMUNITY_DID.into(),
                     vec![crate::schemas::accepts::AcceptsCriterion {
                         id: "kernel-developer".into(),
-                        query: json!({ "credentials": [] }),
+                        admission: crate::schemas::accepts::Admission::Review,
+                        query: Some(dcql_query()),
+                        credential_issuers: Some(
+                            crate::schemas::accepts::CredentialIssuers::Community,
+                        ),
+                        invitation_required: true,
+                        position: 1,
                         description: Some("Two vetters, one in person".into()),
                         hidden_vetting: None,
                         vetting: Some(
@@ -2017,24 +2005,26 @@ fn table() -> Vec<Conformance> {
             json!({ "typeUri": SCHEMA_TYPE })
         ),
         checked!(
-            s::schemas::accepts::register::v0_1::Payload,
-            s::schemas::accepts::register::v0_1::Response,
+            s::schemas::accepts::register::v0_2::Payload,
+            s::schemas::accepts::register::v0_2::Response,
             json!({
                 "id": "membership",
+                "admission": "automatic",
                 "query": dcql_query(),
+                "credentialIssuers": "recognised",
                 "description": "A membership credential",
             }),
             json!({ "criterion": accepts_criterion() })
         ),
         checked!(
-            s::schemas::accepts::list::v0_1::Payload,
-            s::schemas::accepts::list::v0_1::Response,
+            s::schemas::accepts::list::v0_2::Payload,
+            s::schemas::accepts::list::v0_2::Response,
             json!({ "cursor": "o0", "limit": 50 }),
             json!({ "items": [accepts_criterion()] })
         ),
         checked!(
-            s::schemas::accepts::show::v0_1::Payload,
-            s::schemas::accepts::show::v0_1::Response,
+            s::schemas::accepts::show::v0_2::Payload,
+            s::schemas::accepts::show::v0_2::Response,
             json!({ "id": "membership" }),
             json!({ "criterion": accepts_criterion() })
         ),

@@ -1,6 +1,7 @@
 //! The community schema store (Phase 2 §8), served on the spine as
-//! `vtc/schemas/{register,list,show,delete}/0.1` and
-//! `vtc/schemas/accepts/{register,list,show,delete}/0.1`
+//! `vtc/schemas/{register,list,show,delete}/0.1`,
+//! `vtc/schemas/accepts/{register,list,show}/0.2` and
+//! `vtc/schemas/accepts/delete/0.1`
 //! (`trust_tasks::surface_tasks`). There is no REST route; these are the
 //! operations the spine calls.
 //!
@@ -9,9 +10,9 @@
 //! - **Per-type schemas** (`/v1/schemas`) — the Issues / Accepts
 //!   [`SchemaEntry`] registry: each credential type the community mints or
 //!   recognises, bound to a DTG catalog type + an optional JSON Schema.
-//! - **Accepts criteria** (`/v1/schemas/accepts`) — named DCQL queries
-//!   ([`AcceptsCriterion`]) over the per-type registry: a ceremony's
-//!   required-evidence manifest.
+//! - **Accepts criteria** — the community's join criteria
+//!   ([`AcceptsCriterion`]): each an admission mode and the requirements it
+//!   states, a DCQL query over the per-type registry among them.
 //!
 //! Every task is an administrator's (the old routes' `AdminAuth`). Registering a per-type schema with
 //! a `credentialSchema` validates that the schema is itself a well-formed JSON
@@ -22,7 +23,6 @@ use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use tracing::info;
-use vta_sdk::protocols::vetting::VettingRequirements;
 use vti_common::audit::{AuditEvent, SchemaChangeData};
 use vti_common::error::AppError;
 
@@ -87,6 +87,7 @@ pub(crate) async fn register_inner(
                 AuditEvent::SchemaRegistered(SchemaChangeData {
                     id: uri.to_string(),
                     kind: "schema".into(),
+                    admission: None,
                 }),
             )
             .await?;
@@ -113,6 +114,7 @@ pub(crate) async fn delete_inner(
                 AuditEvent::SchemaDeleted(SchemaChangeData {
                     id: type_uri.to_string(),
                     kind: "schema".into(),
+                    admission: None,
                 }),
             )
             .await?;
@@ -121,37 +123,20 @@ pub(crate) async fn delete_inner(
     Ok(type_uri.to_string())
 }
 
-// ─── Accepts criteria (DCQL over the registry) ───────────
+// ─── Accepts criteria (the join criteria) ────────────────
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct RegisterAcceptsBody {
-    pub id: String,
-    pub query: JsonValue,
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Peer identity vetting this criterion requires, advertised in the join
-    /// manifest (0.2). Its `statementType` must be a registered endorsement type.
-    #[serde(default)]
-    #[schema(value_type = Option<vta_sdk::openapi::JoinManifest02VettingRequirements>)]
-    pub vetting: Option<VettingRequirements>,
-    /// Hidden-vetter admission (ZKP, development branch `zkp-pcs`): the published
-    /// parameters, stored verbatim (`crate::vetting::pcs::HiddenVettingConfig`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
-    pub hidden_vetting: Option<serde_json::Value>,
-}
-
-/// `POST /v1/schemas/accepts` — register (or update) an Accepts criterion. The
-/// DCQL query is validated and every referenced type checked against the
-/// registry by [`store_accepts`].
+/// Register (or replace) an Accepts criterion, already shaped by the
+/// `vtc/schemas/accepts/register/0.2` handler. Its query is validated and every
+/// referenced type checked against the registry by [`store_accepts`].
+///
+/// Stored as given — no requirement added, none dropped, its `admission`
+/// unchanged — with the caller and the time recorded.
 pub(crate) async fn register_accepts_inner(
     state: &AppState,
     actor: &str,
-    body: RegisterAcceptsBody,
+    mut criterion: AcceptsCriterion,
 ) -> Result<AcceptsCriterion, AppError> {
-    let id = body.id.trim();
+    let id = criterion.id.trim().to_string();
     if id.is_empty() {
         return Err(AppError::Validation(
             "accepts criterion id cannot be empty".into(),
@@ -160,7 +145,7 @@ pub(crate) async fn register_accepts_inner(
     // A criterion that counts statements of a type the community does not
     // recognise could never be satisfied — refuse it here, where the operator
     // can act on the error, rather than at an applicant's submit.
-    if let Some(vetting) = &body.vetting
+    if let Some(vetting) = &criterion.vetting
         && !crate::endorsement_types::storage::type_exists(
             &state.endorsement_types_ks,
             &vetting.statement_type,
@@ -173,33 +158,33 @@ pub(crate) async fn register_accepts_inner(
             vetting.statement_type
         )));
     }
-    let criterion = AcceptsCriterion {
-        id: id.to_string(),
-        query: body.query,
-        description: body.description,
-        vetting: body.vetting,
-        hidden_vetting: body.hidden_vetting,
-        created_at: Utc::now(),
-        created_by_did: actor.to_string(),
-    };
-    store_accepts(&state.schemas_ks, &criterion).await?;
+    criterion.id = id.clone();
+    criterion.created_at = Utc::now();
+    criterion.created_by_did = actor.to_string();
+    let criterion = store_accepts(&state.schemas_ks, &criterion).await?;
     if let Some(writer) = state.audit_writer.as_ref() {
         writer
             .write(
                 actor,
                 None,
                 AuditEvent::SchemaRegistered(SchemaChangeData {
-                    id: id.to_string(),
+                    id: id.clone(),
                     kind: "accepts".into(),
+                    admission: Some(criterion.admission.as_str().into()),
                 }),
             )
             .await?;
     }
-    info!(id = %id, by = %actor, "accepts criterion registered");
+    info!(
+        id = %id,
+        admission = criterion.admission.as_str(),
+        by = %actor,
+        "accepts criterion registered"
+    );
     Ok(criterion)
 }
 
-/// `DELETE /v1/schemas/accepts/{id}` — remove an Accepts criterion.
+/// Remove an Accepts criterion.
 pub(crate) async fn delete_accepts_inner(
     state: &AppState,
     actor: &str,
@@ -219,6 +204,7 @@ pub(crate) async fn delete_accepts_inner(
                 AuditEvent::SchemaDeleted(SchemaChangeData {
                     id: id.to_string(),
                     kind: "accepts".into(),
+                    admission: None,
                 }),
             )
             .await?;

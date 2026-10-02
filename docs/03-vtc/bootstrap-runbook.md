@@ -249,24 +249,27 @@ next starts, naming the command, the DID and the host it ran on.
   (`routes/invitations.rs`). A join by that DID fails too, because admission
   would write a second ACL row for it. So the first vetter is a **different
   identity** from the admin, held by the person who will vet.
-- **Once a criterion requires vetting, nothing bypasses it.** The default
-  `join.rego` holds admission until `input.evidence.vetting` is satisfied.
-  Neither an invitation nor a trusted credential bypasses it, and a
-  `request_more` request is `Deferred`, which an admin cannot approve (only
-  `Pending` requests can be decided). A statement counts only if a vetter
-  issued it. So a community that requires vetting before it has a vetter
-  cannot admit anyone by vetting.
+- **A vetting criterion counts only vetters' statements.** A statement
+  counts only if an eligible vetter issued it, so a criterion that requires
+  vetting admits nobody until a vetter exists. Other criteria are unaffected:
+  each [join criterion](join-criteria.md) is its own way in, so an invitation
+  still admits through a criterion that asks for one, whatever else the
+  community publishes.
 
-So: admit the vetter first, grant the role, and only then start requiring
-vetting.
+So: admit the vetter through an invitation, grant the role, and add the
+vetting criterion when you want applicants to be able to join by it.
 
 ### Steps
 
-0. **Do not add a vetting criterion yet.** If one exists (an Accepts criterion
-   carrying a `vetting` object), remove it on **Vetting → Requirements**, or
-   with `DELETE /v1/schemas/accepts/{id}`, until step 4.
+1. **Check the criteria.** A new community starts with three (**Vetting →
+   Requirements**): `invited` — an invitation this community issued admits
+   automatically; `member-credential` — a membership credential admits
+   automatically; `review` — anything else is referred to an administrator.
+   If you have removed `invited`, add a criterion with **Applicants must hold
+   an invitation this community issued** and **Admit them automatically**
+   first.
 
-1. **Invite the vetter-to-be.** Use **Invitations** in the console, or:
+2. **Invite the vetter-to-be.** Use **Invitations** in the console, or:
 
    ```http
    POST /v1/invitations
@@ -286,20 +289,19 @@ vetting.
    credentials the vetter signs, so a DID that has only a key-agreement key
    passes admission and the grant but can never vet anyone.
 
-2. **The vetter-to-be applies**, with the VIC in the presentation. That is
-   `vtc/join-requests/submit/0.2` over `POST /v1/trust-tasks`, a DIDComm
-   session or TSP (in Rust, `vtc_client::VtcClient::submit_join_as`). With no
-   vetting criterion in force, the default `join.rego` answers **`allow`** for
-   a valid, trusted, unconsumed invitation: the applicant is admitted as a
-   member (or at the role the invitation names), and receives the membership
-   credential and role endorsement. See
-   [`credential-delivery.md`](credential-delivery.md) for how they arrive.
+3. **The vetter-to-be applies**, with the VIC in the presentation. That is
+   `vtc/join-requests/submit/0.3` over `POST /v1/trust-tasks`, a DIDComm
+   session or TSP (in Rust, `vtc_client::VtcClient::submit_join_as`). The
+   submission meets `invited`, so it is answered **`allow`**: the applicant is
+   admitted as a member (or at the role the invitation names), the invitation
+   is spent, and they receive the membership credential and role endorsement.
+   See [`credential-delivery.md`](credential-delivery.md) for how they arrive.
 
-   *Without an invitation* the same submission is referred to the moderator
-   queue. Approve it in **Join requests**, or with
+   *Without an invitation* the same submission meets only `review`, and is
+   referred to an administrator. Approve it in **Join requests**, or with
    `POST /v1/join-requests/{id}/decide`, body `{"decision": "approved"}`.
 
-3. **Name them a vetter.** Open **Members**, choose the member, then **Grant
+4. **Name them a vetter.** Open **Members**, choose the member, then **Grant
    vetter role**. Or:
 
    ```http
@@ -313,18 +315,17 @@ vetting.
    `201` issues the vetter role credential and delivers it to the member; `200`
    means a live grant already existed and returns it.
 
-4. **Now require vetting.** Register the statement type and add the criterion:
-   [`vetting.md`](vetting.md) §1–2, or **Vetting → Requirements**. From here,
-   applicants gather statements from the vetter you just named.
+5. **Add the vetting criterion.** Register the statement type and add the
+   criterion: [`vetting.md`](vetting.md) §1–2, or **Vetting → Requirements**.
+   It goes last in the decision order, after `review`, so applicants reach it
+   by naming it — which the OpenVTC client does when it gathers statements for
+   a criterion. To make vetting the way in for applicants who name nothing,
+   remove `review` and add it again, so it goes after the vetting criterion.
 
-5. **Grow the vetter pool** as members join: one at a time (step 3), by the
+6. **Grow the vetter pool** as members join: one at a time (step 4), by the
    automatic-grant sweep ([`vetting.md`](vetting.md) §5), or from an existing
    OpenPGP web of trust ([`vetting.md`](vetting.md) §8). Each of these needs
    the people to be members first.
-
-A criterion that asks for an invitation **and** vetting is still a vetting
-criterion. Adding it in step 0 blocks the first vetter the same way: the
-invitation alone answers `request_more` (`needs: ["vetting"]`).
 
 ## Checklist
 
@@ -335,7 +336,7 @@ invitation alone answers `request_more` (`needs: ["vetting"]`).
 | `cnm` can administer the community | `cnm vetting vetters list` answers; if it prints `vtc acl add`, run that |
 | The first vetter is a member | **Members** lists the DID |
 | The vetter grant is live | **Vetting → Vetters** shows the grant as `live` |
-| Vetting is required only now | **Vetting → Requirements** has a vetting criterion, added after the grant |
+| Applicants can join by vetting | **Vetting → Requirements** has a vetting criterion, added after the grant |
 
 ## See also
 
