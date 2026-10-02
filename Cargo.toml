@@ -207,7 +207,13 @@ affinidi-messaging-core = "0.1"
 # (VTI-56). And a request collected by Delivery-Request keeps its sender's
 # id, so a reply threads to it (VTI-49). On `^0.31` a lockfile resolving 0.31.0
 # would bring the cross-mediator refusal back with nothing here to catch it.
-affinidi-messaging-sdk = { version = "0.32", default-features = false }
+#
+# 0.32.1 is the floor (affinidi-tdk-rs #921): before it, a message arriving
+# just after `live_stream_next`'s `wait` elapsed — or after a
+# `live_stream_get` gave up — went to a dropped receiver and was discarded,
+# already delivered by the mediator and never cached. 3–5% of single messages
+# under a 500 ms poll loop. No API change.
+affinidi-messaging-sdk = { version = "0.32.1", default-features = false }
 # Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
 # delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
 # services already use directly.
