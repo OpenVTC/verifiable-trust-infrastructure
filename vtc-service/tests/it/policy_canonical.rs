@@ -13,7 +13,6 @@
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use vti_rooms_dtg::test_support::Party;
 
 use vtc_service::test_support::TestVtc;
 
@@ -25,13 +24,20 @@ const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const JOIN_POLICY: &str = "package vtc.join\nimport rego.v1\ndefault allow := true\n";
 
 struct Fixture {
-    signer: Party,
+    signer: crate::common::second_party::GatedAdmin,
     _vtc: TestVtc,
 }
 
 async fn build() -> Fixture {
-    let vtc = TestVtc::builder().with_audit(true).build().await;
-    let signer = crate::common::signed::admin(&vtc).await;
+    // A `join` policy decides authority, so writing one takes the signer's
+    // gesture and a second administrator's consent (VTI-VTC-022).
+    let vtc = TestVtc::builder()
+        .with_audit(true)
+        .with_signers(true)
+        .with_public_url("https://vtc.example.com")
+        .build()
+        .await;
+    let signer = crate::common::second_party::GatedAdmin::new(&vtc).await;
     Fixture { signer, _vtc: vtc }
 }
 
@@ -60,7 +66,7 @@ async fn call(
     payload: Value,
     success: StatusCode,
 ) -> (StatusCode, Value) {
-    let (_, doc) = crate::common::signed::call(&fix._vtc, &fix.signer, task, payload).await;
+    let (_, doc) = fix.signer.call(&fix._vtc, task, payload).await;
     match crate::common::signed::error_code(&doc) {
         Some(code) => (
             status_for_code(code),
@@ -71,7 +77,7 @@ async fn call(
 }
 
 async fn upsert(fix: &Fixture, body: Value) -> (StatusCode, Value) {
-    let (_, doc) = crate::common::signed::call(&fix._vtc, &fix.signer, UPSERT, body).await;
+    let (_, doc) = fix.signer.call(&fix._vtc, UPSERT, body).await;
     let success = if doc["payload"]["created"] == false {
         StatusCode::OK
     } else {

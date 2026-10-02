@@ -703,11 +703,14 @@ async fn a_stale_from_role_is_a_conflict_not_a_gesture() {
     assert_eq!(reply["details"]["reason"], "conflict", "{reply}");
 }
 
-/// A demotion confers nothing and needs no gesture.
+/// A demotion confers nothing, but it ends an administrator's authority — the
+/// hole by which one admin could strip every other (VTI-APV-019). It takes a
+/// gesture bound to it, and for an unrestricted subject the consent of an
+/// admin who is neither party, before anything is written.
 #[tokio::test]
-async fn a_demotion_needs_no_gesture() {
+async fn vti_apv_019_a_demotion_needs_a_gesture_and_a_third_party() {
     let mut fix = fixture().await;
-    let _admin = admin_with_passkey(&mut fix).await;
+    let third = admin_with_passkey(&mut fix).await;
     let colleague = admin_with_passkey(&mut fix).await;
     let actor = admin_with_passkey(&mut fix).await;
     vtc_service::members::store_member(
@@ -717,8 +720,39 @@ async fn a_demotion_needs_no_gesture() {
     .await
     .unwrap();
 
-    let demote = json!({ "subject": colleague.did, "fromRole": "admin", "toRole": "member" });
-    let (status, reply) = post(&fix, &signed(&actor, CHANGE_ROLE, demote).await).await;
+    let demote = signed(
+        &actor,
+        CHANGE_ROLE,
+        json!({ "subject": colleague.did, "fromRole": "admin", "toRole": "member" }),
+    )
+    .await;
+    let (status, reply) = post(&fix, &demote).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    let request = step_up_request(&reply);
+    let cred = fix
+        .authenticator
+        .authenticate(&options(&request), RP_ORIGIN);
+    let (status, ack) = approve(&fix, &actor, &request, &cred).await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+
+    let (_, reply) = post(&fix, &demote).await;
+    let details = reply["details"].clone();
+    assert_eq!(details["reason"], "auth:consent_required", "{reply}");
+    assert_eq!(details["approverSet"], "unrestricted-admins-except-subject");
+    let decision = signed(
+        &third,
+        "https://trusttasks.org/spec/task-consent/decision/0.1",
+        json!({
+            "challenge": details["challenge"],
+            "payloadDigest": details["payloadDigest"],
+            "decision": "approve",
+        }),
+    )
+    .await;
+    let (status, ack) = post(&fix, &decision).await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+
+    let (status, reply) = post(&fix, &demote).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(reply["entry"]["role"], "member", "{reply}");
 }

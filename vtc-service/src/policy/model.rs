@@ -176,6 +176,26 @@ impl PolicyPurpose {
         PolicyPurpose::GitNamespace,
     ];
 
+    /// Whether this purpose decides **authority** — who becomes, stays or stops
+    /// being someone with power in the community: a role change, a removal, a
+    /// join, a foreign role's recognition, a git namespace right.
+    ///
+    /// Changing such a policy is itself a change of authority, so it takes the
+    /// same second party a grant of unrestricted admin does (**VTI-VTC-022**;
+    /// `vtc-action-list.md` §7b item 3). The remaining purposes are community
+    /// rules, gated by role only.
+    #[must_use]
+    pub fn decides_authority(self) -> bool {
+        matches!(
+            self,
+            PolicyPurpose::RoleChange
+                | PolicyPurpose::Removal
+                | PolicyPurpose::Join
+                | PolicyPurpose::CrossCommunityRoles
+                | PolicyPurpose::GitNamespace
+        )
+    }
+
     /// Lowercase camelCase wire form of this purpose. Stable wire
     /// (operators script around it); matches the serde
     /// representation.

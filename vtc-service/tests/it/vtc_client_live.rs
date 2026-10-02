@@ -460,19 +460,35 @@ async fn upload_policy_is_accepted_and_activates() {
     let mock = audited_vtc().await;
     let client = admin_client(&mock, 0xA1).await;
 
+    // A policy that decides authority (`join`, `removal`, …) takes the
+    // uploader's passkey gesture and a second administrator's consent
+    // (VTI-VTC-022), which this client has no way to give — so it is refused,
+    // and the body shape is proven on a community rule instead.
+    assert!(
+        client
+            .upload_policy(
+                "join",
+                "package vtc.join\nimport rego.v1\ndefault allow := true\n",
+            )
+            .await
+            .is_err(),
+        "an authority policy is never changed by one administrator alone"
+    );
+
     let uploaded = client
         .upload_policy(
-            "join",
-            "package vtc.join\nimport rego.v1\ndefault allow := true\n",
+            "directory",
+            "package vtc.directory\nimport rego.v1\n\
+             default decision := {\"effect\": \"deny\", \"with\": {\"code\": \"closed\"}}\n",
         )
         .await
         .expect("a live VTC must accept the upload");
     assert_eq!(uploaded["created"], true, "{uploaded}");
     let policy = &uploaded["policy"];
-    assert_eq!(policy["name"], "join", "{uploaded}");
+    assert_eq!(policy["name"], "directory", "{uploaded}");
     assert_eq!(
         policy["ext"][vtc_client::POLICY_PURPOSE_EXT_KEY],
-        "join",
+        "directory",
         "{uploaded}"
     );
     let id = policy["id"].as_str().expect("policy id").to_string();

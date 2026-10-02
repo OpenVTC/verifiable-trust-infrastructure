@@ -387,6 +387,38 @@ async fn check_against_community(
     Ok(())
 }
 
+/// The threshold a write of `overrides` would **lower**
+/// `acl.unrestricted_admin_consent_threshold` from, and to — `None` when it
+/// raises it, leaves it alone, or names a value that would be refused anyway.
+///
+/// **VTI-APV-020**: lowering a consent threshold needs consent at the threshold
+/// as it stood. Without it one unrestricted admin could turn N-of-M back into
+/// 1-of-M alone, then promote at will (`vtc-action-list.md` §8.1, hole 2). Read
+/// before the write, so `config/patch` and `vtc/config/import` can settle the
+/// consent ([`crate::acl::admin_consent::Act::LowerThreshold`]) first. Raising
+/// it stays immediate: it only ever asks for more agreement.
+pub(crate) async fn lowered_threshold<'a>(
+    state: &AppState,
+    overrides: impl IntoIterator<Item = (&'a String, &'a Value)>,
+) -> Result<Option<(u64, u64)>, AppError> {
+    let key = crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD;
+    let Some((_, value)) = overrides.into_iter().find(|(k, _)| k.as_str() == key) else {
+        return Ok(None);
+    };
+    // A value the write would reject is not a lowering; it is refused there.
+    let Some(def) = lookup(key) else {
+        return Ok(None);
+    };
+    if validate_value(def, value).is_err() {
+        return Ok(None);
+    }
+    let Some(next) = value.as_u64() else {
+        return Ok(None);
+    };
+    let current = crate::acl::admin_consent::threshold(state).await?;
+    Ok((next < current).then_some((current, next)))
+}
+
 /// Read the live in-memory value for `key` out of an `AppConfig`.
 /// Phase-0 keys only; unknown keys return `Value::Null`.
 fn lookup_live(cfg: &crate::config::AppConfig, key: &str) -> Value {

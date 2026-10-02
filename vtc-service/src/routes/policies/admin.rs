@@ -212,6 +212,61 @@ pub struct TestResponse {
 // POST /v1/policies — upload
 // ---------------------------------------------------------------------------
 
+/// Every check [`upload_inner`] makes before it writes, and the purpose the
+/// revision would serve. Writes nothing.
+///
+/// For the gate on a policy that decides authority (**VTI-VTC-022**): the spine
+/// settles the requester's gesture and another administrator's consent between
+/// this and the upload, so nobody is asked about a module the upload would
+/// refuse anyway. [`upload_inner`] still runs every check itself.
+pub(crate) fn precheck_upload(body: &UploadBody) -> Result<PolicyPurpose, AppError> {
+    let unsupported = body.unsupported();
+    if !unsupported.is_empty() {
+        return Err(AppError::Validation(format!(
+            "this maintainer does not implement {}",
+            unsupported.join(", "),
+        )));
+    }
+    let purpose = body.purpose()?;
+    if body.module.len() > POLICY_SOURCE_MAX_BYTES {
+        return Err(AppError::Validation(format!(
+            "module exceeds {POLICY_SOURCE_MAX_BYTES} bytes (got {})",
+            body.module.len(),
+        )));
+    }
+    validate_purpose_package(&compile(&body.module, Uuid::new_v4())?, purpose)?;
+    Ok(purpose)
+}
+
+/// Every check [`activate_inner`] makes before it writes, and the purpose of
+/// the revision it would activate. Writes nothing. See [`precheck_upload`].
+pub(crate) async fn precheck_activate(
+    state: &AppState,
+    id: Uuid,
+    purpose: Option<PolicyPurpose>,
+) -> Result<PolicyPurpose, AppError> {
+    let policy = get_policy(&state.policies_ks, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("policy not found: {id}")))?;
+    if let Some(named) = purpose
+        && named != policy.purpose
+    {
+        return Err(AppError::Validation(format!(
+            "policy {id} decides {}, not {}: a revision's purpose is fixed by its Rego package",
+            policy.purpose.as_str(),
+            named.as_str()
+        )));
+    }
+    validate_purpose_package(&compile(&policy.rego_source, policy.id)?, policy.purpose)?;
+    if get_active_policy_id(&state.active_policies_ks, policy.purpose).await? == Some(id) {
+        return Err(AppError::Conflict(format!(
+            "policy {id} is already active for purpose {}",
+            policy.purpose.as_str()
+        )));
+    }
+    Ok(policy.purpose)
+}
+
 /// Compile, check and store a revision as `actor` — `policy/upsert/0.2`, on the
 /// route and the spine alike.
 pub(crate) async fn upload_inner(

@@ -152,21 +152,25 @@ pub(super) async fn handle_update(
         Ok(p) => p,
         Err(e) => return task_error_to_reject(&doc, &e),
     };
-    if let Err(refusal) = settle_signed_gate(state, &actor, &doc, &plan).await {
-        return refusal;
-    }
-    match ops::commit_grant(state, &actor, plan).await {
-        Ok((_status, envelope)) => success_response(&doc, envelope),
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
+    let unopposed = match settle_signed_gate(state, &actor, &doc, &plan).await {
+        Ok(u) => u,
+        Err(refusal) => return refusal,
+    };
+    commit_settled(state, &actor, &doc, plan, unopposed).await
 }
 
 /// `acl/revoke/0.1` — remove an entry, or reduce its scopes.
 ///
-/// Administrator only, the bearer route's `AdminAuth`. No gesture: removing
-/// authority confers none. The last unrestricted administrator is protected
-/// (`acl/revoke:lastAuthorityProtected`, VTI-APV-009), and a member's entry is
-/// refused in favour of the leave ceremony, exactly as on the bearer route.
+/// Administrator only, the bearer route's `AdminAuth`. The last unrestricted
+/// administrator is protected (`acl/revoke:lastAuthorityProtected`,
+/// VTI-APV-009), and a member's entry is refused in favour of the leave
+/// ceremony, exactly as on the bearer route.
+///
+/// Revoking or narrowing an **administrator** takes a passkey gesture bound to
+/// this document, and removing another unrestricted administrator also takes
+/// the consent of one who is neither the requester nor the subject
+/// (**VTI-APV-019**). Removing authority confers none, which is why this used
+/// to be ungated — and why one admin could strip every other.
 pub(super) async fn handle_revoke(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -193,6 +197,10 @@ pub(super) async fn handle_revoke(
         &req.subject,
         (!scopes.is_empty()).then_some(scopes.as_slice()),
         reason.as_deref(),
+        crate::acl::admin_consent::Operation {
+            type_uri: super::ACL_REVOKE_TYPE,
+            payload: &doc.payload,
+        },
     )
     .await
     {
@@ -234,12 +242,19 @@ async fn manager(
 /// `permissionDenied` with the ceremony inline in `details.stepUpRequest`; the
 /// spine releases the refused document's `id`, so once the admin has answered,
 /// the *same* document is sent again and succeeds.
+///
+/// A write that takes authority away from a live administrator — a narrowing
+/// rewrite, an expiry brought forward — needs the gesture too, and narrowing
+/// **another unrestricted** administrator also needs the consent of one who is
+/// neither the requester nor the subject (**VTI-APV-019**). `Ok(Some(prior))`
+/// means nobody else was left to give it: the caller commits, then records the
+/// reduction at `Critical` ([`crate::acl::admin_consent::record_unopposed_reduction`]).
 pub(super) async fn settle_signed_gate(
     state: &AppState,
     actor: &AuthClaims,
     doc: &TrustTask<Value>,
     plan: &ops::GrantPlan,
-) -> Result<(), TrustTaskOutcome> {
+) -> Result<Option<crate::acl::VtcAclEntry>, TrustTaskOutcome> {
     use crate::acl::bound_step_up::{self, Gate};
 
     let type_uri = doc.type_uri.to_string();
@@ -277,6 +292,23 @@ pub(super) async fn settle_signed_gate(
             .spend(state)
             .await
             .map_err(|e| app_error_to_reject(doc, &e))?;
+    } else if let Some(prior) = plan.reduces_admin.as_ref() {
+        // One gesture covers a rewrite that moves a scoped admin sideways —
+        // some authority dropped, some conferred.
+        let unopposed = crate::acl::admin_consent::settle_reduction(
+            state,
+            &actor.did,
+            prior,
+            crate::acl::admin_consent::Operation {
+                type_uri: &type_uri,
+                payload: &doc.payload,
+            },
+            &format!("Reduce administrator {subject}'s authority"),
+            &format!("Narrow unrestricted administrator {subject}"),
+        )
+        .await
+        .map_err(|e| super::helpers::task_error_to_reject(doc, &e))?;
+        return Ok(unopposed.then(|| prior.clone()));
     } else if plan.confers_admin {
         let reason = format!(
             "Grant administrator authority over {} to {subject}",
@@ -290,7 +322,83 @@ pub(super) async fn settle_signed_gate(
             Err(e) => return Err(app_error_to_reject(doc, &e)),
         }
     }
-    Ok(())
+    Ok(None)
+}
+
+/// The requester's bound gesture **and** another unrestricted administrator's
+/// consent for `act`, both keyed on this document, settled on the signed door —
+/// the gate a grant of unrestricted admin takes, for the acts that could undo it
+/// one step at a time: lowering the consent threshold (**VTI-APV-020**) and
+/// changing a policy that decides authority (**VTI-VTC-022**).
+///
+/// The consent is spent here, so call it last before the write.
+pub(super) async fn settle_consent_gate(
+    state: &AppState,
+    actor: &AuthClaims,
+    doc: &TrustTask<Value>,
+    act: crate::acl::admin_consent::Act,
+    subject: &str,
+    gesture_reason: &str,
+    consent_summary: &str,
+) -> Result<(), TrustTaskOutcome> {
+    use crate::acl::admin_consent::{self, Operation, SignedGate};
+    let type_uri = doc.type_uri.to_string();
+    let gate = admin_consent::gesture_then_consent_for(
+        state,
+        act,
+        &actor.did,
+        subject,
+        Operation {
+            type_uri: &type_uri,
+            payload: &doc.payload,
+        },
+        gesture_reason,
+        consent_summary,
+    )
+    .await;
+    let ready = match gate {
+        Ok(SignedGate::Ready(ready)) => ready,
+        Ok(SignedGate::StepUpRequired(request)) => {
+            return Err(super::helpers::task_error_to_reject(
+                doc,
+                &TaskError::step_up(request),
+            ));
+        }
+        Err(e) => return Err(app_error_to_reject(doc, &e)),
+    };
+    ready
+        .spend(state)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))
+}
+
+/// Commit a planned `acl/grant` or `acl/update` whose gate
+/// ([`settle_signed_gate`]) has settled, and record an unopposed reduction
+/// (VTI-APV-019) once the write has landed.
+pub(super) async fn commit_settled(
+    state: &AppState,
+    actor: &AuthClaims,
+    doc: &TrustTask<Value>,
+    plan: ops::GrantPlan,
+    unopposed: Option<crate::acl::VtcAclEntry>,
+) -> TrustTaskOutcome {
+    match ops::commit_grant(state, actor, plan).await {
+        Ok((_status, envelope)) => {
+            if let Some(prior) = unopposed
+                && let Err(e) = crate::acl::admin_consent::record_unopposed_reduction(
+                    state,
+                    &actor.did,
+                    &prior,
+                    &doc.type_uri.to_string(),
+                )
+                .await
+            {
+                return app_error_to_reject(doc, &e);
+            }
+            success_response(doc, envelope)
+        }
+        Err(e) => app_error_to_reject(doc, &e),
+    }
 }
 
 /// Each `acl/*` task through the spine, as every transport hands it over.

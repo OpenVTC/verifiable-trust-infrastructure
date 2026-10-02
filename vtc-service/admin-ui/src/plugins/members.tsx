@@ -58,14 +58,13 @@ import { CopyButton } from "@/components/CopyButton";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
 import { changeAclRole } from "@/lib/acl";
-import { explainConsent, gestureFromConfirm, type ConfirmGesture } from "@/lib/signed-act";
+import { adminRemoveMember } from "@/lib/member-removal";
+import { gestureFromConfirm, type ConfirmGesture } from "@/lib/signed-act";
 
 const TRUST_TASK_LIST =
   "https://trusttasks.org/spec/vtc/members/list/0.1";
 const TRUST_TASK_SHOW =
   "https://trusttasks.org/spec/vtc/members/show/0.1";
-const TRUST_TASK_ADMIN_REMOVE =
-  "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 // Promotion is a **role transition**, so it goes to the task defined for role
 // transitions. `vtc/members/update` declares `adminRoleForbidden` and refuses
 // `role: admin` outright (#1645): it is a metadata update, and the step-up it
@@ -200,26 +199,22 @@ async function promoteToAdmin(args: {
   // this one promotion, which the operator confirms as its own click.
   // `fromRole` is a compare-and-swap guard, not decoration: the role we render
   // is a read, and the daemon refuses the change if the row has moved since.
-  await explainConsent(
-    changeAclRole(
-      { subject: args.did, fromRole: args.fromRole, toRole: "admin" },
-      args.confirmGesture,
-    ),
+  // `changeAclRole` explains a refusal pending another admin's consent.
+  await changeAclRole(
+    { subject: args.did, fromRole: args.fromRole, toRole: "admin" },
+    args.confirmGesture,
   );
 }
 
-async function adminRemove(args: {
+// A signed document (the payload carries `did`). Removing an administrator
+// takes a passkey gesture, and another unrestricted administrator a third
+// administrator's consent (VTI-APV-019) — see `lib/member-removal.ts`.
+const adminRemove = (args: {
   did: string;
   reason: string;
-}): Promise<void> {
-  // A signed document (the payload carries `did`). `reason` is omitted rather
-  // than sent as `null` — the payload is `deny_unknown_fields` with `reason`
-  // an optional string, so `null` is a parse failure rather than "no reason".
-  await postSignedTrustTask<unknown>(
-    TRUST_TASK_ADMIN_REMOVE,
-    args.reason ? { did: args.did, reason: args.reason } : { did: args.did },
-  );
-}
+  confirmGesture: ConfirmGesture;
+}): Promise<void> =>
+  adminRemoveMember({ did: args.did, reason: args.reason }, args.confirmGesture);
 
 async function fetchRemovedMembers(): Promise<RemovedMemberRow[]> {
   const body = await postSignedRead<RemovedMembersResponse>(TRUST_TASK_REMOVED, {});
@@ -668,7 +663,8 @@ function MemberDetail() {
   });
 
   const removeMutation = useMutation({
-    mutationFn: adminRemove,
+    mutationFn: (args: { did: string; reason: string }) =>
+      adminRemove({ ...args, confirmGesture }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["members"] });
       navigate("..");

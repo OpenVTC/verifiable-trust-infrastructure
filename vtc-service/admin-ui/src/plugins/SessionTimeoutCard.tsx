@@ -15,7 +15,10 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { fetchEffectiveConfig, saveConfig } from "@/lib/api";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { fetchEffectiveConfig } from "@/lib/api";
+import { saveConfig } from "@/lib/config-api";
+import { gestureFromConfirm } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
 import type { EffectiveField } from "@/lib/wire-types";
 
@@ -49,6 +52,10 @@ function describe(secs: number): string {
 export function SessionTimeoutCard() {
   const qc = useQueryClient();
   const toast = useToast();
+  // `config/patch` takes a passkey gesture where the write needs one (lowering
+  // the consent threshold, VTI-APV-020); this key never does, so it is unused
+  // in practice, but every patch goes through the one gated path.
+  const confirmGesture = gestureFromConfirm(useConfirm());
   const query = useQuery({
     queryKey: ["admin-config"],
     queryFn: fetchEffectiveConfig,
@@ -68,7 +75,7 @@ export function SessionTimeoutCard() {
   }, [current]);
 
   const save = useMutation({
-    mutationFn: (secs: number) => saveConfig({ [KEY]: secs }),
+    mutationFn: (secs: number) => saveConfig({ [KEY]: secs }, confirmGesture),
     onSuccess: (result, secs) => {
       const refused = result.rejected.find((r) => r.key === KEY);
       if (refused) {

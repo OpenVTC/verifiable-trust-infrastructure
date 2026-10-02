@@ -10,9 +10,39 @@
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
+use crate::common::second_party::GatedAdmin;
 use crate::common::signed::{
-    admin, bearer_route_served_as, call, error_code, party_with_role, payload, post, unsigned,
+    bearer_route_served_as, error_code, party_with_role, payload, post, unsigned,
 };
+
+/// Who sends a document: a plain signer, or an administrator who passes the
+/// gesture and second administrator's consent a policy that decides authority
+/// takes (VTI-VTC-022) — this suite's `join` revisions are such policies.
+trait Sender {
+    async fn send(&self, vtc: &TestVtc, task: &str, body: Value) -> (StatusCode, Value);
+}
+
+impl Sender for vti_rooms_dtg::test_support::Party {
+    async fn send(&self, vtc: &TestVtc, task: &str, body: Value) -> (StatusCode, Value) {
+        crate::common::signed::call(vtc, self, task, body).await
+    }
+}
+
+impl Sender for GatedAdmin {
+    async fn send(&self, vtc: &TestVtc, task: &str, body: Value) -> (StatusCode, Value) {
+        self.call(vtc, task, body).await
+    }
+}
+
+async fn call(vtc: &TestVtc, by: &impl Sender, task: &str, body: Value) -> (StatusCode, Value) {
+    by.send(vtc, task, body).await
+}
+
+/// An unrestricted administrator, with what it takes to change a policy that
+/// decides authority.
+async fn admin(vtc: &TestVtc) -> GatedAdmin {
+    GatedAdmin::new(vtc).await
+}
 use vtc_service::acl::VtcRole;
 use vtc_service::policy::{PolicyPurpose, get_active_policy_id, get_policy};
 use vtc_service::test_support::TestVtc;
@@ -38,7 +68,12 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
 const JOIN_POLICY: &str = "package vtc.join\n\nimport rego.v1\n\ndefault allow := false\n\nallow if input.role == \"admin\"\n";
 
 async fn vtc() -> TestVtc {
-    TestVtc::builder().with_audit(true).build().await
+    TestVtc::builder()
+        .with_audit(true)
+        .with_signers(true)
+        .with_public_url("https://vtc.example.com")
+        .build()
+        .await
 }
 
 fn upsert(purpose: &str, module: &str) -> Value {
@@ -46,7 +81,7 @@ fn upsert(purpose: &str, module: &str) -> Value {
 }
 
 /// Upload `module` for `purpose` as `by`, returning the revision id.
-async fn uploaded(vtc: &TestVtc, by: &vti_rooms_dtg::test_support::Party, purpose: &str) -> String {
+async fn uploaded(vtc: &TestVtc, by: &impl Sender, purpose: &str) -> String {
     let (status, doc) = call(vtc, by, UPSERT, upsert(purpose, JOIN_POLICY)).await;
     assert_eq!(status, StatusCode::OK, "{doc}");
     payload(&doc)["policy"]["id"].as_str().unwrap().to_string()

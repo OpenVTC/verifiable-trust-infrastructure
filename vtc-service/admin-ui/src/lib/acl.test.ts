@@ -74,13 +74,79 @@ describe("acl/list", () => {
   });
 });
 
+const consentRefusal = (): ApiError => ({
+  status: 422,
+  message: "auth:consent_required",
+  code: "taskFailed",
+  details: { reason: "auth:consent_required" },
+});
+
 describe("acl/revoke", () => {
-  it("names the subject", async () => {
+  it("names the subject, and asks nothing when no gesture is needed", async () => {
     vi.mocked(postSignedTrustTask).mockResolvedValueOnce({ entry: null });
-    await revokeAcl(ALICE);
+    const confirm = vi.fn();
+    await revokeAcl(ALICE, confirm);
     expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(ACL_REVOKE_TASK, {
       subject: ALICE,
     });
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  // VTI-APV-019: removing an administrator takes a gesture bound to it.
+  it("asks for the gesture removing an administrator, then re-sends the same document", async () => {
+    vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
+    vi.mocked(answerStepUp).mockResolvedValueOnce({ status: "recorded" });
+    vi.mocked(postSignedDocument).mockResolvedValueOnce({ entry: null });
+    const confirm = vi.fn(async () => true);
+
+    await revokeAcl(ALICE, confirm);
+
+    expect(confirm).toHaveBeenCalledWith(STEP_UP);
+    expect(vi.mocked(answerStepUp)).toHaveBeenCalledWith(STEP_UP);
+    expect(vi.mocked(postSignedDocument)).toHaveBeenCalledWith(SIGNED);
+  });
+
+  // …and removing another unrestricted one a third administrator's consent.
+  it("explains a removal waiting on another administrator's consent", async () => {
+    vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
+    vi.mocked(answerStepUp).mockResolvedValueOnce({ status: "recorded" });
+    vi.mocked(postSignedDocument).mockRejectedValueOnce(consentRefusal());
+
+    await expect(revokeAcl(ALICE, async () => true)).rejects.toThrow(
+      /Another unrestricted administrator has to approve this first/,
+    );
+  });
+});
+
+describe("acl/change-role, demoting an administrator", () => {
+  it("asks for the gesture and explains the consent it waits on", async () => {
+    vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
+    vi.mocked(answerStepUp).mockResolvedValueOnce({ status: "recorded" });
+    vi.mocked(postSignedDocument).mockRejectedValueOnce(consentRefusal());
+    const confirm = vi.fn(async () => true);
+
+    await expect(
+      changeAclRole({ subject: ALICE, fromRole: "admin", toRole: "member" }, confirm),
+    ).rejects.toThrow(/Another unrestricted administrator has to approve this first/);
+    expect(confirm).toHaveBeenCalledWith(STEP_UP);
+    expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(ACL_CHANGE_ROLE_TASK, {
+      subject: ALICE,
+      fromRole: "admin",
+      toRole: "member",
+    });
+  });
+
+  it("goes through once both are given", async () => {
+    vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
+    vi.mocked(answerStepUp).mockResolvedValueOnce({ status: "recorded" });
+    vi.mocked(postSignedDocument).mockResolvedValueOnce({ entry: entry(ALICE, "member") });
+
+    const got = await changeAclRole(
+      { subject: ALICE, fromRole: "admin", toRole: "member" },
+      async () => true,
+    );
+    expect(got.role).toBe("member");
+    expect(vi.mocked(postSignedDocument)).toHaveBeenCalledWith(SIGNED);
   });
 });
 

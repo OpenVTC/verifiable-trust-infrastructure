@@ -6,8 +6,8 @@
 // for exactly this (`routes::ApiDoc`); the request payloads are the family's
 // (`acl/list`, `acl/grant`, …), written here beside the calls that send them.
 
-import { postSignedRead, postSignedTrustTask } from "./api";
-import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
+import { postSignedRead } from "./api";
+import { explainConsent, postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 import type { AclEntry, AclEntryEnvelope, AclListResponse } from "./wire-types";
 
 export type { AclEntry, AclListResponse };
@@ -83,21 +83,28 @@ export async function grantAcl(
 /**
  * Change an entry's role. `fromRole` is a compare-and-swap guard: the role on
  * screen is a read, and the VTC refuses the change if the row has moved since.
- * Promotion to `admin` may need a passkey gesture.
+ * Promotion to `admin` may need a passkey gesture, and so does a demotion
+ * from `admin` (VTI-APV-019). Making or unmaking an unrestricted admin also
+ * waits on another unrestricted admin's consent, which is explained rather
+ * than shown as a code.
  */
 export async function changeAclRole(
   args: { subject: string; fromRole: string; toRole: string; reason?: string },
   confirmGesture: ConfirmGesture,
 ): Promise<AclEntry> {
-  const body = await postSignedWithStepUp<AclEntryEnvelope>(
-    ACL_CHANGE_ROLE_TASK,
-    args,
-    confirmGesture,
+  const body = await explainConsent(
+    postSignedWithStepUp<AclEntryEnvelope>(ACL_CHANGE_ROLE_TASK, args, confirmGesture),
   );
   return body.entry;
 }
 
-/** Remove an entry outright. */
-export async function revokeAcl(subject: string): Promise<void> {
-  await postSignedTrustTask<{ entry: AclEntry | null }>(ACL_REVOKE_TASK, { subject });
+/**
+ * Remove an entry outright. Removing an administrator needs a passkey gesture
+ * bound to this removal, and removing another unrestricted administrator also
+ * needs the consent of an administrator who is neither of you (VTI-APV-019).
+ */
+export async function revokeAcl(subject: string, confirmGesture: ConfirmGesture): Promise<void> {
+  await explainConsent(
+    postSignedWithStepUp<{ entry: AclEntry | null }>(ACL_REVOKE_TASK, { subject }, confirmGesture),
+  );
 }

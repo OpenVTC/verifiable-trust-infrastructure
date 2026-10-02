@@ -20,6 +20,7 @@ mod acl_canonical;
 mod acl_cli;
 mod acl_trust_tasks;
 mod acl_vtc_client;
+mod admin_authority_stopgaps;
 mod admin_bootstrap;
 mod admin_config;
 mod admin_invites;

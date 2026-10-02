@@ -97,6 +97,7 @@ async fn an_admin_removal_reaches_the_member_signed() {
         &member_did,
         None,
         "Repeated code-of-conduct breach.".to_string(),
+        None,
     )
     .await
     .expect("admin removal succeeds");
@@ -214,6 +215,7 @@ async fn a_self_leave_sends_no_removal_notice() {
         &member_did,
         None,
         String::new(),
+        None,
     )
     .await
     .expect("self-leave succeeds");

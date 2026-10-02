@@ -643,9 +643,9 @@ fn task_error_reject(doc: &TrustTask<Value>, err: TaskError) -> TrustTaskOutcome
         {
             refuse(doc, "decryptionFailed", error.to_string(), None)
         }
-        TaskError::Declared { error, .. } | TaskError::App(error) => {
-            app_error_to_reject(doc, &error)
-        }
+        TaskError::Declared { error, .. }
+        | TaskError::App(error)
+        | TaskError::StepUp { error, .. } => app_error_to_reject(doc, &error),
     }
 }
 
