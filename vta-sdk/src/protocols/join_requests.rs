@@ -314,6 +314,30 @@ pub struct JoinRequestStatusBody {
     /// asks the community to resolve the applicant's open request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<Uuid>,
+    /// Ask the community to deliver again the credentials it already issued
+    /// for an `approved` request whose membership credential has not arrived.
+    ///
+    /// Set it only after a response of `approved` with
+    /// `credentials_delivered: Some(false)` and a reasonable wait: the
+    /// community rate-limits it, and answers in
+    /// [`JoinRequestStatusResponseBody::credential_resend`]. It never issues
+    /// new credentials in response.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resend_credentials: bool,
+}
+
+/// The community's answer to
+/// [`JoinRequestStatusBody::resend_credentials`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum CredentialResend {
+    /// A re-delivery of the credentials already issued is queued.
+    Queued,
+    /// The community already holds the applicant's acknowledgement.
+    NotNeeded,
+    /// A re-delivery was honoured too recently; see `retry_after`.
+    RateLimited,
 }
 
 /// Status response: the request's lifecycle, plus (when `deferred`) what
@@ -354,6 +378,21 @@ pub struct JoinRequestStatusResponseBody {
     /// `None` on a request decided before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_at: Option<DateTime<Utc>>,
+    /// Whether the community holds the applicant's acknowledgement that the
+    /// membership credential arrived. Present only for an `approved` request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials_delivered: Option<bool>,
+    /// The answer to `resend_credentials`. Present only when it was set and
+    /// the request is `approved`; absent then means the community does not
+    /// support re-delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_resend: Option<CredentialResend>,
+    /// The earliest time the community will honour another
+    /// `resend_credentials`. Present only with
+    /// [`CredentialResend::RateLimited`], and absent there when no further
+    /// re-delivery will be honoured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<DateTime<Utc>>,
 }
 
 /// The refusal code on the **admin** reject path.

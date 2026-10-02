@@ -33,9 +33,10 @@ pub use orchestrate::{
 };
 pub use retention::{JoinRequestsConfig, RetentionSweeper, default_retention_days};
 pub use storage::{
-    JOIN_REQUEST_EXTENSIONS_MAX_BYTES, JOIN_REQUEST_VP_MAX_BYTES, StoredVettingFacts,
-    delete_join_request, get_join_request, get_vetting_facts, list_join_requests,
-    list_join_requests_paginated, store_join_request, store_vetting_facts,
+    CredentialResends, JOIN_REQUEST_EXTENSIONS_MAX_BYTES, JOIN_REQUEST_VP_MAX_BYTES,
+    StoredVettingFacts, delete_join_request, get_credential_resends, get_join_request,
+    get_vetting_facts, list_join_requests, list_join_requests_paginated, store_credential_resends,
+    store_join_request, store_vetting_facts,
 };
 
 /// State of a join request through its lifecycle.
