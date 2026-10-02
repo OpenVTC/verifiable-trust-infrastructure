@@ -8,6 +8,13 @@ signed document. `vtc-trust-task-proof-enforcement.md` §6b states that as the
 removal point for every bearer route in the migration. This note is how the
 console gets there.*
 
+> **Status (2026-10-02): built, and the bearer routes are gone.** Option A
+> shipped; enrolment became `auth/signing-key/*` Trust Tasks (§6c), signing is
+> required and gated at sign-in (§6e), and a VTA wallet sign-in enrols with the
+> identity's own signature (`enroll/0.2`, §6c). The operator-facing description
+> is `docs/03-vtc/website-and-admin.md` → *Signing keys*. Superseded passages
+> below are marked where they stand; the rest is the design record.
+
 ---
 
 ## 1. The premise, verified
@@ -464,7 +471,20 @@ of that seam, not 60 call sites.
 > gesture bound to that one enrolment, answered unsigned from the console.
 > Every delegation has the `console` scope and an expiry of at most 30 days, an
 > identity holds at most five, and no approval is ever accepted under a
-> delegated key's proof. What follows is the original design.
+> delegated key's proof.
+>
+> **`enroll/0.2`** (trust-tasks-tf #712, VTI #1903, served beside 0.1) adds two
+> things. The identity may authorize the enrolment with **its own signature**
+> instead of the passkey gesture: an embedded `auth/signing-key/authorize/0.1`
+> signed by the identity, over exactly the enrolment's terms. That is how a VTA
+> wallet sign-in enrols — the VTA signs as the persona via the wallet's
+> `signTrustTask({ asDid })` — since such an operator usually has no passkey at
+> the VTC. And one enrolment may **replace** one of the identity's active keys
+> (`replaces`); at the cap, `tooManyKeys` lists the active keys, but only once
+> the enrolment's evidence has been accepted. The VTC never enrols a key twice
+> (an expired delegation still answers `alreadyEnrolled`), so the console mints
+> a fresh key for every enrolment, renewal included. What follows is the
+> original design.
 
 A self-service pair mirroring `auth/passkey/{enroll,revoke}` exactly:
 
@@ -530,6 +550,28 @@ specific browser did. `AuditLogEntry.detail` is the existing place for it.
 | Operator with no key yet? | Detected on load. The console offers "enable signing for this browser", which runs the step-up and enrols. Until then it keeps using the bearer routes — which is exactly why they stay mounted during the migration and are removed per §7. |
 | Revocation | `DELETE` the delegation, or let it expire, or remove the operator's ACL row (which kills every key delegated from it at once). |
 | Browser with no WebCrypto Ed25519 | Detected at generate time; the console says so and stays on the bearer path rather than failing a click. |
+
+> **Superseded (2026-10-02)** — the rows on an operator with no key and a
+> browser with no Ed25519 assumed bearer routes to fall back to. Those are gone
+> (#1808), so signing is **required**, and since VTI #1899 the shell gates on
+> it. After sign-in an administrator's browser is checked once
+> (`auth/signing-key/list/0.1`); without an accepted key the operator sees
+> **Set up signing** instead of the console, and nothing signs until then — an
+> unenrolled key's documents are charged to the anonymous per-address rate
+> limit, which a few screens of signed reads used to exhaust before the
+> enrolment that would fix it could run. A browser with no Ed25519 is told it
+> cannot administer the community. The other rows, as built:
+>
+> - **Expiry** is fixed at enrolment (at most 30 days), not refreshed on use.
+>   The console offers renewal five days before it, and renewal is a fresh
+>   enrolment that revokes the key it replaces.
+> - **Storage**: the key is adopted only after the VTC accepts it, the write
+>   is read back, `navigator.storage.persist()` is requested, and a refused
+>   write is an error rather than a silent in-memory fallback. It is per
+>   **origin**, and is lost to cleared site data, a closed private window,
+>   eviction, or Safari's seven-day storage cap — each costs one re-setup.
+> - **Revocation** is `auth/signing-key/revoke/0.1`; a backup restore drops
+>   every delegation by design (`console_keys` is excluded from backup).
 
 ### 6f. Interaction with the passkey — two factors, still
 
