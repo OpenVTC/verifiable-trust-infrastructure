@@ -272,6 +272,7 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
                 JOIN_REQUEST_STATUS_TYPE,
                 serde_json::to_value(JoinRequestStatusBody {
                     request_id: Some(request_id),
+                    resend_credentials: false,
                 })
                 .unwrap(),
             )
@@ -294,7 +295,11 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
             .request(
                 &vtc_did,
                 JOIN_REQUEST_STATUS_TYPE,
-                serde_json::to_value(JoinRequestStatusBody { request_id: None }).unwrap(),
+                serde_json::to_value(JoinRequestStatusBody {
+                    request_id: None,
+                    resend_credentials: false,
+                })
+                .unwrap(),
             )
             .await,
     ))

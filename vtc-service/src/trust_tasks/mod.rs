@@ -3472,11 +3472,21 @@ async fn handle_status(
     // repairs the applicant's record for every later poll.
     let result = match body.request_id {
         Some(request_id) => {
-            crate::routes::join_requests::status::status_inner(state, request_id, applicant_did)
-                .await
+            crate::routes::join_requests::status::status_inner(
+                state,
+                request_id,
+                applicant_did,
+                body.resend_credentials,
+            )
+            .await
         }
         None => {
-            crate::routes::join_requests::status::status_by_applicant(state, applicant_did).await
+            crate::routes::join_requests::status::status_by_applicant(
+                state,
+                applicant_did,
+                body.resend_credentials,
+            )
+            .await
         }
     };
 

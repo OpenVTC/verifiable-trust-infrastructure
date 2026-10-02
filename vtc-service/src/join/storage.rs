@@ -76,7 +76,57 @@ pub async fn store_join_request(
 /// Delete a join request and the vetting facts recorded for it.
 pub async fn delete_join_request(ks: &KeyspaceHandle, id: Uuid) -> Result<(), AppError> {
     ks.remove(vetting_facts_key(id)).await?;
+    ks.remove(credential_resends_key(id)).await?;
     ks.remove(key(id)).await
+}
+
+/// Key prefix of the credential re-delivery record for a join request
+/// ([`CredentialResends`]). Distinct from [`PREFIX`], so a request listing
+/// never reads one.
+const CREDENTIAL_RESENDS_PREFIX: &[u8] = b"join_resend:";
+
+fn credential_resends_key(id: Uuid) -> Vec<u8> {
+    let mut k = CREDENTIAL_RESENDS_PREFIX.to_vec();
+    k.extend_from_slice(id.as_hyphenated().to_string().as_bytes());
+    k
+}
+
+/// The community's own count of credential re-deliveries it has honoured for
+/// one join request, kept for their rate limit. Never on the wire.
+///
+/// An applicant asks for a re-delivery with the status poll's
+/// `resendCredentials` flag; this records how often that was honoured and when
+/// last. A row of its own rather than a member of [`JoinRequest`], which is the
+/// canonical `JoinRequest` component on the admin surface: this is the
+/// community's bookkeeping, not part of the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialResends {
+    /// Re-deliveries honoured so far.
+    pub count: u32,
+    /// When the last one was honoured.
+    pub last_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// The re-delivery record for `request_id`, if any re-delivery was honoured.
+pub async fn get_credential_resends(
+    ks: &KeyspaceHandle,
+    request_id: Uuid,
+) -> Result<Option<CredentialResends>, AppError> {
+    ks.get(credential_resends_key(request_id)).await
+}
+
+/// Record a re-delivery honoured for `request_id`.
+pub async fn store_credential_resends(
+    ks: &KeyspaceHandle,
+    request_id: Uuid,
+    resends: &CredentialResends,
+) -> Result<(), AppError> {
+    ks.insert(
+        String::from_utf8(credential_resends_key(request_id)).expect("key is ASCII"),
+        resends,
+    )
+    .await
 }
 
 /// Key prefix of the vetting facts recorded for a join request. Distinct from

@@ -510,7 +510,12 @@ aws-smithy-types = ">=1.6.1, <1.7"
 #
 # 0.26 is the affinidi-data-integrity 0.8 cascade (trust-tasks-tf #705) and
 # carries #702 too, so the floor above holds on this line.
-trust-tasks-rs = { version = "0.26", default-features = false, features = [
+#
+# 0.26.1 raises it: it is the first release whose `join-requests/status/0.1`
+# carries `resendCredentials` and the delivery members of its response
+# (trust-tasks-tf #709), which `routes::join_requests::status` serves. 0.26.0's
+# generated schema refuses the request member.
+trust-tasks-rs = { version = "0.26.1", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

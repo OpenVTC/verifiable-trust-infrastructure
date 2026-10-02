@@ -1206,8 +1206,15 @@ fn table() -> Vec<Conformance> {
             s::join_requests::status::v0_1::Payload,
             s::join_requests::status::v0_1::Response,
             // The id-less poll: `requestId` is `Option` and omitted
-            // (vta-sdk/src/protocols/join_requests.rs:164).
-            to_v(jr::JoinRequestStatusBody { request_id: None }),
+            // (vta-sdk/src/protocols/join_requests.rs:164), asking for an
+            // approved request's credentials again (tf#709). The response
+            // members that ask adds are witnessed apart, in
+            // `status_credential_delivery_speaks_its_published_schema`, since
+            // this table holds one witness per URI.
+            to_v(jr::JoinRequestStatusBody {
+                request_id: None,
+                resend_credentials: true,
+            }),
             // The rejected projection — the only one that carries the three
             // members #1058 added (routes/join_requests/status.rs:140).
             to_v(jr::JoinRequestStatusResponseBody {
@@ -1222,6 +1229,9 @@ fn table() -> Vec<Conformance> {
                         .expect("fixture ts")
                         .with_timezone(&chrono::Utc),
                 ),
+                credentials_delivered: None,
+                credential_resend: None,
+                retry_after: None,
             })
         ),
         // ─── members ─────────────────────────────────────────────────
@@ -2414,6 +2424,41 @@ fn every_bound_published_uri_has_a_witness() {
          published:\n  {}\n\nRemove them, or fix the spec module they name.",
         stale.join("\n  ")
     );
+}
+
+/// The delivery members a status poll answers with on an approved request
+/// (tf#709) speak the published schema: `credentialsDelivered`,
+/// `credentialResend` in its camelCase spelling, and `retryAfter`. The witness
+/// table carries one response per URI, and status's is the rejected
+/// projection, so these are checked here.
+#[test]
+fn status_credential_delivery_speaks_its_published_schema() {
+    use vta_sdk::protocols::join_requests as jr;
+    type R = trust_tasks_rs::specs::vtc::join_requests::status::v0_1::Response;
+    for resend in [
+        jr::CredentialResend::Queued,
+        jr::CredentialResend::NotNeeded,
+        jr::CredentialResend::RateLimited,
+    ] {
+        let v = to_v(jr::JoinRequestStatusResponseBody {
+            request_id: uuid(),
+            status: "approved".into(),
+            needs: vec![],
+            presentation_definition: None,
+            code: None,
+            reason: None,
+            decided_at: None,
+            credentials_delivered: Some(resend == jr::CredentialResend::NotNeeded),
+            credential_resend: Some(resend),
+            retry_after: (resend == jr::CredentialResend::RateLimited).then(|| {
+                DateTime::parse_from_rfc3339(TS)
+                    .expect("fixture ts")
+                    .with_timezone(&chrono::Utc)
+            }),
+        });
+        parses::<R>(v.clone()).unwrap_or_else(|e| panic!("{resend:?}: {e}\n{v:#}"));
+        validates::<R>(&v).unwrap_or_else(|e| panic!("{resend:?}: {e}\n{v:#}"));
+    }
 }
 
 /// Correctness: every conforming witness's request parses as the generated
