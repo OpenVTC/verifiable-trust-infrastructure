@@ -390,13 +390,24 @@ authenticate for no wire-visible gain.
 
 ### Signing keys — what the console signs with
 
-A growing number of admin verbs are served as **signed Trust Task documents**
-at `POST /v1/trust-tasks` rather than as bearer REST (#1641, #1681). A
-document carries its own authentication: the daemon verifies its
-`eddsa-jcs-2022` proof, binds the proof to the document's `issuer`, requires
-the community as `recipient`, bounds its age and records its `id` against
-replay — none of which a cookie can supply. The console therefore needs a
-key, and the **Signing keys** screen is where an operator gives it one.
+Every admin verb is served as a **signed Trust Task document** at
+`POST /v1/trust-tasks`; the bearer twins are gone (#1641, #1808). A document
+carries its own authentication: the daemon verifies its `eddsa-jcs-2022`
+proof, binds the proof to the document's `issuer`, requires the community as
+`recipient`, bounds its age and records its `id` against replay — none of
+which a cookie can supply. The console therefore needs a key before it can do
+anything for an administrator.
+
+**First sign-in on a browser.** After the passkey sign-in, the console checks
+whether this browser holds a key the community accepts (one signed
+`auth/signing-key/list/0.1`). If it does not — a new browser, a first install,
+a key that expired or was revoked, or a community restored from backup, which
+drops every delegation by design — the operator sees **Set up signing**
+instead of the dashboard: name the browser, confirm with the passkey, done.
+Nothing in the console signs until that has happened, so an unenrolled key
+never spends the anonymous rate-limit budget that its enrolment needs. If a
+signed document is later refused outright, the console checks again and
+returns to that page when the key has stopped being accepted.
 
 - **What it is.** A non-extractable WebCrypto Ed25519 key, generated in the
   browser and kept in that profile's IndexedDB as a `CryptoKey` — never as
@@ -411,13 +422,30 @@ key, and the **Signing keys** screen is where an operator gives it one.
   key behind, since the key signs with no gesture at use time.
 - **Per browser, not per operator.** Each profile, machine and private
   window enrols its own, listed and individually revocable, exactly as
-  passkeys are. A revoked key is tombstoned and cannot be re-enrolled; the
-  browser generates a new one.
-- **Optional.** A browser without WebCrypto Ed25519 (below Chrome 137 /
-  Firefox 130 / Safari 17), or one whose operator has not enrolled, keeps
-  using the transitional bearer routes. Those stay mounted until every
-  client can sign; each carries its removal point in its OpenAPI
-  description.
+  passkeys are. The key is per **origin**: `https://vtc.example` and
+  `https://vtc.example:8443` — or `localhost` and `127.0.0.1` — hold
+  different keys, so reach the console at one address.
+- **Always a fresh key.** The daemon never enrols a key twice: a revoked
+  key is tombstoned, and an *expired* delegation still answers
+  `alreadyEnrolled`. So every enrolment — first setup, re-setup and renewal —
+  generates a new key, stores it only once the daemon has accepted it, and
+  then revokes the key it replaced.
+- **Lifetime.** A delegation lasts at most 30 days. Five days before it ends
+  the console shows a renewal banner; renewing is one passkey confirmation
+  on the Signing keys screen.
+- **Durability.** The key survives signing out and restarting the browser,
+  the OS or the VTC. It ends when the browser deletes the origin's storage:
+  clearing site data, a private window closing, eviction under disk pressure
+  (the console asks for persistent storage to avoid this), or Safari's
+  seven-day limit on storage for sites not visited. Losing it costs one
+  re-setup, not access.
+- **Required.** A browser without WebCrypto Ed25519 (below Chrome 137 /
+  Firefox 130 / Safari 17) cannot administer the community; the console
+  says so at sign-in.
+- **At most five active per administrator.** Each lost browser leaves its
+  delegation live until it expires, so an operator who loses browser storage
+  repeatedly can reach the cap; the setup page then says to revoke one from
+  a browser that still signs, or wait for one to expire.
 
 Design note: `docs/05-design-notes/vtc-console-signing.md`.
 

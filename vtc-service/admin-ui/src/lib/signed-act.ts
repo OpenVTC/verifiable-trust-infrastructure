@@ -12,6 +12,7 @@
 
 import { postSignedDocument, postSignedTrustTask, type ApiError } from "./api";
 import { answerStepUp, stepUpRequestOf, type StepUpRequest } from "./bound-step-up";
+import type { ConsoleSigningKey } from "./console-key";
 
 /** Ask the operator to confirm the gesture `req` asks for. */
 export type ConfirmGesture = (req: StepUpRequest) => Promise<boolean>;
@@ -43,9 +44,12 @@ export async function postSignedWithStepUp<T>(
   typeUri: string,
   payload: unknown,
   confirmGesture: ConfirmGesture,
+  key?: ConsoleSigningKey,
 ): Promise<T> {
   try {
-    return await postSignedTrustTask<T>(typeUri, payload);
+    return await (key
+      ? postSignedTrustTask<T>(typeUri, payload, key)
+      : postSignedTrustTask<T>(typeUri, payload));
   } catch (e) {
     const req = stepUpRequestOf(e);
     const document = (e as ApiError | null)?.document;

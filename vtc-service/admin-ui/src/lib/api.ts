@@ -379,6 +379,7 @@ import {
   ed25519Available,
   loadConsoleKey,
   signTrustTaskDocument,
+  type ConsoleSigningKey,
   type SignedTrustTaskDocument,
   type UnsignedTrustTaskDocument,
 } from "./console-key";
@@ -454,12 +455,16 @@ interface TrustTaskErrorPayload {
  *
  * Throws [`SigningUnavailableError`] when this browser cannot sign, and an
  * [`ApiError`] for everything else, so existing error rendering is unchanged.
+ *
+ * `key` signs instead of this browser's stored key — for enrolment, whose
+ * document is signed by the key being enrolled before this browser keeps it.
  */
 export async function postSignedTrustTask<T>(
   typeUri: string,
   payload: unknown,
+  key?: ConsoleSigningKey,
 ): Promise<T> {
-  return postSignedDocument<T>(await signTrustTask(typeUri, payload));
+  return postSignedDocument<T>(await signTrustTask(typeUri, payload, key));
 }
 
 /**
@@ -492,11 +497,12 @@ export async function postSignedRead<T>(typeUri: string, payload: unknown): Prom
 async function signTrustTask(
   typeUri: string,
   payload: unknown,
+  withKey?: ConsoleSigningKey,
 ): Promise<SignedTrustTaskDocument> {
   if (!(await ed25519Available())) {
     throw new SigningUnavailableError("no-ed25519");
   }
-  const key = await loadConsoleKey();
+  const key = withKey ?? (await loadConsoleKey());
   if (!key) throw new SigningUnavailableError("no-key");
 
   const recipient = await communityDid();
@@ -547,25 +553,72 @@ export async function postUnsignedTrustTask<T>(
   return postDocument<T>(buildTrustTaskDocument({ typeUri, payload, issuer, recipient }));
 }
 
+/** Dispatched on `window` when the VTC refuses a signed document outright. */
+export const SIGNING_KEY_REFUSED_EVENT = "vtc-signing-key-refused";
+
+/** The longest rate-limit wait [`postDocument`] sits out by itself. */
+const AUTO_RETRY_MAX_SECS = 10;
+
+/**
+ * Seconds a 429 asks the caller to wait: the VTC's own body
+ * (`routing::rate_limit` — `{"error":"rate_limited","retryAfterSecs":N}`),
+ * else the `Retry-After` header. `null` when it says neither.
+ */
+function retryAfterSecs(res: Response, body: unknown): number | null {
+  const fromBody = (body as { retryAfterSecs?: unknown } | null)?.retryAfterSecs;
+  if (typeof fromBody === "number" && Number.isFinite(fromBody) && fromBody >= 0) {
+    return Math.ceil(fromBody);
+  }
+  const header = Number(res.headers.get("Retry-After"));
+  return res.headers.has("Retry-After") && Number.isFinite(header) && header >= 0
+    ? Math.ceil(header)
+    : null;
+}
+
 async function postDocument<T>(
   signed: UnsignedTrustTaskDocument | SignedTrustTaskDocument,
 ): Promise<T> {
   const headers = new Headers({ "Content-Type": "application/json" });
   const csrf = csrfTokenFromCookie();
   if (csrf) headers.set("X-CSRF-Token", csrf);
+  const send = () =>
+    fetch("/v1/trust-tasks", {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: JSON.stringify(signed),
+    });
 
-  const res = await fetch("/v1/trust-tasks", {
-    method: "POST",
-    credentials: "include",
-    headers,
-    body: JSON.stringify(signed),
-  });
+  let res = await send();
+  // A rate-limit refusal is decided before the document runs, and the spine
+  // keeps a refused document's `id` free, so the identical document can go
+  // again. A short wait is waited out here, once, rather than handed to the
+  // operator as an error to retry by hand.
+  if (res.status === 429) {
+    const wait = retryAfterSecs(res, await res.clone().json().catch(() => null));
+    if (wait !== null && wait <= AUTO_RETRY_MAX_SECS) {
+      await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+      res = await send();
+    }
+  }
 
   const body = (await res.json().catch(() => null)) as {
     payload?: unknown;
   } | null;
 
   if (!res.ok) {
+    if (res.status === 429) {
+      const wait = retryAfterSecs(res, body);
+      const apiError: ApiError = {
+        status: 429,
+        code: "rateLimited",
+        message:
+          wait !== null
+            ? `The VTC is limiting requests from this browser. Try again in ${wait} second${wait === 1 ? "" : "s"}.`
+            : "The VTC is limiting requests from this browser. Wait a moment and try again.",
+      };
+      throw apiError;
+    }
     const err = (body?.payload ?? {}) as TrustTaskErrorPayload;
     const apiError: ApiError = {
       status: res.status,
@@ -578,6 +631,20 @@ async function postDocument<T>(
     if (err.details && typeof err.details === "object") apiError.details = err.details;
     // Only a signed document is worth re-sending unchanged.
     if ("proof" in signed) apiError.document = signed as SignedTrustTaskDocument;
+    // A signed document refused outright may mean this browser's key stopped
+    // being accepted (expired, revoked elsewhere). The shell re-checks and, if
+    // so, puts the operator back through setup — rather than every screen
+    // failing one by one. A step-up request is not a refusal of the key, and
+    // the signing-key tasks are the check itself.
+    if (
+      "proof" in signed &&
+      apiError.code === "permissionDenied" &&
+      !(apiError.details && "stepUpRequest" in apiError.details) &&
+      !signed.type.includes("/auth/signing-key/") &&
+      typeof window !== "undefined"
+    ) {
+      window.dispatchEvent(new Event(SIGNING_KEY_REFUSED_EVENT));
+    }
     throw apiError;
   }
 

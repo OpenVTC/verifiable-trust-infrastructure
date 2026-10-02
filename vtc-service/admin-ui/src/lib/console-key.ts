@@ -292,14 +292,17 @@ async function identityFor(keypair: CryptoKeyPair): Promise<ConsoleSigningKey> {
 }
 
 /**
- * Generate a fresh console signing key and persist it for this browser
- * profile.
+ * Generate a fresh console signing key, **without** storing it.
  *
- * Does **not** enrol it — `enrolConsoleKey` in `console-keys-api.ts` does
- * that, behind the step-up. A generated key that is never enrolled authorises
- * nothing at all, which is why generating is safe to do before asking.
+ * Every enrolment uses a fresh key: `auth/signing-key/enroll/0.1` is "a
+ * freshly generated key asks to be enrolled", and the VTC refuses any key it
+ * has a delegation for — `keyRevoked`, and `alreadyEnrolled`, which an
+ * *expired* delegation still is. So a browser whose delegation lapsed cannot
+ * revive its old key; it makes a new one. [`adoptConsoleKey`] stores it once
+ * the VTC has enrolled it, so a ceremony that fails or is cancelled leaves the
+ * key this browser already held where it was.
  */
-export async function generateConsoleKey(): Promise<ConsoleSigningKey> {
+export async function mintConsoleKey(): Promise<ConsoleSigningKey> {
   if (typeof crypto === "undefined" || !crypto.subtle) {
     throw new Error(
       "WebCrypto is not available here — the console cannot sign documents in this browser",
@@ -309,11 +312,30 @@ export async function generateConsoleKey(): Promise<ConsoleSigningKey> {
     "sign",
     "verify",
   ])) as CryptoKeyPair;
+  return identityFor(keypair);
+}
 
-  const identity = await identityFor(keypair);
-  cached = identity;
-  await persist(identity);
+/** [`mintConsoleKey`] and [`adoptConsoleKey`] in one step. */
+export async function generateConsoleKey(): Promise<ConsoleSigningKey> {
+  const identity = await mintConsoleKey();
+  await adoptConsoleKey(identity);
   return identity;
+}
+
+/**
+ * Make `identity` this browser's key: store it, read it back, and ask the
+ * browser to keep this origin's storage.
+ *
+ * Throws [`KeyStorageError`] if it could not be stored. Before this, a failed
+ * write fell back to memory without a word: the key signed until the next
+ * reload and then vanished, leaving an enrolled delegation nobody held.
+ */
+export async function adoptConsoleKey(
+  identity: ConsoleSigningKey,
+): Promise<StorageDurability> {
+  const durability = await persist(identity);
+  cached = identity;
+  return durability;
 }
 
 let cached: ConsoleSigningKey | null = null;
@@ -322,7 +344,11 @@ let restoreInFlight: Promise<ConsoleSigningKey | null> | null = null;
 
 /**
  * The key this browser holds, restoring it from storage on first use after a
- * reload. `null` when this profile has never generated one.
+ * reload. `null` only when this profile holds none.
+ *
+ * Throws [`KeyStorageError`] when the store could not be read. That is not
+ * "no key": reading it as one sends the operator to enrol again, and it once
+ * also overwrote the key they had.
  */
 export async function loadConsoleKey(): Promise<ConsoleSigningKey | null> {
   if (cached) return cached;
@@ -333,16 +359,27 @@ export async function loadConsoleKey(): Promise<ConsoleSigningKey | null> {
       if (!stored) return null;
       cached = await identityFor(stored.keypair);
       return cached;
-    } catch {
-      // A restore that fails is a browser that cannot sign right now, not an
-      // error worth taking a screen down for: every caller falls back to the
-      // bearer route.
-      return null;
+    } catch (e) {
+      throw new KeyStorageError(
+        `this browser's signing key could not be read from its storage: ${messageOf(e)}`,
+      );
     } finally {
       restoreInFlight = null;
     }
   })();
   return restoreInFlight;
+}
+
+/** The browser's key store could not be read or written. */
+export class KeyStorageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "KeyStorageError";
+  }
+}
+
+function messageOf(e: unknown): string {
+  return (e as Error | null)?.message ?? String(e);
 }
 
 /** Forget this browser's key. The delegation is revoked separately. */
@@ -367,12 +404,62 @@ export function resetConsoleKeyCacheForTests(): void {
 // Persistence
 // ---------------------------------------------------------------------------
 //
-// IndexedDB, holding the `CryptoKey` objects themselves. Where IndexedDB is
-// unavailable — a private window, a locked-down embedded webview, jsdom under
-// the console's own tests — the fallback is an in-memory record, which keeps
-// the tab working and loses the key on reload. That is the honest
-// degradation: the operator re-enrols, exactly as they would on a new
-// profile, and nothing silently writes key material somewhere weaker.
+// IndexedDB, holding the `CryptoKey` objects themselves. The record survives
+// a VTC restart (nothing about it lives on the daemon), a browser restart and
+// an OS reboot. What ends it is the browser deleting this origin's storage:
+//
+// - the operator clearing site data, or a private window closing;
+// - eviction. Storage is best-effort unless the origin has been granted
+//   persistence, and best-effort storage is what a browser deletes first
+//   under disk pressure. So adopting a key asks for
+//   `navigator.storage.persist()`: Chromium grants it silently to a site the
+//   operator uses, Firefox asks, Safari decides by engagement. Safari also
+//   deletes an origin's script-writable storage after seven days of browser
+//   use without a visit, persisted or not.
+//
+// The key is per **origin**: `https://vtc.example` and
+// `https://vtc.example:8443` — or `localhost` and `127.0.0.1` — are two
+// browsers as far as the key is concerned.
+//
+// Where the browser offers no IndexedDB at all (some embedded webviews, and
+// jsdom under the console's own tests) the key is held in memory and
+// [`StorageDurability`] says so. Nothing else falls back to memory: a write
+// IndexedDB refuses is an error, not a quieter kind of success.
+
+/** How a stored key is held. */
+export type StorageDurability =
+  /** IndexedDB, and the browser agreed not to evict this origin's storage. */
+  | "persistent"
+  /** IndexedDB, best-effort: kept unless the browser needs the space. */
+  | "best-effort"
+  /** No IndexedDB here: the key lasts as long as this tab. */
+  | "memory";
+
+/** Ask the browser not to evict this origin's storage. Never throws. */
+async function requestPersistence(): Promise<boolean> {
+  try {
+    const storage = typeof navigator === "undefined" ? undefined : navigator.storage;
+    if (!storage?.persist) return false;
+    if (storage.persisted && (await storage.persisted())) return true;
+    return await storage.persist();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * How this browser holds its key right now, for the console to say. Asks the
+ * browser for nothing and never throws.
+ */
+export async function keyStorageDurability(): Promise<StorageDurability> {
+  if (typeof indexedDB === "undefined") return "memory";
+  try {
+    const storage = typeof navigator === "undefined" ? undefined : navigator.storage;
+    return storage?.persisted && (await storage.persisted()) ? "persistent" : "best-effort";
+  } catch {
+    return "best-effort";
+  }
+}
 
 interface StoredKey {
   keypair: CryptoKeyPair;
@@ -406,17 +493,19 @@ function openDb(): Promise<IDBDatabase | null> {
   });
 }
 
-async function persist(identity: ConsoleSigningKey): Promise<void> {
+async function persist(identity: ConsoleSigningKey): Promise<StorageDurability> {
   const record: StoredKey = { keypair: identity.keypair };
-  let db: IDBDatabase | null = null;
+  let db: IDBDatabase | null;
   try {
     db = await openDb();
-  } catch {
-    db = null;
+  } catch (e) {
+    throw new KeyStorageError(
+      `this browser's storage could not be opened to keep the signing key: ${messageOf(e)}`,
+    );
   }
   if (!db) {
     memoryFallback = record;
-    return;
+    return "memory";
   }
   try {
     await new Promise<void>((resolve, reject) => {
@@ -426,20 +515,30 @@ async function persist(identity: ConsoleSigningKey): Promise<void> {
       tx.onerror = () => reject(tx.error ?? new Error("IDB put failed"));
       tx.onabort = () => reject(tx.error ?? new Error("IDB put aborted"));
     });
-  } catch {
-    memoryFallback = record;
+  } catch (e) {
+    throw new KeyStorageError(`this browser refused to store the signing key: ${messageOf(e)}`);
   } finally {
     db.close();
   }
+  // Read it back. A store that took the write but cannot hand back a usable
+  // key is a store that loses it on the next reload — find out now, while the
+  // operator is still here, not then.
+  let back: StoredKey | null;
+  try {
+    back = await read();
+  } catch (e) {
+    throw new KeyStorageError(`the signing key was stored but could not be read back: ${messageOf(e)}`);
+  }
+  const restored = back ? await identityFor(back.keypair) : null;
+  if (restored?.consoleDid !== identity.consoleDid) {
+    throw new KeyStorageError("the signing key read back is not the one just stored");
+  }
+  return (await requestPersistence()) ? "persistent" : "best-effort";
 }
 
+/** The stored record, or `null` when there is none. Throws if the store fails. */
 async function read(): Promise<StoredKey | null> {
-  let db: IDBDatabase | null = null;
-  try {
-    db = await openDb();
-  } catch {
-    db = null;
-  }
+  const db = await openDb();
   if (!db) return memoryFallback;
   try {
     const record = await new Promise<StoredKey | undefined>((resolve, reject) => {
@@ -448,7 +547,7 @@ async function read(): Promise<StoredKey | null> {
       req.onsuccess = () => resolve(req.result as StoredKey | undefined);
       req.onerror = () => reject(req.error ?? new Error("IDB get failed"));
     });
-    return record ?? memoryFallback;
+    return record ?? null;
   } finally {
     db.close();
   }

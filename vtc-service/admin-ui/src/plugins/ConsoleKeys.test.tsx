@@ -56,8 +56,7 @@ describe("the signing-keys screen", () => {
   });
 
   it("says so, and offers nothing, on a browser without WebCrypto Ed25519", async () => {
-    // The degradation that matters: the console keeps working on the bearer
-    // routes, and the screen explains itself rather than failing a click.
+    // The screen explains itself rather than failing a click.
     resetConsoleKeyCacheForTests();
     const real = crypto.subtle.generateKey;
     Object.defineProperty(crypto.subtle, "generateKey", {
@@ -110,7 +109,7 @@ describe("the signing-keys screen", () => {
     listing([row(key.consoleDid, { active: false, revokedAt: "2026-09-22T09:00:00Z" })]);
     renderWithProviders(<ConsoleKeys />);
 
-    expect(await screen.findByText(/a revoked key can never be re-enrolled/i)).toBeTruthy();
+    expect(await screen.findByText(/generates a fresh one/i)).toBeTruthy();
     expect(
       screen.getByRole("button", { name: /enable signing here/i }),
     ).toBeTruthy();
@@ -126,7 +125,7 @@ describe("the signing-keys screen", () => {
     vi.mocked(enrolThisBrowser).mockImplementation(async () => {
       const key = await generateConsoleKey();
       enrolled = row(key.consoleDid, { label: "Here" });
-      return enrolled;
+      return { key: enrolled, durability: "persistent" as const };
     });
 
     renderWithProviders(<ConsoleKeys />);
