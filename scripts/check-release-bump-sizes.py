@@ -60,6 +60,11 @@ held to a version the Release PR will set.
 
 ## Fixing a failure
 
+Rules 2 and 3 fail on every Release PR that follows a breaking change to a
+leaf crate (`vti-common`, `vta-sdk`): release-plz patches the ~20 dependents and
+the fix cascades through them. `scripts/fix-release-bump-sizes.py` applies it —
+run it on the Release PR branch and commit the result.
+
 - Rule 1: drop `version` from the dev-dependency, keeping `path`.
 - Rule 2: in the Release PR, raise the named crate to the next breaking version
   it names (e.g. 0.3.26 -> 0.4.0), and update its dependents' requirements (the
