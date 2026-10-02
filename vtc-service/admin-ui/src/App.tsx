@@ -15,6 +15,13 @@ import {
   WhoamiResponse,
 } from "@/lib/api";
 import { signingStatus, type SigningStatus } from "@/lib/console-keys-api";
+import {
+  ACTIONS_PLUGIN_ID,
+  bannerDismissed,
+  dismissBanner,
+  useWaitingCount,
+  waitingSentence,
+} from "@/lib/action-badge";
 import { isSuperAdmin } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
@@ -163,6 +170,14 @@ export default function App() {
     window.addEventListener(SIGNING_KEY_REFUSED_EVENT, onRefused);
     return () => window.removeEventListener(SIGNING_KEY_REFUSED_EVENT, onRefused);
   }, [qc, subject]);
+
+  // How many administrator actions wait for this admin (lib/action-badge.ts):
+  // the Actions nav badge, the banner below and the tab title. Only once the
+  // browser can sign — the count is a signed read.
+  const waiting = useWaitingCount(
+    needsSigning && signing.data?.state === "ready" && !pathname.startsWith("/install"),
+  );
+  const [bannerHidden, setBannerHidden] = useState(bannerDismissed);
 
   // Re-arm the session-expiry guard whenever a fresh session lands.
   // Without this, a second expiry inside the same browser tab would
@@ -317,6 +332,14 @@ export default function App() {
                   <PluginIcon plugin={p} />
                 </span>
                 <span className="nav-label">{p.label}</span>
+                {p.id === ACTIONS_PLUGIN_ID && waiting > 0 && (
+                  <span
+                    className="nav-badge"
+                    aria-label={`${waiting} waiting for you`}
+                  >
+                    {waiting}
+                  </span>
+                )}
               </NavLink>
             </li>
           ))}
@@ -335,6 +358,23 @@ export default function App() {
               working.
             </span>
             <NavLink to="/console-keys">Renew</NavLink>
+          </div>
+        )}
+        {waiting > 0 && !bannerHidden && !pathname.startsWith("/actions") && (
+          <div className="actions-banner" role="status">
+            <strong>{waitingSentence(waiting)}.</strong>
+            <NavLink to="/actions">Review them</NavLink>
+            <button
+              type="button"
+              className="link"
+              aria-label="Dismiss for this session"
+              onClick={() => {
+                dismissBanner();
+                setBannerHidden(true);
+              }}
+            >
+              Dismiss
+            </button>
           </div>
         )}
         <Routes>

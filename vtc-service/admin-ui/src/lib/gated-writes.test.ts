@@ -3,8 +3,9 @@
 // (VTI-VTC-022), lowering the consent threshold (VTI-APV-020). Each goes
 // through the same step-up path the grant and promotion do: a refusal carrying
 // `details.stepUpRequest` asks the operator, records the gesture and re-sends
-// the identical document; a refusal pending consent is explained, never shown
-// as `auth:consent_required`.
+// the identical document. One that needs other administrators' approval is
+// then parked by the VTC (a `trust-task-next-step` reply), which the signed
+// door throws as a `ParkedAction` — a success, never re-sent.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +16,7 @@ import { saveConfig } from "./config-api";
 import type { SignedTrustTaskDocument } from "./console-key";
 import { MEMBERS_ADMIN_REMOVE_TASK, adminRemoveMember } from "./member-removal";
 import { activatePolicy, uploadPolicy } from "./policies-api";
+import { ParkedAction } from "./signed-act";
 
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
@@ -41,13 +43,11 @@ const stepUpRefusal = (): ApiError => ({
   details: { stepUpRequest: STEP_UP },
   document: SIGNED,
 });
-const consentRefusal = (): ApiError => ({
-  status: 422,
-  message: "auth:consent_required",
-  code: "taskFailed",
-  details: { reason: "auth:consent_required" },
-});
-const CONSENT_EXPLAINED = /Another unrestricted administrator has to approve this first/;
+const parked = (): ParkedAction =>
+  new ParkedAction({
+    actionId: "act-7",
+    message: "Sent for approval — 1 of 2 unrestricted administrator(s) must approve within 72 hours.",
+  });
 
 beforeEach(() => {
   vi.mocked(postSignedTrustTask).mockReset();
@@ -56,11 +56,11 @@ beforeEach(() => {
 });
 
 /** The gesture is asked for, recorded, and the same document re-sent. */
-function gestureThen(outcome: "ok" | "consent", value: unknown = {}) {
+function gestureThen(outcome: "ok" | "parked", value: unknown = {}) {
   vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
   vi.mocked(answerStepUp).mockResolvedValueOnce({ status: "recorded" });
   if (outcome === "ok") vi.mocked(postSignedDocument).mockResolvedValueOnce(value);
-  else vi.mocked(postSignedDocument).mockRejectedValueOnce(consentRefusal());
+  else vi.mocked(postSignedDocument).mockRejectedValueOnce(parked());
 }
 
 function expectGestureMade(confirm: ReturnType<typeof vi.fn>) {
@@ -91,11 +91,12 @@ describe("vtc/members/admin-remove (VTI-APV-019)", () => {
     expectGestureMade(confirm);
   });
 
-  it("explains a removal waiting on a third administrator's consent", async () => {
-    gestureThen("consent");
-    await expect(adminRemoveMember({ did: BOB, reason: "" }, async () => true)).rejects.toThrow(
-      CONSENT_EXPLAINED,
-    );
+  it("surfaces a removal parked for a third administrator's approval", async () => {
+    gestureThen("parked");
+    await expect(
+      adminRemoveMember({ did: BOB, reason: "" }, async () => true),
+    ).rejects.toBeInstanceOf(ParkedAction);
+    expect(vi.mocked(postSignedDocument)).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -108,17 +109,17 @@ describe("policy/upsert and policy/activate (VTI-VTC-022)", () => {
     expectGestureMade(confirm);
   });
 
-  it("explains an upload waiting on another administrator's consent", async () => {
-    gestureThen("consent");
+  it("surfaces an upload parked for another administrator's approval", async () => {
+    gestureThen("parked");
     await expect(
       uploadPolicy({ purpose: "join", regoSource: "package vtc.join" }, async () => true),
-    ).rejects.toThrow(CONSENT_EXPLAINED);
+    ).rejects.toBeInstanceOf(ParkedAction);
   });
 
-  it("asks for the gesture activating, and explains the consent", async () => {
-    gestureThen("consent");
+  it("asks for the gesture activating, then surfaces the parked action", async () => {
+    gestureThen("parked");
     const confirm = vi.fn(async () => true);
-    await expect(activatePolicy("p1", "removal", confirm)).rejects.toThrow(CONSENT_EXPLAINED);
+    await expect(activatePolicy("p1", "removal", confirm)).rejects.toBeInstanceOf(ParkedAction);
     expectGestureMade(confirm);
   });
 
@@ -133,11 +134,13 @@ describe("policy/upsert and policy/activate (VTI-VTC-022)", () => {
 describe("config/patch lowering the consent threshold (VTI-APV-020)", () => {
   const KEY = "acl.unrestricted_admin_consent_threshold";
 
-  it("asks for the gesture and explains the consent", async () => {
-    gestureThen("consent");
+  it("asks for the gesture, then surfaces the parked action without reloading", async () => {
+    gestureThen("parked");
     const confirm = vi.fn(async () => true);
-    await expect(saveConfig({ [KEY]: 1 }, confirm)).rejects.toThrow(CONSENT_EXPLAINED);
+    await expect(saveConfig({ [KEY]: 1 }, confirm)).rejects.toBeInstanceOf(ParkedAction);
     expectGestureMade(confirm);
+    // A parked patch applied nothing, so `config/reload` is not sent.
+    expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledTimes(1);
   });
 
   it("saves once both are given", async () => {

@@ -17,7 +17,7 @@ import {
 } from "./acl";
 import { answerStepUp, type StepUpRequest } from "./bound-step-up";
 import type { SignedTrustTaskDocument } from "./console-key";
-import { GestureDeclinedError, explainConsent } from "./signed-act";
+import { GestureDeclinedError, ParkedAction } from "./signed-act";
 
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
@@ -74,12 +74,15 @@ describe("acl/list", () => {
   });
 });
 
-const consentRefusal = (): ApiError => ({
-  status: 422,
-  message: "auth:consent_required",
-  code: "taskFailed",
-  details: { reason: "auth:consent_required" },
-});
+// What the signed door throws for a `trust-task-next-step` reply: the act was
+// accepted and parked for other administrators' approval.
+const parked = (): ParkedAction =>
+  new ParkedAction({
+    actionId: "act-1",
+    message: "Sent for approval — 1 of 2 unrestricted administrator(s) must approve within 72 hours.",
+    threshold: 1,
+    approvers: 2,
+  });
 
 describe("acl/revoke", () => {
   it("names the subject, and asks nothing when no gesture is needed", async () => {
@@ -106,28 +109,32 @@ describe("acl/revoke", () => {
     expect(vi.mocked(postSignedDocument)).toHaveBeenCalledWith(SIGNED);
   });
 
-  // …and removing another unrestricted one a third administrator's consent.
-  it("explains a removal waiting on another administrator's consent", async () => {
+  // …and removing another unrestricted one is parked for a third
+  // administrator's approval: no refusal, no re-send.
+  it("surfaces a removal parked for another administrator's approval", async () => {
     vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
     vi.mocked(answerStepUp).mockResolvedValueOnce({ status: "recorded" });
-    vi.mocked(postSignedDocument).mockRejectedValueOnce(consentRefusal());
+    vi.mocked(postSignedDocument).mockRejectedValueOnce(parked());
 
-    await expect(revokeAcl(ALICE, async () => true)).rejects.toThrow(
-      /Another unrestricted administrator has to approve this first/,
-    );
+    const err = await revokeAcl(ALICE, async () => true).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ParkedAction);
+    expect((err as ParkedAction).actionId).toBe("act-1");
+    expect((err as ParkedAction).message).toMatch(/^Sent for approval/);
+    // Sent once after the gesture, never again.
+    expect(vi.mocked(postSignedDocument)).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("acl/change-role, demoting an administrator", () => {
-  it("asks for the gesture and explains the consent it waits on", async () => {
+  it("asks for the gesture, then surfaces the parked action", async () => {
     vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
     vi.mocked(answerStepUp).mockResolvedValueOnce({ status: "recorded" });
-    vi.mocked(postSignedDocument).mockRejectedValueOnce(consentRefusal());
+    vi.mocked(postSignedDocument).mockRejectedValueOnce(parked());
     const confirm = vi.fn(async () => true);
 
     await expect(
       changeAclRole({ subject: ALICE, fromRole: "admin", toRole: "member" }, confirm),
-    ).rejects.toThrow(/Another unrestricted administrator has to approve this first/);
+    ).rejects.toBeInstanceOf(ParkedAction);
     expect(confirm).toHaveBeenCalledWith(STEP_UP);
     expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(ACL_CHANGE_ROLE_TASK, {
       subject: ALICE,
@@ -200,15 +207,10 @@ describe("an act that needs a passkey gesture", () => {
     ).rejects.toBe(refused);
   });
 
-  it("explains a refusal pending another administrator's consent", async () => {
-    const refused: ApiError = {
-      status: 422,
-      message: "auth:consent_required",
-      code: "taskFailed",
-      details: { reason: "auth:consent_required" },
-    };
-    await expect(explainConsent(Promise.reject(refused))).rejects.toThrow(
-      /Another unrestricted administrator has to approve this first/,
-    );
+  it("passes a grant parked for approval through as a ParkedAction", async () => {
+    vi.mocked(postSignedTrustTask).mockRejectedValueOnce(parked());
+    await expect(
+      grantAcl({ entry: { subject: ALICE, role: "admin", scopes: [] } }, async () => true),
+    ).rejects.toBeInstanceOf(ParkedAction);
   });
 });

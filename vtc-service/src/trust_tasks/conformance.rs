@@ -345,6 +345,41 @@ const OTHER_DID: &str = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2do
 const COMMUNITY_DID: &str = "did:web:community.example";
 const REQUEST_ID: &str = "5b8f1d4e-9c2a-4f6b-8e31-7a0c5d9e2f14";
 const TS: &str = "2026-08-23T00:00:00Z";
+const ACTION_ID: &str = "act-5b8f1d4e9c2a4f6b8e317a0c5d9e2f14";
+
+/// An action as `crate::admin_actions` renders one: open with the caller's
+/// challenge, or closed. The summary and digest are the real renderer's.
+fn sample_action(open: bool) -> serde_json::Value {
+    use crate::admin_actions::summary;
+    let type_uri = "https://trusttasks.org/spec/acl/grant/0.1";
+    let payload = json!({ "entry": { "subject": OTHER_DID, "role": "admin", "scopes": [] } });
+    let mut action = json!({
+        "actionId": ACTION_ID,
+        "category": "approval",
+        "kind": summary::KIND_GRANT_AUTHORITY,
+        "typeUri": type_uri,
+        "requester": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+        "status": if open { "open" } else { "cancelled" },
+        "createdAt": TS,
+        "expiresAt": "2026-08-26T00:00:00Z",
+        "approvals": [],
+        "summary": summary::render(summary::KIND_GRANT_AUTHORITY, type_uri, &payload),
+        "payloadDigest": summary::payload_digest(&payload).unwrap(),
+        "payload": payload,
+        "callerRole": if open { "approver" } else { "requester" },
+        "requesterOpenActions": 1,
+        "threshold": 1,
+        "ext": { "org.openvtc": { "approverCount": 1, "requesterRecentActions": 1, "burst": false } },
+    });
+    if open {
+        action["approversRemaining"] = json!(1);
+        action["challenge"] = json!("c".repeat(64));
+    } else {
+        action["closedAt"] = json!(TS);
+        action["closedReason"] = json!("cancelledByRequester");
+    }
+    action
+}
 
 /// A signed VC as this service emits one. Opaque to every schema below
 /// (`vmc` / `roleVac` / `vec` / `vic` are all `type: object`), so one shape
@@ -727,6 +762,37 @@ fn table() -> Vec<Conformance> {
 
     #[allow(unused_mut)]
     let mut table = vec![
+        // ─── the action list (`crate::admin_actions`) ────────────────
+        checked!(
+            s::admin::actions::list::v0_1::Payload,
+            s::admin::actions::list::v0_1::Response,
+            json!({ "view": "waitingForMe", "limit": 25 }),
+            json!({
+                "actions": [sample_action(true)],
+                "counts": { "waitingForMe": 1, "requestedByMe": 0 },
+                "nextCursor": "djF8d2FpdGluZ0Zvck1lfHwyNQ",
+            })
+        ),
+        checked!(
+            s::admin::actions::show::v0_1::Payload,
+            s::admin::actions::show::v0_1::Response,
+            json!({ "actionId": ACTION_ID }),
+            json!({ "action": sample_action(true) })
+        ),
+        checked!(
+            s::admin::actions::cancel::v0_1::Payload,
+            s::admin::actions::cancel::v0_1::Response,
+            json!({ "actionId": ACTION_ID, "reason": "raised against the wrong DID" }),
+            json!({ "action": sample_action(false) })
+        ),
+        // Served, but every action A1 raises is an approval, so the success
+        // path is not reached yet; the response is the shape it will carry.
+        checked!(
+            s::admin::actions::acknowledge::v0_1::Payload,
+            s::admin::actions::acknowledge::v0_1::Response,
+            json!({ "actionId": ACTION_ID }),
+            json!({ "action": sample_action(false) })
+        ),
         // ─── admin ───────────────────────────────────────────────────
         checked!(
             s::admin::bootstrap::v0_1::Payload,

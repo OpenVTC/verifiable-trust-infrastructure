@@ -10568,9 +10568,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.26.2"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31cee56fe9192df0388cd94e6a7be9f13c9acc390d45e626f453f0e20369875d"
+checksum = "1a2fa58971a915c66742c69071c977de2a5ae0fcfd408e87044e251807fb1f66"
 dependencies = [
  "async-trait",
  "chrono",
@@ -11710,9 +11710,11 @@ version = "0.15.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
+ "multibase",
  "reqwest",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",

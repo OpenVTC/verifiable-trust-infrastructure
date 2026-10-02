@@ -1,13 +1,17 @@
 //! `cnm consent {show,approve,deny}` — answer the community's consent requests.
 //!
 //! Making or widening an unrestricted administrator needs another unrestricted
-//! administrator's consent (VTI-APV-014). The VTC raises a signed
-//! `task-consent/request/0.1` for each approver, pushes it to them, and hands
-//! the same documents back to the requester in its refusal
-//! (`details.consentRequests`). An approver with a `cnm` profile takes the
-//! relayed request and signs the decision here. What is shown and the code
-//! comparison approval requires are shared with `pnm consent`
-//! ([`vta_cli_common::consent_approve`]).
+//! administrator's consent (VTI-APV-014), as do the acts that could undo it
+//! (VTI-APV-019, -020, VTI-VTC-022). The VTC parks such an operation in its
+//! action list and runs it on the approval that reaches its threshold
+//! (VTI-APV-017).
+//!
+//! `--action <id>` decides an action from the list (`cnm actions list`): its
+//! summary is re-derived from the payload that will run, the match code comes
+//! from its digest, and the decision is `task-consent/decision/0.2`. Without
+//! it, the argument is a VTC-signed `task-consent/request/0.1` the VTC pushed
+//! to this approver, answered as before; what is shown and the code comparison
+//! are shared with `pnm consent` ([`vta_cli_common::consent_approve`]).
 
 use std::path::{Path, PathBuf};
 
@@ -26,28 +30,40 @@ type CliResult<T> = Result<T, Box<dyn std::error::Error>>;
 pub enum ConsentCommands {
     /// Verify a consent request and show what it asks. Sends nothing.
     Show {
-        /// The request: a request document, the requester's refusal body, or
-        /// its `details` (`-` reads stdin).
-        request: PathBuf,
+        /// The request: a pushed request document (`-` reads stdin).
+        #[arg(required_unless_present = "action")]
+        request: Option<PathBuf>,
+        /// An action from the community's action list (`cnm actions list`),
+        /// fetched with `vtc/admin/actions/show`.
+        #[arg(long, conflicts_with = "request")]
+        action: Option<String>,
     },
-    /// Approve a consent request, after comparing its match code.
+    /// Approve a consent request, after comparing its match code. Approving
+    /// the last one the action needs runs the operation.
     Approve {
-        /// The request: a request document, the requester's refusal body, or
-        /// its `details` (`-` reads stdin).
-        request: PathBuf,
-        /// The code the requester's screen shows. Without it you are asked to
-        /// type it; approval never proceeds on a code nobody compared.
+        /// The request: a pushed request document (`-` reads stdin).
+        #[arg(required_unless_present = "action")]
+        request: Option<PathBuf>,
+        /// An action from the community's action list (`cnm actions list`).
+        #[arg(long, conflicts_with = "request")]
+        action: Option<String>,
+        /// The code shown beside the action — on the requester's screen, in
+        /// the console's card. Without it you are asked to type it; approval
+        /// never proceeds on a code nobody compared.
         #[arg(long)]
         match_code: Option<String>,
         /// A note recorded with the decision (at most 500 characters).
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Deny a consent request. The requester has to ask again.
+    /// Deny a consent request. One deny closes the action for everyone.
     Deny {
-        /// The request: a request document, the requester's refusal body, or
-        /// its `details` (`-` reads stdin).
-        request: PathBuf,
+        /// The request: a pushed request document (`-` reads stdin).
+        #[arg(required_unless_present = "action")]
+        request: Option<PathBuf>,
+        /// An action from the community's action list (`cnm actions list`).
+        #[arg(long, conflicts_with = "request")]
+        action: Option<String>,
         /// Why, recorded with the decision (at most 500 characters).
         #[arg(long)]
         reason: Option<String>,
@@ -61,7 +77,40 @@ pub async fn run(
     transport: TransportChoice,
 ) -> CliResult<()> {
     match command {
-        ConsentCommands::Show { request } => {
+        ConsentCommands::Show {
+            action: Some(id), ..
+        } => {
+            let vtc = vtc::connect_for_tasks(keyring_key, target, transport).await?;
+            let shown = vtc.client.show_action(&id).await;
+            vtc.client.shutdown().await;
+            let verified = crate::actions::verified(shown?)?;
+            crate::actions::render(&verified);
+            Ok(())
+        }
+        ConsentCommands::Approve {
+            action: Some(id),
+            match_code,
+            reason,
+            ..
+        } => {
+            decide_action(
+                &id,
+                true,
+                match_code,
+                reason,
+                keyring_key,
+                target,
+                transport,
+            )
+            .await
+        }
+        ConsentCommands::Deny {
+            action: Some(id),
+            reason,
+            ..
+        } => decide_action(&id, false, None, reason, keyring_key, target, transport).await,
+        ConsentCommands::Show { request, .. } => {
+            let request = request.expect("clap requires a request without --action");
             let verified = load(&request, keyring_key, target).await?;
             consent_approve::render(&verified);
             Ok(())
@@ -70,7 +119,9 @@ pub async fn run(
             request,
             match_code,
             reason,
+            ..
         } => {
+            let request = request.expect("clap requires a request without --action");
             let verified = load(&request, keyring_key, target).await?;
             consent_approve::render(&verified);
             consent_approve::confirm_match_code(&verified, match_code.as_deref(), bin_name())?;
@@ -84,7 +135,10 @@ pub async fn run(
             )
             .await
         }
-        ConsentCommands::Deny { request, reason } => {
+        ConsentCommands::Deny {
+            request, reason, ..
+        } => {
+            let request = request.expect("clap requires a request without --action");
             let verified = load(&request, keyring_key, target).await?;
             consent_approve::render(&verified);
             decide(
@@ -98,6 +152,49 @@ pub async fn run(
             .await
         }
     }
+}
+
+/// Decide an action from the action list: fetch it, re-derive what it says
+/// from the payload that will run, compare the match code (approval only), and
+/// send a `task-consent/decision/0.2` signed with this profile's own key.
+#[allow(clippy::too_many_arguments)]
+async fn decide_action(
+    id: &str,
+    approve: bool,
+    match_code: Option<String>,
+    reason: Option<String>,
+    keyring_key: &str,
+    target: &VtcTarget,
+    transport: TransportChoice,
+) -> CliResult<()> {
+    let vtc = vtc::connect_for_tasks(keyring_key, target, transport).await?;
+    let result = async {
+        let verified = crate::actions::verified(vtc.client.show_action(id).await?)?;
+        crate::actions::render(&verified);
+        if approve {
+            crate::actions::confirm_match_code(&verified, match_code.as_deref())?;
+        }
+        let decision =
+            vtc_client::actions::decision_for(&verified.action, approve, reason.as_deref())?
+                .ok_or_else(|| {
+                    format!(
+                        "{} cannot decide {id} now: it is not open, it is not waiting for this \
+                         profile ({}), or this profile has already decided it",
+                        bin_name(),
+                        vtc.client_did
+                    )
+                })?;
+        let response = vtc
+            .client
+            .decide_action(&decision)
+            .await
+            .map_err(|e| decision_error(e, &vtc.client_did))?;
+        crate::actions::report_decision(&response);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+    vtc.client.shutdown().await;
+    result
 }
 
 async fn load(

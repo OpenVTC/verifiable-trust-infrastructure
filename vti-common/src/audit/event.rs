@@ -698,6 +698,16 @@ pub enum AuditEvent {
     /// authority without a second person agreeing. The subject travels in the
     /// envelope's hashed `target_did_*` members.
     AuthorityReducedUnopposed(AuthorityReducedUnopposedData),
+
+    /// One administrator raised more actions for approval in a short window
+    /// than a person plausibly means to — the approval-fatigue pattern, where
+    /// a compromised requester raises requests until a tired approver clicks
+    /// Approve (`vtc-action-list.md` §7a.1).
+    ///
+    /// [`AuditSeverity::Critical`]: it is the signal an approver needs before
+    /// approving the next one, and each of those approvers' cards carries the
+    /// same flag. Nothing is refused by it; the per-requester cap does that.
+    AdminActionBurst(AdminActionBurstData),
 }
 
 /// How much an audit event matters to someone reviewing the log. Ordered:
@@ -824,6 +834,7 @@ impl AuditEvent {
             Self::VtaOperation(..) => "VtaOperation",
             Self::GitNsBreakGlass(..) => "GitNsBreakGlass",
             Self::AuthorityReducedUnopposed(..) => "AuthorityReducedUnopposed",
+            Self::AdminActionBurst(..) => "AdminActionBurst",
         }
     }
 
@@ -836,7 +847,8 @@ impl AuditEvent {
         match self {
             Self::EmergencyBootstrapInvoked(..)
             | Self::GitNsBreakGlass(..)
-            | Self::AuthorityReducedUnopposed(..) => AuditSeverity::Critical,
+            | Self::AuthorityReducedUnopposed(..)
+            | Self::AdminActionBurst(..) => AuditSeverity::Critical,
             _ => AuditSeverity::Info,
         }
     }
@@ -1026,6 +1038,21 @@ pub struct AuthorityReducedUnopposedData {
     pub prior_role: String,
     /// The subject's scopes before the act (empty: unrestricted).
     pub prior_scopes: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::AdminActionBurst`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminActionBurstData {
+    /// The action whose raising crossed the threshold.
+    pub action_id: String,
+    /// Its kind (`acl.grant.authority`, …).
+    pub kind: String,
+    /// How many actions the requester raised inside the window, this one
+    /// included.
+    pub raised: u32,
+    /// The window, in seconds.
+    pub window_secs: u64,
 }
 
 /// Payload for [`AuditEvent::GitNsBreakGlass`].
@@ -1449,7 +1476,9 @@ pub struct StepUpPasskeyData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskConsentData {
-    /// `requested`, `approved`, `declined`, `granted` or `consumed`.
+    /// The VTA's DTTE: `requested`, `approved`, `declined`, `granted` or
+    /// `consumed`. The VTC's action list: `parked`, `approved`, `declined`,
+    /// `cancelled`, `expired`, `invalidated`, `completed` or `failed`.
     pub stage: String,
     /// Type URI of the operation consented to.
     pub task: String,

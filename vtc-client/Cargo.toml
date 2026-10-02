@@ -54,6 +54,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # The chunk digests and encoding of the `backup/*` chunked transfer.
 sha2 = { workspace = true }
+# The action list's digests (`actions`): RFC 8785 over the parked payload, as
+# a multibase multihash — what an approver recomputes before deciding.
+serde_json_canonicalizer = { workspace = true }
+multibase = { workspace = true }
 base64 = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }

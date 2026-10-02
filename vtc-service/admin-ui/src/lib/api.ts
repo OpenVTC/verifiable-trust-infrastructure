@@ -386,6 +386,7 @@ import {
   type SignedTrustTaskDocument,
   type UnsignedTrustTaskDocument,
 } from "./console-key";
+import { parkedActionFromDocument } from "./parked-action";
 
 /**
  * Thrown when this browser cannot produce a signed document — no WebCrypto
@@ -650,18 +651,28 @@ async function postDocument<T>(
     // being accepted (expired, revoked elsewhere). The shell re-checks and, if
     // so, puts the operator back through setup — rather than every screen
     // failing one by one. A step-up request is not a refusal of the key, and
-    // the signing-key tasks are the check itself.
+    // the signing-key tasks are the check itself. A `task-consent` decision is
+    // signed by the approver's own DID through the wallet, not by this
+    // browser's key, so its refusal says nothing about the key.
     if (
       "proof" in signed &&
       apiError.code === "permissionDenied" &&
       !(apiError.details && "stepUpRequest" in apiError.details) &&
       !signed.type.includes("/auth/signing-key/") &&
+      !signed.type.includes("/task-consent/") &&
       typeof window !== "undefined"
     ) {
       window.dispatchEvent(new Event(SIGNING_KEY_REFUSED_EVENT));
     }
     throw apiError;
   }
+
+  // A consent-gated act the VTC parked as an administrator action: HTTP 202
+  // with a `trust-task-next-step` document instead of the task's response.
+  // Thrown so no caller can read it as the completed operation (see
+  // `lib/parked-action.ts`).
+  const parked = parkedActionFromDocument(body);
+  if (parked) throw parked;
 
   if (!body || !("payload" in body)) {
     const apiError: ApiError = {

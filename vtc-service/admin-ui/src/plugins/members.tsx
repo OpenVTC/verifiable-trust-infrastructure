@@ -55,6 +55,7 @@ import {
   type RelationshipsGraph,
 } from "@/lib/api";
 import { CopyButton } from "@/components/CopyButton";
+import { ErrorOrParked } from "@/components/ParkedNotice";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
 import { changeAclRole } from "@/lib/acl";
@@ -199,7 +200,8 @@ async function promoteToAdmin(args: {
   // this one promotion, which the operator confirms as its own click.
   // `fromRole` is a compare-and-swap guard, not decoration: the role we render
   // is a read, and the daemon refuses the change if the row has moved since.
-  // `changeAclRole` explains a refusal pending another admin's consent.
+  // A promotion that needs other administrators' approval is parked, and
+  // `changeAclRole` throws it as a `ParkedAction`.
   await changeAclRole(
     { subject: args.did, fromRole: args.fromRole, toRole: "admin" },
     args.confirmGesture,
@@ -1023,18 +1025,10 @@ function MemberDetail() {
               the member can re-apply via the join flow.
             </p>
 
-            {promoteMutation.error && (
-              <section className="card error">
-                <h3>Promote failed</h3>
-                <p>{(promoteMutation.error as Error).message}</p>
-              </section>
-            )}
-            {removeMutation.error && (
-              <section className="card error">
-                <h3>Remove failed</h3>
-                <p>{(removeMutation.error as Error).message}</p>
-              </section>
-            )}
+            {/* A promotion or removal that needs other administrators'
+                approval arrives as a parked action, shown as a success. */}
+            <ErrorOrParked title="Promote failed" error={promoteMutation.error} />
+            <ErrorOrParked title="Remove failed" error={removeMutation.error} />
 
             <div className="form-actions">
               <button

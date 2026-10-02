@@ -530,7 +530,7 @@ aws-smithy-types = ">=1.6.1, <1.7"
 # `vtc/join-requests/manifest/0.3` and `vtc/join-requests/submit/0.3`
 # (trust-tasks-tf #710, first released in 0.26.1) — join criteria that state
 # their own admission mode, which `vtc-service` decides by (Keyring VTI-13).
-trust-tasks-rs = { version = "0.26.2", default-features = false, features = [
+trust-tasks-rs = { version = "0.26.3", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

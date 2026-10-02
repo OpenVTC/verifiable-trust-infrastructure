@@ -107,7 +107,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         console_keys_ks: store.keyspace("console_keys").unwrap(),
         step_up_marks_ks: store.keyspace("step_up_marks").unwrap(),
         step_up_passkeys_ks: store.keyspace("step_up_passkeys").unwrap(),
-        task_consent_ks: store.keyspace("task_consent").unwrap(),
+        admin_actions_ks: store.keyspace("admin_actions").unwrap(),
         member_pushes_ks: store.keyspace("member_pushes").unwrap(),
         tsp_reach: std::sync::Arc::new(vti_common::tsp_reach::TspReachability::new()),
         backup_bundles_ks: store.keyspace("backup_bundles").unwrap(),

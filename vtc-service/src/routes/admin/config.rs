@@ -430,7 +430,9 @@ fn lookup_live(cfg: &crate::config::AppConfig, key: &str) -> Value {
         crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD => {
             Value::Number(cfg.acl.unrestricted_admin_consent_threshold.into())
         }
-        _ => Value::Null,
+        other => crate::config_store::action_key_live(cfg, other)
+            .map(|n| Value::Number(n.into()))
+            .unwrap_or(Value::Null),
     }
 }
 
@@ -471,6 +473,13 @@ fn apply_to_live(cfg: &mut crate::config::AppConfig, key: &str, value: &Value) -
         && let Some(n) = value.as_u64().filter(|n| *n >= 1)
     {
         cfg.acl.unrestricted_admin_consent_threshold = n;
+        return true;
+    }
+    // The action-list settings are read live by `crate::admin_actions` too;
+    // this keeps the in-memory copy in step.
+    if let Some(n) = value.as_u64()
+        && crate::config_store::set_action_key(cfg, key, n)
+    {
         return true;
     }
     false

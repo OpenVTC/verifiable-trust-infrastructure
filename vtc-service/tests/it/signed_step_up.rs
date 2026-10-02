@@ -735,26 +735,32 @@ async fn vti_apv_019_a_demotion_needs_a_gesture_and_a_third_party() {
     let (status, ack) = approve(&fix, &actor, &request, &cred).await;
     assert_eq!(status, StatusCode::OK, "{ack}");
 
-    let (_, reply) = post(&fix, &demote).await;
-    let details = reply["details"].clone();
-    assert_eq!(details["reason"], "auth:consent_required", "{reply}");
-    assert_eq!(details["approverSet"], "unrestricted-admins-except-subject");
-    let decision = signed(
-        &third,
-        "https://trusttasks.org/spec/task-consent/decision/0.1",
-        json!({
-            "challenge": details["challenge"],
-            "payloadDigest": details["payloadDigest"],
-            "decision": "approve",
-        }),
-    )
-    .await;
-    let (status, ack) = post(&fix, &decision).await;
-    assert_eq!(status, StatusCode::OK, "{ack}");
-
+    // Parked for a third party, never the subject (VTI-APV-019); it runs on
+    // that approval (VTI-APV-017).
     let (status, reply) = post(&fix, &demote).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    assert_eq!(reply["entry"]["role"], "member", "{reply}");
+    assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
+    let action_id = reply["expects"][0]["hint"]["actionId"]
+        .as_str()
+        .expect("parked as an action")
+        .to_string();
+    let (_, shown) =
+        crate::common::second_party::show_action(&fix.vtc, &colleague, &action_id).await;
+    assert!(
+        shown["payload"]["action"].get("challenge").is_none(),
+        "the subject is not asked: {shown}"
+    );
+    let (status, ack) =
+        crate::common::second_party::decide(&fix.vtc, &third, &action_id, "approve").await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert_eq!(
+        get_acl_entry(&fix.vtc.state.acl_ks, &colleague.did)
+            .await
+            .unwrap()
+            .unwrap()
+            .role,
+        VtcRole::Member
+    );
 }
 
 /// Changing roles is an administrator's act. A member's signature is refused

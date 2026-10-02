@@ -116,18 +116,55 @@ pub struct AclConfig {
     /// written at runtime (VTI-APV-009); see `crate::acl::admin_consent`.
     #[serde(default = "default_unrestricted_admin_consent_threshold")]
     pub unrestricted_admin_consent_threshold: u64,
+    /// How long, in seconds, an operation parked for approval stays open
+    /// before it expires (VTI-APV-008) — `docs/05-design-notes/vtc-action-list.md`
+    /// §5. Default 72 hours, bounded 15 minutes to 14 days. An open action keeps
+    /// the `expiresAt` it was raised with; a change binds only later ones.
+    #[serde(default = "default_action_lifetime")]
+    pub action_lifetime: u64,
+    /// How many open actions one requester may hold at once (§7a.1).
+    #[serde(default = "default_action_max_open_per_requester")]
+    pub action_max_open_per_requester: u64,
+    /// How many open actions the community may hold at once (§7a.1).
+    #[serde(default = "default_action_max_open")]
+    pub action_max_open: u64,
+    /// Seconds after a decline during which the same requester may not raise
+    /// the same kind of action against the same subject again (§7a.1).
+    #[serde(default = "default_action_decline_cooldown")]
+    pub action_decline_cooldown: u64,
 }
 
 impl Default for AclConfig {
     fn default() -> Self {
         Self {
             unrestricted_admin_consent_threshold: default_unrestricted_admin_consent_threshold(),
+            action_lifetime: default_action_lifetime(),
+            action_max_open_per_requester: default_action_max_open_per_requester(),
+            action_max_open: default_action_max_open(),
+            action_decline_cooldown: default_action_decline_cooldown(),
         }
     }
 }
 
 pub(crate) fn default_unrestricted_admin_consent_threshold() -> u64 {
     1
+}
+
+/// 72 hours: a weekend for a small team (`vtc-action-list.md` §5).
+pub(crate) fn default_action_lifetime() -> u64 {
+    72 * 3600
+}
+
+pub(crate) fn default_action_max_open_per_requester() -> u64 {
+    5
+}
+
+pub(crate) fn default_action_max_open() -> u64 {
+    50
+}
+
+pub(crate) fn default_action_decline_cooldown() -> u64 {
+    3600
 }
 
 /// Trust Task document-dispatch settings. **Empty of live settings**: every

@@ -139,7 +139,7 @@ pub struct AppState {
     pub step_up_passkeys_ks: KeyspaceHandle,
     /// Unrestricted-admin consent requests and grants (VTI-APV-014). See
     /// `crate::acl::admin_consent`.
-    pub task_consent_ks: KeyspaceHandle,
+    pub admin_actions_ks: KeyspaceHandle,
     /// Member pushes in flight (`crate::member_push`). Encrypted at rest.
     pub member_pushes_ks: KeyspaceHandle,
     /// Which members were recently seen sending here over TSP, recorded from
@@ -473,7 +473,7 @@ pub async fn run(
     let console_keys_ks = store.keyspace(keyspaces::CONSOLE_KEYS)?;
     let step_up_marks_ks = store.keyspace(keyspaces::STEP_UP_MARKS)?;
     let step_up_passkeys_ks = store.keyspace(keyspaces::STEP_UP_PASSKEYS)?;
-    let task_consent_ks = store.keyspace(keyspaces::TASK_CONSENT)?;
+    let admin_actions_ks = store.keyspace(keyspaces::ADMIN_ACTIONS)?;
     let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
@@ -811,7 +811,7 @@ pub async fn run(
         console_keys_ks,
         step_up_marks_ks,
         step_up_passkeys_ks,
-        task_consent_ks,
+        admin_actions_ks,
         member_pushes_ks,
         tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
         backup_bundles_ks,
@@ -1279,12 +1279,13 @@ pub async fn run(
     // present-challenge / credx-pending rows, and `Failed` registry sync jobs
     // accumulated forever. Unconditional — unlike the registry syncer, it has
     // no external dependency. Runs on its own task until shutdown.
+    // The action list's expiry and invalidation sweep (VTI-APV-008, §4.4).
+    crate::admin_actions::spawn_sweeper(state.clone(), shutdown_rx.clone());
     crate::join::retention::RetentionSweeper::spawn(
         state.join_requests_ks.clone(),
         state.sync_queue_ks.clone(),
         state.accepted_ids_ks.clone(),
         state.step_up_marks_ks.clone(),
-        state.task_consent_ks.clone(),
         state.step_up_passkeys_ks.clone(),
         state.backup_bundles_ks.clone(),
         crate::trust_tasks::backup_tasks::blob_dir(&boot_cfg.store.data_dir),

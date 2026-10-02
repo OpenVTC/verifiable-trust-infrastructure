@@ -816,6 +816,10 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Docs**: `docs/02-vta/approvals.md` (the rules),
   `docs/02-vta/task-consent.md` (the ceremony),
   `docs/05-design-notes/approvals-convergence.md` (why one model).
+- **VTC differs: it parks, the VTA re-sends.** A consent-gated VTC operation
+  (APV-014/-019/-020, VTC-022) is stored as an action (202 + `actionId`) and
+  runs itself, re-checked, on the N-th approval. Code: `vtc-service/src/admin_actions/`,
+  `vtc-service/src/trust_tasks/action_tasks.rs`; docs: `docs/05-design-notes/vtc-action-list.md`.
 
 ### Vault archival lifecycle (archive / soft-delete / restore / purge)
 - **What**: Full lifecycle for **both** VTA stores — the password

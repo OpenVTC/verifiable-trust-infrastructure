@@ -20,7 +20,9 @@ import { Link, useSearchParams } from "react-router-dom";
 import { postSignedRead } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso } from "@/lib/format";
-import { gestureFromConfirm } from "@/lib/signed-act";
+import { gestureFromConfirm, parkedOf } from "@/lib/signed-act";
+import { useToast } from "@/lib/toast";
+import { ParkedNotice } from "@/components/ParkedNotice";
 import {
   type PolicyRow,
   type Purpose,
@@ -715,8 +717,10 @@ function PolicyManager({
 }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
+  const toast = useToast();
   // Changing a policy that decides authority takes a passkey gesture and
-  // another unrestricted administrator's consent (VTI-VTC-022).
+  // another unrestricted administrator's approval (VTI-VTC-022): the change is
+  // parked as an administrator action, which the toast shows as a success.
   const confirmGesture = gestureFromConfirm(confirm);
   const [showUpload, setShowUpload] = useState(false);
   const [editing, setEditingState] = useState(false);
@@ -743,6 +747,7 @@ function PolicyManager({
       void qc.invalidateQueries({ queryKey: ["policies", purpose] });
       void qc.invalidateQueries({ queryKey: ["active-policy", purpose] });
     },
+    onError: (err) => toast.pushFromError(err, "Activate failed"),
   });
 
   const saveVisual = useMutation({
@@ -750,6 +755,10 @@ function PolicyManager({
     onSuccess: () => {
       setEditing(false);
       void qc.invalidateQueries({ queryKey: ["policies", purpose] });
+    },
+    onError: (err) => {
+      toast.pushFromError(err, "Save failed");
+      if (parkedOf(err)) setEditing(false);
     },
   });
 
@@ -771,6 +780,7 @@ function PolicyManager({
       void qc.invalidateQueries({ queryKey: ["policies", purpose] });
       void qc.invalidateQueries({ queryKey: ["active-policy", purpose] });
     },
+    onError: (err) => toast.pushFromError(err, "Rollback failed"),
   });
 
   const items: PolicyRow[] = query.data?.policies ?? [];
@@ -1063,11 +1073,14 @@ function UploadPolicyForm({
         value={source}
         onChange={(e) => setSource(e.target.value)}
       />
-      {mutation.error && (
-        <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
-          {(mutation.error as Error).message}
-        </p>
-      )}
+      {mutation.error &&
+        (parkedOf(mutation.error) ? (
+          <ParkedNotice action={parkedOf(mutation.error)!} />
+        ) : (
+          <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
+            {(mutation.error as Error).message}
+          </p>
+        ))}
       <button
         type="submit"
         className="cer-run"

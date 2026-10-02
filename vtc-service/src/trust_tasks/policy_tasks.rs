@@ -217,6 +217,22 @@ async fn handle_upsert(
         Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    // Refused for its own faults before anyone is asked to approve it
+    // (`vtc-action-list.md` §4.2); `upload_inner` checks again when it runs.
+    if purpose.decides_authority() {
+        match policy_admin::check_upload(state, &body).await {
+            Ok(()) => {}
+            Err(AppError::Conflict(message)) => {
+                return reject_with_code(
+                    &doc,
+                    extended_code(policy_upsert::error_codes::VERSION_CONFLICT.code),
+                    message,
+                    None,
+                );
+            }
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
+    }
     if let Err(refusal) = gate_authority_policy(state, &actor, &doc, purpose, "Replace").await {
         return refusal;
     }

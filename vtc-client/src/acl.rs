@@ -303,6 +303,16 @@ impl VtcClient {
             });
         }
         let payload = reply.get("payload").cloned().unwrap_or(Value::Null);
+        // Parked for other administrators' approval (VTI-APV-017).
+        if let Some(parked) = crate::parked_from_next_step(
+            reply
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            &payload,
+        ) {
+            return Err(parked);
+        }
         serde_json::from_value(payload).map_err(|e| VtcError::Http {
             status: 200,
             body: format!("{type_uri} response does not fit its schema: {e}"),

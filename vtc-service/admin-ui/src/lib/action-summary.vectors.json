@@ -1,0 +1,178 @@
+[
+  {
+    "kind": "acl.grant.authority",
+    "name": "grant an unrestricted administrator",
+    "payload": {
+      "entry": {
+        "role": "admin",
+        "scopes": [],
+        "subject": "did:webvh:QmScidExample:community.example:carol"
+      },
+      "reason": "carol runs the membership desk"
+    },
+    "summary": {
+      "effect": "{subject} will be able to grant and remove any authority in this community, including yours.",
+      "fields": {
+        "expiresAt": {
+          "format": "datetime",
+          "pointer": "/entry/expiresAt",
+          "value": null
+        },
+        "role": {
+          "format": "text",
+          "pointer": "/entry/role",
+          "value": "admin"
+        },
+        "scopes": {
+          "format": "capabilityList",
+          "pointer": "/entry/scopes",
+          "value": []
+        },
+        "subject": {
+          "format": "did",
+          "pointer": "/entry/subject",
+          "value": "did:webvh:QmScidExample:community.example:carol"
+        }
+      },
+      "templateDigest": "zQmPrXgyRpZ57y4AekuZPspEkunnEbEhxvZuqrfoxrgsvr4",
+      "title": "Make {subject} an unrestricted administrator"
+    },
+    "typeUri": "https://trusttasks.org/spec/acl/grant/0.1"
+  },
+  {
+    "kind": "acl.grant.authority",
+    "name": "promote a member",
+    "payload": {
+      "fromRole": "member",
+      "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+      "toRole": "admin"
+    },
+    "summary": {
+      "effect": "{subject} will be able to grant and remove any authority in this community, including yours.",
+      "fields": {
+        "fromRole": {
+          "format": "text",
+          "pointer": "/fromRole",
+          "value": "member"
+        },
+        "subject": {
+          "format": "did",
+          "pointer": "/subject",
+          "value": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        },
+        "toRole": {
+          "format": "text",
+          "pointer": "/toRole",
+          "value": "admin"
+        }
+      },
+      "templateDigest": "zQmQX9Dx7cDqLtcoTNuDSWWo5nJTGecB9CqRLKgpd4es1c9",
+      "title": "Promote {subject} from {fromRole} to unrestricted administrator"
+    },
+    "typeUri": "https://trusttasks.org/spec/acl/change-role/0.1"
+  },
+  {
+    "kind": "admin.invite.create",
+    "name": "invite an administrator",
+    "payload": {
+      "did": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+      "label": "<b>night shift</b>"
+    },
+    "summary": {
+      "effect": "{subject} will be able to grant and remove any authority in this community, including yours.",
+      "fields": {
+        "label": {
+          "format": "text",
+          "pointer": "/label",
+          "value": "<b>night shift</b>"
+        },
+        "subject": {
+          "format": "did",
+          "pointer": "/did",
+          "value": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+        }
+      },
+      "templateDigest": "zQmSXC2GaMpizs4kKRhz4nBchZikWjqHAoeDfA5D7fVizgp",
+      "title": "Invite {subject} to become an unrestricted administrator"
+    },
+    "typeUri": "https://trusttasks.org/spec/vtc/admin/invites/create/0.1"
+  },
+  {
+    "kind": "acl.reduce.authority",
+    "name": "remove an unrestricted administrator",
+    "payload": {
+      "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+    },
+    "summary": {
+      "effect": "{subject} loses unrestricted authority in this community. They are not asked: a party to a removal never decides it.",
+      "fields": {
+        "reason": {
+          "format": "text",
+          "pointer": "/reason",
+          "value": null
+        },
+        "scopes": {
+          "format": "capabilityList",
+          "pointer": "/scopes",
+          "value": null
+        },
+        "subject": {
+          "format": "did",
+          "pointer": "/subject",
+          "value": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        }
+      },
+      "templateDigest": "zQmbvSkPZnzCqq5idfR5DKfFyiHFRCeimT48C4c6jtZfG1Z",
+      "title": "Remove unrestricted administrator {subject}"
+    },
+    "typeUri": "https://trusttasks.org/spec/acl/revoke/0.1"
+  },
+  {
+    "kind": "config.threshold.lower",
+    "name": "lower the consent threshold",
+    "payload": {
+      "overrides": {
+        "acl.unrestricted_admin_consent_threshold": 1
+      }
+    },
+    "summary": {
+      "effect": "Fewer administrators will be needed to make an unrestricted administrator — including the next one this requester asks for.",
+      "fields": {
+        "threshold": {
+          "format": "text",
+          "pointer": "/overrides/acl.unrestricted_admin_consent_threshold",
+          "value": 1
+        }
+      },
+      "templateDigest": "zQmeGT7ztnicC5RScp86U5Yjq1s3vhtzZof8yYy6sWi9cYP",
+      "title": "Lower the unrestricted-administrator consent threshold to {threshold}"
+    },
+    "typeUri": "https://trusttasks.org/spec/config/patch/0.1"
+  },
+  {
+    "kind": "policy.authority.change",
+    "name": "activate an authority policy",
+    "payload": {
+      "id": "8d7f1c2e-0a4b-4c55-9d1e-3f2a6b7c8d9e",
+      "purpose": "removal"
+    },
+    "summary": {
+      "effect": "The rules that decide who holds authority in this community change.",
+      "fields": {
+        "id": {
+          "format": "text",
+          "pointer": "/id",
+          "value": "8d7f1c2e-0a4b-4c55-9d1e-3f2a6b7c8d9e"
+        },
+        "purpose": {
+          "format": "text",
+          "pointer": "/purpose",
+          "value": "removal"
+        }
+      },
+      "templateDigest": "zQmTqKd5UoQZfTy7giJU9KFWFyhUbqxAtr5XWoUB9BLncBL",
+      "title": "Activate policy {id} for {purpose}"
+    },
+    "typeUri": "https://trusttasks.org/spec/policy/activate/0.1"
+  }
+]

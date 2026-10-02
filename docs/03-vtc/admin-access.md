@@ -61,7 +61,7 @@ Only an unrestricted administrator can:
 - read and verify the audit trail;
 - change, reload or restart the configuration, and import one;
 - export or restore a backup, or purge members;
-- approve another administrator's promotion to unrestricted (§3.2);
+- approve actions waiting on a second administrator (§3.2);
 - revoke other people's console signing keys.
 
 Everything else, including vetting, members, joins and credentials, a scoped
@@ -72,7 +72,7 @@ administrator does exactly as an unrestricted one does.
 | Sign-in | What it is | Can do step-up (§3.1)? |
 |---|---|---|
 | **Passkey** ("Sign in with passkey") | a WebAuthn passkey registered to the admin DID at this VTC | yes |
-| **VTA wallet** ("Sign in as a VTA identity", via the browser plugin) | the VTA signs as one of your personas (a `did:webvh` or `did:key`) | only if that DID also has a passkey here (§4, step 5) |
+| **VTA wallet** ("Sign in as a VTA identity", via the browser plugin) | the VTA signs as one of your personas (a `did:webvh` or `did:key`) | only if that DID also has a passkey here (§4, step 5); signs approvals (§3.2) |
 | **`cnm` / API** | a DI-signed `auth/authenticate` from a `did:key` | not interactively; signs approvals (§3.2) |
 
 Once signed in, the console signs your actions as signed Trust Task documents,
@@ -125,8 +125,9 @@ another (§3.2), and break-glass is not needed again unless you are back to one.
 
 With three or more you can raise the consent threshold so a promotion takes
 several approvals (`acl.unrestricted_admin_consent_threshold`, default and
-minimum 1, maximum 16, changeable at runtime). The VTC refuses a threshold the
-community could never meet. It also refuses to remove or demote an
+minimum 1, maximum 16, changeable at runtime). Raising it takes effect at once;
+lowering it is itself an action that needs the current threshold's approvals
+(VTI-APV-020). The VTC refuses a threshold the community could never meet. It also refuses to remove or demote an
 administrator when that would leave the threshold unmeetable.
 
 ## 3. Protection against a bad administrator
@@ -151,28 +152,73 @@ approves a different one, and a script holding your console key can't use your
 gesture for an act you didn't see: the console key can redeem a gesture, but it
 can never make one.
 
-### 3.2 Second-party consent for unrestricted authority (VTI-APV-014)
+### 3.2 Second-party consent: the action list
 
-Making someone an unrestricted administrator, or widening an entry to
-unrestricted, needs consent from **another** unrestricted administrator. This
-applies to grants, promotions and admin invites alike.
+These operations need the consent of **other** unrestricted administrators:
 
-1. Administrator A sends the operation. Their step-up is asked for **first**,
-   so a thief holding only A's signing key cannot make the other
-   administrators' devices ring.
-2. The VTC refuses with `consent_required` and sends a VTC-signed
-   `task-consent/request` to every other unrestricted administrator. A is never
-   an approver of their own request.
-3. Administrator B checks it and approves (`cnm consent show` / `approve`, §4
-   step 7).
-4. A sends the **same** operation again. The VTC re-checks everything before it
-   writes:
-   - B is still an unrestricted administrator;
-   - the threshold is still met;
-   - the subject's entry hasn't changed since B saw it.
+| Operation | Requirement |
+|---|---|
+| making someone an unrestricted administrator, or widening an entry to unrestricted: `acl/grant`, `acl/update`, `acl/change-role`, `vtc/admin/invites/create` | VTI-APV-014 |
+| removing, demoting or narrowing **another** unrestricted administrator: `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update` or `acl/grant`, `vtc/members/admin-remove` | VTI-APV-019 |
+| lowering `acl.unrestricted_admin_consent_threshold`, by `config/patch` or `vtc/config/import` (raising it stays immediate) | VTI-APV-020 |
+| `policy/upsert` and `policy/activate` for the purposes that decide authority | VTI-VTC-022 |
 
-   The approval is bound to that exact payload and is spent once. Pending
-   requests expire after 15 minutes, and a granted approval after 10.
+The approvers are every other live unrestricted administrator. A is never an
+approver of their own request, and for a reduction the subject is not one
+either. The number needed is the consent threshold (§2.2).
+
+1. Administrator A sends the operation. Every check runs, and A's step-up is
+   asked for **first**, so a thief holding only A's signing key cannot make the
+   other administrators' devices ring.
+2. The VTC **parks** the operation as an *action*, storing A's signed document
+   as sent. A gets HTTP 202 and a `trust-task-next-step` reply naming the
+   action; the console shows "*Sent for approval — 1 of 2 must approve within
+   72 hours*", linking to it. A sends nothing again.
+3. Each approver finds the action in the console's **Actions** page (or `cnm
+   actions list`) and approves or declines it, signing with their own DID
+   (§4 step 6). One decline closes it for everyone.
+4. The approval that reaches the threshold **runs the stored operation**. The
+   VTC re-checks everything first, against the community as it is then
+   (VTI-APV-017):
+   - A still has the authority, and separation of duties, the role-change policy
+     and attrition still allow it;
+   - the approvers are still unrestricted administrators, and the threshold is
+     still met;
+   - the subject's entry hasn't changed since the approvers saw it.
+
+   It runs at most once. If a check fails, the action closes `failed` and
+   nothing is written.
+
+An action is approved against the exact payload it parks, and each approver
+answers their own challenge. It ends in one of these ways:
+
+| Closes as | When |
+|---|---|
+| `completed` | the threshold was reached and the operation ran |
+| `failed` | a re-check at completion refused it |
+| `declined` | any approver declined |
+| `cancelled` | A withdrew it (`vtc/admin/actions/cancel`), or it was invalidated: A stopped being a live unrestricted administrator, the subject's entry changed, or too few approvers remain to reach the threshold |
+| `expired` | nobody completed it within its lifetime |
+
+An approver who loses standing simply stops counting. Closed actions stay in
+**History** for 30 days.
+
+Lifetimes and limits are community configuration, changeable at runtime with
+`config/patch`. An open action keeps the expiry it was raised with.
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `acl.action_lifetime` (seconds) | 259200 (72 h) | 900 – 1209600 (14 days) |
+| `acl.action_max_open_per_requester` | 5 | 1 – 20 |
+| `acl.action_max_open` (whole community) | 50 | 10 – 500 |
+| `acl.action_decline_cooldown` (seconds; same requester, kind and subject after a decline) | 3600 | 0 – 86400 |
+
+More than three actions from one requester in 10 minutes writes a `Critical`
+`AdminActionBurst` audit row and flags that requester's cards for the
+approvers. An approver can make at most 10 decisions a minute.
+
+The VTC still pushes a VTC-signed `task-consent/request` to each approver's
+device, best-effort. The action list is the source of truth.
 
 ### 3.3 Separation of duties
 
@@ -191,14 +237,24 @@ threshold needs. Once that threshold is above 1, it has to be lowered before
 the last spare approver can be removed. Narrowing an unrestricted administrator
 to scoped counts as a removal for this check.
 
+Every removal, demotion or narrowing of an administrator takes the requester's
+step-up. When the subject is another unrestricted administrator it is also an
+action for the other unrestricted administrators to approve (§3.2,
+VTI-APV-019). With only two unrestricted administrators nobody is left to
+approve, so the requester's step-up is enough. The write is then audited at
+`Critical` as `AuthorityReducedUnopposed`. The VTC cannot tell a removal of a
+compromised co-admin from a compromised admin removing the other, and must not
+make the first impossible. Run with three or more to close that window.
+
 When an administrator loses privilege, their sessions are revoked and they
 receive a signed removal notice.
 
 ### 3.5 Everything is audited, including the break-glass
 
 The audit trail has a row for every grant, update, revocation, promotion,
-admin invite and passkey registration, and for every consent requested,
-approved, declined, granted and spent. Offline writers (`vtc acl add` and
+admin invite and passkey registration, and for every step of an action
+(`TaskConsentRecorded`, stage `parked`, `approved`, `declined`, `cancelled`,
+`invalidated`, `expired`, `completed` or `failed`). Offline writers (`vtc acl add` and
 `remove`, `vtc admin invite`, `vtc create-did-key --admin`) cannot write the
 audit trail while the daemon is stopped, so they leave a marker. The daemon
 turns it into an `AclBreakGlassWritten` row at its next start, naming the
@@ -321,40 +377,52 @@ behind an existing one, and nobody can invite themselves. Alice does it:
 From then on Bob's step-up works whichever way he signs in, because the gesture
 is checked against the passkeys registered to his DID.
 
-### Step 6 — Give the community an approver that can sign
+### Step 6 — Make sure each approver can sign
 
-Consent approvals (§3.2) are documents an administrator's DID signs with its
-own key, never a console key. Today:
+An approval (§3.2) is a `task-consent/decision` signed by the approver's **own
+DID**, never by a console key. There are two ways to sign one:
 
-- `cnm consent approve` signs with the `did:key` of its profile;
-- the console has no approval screen;
-- Bob's `did:webvh` is held by his VTA, and **cannot sign an approval yet**.
+- **The console, with the browser wallet.** **Approve** and **Decline** on the
+  Actions page sign the decision through the wallet, as the admin DID itself.
+  The VTA holds that key, whether it is the admin `did:key` the VTA minted or
+  the wallet persona. If the session also has a passkey, the console adds a
+  passkey assertion as an extra factor; it never replaces the signature.
+- **`cnm`**, for an administrator without a wallet. It signs with the
+  `did:key` of its profile. The console shows the command to run instead of
+  the buttons.
 
-So at least one unrestricted administrator must be able to approve from `cnm`.
-The simplest arrangement is Alice's `cnm`: give the `cnm` Client DID its own
-unrestricted admin row, as `bootstrap-runbook.md` describes ("`cnm` needs its
-own super-admin row").
+Bob signs from the console. Alice signs from the console if she uses the
+wallet, or from `cnm` if she doesn't; for that, the `cnm` Client DID needs its
+own unrestricted admin row, as `bootstrap-runbook.md` describes ("`cnm` needs
+its own super-admin row").
 
 ### Step 7 — A third administrator, entirely online
 
 Say Bob makes Carol an unrestricted administrator:
 
 1. Bob creates or promotes Carol in the console and confirms with his passkey.
-   The VTC refuses with *another unrestricted administrator has to approve this
-   first* and sends the request to the other unrestricted administrators.
-2. Bob passes the refusal on to Alice (its `details.consentRequests` holds the
-   VTC-signed request). Alice checks it and approves:
+   The console shows *Sent for approval — 1 of 1 must approve within 72
+   hours*, with a link to the action. Bob is done; he sends nothing again.
+2. Alice sees **Actions (1)** in the console's navigation, a banner after she
+   signs in, and `(1)` in the tab title. Under **Waiting for me** the card says
+   what the action does, who asked, and when it expires. She checks it and
+   chooses **Approve**. From `cnm` instead:
 
    ```sh
-   cnm consent show    refusal.json   # verify it and show what it asks
-   cnm consent approve refusal.json   # type Bob's match code
+   cnm actions list --view waiting                  # what is waiting for you
+   cnm actions show <actionId>                      # what it does, and who asked
+   cnm consent approve --action <actionId>          # or: --match-code <code>
+   cnm consent deny    --action <actionId> --reason "not expected"
    ```
 
-3. Bob sends the same operation again. It goes through, and Carol has a row.
-   Carol then follows steps 4 and 5 for herself.
+   `cnm` fetches the action, renders its summary from the payload itself, and
+   shows a six-character match code derived from the payload digest.
+3. Alice's approval reaches the threshold, so the VTC re-checks everything and
+   runs Bob's stored operation. Carol has a row, and the action shows as
+   *completed* in both their **History**. Carol then follows steps 4 and 5 for
+   herself.
 
-Promotions that Alice starts need an approver other than Alice. Until Bob can
-sign approvals (§5), the `cnm` row from step 6 is that approver.
+Promotions that Alice starts need an approver other than Alice: here, Bob.
 
 ## 5. Known gaps
 
@@ -363,19 +431,11 @@ sign approvals (§5), the `cnm` row from step 6 is that approver.
   designed in
   [`../05-design-notes/vtc-approver-step-up.md`](../05-design-notes/vtc-approver-step-up.md)
   and waits on specification changes.
-- **Wallet administrators can't sign consent approvals.** `cnm consent` is
-  `did:key`-only and the console has no approval screen.
-- **One admin can still remove the others, short of the last.** `acl/revoke`,
-  demotion and `vtc/members/admin-remove` need no second admin.
-- **Lowering the consent threshold needs no consent.** `config/patch` and
-  `vtc/config/import` can set it back to 1.
-- **Scoped admins can replace policy**, including the removal policy that
-  refuses removing an admin.
-
-  Together these three let one compromised unrestricted admin get round
-  VTI-APV-014. The fix, and an action list for N-of-M approvals that complete
-  themselves, is designed in
-  [`../05-design-notes/vtc-action-list.md`](../05-design-notes/vtc-action-list.md).
+- **Two-admin removal has no cooling-off yet.** With two unrestricted
+  administrators, either can remove the other on their own step-up (§3.4). The
+  planned 24-hour cooling-off, the notice to the subject, and acknowledge items
+  for offline writes come in the action list's next phase
+  ([`../05-design-notes/vtc-action-list.md`](../05-design-notes/vtc-action-list.md) §10).
 - **A founder who uses only a wallet** can't claim the install under their own
   DID. Install claims under an existing DID are a planned version of
   `vtc/install/claim`.
@@ -385,10 +445,13 @@ sign approvals (§5), the `cnm` row from step 6 is that approver.
 | I want to… | Do this |
 |---|---|
 | add a scoped admin | Access control → Add entry → contexts set → your passkey |
-| add an unrestricted admin, with 2+ unrestricted admins | the same with contexts blank → another admin approves → send it again |
+| add an unrestricted admin, with 2+ unrestricted admins | the same with contexts blank → it waits in Actions → another admin approves and it runs |
 | add an unrestricted admin, as the only admin | offline `vtc acl add … --role admin`, daemon stopped |
 | give an existing admin a console passkey | Access control → Admin invites → Invite admin |
 | give a member a step-up passkey | Members → member → Step-up passkeys → Invite… |
-| approve a promotion | `cnm consent show` / `approve` on the relayed refusal |
+| approve a promotion | console → Actions → Waiting for me → Approve (wallet), or `cnm consent approve --action <actionId>` |
+| see what is waiting | console → Actions, or `cnm actions list` |
+| withdraw my request | console → Actions → Requested by me → Cancel |
+| give approvers longer | `acl.action_lifetime` (seconds, default 72 h, at most 14 days) |
 | require two approvers | set `acl.unrestricted_admin_consent_threshold = 2` (needs 3+ unrestricted admins) |
 | see who did what | Audit trail (unrestricted admins only); filter for `AclBreakGlassWritten` to see offline writes |

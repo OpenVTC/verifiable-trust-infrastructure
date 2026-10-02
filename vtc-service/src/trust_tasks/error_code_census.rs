@@ -892,9 +892,79 @@ fn witnesses() -> Vec<Witness> {
             "the_codes_the_specifications_declare_are_answered"
         ),
     ];
+    table.extend(action_witnesses());
     #[cfg(feature = "vetting-pcs")]
     table.extend(pcs_witnesses());
     table
+}
+
+/// The action list's declared codes (`vtc/admin/actions/*`), each driven over
+/// the signed door in `unrestricted_admin_consent.rs`.
+fn action_witnesses() -> Vec<Witness> {
+    use crate::admin_actions::codes as c;
+    use trust_tasks_rs::specs::vtc::admin::actions as a;
+    vec![
+        witness!(
+            a::list::v0_1::error_codes::NOT_ADMINISTRATOR,
+            c::LIST_NOT_ADMINISTRATOR,
+            "unrestricted_admin_consent.rs",
+            "the_list_shows_each_caller_what_is_theirs_to_see"
+        ),
+        witness!(
+            a::list::v0_1::error_codes::INVALID_CURSOR,
+            c::LIST_INVALID_CURSOR,
+            "unrestricted_admin_consent.rs",
+            "the_list_shows_each_caller_what_is_theirs_to_see"
+        ),
+        witness!(
+            a::list::v0_1::error_codes::INVALID_FILTER,
+            c::LIST_INVALID_FILTER,
+            "unrestricted_admin_consent.rs",
+            "the_list_shows_each_caller_what_is_theirs_to_see"
+        ),
+        witness!(
+            a::show::v0_1::error_codes::NOT_FOUND,
+            c::SHOW_NOT_FOUND,
+            "unrestricted_admin_consent.rs",
+            "the_list_shows_each_caller_what_is_theirs_to_see"
+        ),
+        witness!(
+            a::show::v0_1::error_codes::NOT_ADMINISTRATOR,
+            c::SHOW_NOT_ADMINISTRATOR,
+            "unrestricted_admin_consent.rs",
+            "the_list_shows_each_caller_what_is_theirs_to_see"
+        ),
+        witness!(
+            a::cancel::v0_1::error_codes::NOT_FOUND,
+            c::CANCEL_NOT_FOUND,
+            "unrestricted_admin_consent.rs",
+            "the_requester_cancels_and_nobody_else_can"
+        ),
+        witness!(
+            a::cancel::v0_1::error_codes::NOT_REQUESTER,
+            c::CANCEL_NOT_REQUESTER,
+            "unrestricted_admin_consent.rs",
+            "the_requester_cancels_and_nobody_else_can"
+        ),
+        witness!(
+            a::cancel::v0_1::error_codes::NOT_OPEN,
+            c::CANCEL_NOT_OPEN,
+            "unrestricted_admin_consent.rs",
+            "the_requester_cancels_and_nobody_else_can"
+        ),
+        witness!(
+            a::acknowledge::v0_1::error_codes::NOT_FOUND,
+            c::ACKNOWLEDGE_NOT_FOUND,
+            "unrestricted_admin_consent.rs",
+            "an_approval_action_is_not_acknowledgeable"
+        ),
+        witness!(
+            a::acknowledge::v0_1::error_codes::NOT_ACKNOWLEDGEABLE,
+            c::ACKNOWLEDGE_NOT_ACKNOWLEDGEABLE,
+            "unrestricted_admin_consent.rs",
+            "an_approval_action_is_not_acknowledgeable"
+        ),
+    ]
 }
 
 /// Hidden vetting's declared codes (`zkp-pcs`), witnessed only where its tasks are bound. Every
@@ -1065,6 +1135,11 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // before anything else, so different bytes are `chunkMismatch` first;
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
+        // `alreadyAcknowledged` needs an `acknowledge`-category action, and
+        // nothing raises one yet: operator-write acknowledge items are the
+        // action list's phase A2 (`vtc-action-list.md` §8.3b). Every action
+        // A1 raises is an approval, answered `notAcknowledgeable`.
+        s::admin::actions::acknowledge::v0_1::error_codes::ALREADY_ACKNOWLEDGED,
         // BASELINE-END
     ]
 }
@@ -1077,7 +1152,7 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
 /// the baseline past the ceiling — a newly bound task declaring codes
 /// nothing tests — requires raising this constant, which is the point:
 /// that always wants a human decision, never a silent pass.
-const UNWITNESSED_CEILING: usize = 8;
+const UNWITNESSED_CEILING: usize = 9;
 
 /// Extended codes this service emits that its specification does **not**
 /// declare — minted under the task's own namespace, as SPEC §8.5 permits.

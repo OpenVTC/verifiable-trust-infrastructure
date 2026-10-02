@@ -24,17 +24,30 @@ import {
 } from "react";
 
 import type { ApiError } from "@/lib/api";
+import { parkedOf } from "@/lib/parked-action";
 
 export type ToastKind = "success" | "info" | "error";
+
+/** A link a toast carries: `href` is a console path under `/admin`. */
+export interface ToastLink {
+  readonly href: string;
+  readonly label: string;
+}
 
 export interface Toast {
   readonly id: number;
   readonly kind: ToastKind;
   readonly message: string;
+  readonly link?: ToastLink;
 }
 
 export interface ToastApi {
-  push: (kind: ToastKind, message: string) => void;
+  push: (kind: ToastKind, message: string, link?: ToastLink) => void;
+  /**
+   * Show `err`. A [`ParkedAction`] (`lib/parked-action.ts`) is not an error —
+   * the act was accepted and is waiting on other administrators — so it is
+   * shown as a success linking to the action, without `prefix`.
+   */
   pushFromError: (err: unknown, prefix?: string) => void;
   dismiss: (id: number) => void;
 }
@@ -42,6 +55,8 @@ export interface ToastApi {
 const ToastContext = createContext<ToastApi | null>(null);
 
 const DEFAULT_DISMISS_MS = 4500;
+/** A toast with a link stays long enough to be followed. */
+const LINK_DISMISS_MS = 12_000;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ReadonlyArray<Toast>>([]);
@@ -52,12 +67,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const push = useCallback(
-    (kind: ToastKind, message: string) => {
+    (kind: ToastKind, message: string, link?: ToastLink) => {
       const id = nextId.current++;
-      setToasts((prev) => [...prev, { id, kind, message }]);
+      setToasts((prev) => [...prev, link ? { id, kind, message, link } : { id, kind, message }]);
       // Auto-dismiss success + info; errors stick.
       if (kind !== "error") {
-        setTimeout(() => dismiss(id), DEFAULT_DISMISS_MS);
+        setTimeout(() => dismiss(id), link ? LINK_DISMISS_MS : DEFAULT_DISMISS_MS);
       }
     },
     [dismiss],
@@ -65,6 +80,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const pushFromError = useCallback(
     (err: unknown, prefix?: string) => {
+      const parked = parkedOf(err);
+      if (parked) {
+        push("success", parked.message, { href: parked.path, label: "View the action" });
+        return;
+      }
       const apiErr = err as Partial<ApiError> | undefined;
       const detail = apiErr?.message ?? (err instanceof Error ? err.message : String(err));
       const status = apiErr?.status ? ` (${apiErr.status})` : "";
@@ -130,7 +150,21 @@ function ToastViewport({
           className={`toast toast-${t.kind}`}
           role={t.kind === "error" ? "alert" : "status"}
         >
-          <span className="toast-message">{t.message}</span>
+          <span className="toast-message">
+            {t.message}
+            {t.link && (
+              <>
+                {" "}
+                <a
+                  className="toast-link"
+                  href={`/admin${t.link.href}`}
+                  onClick={(e) => followInConsole(e, t.link!.href)}
+                >
+                  {t.link.label}
+                </a>
+              </>
+            )}
+          </span>
           <button
             type="button"
             className="toast-dismiss"
@@ -145,3 +179,20 @@ function ToastViewport({
   );
 }
 
+
+/**
+ * Follow a toast link without reloading the console. The toaster sits outside
+ * the router (`main.tsx`), so it cannot use `<Link>`; pushing the history
+ * entry and announcing it is what `BrowserRouter` listens for. A modified
+ * click (new tab, new window) keeps the browser's own behaviour.
+ */
+function followInConsole(e: React.MouseEvent<HTMLAnchorElement>, href: string): void {
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  try {
+    window.history.pushState({}, "", `/admin${href}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  } catch {
+    window.location.assign(`/admin${href}`);
+  }
+}

@@ -1,9 +1,23 @@
 # The administrator action list — N-of-M approvals that complete themselves
 
-Status: **accepted** (2026-10-02; §7a, §7b, §8a decided with the maintainer). Nothing here is implemented yet. It changes
-how VTI-APV-014 consent is collected and finished at the VTC, adds wire tasks
-that need a specification first (§9), and depends on
-`vtc-approver-step-up.md` for how an approval is signed from the console (§6).
+Status: **accepted** (2026-10-02; §7a, §7b, §8a decided with the maintainer).
+**Phase A1 is implemented**: §4–§7 for every consent-gated VTC operation
+(VTI-APV-014, VTI-APV-019, VTI-APV-020, VTI-VTC-022), and `task-consent/decision/0.2`
+with `webauthn` evidence. What A1 leaves to A2 is listed in §10. It changes
+how consent is collected and finished at the VTC, adds wire tasks that need a
+specification first (§9), and depends on `vtc-approver-step-up.md` for the
+approver-signed evidence the console will add later (§6).
+
+Two deviations from the text below, as built:
+
+- **Execution is serialised by the action's own status transition**, taken
+  under a dedicated per-action lock, not by holding `lock_admin_set` across the
+  execution (§4.2). The handlers the action re-runs take `lock_admin_set` (and
+  the promotion lock) themselves for their write; holding it across them would
+  invert the lock order and deadlock. Status leaves `open` before execution
+  starts, so the operation still runs at most once.
+- **Summary templates are keyed by `(kind, typeUri)`**, not by `kind` alone
+  (§7a.2): one kind spans several operations whose payloads differ.
 
 Builds on `vtc-operation-bound-step-up.md` §4 (the APV-014 consent as built,
 `vtc-service/src/acl/admin_consent.rs`) and the shared consent store
@@ -180,25 +194,29 @@ between the N-th approval and execution.
 
 ## 6. Signing an approval from the console
 
-This is what the console cannot do today. `task-consent/decision` must carry a
-proof from the approver themselves (and a console key is refused there by
-design). There are three ways to produce one:
+A `task-consent/decision` is **always signed by the approver's own DID**: its
+`assertionMethod` proof is the authorization. A decision signed by a delegated
+console key is refused, by design. There is no decision whose proof is anything
+else.
 
-| Approver signs in with | Signs the decision with | Status |
-|---|---|---|
-| `cnm` (a `did:key`) | the DID's own key | **works today** (`cnm consent approve`) |
-| browser plugin wallet | the outer document signed by the persona via the wallet's `signTrustTask({asDid})`, **plus** the approver device's statement bound to the approver's challenge | designed in `vtc-approver-step-up.md`; this note extends it to decisions |
-| passkey only | the persona has no key the browser can use, so a decision needs passkey evidence: a WebAuthn assertion over the approver's challenge-salted wire digest | needs a decision evidence slot (§9.1) |
+| Approver works from | Signs the decision with |
+|---|---|
+| the console, with the browser wallet | the approver's admin DID, through the wallet's `signTrustTask({asDid})`. The VTA holds that key: the admin `did:key` it minted, or the wallet persona |
+| `cnm` (a `did:key`), for an admin without a wallet | the profile's own key (`cnm consent approve --action <actionId>`) |
 
-The rule stays the same in every case: an approval is the approver's own
-factor, never a console key's signature. The console only carries it.
+Evidence is an **additional** factor carried in `decision/0.2`'s `evidence`
+member, never a substitute for the proof:
 
-For a passkey approver, the console builds the decision, asks for a WebAuthn
-assertion whose challenge commits to the decision's wire digest, and posts the
-decision carrying it. The VTC verifies the assertion against that approver's
-registered passkeys, with user verification required, as for a step-up. This
-is the one case where the decision's proof is not a DID signature, and it is
-why §9.1 needs a specification change.
+- `webauthn` (built in A1): when the console session has a passkey, the console
+  attaches a WebAuthn assertion whose challenge is the UTF-8 bytes of the
+  decision's challenge. The VTC verifies it against that approver's registered
+  passkeys, with user verification required, as for a step-up.
+- `approverSigned` (A2): the approver device's statement from
+  `vtc-approver-step-up.md`. Refused in A1 (`evidenceInvalid`, reason
+  `approverSignedUnsupported`) until the approver store lands.
+
+Without a wallet, the console shows the `cnm consent approve --action
+<actionId>` command instead of the buttons.
 
 ## 7. The console
 
@@ -519,8 +537,9 @@ answers `consent_required` for them.
    item carries the rendered summary, the digest and that approver's challenge,
    so the approver can verify what they are shown.
 2. **`vtc/admin/actions/cancel/0.1`** — the requester withdraws an open action.
-3. **`task-consent/decision/0.2`** — an optional `evidence` member: `webauthn`
-   (an assertion over the challenge-salted wire digest) and `approverSigned`
+3. **`task-consent/decision/0.2`** — an optional `actionId` and an optional
+   `evidence` member: `webauthn` (an assertion over the approver's challenge)
+   and `approverSigned`
    (from `vtc-approver-step-up.md`). Without it the document's proof is the
    authorization, as in 0.1.
 4. **The submit response.** A parked operation answers with an `accepted`
@@ -538,6 +557,26 @@ answers `consent_required` for them.
    whenever the lifetime is longer than the original step-up window.
 
 ## 10. What changes in code
+
+**Landed in A1.** `vtc-service/src/admin_actions/` (the `admin_actions`
+keyspace, lifecycle, invalidation, limits, burst alert, summary templates) and
+`vtc-service/src/trust_tasks/action_tasks.rs` (`vtc/admin/actions/{list,show,cancel}/0.1`).
+`admin_consent` parks instead of refusing, for every operation in §8.2's first
+table except backup restore; the submit answers `trust-task-next-step/0.1`
+(HTTP 202, continuation `proceed`, expecting `vtc/admin/actions/show/0.1` with
+`{actionId}`). `task-consent/decision/0.2` adds `actionId` and `webauthn`
+evidence. The lifetimes and limits of §5 and §7a.1 are community config
+(`acl.action_lifetime`, `acl.action_max_open_per_requester`,
+`acl.action_max_open`, `acl.action_decline_cooldown`), patchable at runtime.
+The console's Actions page, badge, banner and submit notice, and `cnm actions
+{list,show}` / `cnm consent {approve,deny} --action`, ship with it.
+
+**Deferred to A2.** Acknowledge items for operator writes (§8.3b: the
+acknowledge task exists and answers `notAcknowledgeable`), the authority-reduced
+notice, the two-admin 24 h cooling-off (§8.2), `approverSigned` evidence, and
+`requireRequesterAtCompletion` (§4.3).
+
+The plan as written:
 
 1. `vti_common::task_consent`: the pending record gains the parked operation,
    `status` and the per-approver challenges. The VTA's DTTE keeps its re-send
