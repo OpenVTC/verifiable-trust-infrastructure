@@ -1,0 +1,776 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VTC Administrator Access</title>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --bg-2: #111726;
+    --panel: #161d2f;
+    --panel-2: #1c2540;
+    --line: #2a3450;
+    --ink: #e8edf7;
+    --muted: #94a3c4;
+    --dim: #647196;
+    --accent: #6ea8ff;
+    --accent-2: #58e6c9;
+    --accent-3: #c79bff;
+    --warn: #ffb454;
+    --hard: #ff7a8a;
+    --good: #58e6a8;
+    --alice: #6ea8ff;
+    --bob: #c79bff;
+    --shadow: 0 18px 50px rgba(0,0,0,.45);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 700px at 80% -10%, #1a2238 0%, transparent 60%),
+      radial-gradient(1000px 600px at 0% 10%, #16203a 0%, transparent 55%),
+      var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px; }
+  .mono, code { font-family: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+  code { font-size: .88em; background: #0d1322; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; color: var(--accent-2); overflow-wrap: anywhere; }
+  a { color: var(--accent); }
+
+  nav.toc {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(10,14,26,.86); backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  nav.toc .wrap { display: flex; gap: 6px; overflow-x: auto; padding-top: 10px; padding-bottom: 10px; }
+  nav.toc a {
+    white-space: nowrap; font-size: 13px; color: var(--muted); text-decoration: none;
+    padding: 6px 12px; border-radius: 999px; border: 1px solid transparent;
+  }
+  nav.toc a:hover { color: var(--ink); border-color: var(--line); background: var(--panel); }
+
+  header.hero {
+    padding: 80px 0 60px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(110,168,255,.06), transparent 70%);
+  }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent-2); font-weight: 600;
+    padding: 6px 14px; border: 1px solid var(--line); border-radius: 999px;
+    background: var(--panel);
+  }
+  h1 {
+    font-size: 52px; line-height: 1.08; margin: 22px 0 14px; letter-spacing: -.02em;
+    background: linear-gradient(110deg, #fff 10%, var(--accent) 55%, var(--accent-3) 95%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    max-width: 20ch;
+  }
+  .lede { font-size: 20px; color: var(--muted); max-width: 72ch; margin: 0; }
+  .hero-tags { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
+  .tag {
+    font-size: 13px; color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px;
+  }
+  .tag b { color: var(--accent-2); font-weight: 600; }
+
+  section { padding: 70px 0; border-bottom: 1px solid var(--line); }
+  .kicker { font-size: 13px; letter-spacing: .16em; text-transform: uppercase; color: var(--dim); font-weight: 600; margin: 0 0 10px; }
+  h2 { font-size: 34px; margin: 0 0 14px; letter-spacing: -.015em; }
+  h2 + .sub { color: var(--muted); font-size: 18px; max-width: 74ch; margin: 0 0 36px; }
+  h3 { font-size: 19px; margin: 8px 0; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+
+  .card {
+    background: linear-gradient(180deg, var(--panel), var(--bg-2));
+    border: 1px solid var(--line); border-radius: 16px; padding: 24px;
+    box-shadow: var(--shadow); position: relative; overflow: hidden;
+  }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  .card ul { margin: 12px 0 0; padding-left: 18px; color: var(--muted); font-size: 15px; }
+  .card li { margin: 5px 0; }
+  .card .n { font-size: 13px; color: var(--accent); font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+  .card.top::before { content:""; position:absolute; inset:0 0 auto 0; height:4px; }
+  .card.good::before { background: linear-gradient(90deg, var(--good), transparent); }
+  .card.warn::before { background: linear-gradient(90deg, var(--warn), transparent); }
+  .card.hard::before { background: linear-gradient(90deg, var(--hard), transparent); }
+  .card.acc::before { background: linear-gradient(90deg, var(--accent), transparent); }
+  .lbl { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; }
+  .good .lbl { color: var(--good); } .warn .lbl { color: var(--warn); }
+  .hard .lbl { color: var(--hard); } .acc .lbl { color: var(--accent); }
+
+  /* ACL row visual */
+  .acl-row {
+    display: grid; grid-template-columns: 1.6fr .7fr 1.2fr; gap: 0;
+    border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-top: 14px;
+    font-size: 13px;
+  }
+  .acl-row div { padding: 10px 12px; border-right: 1px solid var(--line); overflow-wrap: anywhere; }
+  .acl-row div:last-child { border-right: 0; }
+  .acl-row .h { background: var(--panel-2); color: var(--dim); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 11px; }
+  .acl-row .v { background: #0d1322; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .pill.all { background: rgba(88,230,168,.14); color: var(--good); border: 1px solid rgba(88,230,168,.4); }
+  .pill.sc { background: rgba(255,180,84,.12); color: var(--warn); border: 1px solid rgba(255,180,84,.4); }
+
+  /* sign-in table */
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+  td { color: var(--muted); }
+  td:first-child { color: var(--ink); font-weight: 600; }
+  .yes { color: var(--good); font-weight: 700; }
+  .partial { color: var(--warn); font-weight: 700; }
+  .tbl { border: 1px solid var(--line); border-radius: 16px; overflow-x: auto; background: var(--panel); }
+
+  /* defence layers */
+  .layers { display: grid; gap: 12px; }
+  .layer {
+    display: grid; grid-template-columns: 54px 1fr auto; gap: 18px; align-items: center;
+    border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; background: var(--panel);
+  }
+  .layer .ic {
+    width: 42px; height: 42px; border-radius: 11px; display: grid; place-items: center;
+    background: var(--panel-2); border: 1px solid var(--line); font-size: 20px;
+  }
+  .layer h4 { margin: 0 0 4px; font-size: 17px; }
+  .layer p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .layer .stops { font-size: 12px; color: var(--hard); border: 1px solid rgba(255,122,138,.4); border-radius: 999px; padding: 4px 10px; white-space: nowrap; }
+
+  /* diagram */
+  .diagram { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 18px; overflow-x: auto; }
+  .diagram svg { display: block; width: 100%; min-width: 760px; height: auto; }
+
+  /* walkthrough */
+  .flow { display: grid; gap: 14px; }
+  .step {
+    display: grid; grid-template-columns: 54px 1fr; gap: 20px; align-items: start;
+    border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; background: var(--panel);
+    border-left: 4px solid var(--line);
+  }
+  .step.alice { border-left-color: var(--alice); }
+  .step.bob { border-left-color: var(--bob); }
+  .step.both { border-left-color: var(--accent-2); }
+  .step .num {
+    width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
+    background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--accent); font-weight: 700; font-size: 15px;
+  }
+  .who { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; font-weight: 700; }
+  .alice .who { color: var(--alice); } .bob .who { color: var(--bob); } .both .who { color: var(--accent-2); }
+  .step h4 { margin: 6px 0 8px; font-size: 18px; }
+  .step p { margin: 0; color: var(--muted); font-size: 15px; }
+  .step ol, .step ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 15px; }
+  .step li { margin: 4px 0; }
+  .ui {
+    display: inline-block; font-size: 13px; background: var(--panel-2); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; padding: 1px 8px; font-weight: 600;
+  }
+  pre {
+    margin: 12px 0 0; font-size: 13px; background: #0d1322; border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; color: var(--accent-2); overflow-x: auto;
+  }
+  .note {
+    margin-top: 12px; font-size: 14px; color: var(--warn);
+    border: 1px dashed rgba(255,180,84,.45); border-radius: 10px; padding: 10px 12px;
+    background: rgba(255,180,84,.05);
+  }
+  .fork { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  .fork > div { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: #0f1527; font-size: 14.5px; color: var(--muted); }
+  .fork b { color: var(--ink); }
+
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 0 0 22px; font-size: 14px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 8px; vertical-align: middle; }
+  .legend .la::before { background: var(--alice); }
+  .legend .lb::before { background: var(--bob); }
+  .legend .lc::before { background: var(--accent-2); }
+
+  footer { padding: 40px 0 70px; color: var(--dim); font-size: 14px; }
+
+  @media (max-width: 860px) {
+    h1 { font-size: 38px; }
+    .grid-2, .grid-3, .fork { grid-template-columns: 1fr; }
+    .layer { grid-template-columns: 44px 1fr; }
+    .layer .stops { grid-column: 2; justify-self: start; }
+    .step { grid-template-columns: 1fr; gap: 10px; }
+    .wrap { padding: 0 16px; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="toc"><div class="wrap">
+  <a href="#model">The model</a>
+  <a href="#signin">Signing in</a>
+  <a href="#one-or-many">One admin or many</a>
+  <a href="#defences">Protections</a>
+  <a href="#consent">Consent flow</a>
+  <a href="#walkthrough">Walkthrough</a>
+  <a href="#gaps">Known gaps</a>
+  <a href="#coming">What's coming</a>
+  <a href="#ref">Quick reference</a>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <span class="eyebrow">Verifiable Trust Community · Administration</span>
+  <h1>Who runs a community, and who stops them</h1>
+  <p class="lede">How administrator access works in a VTC: a single owner or a team, how each one proves who they are, and the controls that keep a single stolen credential, or a single rogue administrator, from taking the community over.</p>
+  <div class="hero-tags">
+    <span class="tag"><b>Authority</b> = an ACL row, read at every act</span>
+    <span class="tag"><b>Step-up</b> bound to one operation</span>
+    <span class="tag"><b>VTI-APV-014</b> second-admin consent</span>
+    <span class="tag"><b>Break-glass</b> offline &amp; audited</span>
+  </div>
+</div></header>
+
+<!-- ── 1. Model ─────────────────────────────────────────── -->
+<section id="model"><div class="wrap">
+  <p class="kicker">01 · The model</p>
+  <h2>An administrator is an ACL row</h2>
+  <p class="sub">A DID is an administrator because the community's access-control list says so. Every act is authorized by reading that row at the moment it runs. Sessions, console keys and credentials carry no authority of their own, and only administrators can sign in to the console.</p>
+
+  <div class="grid-2">
+    <div class="card top good">
+      <span class="lbl">Unrestricted admin</span>
+      <h3>Acts everywhere</h3>
+      <div class="acl-row">
+        <div class="h">DID</div><div class="h">Role</div><div class="h">Allowed contexts</div>
+        <div class="v mono">did:key:z6Mk…alice</div><div class="v">admin</div><div class="v"><span class="pill all">blank = all</span></div>
+      </div>
+      <ul>
+        <li>Admin invites and step-up passkey invites</li>
+        <li>Audit trail, configuration, backup and restore, purging members</li>
+        <li>Approves other admins' promotions to unrestricted</li>
+        <li>Revokes anyone's console signing keys</li>
+      </ul>
+    </div>
+    <div class="card top warn">
+      <span class="lbl">Scoped admin</span>
+      <h3>An admin, minus the super-admin powers</h3>
+      <div class="acl-row">
+        <div class="h">DID</div><div class="h">Role</div><div class="h">Allowed contexts</div>
+        <div class="v mono">did:webvh:…:bob</div><div class="v">admin</div><div class="v"><span class="pill sc">events, events/2026</span></div>
+      </div>
+      <ul>
+        <li>Runs vetting, members, joins and credentials community-wide, like any admin</li>
+        <li>Sees ACL entries sharing a context; changes only those wholly inside its contexts, never an unrestricted one</li>
+        <li>Granting one needs only the granter's step-up, not another admin's consent</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card top acc" style="margin-top:18px">
+    <span class="lbl">What is a context?</span>
+    <h3>A label on an ACL entry, nothing more</h3>
+    <p>Contexts are path-like labels (<code>events</code> covers <code>events/2026</code>). The community keeps no list of them, and no community resource belongs to one: members, joins, vetting, credentials and rooms are all community-wide. They decide only whether an admin is scoped or unrestricted, which ACL entries a scoped admin can see and change, and whose step-up passkeys it can list. In the VTA a context is a key hierarchy; the VTC borrows the ACL model, not that meaning.</p>
+    <p style="margin-top:10px">See them in <span class="ui">Access control</span>: the <b>Contexts</b> column and <b>Filter by context</b>, or <code>vtc acl list</code> offline. "all" in that column is true only for admins; a member with no contexts has none.</p>
+  </div>
+</div></section>
+
+<!-- ── 2. Sign-in ───────────────────────────────────────── -->
+<section id="signin"><div class="wrap">
+  <p class="kicker">02 · Proving who you are</p>
+  <h2>Three ways in, one signing key per browser</h2>
+  <p class="sub">After sign-in the console signs every act as a Trust Task document with a <b>console signing key</b>. It is generated in the browser, can't be exported, and is enrolled as a delegation from your admin DID. It lasts at most 30 days, you can hold at most five, and it only works in the console. It proves you have the browser, never that you are present.</p>
+  <div class="tbl">
+    <table>
+      <thead><tr><th>Sign-in</th><th>What it is</th><th>Can step up?</th></tr></thead>
+      <tbody>
+        <tr><td>Passkey</td><td>A WebAuthn passkey registered to the admin DID at this VTC. <span class="ui">Sign in with passkey</span></td><td class="yes">Yes</td></tr>
+        <tr><td>VTA wallet</td><td>The browser plugin signs in as one of your VTA personas. <span class="ui">Sign in as a VTA identity</span></td><td class="partial">Only if that DID also has a passkey here</td></tr>
+        <tr><td>cnm / API</td><td>A DI-signed <code>auth/authenticate</code> from a <code>did:key</code></td><td>Signs approvals (§5)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div></section>
+
+<!-- ── 3. One or many ───────────────────────────────────── -->
+<section id="one-or-many"><div class="wrap">
+  <p class="kicker">03 · One administrator or several</p>
+  <h2>Run with at least two unrestricted admins</h2>
+  <p class="sub">Day-to-day administration works with one administrator. Making someone else <em>unrestricted</em> needs another unrestricted administrator to agree, and a single administrator has nobody to ask.</p>
+  <div class="grid-2">
+    <div class="card top hard">
+      <span class="lbl">One unrestricted admin</span>
+      <h3>Works, but can't grow online</h3>
+      <p>Granting unrestricted admin is refused: <i>"needs consent from 1 other unrestricted admin(s), and this community has 0 (VTI-APV-014)"</i>. The ways forward:</p>
+      <ul>
+        <li><b>Grant scoped admin</b> (set contexts), which needs only your step-up</li>
+        <li><b>Offline, once:</b> <code>vtc acl add --did … --role admin</code> with the daemon stopped (audited)</li>
+        <li><b>At install:</b> name <code>co_admin_did</code> in <code>vtc setup</code></li>
+      </ul>
+      <p style="margin-top:12px">It is also a single point of failure: lose the passkey and the only way back is offline.</p>
+    </div>
+    <div class="card top good">
+      <span class="lbl">Two or more</span>
+      <h3>Everything online</h3>
+      <p>One administrator proposes, another approves, and break-glass isn't needed again unless you drop back to one.</p>
+      <ul>
+        <li>With three or more, raise <code>acl.unrestricted_admin_consent_threshold</code> (1–16, changeable at runtime) to require several approvals</li>
+        <li>A threshold the community can't meet is refused when you set it</li>
+        <li>So is a removal that would leave the threshold unmeetable</li>
+      </ul>
+    </div>
+  </div>
+</div></section>
+
+<!-- ── 4. Defences ──────────────────────────────────────── -->
+<section id="defences"><div class="wrap">
+  <p class="kicker">04 · Protection against a bad administrator</p>
+  <h2>Assume one credential is stolen</h2>
+  <p class="sub">Each control limits what one administrator, or one stolen key, can do alone.</p>
+  <div class="layers">
+    <div class="layer">
+      <div class="ic">👆</div>
+      <div><h4>Step-up bound to one operation</h4>
+        <p>Granting or promoting admin, minting an admin invite, inviting a step-up passkey, and git break-glass all need a live, user-verified gesture from the actor's own passkey. The gesture is made for a digest of that exact operation, can be used once within 300 s, and raises no session. A console key can redeem a gesture but never make one.</p></div>
+      <span class="stops">stops: a script holding your console key</span>
+    </div>
+    <div class="layer">
+      <div class="ic">🤝</div>
+      <div><h4>Second-party consent (VTI-APV-014)</h4>
+        <p>Making or widening anyone to unrestricted needs another unrestricted admin's approval. The requester is never an approver. The approval is bound to that payload, re-checked when used, and spent once.</p></div>
+      <span class="stops">stops: one admin minting a co-conspirator</span>
+    </div>
+    <div class="layer">
+      <div class="ic">⚖️</div>
+      <div><h4>Separation of duties</h4>
+        <p>No self-grant, self-promotion, self-rewrite or self-revoke. No entry can outlive the one who wrote it. Every promotion runs the role-change policy and its host checks.</p></div>
+      <span class="stops">stops: self-elevation</span>
+    </div>
+    <div class="layer">
+      <div class="ic">🛡️</div>
+      <div><h4>Attrition guards</h4>
+        <p>Removals and demotions run one at a time under a lock. The last admin, or the last unrestricted admin, can't be removed, and nor can anyone whose removal would leave the threshold unmeetable. A removed admin loses their sessions and gets a signed notice. <span style="color:var(--hard)">Removing any admin but the last still needs no second admin (see Known gaps).</span></p></div>
+      <span class="stops">stops: removing the very last admin</span>
+    </div>
+    <div class="layer">
+      <div class="ic">📜</div>
+      <div><h4>Everything audited, break-glass included</h4>
+        <p>Every grant, revocation, promotion, invite, passkey and consent step has an audit row. Offline writers leave a marker, and the daemon records it as <code>AclBreakGlassWritten</code> at its next start, naming the command, the DID and the host.</p></div>
+      <span class="stops">stops: silent changes</span>
+    </div>
+    <div class="layer">
+      <div class="ic">🎟️</div>
+      <div><h4>Bounded invites and notices</h4>
+        <p>Invites are single use, last at most 24 h, and come with a claim code sent separately. Five wrong codes void a step-up passkey invite. Members are told when a step-up passkey is enrolled or revoked for them, and by whom.</p></div>
+      <span class="stops">stops: hijacked invites</span>
+    </div>
+  </div>
+  <p class="note">The offline break-glass bypasses every control above and needs the host itself. Protect the host the way you protect the community.</p>
+</div></section>
+
+<!-- ── 5. Consent sequence ──────────────────────────────── -->
+<section id="consent"><div class="wrap">
+  <p class="kicker">05 · How a second admin agrees</p>
+  <h2>Propose, approve, re-send</h2>
+  <p class="sub">The requester's own gesture comes first, so a thief holding only their signing key can't make the other administrators' devices ring. The VTC checks everything again before it writes.</p>
+  <div class="diagram">
+  <svg viewBox="0 0 980 470" role="img" aria-label="Consent sequence between administrator A, the VTC and administrator B">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3c4"/></marker>
+      <marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#58e6a8"/></marker>
+      <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ffb454"/></marker>
+    </defs>
+    <g font-family="-apple-system, Segoe UI, Roboto, sans-serif" font-size="14">
+      <rect x="40" y="16" width="200" height="46" rx="10" fill="#1c2540" stroke="#6ea8ff"/>
+      <text x="140" y="44" text-anchor="middle" fill="#e8edf7" font-weight="700">Admin A (requester)</text>
+      <rect x="390" y="16" width="200" height="46" rx="10" fill="#1c2540" stroke="#58e6c9"/>
+      <text x="490" y="44" text-anchor="middle" fill="#e8edf7" font-weight="700">VTC</text>
+      <rect x="740" y="16" width="200" height="46" rx="10" fill="#1c2540" stroke="#c79bff"/>
+      <text x="840" y="44" text-anchor="middle" fill="#e8edf7" font-weight="700">Admin B (approver)</text>
+      <line x1="140" y1="62" x2="140" y2="456" stroke="#2a3450" stroke-dasharray="5 5"/>
+      <line x1="490" y1="62" x2="490" y2="456" stroke="#2a3450" stroke-dasharray="5 5"/>
+      <line x1="840" y1="62" x2="840" y2="456" stroke="#2a3450" stroke-dasharray="5 5"/>
+
+      <line x1="140" y1="100" x2="486" y2="100" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="152" y="92" fill="#e8edf7">① acl/grant · unrestricted admin</text>
+      <line x1="490" y1="140" x2="144" y2="140" stroke="#ffb454" stroke-width="1.6" marker-end="url(#arw)"/>
+      <text x="152" y="132" fill="#ffb454">② step-up required (challenge for this op)</text>
+      <line x1="140" y1="180" x2="486" y2="180" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="152" y="172" fill="#e8edf7">③ A's passkey gesture, bound to the digest</text>
+      <line x1="490" y1="220" x2="144" y2="220" stroke="#ffb454" stroke-width="1.6" marker-end="url(#arw)"/>
+      <text x="152" y="212" fill="#ffb454">④ consent_required</text>
+      <line x1="490" y1="220" x2="836" y2="220" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="502" y="212" fill="#e8edf7">④ VTC-signed task-consent/request</text>
+      <rect x="700" y="244" width="280" height="44" rx="8" fill="#0d1322" stroke="#2a3450"/>
+      <text x="840" y="264" text-anchor="middle" fill="#94a3c4" font-size="12.5">B checks the request and match code</text>
+      <text x="840" y="280" text-anchor="middle" fill="#94a3c4" font-size="12.5">cnm consent approve</text>
+      <line x1="840" y1="310" x2="494" y2="310" stroke="#58e6a8" stroke-width="1.6" marker-end="url(#arg)"/>
+      <text x="502" y="302" fill="#58e6a8">⑤ task-consent/decision · approved (B's own key)</text>
+      <line x1="140" y1="360" x2="486" y2="360" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="152" y="352" fill="#e8edf7">⑥ the same acl/grant, sent again</text>
+      <rect x="360" y="376" width="260" height="58" rx="8" fill="#0d1322" stroke="#58e6a8"/>
+      <text x="490" y="396" text-anchor="middle" fill="#58e6a8" font-size="12.5">B still unrestricted? threshold met?</text>
+      <text x="490" y="412" text-anchor="middle" fill="#58e6a8" font-size="12.5">entry unchanged? → write, spend once</text>
+      <text x="490" y="428" text-anchor="middle" fill="#647196" font-size="11.5">pending 15 min · granted approval 10 min</text>
+    </g>
+  </svg>
+  </div>
+</div></section>
+
+<!-- ── 6. Walkthrough ───────────────────────────────────── -->
+<section id="walkthrough"><div class="wrap">
+  <p class="kicker">06 · Walkthrough</p>
+  <h2>First admin, then a second on the browser plugin</h2>
+  <p class="sub"><b>Alice</b> runs the install and signs in with a passkey. <b>Bob</b> uses the VTA browser plugin and administers as his wallet persona <code>did:webvh:…:bob</code>.</p>
+  <div class="legend"><span class="la">Alice</span><span class="lb">Bob</span><span class="lc">Both / VTC</span></div>
+
+  <div class="flow">
+    <div class="step bob">
+      <div class="num">1</div>
+      <div><span class="who">Bob · before setup</span>
+        <h4>Bob sends Alice his DID</h4>
+        <p>He installs the browser plugin, onboards it to his VTA, picks the persona he will administer as, and sends Alice its DID. If the persona's DID is published, Alice resolves it to check she has the right one.</p>
+      </div>
+    </div>
+
+    <div class="step alice">
+      <div class="num">2</div>
+      <div><span class="who">Alice · install</span>
+        <h4>Install the community with Bob as co-admin</h4>
+        <pre>vtc setup                      # or: vtc setup --from setup.toml
+# in the TOML:
+co_admin_did = "did:webvh:…:bob"</pre>
+        <ol>
+          <li>Setup mints Alice's admin <code>did:key</code> and prints a one-time <b>install URL</b> and a separate <b>claim code</b>, both valid for 15 minutes.</li>
+          <li>She opens <span class="ui">Claim Admin Passkey</span>, enters the code and registers a passkey. The VTC writes <b>two</b> unrestricted admin rows, hers and Bob's ("co-admin (install bootstrap)").</li>
+          <li><span class="ui">Sign in with passkey</span>, then <span class="ui">Set up signing</span> with her passkey.</li>
+        </ol>
+        <p class="note">The claim code is what protects this step, not the URL. Send them separately.</p>
+      </div>
+    </div>
+
+    <div class="step alice">
+      <div class="num">3</div>
+      <div><span class="who">Alice · only if Bob wasn't named at install</span>
+        <h4>Give Bob an admin row</h4>
+        <div class="fork">
+          <div><b>Scoped, online</b><br><span class="ui">Access control</span> → <span class="ui">Add entry</span> → DID, role <code>admin</code>, contexts → <span class="ui">Create entry</span> → Alice's passkey.</div>
+          <div><b>Unrestricted, offline once</b><pre>vtc acl add --did did:webvh:…:bob \
+  --role admin --label "Bob"
+# daemon stopped; audited at next start</pre></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step bob">
+      <div class="num">4</div>
+      <div><span class="who">Bob · browser plugin</span>
+        <h4>Sign in with the wallet and set up signing</h4>
+        <ol>
+          <li><span class="ui">Sign in as a VTA identity</span> → his persona. His VTA signs the sign-in.</li>
+          <li><span class="ui">Set up signing with your wallet</span>: the VTA authorizes a new console key in this browser.</li>
+        </ol>
+        <p>Bob can now do every administrative act that doesn't need a step-up.</p>
+      </div>
+    </div>
+
+    <div class="step alice">
+      <div class="num">5</div>
+      <div><span class="who">Alice → Bob</span>
+        <h4>Invite Bob to register a passkey</h4>
+        <p>Without a passkey at this VTC, every step-up act is refused for Bob, and he can't add the first one himself. Alice:</p>
+        <ol>
+          <li><span class="ui">Access control</span> → <span class="ui">Admin invites</span> → <span class="ui">Invite admin</span> → Bob's DID → <span class="ui">Mint invite</span>. Bob is already an admin, so this grants nothing and needs no consent.</li>
+          <li>Sends the URL and the claim code by <b>different channels</b>.</li>
+          <li>Bob opens it, enters the code and registers a passkey (<code>AdminPasskeyRegistered</code>).</li>
+        </ol>
+        <p>Bob's step-up now works whichever way he signs in.</p>
+      </div>
+    </div>
+
+    <div class="step both">
+      <div class="num">6</div>
+      <div><span class="who">Alice · cnm</span>
+        <h4>Make sure an approver can sign</h4>
+        <p>Approvals are signed by the admin DID's own key, never a console key. Today only <code>cnm consent approve</code> signs them, and only with a <code>did:key</code>. Bob's wallet <code>did:webvh</code> can't sign an approval yet, so give Alice's <code>cnm</code> Client DID its own unrestricted admin row (see the bootstrap runbook).</p>
+      </div>
+    </div>
+
+    <div class="step both">
+      <div class="num">7</div>
+      <div><span class="who">Bob proposes · Alice approves</span>
+        <h4>A third admin, entirely online</h4>
+        <ol>
+          <li>Bob makes Carol unrestricted in the console and confirms with his passkey. The VTC answers <i>"another unrestricted administrator has to approve this first"</i>.</li>
+          <li>Bob passes the refusal on. Alice checks and approves:</li>
+        </ol>
+        <pre>cnm consent show    refusal.json
+cnm consent approve refusal.json   # type Bob's match code</pre>
+        <ol start="3"><li>Bob sends the same operation again. Carol has her row, and repeats steps 4–5 for herself.</li></ol>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<!-- ── 7. Gaps ──────────────────────────────────────────── -->
+<section id="gaps"><div class="wrap">
+  <p class="kicker">07 · Known gaps</p>
+  <h2>What wallet administrators can't do yet</h2>
+  <div class="grid-3">
+    <div class="card top warn"><span class="lbl">Step-up</span><h3>Needs a VTC passkey</h3><p>Workaround: step 5. Using the plugin's approver identity as the factor is designed in <code>vtc-approver-step-up.md</code> and waits on spec changes.</p></div>
+    <div class="card top warn"><span class="lbl">Approvals</span><h3>Can't sign consent</h3><p><code>cnm consent</code> signs only with a <code>did:key</code>, and the console has no approval screen.</p></div>
+    <div class="card top warn"><span class="lbl">Install</span><h3>No wallet-only founder</h3><p>The install claim can't yet be made under an existing DID. That is a planned version of <code>vtc/install/claim</code>.</p></div>
+  </div>
+
+  <h3 style="margin-top:40px">Three holes in today's protections</h3>
+  <p style="color:var(--muted);max-width:74ch;margin:6px 0 18px">Found by a survey of every VTC operation on 2 October 2026. Together they let one compromised unrestricted admin get round the second-admin rule: remove the others, lower the threshold, then promote at will.</p>
+  <div class="grid-3">
+    <div class="card top hard"><span class="lbl">Hole 1</span><h3>Stripping the other admins</h3><p><code>acl/revoke</code>, demoting with <code>acl/change-role</code>, and <code>members/admin-remove</code> need no second admin. One admin can remove every other admin except the last.</p></div>
+    <div class="card top hard"><span class="lbl">Hole 2</span><h3>Lowering the threshold</h3><p><code>config/patch</code> or <code>config/import</code> can set <code>unrestricted_admin_consent_threshold</code> back to 1 with no consent. Only a value the community can't meet is refused.</p></div>
+    <div class="card top hard"><span class="lbl">Hole 3</span><h3>Policy is open to scoped admins</h3><p><code>policy/upsert</code> and <code>activate</code> accept any admin, and replace the rules for role changes, removal, joins and more. The default ban on removing admins is one of those rules.</p></div>
+  </div>
+</div></section>
+
+<!-- ── 8. Coming ────────────────────────────────────────── -->
+<section id="coming"><div class="wrap">
+  <p class="kicker">08 · What's coming</p>
+  <h2>Wallet administrators as first-class</h2>
+  <p class="sub">The design note <code>docs/05-design-notes/vtc-approver-step-up.md</code> (proposed, not built) lets the browser plugin's <b>approver identity</b> be an administrator's step-up factor. That identity is a separate <code>did:key</code> whose key is unlocked only by a biometric or hardware gesture. Bob would no longer need a passkey at the VTC.</p>
+
+  <div class="diagram">
+  <svg viewBox="0 0 980 300" role="img" aria-label="Planned step-up with the approver device">
+    <defs>
+      <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3c4"/></marker>
+      <marker id="arg2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#58e6a8"/></marker>
+      <marker id="arw2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ffb454"/></marker>
+    </defs>
+    <g font-family="-apple-system, Segoe UI, Roboto, sans-serif" font-size="14">
+      <rect x="30" y="14" width="190" height="44" rx="10" fill="#1c2540" stroke="#c79bff"/>
+      <text x="125" y="41" text-anchor="middle" fill="#e8edf7" font-weight="700">Console (Bob)</text>
+      <rect x="290" y="14" width="190" height="44" rx="10" fill="#1c2540" stroke="#c79bff"/>
+      <text x="385" y="41" text-anchor="middle" fill="#e8edf7" font-weight="700">Plugin approver</text>
+      <rect x="550" y="14" width="190" height="44" rx="10" fill="#1c2540" stroke="#6ea8ff"/>
+      <text x="645" y="41" text-anchor="middle" fill="#e8edf7" font-weight="700">Bob's VTA</text>
+      <rect x="790" y="14" width="160" height="44" rx="10" fill="#1c2540" stroke="#58e6c9"/>
+      <text x="870" y="41" text-anchor="middle" fill="#e8edf7" font-weight="700">VTC</text>
+      <line x1="125" y1="58" x2="125" y2="288" stroke="#2a3450" stroke-dasharray="5 5"/>
+      <line x1="385" y1="58" x2="385" y2="288" stroke="#2a3450" stroke-dasharray="5 5"/>
+      <line x1="645" y1="58" x2="645" y2="288" stroke="#2a3450" stroke-dasharray="5 5"/>
+      <line x1="870" y1="58" x2="870" y2="288" stroke="#2a3450" stroke-dasharray="5 5"/>
+
+      <line x1="870" y1="92" x2="129" y2="92" stroke="#ffb454" stroke-width="1.6" marker-end="url(#arw2)"/>
+      <text x="460" y="84" fill="#ffb454">① step-up required · accepts approverSigned</text>
+      <line x1="125" y1="130" x2="381" y2="130" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar2)"/>
+      <text x="136" y="122" fill="#e8edf7">② approveStepUp(operation)</text>
+      <rect x="290" y="144" width="190" height="50" rx="8" fill="#0d1322" stroke="#2a3450"/>
+      <text x="385" y="164" text-anchor="middle" fill="#94a3c4" font-size="12">re-checks the digest, shows the act,</text>
+      <text x="385" y="180" text-anchor="middle" fill="#94a3c4" font-size="12">gesture unlocks key, signs statement</text>
+      <line x1="125" y1="222" x2="641" y2="222" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar2)"/>
+      <text x="136" y="214" fill="#e8edf7">③ wallet signs the response as Bob's DID</text>
+      <line x1="645" y1="262" x2="866" y2="262" stroke="#58e6a8" stroke-width="1.6" marker-end="url(#arg2)"/>
+      <text x="656" y="254" fill="#58e6a8">④ VTC verifies both</text>
+    </g>
+  </svg>
+  </div>
+
+  <div class="grid-3" style="margin-top:18px">
+    <div class="card top acc">
+      <span class="lbl">The factor</span>
+      <h3>Your own approver device</h3>
+      <p>A new step-up evidence kind, <code>approverSigned</code>. It is a re-authentication, not a consent: the device is your second factor, not another party (VTI-APV-003). The VTC checks the device's signature itself and never relies on the VTA's word.</p>
+    </div>
+    <div class="card top acc">
+      <span class="lbl">The first-factor problem</span>
+      <h3>Four anchors to enrol</h3>
+      <ul>
+        <li><b>Install:</b> claim 0.3 under your existing DID, for a wallet-only founder</li>
+        <li><b>Invite:</b> another admin, behind their own step-up</li>
+        <li><b>Self-service:</b> from a factor you already hold</li>
+        <li><b>Offline:</b> <code>vtc admin enrol-approver</code>, audited</li>
+      </ul>
+    </div>
+    <div class="card top acc">
+      <span class="lbl">Beyond the browser</span>
+      <h3>Phone approvers (phase 2)</h3>
+      <p>The VTC pushes the request over TSP or DIDComm to the phone, which signs the same statement. This needs the VTC registered as a trusted issuer on the device at enrolment.</p>
+    </div>
+  </div>
+
+  <!-- action list -->
+  <h3 style="margin-top:48px">The action list: N-of-M approvals that complete themselves</h3>
+  <p style="color:var(--muted);max-width:76ch;margin:6px 0 18px">Designed in <code>docs/05-design-notes/vtc-action-list.md</code> (proposed). An operation that needs other admins' agreement is <b>parked</b> as an action instead of refused. Approvers find it in the console whenever they next sign in. When N of them have approved, the VTC re-checks everything and runs it, and it disappears from everyone else's list.</p>
+
+  <div class="diagram">
+  <svg viewBox="0 0 980 250" role="img" aria-label="Action lifecycle">
+    <defs>
+      <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3c4"/></marker>
+    </defs>
+    <g font-family="-apple-system, Segoe UI, Roboto, sans-serif" font-size="14">
+      <rect x="20" y="90" width="150" height="56" rx="12" fill="#1c2540" stroke="#6ea8ff"/>
+      <text x="95" y="114" text-anchor="middle" fill="#e8edf7" font-weight="700">Submit</text>
+      <text x="95" y="132" text-anchor="middle" fill="#94a3c4" font-size="12">checks + step-up</text>
+      <line x1="170" y1="118" x2="246" y2="118" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar3)"/>
+
+      <rect x="250" y="80" width="230" height="76" rx="12" fill="#1c2540" stroke="#ffb454"/>
+      <text x="365" y="106" text-anchor="middle" fill="#ffb454" font-weight="700">Open · waiting</text>
+      <text x="365" y="126" text-anchor="middle" fill="#94a3c4" font-size="12">approvals 1 of 2 · expires in 2 d 4 h</text>
+      <text x="365" y="144" text-anchor="middle" fill="#94a3c4" font-size="12">on every approver's list</text>
+      <line x1="480" y1="118" x2="586" y2="118" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar3)"/>
+      <text x="533" y="108" text-anchor="middle" fill="#94a3c4" font-size="12">N-th approve</text>
+
+      <rect x="590" y="80" width="170" height="76" rx="12" fill="#1c2540" stroke="#58e6c9"/>
+      <text x="675" y="108" text-anchor="middle" fill="#58e6c9" font-weight="700">Re-check</text>
+      <text x="675" y="128" text-anchor="middle" fill="#94a3c4" font-size="12">authority, approvers,</text>
+      <text x="675" y="144" text-anchor="middle" fill="#94a3c4" font-size="12">threshold, state pin</text>
+      <line x1="760" y1="104" x2="826" y2="80" stroke="#58e6a8" stroke-width="1.6" marker-end="url(#ar3)"/>
+      <line x1="760" y1="132" x2="826" y2="160" stroke="#ff7a8a" stroke-width="1.6" marker-end="url(#ar3)"/>
+      <rect x="830" y="56" width="130" height="44" rx="10" fill="#0d1322" stroke="#58e6a8"/>
+      <text x="895" y="83" text-anchor="middle" fill="#58e6a8" font-weight="700">completed</text>
+      <rect x="830" y="140" width="130" height="44" rx="10" fill="#0d1322" stroke="#ff7a8a"/>
+      <text x="895" y="167" text-anchor="middle" fill="#ff7a8a" font-weight="700">failed</text>
+
+      <line x1="365" y1="156" x2="365" y2="196" stroke="#94a3c4" stroke-width="1.4" marker-end="url(#ar3)"/>
+      <rect x="200" y="200" width="330" height="40" rx="10" fill="#0d1322" stroke="#2a3450"/>
+      <text x="365" y="225" text-anchor="middle" fill="#94a3c4" font-size="12.5">declined (any one deny) · expired · cancelled</text>
+      <text x="365" y="40" text-anchor="middle" fill="#647196" font-size="12">default lifetime 72 h (15 min – 14 days)</text>
+      <line x1="365" y1="46" x2="365" y2="76" stroke="#2a3450" stroke-dasharray="4 4"/>
+    </g>
+  </svg>
+  </div>
+
+  <div class="grid-3" style="margin-top:18px">
+    <div class="card top acc">
+      <span class="lbl">In the console</span>
+      <h3>See what's waiting</h3>
+      <div style="margin:12px 0 4px;display:flex;align-items:center;gap:10px;font-size:14px">
+        <span class="ui">Actions</span><span style="background:var(--hard);color:#0a0e1a;font-weight:800;border-radius:999px;padding:0 8px;font-size:12px">2</span>
+      </div>
+      <p>A badge with your count, a banner after sign-in, and <span class="mono">(2)</span> in the tab title. The page has tabs <b>Waiting for me</b>, <b>Requested by me</b> and <b>History</b>. Pushes to devices are optional; the list is the source of truth.</p>
+    </div>
+    <div class="card top acc">
+      <span class="lbl">Approving</span>
+      <h3>Your own factor, never a console key</h3>
+      <ul>
+        <li><b>cnm</b>: signs with the DID's key (works today)</li>
+        <li><b>Wallet</b>: the approver device's statement</li>
+        <li><b>Passkey</b>: an assertion over the request's digest</li>
+      </ul>
+    </div>
+    <div class="card top acc">
+      <span class="lbl">Rules</span>
+      <h3>One rule list, keyed on task</h3>
+      <p>Same model as the VTA: each rule names a Trust Task URI, its approvers, N, whether the requester is excluded, and a lifetime. Built-in rules can be tightened, never loosened. Changing the rules is itself an N-of-M action.</p>
+    </div>
+  </div>
+
+  <h3 style="margin-top:40px">Everything that could use it</h3>
+  <div class="grid-2" style="margin-top:14px">
+    <div class="card top hard">
+      <span class="lbl">Built in · protects the admin set</span>
+      <h3>N-of-M from day one</h3>
+      <ul>
+        <li>Making or widening an unrestricted admin (APV-014)</li>
+        <li>Removing, demoting or narrowing an unrestricted admin (closes hole 1)</li>
+        <li>Lowering the consent threshold (closes hole 2)</li>
+        <li>Policy changes for role change, removal, join, recognition and git-ns (closes hole 3)</li>
+        <li>Restoring a backup, which replaces the ACL</li>
+      </ul>
+      <p style="margin-top:10px">With only two admins, a removal has nobody else to approve it. It goes ahead after a 24 h cooling-off, with notice to the subject and a <code>Critical</code> audit row.</p>
+    </div>
+    <div class="card top warn">
+      <span class="lbl">Optional · by rule</span>
+      <h3>High-impact or irreversible</h3>
+      <ul>
+        <li>Backup export; purging members</li>
+        <li>Extending the VTC's DID log</li>
+        <li>Join criteria changes (review → automatic)</li>
+        <li>Granting vetters; auto-grant settings</li>
+        <li>Endorsement and personhood revocation</li>
+        <li>Discarding trust-registry sync jobs</li>
+        <li>Other policy; restart</li>
+        <li>git-ns unbind, reseat, repo transfer, granting <code>ns.admin</code> or <code>own</code></li>
+      </ul>
+    </div>
+    <div class="card top good">
+      <span class="lbl">Existing queues · move in</span>
+      <h3>Already waiting on a person</h3>
+      <ul>
+        <li><b>git-ns break-glass</b>: Ratify or Revoke; never expires into acceptance</li>
+        <li><b>Join review</b> (<code>admission: review</code>): N = 1 by default</li>
+        <li><b>Vetting withdrawal review</b>: Keep member, or Start removal</li>
+      </ul>
+    </div>
+    <div class="card top">
+      <span class="lbl" style="color:var(--dim)">Deliberately not</span>
+      <h3>Must stay fast, or isn't an admin decision</h3>
+      <ul>
+        <li>Incident response: revoking console keys or sessions, revoking invites. These remove access, never grant it</li>
+        <li>Rooms: authority is the owner chain, not the ACL</li>
+        <li>Forge or member link waits: a machine, not a person</li>
+        <li>Profile, website, schemas, invitations: optional at most</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3 style="margin-top:40px">The plan</h3>
+  <div class="layers" style="margin-top:14px">
+    <div class="layer"><div class="ic">1</div><div><h4>Specifications first</h4><p>trust-tasks: approve-response 0.6, approve-request 0.4, an approver enrolment family, install claim 0.3. VTI spec: clarify VTI-APV-015 and add a requirement on how a factor may be bound to an admin.</p></div><span class="stops" style="color:var(--warn);border-color:rgba(255,180,84,.4)">next</span></div>
+    <div class="layer"><div class="ic">2</div><div><h4>VTC factor store and gate</h4><p>A <code>step_up_approvers</code> keyspace; the step-up gate accepts <code>approverSigned</code>.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">planned</span></div>
+    <div class="layer"><div class="ic">3</div><div><h4>Enrolment and revocation</h4><p>Invite, self-service and offline routes; revoking a factor and recovering after losing every one.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">planned</span></div>
+    <div class="layer"><div class="ic">4</div><div><h4>Wallet founder install</h4><p>Install claim under an existing DID, plus <code>vtc setup</code> support.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">planned</span></div>
+    <div class="layer"><div class="ic">5</div><div><h4>Console and browser plugin</h4><p>The approver path in the console, <code>approveStepUp</code> in the plugin, enrolment screens, and an error that names the routes that actually work.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">planned</span></div>
+    <div class="layer"><div class="ic">6</div><div><h4>Action list for APV-014</h4><p>Park instead of refuse, complete on the N-th approval, the Actions page and badge, approving from the console. Specs first: <code>vtc/admin/actions/{list,cancel}</code>, <code>task-consent/decision/0.2</code>.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">planned</span></div>
+    <div class="layer"><div class="ic">7</div><div><h4>Close holes 1–3</h4><p>Built-in rules for removal, threshold lowering and authority policy; policy changes become unrestricted-admin only. A stop-gap could ship before the action list.</p></div><span class="stops" style="color:var(--warn);border-color:rgba(255,180,84,.4)">urgent</span></div>
+    <div class="layer"><div class="ic">8</div><div><h4>Existing queues, then optional rules</h4><p>Break-glass ratification, join review and vetting withdrawal review move in; then the rule list surface and optional rules.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">later</span></div>
+    <div class="layer"><div class="ic">9</div><div><h4>Phone approvers</h4><p>Phase 2 of the approver device.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">later</span></div>
+  </div>
+
+  <div class="grid-2" style="margin-top:24px">
+    <div class="card top warn">
+      <span class="lbl">Open questions</span>
+      <h3>Still to decide</h3>
+      <ul>
+        <li>One approver DID per community, so communities can't correlate you?</li>
+        <li>How far to trust that the device checked the user: a passkey proves it, a signature can't</li>
+        <li>Should approver devices be included in backups?</li>
+        <li>Should every new admin get an enrolment invite automatically?</li>
+      </ul>
+    </div>
+    <div class="card top hard">
+      <span class="lbl">Found, not yet designed</span>
+      <h3>Also on the list</h3>
+      <ul>
+        <li>Contexts that scope community resources (rooms, git namespaces), if wanted</li>
+        <li>The console shows "all" for a member with no contexts</li>
+        <li>The wallet sign-in hint mentions only the offline invite; the CLI names "Access → Invite"</li>
+        <li>Error toasts overflowing on long DIDs (fix ready)</li>
+      </ul>
+    </div>
+  </div>
+</div></section>
+
+<!-- ── 9. Reference ─────────────────────────────────────── -->
+<section id="ref"><div class="wrap">
+  <p class="kicker">09 · Quick reference</p>
+  <h2>I want to…</h2>
+  <div class="tbl">
+    <table>
+      <tbody>
+        <tr><td>add a scoped admin</td><td>Access control → Add entry → contexts set → your passkey</td></tr>
+        <tr><td>add an unrestricted admin (2+ admins)</td><td>Same, contexts blank → another admin approves → send it again</td></tr>
+        <tr><td>add an unrestricted admin (the only admin)</td><td><code>vtc acl add --did … --role admin</code>, daemon stopped</td></tr>
+        <tr><td>give an existing admin a passkey</td><td>Access control → Admin invites → Invite admin</td></tr>
+        <tr><td>give a member a step-up passkey</td><td>Members → member → Step-up passkeys → Invite…</td></tr>
+        <tr><td>approve a promotion</td><td><code>cnm consent show</code> / <code>approve</code> on the relayed refusal</td></tr>
+        <tr><td>require two approvers</td><td><code>acl.unrestricted_admin_consent_threshold = 2</code> (needs 3+ unrestricted admins)</td></tr>
+        <tr><td>see offline writes</td><td>Audit trail → <code>AclBreakGlassWritten</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  Companion to <code>docs/03-vtc/admin-access.md</code>. Requirements: VTI-APV-003, -014, -015; VTI-OPS-050; VTI-ACL-052, -053.
+</div></footer>
+
+</body>
+</html>
