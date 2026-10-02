@@ -120,7 +120,7 @@ impl DelegationScope {
 /// storage shape is (R3.1), and because the list endpoint serves this type's
 /// projection straight to the console.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "StoredDelegation")]
 pub struct ConsoleKeyDelegation {
     /// The console key's own `did:key` — an Ed25519 multikey, the DID the
     /// browser derives from the public half of its non-extractable keypair.
@@ -160,6 +160,51 @@ pub struct ConsoleKeyDelegation {
     /// Who revoked it — the owner, or a super-admin doing incident response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_by: Option<String>,
+}
+
+/// The row as stored, tolerant of what #1836 added. Rows written before it
+/// carry no `scope` (every one was a console key, and `console` is the only
+/// scope, so reading one as `console` widens nothing) and no `expiresAt` (they
+/// lasted until revoked). A row with no expiry reads as expiring
+/// [`MAX_LIFETIME_DAYS`] after it was created — the most a fresh enrolment
+/// gets — so a legacy key never outlives the ceiling, and one older than that
+/// is expired and its browser re-enrols.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredDelegation {
+    console_did: String,
+    admin_did: String,
+    #[serde(default)]
+    scope: DelegationScope,
+    #[serde(default)]
+    label: Option<String>,
+    created_at: DateTime<Utc>,
+    #[serde(default)]
+    expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    last_used_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    revoked_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    revoked_by: Option<String>,
+}
+
+impl From<StoredDelegation> for ConsoleKeyDelegation {
+    fn from(s: StoredDelegation) -> Self {
+        Self {
+            expires_at: s
+                .expires_at
+                .unwrap_or(s.created_at + Duration::days(MAX_LIFETIME_DAYS)),
+            console_did: s.console_did,
+            admin_did: s.admin_did,
+            scope: s.scope,
+            label: s.label,
+            created_at: s.created_at,
+            last_used_at: s.last_used_at,
+            revoked_at: s.revoked_at,
+            revoked_by: s.revoked_by,
+        }
+    }
 }
 
 impl ConsoleKeyDelegation {
@@ -419,6 +464,20 @@ mod tests {
 
     const CONSOLE: &str = "did:key:z6MkConsoleBrowserOne";
     const ADMIN: &str = "did:key:z6MkAdminOperator";
+
+    /// A row stored before #1836 has no `scope` and no `expiresAt`; it must
+    /// still read — as `console`, expiring a ceiling after creation — or every
+    /// console sign-in 500s on it.
+    #[test]
+    fn a_row_stored_before_scope_and_expiry_still_reads() {
+        let row = r#"{"consoleDid":"did:key:z6MkOld","adminDid":"did:key:z6MkAdmin","createdAt":"2026-09-01T00:00:00Z"}"#;
+        let d: ConsoleKeyDelegation = serde_json::from_str(row).expect("legacy row reads");
+        assert_eq!(d.scope, DelegationScope::Console);
+        assert_eq!(
+            d.expires_at,
+            d.created_at + Duration::days(MAX_LIFETIME_DAYS)
+        );
+    }
 
     fn temp_store() -> (KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
