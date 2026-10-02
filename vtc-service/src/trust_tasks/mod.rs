@@ -933,18 +933,25 @@ async fn dispatch_typed(
     let rooms_presenter = ctx.verified_signer.as_deref();
 
     match type_uri {
-        jr::JOIN_REQUEST_SUBMIT_TYPE => handle_submit(state, ctx, doc).await,
+        // The three join-decision arms are boxed. This `match` is one future
+        // the size of its largest arm, awaited for *every* document, and these
+        // three carry the whole decision — credential verification, every
+        // criterion evaluated, the vetting count, the policy — inline. Unboxed,
+        // they set the stack every other task is dispatched on: with
+        // `vetting-pcs` a `git-ns/*` document overflowed a 2 MiB test thread
+        // on Linux after VTI-13 (#1907) grew the join path.
+        jr::JOIN_REQUEST_SUBMIT_TYPE => Box::pin(handle_submit(state, ctx, doc)).await,
         jr::JOIN_REQUEST_MANIFEST_TYPE => handle_manifest(state, ctx, doc).await,
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
         jr::JOIN_REQUEST_WITHDRAW_TYPE => handle_withdraw(state, ctx, doc).await,
-        jr::JOIN_REQUEST_SUPPLEMENT_TYPE => handle_supplement(state, ctx, doc).await,
+        jr::JOIN_REQUEST_SUPPLEMENT_TYPE => Box::pin(handle_supplement(state, ctx, doc)).await,
         jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
         mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
         vta_sdk::protocols::credential_exchange::REQUEST => {
             credential_exchange::handle_request(state, ctx, doc).await
         }
         vta_sdk::protocols::credential_exchange::PRESENT => {
-            credential_exchange::handle_present(state, ctx, doc).await
+            Box::pin(credential_exchange::handle_present(state, ctx, doc)).await
         }
         vetting_wire::VETTING_REVOKE_STATEMENT_TYPE => {
             handle_revoke_statement(state, ctx, doc).await
