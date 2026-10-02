@@ -70,12 +70,18 @@ use crate::join::{JoinSubmitOutcome, decide_join, realize_join_verdict};
 /// indistinguishable from a local one. On success the applicant is the **proven
 /// holder** of the presentation. On `allow` the MembershipCredential is issued
 /// inline (the returned [`JoinSubmitOutcome::admit`]).
+///
+/// `criterion` is the join criterion the query was built from — the one the
+/// presentation is decided under. `None` decides it as a submission naming no
+/// criterion is decided: under the first criterion it meets.
+#[allow(clippy::too_many_arguments)]
 pub async fn present_and_decide_join(
     state: &AppState,
     vp_token: &JsonValue,
     expected_aud: &str,
     expected_nonce: &str,
     thread_id: &str,
+    criterion: Option<&str>,
     transport: JoinTransport,
     now: DateTime<Utc>,
 ) -> Result<JoinSubmitOutcome, AppError> {
@@ -99,6 +105,29 @@ pub async fn present_and_decide_join(
     //    not carry one is refused here, before any decision is taken.
     let presentation = presentation_from_verified_set(state, &set, thread_id).await?;
 
+    // Which criterion governs, and whether these credentials meet it. This path
+    // carries no invitation and no vetting statements, so a criterion asking
+    // for either is not met by it.
+    let presented = crate::join::criteria::Presented {
+        credentials: crate::join::criteria::presented_from_verified(&presentation),
+        ..Default::default()
+    };
+    let governing =
+        crate::join::criteria::govern_by_id(state, &applicant_did, &presented, criterion, now)
+            .await
+            .map_err(|r| {
+                match r {
+        crate::join::criteria::CriterionRefusal::NotAccepting => AppError::Validation(
+            "this community publishes no join criteria, so it is not accepting applications"
+                .into(),
+        ),
+        crate::join::criteria::CriterionRefusal::Unknown(id) => AppError::Validation(format!(
+            "the join criterion `{id}` this presentation answers is no longer published"
+        )),
+        crate::join::criteria::CriterionRefusal::Other(e) => e,
+    }
+            })?;
+
     // 3 + 4. Decide under the active join policy, then realize the verdict. The
     // credential-exchange path carries no VIC (invitations ride the VP-submit
     // path), so no invitation fact and nothing to consume.
@@ -109,12 +138,12 @@ pub async fn present_and_decide_join(
         &applicant_did,
         presentation,
         None,
-        None,
+        &governing,
         Some(thread_id),
     )
     .await?;
     let vp_claims = vp_claims_from_set(&set);
-    realize_join_verdict(
+    let outcome = realize_join_verdict(
         state,
         &applicant_did,
         vp_token.clone(),
@@ -128,7 +157,9 @@ pub async fn present_and_decide_join(
         transport,
         None,
     )
-    .await
+    .await?;
+    crate::join::orchestrate::record_criterion(state, outcome.request.id, &governing).await;
+    Ok(outcome)
 }
 
 // ---------------------------------------------------------------------------
@@ -160,9 +191,10 @@ pub async fn prepare_join_query(
         .ok_or_else(|| {
             AppError::NotFound(format!("no Accepts criterion `{criterion_id}` registered"))
         })?;
-    let dcql_query = DcqlQuery::from_json(&criterion.query).map_err(|e| {
-        AppError::Internal(format!(
-            "registered Accepts criterion `{criterion_id}` is not a valid DCQL query: {e}"
+    let dcql_query: DcqlQuery = criterion.dcql()?.ok_or_else(|| {
+        AppError::Validation(format!(
+            "the Accepts criterion `{criterion_id}` asks for no credential, so there is no query \
+             to send"
         ))
     })?;
 
@@ -170,6 +202,7 @@ pub async fn prepare_join_query(
         &state.join_requests_ks,
         thread_id,
         &vtc_did,
+        Some(criterion_id),
         DEFAULT_CHALLENGE_TTL,
         now,
     )
@@ -461,7 +494,7 @@ fn credential_from_verified(
 /// - entry present but unresolvable (malformed, or the list unreachable) →
 ///   [`CredentialStatus::Unknown`]: **surfaced, not guessed**, so the policy can
 ///   refuse rather than the verifier silently trusting an uncheckable credential.
-async fn resolve_presented_status(
+pub(crate) async fn resolve_presented_status(
     status_entry: Option<&JsonValue>,
     expected_issuer: Option<&str>,
     fetcher: &dyn StatusListFetcher,
@@ -543,7 +576,7 @@ fn parse_status_index(v: Option<&JsonValue>) -> Option<usize> {
 /// recognition graph loses trust on the next presentation, not when a TTL
 /// elapses. The verdict feeds the Rego `cred_trusted` policy helper — it is an
 /// input to the decision, not the decision itself.
-async fn issuer_trusted(
+pub(crate) async fn issuer_trusted(
     registry: Option<&dyn TrustRegistryClient>,
     own_did: Option<&str>,
     issuer_did: &str,

@@ -368,6 +368,7 @@ mod tests {
             &join_ks,
             "stale-thread",
             "did:web:v",
+            None,
             present_challenge::DEFAULT_CHALLENGE_TTL,
             now - ChronoDuration::minutes(10),
         )
@@ -396,6 +397,7 @@ mod tests {
             &join_ks,
             "fresh-thread",
             "did:web:v",
+            None,
             present_challenge::DEFAULT_CHALLENGE_TTL,
             now,
         )

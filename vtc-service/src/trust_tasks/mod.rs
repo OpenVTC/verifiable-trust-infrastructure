@@ -191,7 +191,6 @@ use vta_sdk::protocols::vetting::{
 };
 
 use crate::join::{JoinSubmitOutcome, JoinTransport};
-use crate::routes::join_requests::manifest::ManifestVersion;
 use crate::server::AppState;
 
 pub(crate) use helpers::DETAILS_MAX_JCS_BYTES;
@@ -935,12 +934,7 @@ async fn dispatch_typed(
 
     match type_uri {
         jr::JOIN_REQUEST_SUBMIT_TYPE => handle_submit(state, ctx, doc).await,
-        jr::JOIN_REQUEST_MANIFEST_TYPE => {
-            handle_manifest(state, ctx, doc, ManifestVersion::V0_1).await
-        }
-        jr::JOIN_REQUEST_MANIFEST_0_2_TYPE => {
-            handle_manifest(state, ctx, doc, ManifestVersion::V0_2).await
-        }
+        jr::JOIN_REQUEST_MANIFEST_TYPE => handle_manifest(state, ctx, doc).await,
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
         jr::JOIN_REQUEST_WITHDRAW_TYPE => handle_withdraw(state, ctx, doc).await,
         jr::JOIN_REQUEST_SUPPLEMENT_TYPE => handle_supplement(state, ctx, doc).await,
@@ -1664,11 +1658,7 @@ mod spine_proof_tests {
     const DISPATCHED_WITHOUT_PROOF: &[(&str, &str)] = &[
         (
             jr::JOIN_REQUEST_MANIFEST_TYPE,
-            "a public read of the community's vetting manifest; names no identity to authorize",
-        ),
-        (
-            jr::JOIN_REQUEST_MANIFEST_0_2_TYPE,
-            "a public read of the community's vetting manifest; names no identity to authorize",
+            "a public read of the community's join criteria; names no identity to authorize",
         ),
         (
             vetting_wire::VETTING_VETTER_LIST_TYPE,
@@ -2422,9 +2412,9 @@ fn unsupported_type_or_version(doc: &TrustTask<Value>, type_uri: &str) -> TrustT
 /// not actually serve.
 pub(crate) const DISPATCHED_URIS: &[&str] = &[
     jr::JOIN_REQUEST_SUBMIT_TYPE,
+    // 0.3: every criterion states its admission, in the order the community
+    // decides by.
     jr::JOIN_REQUEST_MANIFEST_TYPE,
-    // 0.2 adds the per-criterion vetting requirements and `requirementsDigest`.
-    jr::JOIN_REQUEST_MANIFEST_0_2_TYPE,
     jr::JOIN_REQUEST_STATUS_TYPE,
     // The applicant closing their own request. Paired with `status` above: the
     // poll is how they learn the community asked for more, and this is how
@@ -2762,7 +2752,7 @@ pub(crate) const STEP_UP_APPROVE_RESPONSE_V0_5_TYPE: &str =
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
 pub(crate) const SUBMIT_ERR_PRESENTATION_INVALID: &str =
-    trust_tasks_rs::specs::vtc::join_requests::submit::v0_2::error_codes::PRESENTATION_INVALID.code;
+    jr::JOIN_REQUEST_SUBMIT_ERR_PRESENTATION_INVALID;
 
 /// Resolve the proven holder DID for a holder-bound verb. DIDComm → the
 /// authcrypt sender; REST → the document proof signer. When the document
@@ -2833,6 +2823,7 @@ async fn handle_submit(
                 value: a.value,
             })
             .collect(),
+        body.criterion,
         None,
         ctx.transport,
     )
@@ -2892,6 +2883,26 @@ async fn handle_submit(
                 extended_code(SUBMIT_ERR_PRESENTATION_INVALID),
                 reason,
                 None,
+            );
+        }
+        // The community's criteria are its join rules; with none published it
+        // accepts nobody, and says so rather than queueing what it will never
+        // decide.
+        Err(crate::join::SubmitRefusal::NotAccepting) => {
+            return reject_with_code(
+                &doc,
+                extended_code(jr::JOIN_REQUEST_SUBMIT_ERR_NOT_ACCEPTING),
+                AppError::from(crate::join::SubmitRefusal::NotAccepting).to_string(),
+                None,
+            );
+        }
+        Err(crate::join::SubmitRefusal::CriterionUnknown(digest)) => {
+            let details = serde_json::json!({ "criterion": digest });
+            return reject_with_code(
+                &doc,
+                extended_code(jr::JOIN_REQUEST_SUBMIT_ERR_CRITERION_UNKNOWN),
+                AppError::from(crate::join::SubmitRefusal::CriterionUnknown(digest)).to_string(),
+                Some(details),
             );
         }
         Err(crate::join::SubmitRefusal::Other(e)) => return app_error_to_reject(&doc, &e),
@@ -3392,8 +3403,7 @@ fn caller_is_identified(ctx: &JoinAuthCtx) -> bool {
     ctx.verified_signer.is_some() || ctx.sender_did.is_some()
 }
 
-/// Both manifest versions share one read; the version the document names
-/// decides the shape of the answer.
+/// The join manifest (`vtc/join-requests/manifest/0.3`).
 ///
 /// Public unless the community has turned public discovery off, in which case
 /// an unidentified caller is refused and an identified one is answered exactly
@@ -3406,9 +3416,8 @@ async fn handle_manifest(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
-    version: ManifestVersion,
 ) -> TrustTaskOutcome {
-    use crate::routes::join_requests::manifest::{manifest_v0_1, manifest_v0_2};
+    use crate::routes::join_requests::manifest::manifest_v0_3;
     if !caller_is_identified(ctx) {
         let public = match crate::community::join_discovery::load_join_discovery(
             &state.community_ks,
@@ -3437,15 +3446,10 @@ async fn handle_manifest(
             );
         }
     }
-    let answer = match version {
-        ManifestVersion::V0_1 => manifest_v0_1(state)
-            .await
-            .map(|r| success_response(&doc, r)),
-        ManifestVersion::V0_2 => manifest_v0_2(state)
-            .await
-            .map(|r| success_response(&doc, r)),
-    };
-    answer.unwrap_or_else(|e| app_error_to_reject(&doc, &e))
+    manifest_v0_3(state)
+        .await
+        .map(|r| success_response(&doc, r))
+        .unwrap_or_else(|e| app_error_to_reject(&doc, &e))
 }
 
 // ─── status ────────────────────────────────────────────────────────────────
@@ -7868,8 +7872,7 @@ mod endorsement_type_tests {
             .expect("store the referenced schema");
         let criterion: crate::schemas::accepts::AcceptsCriterion = serde_json::from_value(json!({
             "id": "vetted",
-            "query": { "credentials": [ { "id": "vetting", "format": "ldp_vc",
-                       "meta": { "type_values": ["StatementCredential"] } } ] },
+            "admission": "automatic",
             "vetting": {
                 "version": "0.1",
                 "statementType": TYPE,

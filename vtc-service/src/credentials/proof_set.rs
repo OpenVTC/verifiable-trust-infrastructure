@@ -12,6 +12,44 @@ pub(crate) use vta_sdk::trust_task_proof::proof_set::{
     accept_all, proof_set, proof_signer_did, verify_one,
 };
 
+use serde_json::Value as JsonValue;
+use vti_common::auth::{ProofPurpose, PurposeVmResolver};
+
+/// Verify the issuer's proof set on a credential `doc`: every proof bound to
+/// `issuer_did` — checked before any signature, so a proof naming someone else
+/// is refused as the wrong author rather than reached by happening to verify —
+/// and every checkable proof valid under `assertionMethod` over the
+/// proof-stripped document.
+///
+/// The reading the invitation, recognition and join-criterion paths share.
+/// Errors are the reason, for the caller to wrap in its own refusal.
+pub(crate) async fn verify_issued(
+    doc: &JsonValue,
+    issuer_did: &str,
+    resolver: &dyn PurposeVmResolver,
+) -> Result<(), String> {
+    let proof_value = doc.get("proof").ok_or("no proof")?;
+    let proofs = proof_set(proof_value).map_err(|e| format!("proof did not parse: {e}"))?;
+    for proof in &proofs {
+        super::vm_resolver::check_issuer_binding(&proof.verification_method, issuer_did)
+            .map_err(|e| e.to_string())?;
+    }
+    let mut unsigned = doc.clone();
+    unsigned
+        .as_object_mut()
+        .ok_or("not a JSON object")?
+        .remove("proof");
+    let mut outcomes: Vec<(String, Result<(), String>)> = Vec::with_capacity(proofs.len());
+    for proof in &proofs {
+        let did = proof_signer_did(proof).to_string();
+        let r = verify_one(proof, &unsigned, resolver, ProofPurpose::AssertionMethod).await;
+        outcomes.push((did, r));
+    }
+    accept_all(&outcomes)
+        .map(|_| ())
+        .map_err(|e| format!("signature did not verify: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

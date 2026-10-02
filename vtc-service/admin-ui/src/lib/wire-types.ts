@@ -89,16 +89,16 @@ export type AutoGrantConfig = Schemas["AutoGrantConfig"];
 export type AutoGrantSweep = Schemas["AutoGrantSweep"];
 export type VettingRevocationRow = Schemas["VettingRevocationRow"];
 export type RevocationReviewState = Schemas["RevocationReviewState"];
-/** The vetting vocabulary, as `vtc/join-requests/manifest/0.2` defines it. */
-export type VettingMethod = Schemas["VtcJoinRequestsManifestV0_2VettingMethod"];
-export type VettingRelationship = Schemas["VtcJoinRequestsManifestV0_2VettingRelationship"];
+/** The vetting vocabulary, as `vtc/join-requests/manifest/0.3` defines it. */
+export type VettingMethod = Schemas["VtcJoinRequestsManifestV0_3VettingMethod"];
+export type VettingRelationship = Schemas["VtcJoinRequestsManifestV0_3VettingRelationship"];
 export type VetterListBody = Schemas["VtcVettingVettersListV0_1Payload"];
 export type VetterListResponse = Schemas["VtcVettingVettersListV0_1Response"];
 export type ListedVetter = Schemas["VtcVettingVettersListV0_1ListedVetter"];
 export type VetterEvent = Schemas["VtcVettingVettersListV0_1VetterEvent"];
 export type VetterLocation = Schemas["VtcVettingVettersListV0_1VetterLocation"];
-/** `vtc/join-requests/manifest/0.2`'s branding — also the body of `/v1/community/branding`. */
-export type CommunityBranding = Schemas["VtcJoinRequestsManifestV0_2CommunityBranding"];
+/** `vtc/join-requests/manifest/0.3`'s branding — also the body of `/v1/community/branding`. */
+export type CommunityBranding = Schemas["VtcJoinRequestsManifestV0_3CommunityBranding"];
 export type RequestVmcResponse = Schemas["RequestVmcResponse"];
 
 // ── Join requests ───────────────────────────────────────────────────────
@@ -108,18 +108,19 @@ export type JoinRequestsPage = Schemas["Paginated_JoinRequest"];
 export type JoinRequestVettingResponse = Schemas["JoinRequestVettingResponse"];
 export type JoinRequestVetting = Schemas["JoinRequestVetting"];
 export type JoinRequestVettingStatement = Schemas["JoinRequestVettingStatement"];
-export type JoinManifest = Schemas["VtcJoinRequestsManifestV0_2Response"];
-export type ManifestCriterion = Schemas["VtcJoinRequestsManifestV0_2Criterion"];
-export type VettingRequirements = Schemas["VtcJoinRequestsManifestV0_2VettingRequirements"];
+export type JoinManifest = Schemas["VtcJoinRequestsManifestV0_3Response"];
+export type ManifestCriterion = Schemas["VtcJoinRequestsManifestV0_3Criterion"];
+export type VettingRequirements = Schemas["VtcJoinRequestsManifestV0_3VettingRequirements"];
 export type DecideResponse = Schemas["DecideResponse"];
 
 // ── Admission criteria + endorsement types ──────────────────────────────
 //
 // What the manifest publishes, the community stores as an Accepts criterion:
-// the manifest criterion is the applicant's view (with its `requirementsDigest`)
-// and `AcceptsCriterion` is the editable record behind it.
-export type AcceptsCriterion = Schemas["AcceptsCriterion"];
-export type RegisterAcceptsBody = Schemas["RegisterAcceptsBody"];
+// the manifest criterion is the applicant's view (with its `requirementsDigest`,
+// in the order the community decides by) and `AcceptsCriterion` is the editable
+// record behind it (`vtc/schemas/accepts/{register,list}/0.2`).
+export type AcceptsCriterion = Schemas["VtcSchemasAcceptsListV0_2AcceptsCriterion"];
+export type RegisterAcceptsBody = Schemas["VtcSchemasAcceptsRegisterV0_2Payload"];
 export type EndorsementType = Schemas["EndorsementType"];
 export type EndorsementTypesPage = Schemas["Paginated_EndorsementType"];
 /** `{ endorsementType: … }`, what `endorsement-types/register/0.1` publishes. */

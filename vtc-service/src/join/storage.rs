@@ -77,7 +77,69 @@ pub async fn store_join_request(
 pub async fn delete_join_request(ks: &KeyspaceHandle, id: Uuid) -> Result<(), AppError> {
     ks.remove(vetting_facts_key(id)).await?;
     ks.remove(credential_resends_key(id)).await?;
+    ks.remove(criterion_key(id)).await?;
     ks.remove(key(id)).await
+}
+
+/// Key prefix of the criterion record kept for a join request. Distinct from
+/// [`PREFIX`], so a request listing never reads one.
+const CRITERION_PREFIX: &[u8] = b"join_criterion:";
+
+fn criterion_key(id: Uuid) -> Vec<u8> {
+    let mut k = CRITERION_PREFIX.to_vec();
+    k.extend_from_slice(id.as_hyphenated().to_string().as_bytes());
+    k
+}
+
+/// Which criterion, and which version of it, a join was decided under, and so
+/// what a supplement re-decides it under.
+///
+/// The record decision rule 4 of `vtc/join-requests/submit/0.3` requires.
+///
+/// Kept beside the request rather than on it, for the reason
+/// [`StoredVettingFacts`] is: the request row is a published wire shape.
+/// Deleted with the request.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredCriterion {
+    /// The join request.
+    pub request_id: Uuid,
+    /// The criterion as the decision read it.
+    pub criterion: crate::join::criteria::CriterionFact,
+    /// When the decision was taken.
+    pub decided_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Record the criterion a join request was decided under.
+pub async fn store_criterion(
+    ks: &KeyspaceHandle,
+    request_id: Uuid,
+    criterion: &crate::join::criteria::CriterionFact,
+    decided_at: chrono::DateTime<chrono::Utc>,
+) -> Result<(), AppError> {
+    let row = StoredCriterion {
+        request_id,
+        criterion: criterion.clone(),
+        decided_at,
+    };
+    ks.insert(
+        String::from_utf8(criterion_key(request_id)).expect("key is ASCII"),
+        &row,
+    )
+    .await
+}
+
+/// The criterion a join request was decided under, if recorded.
+pub async fn get_criterion(
+    ks: &KeyspaceHandle,
+    request_id: Uuid,
+) -> Result<Option<StoredCriterion>, AppError> {
+    match ks.get_raw(criterion_key(request_id)).await? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| AppError::Internal(format!("join criterion record decode: {e}"))),
+        None => Ok(None),
+    }
 }
 
 /// Key prefix of the credential re-delivery record for a join request

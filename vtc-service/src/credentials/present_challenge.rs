@@ -35,6 +35,10 @@ struct PresentChallenge {
     nonce: String,
     aud: String,
     expires_at: DateTime<Utc>,
+    /// The join criterion the query was built from, which the presentation is
+    /// decided under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    criterion: Option<String>,
 }
 
 /// The freshness `nonce` + `aud` a holder must have bound into its presentation,
@@ -45,6 +49,8 @@ pub struct ConsumedChallenge {
     pub nonce: String,
     /// The verifier identity (the VTC DID) the holder's kb-jwt must name.
     pub aud: String,
+    /// The join criterion the query was built from, if it was built from one.
+    pub criterion: Option<String>,
 }
 
 /// Issue a single-use presentation challenge for `thread_id`, bound to `aud`
@@ -54,6 +60,7 @@ pub async fn issue(
     ks: &KeyspaceHandle,
     thread_id: &str,
     aud: &str,
+    criterion: Option<&str>,
     ttl: Duration,
     now: DateTime<Utc>,
 ) -> Result<String, AppError> {
@@ -62,6 +69,7 @@ pub async fn issue(
         nonce: nonce.clone(),
         aud: aud.to_string(),
         expires_at: now + ttl,
+        criterion: criterion.map(str::to_string),
     };
     ks.insert(key(thread_id), &rec).await?;
     Ok(nonce)
@@ -91,6 +99,7 @@ pub async fn consume(
     Ok(ConsumedChallenge {
         nonce: rec.nonce,
         aud: rec.aud,
+        criterion: rec.criterion,
     })
 }
 
@@ -138,6 +147,7 @@ mod tests {
             &ks,
             "thread-1",
             "did:web:vtc.example",
+            None,
             DEFAULT_CHALLENGE_TTL,
             now,
         )
@@ -157,6 +167,7 @@ mod tests {
             &ks,
             "thread-1",
             "did:web:vtc.example",
+            None,
             DEFAULT_CHALLENGE_TTL,
             now,
         )
@@ -180,6 +191,7 @@ mod tests {
             &ks,
             "thread-1",
             "did:web:vtc.example",
+            None,
             DEFAULT_CHALLENGE_TTL,
             issued_at,
         )
@@ -215,13 +227,14 @@ mod tests {
             &ks,
             "stale",
             "did:web:v",
+            None,
             DEFAULT_CHALLENGE_TTL,
             now - Duration::minutes(10),
         )
         .await
         .unwrap();
         // Fresh: issued now → survives.
-        issue(&ks, "fresh", "did:web:v", DEFAULT_CHALLENGE_TTL, now)
+        issue(&ks, "fresh", "did:web:v", None, DEFAULT_CHALLENGE_TTL, now)
             .await
             .unwrap();
 

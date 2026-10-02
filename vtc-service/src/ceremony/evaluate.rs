@@ -155,6 +155,7 @@ statement_trusted(p) if {
                     }],
                 }),
                 request: Some(json!({ "agreements": {} })),
+                criterion: None,
             },
             state: State {
                 subject_member: None,

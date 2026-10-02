@@ -7,11 +7,11 @@
 // operator had to do was the one thing the console could not help with.
 //
 // It reads both surfaces, because they answer different questions. The criteria
-// (`GET /v1/schemas/accepts`) are the records being edited — the DCQL query
-// included, which the manifest does not carry. The manifest is what applicants
-// receive, and it alone carries each criterion's `requirementsDigest`: the
-// value an applicant records when they start gathering statements, so a change
-// made here is visible to them rather than silent.
+// (`vtc/schemas/accepts/list/0.2`) are the records being edited. The manifest
+// (`vtc/join-requests/manifest/0.3`) is what applicants receive, and it alone
+// carries two things: each criterion's `requirementsDigest` — the value an
+// applicant cites, so a change made here is visible to them rather than silent
+// — and the order the community decides by, which is the order shown here.
 //
 // The checks shown are `validateRequirements`, the same rules the daemon
 // applies — so a criterion stored before a rule existed says what would be
@@ -25,6 +25,8 @@ import { CopyButton } from "@/components/CopyButton";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useToast } from "@/lib/toast";
 import {
+  admissionSentence,
+  criterionRequirementLines,
   summarizeRequirements,
   validateRequirements,
   type VettingRequirements,
@@ -57,7 +59,14 @@ export function RequirementsPanel() {
   });
   const [editing, setEditing] = useState<Editing>({ kind: "none" });
 
-  const rows = criteria.data ?? [];
+  // In the order the community decides by: the manifest's. A criterion the
+  // manifest does not list yet (it was just saved) goes last, as it will.
+  const published = (manifest.data?.criteria ?? []).map((c) => c.id);
+  const rank = (id: string) => {
+    const at = published.indexOf(id);
+    return at < 0 ? published.length : at;
+  };
+  const rows = [...(criteria.data ?? [])].sort((a, b) => rank(a.id) - rank(b.id));
   const digests = new Map(
     (manifest.data?.criteria ?? []).map((c) => [c.id, c.requirementsDigest]),
   );
@@ -96,15 +105,20 @@ export function RequirementsPanel() {
       <section className="card" aria-labelledby="requirements-title">
         <h3 id="requirements-title">Admission criteria</h3>
         <p className="lead">
-          Each criterion is one way into this community — an applicant satisfies
-          any one of them. A criterion that requires vetting says how many
-          statements it counts and from whom; every number is this community's
-          policy, and the protocol has no defaults.
+          Each criterion is one way into this community: what it asks for, and
+          whether an applicant who meets it is admitted automatically or
+          referred to an administrator. Nobody is admitted other than through
+          one of them. An applicant who names no criterion is decided under the
+          first one they meet, in the order below — so a criterion that asks for
+          nothing, listed first, would decide every application. Every rule here
+          is this community's policy; the protocol has no defaults.
         </p>
         {criteria.isPending && <p className="muted">Loading the criteria…</p>}
         {criteria.data && rows.length === 0 && (
           <p className="muted">
-            No criteria are registered, so applicants are asked for no evidence.
+            No criteria are registered, so this community is not accepting
+            applications. Add one to open it — a criterion that asks for nothing
+            lets anyone apply.
           </p>
         )}
         {editing.kind === "none" && (
@@ -141,9 +155,10 @@ export function RequirementsPanel() {
         />
       )}
 
-      {rows.map((criterion) => (
+      {rows.map((criterion, index) => (
         <CriterionCard
           key={criterion.id}
+          position={index + 1}
           criterion={criterion}
           digest={digests.get(criterion.id)}
           busy={remove.isPending || editing.kind !== "none"}
@@ -156,12 +171,14 @@ export function RequirementsPanel() {
 }
 
 function CriterionCard({
+  position,
   criterion,
   digest,
   busy,
   onEdit,
   onRemove,
 }: {
+  position: number;
   criterion: AcceptsCriterion;
   digest: string | null | undefined;
   busy: boolean;
@@ -177,13 +194,32 @@ function CriterionCard({
   return (
     <section className="card" aria-labelledby={titleId}>
       <h3 id={titleId}>
-        Criterion <code>{criterion.id}</code>
+        {position}. Criterion <code>{criterion.id}</code>
       </h3>
       {criterion.description && <p>{criterion.description}</p>}
+      <p>
+        <strong>{admissionSentence(criterion.admission)}</strong>
+      </p>
+      <ul className="vet-list" aria-label="What it asks for">
+        {criterionRequirementLines(criterion).map((line) => (
+          <li key={line}>{line}</li>
+        ))}
+      </ul>
+      {digest && !vetting && (
+        <dl>
+          <dt>Requirements digest</dt>
+          <dd>
+            <code>{digest}</code>
+            <CopyButton
+              value={digest}
+              label="Copy requirements digest"
+              successMessage="Requirements digest copied"
+            />
+          </dd>
+        </dl>
+      )}
 
-      {!vetting ? (
-        <p className="muted">This criterion requires no vetting.</p>
-      ) : (
+      {vetting && (
         <>
           {problems.length > 0 && (
             <div className="finding error" role="alert">

@@ -150,6 +150,8 @@ pub(super) async fn handle_present(
         // The same thread the challenge was keyed by: the exchange every
         // presented credential's `taskContext` is resolved against.
         &thread_id,
+        // The criterion the query was built from governs the decision.
+        challenge.criterion.as_deref(),
         ctx.transport,
         now,
     )

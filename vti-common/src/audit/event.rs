@@ -1065,6 +1065,11 @@ pub struct SchemaChangeData {
     pub id: String,
     /// `"schema"` or `"accepts"`.
     pub kind: String,
+    /// For an accepts criterion registered, its `admission` (`automatic` or
+    /// `review`) — what the criterion obliges the community to do, which
+    /// `vtc/schemas/accepts/register/0.2` requires the audit to name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

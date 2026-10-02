@@ -283,6 +283,15 @@ impl TestVtcBuilder {
             .keyspace(crate::store::keyspaces::ACCEPTED_IDS)
             .expect("accepted_ids ks");
         let schemas_ks = store.keyspace("schemas").expect("schemas ks");
+        // As `server::run` does at boot: the default join criteria (an
+        // invitation admits, a membership credential admits, anything else is
+        // reviewed). A test that needs other criteria registers or deletes
+        // them like an administrator would. The Issues seed is left out: tests
+        // read the schema registry as empty, and the default criteria name no
+        // registered type.
+        crate::schemas::seed_default_criteria(&schemas_ks, self.registry_client.is_some())
+            .await
+            .expect("seed default join criteria");
         let endorsements_ks = store.keyspace("endorsements").expect("endorsements ks");
         let rooms_ks = store.keyspace("rooms").expect("rooms ks");
         let room_records_ks = store.keyspace("room_records").expect("room_records ks");

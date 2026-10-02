@@ -155,8 +155,12 @@ use crate::server::AppState;
         join_requests::read::JoinRequestVettingResponse,
         join_requests::read::JoinRequestVetting,
         join_requests::read::JoinRequestVettingStatement,
-        crate::schemas::AcceptsCriterion,
-        schemas::RegisterAcceptsBody,
+        // The join criteria, as the console registers and lists them
+        // (`vtc/schemas/accepts/{register,list}/0.2`) and as applicants read
+        // them (`vtc/join-requests/manifest/0.3`).
+        vta_sdk::openapi::AcceptsRegister02Payload,
+        vta_sdk::openapi::AcceptsList02Response,
+        vta_sdk::openapi::JoinManifest03Response,
         rooms::HostedRoom,
         // The custom-endorsement reads/revoke the console signs
         // (`vtc/endorsements/{list,show,revoke}/0.1`) — bearer REST routes for

@@ -221,6 +221,11 @@ pub struct Evidence {
     /// requires vetting. Absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vetting: Option<crate::vetting::VettingFacts>,
+    /// The join criterion the submission is decided under, and whether it is
+    /// met (`vtc/join-requests/submit/0.3`). Present on every join decision;
+    /// the host holds the policy to it ([`super::invariant`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub criterion: Option<crate::join::criteria::CriterionFact>,
 }
 
 /// A verified invitation credential (VIC). All fields are
@@ -440,6 +445,7 @@ mod tests {
                     }],
                 }),
                 request: Some(json!({ "agreements": {} })),
+                criterion: None,
             },
             state: State {
                 subject_member: None,
@@ -498,6 +504,7 @@ mod tests {
                 invitation: None,
                 presentation: None,
                 request: Some(json!({ "fields_requested": ["did", "role", "joined_at"] })),
+                criterion: None,
             },
             state: State {
                 subject_member: Some(MemberState {
@@ -584,6 +591,7 @@ mod tests {
                     }],
                 }),
                 request: None,
+                criterion: None,
             },
             state: State {
                 subject_member: None,

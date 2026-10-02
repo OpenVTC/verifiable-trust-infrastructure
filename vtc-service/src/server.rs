@@ -768,6 +768,17 @@ pub async fn run(
             did_resolver.clone(),
         )),
     };
+    // Offer the default join criteria once (invitation → automatic, a
+    // membership credential → automatic, anything else → review). Once only:
+    // an administrator's deletions stay deleted, and a community that already
+    // has criteria keeps them. "Recognised" issuers need a trust registry to
+    // be evaluable, so without one the credential criterion counts this
+    // community's own credentials only.
+    let seeded =
+        crate::schemas::seed_default_criteria(&schemas_ks, registry_client.is_some()).await?;
+    if seeded > 0 {
+        info!(seeded, "default join criteria registered");
+    }
 
     // Build AppState for the REST thread
     let state = AppState {

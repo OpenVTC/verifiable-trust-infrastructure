@@ -28,14 +28,14 @@ const TYPES: EndorsementType[] = [
 const stored = (vetting: unknown): AcceptsCriterion =>
   ({
     id: "kernel-developer",
-    query: DEFAULT_ACCEPTS_QUERY,
+    admission: "automatic",
     vetting,
     createdAt: "2026-01-01T00:00:00Z",
     createdByDid: "did:key:zAdmin",
   }) as unknown as AcceptsCriterion;
 
 const saveRoute = taskRoute(
-  "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.1",
+  "https://trusttasks.org/spec/vtc/schemas/accepts/register/0.2",
   (payload) => ({ criterion: payload }),
 );
 
@@ -70,10 +70,12 @@ describe("CriterionEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add criterion" }));
 
     await waitFor(() => expect(requests.length).toBe(1));
+    // A new criterion is reviewed unless the administrator says otherwise,
+    // and asks for no credential or invitation unless they add one.
     expect((requests[0]!.body as { payload: unknown }).payload).toEqual({
       id: "vetted-member",
+      admission: "review",
       description: "One vetter must confirm who you are",
-      query: DEFAULT_ACCEPTS_QUERY,
       vetting: {
         version: "0.1",
         statementType: STATEMENT_TYPE,
@@ -86,6 +88,57 @@ describe("CriterionEditor", () => {
       },
     });
     // The schema store is one of the daemon's Trust-Task-exempt routes.
+  });
+
+  it("writes open admission: a criterion that asks for nothing and admits", async () => {
+    const requests = mockFetch([saveRoute]);
+    renderWithProviders(
+      <CriterionEditor
+        criterion={null}
+        existingIds={[]}
+        statementTypes={TYPES}
+        onDone={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "open" } });
+    fireEvent.click(screen.getByRole("switch", { name: /must be vetted by members/ }));
+    fireEvent.click(screen.getByRole("radio", { name: "Admit them automatically" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add criterion" }));
+
+    await waitFor(() => expect(requests.length).toBe(1));
+    expect((requests[0]!.body as { payload: unknown }).payload).toEqual({
+      id: "open",
+      admission: "automatic",
+    });
+  });
+
+  it("writes an invitation and a credential requirement with whose credentials count", async () => {
+    const requests = mockFetch([saveRoute]);
+    renderWithProviders(
+      <CriterionEditor
+        criterion={null}
+        existingIds={[]}
+        statementTypes={TYPES}
+        onDone={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "partners" } });
+    fireEvent.click(screen.getByRole("switch", { name: /must be vetted by members/ }));
+    fireEvent.click(screen.getByRole("switch", { name: /hold an invitation this community issued/ }));
+    fireEvent.click(screen.getByRole("switch", { name: /must present credentials/ }));
+    fireEvent.change(screen.getByLabelText("Whose credentials count"), {
+      target: { value: "recognised" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add criterion" }));
+
+    await waitFor(() => expect(requests.length).toBe(1));
+    expect((requests[0]!.body as { payload: unknown }).payload).toEqual({
+      id: "partners",
+      admission: "review",
+      query: DEFAULT_ACCEPTS_QUERY,
+      credentialIssuers: "recognised",
+      invitationRequired: true,
+    });
   });
 
   it("refuses to send requirements the community would reject, and says why", async () => {

@@ -308,6 +308,7 @@ async fn submit_join_signs_and_gets_a_verdict() {
             "holder": applicant_did,
         }),
         registry_consent: false,
+        criterion: None,
         extensions: serde_json::json!({}),
         attributes: Vec::new(),
     };
@@ -351,6 +352,7 @@ async fn submitted_request_is_attributed_to_the_signing_did() {
             "holder": applicant_did,
         }),
         registry_consent: false,
+        criterion: None,
         extensions: serde_json::json!({}),
         attributes: Vec::new(),
     };

@@ -9,7 +9,7 @@
 //! | `vtc/community/{branding,requested-attributes,join-discovery}/show/0.1` | any entry |
 //! | `vtc/community/{branding,requested-attributes,join-discovery}/update/0.1` | `Admin` |
 //! | `vtc/schemas/{register,list,show,delete}/0.1` | `Admin` |
-//! | `vtc/schemas/accepts/{register,list,show,delete}/0.1` | `Admin` |
+//! | `vtc/schemas/accepts/{register,list,show}/0.2`, `…/delete/0.1` | `Admin` |
 //! | `vtc/vetting/vetters/grants/list/0.1` | `Admin` |
 //! | `vtc/vetting/auto-grant/{show,update}/0.1` | `Admin` |
 //! | `vtc/vetting/revocations/list/0.1` | `Admin` |
@@ -50,8 +50,8 @@ use trust_tasks_rs::specs::vtc::relationships::{
 use trust_tasks_rs::specs::vtc::rooms::list::v0_1 as rooms_list;
 use trust_tasks_rs::specs::vtc::schemas::{
     accepts::{
-        delete::v0_1 as accepts_delete, list::v0_1 as accepts_list,
-        register::v0_1 as accepts_register, show::v0_1 as accepts_show,
+        delete::v0_1 as accepts_delete, list::v0_2 as accepts_list,
+        register::v0_2 as accepts_register, show::v0_2 as accepts_show,
     },
     delete::v0_1 as schemas_delete,
     list::v0_1 as schemas_list,
@@ -120,6 +120,8 @@ pub(crate) const ACCEPTS_REGISTER_ERR_INVALID_VETTING: &str =
     accepts_register::error_codes::INVALID_VETTING.code;
 pub(crate) const ACCEPTS_REGISTER_ERR_NOT_PUBLISHABLE: &str =
     accepts_register::error_codes::NOT_PUBLISHABLE.code;
+pub(crate) const ACCEPTS_REGISTER_ERR_UNSUPPORTED_REQUIREMENT: &str =
+    accepts_register::error_codes::UNSUPPORTED_REQUIREMENT.code;
 pub(crate) const ACCEPTS_SHOW_ERR_NOT_FOUND: &str = accepts_show::error_codes::NOT_FOUND.code;
 pub(crate) const ACCEPTS_DELETE_ERR_NOT_FOUND: &str = accepts_delete::error_codes::NOT_FOUND.code;
 pub(crate) const SUSPEND_ERR_NOT_FOUND: &str = rel_suspend::error_codes::NOT_FOUND.code;
@@ -561,9 +563,10 @@ async fn handle_schemas_delete(
     let users: Vec<String> = criteria
         .into_iter()
         .filter(|c| {
-            affinidi_openid4vp::DcqlQuery::from_json(&c.query)
-                .map(|q| crate::schemas::accepts::referenced_types(&q).contains(&type_uri))
-                .unwrap_or(false)
+            c.dcql()
+                .ok()
+                .flatten()
+                .is_some_and(|q| crate::schemas::accepts::referenced_types(&q).contains(&type_uri))
         })
         .map(|c| c.id)
         .collect();
@@ -595,15 +598,21 @@ async fn handle_accepts_register(
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    let body: crate::routes::schemas::RegisterAcceptsBody = match parse_payload(&doc) {
+    let body: accepts_register::Payload = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
+    let criterion = match accepts_criterion_from(body) {
+        Ok(c) => c,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
     // The refusals the specification orders: the query parses, the types it
     // names are registered, the statement type is registered, the vetting
-    // requirements are satisfiable, and the manifest can publish the result.
-    if let Err(AppError::Validation(m)) =
-        crate::schemas::accepts::validate_accepts_query(&state.schemas_ks, &body.query).await
+    // requirements are satisfiable, every requirement is one this community
+    // can evaluate, and the manifest can publish the result.
+    if let Some(query) = &criterion.query
+        && let Err(AppError::Validation(m)) =
+            crate::schemas::accepts::validate_accepts_query(&state.schemas_ks, query).await
     {
         let code = if m.starts_with("invalid DCQL query") {
             ACCEPTS_REGISTER_ERR_INVALID_QUERY
@@ -612,7 +621,7 @@ async fn handle_accepts_register(
         };
         return declared(&doc, code, m);
     }
-    if let Some(vetting) = &body.vetting {
+    if let Some(vetting) = &criterion.vetting {
         match crate::endorsement_types::storage::type_exists(
             &state.endorsement_types_ks,
             &vetting.statement_type,
@@ -642,12 +651,84 @@ async fn handle_accepts_register(
             );
         }
     }
-    match crate::routes::schemas::register_accepts_inner(state, &actor, body).await {
-        Ok(criterion) => success_response(&doc, json!({ "criterion": criterion })),
+    if let Some(reason) = unsupported_requirement(state, &criterion) {
+        return declared(&doc, ACCEPTS_REGISTER_ERR_UNSUPPORTED_REQUIREMENT, reason);
+    }
+    match crate::routes::schemas::register_accepts_inner(state, &actor, criterion).await {
+        Ok(criterion) => success_response(&doc, json!({ "criterion": criterion.to_wire() })),
         // Every check above passed, so what is left is the manifest refusing it.
         Err(AppError::Validation(m)) => declared(&doc, ACCEPTS_REGISTER_ERR_NOT_PUBLISHABLE, m),
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+/// The criterion a `vtc/schemas/accepts/register/0.2` payload states, as the
+/// store holds it: every requirement it states, and none it does not. The
+/// registrant and time are the handler's to set.
+fn accepts_criterion_from(
+    body: accepts_register::Payload,
+) -> Result<crate::schemas::AcceptsCriterion, AppError> {
+    use crate::schemas::{Admission, CredentialIssuers};
+    let admission = match body.admission {
+        accepts_register::Admission::Automatic => Admission::Automatic,
+        accepts_register::Admission::Review => Admission::Review,
+        // A mode this build does not know is one it cannot honour; refusing is
+        // the only reading that does not change what the criterion says.
+        #[allow(unreachable_patterns)]
+        other => {
+            return Err(AppError::Validation(format!(
+                "admission `{other}` is not one this community can decide by"
+            )));
+        }
+    };
+    let credential_issuers = match body.credential_issuers {
+        None => None,
+        Some(accepts_register::CredentialIssuers::Any) => Some(CredentialIssuers::Any),
+        Some(accepts_register::CredentialIssuers::Community) => Some(CredentialIssuers::Community),
+        Some(accepts_register::CredentialIssuers::Recognised) => {
+            Some(CredentialIssuers::Recognised)
+        }
+        #[allow(unreachable_patterns)]
+        Some(other) => {
+            return Err(AppError::Validation(format!(
+                "credentialIssuers `{other}` is not one this community can evaluate"
+            )));
+        }
+    };
+    let vetting = body
+        .vetting
+        .map(|v| serde_json::to_value(v).and_then(serde_json::from_value))
+        .transpose()
+        .map_err(|e| AppError::Validation(format!("vetting: {e}")))?;
+    let mut criterion = crate::schemas::AcceptsCriterion::new(
+        String::from(body.id).trim(),
+        admission,
+        String::new(),
+    );
+    criterion.query = body.query.map(|q| Value::Object(q.0));
+    criterion.credential_issuers = credential_issuers;
+    criterion.invitation_required = body.invitation_required.unwrap_or(false);
+    criterion.description = body.description.map(String::from);
+    criterion.vetting = vetting;
+    Ok(criterion)
+}
+
+/// A requirement the criterion states that this community cannot decide a
+/// submission against, if it states one. Only `recognised` issuers can be: a
+/// community with no trust registry recognises no other community, and a
+/// criterion it publishes must be one it can evaluate.
+fn unsupported_requirement(
+    state: &AppState,
+    criterion: &crate::schemas::AcceptsCriterion,
+) -> Option<String> {
+    (criterion.credential_issuers == Some(crate::schemas::CredentialIssuers::Recognised)
+        && state.registry_client.is_none())
+    .then(|| {
+        "credentialIssuers `recognised` needs a trust registry to recognise other communities \
+         by, and this community has none configured — use `community`, or configure the \
+         registry first"
+            .to_string()
+    })
 }
 
 async fn handle_accepts_list(
@@ -661,7 +742,7 @@ async fn handle_accepts_list(
     match crate::schemas::list_accepts(&state.schemas_ks).await {
         Ok(mut criteria) => {
             criteria.sort_by(|a, b| a.id.cmp(&b.id));
-            page(&doc, criteria)
+            page(&doc, criteria.iter().map(|c| c.to_wire()).collect())
         }
         Err(e) => app_error_to_reject(&doc, &e),
     }
@@ -680,7 +761,7 @@ async fn handle_accepts_show(
         Err(reject) => return reject,
     };
     match crate::schemas::get_accepts(&state.schemas_ks, id.trim()).await {
-        Ok(Some(c)) => success_response(&doc, json!({ "criterion": c })),
+        Ok(Some(c)) => success_response(&doc, json!({ "criterion": c.to_wire() })),
         Ok(None) => declared_as(
             &doc,
             ACCEPTS_SHOW_ERR_NOT_FOUND,

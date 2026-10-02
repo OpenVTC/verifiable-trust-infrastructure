@@ -33,11 +33,11 @@ use vtc_service::test_support::TestVtc;
 const RP_ORIGIN: &str = "https://vtc.example.com";
 // The holder-facing verbs are now Trust Task **document** types (the `/spec/`
 // canonical form the dispatcher routes on).
-const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.2";
+const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.3";
 // `accept` is retired — the join close-the-loop is `members/vmc` with a
 // `requestId` (one credential-delivery path).
 const VMC_TASK: &str = "https://trusttasks.org/spec/vtc/members/vmc/0.1";
-const MANIFEST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.1";
+const MANIFEST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.3";
 const STATUS_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/status/0.1";
 // The admin verbs remain header-gated REST routes (unchanged) — flat URIs.
 // The admin GET list shares the submit mount, so it gates on the flat submit URI.
@@ -403,7 +403,7 @@ async fn rest_submit_rejects_wrong_signer() {
 
 #[tokio::test]
 async fn rest_submit_rejects_missing_holder_proof() {
-    // `vtc/join-requests/submit/0.2` declares `proof` REQUIRED, so a document
+    // `vtc/join-requests/submit/0.3` declares `proof` REQUIRED, so a document
     // carrying none is refused by the spine before any handler runs, with the
     // framework's own code for exactly that (SPEC §7.2 item 7, VTI-OPS-020).
     //
@@ -789,6 +789,33 @@ async fn reject_rejects_overlong_reason() {
 // M2.6 — Policy step at submit time
 // ---------------------------------------------------------------------------
 
+/// Make this community admit automatically on a criterion that asks for
+/// nothing, and nothing else: the policy under test is then what decides.
+/// Without it a submission meets only the default `review` criterion, which no
+/// policy can turn into an admission.
+async fn admit_automatically(fix: &Fixture) {
+    use vtc_service::schemas::accepts::{AcceptsCriterion, Admission, store_accepts};
+    clear_criteria(fix).await;
+    store_accepts(
+        &fix.state.schemas_ks,
+        &AcceptsCriterion::new("open", Admission::Automatic, ADMIN_DID),
+    )
+    .await
+    .expect("store the open criterion");
+}
+
+/// Remove every published criterion — the defaults included.
+async fn clear_criteria(fix: &Fixture) {
+    for c in vtc_service::schemas::list_accepts(&fix.state.schemas_ks)
+        .await
+        .unwrap()
+    {
+        vtc_service::schemas::delete_accepts(&fix.state.schemas_ks, &c.id)
+            .await
+            .unwrap();
+    }
+}
+
 /// Upload + activate a join policy. The active pointer is flipped
 /// server-side; subsequent submits see the new policy's semantics.
 async fn activate_join_policy(fix: &Fixture, source: &str) {
@@ -842,6 +869,7 @@ async fn rest_submit_under_allow_policy_auto_admits() {
          default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n",
     )
     .await;
+    admit_automatically(&fix).await;
 
     let (_sk, applicant_did) = applicant_pair();
     let vp = json!({ "type": "VerifiablePresentation" });
@@ -911,6 +939,7 @@ async fn auto_admit_emits_membership_issuance_audit() {
          default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n",
     )
     .await;
+    admit_automatically(&fix).await;
 
     let vp = json!({ "type": "VerifiablePresentation" });
     let (_d, doc) = submit_doc(&vp).await;
@@ -1271,6 +1300,7 @@ async fn credential_exchange_present_auto_admits_under_allow_policy() {
          default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n",
     )
     .await;
+    admit_automatically(&fix).await;
 
     let now = chrono::Utc::now();
     let nonce = "vtc-issued-nonce-1";
@@ -1282,6 +1312,7 @@ async fn credential_exchange_present_auto_admits_under_allow_policy() {
         VTC_AUD,
         nonce,
         "query-thread",
+        None,
         JoinTransport::DIDComm,
         now,
     )
@@ -1326,6 +1357,7 @@ async fn credential_exchange_present_defers_under_default_policy() {
         VTC_AUD,
         nonce,
         "query-thread",
+        None,
         JoinTransport::DIDComm,
         now,
     )
@@ -1356,6 +1388,7 @@ async fn credential_exchange_present_rejects_a_wrong_nonce() {
             VTC_AUD,
             "wrong-nonce",
             "query-thread",
+            None,
             JoinTransport::DIDComm,
             now,
         )
@@ -1386,6 +1419,7 @@ async fn credential_exchange_present_over_a_single_use_challenge_closes_the_loop
          default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n",
     )
     .await;
+    admit_automatically(&fix).await;
 
     let now = chrono::Utc::now();
     let thread = "query-thread-1";
@@ -1395,6 +1429,7 @@ async fn credential_exchange_present_over_a_single_use_challenge_closes_the_loop
         &fix.state.join_requests_ks,
         thread,
         VTC_AUD,
+        None,
         DEFAULT_CHALLENGE_TTL,
         now,
     )
@@ -1417,6 +1452,7 @@ async fn credential_exchange_present_over_a_single_use_challenge_closes_the_loop
         &challenge.aud,
         &challenge.nonce,
         thread,
+        None,
         JoinTransport::DIDComm,
         now,
     )
@@ -1471,6 +1507,7 @@ async fn credential_exchange_present_refuses_a_witness_with_no_task_context() {
          default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n",
     )
     .await;
+    admit_automatically(&fix).await;
 
     let now = chrono::Utc::now();
     let nonce = "n";
@@ -1483,6 +1520,7 @@ async fn credential_exchange_present_refuses_a_witness_with_no_task_context() {
         VTC_AUD,
         nonce,
         "urn:uuid:this-exchange",
+        None,
         JoinTransport::DIDComm,
         now,
     )
@@ -1511,6 +1549,7 @@ async fn a_witness_from_this_exchange_satisfies_a_same_exchange_policy() {
 
     let fix = build_fixture().await;
     activate_join_policy(&fix, SAME_EXCHANGE_ONLY_JOIN_REGO).await;
+    admit_automatically(&fix).await;
 
     let now = chrono::Utc::now();
     let nonce = "n";
@@ -1524,6 +1563,7 @@ async fn a_witness_from_this_exchange_satisfies_a_same_exchange_policy() {
         VTC_AUD,
         nonce,
         thread,
+        None,
         JoinTransport::DIDComm,
         now,
     )
@@ -1551,6 +1591,7 @@ async fn a_witness_from_another_exchange_cannot_satisfy_this_one() {
 
     let fix = build_fixture().await;
     activate_join_policy(&fix, SAME_EXCHANGE_ONLY_JOIN_REGO).await;
+    admit_automatically(&fix).await;
 
     let now = chrono::Utc::now();
     let nonce = "n";
@@ -1568,6 +1609,7 @@ async fn a_witness_from_another_exchange_cannot_satisfy_this_one() {
         VTC_AUD,
         nonce,
         "urn:uuid:this-exchange",
+        None,
         JoinTransport::DIDComm,
         now,
     )
@@ -1603,13 +1645,17 @@ async fn admin_query_send_prepares_a_dcql_query_and_issues_a_challenge() {
     // without registering schemas first.
     let criterion = AcceptsCriterion {
         id: "join-evidence".into(),
-        query: json!({
+        admission: vtc_service::schemas::Admission::Automatic,
+        credential_issuers: Some(vtc_service::schemas::CredentialIssuers::Any),
+        invitation_required: false,
+        position: 0,
+        query: Some(json!({
             "credentials": [{
                 "id": "membership",
                 "format": "ldp_vc",
                 "meta": { "type_values": ["MembershipCredential"] }
             }]
-        }),
+        })),
         description: Some("present a MembershipCredential to join".into()),
         vetting: None,
         hidden_vetting: None,
@@ -1911,13 +1957,17 @@ async fn store_join_criterion(fix: &Fixture) {
     use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
     let criterion = AcceptsCriterion {
         id: "join-evidence".into(),
-        query: json!({
+        admission: vtc_service::schemas::Admission::Automatic,
+        credential_issuers: Some(vtc_service::schemas::CredentialIssuers::Any),
+        invitation_required: false,
+        position: 0,
+        query: Some(json!({
             "credentials": [{
                 "id": "membership",
                 "format": "ldp_vc",
                 "meta": { "type_values": ["MembershipCredential"] }
             }]
-        }),
+        })),
         description: Some("present a MembershipCredential to join".into()),
         vetting: None,
         hidden_vetting: None,
@@ -1939,18 +1989,38 @@ async fn manifest_lists_registered_criteria() {
     let payload = tt_payload(&body);
     assert_eq!(payload["communityDid"], VTC_DID);
     let criteria = payload["criteria"].as_array().unwrap();
-    assert_eq!(criteria.len(), 1);
-    assert_eq!(criteria[0]["id"], "join-evidence");
-    assert!(criteria[0]["presentationDefinition"]["credentials"].is_array());
+    // The three a new community starts with, then the one registered here: a
+    // new criterion goes last in the order the community decides by.
+    let ids: Vec<_> = criteria.iter().map(|c| c["id"].clone()).collect();
     assert_eq!(
-        criteria[0]["description"],
-        "present a MembershipCredential to join"
+        ids,
+        [
+            json!("invited"),
+            json!("member-credential"),
+            json!("review"),
+            json!("join-evidence")
+        ]
     );
+    let c = &criteria[3];
+    assert_eq!(c["admission"], "automatic");
+    assert_eq!(c["credentialIssuers"], "any");
+    assert!(c["presentationDefinition"]["credentials"].is_array());
+    assert_eq!(c["description"], "present a MembershipCredential to join");
+    assert!(c["requirementsDigest"].is_string());
 }
 
+/// No criteria is a manifest: the community accepts no applications.
 #[tokio::test]
-async fn manifest_is_empty_when_no_criteria_registered() {
+async fn manifest_is_empty_when_no_criteria_are_published() {
     let fix = build_fixture().await;
+    for c in vtc_service::schemas::list_accepts(&fix.state.schemas_ks)
+        .await
+        .unwrap()
+    {
+        vtc_service::schemas::delete_accepts(&fix.state.schemas_ks, &c.id)
+            .await
+            .unwrap();
+    }
     let (status, body) = post_tt(&fix.router, manifest_doc()).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
     let payload = tt_payload(&body);
@@ -1958,24 +2028,28 @@ async fn manifest_is_empty_when_no_criteria_registered() {
     assert_eq!(payload["criteria"].as_array().unwrap().len(), 0);
 }
 
-/// Manifest 0.2 advertises a criterion's vetting requirements with a digest the
-/// applicant can recompute from what it received; 0.1 keeps its own shape.
+/// The manifest advertises a criterion's vetting requirements with a digest the
+/// applicant can recompute from what it received.
 #[tokio::test]
-async fn manifest_0_2_advertises_vetting_requirements_and_their_digest() {
-    use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_0_2_TYPE;
+async fn the_manifest_advertises_vetting_requirements_and_their_digest() {
+    use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_TYPE;
     use vta_sdk::vetting::requirements::requirements_digest;
     use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
 
     let fix = build_fixture().await;
     let criterion = AcceptsCriterion {
         id: "kernel-developer".into(),
-        query: json!({
+        admission: vtc_service::schemas::Admission::Automatic,
+        credential_issuers: Some(vtc_service::schemas::CredentialIssuers::Any),
+        invitation_required: false,
+        position: 0,
+        query: Some(json!({
             "credentials": [{
                 "id": "vetting",
                 "format": "ldp_vc",
                 "meta": { "type_values": ["StatementCredential"] }
             }]
-        }),
+        })),
         description: Some("Two vetters, one in person".into()),
         hidden_vetting: None,
         vetting: Some(
@@ -1997,27 +2071,25 @@ async fn manifest_0_2_advertises_vetting_requirements_and_their_digest() {
         .expect("store vetting criterion");
 
     let mut doc = manifest_doc();
-    doc["type"] = json!(JOIN_REQUEST_MANIFEST_0_2_TYPE);
+    doc["type"] = json!(JOIN_REQUEST_MANIFEST_TYPE);
     let (status, body) = post_tt(&fix.router, doc).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
-    let c = &tt_payload(&body)["criteria"][0];
+    let c = tt_payload(&body)["criteria"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "kernel-developer")
+        .cloned()
+        .expect("the vetting criterion is published");
+    let c = &c;
     assert_eq!(c["vetting"]["minStatements"], 2);
     assert_eq!(c["vetting"]["minByMethod"]["inPerson"], 1);
     assert_eq!(
         c["requirementsDigest"]
             .as_str()
-            .expect("0.2 carries a digest"),
+            .expect("every criterion carries a digest"),
         requirements_digest(c).unwrap(),
         "the applicant must be able to recompute the digest from the criterion it received"
-    );
-
-    let (status, body) = post_tt(&fix.router, manifest_doc()).await;
-    assert_eq!(status, StatusCode::OK, "got {body}");
-    let c = &tt_payload(&body)["criteria"][0];
-    assert!(c.get("vetting").is_none(), "0.1 keeps its shape: {c}");
-    assert!(
-        c.get("requirementsDigest").is_none(),
-        "0.1 keeps its shape: {c}"
     );
 }
 
@@ -2098,20 +2170,21 @@ async fn seed_member(fix: &Fixture, did: &str) {
     .expect("store acl");
 }
 
-/// Two distinct eligible vetters, video or in person, `name.legal` verified.
+/// Two distinct eligible vetters, video or in person, `name.legal` verified —
+/// the community's only way in, so a submission naming no criterion is decided
+/// under it.
 async fn store_vetting_criterion(fix: &Fixture) {
     use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
+    clear_criteria(fix).await;
     store_accepts(
         &fix.state.schemas_ks,
         &AcceptsCriterion {
             id: "kernel-developer".into(),
-            query: json!({
-                "credentials": [{
-                    "id": "vetting",
-                    "format": "ldp_vc",
-                    "meta": { "type_values": ["StatementCredential"] }
-                }]
-            }),
+            admission: vtc_service::schemas::Admission::Automatic,
+            credential_issuers: None,
+            invitation_required: false,
+            position: 0,
+            query: None,
             description: Some("Two vetters".into()),
             hidden_vetting: None,
             vetting: Some(
@@ -2646,7 +2719,7 @@ async fn withdrawal_doc(seed: [u8; 32], statement: &Value) -> Value {
 // and the admin views of vetting facts and withdrawals.
 // ---------------------------------------------------------------------------
 
-use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_0_2_TYPE;
+use vta_sdk::protocols::join_requests::JOIN_REQUEST_MANIFEST_TYPE;
 use vta_sdk::protocols::vetting::{
     VETTING_VETTER_LIST_TYPE, VETTING_VETTER_PROFILE_ERR_NOT_ELIGIBLE, VETTING_VETTER_PROFILE_TYPE,
     VETTING_VETTER_RESEND_0_2_TYPE, VETTING_VETTER_RESEND_ERR_NOT_GRANTED,
@@ -3010,7 +3083,7 @@ async fn a_vetter_asks_for_the_grant_credential_again() {
 }
 
 #[tokio::test]
-async fn branding_is_published_on_manifest_0_2_only() {
+async fn branding_is_published_on_the_manifest() {
     let fix = build_fixture().await;
     let (status, body) = admin_document(&fix, BRANDING_SHOW_TASK, json!({})).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -3044,17 +3117,13 @@ async fn branding_is_published_on_manifest_0_2_only() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{logo:?}: {body}");
     }
 
-    let (_did, doc) = signed_trust_task(JOIN_REQUEST_MANIFEST_0_2_TYPE, json!({})).await;
+    let (_did, doc) = signed_trust_task(JOIN_REQUEST_MANIFEST_TYPE, json!({})).await;
     let (status, body) = post_tt(&fix.router, doc).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         tt_payload(&body)["branding"],
         json!({ "displayName": "Kernel", "accentColor": "#1a2b3c" })
     );
-
-    let (_did, doc) = signed_trust_task(MANIFEST_TASK, json!({})).await;
-    let (_status, body) = post_tt(&fix.router, doc).await;
-    assert!(tt_payload(&body).get("branding").is_none(), "{body}");
 }
 
 /// Make `source` the active `vetterEligibility` policy.
@@ -4192,7 +4261,7 @@ async fn a_coded_reject_carries_the_reason_marker_a_client_reads() {
 #[tokio::test]
 async fn requested_attributes_are_published_enforced_and_kept_with_the_request() {
     use vta_sdk::protocols::join_requests::{
-        JOIN_REQUEST_MANIFEST_0_2_TYPE, JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_MISSING,
+        JOIN_REQUEST_MANIFEST_TYPE, JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_MISSING,
         JOIN_REQUEST_SUBMIT_ERR_ATTRIBUTES_UNREQUESTED,
     };
 
@@ -4210,7 +4279,7 @@ async fn requested_attributes_are_published_enforced_and_kept_with_the_request()
 
     // Published on manifest 0.2, and the answer conforms.
     let mut doc = manifest_doc();
-    doc["type"] = json!(JOIN_REQUEST_MANIFEST_0_2_TYPE);
+    doc["type"] = json!(JOIN_REQUEST_MANIFEST_TYPE);
     let (status, body) = post_tt(&fix.router, doc).await;
     assert_eq!(status, StatusCode::OK, "manifest: {body}");
     let asked = tt_payload(&body)["requestedAttributes"].clone();
@@ -4326,7 +4395,7 @@ const DECIDE_ERR_NOT_PENDING: &str =
 const SHOW_ERR_NOT_FOUND: &str = spec::join_requests::show::v0_1::error_codes::NOT_FOUND.code;
 const STATUS_ERR_NOT_FOUND: &str = spec::join_requests::status::v0_1::error_codes::NOT_FOUND.code;
 const SUBMIT_ERR_PRESENTATION_INVALID: &str =
-    spec::join_requests::submit::v0_2::error_codes::PRESENTATION_INVALID.code;
+    spec::join_requests::submit::v0_3::error_codes::PRESENTATION_INVALID.code;
 const SELF_REMOVE_ERR_NOT_MEMBER: &str =
     spec::members::self_remove::v0_1::error_codes::NOT_MEMBER.code;
 const VMC_ERR_SUBJECT_MISMATCH: &str = spec::members::vmc::v0_1::error_codes::SUBJECT_MISMATCH.code;
@@ -4619,6 +4688,7 @@ async fn auto_admitted_publish_consent(f: &Fixture, seed: [u8; 32], payload: Val
 async fn auto_admit_carries_registry_consent_onto_the_member() {
     let f = build_fixture().await;
     activate_join_policy(&f, ALLOW_JOIN_POLICY).await;
+    admit_automatically(&f).await;
     let vp = json!({ "type": "VerifiablePresentation" });
 
     assert!(
@@ -4684,6 +4754,7 @@ async fn an_approved_referral_carries_registry_consent_onto_the_member() {
 async fn a_supplement_that_admits_carries_registry_consent_onto_the_member() {
     let f = build_fixture().await;
     activate_join_policy(&f, ALLOW_JOIN_POLICY).await;
+    admit_automatically(&f).await;
     let applicant = "did:key:zSupplementConsent";
     let mut request =
         vtc_service::join::JoinRequest::new(applicant.to_string(), json!({ "vp": "x" }));
@@ -4713,4 +4784,132 @@ async fn a_supplement_that_admits_carries_registry_consent_onto_the_member() {
         .unwrap()
         .expect("admitted applicant has a member row");
     assert!(member.publish_consent);
+}
+
+// ---------------------------------------------------------------------------
+// Join criteria (vtc/join-requests/submit/0.3 §Deciding a submission)
+// ---------------------------------------------------------------------------
+
+/// A submit document signed by the holder of `seed`, naming `criterion` when
+/// given.
+async fn submit_under(seed: &[u8; 32], criterion: Option<&str>) -> (String, Value) {
+    let mut payload =
+        json!({ "vp": { "type": "VerifiablePresentation" }, "registryConsent": false });
+    if let Some(c) = criterion {
+        payload["criterion"] = json!(c);
+    }
+    signed_trust_task_seed(seed, SUBMIT_TASK, payload).await
+}
+
+/// The published `requirementsDigest` of criterion `id`.
+async fn published_digest(fix: &Fixture, id: &str) -> String {
+    let (status, body) = post_tt(&fix.router, manifest_doc()).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    tt_payload(&body)["criteria"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .and_then(|c| c["requirementsDigest"].as_str())
+        .unwrap_or_else(|| panic!("criterion {id} is not published: {body}"))
+        .to_string()
+}
+
+/// No criteria: the community accepts no applications, and says so.
+#[tokio::test]
+async fn a_community_with_no_criteria_is_not_accepting() {
+    let fix = build_fixture().await;
+    clear_criteria(&fix).await;
+    let (_did, doc) = submit_under(&[0x51; 32], None).await;
+    let (_status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(
+        tt_error_code(&body),
+        vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_ERR_NOT_ACCEPTING,
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_submission_naming_an_unpublished_criterion_is_criterion_unknown() {
+    let fix = build_fixture().await;
+    let unknown = "zQmUnpublishedCriterionDigestXyz";
+    let (_did, doc) = submit_under(&[0x52; 32], Some(unknown)).await;
+    let (_status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(
+        tt_error_code(&body),
+        vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_ERR_CRITERION_UNKNOWN,
+        "{body}"
+    );
+    assert_eq!(body["payload"]["details"]["criterion"], unknown, "{body}");
+}
+
+/// A new community reviews what it does not admit outright: a submission that
+/// presents nothing meets only `review`, and is referred.
+#[tokio::test]
+async fn by_default_a_submission_presenting_nothing_is_reviewed() {
+    let fix = build_fixture().await;
+    let (_did, doc) = submit_under(&[0x53; 32], None).await;
+    let (_status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(verdict_effect(&body), "refer", "{body}");
+    assert_eq!(body["payload"]["verdict"]["with"]["queue"], "admin-review");
+}
+
+/// Order decides among criteria met; naming one decides it outright. Here the
+/// default `review` (asks nothing) comes before an `open` automatic criterion
+/// (asks nothing): unnamed, `review` governs; named, `open` does.
+#[tokio::test]
+async fn a_named_criterion_governs_and_order_decides_otherwise() {
+    use vtc_service::schemas::accepts::{AcceptsCriterion, Admission, store_accepts};
+    let fix = build_fixture().await;
+    store_accepts(
+        &fix.state.schemas_ks,
+        &AcceptsCriterion::new("open", Admission::Automatic, ADMIN_DID),
+    )
+    .await
+    .unwrap();
+
+    let (_did, doc) = submit_under(&[0x54; 32], None).await;
+    let (_status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(
+        verdict_effect(&body),
+        "refer",
+        "unnamed, the first met governs: {body}"
+    );
+
+    let open = published_digest(&fix, "open").await;
+    let (_did, doc) = submit_under(&[0x55; 32], Some(&open)).await;
+    let (_status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(verdict_effect(&body), "allow", "named, it governs: {body}");
+}
+
+/// A criterion that is not met is never admitted, nor referred: the applicant
+/// is asked for exactly what it lacks.
+#[tokio::test]
+async fn an_unmet_criterion_asks_for_what_it_lacks() {
+    let fix = build_fixture().await;
+    let invited = published_digest(&fix, "invited").await;
+    let (_did, doc) = submit_under(&[0x56; 32], Some(&invited)).await;
+    let (_status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(verdict_effect(&body), "requestMore", "{body}");
+    assert_eq!(
+        body["payload"]["verdict"]["with"]["needs"],
+        json!(["invitation"]),
+        "{body}"
+    );
+}
+
+/// Review only: with every automatic criterion removed, nothing admits on the
+/// submission, whatever the policy says.
+#[tokio::test]
+async fn a_review_only_community_admits_nobody_on_submission_even_under_an_allow_policy() {
+    let fix = build_fixture().await;
+    for id in ["invited", "member-credential"] {
+        vtc_service::schemas::delete_accepts(&fix.state.schemas_ks, id)
+            .await
+            .unwrap();
+    }
+    activate_join_policy(&fix, ALLOW_JOIN_POLICY).await;
+    let (_did, doc) = submit_under(&[0x57; 32], None).await;
+    let (_status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(verdict_effect(&body), "refer", "{body}");
 }

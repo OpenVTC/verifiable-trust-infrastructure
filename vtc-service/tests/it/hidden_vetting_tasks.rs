@@ -100,14 +100,18 @@ impl Harness {
         .expect("register the evidence type");
         let criterion = vtc_service::schemas::accepts::AcceptsCriterion {
             id: "hidden-criterion".into(),
-            query: json!({
+            admission: vtc_service::schemas::Admission::Automatic,
+            credential_issuers: Some(vtc_service::schemas::CredentialIssuers::Any),
+            invitation_required: false,
+            position: 0,
+            query: Some(json!({
                 "credentials": [{
                     "id": "membership",
                     "format": "dc+sd-jwt",
                     "meta": { "vct_values": [VCT] },
                     "claims": [{ "path": ["givenName"] }]
                 }]
-            }),
+            })),
             description: None,
             vetting: None,
             hidden_vetting: Some(serde_json::to_value(&config).unwrap()),

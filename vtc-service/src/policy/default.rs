@@ -684,187 +684,7 @@ mod tests {
         compile_policy(default_source(purpose), Uuid::new_v4()).expect("compile default")
     }
 
-    #[test]
-    fn join_default_admits_on_trusted_credential() {
-        // The default join policy is now the decision spine: a trusted,
-        // valid presented credential auto-admits as a member.
-        let c = compile_default(PolicyPurpose::Join);
-        let r = evaluate(
-            &c,
-            "data.vtc.join.decision",
-            json!({
-                "evidence": {
-                    "presentation": {
-                        "credentials": [
-                            { "type": "MembershipCredential", "issuer_trusted": true, "status": "valid" }
-                        ]
-                    }
-                }
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            r.pointer("/result/0/expressions/0/value"),
-            Some(&json!({ "effect": "allow", "with": { "role": "member" } })),
-        );
-    }
-
-    #[test]
-    fn join_default_admits_on_valid_invitation() {
-        // A verified, trusted, unconsumed invitation (VIC) auto-admits as a
-        // member — no presented credential needed.
-        let c = compile_default(PolicyPurpose::Join);
-        let r = evaluate(
-            &c,
-            "data.vtc.join.decision",
-            json!({
-                "evidence": {
-                    "invitation": {
-                        "verified": true,
-                        "issuer": "did:webvh:acme.example",
-                        "issuer_trusted": true,
-                        "consumed": false
-                    }
-                }
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            r.pointer("/result/0/expressions/0/value"),
-            Some(&json!({ "effect": "allow", "with": { "role": "member" } })),
-        );
-    }
-
-    #[test]
-    fn join_default_grants_invited_role() {
-        // A VIC carrying a `role:moderator` scope auto-admits at that role.
-        let c = compile_default(PolicyPurpose::Join);
-        let r = evaluate(
-            &c,
-            "data.vtc.join.decision",
-            json!({
-                "evidence": {
-                    "invitation": {
-                        "verified": true,
-                        "issuer": "did:webvh:acme.example",
-                        "issuer_trusted": true,
-                        "consumed": false,
-                        "scopes": ["role:moderator"]
-                    }
-                }
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            r.pointer("/result/0/expressions/0/value"),
-            Some(&json!({ "effect": "allow", "with": { "role": "moderator" } })),
-        );
-    }
-
-    #[test]
-    fn join_default_invitation_without_role_scope_grants_member() {
-        // A non-role scope (or no scopes) defaults to member.
-        let c = compile_default(PolicyPurpose::Join);
-        let r = evaluate(
-            &c,
-            "data.vtc.join.decision",
-            json!({
-                "evidence": {
-                    "invitation": {
-                        "verified": true,
-                        "issuer": "did:webvh:acme.example",
-                        "issuer_trusted": true,
-                        "consumed": false,
-                        "scopes": ["single-context"]
-                    }
-                }
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            r.pointer("/result/0/expressions/0/value"),
-            Some(&json!({ "effect": "allow", "with": { "role": "member" } })),
-        );
-    }
-
-    #[test]
-    fn join_default_refers_on_consumed_invitation() {
-        // A single-use invitation already redeemed is not a valid admit signal
-        // → falls through to moderator review.
-        let c = compile_default(PolicyPurpose::Join);
-        let r = evaluate(
-            &c,
-            "data.vtc.join.decision",
-            json!({
-                "evidence": {
-                    "invitation": {
-                        "verified": true,
-                        "issuer": "did:webvh:acme.example",
-                        "issuer_trusted": true,
-                        "consumed": true
-                    }
-                }
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            r.pointer("/result/0/expressions/0/value"),
-            Some(&json!({ "effect": "refer", "with": { "queue": "moderator" } })),
-        );
-    }
-
-    #[test]
-    fn join_default_refers_on_untrusted_invitation_issuer() {
-        // A genuinely-verified invitation from an untrusted issuer does not
-        // auto-admit — it is referred for human review.
-        let c = compile_default(PolicyPurpose::Join);
-        let r = evaluate(
-            &c,
-            "data.vtc.join.decision",
-            json!({
-                "evidence": {
-                    "invitation": {
-                        "verified": true,
-                        "issuer": "did:key:zStranger",
-                        "issuer_trusted": false,
-                        "consumed": false
-                    }
-                }
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            r.pointer("/result/0/expressions/0/value"),
-            Some(&json!({ "effect": "refer", "with": { "queue": "moderator" } })),
-        );
-    }
-
-    #[test]
-    fn join_default_refers_without_trusted_credential() {
-        // No trusted credential → referred to the moderator queue
-        // (the request lands Pending for admin review).
-        let c = compile_default(PolicyPurpose::Join);
-        let r = evaluate(
-            &c,
-            "data.vtc.join.decision",
-            json!({
-                "evidence": {
-                    "presentation": {
-                        "credentials": [
-                            { "type": "EmailCredential", "issuer_trusted": false, "status": "valid" }
-                        ]
-                    }
-                }
-            }),
-        )
-        .unwrap();
-        assert_eq!(
-            r.pointer("/result/0/expressions/0/value"),
-            Some(&json!({ "effect": "refer", "with": { "queue": "moderator" } })),
-        );
-    }
-
-    // ── Peer identity vetting (OpenVTC docs/design/vetting-process.md §10) ──
+    // ── Join: the default follows the governing criterion ──
 
     fn join_decision(input: serde_json::Value) -> serde_json::Value {
         let c = compile_default(PolicyPurpose::Join);
@@ -875,21 +695,15 @@ mod tests {
             .expect("join decision value")
     }
 
-    /// Host-assembled vetting facts. `satisfied` is derived here the way the
-    /// host derives it, so no test can hand the policy an impossible state.
-    fn vetting_facts(consistent: bool, independent: bool, needs: &[&str]) -> serde_json::Value {
+    /// The host's verdict on the governing criterion.
+    fn criterion(admission: &str, met: bool) -> serde_json::Value {
         json!({
-            "criterion_id": "kernel-developer",
-            "requirements_digest": "zDigest",
-            "applicant_digest_matches": true,
-            "statements": [],
-            "distinct_counted_vetters": 2,
-            "by_method": { "inPerson": 1, "video": 1 },
-            "commitments_consistent": consistent,
-            "independence_ok": independent,
-            "invitation_required": false,
-            "satisfied": consistent && independent && needs.is_empty(),
-            "needs": needs,
+            "id": "kernel",
+            "requirements_digest": "zKernel",
+            "admission": admission,
+            "met": met,
+            "needs": if met { json!([]) } else { json!(["invitation"]) },
+            "cited": false,
         })
     }
 
@@ -904,101 +718,118 @@ mod tests {
     }
 
     #[test]
-    fn join_default_admits_when_vetting_is_satisfied() {
+    fn join_default_admits_under_a_met_automatic_criterion() {
         assert_eq!(
-            join_decision(json!({ "evidence": { "vetting": vetting_facts(true, true, &[]) } })),
+            join_decision(json!({ "evidence": { "criterion": criterion("automatic", true) } })),
             json!({ "effect": "allow", "with": { "role": "member" } }),
         );
     }
 
     #[test]
-    fn join_default_asks_for_more_vetting_with_the_generic_need() {
-        // The host replaces "vetting" with the precise shortfall after deciding.
+    fn join_default_refers_under_a_met_review_criterion() {
         assert_eq!(
-            join_decision(json!({
-                "evidence": { "vetting": vetting_facts(true, true, &["vetting:statements:1"]) }
-            })),
-            json!({ "effect": "request_more", "with": { "needs": ["vetting"] } }),
+            join_decision(json!({ "evidence": { "criterion": criterion("review", true) } })),
+            json!({ "effect": "refer", "with": { "queue": "admin-review" } }),
         );
     }
 
+    /// The host replaces `criterion` with the precise shortfall after deciding.
     #[test]
-    fn join_default_refers_when_vetters_verified_different_identities() {
-        assert_eq!(
-            join_decision(json!({ "evidence": { "vetting": vetting_facts(false, true, &[]) } })),
-            json!({ "effect": "refer", "with": { "queue": "vetting-review" } }),
-        );
+    fn join_default_asks_for_what_an_unmet_criterion_lacks() {
+        for admission in ["automatic", "review"] {
+            assert_eq!(
+                join_decision(json!({ "evidence": { "criterion": criterion(admission, false) } })),
+                json!({ "effect": "request_more", "with": { "needs": ["criterion"] } }),
+            );
+        }
     }
 
+    /// Nothing outside a criterion admits: a trusted credential or a valid
+    /// invitation the criterion did not count changes nothing.
     #[test]
-    fn join_default_refers_when_vetters_are_not_independent() {
-        assert_eq!(
-            join_decision(json!({ "evidence": { "vetting": vetting_facts(true, false, &[]) } })),
-            json!({ "effect": "refer", "with": { "queue": "vetting-review" } }),
-        );
-    }
-
-    #[test]
-    fn join_default_invitation_does_not_bypass_required_vetting() {
+    fn join_default_admits_on_nothing_the_criterion_does_not_count() {
         assert_eq!(
             join_decision(json!({
                 "evidence": {
+                    "criterion": criterion("review", true),
                     "invitation": valid_invitation(&[]),
-                    "vetting": vetting_facts(true, true, &["vetting:statements:2"]),
-                }
-            })),
-            json!({ "effect": "request_more", "with": { "needs": ["vetting"] } }),
-        );
-    }
-
-    #[test]
-    fn join_default_trusted_credential_does_not_bypass_required_vetting() {
-        assert_eq!(
-            join_decision(json!({
-                "evidence": {
                     "presentation": { "credentials": [
                         { "type": "MembershipCredential", "issuer_trusted": true, "status": "valid" }
                     ]},
-                    "vetting": vetting_facts(true, true, &["vetting:method:inPerson:1"]),
                 }
             })),
-            json!({ "effect": "request_more", "with": { "needs": ["vetting"] } }),
+            json!({ "effect": "refer", "with": { "queue": "admin-review" } }),
         );
-    }
-
-    #[test]
-    fn join_default_asks_for_a_required_invitation_once_vetting_is_met() {
-        let mut facts = vetting_facts(true, true, &[]);
-        facts["invitation_required"] = json!(true);
-        assert_eq!(
-            join_decision(json!({ "evidence": { "vetting": facts } })),
-            json!({ "effect": "request_more", "with": { "needs": ["vetting:invitation"] } }),
-        );
-    }
-
-    #[test]
-    fn join_default_met_vetting_with_an_invitation_admits_at_the_invited_role() {
-        let mut facts = vetting_facts(true, true, &[]);
-        facts["invitation_required"] = json!(true);
         assert_eq!(
             join_decision(json!({
-                "evidence": { "invitation": valid_invitation(&["role:maintainer"]), "vetting": facts }
+                "evidence": {
+                    "criterion": criterion("automatic", false),
+                    "invitation": valid_invitation(&[]),
+                }
             })),
-            json!({ "effect": "allow", "with": { "role": "maintainer" } }),
+            json!({ "effect": "request_more", "with": { "needs": ["criterion"] } }),
         );
     }
 
     #[test]
-    fn join_default_without_vetting_facts_is_unchanged() {
-        // A community whose criteria require no vetting keeps the pre-vetting
-        // behaviour exactly: invitation admits, everything else is referred.
+    fn join_default_admits_at_the_role_a_valid_invitation_grants() {
         assert_eq!(
-            join_decision(json!({ "evidence": { "invitation": valid_invitation(&[]) } })),
+            join_decision(json!({
+                "evidence": {
+                    "criterion": criterion("automatic", true),
+                    "invitation": valid_invitation(&["role:moderator"]),
+                }
+            })),
+            json!({ "effect": "allow", "with": { "role": "moderator" } }),
+        );
+        let mut consumed = valid_invitation(&["role:moderator"]);
+        consumed["consumed"] = json!(true);
+        assert_eq!(
+            join_decision(json!({
+                "evidence": { "criterion": criterion("automatic", true), "invitation": consumed }
+            })),
             json!({ "effect": "allow", "with": { "role": "member" } }),
         );
+    }
+
+    #[test]
+    fn join_default_without_a_criterion_refers() {
         assert_eq!(
             join_decision(json!({ "evidence": {} })),
             json!({ "effect": "refer", "with": { "queue": "moderator" } }),
+        );
+    }
+
+    /// The `@vtc-rule-ir` header the admin UI renders is the visual form of
+    /// the body; it names the same routes.
+    #[test]
+    fn join_default_rule_ir_header_names_the_criterion_routes() {
+        use base64::Engine as _;
+        let source = default_source(PolicyPurpose::Join);
+        let line = source
+            .lines()
+            .find_map(|l| l.strip_prefix("# @vtc-rule-ir: "))
+            .expect("the default carries its rule IR");
+        let ir: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::STANDARD
+                .decode(line.trim())
+                .expect("base64"),
+        )
+        .expect("JSON");
+        let whens: Vec<_> = ir["routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["when"]["all"][0].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            whens,
+            [
+                "criterion_met_automatic",
+                "criterion_met_review",
+                "criterion_unmet",
+                "always"
+            ]
         );
     }
 
