@@ -2,6 +2,35 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.50.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.49.0...vta-service-v0.50.0) — 2026-10-02
+
+
+### Fixed
+
+- A TSP reply reaches a sender on another mediator ([#1894](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1894))
+
+Both the VTC (`handle_tsp`) and the VTA (`handle_tsp` → `send_to`) answered
+  an inbound TSP Trust Task by routing `[own_mediator, sender]`. That ends at a
+  mediator that does not host a sender on another one, which refuses it. The
+  request arrived and the answer never did. In the field: an OpenVTC persona
+  on ic3-mediator joined a VTC on cpunks-mediator, the admin approved it, and
+  the persona stayed Pending. Its submit receipt and every
+  `join-requests/status` poll reply were refused at the VTC's mediator. #405
+  fixed the same failure in the other direction.
+
+
+
+### Chore
+
+- **deps**: Affinidi-messaging-test-mediator 0.17 ([#1896](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1896))
+
+test-mediator 0.17 / mediator 0.36 (affinidi-tdk-rs #920) are the releases on
+  vta-sdk ^0.61, the line this workspace publishes. vta-service and vtc-service
+  expose the test mediator to external consumers behind an optional feature, so
+  the requirement is part of what they publish: breaking for those crates.
+
+
+
 ## [0.49.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-service-v0.48.0...vta-service-v0.49.0) — 2026-10-01
 
 

@@ -2,6 +2,24 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.34.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.34.0...vti-common-v0.34.1) — 2026-10-02
+
+
+### Fixed
+
+- A TSP reply reaches a sender on another mediator ([#1894](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1894))
+
+Both the VTC (`handle_tsp`) and the VTA (`handle_tsp` → `send_to`) answered
+  an inbound TSP Trust Task by routing `[own_mediator, sender]`. That ends at a
+  mediator that does not host a sender on another one, which refuses it. The
+  request arrived and the answer never did. In the field: an OpenVTC persona
+  on ic3-mediator joined a VTC on cpunks-mediator, the admin approved it, and
+  the persona stayed Pending. Its submit receipt and every
+  `join-requests/status` poll reply were refused at the VTC's mediator. #405
+  fixed the same failure in the other direction.
+
+
+
 ## [0.34.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.33.0...vti-common-v0.34.0) — 2026-10-01
 
 
