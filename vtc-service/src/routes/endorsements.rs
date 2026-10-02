@@ -24,6 +24,12 @@
 //!   profile requires `taskContext` (`witnessed/1`, `presented/1`) is
 //!   `predicateNotIssuable`: those statements are made by the party that ran
 //!   the exchange, and the community ran none here.
+//!
+//!   The community's own `vetted/1` is also **delivered to its subject** — one
+//!   `credential-exchange/issue`, as the role VAC is — because the member is the
+//!   one who presents it as identity evidence. Delivery is best effort: the
+//!   statement is already issued and recorded (its signed document kept on the
+//!   row), so a failure is logged and does not fail the issue.
 //! - `vtc/endorsements/list/0.1` — paginated list. Auth: Admin OR Issuer.
 //! - `vtc/endorsements/show/0.1` — one endorsement by id.
 //! - `vtc/endorsements/revoke/0.1` — revoke. Auth: Admin OR the original
@@ -33,7 +39,7 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 use vta_sdk::protocols::members::STATEMENT_CREDENTIAL_TYPE;
 use vti_common::audit::{
@@ -535,7 +541,8 @@ async fn mint_and_record(
         revoked_at: None,
         valid_until: Some(valid_until),
         auto_granted: false,
-        credential: None,
+        // The community's own check is kept so it can be delivered again.
+        credential: community_check.then(|| credential_value.clone()),
     };
     store_endorsement(&state.endorsements_ks, &end).await?;
 
@@ -574,6 +581,10 @@ async fn mint_and_record(
         "community statement issued"
     );
 
+    if community_check {
+        deliver_to_subject(state, &body.subject_did, &credential_value).await;
+    }
+
     Ok(IssueResponse {
         endorsement: EndorsementRow {
             // `issue` knows the expiry it just computed; a read does not.
@@ -586,6 +597,26 @@ async fn mint_and_record(
         },
         credential: credential_value,
     })
+}
+
+/// Hand the community's own `vetted/1` to its subject's wallet. Best effort:
+/// the statement is issued and recorded whether or not it goes, so a failure
+/// is logged, never returned.
+async fn deliver_to_subject(state: &AppState, subject_did: &str, credential: &JsonValue) {
+    let typed = match crate::credentials::dtg::into_typed(credential.clone(), "vetted/1 statement")
+    {
+        Ok(typed) => typed,
+        Err(e) => {
+            warn!(subject = %subject_did, error = %e, "community vetted/1 statement not delivered");
+            return;
+        }
+    };
+    match crate::credentials::delivery::deliver_credentials(state, subject_did, &[&typed]).await {
+        Ok(()) => info!(subject = %subject_did, "community vetted/1 statement queued for delivery"),
+        Err(e) => {
+            warn!(subject = %subject_did, error = %e, "community vetted/1 statement not delivered");
+        }
+    }
 }
 
 // ─── List ────────────────────────────────────────────────

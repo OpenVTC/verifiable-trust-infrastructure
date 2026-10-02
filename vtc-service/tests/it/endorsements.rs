@@ -932,8 +932,20 @@ async fn the_community_records_its_own_identity_check_as_a_vetted_statement() {
         serde_json::from_value(credential.clone()).unwrap();
     assert!(parsed.cites_task(&request).unwrap());
 
-    // Revocable like any other row.
+    // The signed statement is kept on the row, so it can be delivered to its
+    // subject again. Delivery itself is best effort: this subject's DID does
+    // not resolve, its delivery failed, and the issue still succeeded.
     let id = v["endorsement"]["endorsementId"].as_str().unwrap();
+    let row = vtc_service::endorsements::get_endorsement(
+        &fix.endorsements_ks,
+        Uuid::parse_str(id).unwrap(),
+    )
+    .await
+    .unwrap()
+    .expect("the row");
+    assert_eq!(row.credential.as_ref(), Some(credential));
+
+    // Revocable like any other row.
     let (status, body) = signed_task(
         &fix,
         &fix.admin,
