@@ -10,26 +10,40 @@
 // What it is *not* is a second factor. The passkey is possession of an
 // authenticator plus user verification; this is possession of a browser
 // profile. Every admin-conferring operation still runs the step-up.
+//
+// An administrator only reaches this page with an enrolled key — the shell
+// sends one without to `pages/SetupSigning.tsx` first — so the enrol form here
+// is for renewing, and for the moment after revoking this browser's own key.
 
 import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { PenLine, ShieldOff } from "lucide-react";
+import { PenLine, RefreshCw, ShieldOff } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate } from "@/lib/format";
-import { ed25519Available, loadConsoleKey } from "@/lib/console-key";
+import {
+  ed25519Available,
+  keyStorageDurability,
+  loadConsoleKey,
+  type StorageDurability,
+} from "@/lib/console-key";
 import {
   enrolThisBrowser,
+  explainEnrolError,
   listConsoleKeys,
   revokeConsoleKey,
   type ConsoleKey,
 } from "@/lib/console-keys-api";
 import { gestureFromConfirm } from "@/lib/signed-act";
+import { SIGNING_STATUS_KEY, suggestedLabel } from "@/pages/SetupSigning";
 
 /** What this browser holds, and whether it could hold one at all. */
 interface LocalState {
   supported: boolean;
   consoleDid: string | null;
+  durability: StorageDurability;
+  /** The key store could not be read — not the same as holding no key. */
+  readError: string | null;
 }
 
 function useLocalKey(): [LocalState | null, () => void] {
@@ -39,8 +53,15 @@ function useLocalKey(): [LocalState | null, () => void] {
     let live = true;
     void (async () => {
       const supported = await ed25519Available();
-      const key = supported ? await loadConsoleKey() : null;
-      if (live) setState({ supported, consoleDid: key?.consoleDid ?? null });
+      let consoleDid: string | null = null;
+      let readError: string | null = null;
+      try {
+        consoleDid = supported ? ((await loadConsoleKey())?.consoleDid ?? null) : null;
+      } catch (e) {
+        readError = (e as Error).message;
+      }
+      const durability = await keyStorageDurability();
+      if (live) setState({ supported, consoleDid, durability, readError });
     })();
     return () => {
       live = false;
@@ -64,21 +85,25 @@ export function ConsoleKeys() {
     queryFn: listConsoleKeys,
   });
 
+  // Enrolling and revoking both change whether this browser can sign, which
+  // the shell's gate reads — so both re-ask it.
+  const settled = () => {
+    void queryClient.invalidateQueries({ queryKey: ["console-keys"] });
+    void queryClient.invalidateQueries({ queryKey: [SIGNING_STATUS_KEY] });
+    rereadLocalKey();
+  };
+
   const enrol = useMutation({
-    mutationFn: () => enrolThisBrowser(label, gestureFromConfirm(confirm)),
+    mutationFn: (l: string) => enrolThisBrowser(l, gestureFromConfirm(confirm)),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["console-keys"] });
       setLabel("");
-      rereadLocalKey();
+      settled();
     },
   });
 
   const revoke = useMutation({
     mutationFn: revokeConsoleKey,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["console-keys"] });
-      rereadLocalKey();
-    },
+    onSuccess: settled,
   });
 
   const keys = query.data ?? [];
@@ -106,21 +131,27 @@ export function ConsoleKeys() {
           <h3>This browser cannot sign</h3>
           <p>
             Signing needs WebCrypto Ed25519 — Chrome 137 or later, Firefox 130
-            or later, or Safari 17 or later. The console works normally
-            without it; operations that can be signed simply take the older
-            route instead.
+            or later, or Safari 17 or later. Every administrator action in this
+            console is signed, so use one of those to administer the community.
           </p>
         </section>
       )}
 
-      {local?.supported && !enrolled && (
+      {local?.readError && (
+        <section className="card error">
+          <h3>This browser's key store could not be read</h3>
+          <p>{local.readError}</p>
+        </section>
+      )}
+
+      {local?.supported && !local.readError && !enrolled && (
         <section className="card">
           <h3>Enable signing for this browser</h3>
           <p className="lead">
-            {local.consoleDid && !thisBrowser
-              ? "This browser holds a key that has not been enrolled — enrolling it is the step below. "
-              : local.consoleDid && thisBrowser && !thisBrowser.active
-                ? "This browser's key was revoked. Enrolling generates a fresh one: a revoked key can never be re-enrolled. "
+            {local.consoleDid && thisBrowser && !thisBrowser.active
+              ? "This browser's key was revoked or has expired. Enabling signing generates a fresh one. "
+              : local.consoleDid
+                ? "This browser's key is not accepted here. Enabling signing generates a fresh one. "
                 : ""}
             Your browser will prompt for your passkey. That gesture is what
             stops a stolen session leaving a signing key behind.
@@ -128,7 +159,7 @@ export function ConsoleKeys() {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              enrol.mutate();
+              enrol.mutate(label.trim() || suggestedLabel());
             }}
             className="form-stack"
           >
@@ -136,7 +167,7 @@ export function ConsoleKeys() {
               <span className="field-label">Label (optional)</span>
               <input
                 type="text"
-                placeholder="e.g. ‘Work laptop — Chrome’"
+                placeholder={suggestedLabel()}
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
               />
@@ -145,9 +176,7 @@ export function ConsoleKeys() {
             {enrolError && (
               <section className="card error">
                 <h3>Could not enable signing</h3>
-                <p>
-                  {enrolError.message}
-                </p>
+                <p>{explainEnrolError(enrolError)}</p>
               </section>
             )}
 
@@ -165,16 +194,48 @@ export function ConsoleKeys() {
         </section>
       )}
 
-      {enrolled && (
+      {enrolled && thisBrowser && (
         <section className="card">
           <h3>This browser signs</h3>
           <p>
             Documents this console sends are signed by{" "}
-            <code>{thisBrowser?.consoleDid}</code>. The key stays in this
-            browser profile and survives signing out; clearing site data, or
-            revoking it below, ends it. Another machine, another browser or a
-            private window each need their own.
+            <code>{thisBrowser.consoleDid}</code>, accepted until{" "}
+            {formatDate(thisBrowser.expiresAt)}. The key stays in this browser
+            profile for this address ({window.location.origin}), and survives
+            signing out, restarting the browser or the VTC. Clearing site data,
+            or revoking it below, ends it. Another machine, another browser or
+            a private window each need their own.
           </p>
+          {local?.durability === "best-effort" && (
+            <p className="muted">
+              This browser has not agreed to keep this site's storage
+              permanently, so it may delete the key if it runs short of space.
+              If that happens the console asks you to set signing up again.
+            </p>
+          )}
+          {local?.durability === "memory" && (
+            <p className="muted">
+              This browser offers no lasting storage here, so the key ends when
+              this tab closes.
+            </p>
+          )}
+          <div className="form-actions">
+            <button
+              type="button"
+              className="secondary"
+              disabled={enrol.isPending}
+              onClick={() => enrol.mutate(thisBrowser.label ?? suggestedLabel())}
+            >
+              <RefreshCw size={14} aria-hidden="true" />{" "}
+              {enrol.isPending ? "Waiting for your passkey…" : "Renew this browser's key"}
+            </button>
+          </div>
+          {enrolError && (
+            <section className="card error">
+              <h3>Could not renew</h3>
+              <p>{explainEnrolError(enrolError)}</p>
+            </section>
+          )}
         </section>
       )}
 
@@ -219,9 +280,8 @@ export function ConsoleKeys() {
                     </span>
                     <h4>No signing keys enrolled</h4>
                     <p>
-                      Nothing is wrong — the console works without one. Enable
-                      signing above to have this browser author signed
-                      documents instead of relying on its session cookie.
+                      Every administrator action in this console is signed.
+                      Enable signing above to use it from this browser.
                     </p>
                   </div>
                 </td>
@@ -275,7 +335,7 @@ export function ConsoleKeys() {
                             : "Revoke this signing key?",
                           message:
                             k.consoleDid === local?.consoleDid
-                              ? "This browser stops signing immediately and forgets its key. You stay signed in, and the console keeps working on its older route. Enabling signing again generates a new key — a revoked one cannot come back."
+                              ? "This browser stops signing immediately and forgets its key. You stay signed in, and the console asks you to set signing up again before you can carry on. A revoked key cannot come back; setting up generates a new one."
                               : "That browser stops signing on its very next document. A revoked key cannot be re-enrolled; that browser generates a new one if you enable it again.",
                           confirmLabel: "Revoke",
                           destructive: true,

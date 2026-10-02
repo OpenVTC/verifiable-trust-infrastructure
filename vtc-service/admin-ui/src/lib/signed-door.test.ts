@@ -7,7 +7,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { postSignedTrustTask, SigningUnavailableError } from "./api";
+import { postSignedTrustTask, SIGNING_KEY_REFUSED_EVENT, SigningUnavailableError } from "./api";
 import type { SignedTrustTaskDocument } from "./console-key";
 import {
   forgetConsoleKey,
@@ -133,6 +133,74 @@ describe("postSignedTrustTask", () => {
       status: 403,
       message: "Trust Task proof verification failed",
     });
+  });
+
+  // The VTC's rate-limit refusal is not a Trust Task document, and its body
+  // says how long to wait. A short wait is waited out once, with the identical
+  // document; the operator never sees "429 from the signed Trust Task endpoint".
+  it("waits out a short rate limit and resends the same document", async () => {
+    await generateConsoleKey();
+    let calls = 0;
+    const requests = mockFetch([
+      health(),
+      {
+        method: "POST",
+        path: "/v1/trust-tasks",
+        // `mockFetch` reads the body before the status.
+        body: () =>
+          ++calls === 1
+            ? { error: "rate_limited", limiter: "unauth", retryAfterSecs: 0 }
+            : responseDocument({ removed: true }),
+        status: () => (calls === 1 ? 429 : 200),
+      },
+    ]);
+    await expect(postSignedTrustTask(PURGE, { did: "did:key:z6MkTarget" })).resolves.toEqual({
+      removed: true,
+    });
+    const sent = requests.filter((r) => r.url === "/v1/trust-tasks");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.body).toEqual(sent[0]!.body);
+  });
+
+  it("says how long to wait when a rate limit is too long to wait out", async () => {
+    await generateConsoleKey();
+    const requests = mockFetch([
+      health(),
+      {
+        method: "POST",
+        path: "/v1/trust-tasks",
+        status: 429,
+        body: { error: "rate_limited", limiter: "unauth", retryAfterSecs: 40 },
+      },
+    ]);
+    await expect(postSignedTrustTask(PURGE, {})).rejects.toMatchObject({
+      status: 429,
+      code: "rateLimited",
+      message: expect.stringMatching(/try again in 40 seconds/i),
+    });
+    expect(requests.filter((r) => r.url === "/v1/trust-tasks")).toHaveLength(1);
+  });
+
+  it("tells the shell when a signed document is refused outright", async () => {
+    await generateConsoleKey();
+    mockFetch([
+      health(),
+      {
+        method: "POST",
+        path: "/v1/trust-tasks",
+        status: 403,
+        body: { payload: { code: "permissionDenied", message: "no" } },
+      },
+    ]);
+    let heard = 0;
+    const listener = () => heard++;
+    window.addEventListener(SIGNING_KEY_REFUSED_EVENT, listener);
+    try {
+      await expect(postSignedTrustTask(PURGE, {})).rejects.toMatchObject({ status: 403 });
+    } finally {
+      window.removeEventListener(SIGNING_KEY_REFUSED_EVENT, listener);
+    }
+    expect(heard).toBe(1);
   });
 
   it("refuses to sign when this browser holds no key", async () => {

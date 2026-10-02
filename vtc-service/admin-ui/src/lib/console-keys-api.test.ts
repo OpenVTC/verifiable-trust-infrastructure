@@ -2,8 +2,9 @@
 //
 // The things worth asserting: the enrolment names the key this browser can
 // actually sign with and the identity the session belongs to, it goes through
-// the bound step-up (`postSignedWithStepUp`), and a browser with no enrolled
-// key lists nothing rather than failing.
+// the bound step-up (`postSignedWithStepUp`), a browser with no enrolled key
+// lists nothing rather than failing, and the status the shell gates on is
+// `not-enrolled` only when the VTC said so.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -27,6 +28,7 @@ import {
   enrolThisBrowser,
   listConsoleKeys,
   revokeConsoleKey,
+  signingStatus,
 } from "./console-keys-api";
 import {
   forgetConsoleKey,
@@ -83,21 +85,92 @@ describe("enrolment", () => {
       deviceLabel: "Work laptop",
     });
     expect(gesture).toBe(yes);
-    expect(enrolled).toMatchObject({
+    expect(enrolled.key).toMatchObject({
       consoleDid: held!.consoleDid,
       adminDid: ADMIN_DID,
       label: "Work laptop",
       active: true,
     });
+    expect(enrolled.durability).toBe("memory");
   });
 
-  it("omits an empty label, and reuses the key this browser already holds", async () => {
+  // The VTC never enrols a key twice — an expired delegation still answers
+  // `alreadyEnrolled` — so reusing the held key made a lapsed browser
+  // impossible to re-enrol.
+  it("enrols a fresh key, never the one this browser already holds, and omits an empty label", async () => {
     const existing = await generateConsoleKey();
-    vi.mocked(postSignedWithStepUp).mockResolvedValue({ signingKey: signingKey(existing.consoleDid) });
+    vi.mocked(postSignedWithStepUp).mockImplementation(async (_t, payload) => ({
+      signingKey: signingKey((payload as { signingKeyDid: string }).signingKeyDid),
+    }));
+    vi.mocked(postSignedTrustTask).mockResolvedValue({});
     await enrolThisBrowser("   ", yes);
     const payload = vi.mocked(postSignedWithStepUp).mock.calls[0]![1] as Record<string, unknown>;
-    expect(payload.signingKeyDid).toBe(existing.consoleDid);
+    expect(payload.signingKeyDid).not.toBe(existing.consoleDid);
     expect("deviceLabel" in payload).toBe(false);
+    // The new key is this browser's now, and the one it replaced is retired.
+    expect((await loadConsoleKey())!.consoleDid).toBe(payload.signingKeyDid);
+    expect(vi.mocked(postSignedTrustTask).mock.calls).toEqual([
+      [TASK_SIGNING_KEY_REVOKE, { signingKeyDid: existing.consoleDid }],
+    ]);
+  });
+
+  it("leaves the key this browser held in place when enrolment fails", async () => {
+    const existing = await generateConsoleKey();
+    vi.mocked(postSignedWithStepUp).mockRejectedValue(new Error("passkey cancelled"));
+    await expect(enrolThisBrowser("x", yes)).rejects.toThrow("passkey cancelled");
+    expect((await loadConsoleKey())!.consoleDid).toBe(existing.consoleDid);
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+  });
+});
+
+describe("signing status", () => {
+  it("is no-key, and sends nothing, when this browser holds no key", async () => {
+    expect(await signingStatus(ADMIN_DID)).toEqual({ state: "no-key" });
+    expect(postSignedRead).not.toHaveBeenCalled();
+  });
+
+  it("is ready when the VTC lists this browser's key as active for this identity", async () => {
+    const key = await generateConsoleKey();
+    vi.mocked(postSignedRead).mockResolvedValue({ signingKeys: [signingKey(key.consoleDid)] });
+    const status = await signingStatus(ADMIN_DID);
+    expect(status).toMatchObject({ state: "ready", key: { consoleDid: key.consoleDid } });
+  });
+
+  it("is not-enrolled when the VTC does not recognise the key", async () => {
+    const key = await generateConsoleKey();
+    vi.mocked(postSignedRead).mockRejectedValue({ status: 403, code: "permissionDenied", message: "x" });
+    expect(await signingStatus(ADMIN_DID)).toEqual({
+      state: "not-enrolled",
+      consoleDid: key.consoleDid,
+    });
+  });
+
+  // A rate limit, an outage or a 5xx says nothing about the key; sending the
+  // operator to enrol on one would be the original bug in a new place.
+  it("throws, rather than answering not-enrolled, when the check itself fails", async () => {
+    await generateConsoleKey();
+    vi.mocked(postSignedRead).mockRejectedValue({ status: 429, code: "rateLimited", message: "slow" });
+    await expect(signingStatus(ADMIN_DID)).rejects.toMatchObject({ status: 429 });
+  });
+
+  it("is other-identity when the key acts for another administrator", async () => {
+    const key = await generateConsoleKey();
+    vi.mocked(postSignedRead).mockResolvedValue({
+      signingKeys: [signingKey(key.consoleDid, { identityDid: "did:key:z6MkBob" })],
+    });
+    expect(await signingStatus(ADMIN_DID)).toMatchObject({
+      state: "other-identity",
+      identityDid: "did:key:z6MkBob",
+    });
+  });
+
+  it("asks for renewal within five days of expiry", async () => {
+    const key = await generateConsoleKey();
+    const soon = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
+    vi.mocked(postSignedRead).mockResolvedValue({
+      signingKeys: [signingKey(key.consoleDid, { expiresAt: soon })],
+    });
+    expect(await signingStatus(ADMIN_DID)).toMatchObject({ state: "ready", renewSoon: true });
   });
 });
 

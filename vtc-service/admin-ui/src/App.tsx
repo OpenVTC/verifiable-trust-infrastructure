@@ -7,7 +7,13 @@ import { getPlugins, subscribePlugins, type PluginManifest } from "@/plugin-api"
 import { BreakGlassBanner } from "@/components/BreakGlassBanner";
 import { PluginHost } from "@/components/PluginHost";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
-import { probeSession, signOut, WhoamiResponse } from "@/lib/api";
+import {
+  probeSession,
+  signOut,
+  SIGNING_KEY_REFUSED_EVENT,
+  WhoamiResponse,
+} from "@/lib/api";
+import { signingStatus, type SigningStatus } from "@/lib/console-keys-api";
 import { isSuperAdmin } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
@@ -15,6 +21,11 @@ import { useToast } from "@/lib/toast";
 import { Install } from "@/pages/Install";
 import { EnrolStepUpPage } from "@/pages/EnrolStepUp";
 import { Login } from "@/pages/Login";
+import {
+  SetupSigning,
+  SIGNING_STATUS_KEY,
+  SigningCheckFailed,
+} from "@/pages/SetupSigning";
 import { StepUpPage } from "@/pages/StepUp";
 
 /**
@@ -124,6 +135,34 @@ export default function App() {
     enabled: !pathname.startsWith("/install"),
   });
 
+  // Whether this browser can sign for the signed-in administrator. Every
+  // administrator verb is a signed document, so without an accepted key the
+  // console can show nothing that works; the shell puts the operator through
+  // setup first (`pages/SetupSigning.tsx`). Asked once per identity, and again
+  // only when something says the answer changed — enrolment, revocation, or a
+  // signed document the VTC refused outright.
+  const subject = probe.data?.session.subject ?? null;
+  const needsSigning = !!probe.data && probe.data.roles.includes("admin");
+  const signing = useQuery<SigningStatus>({
+    queryKey: [SIGNING_STATUS_KEY, subject],
+    queryFn: () => signingStatus(subject!),
+    enabled: needsSigning && !pathname.startsWith("/install"),
+    staleTime: Infinity,
+    retry: false,
+  });
+  useEffect(() => {
+    const onRefused = () => {
+      // Only a key believed good is worth re-checking; anything else is
+      // already on the setup page, and re-checking it would loop.
+      const current = qc.getQueryData<SigningStatus>([SIGNING_STATUS_KEY, subject]);
+      if (current?.state === "ready") {
+        void qc.invalidateQueries({ queryKey: [SIGNING_STATUS_KEY] });
+      }
+    };
+    window.addEventListener(SIGNING_KEY_REFUSED_EVENT, onRefused);
+    return () => window.removeEventListener(SIGNING_KEY_REFUSED_EVENT, onRefused);
+  }, [qc, subject]);
+
   // Re-arm the session-expiry guard whenever a fresh session lands.
   // Without this, a second expiry inside the same browser tab would
   // be silently ignored.
@@ -182,6 +221,24 @@ export default function App() {
     }
     return <Login />;
   }
+
+  // An administrator's browser needs an accepted signing key before the
+  // console is any use. `/step-up` stays reachable: answering a passkey
+  // step-up handed over from `cnm` signs nothing.
+  if (needsSigning && !pathname.startsWith("/step-up")) {
+    if (signing.isPending) {
+      return <SignInLoading message="Checking this browser's signing key…" />;
+    }
+    if (signing.isError) {
+      return (
+        <SigningCheckFailed error={signing.error} onRetry={() => void signing.refetch()} />
+      );
+    }
+    if (signing.data.state !== "ready") {
+      return <SetupSigning whoami={probe.data} status={signing.data} />;
+    }
+  }
+  const renewSoon = signing.data?.state === "ready" && signing.data.renewSoon;
 
   // A "super admin" is Admin role with no context restrictions.
   // Scope-filtered plugins surface server errors as 403s anyway, but
@@ -255,6 +312,16 @@ export default function App() {
         {/* Not dismissible: it clears when every self-granted elevated right
             has been ratified or revoked (git-ns/right/break-glass). */}
         <BreakGlassBanner />
+        {renewSoon && !pathname.startsWith("/console-keys") && (
+          <div className="signing-renew-banner" role="status">
+            <strong>This browser's signing key expires soon.</strong>
+            <span>
+              Renew it now — one passkey confirmation — so the console keeps
+              working.
+            </span>
+            <NavLink to="/console-keys">Renew</NavLink>
+          </div>
+        )}
         <Routes>
           {plugins.map((p) => (
             <Route
@@ -396,12 +463,12 @@ function ReloadPluginsButton() {
   );
 }
 
-function SignInLoading() {
+function SignInLoading({ message = "Checking session…" }: { message?: string }) {
   return (
     <section className="page login-page">
       <div className="login-card">
         <h2>VTC Admin</h2>
-        <p className="lead">Checking session…</p>
+        <p className="lead">{message}</p>
       </div>
     </section>
   );

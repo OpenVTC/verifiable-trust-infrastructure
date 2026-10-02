@@ -218,6 +218,12 @@ embedded admin SPA serving the install flow:
    redeemed again.
 5. The page shows the admin DID. Sign in at `/admin/` with the
    passkey.
+6. The console asks you to **Set up signing** for this browser —
+   name it and confirm with the same passkey. Every admin action is a
+   signed document, so this happens once per browser before the
+   dashboard appears, and again only if the key expires (30 days, with a
+   renewal reminder), is revoked, or the browser loses its storage. See
+   [Signing keys](website-and-admin.md#signing-keys--what-the-console-signs-with).
 
 The page does not hand you a CLI credential. To authenticate a
 script or CLI, or to get the admin in without a browser, and for
