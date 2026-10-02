@@ -388,10 +388,11 @@ fn build_api_chain(
     // openvtc/vtc/auth/legacy/* slugs were VTC-specific reimplementations
     // of primitives that VTA + did-hosting also have; consolidating here
     // so a multi-service deployment can use one client library.
-    // Browser-SPA convenience surface: `whoami` + `sign-out`. Both
-    // are bound to the access-token session (cookie or bearer);
-    // sign-out revokes the server-side session and clears the
-    // browser cookies in one trip.
+    // Browser-SPA convenience surface: `whoami` here, bound to the
+    // access-token session (cookie or bearer). Its partner `sign-out`
+    // revokes the session and clears the browser cookies in one trip; it
+    // is on the unauthenticated chain because it also answers a session
+    // that has already ended.
     // Audit log list — super-admin only since envelopes carry
     // plaintext DIDs.
     // Admin invites — REST surface for `vtc admin invite`. Single
@@ -494,13 +495,8 @@ fn build_api_chain(
             routes!(auth::whoami),
             "https://trusttasks.org/spec/auth/whoami/0.1",
         ))
-        // Sign-out ends the browser's cookie session: it clears the cookie
-        // pair `auth/admin-session` set, which no Trust Task describes. It had
-        // borrowed `revoke-session`, whose request names a session or a
-        // subject and whose response counts them; sign-out takes neither and
-        // answers `204`. It carries no binding, and goes when the cookie
-        // session does.
-        .routes(routes!(auth::sign_out))
+        // Sign-out is on the unauthenticated chain (`build_unauth_routes`):
+        // it answers a caller whose session has already ended.
         // Audit log (super-admin only): `audit/list` and `audit/verify` are
         // signed documents only.
         // Config lives at `/v1/admin/config` on canonical `config/{show,patch}`.
@@ -863,6 +859,16 @@ fn build_unauth_routes(trust_xff_cidrs: &[IpNetwork]) -> OpenApiRouter<AppState>
             routes!(auth::refresh),
             "https://trusttasks.org/spec/auth/refresh/0.1",
         ))
+        // Sign-out ends the browser's cookie session: it clears the cookie
+        // pair `auth/admin-session` set, which no Trust Task describes. It had
+        // borrowed `revoke-session`, whose request names a session or a
+        // subject and whose response counts them; sign-out takes neither and
+        // answers `204`. It carries no binding, and goes when the cookie
+        // session does. It lives here, behind the governor, because a caller
+        // whose session already ended gets `204` too — a console left open
+        // past its access token still holds a refresh cookie only this
+        // response can clear.
+        .routes(routes!(auth::sign_out))
         .routes(tt(
             routes!(auth::admin_session),
             "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",

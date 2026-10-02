@@ -190,6 +190,17 @@ export interface paths {
          *     expire the cookie pair. The cookies' HttpOnly flag means JS
          *     can't clear them itself — only the server can issue
          *     `Set-Cookie: ...; Max-Age=0` to delete from the browser's jar.
+         * @description Signing out of a session that has already ended is what the caller
+         *     wanted, so it answers `204` too. The common case is a console left
+         *     open past its access token: the browser has dropped the session
+         *     cookie (its `Max-Age` is the token's lifetime) but still holds the
+         *     refresh cookie, which outlives it. Answering `401` there left that
+         *     cookie in the jar — the clearing headers ride only on this response —
+         *     and told the operator their sign-out had failed. So the session is
+         *     found from whichever credential is presented: the access token, or
+         *     failing that the refresh cookie when it is the one its session
+         *     currently issues. With neither, there is nothing to revoke, and the
+         *     cookies are still cleared.
          */
         post: operations["sign_out"];
         delete?: never;
@@ -4180,15 +4191,8 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Session revoked and session/CSRF cookies cleared */
+            /** @description Any session the request names is revoked; the session, refresh and CSRF cookies are cleared */
             204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token */
-            401: {
                 headers: {
                     [name: string]: unknown;
                 };

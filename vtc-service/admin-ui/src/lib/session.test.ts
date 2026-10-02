@@ -5,6 +5,7 @@ import {
   resetSession,
   sessionExpiry,
   setSessionExpiry,
+  watchSessionDeadline,
 } from "@/lib/session";
 
 const NOW = 1_800_000_000_000; // ms
@@ -107,5 +108,83 @@ describe("session renewal", () => {
     // The expiry is left where it was, so the next request 401s and the
     // shell's expiry handler takes over.
     expect(sessionExpiry()).toBe(NOW / 1000 + 30);
+  });
+});
+
+// An idle console has no requests to hang renewal on, so the deadline is
+// watched on a timer. The daemon still decides: a refused renewal leaves the
+// deadline where it was and the console is told it passed.
+describe("session deadline watch", () => {
+  const T0 = NOW / 1000;
+
+  beforeEach(() => {
+    resetSession();
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  it("schedules nothing while no expiry is known", async () => {
+    const renew = vi.fn();
+    const expired = vi.fn();
+    const stop = watchSessionDeadline(renew, expired);
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(renew).not.toHaveBeenCalled();
+    expect(expired).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("renews ahead of the deadline, and keeps doing so while the daemon agrees", async () => {
+    setSessionExpiry(T0 + 300);
+    const renew = vi.fn(async () => Math.floor(Date.now() / 1000) + 300);
+    const expired = vi.fn();
+    const stop = watchSessionDeadline(renew, expired);
+
+    await vi.advanceTimersByTimeAsync(239_000);
+    expect(renew).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(sessionExpiry()).toBe(T0 + 240 + 300);
+
+    await vi.advanceTimersByTimeAsync(240_000);
+    expect(renew).toHaveBeenCalledTimes(2);
+    expect(expired).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("reports the deadline once the daemon refuses to renew", async () => {
+    setSessionExpiry(T0 + 300);
+    // An idled-out session: the daemon answers every renewal with no.
+    const renew = vi.fn().mockResolvedValue(null);
+    const expired = vi.fn();
+    const stop = watchSessionDeadline(renew, expired);
+
+    await vi.advanceTimersByTimeAsync(299_000);
+    expect(expired).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(expired).toHaveBeenCalledTimes(1);
+
+    // And it stops there rather than reporting on a loop.
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(expired).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("renews at once when it starts inside the renewal window", async () => {
+    setSessionExpiry(T0 + 30);
+    const renew = vi.fn(async () => T0 + 330);
+    const stop = watchSessionDeadline(renew, vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(renew).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("does nothing once cancelled", async () => {
+    setSessionExpiry(T0 + 300);
+    const renew = vi.fn().mockResolvedValue(null);
+    const expired = vi.fn();
+    watchSessionDeadline(renew, expired)();
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(renew).not.toHaveBeenCalled();
+    expect(expired).not.toHaveBeenCalled();
   });
 });

@@ -9,7 +9,12 @@
 // call when the access token is nearly out, so an operator who is using
 // the console is not signed out mid-task. See `lib/session.ts`.
 
-import { renewIfNeeded, resetSession, setSessionExpiry } from "@/lib/session";
+import {
+  renewIfNeeded,
+  resetSession,
+  setSessionExpiry,
+  watchSessionDeadline,
+} from "@/lib/session";
 
 // `GET /health` is unauth and deliberately minimal: it carries only
 // `{status, version, vtc_did}`. The `vta_did` / `mediator_url` /
@@ -845,12 +850,35 @@ export async function saveConfig(
 }
 
 /** Revoke the server-side session and clear browser cookies. Sign-out ends the
- *  cookie session, which no Trust Task describes, so it carries no task. */
+ *  cookie session, which no Trust Task describes, so it carries no task.
+ *
+ *  Not routed through `request`, for two reasons. Its pre-flight renewal
+ *  would rotate the refresh token of a session about to be ended. And its
+ *  `vtc-session-expired` event would announce an expiry over the top of a
+ *  sign-out the operator asked for.
+ *
+ *  A 401 means there was no session left to end — the console sat idle
+ *  past its access token, and the daemon predates the one that answers
+ *  204 there. That is the outcome asked for, so it is not an error. */
 export const signOut = async (): Promise<void> => {
-  await postJsonExempt<void>("/v1/auth/sign-out", undefined);
-  // Drop the expiry so a subsequent sign-in starts from that session's
-  // own deadline rather than renewing against the dead one's.
-  resetSession();
+  const headers = new Headers();
+  const csrf = csrfTokenFromCookie();
+  if (csrf) headers.set("X-CSRF-Token", csrf);
+  try {
+    const res = await fetch("/v1/auth/sign-out", {
+      method: "POST",
+      credentials: "include",
+      headers,
+    });
+    if (!res.ok && res.status !== 401) {
+      const err: ApiError = { status: res.status, message: await daemonErrorMessage(res) };
+      throw err;
+    }
+  } finally {
+    // Drop the expiry so a subsequent sign-in starts from that session's
+    // own deadline rather than renewing against the dead one's.
+    resetSession();
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -1027,6 +1055,21 @@ export interface RecognitionCheck {
  * DID — the operator's per-DID window into the recognition graph. */
 export const checkRecognition = (did: string): Promise<RecognitionCheck> =>
   postSignedRead<RecognitionCheck>(RECOGNITION_CHECK_TASK, { did });
+
+/**
+ * Renew the cookie session ahead of its deadline while the console is open,
+ * and raise `vtc-session-expired` once the deadline passes with renewal
+ * refused — so an idle console shows Login instead of waiting for the
+ * operator's next click to fail. See `watchSessionDeadline`.
+ */
+export const watchSession = (): (() => void) =>
+  watchSessionDeadline(renewSession, () => {
+    window.dispatchEvent(
+      new CustomEvent("vtc-session-expired", {
+        detail: { path: "(deadline)", status: 401 },
+      }),
+    );
+  });
 
 /** Probe: returns the whoami response when signed in, null when not. */
 export async function probeSession(): Promise<WhoamiResponse | null> {

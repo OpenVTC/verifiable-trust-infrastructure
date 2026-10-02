@@ -119,24 +119,22 @@ async fn sign_out_is_distinct_from_session_revoked() {
 }
 
 #[tokio::test]
-async fn a_second_sign_out_is_rejected_and_not_audited_twice() {
+async fn a_second_sign_out_succeeds_but_is_not_audited_twice() {
     // Sign-out deletes the session row, and `AuthClaims` refuses a
-    // token whose session is gone — so the same token cannot sign out
-    // twice. This is why `SignedOutData` carries no "did it exist"
-    // flag: the handler only ever runs against a live session.
+    // token whose session is gone — so the retry names no session.
+    // Signing out of nothing is still what the caller asked for, so it
+    // answers 204, but no session ended there and no envelope is
+    // written. `SignedOutData` needs no "did it exist" flag: an
+    // envelope is only ever written for a live session.
     let fix = build().await;
     let token = fix.vtc.token(MEMBER_DID, "application", vec![]).await;
 
     assert_eq!(sign_out(&fix, &token).await, StatusCode::NO_CONTENT);
-    assert_eq!(
-        sign_out(&fix, &token).await,
-        StatusCode::UNAUTHORIZED,
-        "the token dies with its session"
-    );
+    assert_eq!(sign_out(&fix, &token).await, StatusCode::NO_CONTENT);
 
     assert_eq!(
         signed_out_events(&fix).await.len(),
         1,
-        "the rejected retry must not add a second envelope"
+        "the retry must not add a second envelope"
     );
 }

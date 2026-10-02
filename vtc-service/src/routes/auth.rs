@@ -1528,45 +1528,75 @@ fn epoch_to_datetime(secs: u64) -> DateTime<Utc> {
 /// expire the cookie pair. The cookies' HttpOnly flag means JS
 /// can't clear them itself — only the server can issue
 /// `Set-Cookie: ...; Max-Age=0` to delete from the browser's jar.
+///
+/// Signing out of a session that has already ended is what the caller
+/// wanted, so it answers `204` too. The common case is a console left
+/// open past its access token: the browser has dropped the session
+/// cookie (its `Max-Age` is the token's lifetime) but still holds the
+/// refresh cookie, which outlives it. Answering `401` there left that
+/// cookie in the jar — the clearing headers ride only on this response —
+/// and told the operator their sign-out had failed. So the session is
+/// found from whichever credential is presented: the access token, or
+/// failing that the refresh cookie when it is the one its session
+/// currently issues. With neither, there is nothing to revoke, and the
+/// cookies are still cleared.
 #[utoipa::path(
     post, path = "/auth/sign-out", tag = "auth",
-    security(("bearer_jwt" = [])),
+    security((), ("bearer_jwt" = [])),
     responses(
-        (status = 204, description = "Session revoked and session/CSRF cookies cleared"),
-        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 204, description = "Any session the request names is revoked; the session, refresh and CSRF cookies are cleared"),
     ),
 )]
 pub async fn sign_out(
-    auth: AuthClaims,
+    auth: Result<AuthClaims, AppError>,
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
     use axum::http::HeaderValue;
     use axum::http::header::SET_COOKIE;
 
     let sessions = state.sessions_ks.clone();
-    // Best-effort delete — a failure still falls through to the
-    // cookie clearing below, so the browser stops sending the stale
-    // JWT either way. (The session is known to exist: `AuthClaims`
-    // rejects a token whose session row is gone.)
-    let _ = delete_session(&sessions, &auth.session_id).await;
-
-    // Audit the session ending. Best-effort like the delete above: a
-    // failed audit write must not leave the caller holding a live
-    // cookie pair they were told was cleared.
-    if let Some(writer) = state.audit_writer.as_ref()
-        && let Err(e) = writer
-            .write(
-                &auth.did,
-                Some(&auth.did),
-                AuditEvent::SignedOut(SignedOutData {
-                    session_id: auth.session_id.clone(),
+    let ending = match auth {
+        Ok(auth) => Some((auth.did, auth.session_id)),
+        Err(_) => match cookie_value(&headers, ADMIN_REFRESH_COOKIE) {
+            Some(token) => session_by_current_refresh(&sessions, &token)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!(error = %e, "sign-out: refresh-cookie session lookup failed");
+                    None
                 }),
-            )
-            .await
-    {
-        tracing::warn!(error = %e, did = %auth.did, "sign-out audit write failed");
+            None => None,
+        },
+    };
+
+    if let Some((did, session_id)) = ending {
+        // Best-effort delete — a failure still falls through to the
+        // cookie clearing below, so the browser stops sending the stale
+        // JWT either way.
+        let _ = delete_session(&sessions, &session_id).await;
+
+        // Audit the session ending. Best-effort like the delete above: a
+        // failed audit write must not leave the caller holding a live
+        // cookie pair they were told was cleared.
+        if let Some(writer) = state.audit_writer.as_ref()
+            && let Err(e) = writer
+                .write(
+                    &did,
+                    Some(&did),
+                    AuditEvent::SignedOut(SignedOutData {
+                        session_id: session_id.clone(),
+                    }),
+                )
+                .await
+        {
+            tracing::warn!(error = %e, did = %did, "sign-out audit write failed");
+        }
+        info!(did = %did, session_id = %session_id, "sign-out");
+    } else {
+        // Nothing live to end: no audit row, because no session stopped
+        // here. Only the cookies go.
+        tracing::debug!("sign-out with no live session; clearing cookies only");
     }
-    info!(did = %auth.did, session_id = %auth.session_id, "sign-out");
 
     // Sign-out has nothing to report: the session it names is gone, so 204
     // is the honest status and the cookie-clearing headers are the whole
@@ -1601,6 +1631,34 @@ pub async fn sign_out(
             .map_err(|e| AppError::Internal(format!("invalid csrf cookie: {e}")))?,
     );
     Ok(response)
+}
+
+/// The `(did, session_id)` a refresh cookie belongs to, when it is the token
+/// that session currently issues.
+///
+/// Currency is checked the way `/auth/refresh` checks it — the
+/// `refresh-current:` record, falling back to the row only for sessions that
+/// predate it — so a superseded token cannot end the session that replaced
+/// it. It could not renew that session either; sign-out grants it nothing
+/// refresh would not.
+async fn session_by_current_refresh(
+    sessions: &KeyspaceHandle,
+    token: &str,
+) -> Result<Option<(String, String)>, AppError> {
+    use crate::auth::session::{current_refresh_hash, get_session_by_refresh, refresh_token_hash};
+
+    let Some(session_id) = get_session_by_refresh(sessions, token).await? else {
+        return Ok(None);
+    };
+    let Some(session) = get_session(sessions, &session_id).await? else {
+        return Ok(None);
+    };
+    let presented = refresh_token_hash(token);
+    let current = match current_refresh_hash(sessions, &session_id).await? {
+        Some(hash) => hash == presented,
+        None => session.refresh_token.as_deref().map(refresh_token_hash) == Some(presented),
+    };
+    Ok(current.then_some((session.did, session.session_id)))
 }
 
 /// `auth/sessions/list/0.1#response` — the sessions the caller may see.
