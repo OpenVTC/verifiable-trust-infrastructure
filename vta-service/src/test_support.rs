@@ -3633,6 +3633,59 @@ mod transport_harness_tests {
         topology.shutdown().await.expect("shutdown the topology");
     }
 
+    /// A reply to a peer on another mediator reaches it — with no mediator
+    /// handed in, which is the reply path's position: it is answering a frame,
+    /// not choosing TSP from the peer's document. `send_to` routes `[ours,
+    /// peer]`, which ends at a mediator that does not host bob; this is how a
+    /// VTC's answer to a join request (and every status poll after it) never
+    /// came back to a persona on another mediator.
+    #[tokio::test]
+    async fn a_reply_reaches_a_sender_on_another_mediator() {
+        use affinidi_messaging_test_mediator::topology::TestTopology;
+
+        let topology = TestTopology::builder()
+            .mediators(2)
+            .spawn()
+            .await
+            .expect("spawn a two-mediator topology");
+        let alice = topology.add_user(0, "alice").await.expect("alice on A");
+        let bob = topology
+            .add_tsp_mediated_user(1, "bob")
+            .await
+            .expect("bob on B, naming mediator B by DID");
+        topology
+            .relate_directly(&alice, &bob)
+            .await
+            .expect("seed the TSP relationship both ways, as a sender's frame would");
+
+        let transport = crate::messaging::tsp_transport::TspTransport::new(
+            topology.node(0).expect("node A").atm.clone(),
+            alice.profile.clone(),
+        )
+        .expect("alice's profile carries a mediator");
+        let body = vta_sdk::tsp_binding::wrap_envelope(br#"{"probe":"cross-mediator reply"}"#);
+        transport
+            .send_reply(&bob.did, &body)
+            .await
+            .expect("the reply is accepted for delivery");
+
+        let bob_env = topology.node(1).expect("node B");
+        let stored = poll_tsp_inbox(bob_env, &bob.profile).await;
+        let (recovered, sender) = bob_env
+            .atm
+            .tsp()
+            .unpack(&bob.profile, &stored)
+            .await
+            .expect("bob unpacks the reply");
+        assert_eq!(
+            recovered, body,
+            "bob, on another mediator, receives the reply"
+        );
+        assert_eq!(sender, alice.did);
+
+        topology.shutdown().await.expect("shutdown the topology");
+    }
+
     /// VTI-56: a relationship started **from cold** with a peer on another
     /// mediator. Every other cross-mediator test here pre-forms the relationship
     /// (`relate_directly`), which skips the invite entirely, which is how this
