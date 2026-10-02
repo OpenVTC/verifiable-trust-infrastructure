@@ -2637,6 +2637,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     surface_tasks::ROOMS_LIST_TYPE,
     // The console's signing keys, which replaced `/v1/admin/console-keys`.
     signing_key_tasks::ENROLL_TYPE,
+    // 0.2: the identity's own signed `authorization` in place of the step-up,
+    // and `replaces` at the cap. `authorize/0.1` is never dispatched alone.
+    signing_key_tasks::ENROLL_V0_2_TYPE,
     signing_key_tasks::LIST_TYPE,
     signing_key_tasks::REVOKE_TYPE,
     // The website's content, which replaced the raw-byte routes.

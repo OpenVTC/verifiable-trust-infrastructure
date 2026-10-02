@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", async (original) => ({
   ...(await original<typeof import("./api")>()),
+  addressedDocument: vi.fn(),
   fetchWhoami: vi.fn(),
   postSignedRead: vi.fn(),
   postSignedTrustTask: vi.fn(),
@@ -19,10 +20,12 @@ vi.mock("./signed-act", async (original) => ({
   postSignedWithStepUp: vi.fn(),
 }));
 
-import { fetchWhoami, postSignedRead, postSignedTrustTask } from "./api";
+import { addressedDocument, fetchWhoami, postSignedRead, postSignedTrustTask } from "./api";
 import { postSignedWithStepUp } from "./signed-act";
 import {
+  TASK_SIGNING_KEY_AUTHORIZE,
   TASK_SIGNING_KEY_ENROLL,
+  TooManyKeysError,
   TASK_SIGNING_KEY_LIST,
   TASK_SIGNING_KEY_REVOKE,
   enrolThisBrowser,
@@ -120,6 +123,95 @@ describe("enrolment", () => {
     await expect(enrolThisBrowser("x", yes)).rejects.toThrow("passkey cancelled");
     expect((await loadConsoleKey())!.consoleDid).toBe(existing.consoleDid);
     expect(postSignedTrustTask).not.toHaveBeenCalled();
+  });
+});
+
+describe("enrolment authorized by the wallet (enroll/0.2)", () => {
+  afterEach(() => {
+    delete (window as { vtaWallet?: unknown }).vtaWallet;
+  });
+
+  it("carries the identity's wallet-signed terms as `authorization`, with no step-up", async () => {
+    const signTrustTask = vi.fn(async ({ envelope }: { envelope: Record<string, unknown>; asDid?: string }) => ({
+      signedEnvelope: {
+        ...envelope,
+        proof: { verificationMethod: `${ADMIN_DID}#key-0`, proofValue: "z1" },
+      },
+      holderDid: "did:key:z6MkHolder",
+    }));
+    (window as { vtaWallet?: unknown }).vtaWallet = { login: vi.fn(), signTrustTask };
+    vi.mocked(addressedDocument).mockImplementation(async (typeUri, payload, issuer) => ({
+      id: "urn:uuid:a",
+      type: typeUri,
+      issuer,
+      recipient: "did:web:community.example",
+      issuedAt: "2026-10-02T10:00:00Z",
+      payload,
+    }));
+    vi.mocked(postSignedTrustTask).mockImplementation(async (_t, payload) => ({
+      signingKey: signingKey((payload as { signingKeyDid: string }).signingKeyDid),
+    }));
+
+    await enrolThisBrowser("Wallet", yes, { evidence: "wallet" });
+
+    expect(postSignedWithStepUp).not.toHaveBeenCalled();
+    const [task, payload] = vi.mocked(postSignedTrustTask).mock.calls[0]!;
+    expect(task).toBe(TASK_SIGNING_KEY_ENROLL);
+    const { authorization, ...terms } = payload as Record<string, unknown>;
+    const signed = authorization as Record<string, unknown>;
+    expect(signed.type).toBe(TASK_SIGNING_KEY_AUTHORIZE);
+    expect(signed.issuer).toBe(ADMIN_DID);
+    // The identity signed exactly the terms enrolled.
+    expect(signed.payload).toEqual(terms);
+    expect(signTrustTask.mock.calls[0]![0].asDid).toBe(ADMIN_DID);
+  });
+
+  it("refuses a wallet signature made as somebody else, before sending anything", async () => {
+    (window as { vtaWallet?: unknown }).vtaWallet = {
+      login: vi.fn(),
+      signTrustTask: vi.fn(async ({ envelope }: { envelope: Record<string, unknown> }) => ({
+        signedEnvelope: { ...envelope, proof: { verificationMethod: "did:key:z6MkHolder#k" } },
+        holderDid: "did:key:z6MkHolder",
+      })),
+    };
+    vi.mocked(addressedDocument).mockImplementation(async (typeUri, payload, issuer) => ({
+      id: "urn:uuid:a",
+      type: typeUri,
+      issuer,
+      recipient: "did:web:community.example",
+      issuedAt: "2026-10-02T10:00:00Z",
+      payload,
+    }));
+    await expect(enrolThisBrowser("x", yes, { evidence: "wallet" })).rejects.toThrow(
+      /different identity/,
+    );
+    expect(postSignedTrustTask).not.toHaveBeenCalled();
+  });
+});
+
+describe("at the key cap", () => {
+  it("turns tooManyKeys into the list to choose a key to replace from", async () => {
+    vi.mocked(postSignedWithStepUp).mockRejectedValue({
+      status: 422,
+      code: "auth/signing-key/enroll:tooManyKeys",
+      message: "full",
+      details: {
+        maxActiveKeys: 5,
+        activeKeys: [{ signingKeyDid: "did:key:z6MkOld", createdAt: "t", expiresAt: "t" }],
+      },
+    });
+    const err = await enrolThisBrowser("x", yes).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TooManyKeysError);
+    expect((err as TooManyKeysError).activeKeys[0]!.signingKeyDid).toBe("did:key:z6MkOld");
+  });
+
+  it("names the chosen key in `replaces`", async () => {
+    vi.mocked(postSignedWithStepUp).mockImplementation(async (_t, payload) => ({
+      signingKey: signingKey((payload as { signingKeyDid: string }).signingKeyDid),
+    }));
+    await enrolThisBrowser("x", yes, { replaces: "did:key:z6MkOld" });
+    const payload = vi.mocked(postSignedWithStepUp).mock.calls[0]![1] as Record<string, unknown>;
+    expect(payload.replaces).toBe("did:key:z6MkOld");
   });
 });
 

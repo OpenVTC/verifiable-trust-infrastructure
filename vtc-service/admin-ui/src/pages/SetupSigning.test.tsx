@@ -10,7 +10,7 @@ vi.mock("@/lib/console-keys-api", async (original) => ({
 }));
 
 import type { WhoamiResponse } from "@/lib/api";
-import { enrolThisBrowser } from "@/lib/console-keys-api";
+import { enrolThisBrowser, TooManyKeysError } from "@/lib/console-keys-api";
 import { SetupSigning, suggestedLabel } from "@/pages/SetupSigning";
 import { renderWithProviders } from "@/test/render";
 
@@ -44,6 +44,41 @@ describe("setting up signing", () => {
     renderWithProviders(<SetupSigning whoami={WHOAMI} status={{ state: "no-key" }} />);
     fireEvent.click(screen.getByRole("button", { name: /set up signing/i }));
     expect(await screen.findByText(/maximum number of active signing keys/i)).toBeTruthy();
+  });
+
+  it("at the key cap, offers the listed keys and replaces the one chosen", async () => {
+    vi.mocked(enrolThisBrowser)
+      .mockRejectedValueOnce(
+        new TooManyKeysError(
+          [
+            {
+              signingKeyDid: "did:key:z6MkLeastUsed",
+              deviceLabel: "Old laptop",
+              createdAt: "2026-09-01T00:00:00Z",
+              expiresAt: "2026-10-01T00:00:00Z",
+            },
+            {
+              signingKeyDid: "did:key:z6MkRecent",
+              deviceLabel: "Phone",
+              createdAt: "2026-09-20T00:00:00Z",
+              expiresAt: "2026-10-20T00:00:00Z",
+            },
+          ],
+          5,
+        ),
+      )
+      .mockReturnValueOnce(new Promise(() => {}));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    renderWithProviders(<SetupSigning whoami={WHOAMI} status={{ state: "no-key" }} />);
+    fireEvent.click(screen.getByRole("button", { name: /set up signing/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /replace it and set up signing/i }),
+    );
+    // The least recently used is the default choice.
+    await screen.findByRole("button", { name: /waiting/i });
+    expect(vi.mocked(enrolThisBrowser).mock.calls[1]![2]).toMatchObject({
+      replaces: "did:key:z6MkLeastUsed",
+    });
   });
 
   it("offers nothing to click on a browser that cannot sign", () => {

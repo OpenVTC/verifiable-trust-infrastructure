@@ -36,6 +36,12 @@ export function useViewerDid(): string | null {
   return useWhoami()?.session.subject ?? null;
 }
 
+/** How the signed-in viewer authenticated (RFC 8176 `amr`), from the same
+ *  cache — `["passkey"]` for a passkey sign-in, absent for a wallet one. */
+export function useViewerAmr(): string[] | undefined {
+  return useWhoami()?.session.amr;
+}
+
 function useWhoami(): WhoamiResponse | null | undefined {
   const { data } = useQuery({
     queryKey: ["whoami"],

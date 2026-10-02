@@ -16,7 +16,14 @@
 // operator through enrolment (`pages/SetupSigning.tsx`) before it shows them
 // anything that would sign.
 
-import { type ApiError, fetchWhoami, postSignedRead, postSignedTrustTask } from "./api";
+import {
+  addressedDocument,
+  type ApiError,
+  fetchWhoami,
+  postSignedRead,
+  postSignedTrustTask,
+} from "./api";
+import { isWalletSigningAvailable, signWithWallet } from "./wallet";
 import {
   adoptConsoleKey,
   ed25519Available,
@@ -31,7 +38,10 @@ import type { ConsoleKey } from "./wire-types";
 
 export type { ConsoleKey } from "./wire-types";
 
-export const TASK_SIGNING_KEY_ENROLL = "https://trusttasks.org/spec/auth/signing-key/enroll/0.1";
+export const TASK_SIGNING_KEY_ENROLL = "https://trusttasks.org/spec/auth/signing-key/enroll/0.2";
+/** Never sent alone: the identity's signed terms, carried as `authorization`. */
+export const TASK_SIGNING_KEY_AUTHORIZE =
+  "https://trusttasks.org/spec/auth/signing-key/authorize/0.1";
 export const TASK_SIGNING_KEY_LIST = "https://trusttasks.org/spec/auth/signing-key/list/0.1";
 export const TASK_SIGNING_KEY_REVOKE = "https://trusttasks.org/spec/auth/signing-key/revoke/0.1";
 
@@ -149,6 +159,66 @@ export async function signingStatus(identity: string): Promise<SigningStatus> {
   };
 }
 
+/** How the operator shows the VTC they control their identity. */
+export type EnrolEvidence =
+  /** A passkey gesture bound to this enrolment (the step-up). */
+  | "passkey"
+  /** The identity's own signature, made by the VTA through the wallet. */
+  | "wallet";
+
+export interface EnrolOptions {
+  /** Default `passkey`. */
+  evidence?: EnrolEvidence;
+  /** An active key of this identity to revoke in the same step (at the cap). */
+  replaces?: string;
+}
+
+/**
+ * The evidence to offer first: a passkey for a session signed in with one,
+ * the wallet for a session the wallet signed in (it has the identity's key,
+ * and usually no passkey here).
+ */
+export function preferredEvidence(amr: string[] | undefined): EnrolEvidence {
+  if (amr?.includes("passkey")) return "passkey";
+  return isWalletSigningAvailable() ? "wallet" : "passkey";
+}
+
+/** One of the identity's active keys, as a `tooManyKeys` refusal lists it. */
+export interface ActiveKeySummary {
+  signingKeyDid: string;
+  deviceLabel?: string;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt?: string;
+}
+
+/**
+ * The identity is at the VTC's cap on active keys. `activeKeys` (least
+ * recently used first) is what the operator chooses a key to replace from;
+ * the VTC lists them only once the enrolment's evidence was accepted.
+ */
+export class TooManyKeysError extends Error {
+  constructor(
+    readonly activeKeys: ActiveKeySummary[],
+    readonly maxActiveKeys: number | null,
+  ) {
+    super(
+      `You already have ${maxActiveKeys ?? "the maximum number of"} active signing keys. ` +
+        "Choose one you no longer use to replace.",
+    );
+    this.name = "TooManyKeysError";
+  }
+}
+
+function tooManyKeysOf(e: unknown): TooManyKeysError | null {
+  const err = e as ApiError | null;
+  if (typeof err?.code !== "string" || !err.code.endsWith(":tooManyKeys")) return null;
+  const details = (err.details ?? {}) as { activeKeys?: unknown; maxActiveKeys?: unknown };
+  const keys = Array.isArray(details.activeKeys) ? (details.activeKeys as ActiveKeySummary[]) : [];
+  const max = typeof details.maxActiveKeys === "number" ? details.maxActiveKeys : null;
+  return new TooManyKeysError(keys, max);
+}
+
 /** What [`enrolThisBrowser`] reports beyond the delegation. */
 export interface Enrolment {
   key: ConsoleKey;
@@ -171,23 +241,46 @@ export interface Enrolment {
 export async function enrolThisBrowser(
   label: string | undefined,
   confirmGesture: ConfirmGesture,
+  options: EnrolOptions = {},
 ): Promise<Enrolment> {
   const previous = await loadConsoleKey().catch(() => null);
   const key = await mintConsoleKey();
   const identity = (await fetchWhoami()).session.subject;
-  const payload: Record<string, unknown> = {
+  const terms: Record<string, unknown> = {
     signingKeyDid: key.consoleDid,
     identityDid: identity,
     scope: "console",
   };
   const trimmed = label?.trim();
-  if (trimmed) payload.deviceLabel = trimmed;
-  const body = await postSignedWithStepUp<{ signingKey: SigningKey }>(
-    TASK_SIGNING_KEY_ENROLL,
-    payload,
-    confirmGesture,
-    key,
-  );
+  if (trimmed) terms.deviceLabel = trimmed;
+  if (options.replaces) terms.replaces = options.replaces;
+
+  let body: { signingKey: SigningKey };
+  try {
+    if (options.evidence === "wallet") {
+      // `auth/signing-key/enroll/0.2` item 13: the identity signs exactly
+      // these terms, through the wallet (the VTA holds the key), and that
+      // signature is the evidence — no passkey involved.
+      const authorization = await signWithWallet(
+        { ...(await addressedDocument(TASK_SIGNING_KEY_AUTHORIZE, terms, identity)) },
+        identity,
+      );
+      body = await postSignedTrustTask<{ signingKey: SigningKey }>(
+        TASK_SIGNING_KEY_ENROLL,
+        { ...terms, authorization },
+        key,
+      );
+    } else {
+      body = await postSignedWithStepUp<{ signingKey: SigningKey }>(
+        TASK_SIGNING_KEY_ENROLL,
+        terms,
+        confirmGesture,
+        key,
+      );
+    }
+  } catch (e) {
+    throw tooManyKeysOf(e) ?? e;
+  }
   let durability: StorageDurability;
   try {
     durability = await adoptConsoleKey(key);
@@ -253,6 +346,13 @@ export function explainEnrolError(e: unknown): string {
     return "The passkey prompt was dismissed or timed out. Try again, and complete it with your passkey.";
   }
   switch (enrolCode(e)) {
+    case "authorizationInvalid":
+      return (
+        "The VTC did not accept the wallet's signature for this browser. Make sure " +
+        "the wallet is signed in as the identity this community knows you as, and try again."
+      );
+    case "replaceNotFound":
+      return "That key is no longer one of your active keys. Choose another, or try again.";
     case "tooManyKeys":
       return (
         "Your identity already has the maximum number of active signing keys (five), " +

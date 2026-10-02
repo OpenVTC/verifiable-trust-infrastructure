@@ -743,6 +743,13 @@ const SIGNED_DOCUMENT_TYPES: &[&str] = &[
 const SIOP_BODY_DISCRIMINATOR_TYPES: &[&str] =
     &["https://trusttasks.org/spec/auth/authenticate/0.1"];
 
+/// Document types the console builds only to embed in another document, never
+/// to send on their own: the wallet-signed `auth/signing-key/authorize/0.1`
+/// carried as `enroll/0.2`'s `authorization`. Neither a route nor the spine
+/// may serve one — `authorize/0.1` item 1 forbids acting on it alone.
+const EMBEDDED_DOCUMENT_TYPES: &[&str] =
+    &["https://trusttasks.org/spec/auth/signing-key/authorize/0.1"];
+
 /// Document types the console sends that the *spine* dispatches rather than
 /// the git-ns family: the answer to an operation-bound step-up
 /// (`trust_tasks::handle_step_up_approve_response`), which the console sends
@@ -833,7 +840,7 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/join-requests/vetting/show/0.1",
     "https://trusttasks.org/spec/vtc/rooms/list/0.1",
     // The console's signing keys (`trust_tasks::signing_key_tasks`).
-    "https://trusttasks.org/spec/auth/signing-key/enroll/0.1",
+    "https://trusttasks.org/spec/auth/signing-key/enroll/0.2",
     "https://trusttasks.org/spec/auth/signing-key/list/0.1",
     "https://trusttasks.org/spec/auth/signing-key/revoke/0.1",
     // Custom-endorsement reads/revoke and the admin's vetter resend: their
@@ -933,9 +940,21 @@ fn every_admin_ui_task_is_enforced_by_a_route() {
              it — remove it from SPINE_DOCUMENT_TYPES"
         );
     }
+    for uri in EMBEDDED_DOCUMENT_TYPES {
+        assert!(
+            !dispatched.contains(uri) && !enforced.contains(*uri),
+            "`{uri}` is only ever embedded in another document, but something serves it alone"
+        );
+        assert!(
+            sent.contains(*uri),
+            "`{uri}` is allowlisted as an embedded document type but the console no longer \
+             builds it — remove it from EMBEDDED_DOCUMENT_TYPES"
+        );
+    }
     let documents: BTreeSet<String> = SIGNED_DOCUMENT_TYPES
         .iter()
         .chain(SPINE_DOCUMENT_TYPES)
+        .chain(EMBEDDED_DOCUMENT_TYPES)
         .chain(SIOP_BODY_DISCRIMINATOR_TYPES)
         .map(|u| u.to_string())
         .collect();

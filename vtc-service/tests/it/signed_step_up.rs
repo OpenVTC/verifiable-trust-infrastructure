@@ -989,6 +989,198 @@ async fn an_identity_holds_a_bounded_number_of_keys() {
         reply["details"]["maxActiveKeys"],
         vtc_service::acl::console_key::MAX_ACTIVE_PER_IDENTITY
     );
+    // 0.1's `details` schema holds one member; the list is 0.2's.
+    assert!(reply["details"].get("activeKeys").is_none(), "{reply}");
+}
+
+// ─── auth/signing-key/enroll/0.2 ────────────────────────────────────────
+//
+// 0.2 adds the identity's own signed authorization (a VTA-wallet sign-in has
+// the identity's key and no passkey here) and `replaces` at the cap.
+
+const ENROLL_V0_2: &str = "https://trusttasks.org/spec/auth/signing-key/enroll/0.2";
+const AUTHORIZE: &str = "https://trusttasks.org/spec/auth/signing-key/authorize/0.1";
+
+/// An administrator with no passkey — signs in with their own key.
+async fn admin_without_passkey(fix: &Fixture) -> Party {
+    let party = Party::new();
+    store_acl_entry(&fix.vtc.state.acl_ks, &row(&party.did, VtcRole::Admin))
+        .await
+        .unwrap();
+    party
+}
+
+/// An `enroll/0.2` by `key` on `terms`, carrying `by`'s signed authorization
+/// of exactly those terms.
+async fn authorized_enrolment(key: &Party, by: &Party, terms: Value) -> Value {
+    let mut payload = terms.clone();
+    payload["authorization"] = signed(by, AUTHORIZE, terms).await;
+    signed(key, ENROLL_V0_2, payload).await
+}
+
+/// VTI-SPEC auth/signing-key/enroll/0.2 item 13: the identity's own signature
+/// over the terms is the evidence; no step-up is asked for.
+#[tokio::test]
+async fn an_identity_signed_authorization_enrols_without_a_gesture() {
+    let fix = fixture().await;
+    let admin = admin_without_passkey(&fix).await;
+    let key = Party::new();
+    let doc = authorized_enrolment(&key, &admin, enrolment(&key, &admin.did, "Wallet")).await;
+    let (status, reply) = post(&fix, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["signingKey"]["signingKeyDid"], key.did.as_str());
+    assert_eq!(reply["signingKey"]["identityDid"], admin.did.as_str());
+    assert_eq!(reply["signingKey"]["active"], true);
+    // And it signs as the admin.
+    let (status, listed) = post(&fix, &signed(&key, ACL_LIST, json!({})).await).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+}
+
+/// Item 13: the authorization covers exactly these terms. Anything else —
+/// another label, another signer — is `authorizationInvalid`, never a fallback
+/// to the step-up.
+#[tokio::test]
+async fn an_authorization_for_other_terms_or_by_another_party_is_refused() {
+    let fix = fixture().await;
+    let admin = admin_without_passkey(&fix).await;
+    let key = Party::new();
+    let code = |v: &Value| v["code"].as_str().unwrap_or_default().to_string();
+
+    // Signed for one label, enrolling another.
+    let mut payload = enrolment(&key, &admin.did, "Somebody else's laptop");
+    payload["authorization"] =
+        signed(&admin, AUTHORIZE, enrolment(&key, &admin.did, "Wallet")).await;
+    let (_, r) = post(&fix, &signed(&key, ENROLL_V0_2, payload).await).await;
+    assert_eq!(
+        code(&r),
+        "auth/signing-key/enroll:authorizationInvalid",
+        "{r}"
+    );
+
+    // The right terms, signed by somebody who is not the identity.
+    let stranger = Party::new();
+    let doc = authorized_enrolment(&key, &stranger, enrolment(&key, &admin.did, "Wallet")).await;
+    let (_, r) = post(&fix, &doc).await;
+    assert_eq!(
+        code(&r),
+        "auth/signing-key/enroll:authorizationInvalid",
+        "{r}"
+    );
+
+    // A signature that does not verify.
+    let mut payload = enrolment(&key, &admin.did, "Wallet");
+    let mut inner = signed(&admin, AUTHORIZE, payload.clone()).await;
+    inner["proof"]["proofValue"] = json!(
+        "z3FXQjecWufY46yg5abdVZsXqLhxhueuSoZgNSARiKBk9czhSePTFehP8c3PGfb6a22gkfUKY5MKk7XYKKDpq4m"
+    );
+    payload["authorization"] = inner;
+    let (_, r) = post(&fix, &signed(&key, ENROLL_V0_2, payload).await).await;
+    assert_eq!(
+        code(&r),
+        "auth/signing-key/enroll:authorizationInvalid",
+        "{r}"
+    );
+
+    // Nothing was enrolled by any of them.
+    assert!(
+        vtc_service::acl::console_key::get_delegation(&fix.vtc.state.console_keys_ks, &key.did)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// Items 8 and 14: at the cap, once the evidence is accepted, the refusal
+/// lists the identity's active keys, and an enrolment naming one in
+/// `replaces` swaps it out — the count stays at the cap.
+#[tokio::test]
+async fn at_the_cap_an_enrolment_can_replace_a_listed_key() {
+    use vtc_service::acl::console_key::{MAX_ACTIVE_PER_IDENTITY, active_count, get_delegation};
+    let fix = fixture().await;
+    let admin = admin_without_passkey(&fix).await;
+    for _ in 0..MAX_ACTIVE_PER_IDENTITY {
+        delegated_key(&fix, &admin.did).await;
+    }
+    let key = Party::new();
+    let (_, refusal) = post(
+        &fix,
+        &authorized_enrolment(&key, &admin, enrolment(&key, &admin.did, "New")).await,
+    )
+    .await;
+    assert_eq!(
+        refusal["code"], "auth/signing-key/enroll:tooManyKeys",
+        "{refusal}"
+    );
+    let listed = refusal["details"]["activeKeys"]
+        .as_array()
+        .expect("{refusal}");
+    assert_eq!(listed.len(), MAX_ACTIVE_PER_IDENTITY, "{refusal}");
+    let old = listed[0]["signingKeyDid"].as_str().unwrap().to_string();
+
+    // A new payload, so a new authorization (item 15).
+    let mut terms = enrolment(&key, &admin.did, "New");
+    terms["replaces"] = json!(old);
+    let (status, reply) = post(&fix, &authorized_enrolment(&key, &admin, terms).await).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+
+    let ks = &fix.vtc.state.console_keys_ks;
+    let replaced = get_delegation(ks, &old).await.unwrap().unwrap();
+    assert!(replaced.revoked_at.is_some(), "the replaced key is revoked");
+    assert_eq!(
+        active_count(ks, &admin.did, chrono::Utc::now())
+            .await
+            .unwrap(),
+        MAX_ACTIVE_PER_IDENTITY
+    );
+}
+
+/// Item 8: before the evidence is accepted, nobody learns an identity's keys —
+/// a step-up-path enrolment at the cap is asked for its gesture, not shown
+/// the list.
+#[tokio::test]
+async fn the_active_keys_are_not_listed_before_the_evidence() {
+    let mut fix = fixture().await;
+    let admin = admin_with_passkey(&mut fix).await;
+    for _ in 0..vtc_service::acl::console_key::MAX_ACTIVE_PER_IDENTITY {
+        delegated_key(&fix, &admin.did).await;
+    }
+    let key = Party::new();
+    let (status, refusal) = post(
+        &fix,
+        &signed(&key, ENROLL_V0_2, enrolment(&key, &admin.did, "New")).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
+    step_up_request(&refusal);
+    assert!(refusal["details"].get("activeKeys").is_none(), "{refusal}");
+}
+
+/// Item 14: `replaces` must name an active key of this identity. Another
+/// identity's key gets the same answer as one that does not exist.
+#[tokio::test]
+async fn replacing_a_key_that_is_not_the_identitys_is_refused() {
+    let fix = fixture().await;
+    let admin = admin_without_passkey(&fix).await;
+    let other_admin = admin_without_passkey(&fix).await;
+    let theirs = delegated_key(&fix, &other_admin.did).await;
+    let code = |v: &Value| v["code"].as_str().unwrap_or_default().to_string();
+
+    for target in [theirs.did.clone(), Party::new().did] {
+        let key = Party::new();
+        let mut terms = enrolment(&key, &admin.did, "New");
+        terms["replaces"] = json!(target);
+        let (_, r) = post(&fix, &authorized_enrolment(&key, &admin, terms).await).await;
+        assert_eq!(code(&r), "auth/signing-key/enroll:replaceNotFound", "{r}");
+    }
+    let still =
+        vtc_service::acl::console_key::get_delegation(&fix.vtc.state.console_keys_ks, &theirs.did)
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(
+        still.revoked_at.is_none(),
+        "another identity's key is untouched"
+    );
 }
 
 /// A delegation of a fresh key to `admin`, written directly.

@@ -95,6 +95,14 @@ interface VtaWalletProvider {
   walletProfile?(params: {
     target?: { kind: string; [k: string]: unknown };
   }): Promise<WalletProfileWireResult>;
+  /** Sign a Trust Task document this page built. With `asDid`, the VTA signs
+   *  as that persona (`vault/sign-trust-task`), so the key never leaves it.
+   *  The wallet prompts every time, and only for the RP this origin signed in
+   *  to (`recipient` must be that RP's DID). */
+  signTrustTask?(params: {
+    envelope: Record<string, unknown>;
+    asDid?: string;
+  }): Promise<{ signedEnvelope: Record<string, unknown>; holderDid: string }>;
 }
 
 interface WalletProfileWireResult {
@@ -140,6 +148,39 @@ export function isWalletProxyAvailable(): boolean {
     typeof window.vtaWallet?.proxyLogin === "function" &&
     typeof window.vtaWallet?.vaultList === "function"
   );
+}
+
+/** True iff the wallet can sign a Trust Task document as a persona. */
+export function isWalletSigningAvailable(): boolean {
+  return isWalletAvailable() && typeof window.vtaWallet?.signTrustTask === "function";
+}
+
+/**
+ * Have the wallet sign `envelope` as `asDid` — the persona this VTC knows the
+ * operator as, whose key the VTA holds.
+ *
+ * Checks the proof names `asDid` before returning it. A wallet that finds no
+ * persona for `asDid` has been seen to sign with its own extension key
+ * instead, which the VTC would refuse as signed by somebody else; saying so
+ * here names the actual problem.
+ */
+export async function signWithWallet(
+  envelope: Record<string, unknown>,
+  asDid: string,
+): Promise<Record<string, unknown>> {
+  if (!isWalletSigningAvailable()) {
+    throw new Error("The VTA wallet extension is not available to sign with.");
+  }
+  const { signedEnvelope } = await window.vtaWallet!.signTrustTask!({ envelope, asDid });
+  const vm = (signedEnvelope.proof as { verificationMethod?: unknown } | undefined)
+    ?.verificationMethod;
+  if (typeof vm !== "string" || vm.split("#")[0] !== asDid) {
+    throw new Error(
+      `The wallet signed as a different identity than ${asDid}. Sign in with the ` +
+        "wallet identity this community knows you as, then try again.",
+    );
+  }
+  return signedEnvelope;
 }
 
 /** API base for the wallet's auth round-trip. Points at the VTC's

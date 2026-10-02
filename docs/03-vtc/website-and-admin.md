@@ -398,12 +398,13 @@ proof, binds the proof to the document's `issuer`, requires the community as
 which a cookie can supply. The console therefore needs a key before it can do
 anything for an administrator.
 
-**First sign-in on a browser.** After the passkey sign-in, the console checks
+**First sign-in on a browser.** After sign-in (passkey or VTA wallet), the console checks
 whether this browser holds a key the community accepts (one signed
 `auth/signing-key/list/0.1`). If it does not — a new browser, a first install,
 a key that expired or was revoked, or a community restored from backup, which
 drops every delegation by design — the operator sees **Set up signing**
-instead of the dashboard: name the browser, confirm with the passkey, done.
+instead of the dashboard: name the browser, approve in your wallet or confirm
+with your passkey, done.
 Nothing in the console signs until that has happened, so an unenrolled key
 never spends the anonymous rate-limit budget that its enrolment needs. If a
 signed document is later refused outright, the console checks again and
@@ -417,9 +418,16 @@ returns to that page when the key has stopped being accepted.
   *delegation* — "this key may act as that admin DID" — and authority stays
   the admin's ACL row, read afresh each time a document executes. Revoking
   the row, or the key, stops it.
-- **Enrolling one** needs a live passkey gesture (the same step-up
-  `acl/grant` uses). That is what stops a stolen session leaving a signing
-  key behind, since the key signs with no gesture at use time.
+- **Enrolling one** needs proof that you control your identity, so a stolen
+  session cannot leave a signing key behind (the key signs with no gesture
+  at use time). Either:
+  - **your VTA wallet** — signed in with the VTA browser wallet, you approve
+    once in the wallet and your VTA signs the enrolment's terms as your
+    identity (`auth/signing-key/authorize/0.1`, carried in
+    `auth/signing-key/enroll/0.2`). No passkey is needed, and this is the
+    default for a wallet sign-in; or
+  - **a passkey** — a live gesture bound to this one enrolment (the same
+    step-up `acl/grant` uses). The default for a passkey sign-in.
 - **Per browser, not per operator.** Each profile, machine and private
   window enrols its own, listed and individually revocable, exactly as
   passkeys are. The key is per **origin**: `https://vtc.example` and
@@ -444,8 +452,10 @@ returns to that page when the key has stopped being accepted.
   says so at sign-in.
 - **At most five active per administrator.** Each lost browser leaves its
   delegation live until it expires, so an operator who loses browser storage
-  repeatedly can reach the cap; the setup page then says to revoke one from
-  a browser that still signs, or wait for one to expire.
+  repeatedly can reach the cap. Setup then lists your active keys (only after
+  your wallet or passkey has been accepted), least recently used first; pick
+  one to **replace** and confirm once more — it is revoked in the same step
+  the new key is enrolled (`replaces`). No working browser is needed.
 
 Design note: `docs/05-design-notes/vtc-console-signing.md`.
 
