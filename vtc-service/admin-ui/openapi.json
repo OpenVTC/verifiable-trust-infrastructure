@@ -353,16 +353,15 @@
           "auth"
         ],
         "summary": "`POST /v1/auth/sign-out` — revoke the caller's session and\nexpire the cookie pair. The cookies' HttpOnly flag means JS\ncan't clear them itself — only the server can issue\n`Set-Cookie: ...; Max-Age=0` to delete from the browser's jar.",
+        "description": "Signing out of a session that has already ended is what the caller\nwanted, so it answers `204` too. The common case is a console left\nopen past its access token: the browser has dropped the session\ncookie (its `Max-Age` is the token's lifetime) but still holds the\nrefresh cookie, which outlives it. Answering `401` there left that\ncookie in the jar — the clearing headers ride only on this response —\nand told the operator their sign-out had failed. So the session is\nfound from whichever credential is presented: the access token, or\nfailing that the refresh cookie when it is the one its session\ncurrently issues. With neither, there is nothing to revoke, and the\ncookies are still cleared.",
         "operationId": "sign_out",
         "responses": {
           "204": {
-            "description": "Session revoked and session/CSRF cookies cleared"
-          },
-          "401": {
-            "description": "Missing or invalid bearer token"
+            "description": "Any session the request names is revoked; the session, refresh and CSRF cookies are cleared"
           }
         },
         "security": [
+          {},
           {
             "bearer_jwt": []
           }

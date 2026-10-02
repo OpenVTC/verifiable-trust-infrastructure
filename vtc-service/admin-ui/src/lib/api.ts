@@ -833,12 +833,35 @@ export async function saveConfig(
 }
 
 /** Revoke the server-side session and clear browser cookies. Sign-out ends the
- *  cookie session, which no Trust Task describes, so it carries no task. */
+ *  cookie session, which no Trust Task describes, so it carries no task.
+ *
+ *  Not routed through `request`, for two reasons. Its pre-flight renewal
+ *  would rotate the refresh token of a session about to be ended. And its
+ *  `vtc-session-expired` event would announce an expiry over the top of a
+ *  sign-out the operator asked for.
+ *
+ *  A 401 means there was no session left to end — the console sat idle
+ *  past its access token, and the daemon predates the one that answers
+ *  204 there. That is the outcome asked for, so it is not an error. */
 export const signOut = async (): Promise<void> => {
-  await postJsonExempt<void>("/v1/auth/sign-out", undefined);
-  // Drop the expiry so a subsequent sign-in starts from that session's
-  // own deadline rather than renewing against the dead one's.
-  resetSession();
+  const headers = new Headers();
+  const csrf = csrfTokenFromCookie();
+  if (csrf) headers.set("X-CSRF-Token", csrf);
+  try {
+    const res = await fetch("/v1/auth/sign-out", {
+      method: "POST",
+      credentials: "include",
+      headers,
+    });
+    if (!res.ok && res.status !== 401) {
+      const err: ApiError = { status: res.status, message: await daemonErrorMessage(res) };
+      throw err;
+    }
+  } finally {
+    // Drop the expiry so a subsequent sign-in starts from that session's
+    // own deadline rather than renewing against the dead one's.
+    resetSession();
+  }
 };
 
 // ---------------------------------------------------------------------------

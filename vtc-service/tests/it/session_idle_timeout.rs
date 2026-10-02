@@ -495,6 +495,133 @@ async fn sign_out_clears_the_refresh_cookie_too() {
     assert!(refresh_clear.contains("Max-Age=0"), "got {refresh_clear}");
 }
 
+/// A sign-out posted with cookies only, as the console posts it.
+fn cookie_sign_out(cookies: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/auth/sign-out")
+        .header("cookie", cookies)
+        .header("x-csrf-token", "tok")
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn cleared_cookies(resp: &axum::response::Response) -> Vec<String> {
+    resp.headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect()
+}
+
+/// A console left open past its access token: the browser has dropped the
+/// session cookie but still holds the refresh cookie. Sign-out used to 401
+/// there — reporting a failure, and leaving the refresh cookie in the jar
+/// because the clearing headers ride only on a success.
+#[tokio::test]
+async fn sign_out_after_the_session_cookie_lapsed_ends_the_session() {
+    let fix = build().await;
+    // Idled out too: refresh would refuse this session, sign-out must not.
+    let (_access, refresh, session_id) = seed_session(&fix, 1_200).await;
+
+    let resp = fix
+        .router
+        .clone()
+        .oneshot(cookie_sign_out(&format!(
+            "{ADMIN_REFRESH_COOKIE}={refresh}; csrf=tok"
+        )))
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let cleared = cleared_cookies(&resp);
+    for name in [ADMIN_SESSION_COOKIE, ADMIN_REFRESH_COOKIE, "csrf"] {
+        let c = cleared
+            .iter()
+            .find(|c| c.starts_with(&format!("{name}=")))
+            .unwrap_or_else(|| panic!("no {name} clear in {cleared:?}"));
+        assert!(c.contains("Max-Age=0"), "got {c}");
+    }
+    assert!(
+        get_session(&fix.state.sessions_ks, &session_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "the session the refresh cookie named is revoked"
+    );
+}
+
+/// Signing out with nothing left to sign out of is what the caller wanted.
+#[tokio::test]
+async fn sign_out_with_no_session_still_clears_the_cookies() {
+    let fix = build().await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/auth/sign-out")
+        .body(Body::empty())
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.expect("request");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert!(
+        cleared_cookies(&resp)
+            .iter()
+            .any(|c| c.starts_with(ADMIN_REFRESH_COOKIE) && c.contains("Max-Age=0")),
+    );
+}
+
+/// A refresh token its session no longer issues cannot renew that session,
+/// so it cannot end it either.
+#[tokio::test]
+async fn a_superseded_refresh_cookie_does_not_end_the_session() {
+    let fix = build().await;
+    let (_access, stale, session_id) = seed_session(&fix, 60).await;
+    // The session moves on to a new token; the stale one's index entry is
+    // left behind, as a racing login can leave it.
+    let current = uuid::Uuid::new_v4().to_string();
+    store_refresh_index(&fix.state.sessions_ks, &current, &session_id)
+        .await
+        .unwrap();
+
+    let resp = fix
+        .router
+        .clone()
+        .oneshot(cookie_sign_out(&format!(
+            "{ADMIN_REFRESH_COOKIE}={stale}; csrf=tok"
+        )))
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert!(
+        get_session(&fix.state.sessions_ks, &session_id)
+            .await
+            .unwrap()
+            .is_some(),
+        "a superseded token must not revoke the session that replaced it"
+    );
+}
+
+/// The endpoint stays CSRF-gated: a cross-site form post riding the
+/// browser's refresh cookie must not sign the operator out.
+#[tokio::test]
+async fn a_cookie_sign_out_without_csrf_is_refused() {
+    let fix = build().await;
+    let (_access, refresh, session_id) = seed_session(&fix, 60).await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/auth/sign-out")
+        .header("cookie", format!("{ADMIN_REFRESH_COOKIE}={refresh}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&fix.router, req).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        get_session(&fix.state.sessions_ks, &session_id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
 /// Reading the effective config (the signed `config/show`) is how the console
 /// renders the control; the key has to actually be in the registry for that
 /// to work.
