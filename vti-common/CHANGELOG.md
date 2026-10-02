@@ -2,6 +2,65 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.37.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.36.0...vti-common-v0.37.0) — 2026-10-02
+
+
+### Fixed
+
+- **vtc**: Removing an administrator, lowering the consent threshold and changing authority policy take a second party (VTI-APV-019, VTI-APV-020, VTI-VTC-022) ([#1917](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1917))
+
+* fix(vtc)!: removing an administrator, lowering the consent threshold and changing authority policy take a second party (VTI-APV-019, VTI-APV-020, VTI-VTC-022)
+
+  One unrestricted administrator could undo VTI-APV-014 alone: remove every
+  other administrator one at a time, lower the consent threshold back to 1, and
+  rewrite the policy that decides authority (vtc-action-list.md §8.1, holes 1-3).
+  These are the stop-gaps of §7b, built on the consent machinery that already
+  exists. Each is replaced by its action-list rule once that lands.
+
+  1. Removals and demotions of an administrator take the requester's
+     operation-bound step-up (VTI-APV-019). acl/revoke (removal and scope
+     reduction), a downward acl/change-role, an acl/update or acl/grant rewrite
+     that takes authority from a live admin (narrowed scopes, an expiry brought
+     forward), and vtc/members/admin-remove of an admin all go through
+     bound_step_up::redeem_or_request. When the subject is another live
+     unrestricted admin they also take consent through admin_consent, from the
+     unrestricted admins other than BOTH the requester and the subject (approver
+     set `unrestricted-admins-except-subject`; the subject's decision is refused
+     as notAnApprover). Where that set is empty (two unrestricted admins), the
+     step-up suffices, and once the write lands it is audited as the new
+     `AuthorityReducedUnopposed` event at AuditSeverity::Critical; a removal also
+     sends the subject the signed removal notice. The attrition guards
+     (check_attrition, lock_admin_set, last-admin) are unchanged and still run;
+     attrition is also asked before the gesture so a stranded removal never asks
+     for one. Removing an expired or non-admin entry is unchanged.
+     vtc/members/update can no longer demote an admin (it has no operation to
+     bind a gesture to) and names acl/change-role instead.
+
+  2. Lowering acl.unrestricted_admin_consent_threshold, by config/patch or an
+     applied vtc/config/import, takes the requester's step-up and consent at the
+     threshold as it stands (VTI-APV-020), pinned to that value. Raising it, or
+     leaving it unchanged, stays immediate; the meetable check is unchanged.
+
+  3. policy/upsert/0.2 and policy/activate/0.1 require an unrestricted admin
+     (require_super_admin), not any admin. For the purposes that decide authority
+     (roleChange, removal, join, crossCommunityRoles, gitNamespace —
+     PolicyPurpose::decides_authority) they also take the step-up and consent of
+     another unrestricted admin (VTI-VTC-022). The upload and activation checks
+     run before the gate, so a module that would be refused asks nobody.
+
+  4. vtc/members/admin-remove applies acl/revoke's scope-cover check
+     (caller_covers_target, VTI-ACL-050): an entry the actor cannot see answers
+     as not found, one it does not fully cover is refused.
+
+  admin_consent is generalised over an `Act` (GrantUnrestricted,
+  ReduceUnrestricted, LowerThreshold, ChangeAuthorityPolicy) that decides the
+  approvers, the refusal wording, what the approvers are shown and the state the
+  consent is pinned to. require and gesture_then_consent keep their signatures
+  and are Act::GrantUnrestricted, so APV-014 is unchanged. TaskError gains a
+  StepUp variant so a gate deep in an operation refuses with the ceremony inline.
+
+
+
 ## [0.36.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.35.1...vti-common-v0.36.0) — 2026-10-02
 
 
