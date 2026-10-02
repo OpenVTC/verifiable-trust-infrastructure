@@ -48,6 +48,8 @@ async fn build_fixture() -> Fixture {
     let vtc = TestVtc::builder()
         .with_audit(true)
         .with_public_url(RP_ORIGIN)
+        // Signers, for the consent requests a removal-policy change sends.
+        .with_signers(true)
         .build()
         .await;
 
@@ -535,28 +537,35 @@ async fn admin_remove_overlong_reason_rejected() {
 /// Upload + activate a removal policy, signed by the fixture's admin
 /// (`policy/upsert/0.2` + `policy/activate/0.1` — no REST route either).
 /// `source` is the full Rego module body.
+///
+/// The removal policy decides authority, so changing it takes an unrestricted
+/// administrator's passkey gesture and a second one's consent (VTI-VTC-022).
+/// A pair of administrators who can give both makes the change.
 async fn activate_removal_policy(fix: &Fixture, source: &str) {
-    let (status, body) = admin_document(
-        fix,
-        POLICY_UPLOAD_TASK,
-        json!({ "name": "removal", "module": source, "ext": { "org.openvtc.purpose": "removal" } }),
-    )
-    .await;
+    let gated = crate::common::second_party::GatedAdmin::new(&fix._vtc).await;
+    let (status, doc) = gated
+        .call(
+            &fix._vtc,
+            POLICY_UPLOAD_TASK,
+            json!({ "name": "removal", "module": source, "ext": { "org.openvtc.purpose": "removal" } }),
+        )
+        .await;
     // Canonical upsert: 201 when this is the first revision for the
     // purpose, 200 when it revises an existing one. Fixtures may have
     // seeded a policy already, so both are success here.
     assert!(
         status == StatusCode::CREATED || status == StatusCode::OK,
-        "upload failed ({status}): {body}"
+        "upload failed ({status}): {doc}"
     );
-    let id = body["policy"]["id"].as_str().unwrap().to_string();
-    let (status, body) = admin_document(
-        fix,
-        POLICY_ACTIVATE_TASK,
-        json!({ "id": id, "purpose": "removal" }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "activate failed: {body}");
+    let id = doc["payload"]["policy"]["id"].as_str().unwrap().to_string();
+    let (status, doc) = gated
+        .call(
+            &fix._vtc,
+            POLICY_ACTIVATE_TASK,
+            json!({ "id": id, "purpose": "removal" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "activate failed: {doc}");
 }
 
 /// A deny-all custom removal.rego blocks admin-remove even for

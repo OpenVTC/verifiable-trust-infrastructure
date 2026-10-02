@@ -162,6 +162,18 @@ async fn run_role_change(
 ) -> Result<RoleChangeOutcome, AppError> {
     let actor_did = actor.did.as_str();
     let promoting = target_role == super::invariant::ADMIN_ROLE;
+    // A move *out of* admin ends administrator authority, and takes the
+    // requester's gesture — and for another unrestricted admin a third party's
+    // consent (VTI-APV-019). Read before the decision so a demotion another
+    // rule refuses is refused for its own reason first.
+    let demoting = current_role == super::invariant::ADMIN_ROLE && !promoting;
+    let demoted = if demoting {
+        get_acl_entry(&state.acl_ks, subject_did)
+            .await?
+            .filter(|e| e.role == crate::acl::VtcRole::Admin)
+    } else {
+        None
+    };
 
     // Held across the decision *and* the effect, because the effect is what
     // performs the write. Only promotions contend: every other transition is
@@ -337,6 +349,40 @@ async fn run_role_change(
         }
     }
 
+    // A demotion of an administrator: the gesture, bound to this operation,
+    // and for another unrestricted admin a third party's consent too
+    // (VTI-APV-019). Only the signed `acl/change-role` door carries an
+    // operation to bind them to; a door that has none (`vtc/members/update`)
+    // is refused rather than let through.
+    let mut unopposed = None;
+    if let Some(prior) = demoted.as_ref() {
+        let StepUpSource::BoundTo { type_uri, payload } = source else {
+            return Err(AppError::Forbidden(format!(
+                "demoting administrator {subject_did} needs a passkey gesture bound to the \
+                 operation (VTI-APV-019), which only acl/change-role can carry — send \
+                 acl/change-role {{\"subject\": \"{subject_did}\", \"fromRole\": \"admin\", \
+                 \"toRole\": \"{target_role}\"}}"
+            )));
+        };
+        match crate::acl::admin_consent::settle_reduction(
+            state,
+            actor_did,
+            prior,
+            crate::acl::admin_consent::Operation { type_uri, payload },
+            &format!("Demote administrator {subject_did} to {target_role}"),
+            &format!("Demote unrestricted administrator {subject_did} to {target_role}"),
+        )
+        .await
+        {
+            Ok(true) => unopposed = Some((prior.clone(), type_uri)),
+            Ok(false) => {}
+            Err(crate::error::TaskError::StepUp { request, .. }) => {
+                return Ok(RoleChangeOutcome::StepUpRequired(request));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
     let plan = EffectPlan::Remint {
         subject: subject_did.to_string(),
         role: granted.clone(),
@@ -346,6 +392,16 @@ async fn run_role_change(
             "remint effect did not produce an outcome".into(),
         ));
     };
+    // Nobody else was left to consent to this demotion: recorded at the
+    // highest severity, once it has landed (VTI-APV-019). A member subject is
+    // sent the re-minted role credential below. There is no specified notice
+    // for a role change, so an ACL-only subject is told nothing beyond what the
+    // audit log shows — a gap the specification has to close
+    // (`member-removal-notice` covers removal only).
+    if let Some((prior, type_uri)) = unopposed {
+        crate::acl::admin_consent::record_unopposed_reduction(state, actor_did, &prior, type_uri)
+            .await?;
+    }
 
     // Deliver the re-minted role VAC to the member's wallet over DIDComm so it
     // can present its updated role. Best-effort: the VAC is already issued and
@@ -558,12 +614,20 @@ pub async fn purge_member(
 /// `actor_did` is the initiator (self for self-leave, admin for admin-remove) —
 /// the policy distinguishes the two via `actor.did == subject.did`. `target_did`
 /// is the subject being removed.
+///
+/// `op` is the operation an administrator's removal of another is bound to:
+/// removing an **administrator** takes the actor's passkey gesture over it, and
+/// removing another live unrestricted admin a third party's consent too
+/// (**VTI-APV-019**, [`crate::acl::admin_consent::settle_reduction`]). A self-
+/// leave passes `None`; an admin removed by another with no operation to bind
+/// to is refused.
 pub async fn remove_inner(
     state: &AppState,
     actor_did: &str,
     target_did: &str,
     disposition: Option<Disposition>,
     reason: String,
+    op: Option<crate::acl::admin_consent::Operation<'_>>,
 ) -> Result<LeaveOutcome, TaskError> {
     let audit_writer = state
         .audit_writer
@@ -666,6 +730,36 @@ pub async fn remove_inner(
         other => other,
     };
 
+    // The removal of an administrator by another: after the decision, before
+    // the effect (VTI-APV-019). The executor's no-last-admin invariant still
+    // runs under its lock below.
+    let mut unopposed = None;
+    if actor_did != target_did
+        && let Some(prior) = target_acl.as_ref()
+        && prior.role == VtcRole::Admin
+        && !prior.is_expired(crate::auth::session::now_epoch())
+    {
+        let Some(op) = op else {
+            return Err(AppError::Forbidden(format!(
+                "removing administrator {target_did} needs a passkey gesture bound to the \
+                 operation (VTI-APV-019); send vtc/members/admin-remove"
+            ))
+            .into());
+        };
+        if crate::acl::admin_consent::settle_reduction(
+            state,
+            actor_did,
+            prior,
+            op,
+            &format!("Remove administrator {target_did} from this community"),
+            &format!("Remove unrestricted administrator {target_did} from this community"),
+        )
+        .await?
+        {
+            unopposed = Some(op.type_uri);
+        }
+    }
+
     // Effect: the no-last-admin invariant + ACL/Member removal + credential
     // revocation, via the ceremony effect executor (the single state-mutating
     // seam). A last-admin removal surfaces as the executor's `Conflict` → 409,
@@ -695,6 +789,14 @@ pub async fn remove_inner(
 
     for grant in &outcome.revoked_grants {
         crate::vetting::vetters::audit_revoked_grant(audit_writer, actor_did, target_did, grant)
+            .await?;
+    }
+
+    // Nobody else was left to consent: recorded at the highest severity once
+    // the removal has landed (VTI-APV-019). The removal notice below tells the
+    // subject.
+    if let (Some(task), Some(prior)) = (unopposed, target_acl.as_ref()) {
+        crate::acl::admin_consent::record_unopposed_reduction(state, actor_did, prior, task)
             .await?;
     }
 

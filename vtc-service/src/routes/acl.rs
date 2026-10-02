@@ -310,6 +310,11 @@ pub(crate) struct GrantPlan {
     /// dropped, or an expiry brought forward — so the subject's live sessions,
     /// which still carry the old authority, are revoked with the write.
     reduces: bool,
+    /// The entry as it stands, when the rewrite takes authority away from a
+    /// live **administrator** — a scope dropped, an expiry brought forward, an
+    /// unrestricted admin made scoped. That takes the requester's gesture, and
+    /// for another unrestricted admin a third party's consent (VTI-APV-019).
+    pub(crate) reduces_admin: Option<VtcAclEntry>,
     /// Which task this write is, for the audit row.
     event: PlanEvent,
     reason: Option<String>,
@@ -392,6 +397,10 @@ pub(crate) async fn plan_grant(
         .is_some_and(|p| crate::acl::admin_consent::is_live_unrestricted(p, now_epoch()))
         && !vti_common::acl::act_scope_for(&as_vti_role(&req_entry.role), &req_entry.scopes)
             .is_unrestricted();
+    let reduces_admin = existing
+        .as_ref()
+        .filter(|p| reduces && p.role == VtcRole::Admin && !p.is_expired(now_epoch()))
+        .cloned();
     let (created_at, created_by, status) = match existing {
         Some(prev) => {
             // VTI-ACL-052. A rewrite of your own entry is a modification of it,
@@ -480,6 +489,7 @@ pub(crate) async fn plan_grant(
         confers_unrestricted,
         ends_unrestricted,
         reduces,
+        reduces_admin,
         event: PlanEvent::Granted,
         reason: req.reason,
     })
@@ -1017,12 +1027,21 @@ fn revoke_response(
 /// `scopes: None` removes the entry; `Some` removes those scopes and keeps the
 /// rest. Both require the caller to administer **every** context the entry
 /// acts in (VTI-ACL-050), and neither may be aimed at the caller's own entry.
+///
+/// Either, aimed at a live **administrator**, takes the requester's passkey
+/// gesture bound to `op`; removing another live unrestricted admin also takes
+/// the consent of an unrestricted admin who is neither the requester nor the
+/// subject (**VTI-APV-019**, [`crate::acl::admin_consent::settle_reduction`]).
+/// "Removing authority confers none" was why this used to be ungated, and it
+/// is how one unrestricted admin could strip every other, one at a time
+/// (`vtc-action-list.md` §8.1, hole 1).
 pub(crate) async fn revoke_entry(
     state: &AppState,
     actor: &AuthClaims,
     did: &str,
     scopes: Option<&[String]>,
     reason: Option<&str>,
+    op: crate::acl::admin_consent::Operation<'_>,
 ) -> Result<vta_sdk::openapi::AclRevoke01Response, TaskError> {
     use trust_tasks_rs::specs::acl::revoke::v0_1::error_codes;
     let did = did.to_string();
@@ -1057,6 +1076,7 @@ pub(crate) async fn revoke_entry(
     if !caller_covers_target(actor, &entry) {
         return Err(not_covered(&did, "revoke").into());
     }
+    let prior = entry.clone();
 
     // Canonical `acl/revoke` has two modes. With `scopes`, this is a
     // *scope reduction*: the entry survives, minus those scopes. Only
@@ -1102,6 +1122,18 @@ pub(crate) async fn revoke_entry(
             }
             ActScope::Contexts(_) => {}
         }
+        // Narrowing an administrator is a reduction like any other
+        // (VTI-APV-019). A scope reduction never reaches an unrestricted
+        // entry — it holds no scopes to drop — so this is the gesture alone.
+        let unopposed = crate::acl::admin_consent::settle_reduction(
+            state,
+            &actor.did,
+            &prior,
+            op,
+            &format!("Remove {} from administrator {did}", reduce.join(", ")),
+            &format!("Narrow administrator {did}"),
+        )
+        .await?;
         entry.updated_at = Some(now_epoch());
         entry.updated_by = Some(actor.did.clone());
         store_acl_entry(&acl, &entry).await?;
@@ -1124,6 +1156,15 @@ pub(crate) async fn revoke_entry(
                     }),
                 )
                 .await?;
+        }
+        if unopposed {
+            crate::acl::admin_consent::record_unopposed_reduction(
+                state,
+                &actor.did,
+                &prior,
+                op.type_uri,
+            )
+            .await?;
         }
 
         info!(
@@ -1169,6 +1210,34 @@ pub(crate) async fn revoke_entry(
         .into());
     }
 
+    // The attrition refusal is this task's declared "last authority" outcome;
+    // anything else it returns (a store fault) is not.
+    let attrition = |e: AppError| match e {
+        AppError::Conflict(_) => TaskError::declared(error_codes::LAST_AUTHORITY_PROTECTED.code, e),
+        other => TaskError::App(other),
+    };
+
+    // Removing an administrator takes the requester's gesture, and removing
+    // another unrestricted one a third party's consent (VTI-APV-019). Asked
+    // after every check above and before the admin-set lock, which is not held
+    // across a push to the approvers. A removal that would strand the
+    // community is refused first, so nobody is asked for a gesture it could
+    // never use; the check under the lock below still decides.
+    if crate::acl::admin_consent::is_live_unrestricted(&prior, now_epoch()) {
+        crate::acl::admin_consent::check_attrition(state, &did)
+            .await
+            .map_err(attrition)?;
+    }
+    let unopposed = crate::acl::admin_consent::settle_reduction(
+        state,
+        &actor.did,
+        &prior,
+        op,
+        &format!("Remove administrator {did} from this community's ACL"),
+        &format!("Remove unrestricted administrator {did}"),
+    )
+    .await?;
+
     // Removing an unrestricted admin must not leave nobody able to consent to
     // another (VTI-APV-014, VTI-APV-009). This route had no last-admin check at
     // all: an ACL-only admin (no member row, so not refused above) could be
@@ -1178,16 +1247,9 @@ pub(crate) async fn revoke_entry(
     if let Some(live) = get_acl_entry(&acl, &did).await?
         && crate::acl::admin_consent::is_live_unrestricted(&live, now_epoch())
     {
-        // The attrition refusal is this task's declared "last authority"
-        // outcome; anything else it returns (a store fault) is not.
         crate::acl::admin_consent::check_attrition(state, &did)
             .await
-            .map_err(|e| match e {
-                AppError::Conflict(_) => {
-                    TaskError::declared(error_codes::LAST_AUTHORITY_PROTECTED.code, e)
-                }
-                other => TaskError::App(other),
-            })?;
+            .map_err(attrition)?;
     }
 
     delete_acl_entry(&acl, &did).await?;
@@ -1208,6 +1270,30 @@ pub(crate) async fn revoke_entry(
                 }),
             )
             .await?;
+    }
+
+    // Nobody else was left to consent: the removal is recorded at the highest
+    // severity and the removed admin is told (VTI-APV-019). After the write,
+    // so a refusal under the lock leaves no row claiming it happened.
+    if unopposed {
+        drop(_admin_set);
+        crate::acl::admin_consent::record_unopposed_reduction(
+            state,
+            &actor.did,
+            &prior,
+            op.type_uri,
+        )
+        .await?;
+        crate::ceremony::removal_notice::send(
+            state,
+            &did,
+            vta_sdk::protocols::members::RemovalCode::AdminRemoved,
+            "purge",
+            reason.map(str::to_string),
+            &Utc::now().to_rfc3339(),
+            &actor.did,
+        )
+        .await;
     }
 
     info!(

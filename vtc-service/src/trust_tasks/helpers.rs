@@ -178,6 +178,13 @@ pub(crate) fn task_error_to_reject<P>(
     use crate::error::TaskError;
     match err {
         TaskError::App(e) => app_error_to_reject(doc, e),
+        // The same refusal `settle_signed_gate` answers a grant with.
+        TaskError::StepUp { request, .. } => reject_with_code(
+            doc,
+            trust_tasks_rs::TrustTaskCode::Standard(trust_tasks_rs::StandardCode::PermissionDenied),
+            "a passkey gesture bound to this operation is required",
+            Some(crate::acl::bound_step_up::refusal_details(request)),
+        ),
         TaskError::Declared { code, error } => {
             let message = error.to_string();
             let marker = match error {

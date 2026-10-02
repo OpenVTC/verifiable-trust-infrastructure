@@ -34,6 +34,16 @@ pub enum TaskError {
     App(AppError),
     /// Answered with the task's declared code beside the usual rendering.
     Declared { code: &'static str, error: AppError },
+    /// The operation needs the requester's passkey gesture bound to it, and
+    /// none is recorded yet. A ceremony is parked; on the Trust Task path the
+    /// refusal is `permissionDenied` with `request` inline as
+    /// `details.stepUpRequest` ([`crate::acl::bound_step_up::refusal_details`]).
+    /// A surface that cannot carry the request sees `error`, an
+    /// [`AppError::StepUpRequired`].
+    StepUp {
+        request: Box<crate::acl::bound_step_up::ApproveRequest>,
+        error: AppError,
+    },
 }
 
 impl TaskError {
@@ -42,10 +52,20 @@ impl TaskError {
         Self::Declared { code, error }
     }
 
+    /// The refusal for an operation still waiting on its bound gesture.
+    pub fn step_up(request: Box<crate::acl::bound_step_up::ApproveRequest>) -> Self {
+        Self::StepUp {
+            request,
+            error: AppError::StepUpRequired(
+                "a passkey gesture bound to this operation is required".into(),
+            ),
+        }
+    }
+
     /// The declared code, if this error carries one.
     pub fn code(&self) -> Option<&'static str> {
         match self {
-            Self::App(_) => None,
+            Self::App(_) | Self::StepUp { .. } => None,
             Self::Declared { code, .. } => Some(code),
         }
     }
@@ -53,7 +73,7 @@ impl TaskError {
     /// The underlying error, whichever form this is.
     pub fn app_error(&self) -> &AppError {
         match self {
-            Self::App(e) | Self::Declared { error: e, .. } => e,
+            Self::App(e) | Self::Declared { error: e, .. } | Self::StepUp { error: e, .. } => e,
         }
     }
 }
@@ -69,7 +89,9 @@ impl From<AppError> for TaskError {
 impl From<TaskError> for AppError {
     fn from(e: TaskError) -> Self {
         match e {
-            TaskError::App(e) | TaskError::Declared { error: e, .. } => e,
+            TaskError::App(e)
+            | TaskError::Declared { error: e, .. }
+            | TaskError::StepUp { error: e, .. } => e,
         }
     }
 }
@@ -83,7 +105,7 @@ impl std::fmt::Display for TaskError {
 impl IntoResponse for TaskError {
     fn into_response(self) -> Response {
         match self {
-            Self::App(e) => e.into_response(),
+            Self::App(e) | Self::StepUp { error: e, .. } => e.into_response(),
             Self::Declared { code, error } => {
                 let message = error.to_string();
                 // The status (and the server-side log line) come from the

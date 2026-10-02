@@ -22,6 +22,7 @@ use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse};
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 
+use crate::common::second_party::Gesturer;
 use crate::common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
@@ -612,13 +613,35 @@ async fn three_admins_threshold_two(fix: &Fixture) -> (Party, Party, Party) {
     (a, b, c)
 }
 
+/// Lower the threshold back to 1. Since VTI-APV-020 that takes `by`'s gesture
+/// and the consent of the threshold as it stands, from `approvers`.
+async fn lower_threshold_to_one(
+    fix: &Fixture,
+    gesturer: &mut Gesturer,
+    by: &Party,
+    approvers: &[&Party],
+) {
+    let doc = signed(
+        by,
+        "https://trusttasks.org/spec/config/patch/0.1",
+        json!({ "overrides": { THRESHOLD_KEY: 1 } }),
+    )
+    .await;
+    let (status, reply) = gesturer.send_through(&fix.vtc, by, approvers, &doc).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["payload"]["applied"][0], THRESHOLD_KEY, "{reply}");
+}
+
 /// `acl/revoke` of an unrestricted admin that would strand the threshold is
-/// refused, names the fix, and writes nothing. Lowering the threshold first
-/// lets it through.
+/// refused, names the fix, and writes nothing — before any gesture is asked
+/// for. Lowering the threshold first lets it through, with the gesture and a
+/// third admin's consent the removal now takes (VTI-APV-019).
 #[tokio::test]
 async fn vti_apv_009_a_revoke_that_would_strand_the_threshold_is_refused() {
     let fix = fixture().await;
-    let (a, _b, c) = three_admins_threshold_two(&fix).await;
+    let (a, b, c) = three_admins_threshold_two(&fix).await;
+    let mut gesturer = Gesturer::new();
+    gesturer.enrol(&fix.vtc, &a.did).await;
 
     let (status, body) = post(&fix, &signed(&a, REVOKE, json!({ "subject": c.did })).await).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -626,19 +649,24 @@ async fn vti_apv_009_a_revoke_that_would_strand_the_threshold_is_refused() {
     assert!(message.contains("config/patch"), "names the fix: {message}");
     assert!(entry(&fix, &c.did).await.is_some(), "nothing removed");
 
-    patch_threshold(&fix, &a, 1).await;
-    let (status, body) = post(&fix, &signed(&a, REVOKE, json!({ "subject": c.did })).await).await;
+    lower_threshold_to_one(&fix, &mut gesturer, &a, &[&b, &c]).await;
+    let revoke = signed(&a, REVOKE, json!({ "subject": c.did })).await;
+    let (status, body) = gesturer.send_through(&fix.vtc, &a, &[&b], &revoke).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 /// At the default threshold a two-admin community can still remove one of
-/// them: the compromised-admin case must never be a lockout.
+/// them: the compromised-admin case must never be a lockout. Nobody else is
+/// left to consent, so the requester's gesture is enough (VTI-APV-019).
 #[tokio::test]
 async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
     let fix = fixture().await;
     let a = admin(&fix).await;
     let b = admin(&fix).await;
-    let (status, body) = post(&fix, &signed(&a, REVOKE, json!({ "subject": b.did })).await).await;
+    let mut gesturer = Gesturer::new();
+    gesturer.enrol(&fix.vtc, &a.did).await;
+    let revoke = signed(&a, REVOKE, json!({ "subject": b.did })).await;
+    let (status, body) = gesturer.send_through(&fix.vtc, &a, &[], &revoke).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
@@ -647,7 +675,9 @@ async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
 #[tokio::test]
 async fn vti_apv_009_narrowing_an_unrestricted_admin_is_attrition() {
     let fix = fixture().await;
-    let (a, _b, c) = three_admins_threshold_two(&fix).await;
+    let (a, b, c) = three_admins_threshold_two(&fix).await;
+    let mut gesturer = Gesturer::new();
+    gesturer.enrol(&fix.vtc, &a.did).await;
     let narrow = json!({ "entry": { "subject": c.did, "role": "admin", "scopes": ["ctx-a"] } });
 
     let (status, body) = post(&fix, &signed(&a, GRANT, narrow.clone()).await).await;
@@ -657,8 +687,9 @@ async fn vti_apv_009_narrowing_an_unrestricted_admin_is_attrition() {
         "unchanged"
     );
 
-    patch_threshold(&fix, &a, 1).await;
-    let (status, body) = post(&fix, &signed(&a, GRANT, narrow).await).await;
+    lower_threshold_to_one(&fix, &mut gesturer, &a, &[&b, &c]).await;
+    let narrow = signed(&a, GRANT, narrow).await;
+    let (status, body) = gesturer.send_through(&fix.vtc, &a, &[&b], &narrow).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(!entry(&fix, &c.did).await.unwrap().is_super_admin());
 }

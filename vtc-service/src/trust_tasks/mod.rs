@@ -3739,6 +3739,8 @@ async fn handle_self_remove(
         &member_did,
         disposition,
         String::new(),
+        // A self-leave: nobody else's authority ends, so nothing to bind.
+        None,
     )
     .await
     {
@@ -4024,9 +4026,13 @@ async fn handle_member_admin_remove(
     };
     match crate::routes::members::remove::admin_remove_inner(
         state,
-        &actor.did,
+        &actor,
         checked.did.as_str(),
         body,
+        crate::acl::admin_consent::Operation {
+            type_uri: &doc.type_uri.to_string(),
+            payload: &doc.payload,
+        },
     )
     .await
     {
@@ -4298,6 +4304,44 @@ async fn handle_config_import(
         Ok(b) => b,
         Err(reject) => return reject,
     };
+    // VTI-APV-020: an applied import that lowers the consent threshold takes
+    // the gesture and the consent of the threshold as it stands, as
+    // `config/patch` does. A preview writes nothing and asks nothing, and a
+    // document the import refuses outright asks for no gesture.
+    if request.confirm
+        && request.document.schema_version == crate::routes::admin::config::EXPORT_SCHEMA_VERSION
+    {
+        match crate::routes::admin::config::lowered_threshold(
+            state,
+            &request.document.config_overrides,
+        )
+        .await
+        {
+            Ok(None) => {}
+            Ok(Some((from, to))) => {
+                if let Err(refusal) = acl_tasks::settle_consent_gate(
+                    state,
+                    &actor,
+                    &doc,
+                    crate::acl::admin_consent::Act::LowerThreshold,
+                    crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD,
+                    &format!(
+                        "Import a configuration that lowers the unrestricted-admin consent \
+                         threshold from {from} to {to}"
+                    ),
+                    &format!(
+                        "Lower the number of administrators who must consent to a new \
+                         unrestricted administrator from {from} to {to}, by configuration import"
+                    ),
+                )
+                .await
+                {
+                    return refusal;
+                }
+            }
+            Err(e) => return app_error_to_reject(&doc, &e),
+        }
+    }
     match crate::routes::admin::config::import_inner(state, &actor.did, request).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),
@@ -4518,13 +4562,11 @@ async fn handle_acl_grant(
         Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    if let Err(refusal) = acl_tasks::settle_signed_gate(state, &actor, &doc, &plan).await {
-        return refusal;
-    }
-    match crate::routes::acl::commit_grant(state, &actor, plan).await {
-        Ok((_status, envelope)) => success_response(&doc, envelope),
-        Err(e) => app_error_to_reject(&doc, &e),
-    }
+    let unopposed = match acl_tasks::settle_signed_gate(state, &actor, &doc, &plan).await {
+        Ok(u) => u,
+        Err(refusal) => return refusal,
+    };
+    acl_tasks::commit_settled(state, &actor, &doc, plan, unopposed).await
 }
 
 /// `acl/change-role/0.1` — move a subject from `fromRole` to `toRole`.

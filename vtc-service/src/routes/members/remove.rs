@@ -27,9 +27,14 @@ use serde::{Deserialize, Serialize};
 
 use vti_common::error::AppError;
 
+use crate::acl::admin_consent::Operation;
+use crate::acl::{get_acl_entry, is_acl_entry_visible};
+use crate::auth::AuthClaims;
+use crate::ceremony::orchestrate::ADMIN_REMOVE_ERR_NOT_FOUND;
 use crate::ceremony::{LeaveOutcome, remove_inner};
 use crate::error::TaskError;
 use crate::members::Disposition;
+use crate::routes::acl::{as_vti_acl_entry, caller_covers_target};
 use crate::server::AppState;
 
 #[derive(Debug, Deserialize, Default)]
@@ -75,14 +80,27 @@ const REASON_MAX: usize = 1024;
 ///
 /// The signed-document arm in [`crate::trust_tasks`] (#1641 phase 2) calls
 /// this, on every transport. Every check is here: the DID is well formed, an
-/// admin does not remove themselves through the admin verb, and the operator
-/// `reason` is capped.
+/// admin does not remove themselves through the admin verb, the operator
+/// `reason` is capped, and the subject's entry is one the actor administers in
+/// full.
+///
+/// The cover check is `acl/revoke`'s (VTI-ACL-050): an administrator of `a`
+/// may not remove a subject who also acts in `b`, and only an unrestricted
+/// administrator may remove an unrestricted one. Without it this verb relied
+/// entirely on the editable removal policy (`vtc-action-list.md` §8.1, hole 3).
+/// An entry the actor cannot see at all answers as absent, so the refusal is no
+/// oracle.
+///
+/// `op` is this document's type and payload, which removing an administrator
+/// binds its gesture and consent to (VTI-APV-019).
 pub(crate) async fn admin_remove_inner(
     state: &AppState,
-    actor_did: &str,
+    actor: &AuthClaims,
     target_did: &str,
     body: RemoveBody,
+    op: Operation<'_>,
 ) -> Result<LeaveOutcome, TaskError> {
+    let actor_did = actor.did.as_str();
     vti_common::identifier::validate_did("did", target_did)?;
     if actor_did == target_did {
         return Err(AppError::Validation(
@@ -100,7 +118,30 @@ pub(crate) async fn admin_remove_inner(
         ))
         .into());
     }
-    remove_inner(state, actor_did, target_did, body.disposition, reason).await
+    if let Some(entry) = get_acl_entry(&state.acl_ks, target_did).await? {
+        if !is_acl_entry_visible(actor, &as_vti_acl_entry(&entry)) {
+            return Err(TaskError::declared(
+                ADMIN_REMOVE_ERR_NOT_FOUND,
+                AppError::NotFound(format!("member not found: {target_did}")),
+            ));
+        }
+        if !caller_covers_target(actor, &entry) {
+            return Err(AppError::Forbidden(format!(
+                "{target_did} holds authority outside your contexts — only an administrator \
+                 whose scope covers every context it acts in can remove it (VTI-ACL-050)"
+            ))
+            .into());
+        }
+    }
+    remove_inner(
+        state,
+        actor_did,
+        target_did,
+        body.disposition,
+        reason,
+        Some(op),
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

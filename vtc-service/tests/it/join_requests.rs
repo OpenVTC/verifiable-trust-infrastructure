@@ -818,34 +818,35 @@ async fn clear_criteria(fix: &Fixture) {
 
 /// Upload + activate a join policy. The active pointer is flipped
 /// server-side; subsequent submits see the new policy's semantics.
+///
+/// The join policy decides authority, so changing it takes an unrestricted
+/// administrator's passkey gesture and a second one's consent (VTI-VTC-022).
+/// A pair of administrators who can give both makes the change.
 async fn activate_join_policy(fix: &Fixture, source: &str) {
-    let (status, body) = send_as_admin(
-        fix,
-        "POST",
-        "/v1/policies",
-        POLICY_UPLOAD_TASK,
-        Some(&fix.admin_token),
-        Some(json!({ "name": "join", "module": source, "ext": { "org.openvtc.purpose": "join" } })),
-    )
-    .await;
+    let gated = crate::common::second_party::GatedAdmin::new(&fix._vtc).await;
+    let (status, doc) = gated
+        .call(
+            &fix._vtc,
+            POLICY_UPLOAD_TASK,
+            json!({ "name": "join", "module": source, "ext": { "org.openvtc.purpose": "join" } }),
+        )
+        .await;
     // Canonical upsert: 201 when this is the first revision for the
     // purpose, 200 when it revises an existing one. Fixtures may have
     // seeded a policy already, so both are success here.
     assert!(
         status == StatusCode::CREATED || status == StatusCode::OK,
-        "upload failed ({status}): {body}"
+        "upload failed ({status}): {doc}"
     );
-    let id = body["policy"]["id"].as_str().unwrap();
-    let (status, body) = send_as_admin(
-        fix,
-        "POST",
-        &format!("/v1/policies/{id}/activate"),
-        POLICY_ACTIVATE_TASK,
-        Some(&fix.admin_token),
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "activate failed: {body}");
+    let id = doc["payload"]["policy"]["id"].as_str().unwrap().to_string();
+    let (status, doc) = gated
+        .call(
+            &fix._vtc,
+            POLICY_ACTIVATE_TASK,
+            json!({ "id": id, "purpose": "join" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "activate failed: {doc}");
 }
 
 async fn activate_deny_all_join_policy(fix: &Fixture) {

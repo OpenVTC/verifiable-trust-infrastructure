@@ -18,7 +18,6 @@
 use serde_json::{Value, json};
 use uuid::Uuid;
 use vti_common::store::KeyspaceHandle;
-use vti_rooms_dtg::test_support::Party;
 
 use axum::http::StatusCode;
 use vtc_service::policy::{PolicyPurpose, get_active_policy_id, get_policy};
@@ -67,7 +66,7 @@ struct Fixture {
     /// The key every document here is signed by: an unrestricted
     /// administrator (`policy/*` reads its authority from the signer's own
     /// ACL row now, not a bearer session).
-    signer: Party,
+    signer: crate::common::second_party::GatedAdmin,
     policies_ks: KeyspaceHandle,
     active_policies_ks: KeyspaceHandle,
     audit_ks: KeyspaceHandle,
@@ -76,8 +75,16 @@ struct Fixture {
 }
 
 async fn build_fixture() -> Fixture {
-    let vtc = TestVtc::builder().with_audit(true).build().await;
-    let signer = crate::common::signed::admin(&vtc).await;
+    // A public URL and signers, because writing a `join` or `removal` policy
+    // takes the signer's passkey gesture and a second administrator's consent
+    // (VTI-VTC-022) — which `GatedAdmin` supplies.
+    let vtc = TestVtc::builder()
+        .with_audit(true)
+        .with_signers(true)
+        .with_public_url("https://vtc.example.com")
+        .build()
+        .await;
+    let signer = crate::common::second_party::GatedAdmin::new(&vtc).await;
 
     let policies_ks = vtc.state.policies_ks.clone();
     let active_policies_ks = vtc.state.active_policies_ks.clone();
@@ -126,7 +133,7 @@ fn reply(doc: &Value, success: StatusCode) -> (StatusCode, Value) {
 }
 
 async fn upsert(fix: &Fixture, body: Value) -> (StatusCode, Value) {
-    let (_, doc) = crate::common::signed::call(&fix._vtc, &fix.signer, UPLOAD_TASK, body).await;
+    let (_, doc) = fix.signer.call(&fix._vtc, UPLOAD_TASK, body).await;
     let success = if doc["payload"]["created"] == false {
         StatusCode::OK
     } else {
@@ -136,8 +143,13 @@ async fn upsert(fix: &Fixture, body: Value) -> (StatusCode, Value) {
 }
 
 async fn show(fix: &Fixture, id: &str) -> (StatusCode, Value) {
-    let (_, doc) =
-        crate::common::signed::call(&fix._vtc, &fix.signer, SHOW_TASK, json!({ "id": id })).await;
+    let (_, doc) = crate::common::signed::call(
+        &fix._vtc,
+        &fix.signer.requester,
+        SHOW_TASK,
+        json!({ "id": id }),
+    )
+    .await;
     reply(&doc, StatusCode::OK)
 }
 
@@ -154,8 +166,7 @@ async fn activate(fix: &Fixture, id: &str, purpose: Option<&str>) -> (StatusCode
             }
         }
     }
-    let (_, doc) =
-        crate::common::signed::call(&fix._vtc, &fix.signer, ACTIVATE_TASK, payload).await;
+    let (_, doc) = fix.signer.call(&fix._vtc, ACTIVATE_TASK, payload).await;
     reply(&doc, StatusCode::OK)
 }
 
@@ -166,7 +177,8 @@ async fn list(fix: &Fixture, purpose: Option<&str>) -> (StatusCode, Value) {
     if let Some(p) = purpose {
         payload["ext"] = json!({ "org.openvtc.purpose": p });
     }
-    let (_, doc) = crate::common::signed::call(&fix._vtc, &fix.signer, LIST_TASK, payload).await;
+    let (_, doc) =
+        crate::common::signed::call(&fix._vtc, &fix.signer.requester, LIST_TASK, payload).await;
     reply(&doc, StatusCode::OK)
 }
 
@@ -177,7 +189,8 @@ async fn active(fix: &Fixture, purpose: Option<&str>) -> (StatusCode, Value) {
     if let Some(p) = purpose {
         payload["purpose"] = json!(p);
     }
-    let (_, doc) = crate::common::signed::call(&fix._vtc, &fix.signer, ACTIVE_TASK, payload).await;
+    let (_, doc) =
+        crate::common::signed::call(&fix._vtc, &fix.signer.requester, ACTIVE_TASK, payload).await;
     reply(&doc, StatusCode::OK)
 }
 
@@ -365,44 +378,40 @@ async fn activate_unknown_id_returns_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-/// Upload + activate each emit one audit envelope. The audit
-/// keyspace gains exactly two rows (plus the boot-time
-/// `AuditKeyRotated::Initial` row from `ensure_initial`).
+/// Upload + activate each emit one audit envelope of their own. A `join`
+/// policy decides authority, so the gesture and consent it takes are audited
+/// beside them (VTI-VTC-022); those rows are the gate's, not the verb's, and
+/// are not counted here.
 #[tokio::test]
 async fn upload_and_activate_emit_audit_envelopes() {
     let fix = build_fixture().await;
-    let baseline = fix
-        .audit_ks
-        .prefix_iter_raw(Vec::new())
-        .await
-        .unwrap()
-        .len();
+    let count = |variant: &'static str| {
+        let ks = fix.audit_ks.clone();
+        async move {
+            ks.prefix_iter_raw(Vec::new())
+                .await
+                .unwrap()
+                .into_iter()
+                .filter_map(|(_, v)| {
+                    serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok()
+                })
+                .filter(|env| env.event.variant_name() == variant)
+                .count()
+        }
+    };
 
     let uploaded = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
     let id = uploaded["id"].as_str().unwrap().to_string();
-    let after_upload = fix
-        .audit_ks
-        .prefix_iter_raw(Vec::new())
-        .await
-        .unwrap()
-        .len();
     assert_eq!(
-        after_upload - baseline,
+        count("PolicyUploaded").await,
         1,
         "upload must emit exactly one audit envelope"
     );
 
     let (status, _) = activate(&fix, &id, None).await;
     assert_eq!(status, StatusCode::OK);
-
-    let after_activate = fix
-        .audit_ks
-        .prefix_iter_raw(Vec::new())
-        .await
-        .unwrap()
-        .len();
     assert_eq!(
-        after_activate - after_upload,
+        count("PolicyActivated").await,
         1,
         "activate must emit exactly one audit envelope"
     );

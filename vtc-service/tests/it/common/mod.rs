@@ -12,3 +12,6 @@ pub mod signed;
 
 #[allow(dead_code)] // pulled into different test binaries; not every file uses every helper
 pub mod legacy;
+
+#[allow(dead_code)] // pulled into different test binaries; not every file uses every helper
+pub mod second_party;

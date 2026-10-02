@@ -53,6 +53,29 @@
 //! ([`super::bound_step_up`]) and this consent. The gesture is asked for first,
 //! so a party holding only the requester's signing key cannot make the other
 //! admins' devices ring. Neither is spent until both are present.
+//!
+//! ## The other acts it gates
+//!
+//! The same machinery — one store, one digest, one decision task — also gates
+//! the acts that could otherwise undo APV-014 one step at a time
+//! (`docs/05-design-notes/vtc-action-list.md` §7b, §8.1). Each is an [`Act`];
+//! what differs between them is only who may consent and what they are shown:
+//!
+//! - [`Act::ReduceUnrestricted`] — **VTI-APV-019**: removing, demoting or
+//!   narrowing *another* subject's unrestricted authority. The approvers exclude
+//!   the subject as well as the requester, so neither party to the dispute can
+//!   decide it. Where nobody is left, [`gate_reduction`] lets the requester's
+//!   step-up suffice and the caller records it at `Critical`
+//!   ([`record_unopposed_reduction`]).
+//! - [`Act::LowerThreshold`] — **VTI-APV-020**: lowering
+//!   `acl.unrestricted_admin_consent_threshold` needs consent at the threshold as
+//!   it stands, which is what [`threshold`] reads.
+//! - [`Act::ChangeAuthorityPolicy`] — **VTI-VTC-022**: replacing or activating
+//!   the policy that decides authority (role change, removal, join,
+//!   cross-community roles, git namespaces).
+//!
+//! [`Act::GrantUnrestricted`] is APV-014 itself, and [`require`] and
+//! [`gesture_then_consent`] keep meaning exactly that.
 
 use std::time::Duration;
 
@@ -98,8 +121,62 @@ pub(crate) const GRANTED_TYPE: &str =
 /// `task-consent/decision/0.1` — what an approver answers with.
 pub(crate) const DECISION_TYPE: &str = <decision::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// The approver set a request to end another subject's unrestricted authority
+/// names (VTI-APV-019): the unrestricted admins other than the requester **and
+/// the subject**.
+pub const APPROVER_SET_EXCEPT_SUBJECT: &str = "unrestricted-admins-except-subject";
+
 /// Domain tag for the [`StatePin`] version over a subject's ACL entry.
 const STATE_DOMAIN: &[u8] = b"vtc/acl-entry-state/v1\0";
+
+/// Domain tag for the [`StatePin`] version over a piece of community state that
+/// is not an ACL entry — the consent threshold, the active policy of a purpose.
+const SETTING_STATE_DOMAIN: &[u8] = b"vtc/consent-setting-state/v1\0";
+
+/// Which act a consent is asked for. The machinery is one; what differs is who
+/// may consent, what they are shown, and what state the consent is pinned to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Act {
+    /// **VTI-APV-014** — creating or widening to unrestricted admin authority.
+    /// The subject is the DID that would hold it.
+    GrantUnrestricted,
+    /// **VTI-APV-019** — removing, demoting or narrowing another subject's
+    /// unrestricted authority. The subject is the DID that holds it, and never
+    /// counts as an approver.
+    ReduceUnrestricted,
+    /// **VTI-APV-020** — lowering the consent threshold. The subject is the
+    /// threshold's config key; the consent is pinned to its current value.
+    LowerThreshold,
+    /// **VTI-VTC-022** — replacing or activating a policy that decides
+    /// authority. The subject names the purpose; the consent is pinned to the
+    /// revision active for it now.
+    ChangeAuthorityPolicy(crate::policy::PolicyPurpose),
+}
+
+impl Act {
+    /// The requirement this act's consent implements, for refusals.
+    fn requirement(self) -> &'static str {
+        match self {
+            Self::GrantUnrestricted => "VTI-APV-014",
+            Self::ReduceUnrestricted => "VTI-APV-019",
+            Self::LowerThreshold => "VTI-APV-020",
+            Self::ChangeAuthorityPolicy(_) => "VTI-VTC-022",
+        }
+    }
+
+    fn approver_set(self) -> &'static str {
+        match self {
+            Self::ReduceUnrestricted => APPROVER_SET_EXCEPT_SUBJECT,
+            _ => APPROVER_SET,
+        }
+    }
+
+    /// Whether the subject is excluded from the approvers, beside the
+    /// requester. Only for a reduction, where the subject is a party to it.
+    fn excludes_subject(self) -> bool {
+        matches!(self, Self::ReduceUnrestricted)
+    }
+}
 
 /// The operation being consented to: its task type and the payload the digest
 /// is taken over.
@@ -323,16 +400,36 @@ pub async fn gesture_then_consent(
     gesture_reason: &str,
     consent_summary: &str,
 ) -> Result<SignedGate, AppError> {
+    gesture_then_consent_for(
+        state,
+        Act::GrantUnrestricted,
+        requester,
+        subject,
+        op,
+        gesture_reason,
+        consent_summary,
+    )
+    .await
+}
+
+/// [`gesture_then_consent`] for any [`Act`].
+pub async fn gesture_then_consent_for(
+    state: &AppState,
+    act: Act,
+    requester: &str,
+    subject: &str,
+    op: Operation<'_>,
+    gesture_reason: &str,
+    consent_summary: &str,
+) -> Result<SignedGate, AppError> {
     use super::bound_step_up::{self, Gate};
 
     // A consent nobody can give makes the gesture pointless, so say so before
     // asking the requester for one.
-    let possible = unrestricted_admins(state, now_epoch())
+    let possible = approvers_for(state, act, requester, subject, now_epoch())
         .await?
-        .iter()
-        .filter(|d| d.as_str() != requester)
-        .count() as u64;
-    refuse_if_unmeetable(possible, threshold(state).await?, consent_summary)?;
+        .len() as u64;
+    refuse_if_unmeetable(act, possible, threshold(state).await?, consent_summary)?;
 
     if !bound_step_up::has_mark(state, requester, op.type_uri, op.payload).await? {
         return match bound_step_up::redeem_or_request(
@@ -349,13 +446,13 @@ pub async fn gesture_then_consent(
             // spent. Carry on to the consent; if that is still outstanding the
             // gesture has to be made again, which is the cost of the race and
             // not a way around either requirement.
-            Gate::Satisfied => require(state, requester, subject, op, consent_summary)
+            Gate::Satisfied => require_for(state, act, requester, subject, op, consent_summary)
                 .await
                 .map(SignedGate::Ready),
         };
     }
 
-    let ready = require(state, requester, subject, op, consent_summary).await?;
+    let ready = require_for(state, act, requester, subject, op, consent_summary).await?;
     match bound_step_up::redeem_or_request(
         state,
         requester,
@@ -369,6 +466,189 @@ pub async fn gesture_then_consent(
         // The mark lapsed while the consent was being checked.
         Gate::Required(request) => Ok(SignedGate::StepUpRequired(request)),
     }
+}
+
+/// What the requester's side of a reduction has settled to, once the gesture is
+/// spent — **VTI-APV-019**.
+#[derive(Debug)]
+#[must_use = "a consented reduction must spend its grant, and an unopposed one must be recorded"]
+pub enum Reduction {
+    /// The subject was not a live unrestricted admin (or is the requester): the
+    /// gesture is the whole gate.
+    StepUpOnly,
+    /// Another unrestricted admin, neither the requester nor the subject,
+    /// consented. Spend it with the write.
+    Consented(ReadyGrant),
+    /// The subject is a live unrestricted admin and nobody else is left who
+    /// could consent. The gesture suffices; once the write lands the caller
+    /// records it at `Critical` and notifies the subject
+    /// ([`record_unopposed_reduction`]).
+    Unopposed,
+}
+
+impl Reduction {
+    /// Spend the consent, if this reduction carries one. Call it with the
+    /// write, after every other check.
+    ///
+    /// `Ok(true)` when the reduction is [`Self::Unopposed`] — the caller's cue
+    /// to [`record_unopposed_reduction`] once the write lands.
+    pub async fn spend(self, state: &AppState) -> Result<bool, AppError> {
+        match self {
+            Self::StepUpOnly => Ok(false),
+            Self::Consented(ready) => ready.spend(state).await.map(|()| false),
+            Self::Unopposed => Ok(true),
+        }
+    }
+}
+
+/// [`gate_reduction`]'s answer.
+#[derive(Debug)]
+pub enum ReductionGate {
+    /// The gesture is spent and the reduction may proceed as described.
+    Cleared(Reduction),
+    /// No gesture yet. A ceremony is parked; refuse with it inline.
+    StepUpRequired(Box<trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload>),
+}
+
+/// The gate on removing, demoting or narrowing an **administrator**'s entry —
+/// `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update` or
+/// `acl/grant` rewrite, `vtc/members/admin-remove` (`vtc-action-list.md` §7b).
+///
+/// Every such act takes the requester's operation-bound gesture. When the
+/// subject is **another** live unrestricted admin, it also takes consent from an
+/// unrestricted admin who is neither the requester nor the subject
+/// (**VTI-APV-019**), through the same machinery as APV-014 ([`Act::ReduceUnrestricted`]).
+/// Where no such admin exists — two unrestricted admins in all — the gesture
+/// alone suffices and [`Reduction::Unopposed`] says so: the VTC cannot tell a
+/// removal of a compromised co-admin from a compromised admin's removal of the
+/// other, and must not make the first impossible.
+///
+/// The attrition guard ([`check_attrition`]) is asked first as well, so a
+/// reduction that would strand the community is refused before anybody is asked
+/// for a gesture. It is not a substitute for the caller's own check under the
+/// admin-set lock, which still runs.
+///
+/// Call it after every check that decides whether the act may happen, and
+/// before anything is written.
+pub async fn gate_reduction(
+    state: &AppState,
+    requester: &str,
+    subject: &VtcAclEntry,
+    op: Operation<'_>,
+    gesture_reason: &str,
+    consent_summary: &str,
+) -> Result<ReductionGate, AppError> {
+    use super::bound_step_up::{self, Gate};
+
+    let now = now_epoch();
+    let unrestricted = is_live_unrestricted(subject, now) && subject.did != requester;
+    if unrestricted {
+        check_attrition(state, &subject.did).await?;
+        let third = approvers_for(state, Act::ReduceUnrestricted, requester, &subject.did, now)
+            .await?
+            .len();
+        if third > 0 {
+            return Ok(
+                match gesture_then_consent_for(
+                    state,
+                    Act::ReduceUnrestricted,
+                    requester,
+                    &subject.did,
+                    op,
+                    gesture_reason,
+                    consent_summary,
+                )
+                .await?
+                {
+                    SignedGate::Ready(ready) => ReductionGate::Cleared(Reduction::Consented(ready)),
+                    SignedGate::StepUpRequired(r) => ReductionGate::StepUpRequired(r),
+                },
+            );
+        }
+    }
+    Ok(
+        match bound_step_up::redeem_or_request(
+            state,
+            requester,
+            op.type_uri,
+            op.payload,
+            gesture_reason,
+        )
+        .await?
+        {
+            Gate::Satisfied if unrestricted => {
+                warn!(
+                    requester,
+                    subject = %subject.did,
+                    task = op.type_uri,
+                    "ending an unrestricted admin's authority with nobody else left to consent \
+                     (VTI-APV-019): the requester's step-up is the only gate"
+                );
+                ReductionGate::Cleared(Reduction::Unopposed)
+            }
+            Gate::Satisfied => ReductionGate::Cleared(Reduction::StepUpOnly),
+            Gate::Required(r) => ReductionGate::StepUpRequired(r),
+        },
+    )
+}
+
+/// [`gate_reduction`] for a door about to end or reduce `prior`, settled to one
+/// answer: `Ok(false)` to go ahead, `Ok(true)` to go ahead and then
+/// [`record_unopposed_reduction`], or the refusal — [`TaskError::StepUp`] with
+/// the ceremony inline when no gesture is recorded yet.
+///
+/// Only an **administrator**'s live entry is gated (`vtc-action-list.md` §7b
+/// item 1); ending an expired or non-admin entry is unchanged, and answers
+/// `Ok(false)` without asking anything. A consent, where one was needed, is
+/// spent here, so call it last before the write.
+///
+/// [`TaskError::StepUp`]: crate::error::TaskError::StepUp
+pub async fn settle_reduction(
+    state: &AppState,
+    requester: &str,
+    prior: &VtcAclEntry,
+    op: Operation<'_>,
+    gesture_reason: &str,
+    consent_summary: &str,
+) -> Result<bool, crate::error::TaskError> {
+    if prior.role != VtcRole::Admin || prior.is_expired(now_epoch()) {
+        return Ok(false);
+    }
+    match gate_reduction(state, requester, prior, op, gesture_reason, consent_summary).await? {
+        ReductionGate::Cleared(reduction) => Ok(reduction.spend(state).await?),
+        ReductionGate::StepUpRequired(request) => Err(crate::error::TaskError::step_up(request)),
+    }
+}
+
+/// Record a [`Reduction::Unopposed`] once its write has landed: a `Critical`
+/// audit row (**VTI-APV-019**). Telling the subject is the caller's, because
+/// which notice fits depends on the act — a removal sends the removal notice.
+///
+/// Called after the write, never before: a refusal later in the write (the
+/// attrition guard under its lock) must not leave a row saying it happened.
+pub async fn record_unopposed_reduction(
+    state: &AppState,
+    requester: &str,
+    prior: &VtcAclEntry,
+    task: &str,
+) -> Result<(), AppError> {
+    let Some(writer) = state.audit_writer.as_ref() else {
+        return Ok(());
+    };
+    writer
+        .write(
+            requester,
+            Some(&prior.did),
+            AuditEvent::AuthorityReducedUnopposed(
+                vti_common::audit::AuthorityReducedUnopposedData {
+                    task: task.to_string(),
+                    prior_role: prior.role.to_string(),
+                    prior_scopes: prior.allowed_contexts.clone(),
+                },
+            ),
+        )
+        .await?;
+    Ok(())
 }
 
 /// Find the consent for this operation, or ask for it.
@@ -388,16 +668,33 @@ pub async fn require(
     op: Operation<'_>,
     summary: &str,
 ) -> Result<ReadyGrant, AppError> {
+    require_for(
+        state,
+        Act::GrantUnrestricted,
+        requester,
+        subject,
+        op,
+        summary,
+    )
+    .await
+}
+
+/// [`require`] for any [`Act`]: the approvers, the refusal's wording, what the
+/// approvers are shown and what the consent is pinned to follow from `act`.
+pub async fn require_for(
+    state: &AppState,
+    act: Act,
+    requester: &str,
+    subject: &str,
+    op: Operation<'_>,
+    summary: &str,
+) -> Result<ReadyGrant, AppError> {
     let now = now_epoch();
     let ks = &state.task_consent_ks;
     let digest = task_consent::payload_digest(op.type_uri, op.payload)?;
     let threshold = threshold(state).await?;
-    let approvers: Vec<String> = unrestricted_admins(state, now)
-        .await?
-        .into_iter()
-        .filter(|d| d != requester)
-        .collect();
-    let pin = state_pin(state, subject).await?;
+    let approvers = approvers_for(state, act, requester, subject, now).await?;
+    let pin = pin_for(state, act, subject).await?;
 
     if let Some(grant) = task_consent::get_grant(ks, requester, &digest, now).await? {
         if still_authorizes(&grant, &approvers, threshold, &pin) {
@@ -420,7 +717,7 @@ pub async fn require(
         task_consent::discard_grant(ks, requester, &digest).await?;
     }
 
-    refuse_if_unmeetable(approvers.len() as u64, threshold, summary)?;
+    refuse_if_unmeetable(act, approvers.len() as u64, threshold, summary)?;
 
     let (pending, raised) = match task_consent::get_pending(ks, &digest, now).await? {
         // Same ask, same world: the same challenge goes back and nobody is
@@ -437,13 +734,14 @@ pub async fn require(
             if let Some(p) = stale {
                 task_consent::delete_pending(ks, &p).await?;
             }
-            let p = mint_pending(requester, op, &digest, threshold, pin, now)?;
+            let mut p = mint_pending(requester, op, &digest, threshold, pin, now)?;
+            p.approver_set = act.approver_set().to_string();
             task_consent::store_pending(ks, &p).await?;
             (p, true)
         }
     };
 
-    let requests = sign_requests(state, &pending, &approvers, subject, summary).await?;
+    let requests = sign_requests(state, act, &pending, &approvers, subject, summary).await?;
     if raised {
         audit(
             state,
@@ -476,16 +774,66 @@ pub async fn require(
 /// Refuse, naming the fix, when there are fewer possible approvers than the
 /// threshold needs. The operator's way out is the offline break-glass, which is
 /// not reachable by a stolen session or key.
-fn refuse_if_unmeetable(approvers: u64, threshold: u64, summary: &str) -> Result<(), AppError> {
+fn refuse_if_unmeetable(
+    act: Act,
+    approvers: u64,
+    threshold: u64,
+    summary: &str,
+) -> Result<(), AppError> {
     if approvers < threshold {
+        let others = if act.excludes_subject() {
+            "unrestricted admin(s) other than you and the subject"
+        } else {
+            "other unrestricted admin(s)"
+        };
         return Err(AppError::Forbidden(format!(
-            "{summary} needs consent from {threshold} other unrestricted admin(s), and this \
-             community has {approvers} (VTI-APV-014). Add another unrestricted admin with the \
+            "{summary} needs consent from {threshold} {others}, and this \
+             community has {approvers} ({}). Add another unrestricted admin with the \
              offline break-glass while the daemon is stopped — `vtc acl add --did <did> --role \
-             admin` — and send this again"
+             admin` — and send this again",
+            act.requirement()
         )));
     }
     Ok(())
+}
+
+/// Who may consent to `act` on `subject` now: every live unrestricted admin
+/// but the requester (VTI-APV-007) — and, for a reduction, but the subject
+/// (VTI-APV-019).
+async fn approvers_for(
+    state: &AppState,
+    act: Act,
+    requester: &str,
+    subject: &str,
+    now: u64,
+) -> Result<Vec<String>, AppError> {
+    Ok(unrestricted_admins(state, now)
+        .await?
+        .into_iter()
+        .filter(|d| d != requester && !(act.excludes_subject() && d == subject))
+        .collect())
+}
+
+/// The state a consent to `act` is pinned to: what the approvers saw, so a
+/// change to it between the ask and the write asks again.
+async fn pin_for(state: &AppState, act: Act, subject: &str) -> Result<StatePin, AppError> {
+    let value = match act {
+        Act::GrantUnrestricted | Act::ReduceUnrestricted => {
+            return state_pin(state, subject).await;
+        }
+        // VTI-APV-020: the consent is to lowering *this* threshold. Once it
+        // moves, what the approvers agreed to is not what would happen.
+        Act::LowerThreshold => json!(threshold(state).await?),
+        Act::ChangeAuthorityPolicy(purpose) => json!(
+            crate::policy::get_active_policy_id(&state.active_policies_ks, purpose)
+                .await?
+                .map(|id| id.to_string())
+        ),
+    };
+    Ok(StatePin {
+        resource: subject.to_string(),
+        version: task_consent::domain_digest(SETTING_STATE_DOMAIN, subject, &value, None)?,
+    })
 }
 
 /// The refusal's `details`: the VTA gate's shape, so a client written for one
@@ -592,6 +940,7 @@ fn still_authorizes(
 /// at it. The requester is never asked (VTI-APV-007).
 async fn sign_requests(
     state: &AppState,
+    act: Act,
     pending: &PendingTaskConsent,
     approvers: &[String],
     subject: &str,
@@ -612,12 +961,31 @@ async fn sign_requests(
     let expires_at = chrono::DateTime::from_timestamp(pending.expires_at as i64, 0)
         .ok_or_else(|| AppError::Internal("consent expiry out of range".into()))?
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let effect = Effect::new("authorityGrant", summary).detail(
-        json!({ "subject": subject, "actScope": "all", "role": "admin" })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-    );
+    let (kind, detail, consequence) = match act {
+        Act::GrantUnrestricted => (
+            "authorityGrant",
+            json!({ "subject": subject, "actScope": "all", "role": "admin" }),
+            "The subject can grant and remove any authority in this community, including yours.",
+        ),
+        Act::ReduceUnrestricted => (
+            "authorityRevoke",
+            json!({ "subject": subject, "actScope": "all", "role": "admin" }),
+            "The subject loses unrestricted authority in this community. They are not asked: \
+             a party to a removal never decides it.",
+        ),
+        Act::LowerThreshold => (
+            "configChange",
+            json!({ "key": subject }),
+            "Fewer administrators will be needed to make an unrestricted administrator — \
+             including the next one this requester asks for.",
+        ),
+        Act::ChangeAuthorityPolicy(purpose) => (
+            "policyChange",
+            json!({ "purpose": purpose.as_str() }),
+            "The rules that decide who holds authority in this community change.",
+        ),
+    };
+    let effect = Effect::new(kind, summary).detail(detail.as_object().cloned().unwrap_or_default());
 
     let payload = json!({
         "challenge": pending.challenge,
@@ -626,9 +994,7 @@ async fn sign_requests(
         "sideEffects": "mutating",
         "exposure": { "actsAsSubject": false, "discloses": "none" },
         "effects": [effect],
-        "consequences": [
-            "The subject can grant and remove any authority in this community, including yours."
-        ],
+        "consequences": [consequence],
         "requester": pending.requester_did,
         "approverSet": pending.approver_set,
         "minApprovals": pending.min_approvals,
@@ -753,6 +1119,11 @@ pub async fn decide(
         .as_ref()
         .map(|p| p.resource.clone())
         .unwrap_or_default();
+    // VTI-APV-019: the subject of a reduction is a party to it, and never
+    // decides it — whichever of the two is the compromised one.
+    if pending.approver_set == APPROVER_SET_EXCEPT_SUBJECT && approver == subject {
+        return Err(DecisionError::NotAnApprover);
+    }
 
     if payload.decision == decision::Decision::Deny {
         task_consent::delete_pending(ks, &pending).await?;

@@ -337,6 +337,30 @@ async fn handle_config_patch(
     let request = crate::routes::admin::config::PatchRequest {
         overrides: payload.overrides.into_iter().collect(),
     };
+    // VTI-APV-020: lowering the consent threshold takes the gesture and the
+    // consent of the threshold as it stands. Raising it does not.
+    match crate::routes::admin::config::lowered_threshold(state, &request.overrides).await {
+        Ok(None) => {}
+        Ok(Some((from, to))) => {
+            if let Err(refusal) = super::acl_tasks::settle_consent_gate(
+                state,
+                &actor,
+                &doc,
+                crate::acl::admin_consent::Act::LowerThreshold,
+                crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD,
+                &format!("Lower the unrestricted-admin consent threshold from {from} to {to}"),
+                &format!(
+                    "Lower the number of administrators who must consent to a new \
+                     unrestricted administrator from {from} to {to}"
+                ),
+            )
+            .await
+            {
+                return refusal;
+            }
+        }
+        Err(e) => return app_error_to_reject(&doc, &e),
+    }
     match crate::routes::admin::config::patch_config(state, &actor.did, request).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),

@@ -686,6 +686,18 @@ pub enum AuditEvent {
     /// the record (step 9). Written alongside the ordinary `GitNsOperation`
     /// row, which is what wakes the projector and feeds the activity view.
     GitNsBreakGlass(GitNsBreakGlassData),
+
+    /// An administrator removed, demoted or narrowed another **unrestricted**
+    /// administrator with nobody else left to consent — **VTI-APV-019**.
+    ///
+    /// Ending unrestricted authority ordinarily needs consent from a party
+    /// other than the requester and the subject. Where no such party exists (a
+    /// community of two unrestricted administrators) the act proceeds on the
+    /// requester's re-authentication alone, the subject is notified, and this
+    /// row records it at [`AuditSeverity::Critical`]: one person ended another's
+    /// authority without a second person agreeing. The subject travels in the
+    /// envelope's hashed `target_did_*` members.
+    AuthorityReducedUnopposed(AuthorityReducedUnopposedData),
 }
 
 /// How much an audit event matters to someone reviewing the log. Ordered:
@@ -811,17 +823,20 @@ impl AuditEvent {
             // subtype.
             Self::VtaOperation(..) => "VtaOperation",
             Self::GitNsBreakGlass(..) => "GitNsBreakGlass",
+            Self::AuthorityReducedUnopposed(..) => "AuthorityReducedUnopposed",
         }
     }
 
     /// The event's severity. Everything is [`AuditSeverity::Info`] except the
-    /// acts that bypass a second person: the emergency bootstrap, and a git
-    /// break-glass with its ratification or revocation.
+    /// acts that bypass a second person: the emergency bootstrap, a git
+    /// break-glass with its ratification or revocation, and the end of an
+    /// unrestricted administrator's authority that nobody else was left to
+    /// consent to (VTI-APV-019).
     pub fn severity(&self) -> AuditSeverity {
         match self {
-            Self::EmergencyBootstrapInvoked(..) | Self::GitNsBreakGlass(..) => {
-                AuditSeverity::Critical
-            }
+            Self::EmergencyBootstrapInvoked(..)
+            | Self::GitNsBreakGlass(..)
+            | Self::AuthorityReducedUnopposed(..) => AuditSeverity::Critical,
             _ => AuditSeverity::Info,
         }
     }
@@ -998,6 +1013,19 @@ pub struct GitNsOperationData {
     /// member wrote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+/// Payload for [`AuditEvent::AuthorityReducedUnopposed`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorityReducedUnopposedData {
+    /// The Trust Task type URI of the act — `acl/revoke`, `acl/change-role`,
+    /// `acl/update`, `acl/grant` or `vtc/members/admin-remove`.
+    pub task: String,
+    /// The subject's role before the act.
+    pub prior_role: String,
+    /// The subject's scopes before the act (empty: unrestricted).
+    pub prior_scopes: Vec<String>,
 }
 
 /// Payload for [`AuditEvent::GitNsBreakGlass`].
@@ -2288,6 +2316,20 @@ mod tests {
         assert_eq!(wire_value(&e)["type"], "GitNsBreakGlass");
         assert_eq!(e.severity(), AuditSeverity::Critical);
         assert!(AuditSeverity::Critical > AuditSeverity::Info);
+    }
+
+    #[test]
+    fn vti_apv_019_an_unopposed_authority_reduction_is_critical_and_round_trips() {
+        let e = AuditEvent::AuthorityReducedUnopposed(AuthorityReducedUnopposedData {
+            task: "https://trusttasks.org/spec/acl/revoke/0.1".into(),
+            prior_role: "admin".into(),
+            prior_scopes: vec![],
+        });
+        round_trip(&e);
+        assert_eq!(e.variant_name(), "AuthorityReducedUnopposed");
+        assert_eq!(wire_value(&e)["type"], "AuthorityReducedUnopposed");
+        assert_eq!(wire_value(&e)["data"]["priorRole"], "admin");
+        assert_eq!(e.severity(), AuditSeverity::Critical);
     }
 
     #[test]

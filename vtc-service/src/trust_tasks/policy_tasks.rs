@@ -6,8 +6,8 @@
 //! | `policy/list/0.2` | `Admin` |
 //! | `policy/get/0.1` | `Admin` |
 //! | `policy/active/0.1` | `Admin` |
-//! | `policy/upsert/0.2` | `Admin` |
-//! | `policy/activate/0.1` | `Admin` |
+//! | `policy/upsert/0.2` | `Admin`, no context scope; for an authority purpose also a bound gesture + consent (VTI-VTC-022) |
+//! | `policy/activate/0.1` | `Admin`, no context scope; for an authority purpose also a bound gesture + consent (VTI-VTC-022) |
 //! | `vtc/policies/test/0.1` | `Admin` |
 //! | `did-management/did/register/0.1` | `Admin`, no context scope |
 //!
@@ -185,6 +185,16 @@ async fn handle_active(
     }
 }
 
+/// `policy/upsert/0.2` — store a new revision.
+///
+/// **Unrestricted administrator** only, where it used to be any admin: a
+/// revision replaces the Rego that decides role changes, removal, joins,
+/// recognition, git rights, rooms and vetter eligibility, so a scoped admin
+/// could rewrite the rules that bound it (`vtc-action-list.md` §8.1, hole 3).
+/// For a purpose that decides authority ([`PolicyPurpose::decides_authority`])
+/// it also takes the requester's gesture and another unrestricted
+/// administrator's consent, bound to this document (**VTI-VTC-022**: policy may
+/// only refuse, and changing the policy that decides authority is gated).
 async fn handle_upsert(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -194,12 +204,22 @@ async fn handle_upsert(
         Ok(p) => p,
         Err(reject) => return reject,
     };
+    if let Err(e) = actor.require_super_admin() {
+        return app_error_to_reject(&doc, &e);
+    }
     // The route's own body: its purpose binding through `ext`, and its refusal
     // of the selection hints this maintainer does not honour.
     let body: policy_admin::UploadBody = match parse_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
     };
+    let purpose = match policy_admin::precheck_upload(&body) {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
+    if let Err(refusal) = gate_authority_policy(state, &actor, &doc, purpose, "Replace").await {
+        return refusal;
+    }
     match policy_admin::upload_inner(state, &actor.did, body).await {
         Ok(response) => success_response(&doc, response),
         Err(AppError::Conflict(message)) => reject_with_code(
@@ -212,6 +232,39 @@ async fn handle_upsert(
     }
 }
 
+/// The second party a change to an authority-deciding policy takes
+/// (**VTI-VTC-022**), and nothing for any other purpose.
+async fn gate_authority_policy(
+    state: &AppState,
+    actor: &AuthClaims,
+    doc: &TrustTask<Value>,
+    purpose: PolicyPurpose,
+    verb: &str,
+) -> Result<(), TrustTaskOutcome> {
+    if !purpose.decides_authority() {
+        return Ok(());
+    }
+    let summary = format!(
+        "{verb} the {} policy, which decides authority in this community",
+        purpose.as_str()
+    );
+    super::acl_tasks::settle_consent_gate(
+        state,
+        actor,
+        doc,
+        crate::acl::admin_consent::Act::ChangeAuthorityPolicy(purpose),
+        &format!("policy:{}", purpose.as_str()),
+        &summary,
+        &summary,
+    )
+    .await
+}
+
+/// `policy/activate/0.1` — put a revision in force for its purpose.
+///
+/// Unrestricted administrator only, and for a purpose that decides authority
+/// the gesture and another unrestricted administrator's consent too — the same
+/// gate as [`handle_upsert`], for the same reason (**VTI-VTC-022**).
 async fn handle_activate(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -221,6 +274,9 @@ async fn handle_activate(
         Ok(p) => p,
         Err(reject) => return reject,
     };
+    if let Err(e) = actor.require_super_admin() {
+        return app_error_to_reject(&doc, &e);
+    }
     if payload.context_id.is_some() {
         return app_error_to_reject(
             &doc,
@@ -248,21 +304,32 @@ async fn handle_activate(
                 );
             }
         };
-    match policy_admin::activate_inner(state, &actor.did, id, Some(purpose)).await {
-        Ok(response) => success_response(&doc, response),
-        Err(AppError::NotFound(message)) => reject_with_code(
-            &doc,
+    let refuse = |doc: &TrustTask<Value>, e: AppError| match e {
+        AppError::NotFound(message) => reject_with_code(
+            doc,
             extended_code(policy_activate::error_codes::NOT_FOUND.code),
             message,
             None,
         ),
-        Err(AppError::Conflict(message)) => reject_with_code(
-            &doc,
+        AppError::Conflict(message) => reject_with_code(
+            doc,
             extended_code(policy_activate::error_codes::ALREADY_ACTIVE.code),
             message,
             None,
         ),
-        Err(e) => app_error_to_reject(&doc, &e),
+        e => app_error_to_reject(doc, &e),
+    };
+    // The stored revision's purpose decides the gate, not the one named.
+    let decides = match policy_admin::precheck_activate(state, id, Some(purpose)).await {
+        Ok(p) => p,
+        Err(e) => return refuse(&doc, e),
+    };
+    if let Err(refusal) = gate_authority_policy(state, &actor, &doc, decides, "Activate").await {
+        return refusal;
+    }
+    match policy_admin::activate_inner(state, &actor.did, id, Some(purpose)).await {
+        Ok(response) => success_response(&doc, response),
+        Err(e) => refuse(&doc, e),
     }
 }
 
