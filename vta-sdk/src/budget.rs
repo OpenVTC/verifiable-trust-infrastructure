@@ -45,6 +45,18 @@ use crate::trust_tasks;
 /// is the whole defect this module was written for.
 pub const TSP_REPLY_TIMEOUT_SECS: u64 = 30;
 
+/// How long the VTA keeps re-sending a TSP reply that a rate limiter refused
+/// (HTTP 429) before giving up on it.
+///
+/// The reply is the only copy of the answer: a task whose response carries a
+/// secret (`provision/integration`'s sealed bundle) is answered "already
+/// performed" on a retry, never with the bundle again, so a dropped reply turns
+/// a completed operation into one the caller cannot finish. The authoritative
+/// copy, read by `vti_common::tsp_route::send_reply`, and part of
+/// [`relay_worst_case_secs`] because it is spent after the work is done, on the
+/// caller's clock.
+pub const TSP_REPLY_RATE_LIMIT_RETRY_SECS: u64 = 20;
+
 /// Reply-awaiting hops a relayed task may spend at the VTA: the first send,
 /// then the §7.2.2 self-repair resend after the relationship is re-formed.
 ///
@@ -86,7 +98,7 @@ const _: () = assert!(
 /// The longest the VTA can take on a task it relays onward before answering.
 #[must_use]
 pub const fn relay_worst_case_secs() -> u64 {
-    RELAY_HOPS * TSP_REPLY_TIMEOUT_SECS + REFORM_MARGIN_SECS
+    RELAY_HOPS * TSP_REPLY_TIMEOUT_SECS + REFORM_MARGIN_SECS + TSP_REPLY_RATE_LIMIT_RETRY_SECS
 }
 
 /// The smallest client budget that can outlast [`relay_worst_case_secs`] — i.e.
