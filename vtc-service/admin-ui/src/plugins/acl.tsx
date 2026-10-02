@@ -58,7 +58,12 @@ const fetchAcl = (scope: string | null): Promise<AclListResponse> =>
 const createAcl = (req: AclGrantRequest, confirmGesture: ConfirmGesture): Promise<AclEntry> =>
   explainConsent(grantAcl(req, confirmGesture));
 
-const deleteAcl = (subject: string): Promise<void> => revokeAcl(subject);
+// Revoking an administrator needs a passkey gesture bound to this one
+// revocation, and revoking another unrestricted one a third administrator's
+// consent (VTI-APV-019). `revokeAcl` asks for the first and explains the
+// second; any other entry is removed with neither.
+const deleteAcl = (subject: string, confirmGesture: ConfirmGesture): Promise<void> =>
+  revokeAcl(subject, confirmGesture);
 
 // A label edit is not a role change, so it goes through `acl/grant`
 // re-stating the entry with its existing role — `acl/change-role` is
@@ -130,7 +135,7 @@ export function Acl() {
   });
 
   const revoke = useMutation({
-    mutationFn: deleteAcl,
+    mutationFn: (subject: string) => deleteAcl(subject, gestureFromConfirm(confirm)),
     onSuccess: (_, did) => {
       toast.push("success", `Revoked ACL entry for ${did}`);
       void queryClient.invalidateQueries({ queryKey: ["acl"] });

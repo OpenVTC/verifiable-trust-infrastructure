@@ -15,7 +15,6 @@ import {
   setSessionExpiry,
   watchSessionDeadline,
 } from "@/lib/session";
-
 // `GET /health` is unauth and deliberately minimal: it carries only
 // `{status, version, vtc_did}`. The `vta_did` / `mediator_url` /
 // `mediator_did` infrastructure detail moved to the administrator's signed
@@ -41,7 +40,6 @@ export interface HealthResponse {
 // aliases instead, so a response change fails to compile rather than arriving
 // as `undefined`.
 import type {
-  ConfigPatchResponse,
   EffectiveConfig,
   DiagnosticsResponse,
   RegistryRecordsResponse,
@@ -824,30 +822,13 @@ export const fetchWhoami = (): Promise<WhoamiResponse> =>
 // folds the overlay onto the live `AppConfig`.
 
 const CONFIG_SHOW_TASK = "https://trusttasks.org/spec/config/show/0.1";
-const CONFIG_PATCH_TASK = "https://trusttasks.org/spec/config/patch/0.1";
-const CONFIG_RELOAD_TASK = "https://trusttasks.org/spec/config/reload/0.1";
 
 export const fetchEffectiveConfig = (): Promise<EffectiveConfig> =>
   postSignedRead<EffectiveConfig>(CONFIG_SHOW_TASK, {});
 
-/**
- * Write config overrides and put them into effect.
- *
- * Returns the PATCH response so a caller can surface `rejected` — the
- * daemon validates bounds server-side, so a value the console let through
- * can still come back refused, and the reason is worth showing.
- */
-export async function saveConfig(
-  overrides: Record<string, unknown>,
-): Promise<ConfigPatchResponse> {
-  const result = await postSignedTrustTask<ConfigPatchResponse>(CONFIG_PATCH_TASK, {
-    overrides,
-  });
-  if (result.applied.length > 0) {
-    await postSignedTrustTask<unknown>(CONFIG_RELOAD_TASK, {});
-  }
-  return result;
-}
+// `saveConfig` (`config/patch` + `config/reload`) lives in `lib/config-api.ts`:
+// a patch may need a passkey gesture (VTI-APV-020), and the step-up path
+// (`lib/signed-act.ts`) sends through this module, so it cannot live here.
 
 /** Revoke the server-side session and clear browser cookies. Sign-out ends the
  *  cookie session, which no Trust Task describes, so it carries no task.

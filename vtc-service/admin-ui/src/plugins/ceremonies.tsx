@@ -20,6 +20,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { postSignedRead } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso } from "@/lib/format";
+import { gestureFromConfirm } from "@/lib/signed-act";
 import {
   type PolicyRow,
   type Purpose,
@@ -714,6 +715,9 @@ function PolicyManager({
 }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
+  // Changing a policy that decides authority takes a passkey gesture and
+  // another unrestricted administrator's consent (VTI-VTC-022).
+  const confirmGesture = gestureFromConfirm(confirm);
   const [showUpload, setShowUpload] = useState(false);
   const [editing, setEditingState] = useState(false);
   const setEditing = (v: boolean) => {
@@ -734,7 +738,7 @@ function PolicyManager({
   });
 
   const activate = useMutation({
-    mutationFn: (id: string) => activatePolicy(id, purpose),
+    mutationFn: (id: string) => activatePolicy(id, purpose, confirmGesture),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["policies", purpose] });
       void qc.invalidateQueries({ queryKey: ["active-policy", purpose] });
@@ -742,7 +746,7 @@ function PolicyManager({
   });
 
   const saveVisual = useMutation({
-    mutationFn: (rego: string) => uploadPolicy({ purpose, regoSource: rego }),
+    mutationFn: (rego: string) => uploadPolicy({ purpose, regoSource: rego }, confirmGesture),
     onSuccess: () => {
       setEditing(false);
       void qc.invalidateQueries({ queryKey: ["policies", purpose] });
@@ -754,11 +758,14 @@ function PolicyManager({
   // only ever grows; the active pointer always moves forward.
   const rollback = useMutation({
     mutationFn: async (row: PolicyRow) => {
-      const created = await uploadPolicy({
-        purpose,
-        regoSource: row.module,
-      });
-      await activatePolicy(created.id, purpose);
+      const created = await uploadPolicy(
+        {
+          purpose,
+          regoSource: row.module,
+        },
+        confirmGesture,
+      );
+      await activatePolicy(created.id, purpose, confirmGesture);
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["policies", purpose] });
@@ -1030,8 +1037,9 @@ function UploadPolicyForm({
   onDone: () => void;
 }) {
   const [source, setSource] = useState("");
+  const confirmGesture = gestureFromConfirm(useConfirm());
   const mutation = useMutation({
-    mutationFn: () => uploadPolicy({ purpose, regoSource: source }),
+    mutationFn: () => uploadPolicy({ purpose, regoSource: source }, confirmGesture),
     onSuccess: onDone,
   });
 
