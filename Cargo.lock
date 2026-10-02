@@ -393,9 +393,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator"
-version = "0.35.0"
+version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38d09f654aa012ad99bb0cec33b6d65f3901fb2a593b8f82e3776ed3f7ae2552"
+checksum = "ee7ba9df7e8b778ec734bcf1ac6a0b95c10ee951eab57a26477c7a6627f7dfa7"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -591,9 +591,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-test-mediator"
-version = "0.16.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d1c60550a0b215a5b3548084f53c881ecc744eae8cf816967d0038a4ce84687"
+checksum = "2252835022b8282f497ea61e788c7d461d4764621060a39d5c3dd88bb3360f02"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
