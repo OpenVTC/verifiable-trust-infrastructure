@@ -1251,8 +1251,8 @@ more do. Use `--no-fail-fast` before concluding anything about scope, and
 before believing a fix is complete.
 
 **Reproduce what CI runs, not what seems equivalent.** CI's workspace job is
-`cargo test --workspace --exclude vtc-service --exclude vtc-client` — default
-features. Chasing the same failure under `--all-features` finds real but
+`cargo nextest run --workspace --exclude vtc-service --exclude vtc-client`
+plus `cargo test … --doc` — default features. Chasing the same failure under `--all-features` finds real but
 unrelated breakage (a stack overflow in `mock_vta`, nine failures elsewhere)
 that CI never sees, and none of it is the thing that is red.
 
@@ -1267,11 +1267,42 @@ So, before pushing a change that could touch another crate's tests, run what CI
 runs:
 
 ```sh
-cargo test --workspace --exclude vtc-service --exclude vtc-client --no-fail-fast
-cargo test -p vtc-service -p vtc-client          # a separate CI job
+cargo nextest run --workspace --exclude vtc-service --exclude vtc-client
+cargo test --workspace --exclude vtc-service --exclude vtc-client --doc
+cargo nextest run -p vtc-service -p vtc-client   # a separate CI job
+cargo test -p vtc-service -p vtc-client --doc
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
+
+**Tests run under nextest; doctests do not.** `cargo install cargo-nextest`
+(or the prebuilt binary from <https://nexte.st>). `.config/nextest.toml` sets
+`fail-fast = false` — the `--no-fail-fast` rule above, by default — and kills
+a test after 5 minutes, so a hang ends with its name. nextest runs each test
+in its own process, all binaries in one pool: `cargo test` runs one binary at
+a time, and vtc-service's tests serialise on process-global locks, which kept
+its two big binaries under one core. nextest never runs doctests, so the
+`--doc` lines are not optional. `cargo test` still works and still means the
+same thing; it is only slower.
+
+**Dependencies build at `opt-level = 2`** (`[profile.dev.package."*"]`;
+workspace crates stay at 0, so an edit-test loop recompiles nothing extra).
+At 0 the suites spent their CPU in other people's code — regorus re-parsing
+the default policy bundle for every vtc-service test, Argon2id at 64 MiB in
+vta-backup (89s of one CI run). The first build after a `Cargo.lock` change
+pays for the optimisation once.
+
+**On macOS the vtc-service suites are slow for a reason neither change
+touches.** Measured on an 18-core Mac (load average 3–7 from other builds;
+treat as indicative): `cargo test -p vtc-service --lib` 1085s / 1111s at
+opt-level 0, 984s at 2, 893s under nextest; the `it` binary 1434s / 2689s.
+Linux CI runs the same lib binary in ~141s. A sampled test spends 2.9s wall
+for 0.5s of CPU, nearly all of it in `fcntl(F_FULLFSYNC)` — `lsm_tree`'s
+`fsync_directory` while `build_test_vtc` creates its twenty-odd fjall
+keyspaces. `File::sync_all` is `F_FULLFSYNC` on macOS, a whole-device cache
+flush, so parallel test processes queue on the disk rather than the CPU. To
+iterate on vtc-service locally, filter (`cargo nextest run -p vtc-service
+<substring>`) rather than run the suite.
 
 ## A merge is not evidence that anything passed
 

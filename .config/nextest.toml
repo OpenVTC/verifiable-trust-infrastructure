@@ -1,0 +1,39 @@
+# cargo-nextest configuration — https://nexte.st/docs/configuration/
+#
+# nextest runs every test in its own process, all binaries' tests in one
+# pool, `num-cpus` at a time. `cargo test` runs one test binary at a time and
+# vtc-service's two big binaries keep well under one core busy (their tests
+# serialise on in-process locks), so the pool is where the time goes back.
+#
+# Doctests do not run under nextest. CI runs `cargo test --doc` beside it.
+
+[profile.default]
+# The workspace's rule is `--no-fail-fast`: one failure must not hide the next
+# sixty-seven (see "Running the tests: green and wrong" in CLAUDE.md).
+fail-fast = false
+# A test still running after 60s is reported as SLOW; after 5 periods (5 min) it
+# is killed and reported as a timeout, so a hang ends with a name, not a job
+# ceiling.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+# The R1 regression probes build twenty fresh VTCs each, in a loop, by design.
+# Under a full parallel run that outlasts the 5-minute budget above, which is a
+# property of the test rather than a hang — give them their own.
+[[profile.default.overrides]]
+filter = 'package(vtc-service) & test(/::r1_probes::/)'
+slow-timeout = { period = "120s", terminate-after = 10 }
+
+[profile.ci]
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 5 }
+# Print a failure's output where it happens and again in the summary at the end,
+# which is where a reader of a long CI log starts.
+failure-output = "immediate-final"
+# A passing test's lines are noise in CI; failures, slow tests and the summary
+# are not.
+status-level = "slow"
+final-status-level = "slow"
+
+[[profile.ci.overrides]]
+filter = 'package(vtc-service) & test(/::r1_probes::/)'
+slow-timeout = { period = "120s", terminate-after = 10 }
