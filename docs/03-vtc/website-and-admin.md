@@ -330,7 +330,9 @@ count bubble while something waits:
   item in **Actions**; deciding it in either place closes it in both.
 
 Both are fetched at sign-in, whenever the tab regains focus or becomes
-visible, and every 60 s. The dashboard opens with a **Members** tile (current
+visible, whenever the live channel says they moved (below), and on a poll —
+every 60 s while the console is offline, every 5 minutes while it is live. The
+dashboard opens with a **Members** tile (current
 members, for `vtc.members.manage`) and a **Join requests** tile (the badge's
 pending count, for `vtc.join.decide`), each linking to its screen and hidden
 from a viewer without the capability.
@@ -352,6 +354,76 @@ schemas, the console's `list-limits.test.ts` census checks every call site,
 and the signer refuses an over-limit page before signing. A page size over
 the maximum is refused by the VTC as `malformedRequest`; that is how the
 admission-criteria page read nothing until #1921.
+
+### Live updates, and polling as the fallback
+
+A signed-in console holds **one live channel** per session:
+`vtc/admin/events/subscribe/0.1`, sent as a signed document to the ordinary
+`POST /v1/trust-tasks` with `Accept: text/event-stream, application/json;q=0.5`
+and answered as a **streamed response** (HTTPS binding 0.3 §2.1): `200
+text/event-stream`, whose first event is the signed `#response` and whose later
+events are `vtc/admin/events/event/0.1` **hints**. There is no other route — no
+`GET`, no WebSocket — and nothing about the door changes for any other task.
+
+**A hint is never data.** It names a topic, when it changed, and for the three
+badge topics the viewer's count:
+
+| Topic | Re-reads | `count` | Who hears it |
+|---|---|---|---|
+| `actions` | the Actions page and its badge | `waitingForMe` | every administrator |
+| `acknowledgements` | the operator-write banner (the badge read) | open acknowledge items owed | every administrator |
+| `joinRequests` | the Join requests page, badge and tile | pending requests — the list's own `totalEstimate` | every administrator |
+| `members` | the Members page and tile | — | every administrator |
+| `singleAdminMode` | the single-administrator banner | — | every administrator |
+| `config` | the configuration and profile screens | — | holders of `vtc.config.admin` |
+
+The console reacts to a hint only by invalidating the react-query keys of that
+topic's own signed read, so authorization stays on every read: a hint can
+neither leak a record nor grant one, and a forged hint costs one unnecessary
+request. A hint never carries a record, a record id or a DID — the community's
+integration tests assert the shape of every one it sends. Within a count topic,
+a change the viewer's read would not show them sends no hint (the VTC compares
+a digest of what that read shows). Who hears a topic is decided by exactly the
+check its read makes — one table in the VTC (`admin_events::read_capability`)
+that the read handlers gate on too — so whoever the community would answer on
+the read gets its hints, and nobody else.
+
+**Live or offline.** The nav shows **Live** only while bytes are arriving —
+an event, or the heartbeat comment the VTC sends at least every
+`heartbeatSeconds` (25 by default). Silence for twice that, an ended stream or
+any failure shows **Polling** at once, re-reads every topic, and the badge and
+tile polls go back to 60 s. The console re-subscribes with a **freshly signed**
+document carrying `since` (the last resume token it saw), backing off
+exponentially with jitter (1 s doubling to 60 s, any `retry:` the stream sent
+as the floor). `resumed: true` means the VTC replayed a hint for every topic
+that changed while it was away; `resumed: false` — an unknown, expired or
+another caller's token, or a VTC that restarted — means the console re-reads
+everything, and is never an error. A refusal that will not change this session
+(`streamUnavailable`, `notAdministrator`, `permissionDenied`, `unsupportedType`)
+leaves it polling; `tooManyStreams` backs off and tries again.
+
+**What the VTC holds to.** A refusal is the ordinary JSON `trust-task-error`
+and never opens a stream; once the `#response` is written nothing but hints
+and heartbeats follow, and the stream simply ends (no reason, no error) when:
+the client goes; the service stops; the authority it was opened on lapses — the
+signer's ACL entry, the console key's delegation, or the document's own
+`expiresAt`; an hour passes; a write stalls for twice the heartbeat; or the
+viewer's readable topics shrink (re-checked on every ACL change, before every
+hint, and at least once a heartbeat). Each end costs one freshly signed
+subscribe, which re-authorizes everything. A subscribe is accepted only inside
+a five-minute `issuedAt` window, and a replayed one opens nothing (`204`).
+`Last-Event-ID` is only a cross-check: one that disagrees with `since` is
+`malformedRequest`. Hints are coalesced to at most one per topic per second.
+
+Limits: **5** concurrent streams per administrator (each console key counts
+against the administrator it acts for — several tabs or devices) and **256**
+in all; past either, `tooManyStreams` (retryable). Resumption history is kept
+in memory for 10 minutes or 4096 changes, whichever is shorter.
+
+Proxies in front of the VTC must not buffer `text/event-stream` responses (the
+VTC sends `X-Accel-Buffering: no` for nginx) and must allow an idle read of at
+least twice the heartbeat. `cnm actions watch` prints the same hints on a
+terminal.
 
 Operators wanting a different UX point `admin_ui.mode = "external"`
 at their own origin; that knob skips the embedded SPA and adds the

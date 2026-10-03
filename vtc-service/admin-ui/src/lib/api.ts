@@ -537,6 +537,26 @@ async function signTrustTask(
 }
 
 /**
+ * A freshly signed document of `typeUri`, from this browser's console key,
+ * addressed to this community — for a caller that sends it itself rather than
+ * through [`postSignedDocument`]: the live console channel
+ * (`lib/live-events.ts`), whose answer is a stream, not one document. A fresh
+ * `id`, `issuedAt` and proof every call, which is what a re-subscribe needs
+ * (HTTPS binding 0.3 §2.1.3).
+ */
+export function signedDocument(
+  typeUri: string,
+  payload: unknown,
+): Promise<SignedTrustTaskDocument> {
+  return signTrustTask(typeUri, payload);
+}
+
+/** The CSRF token the signed door's double-submit check wants, if set. */
+export function csrfToken(): string | null {
+  return csrfTokenFromCookie();
+}
+
+/**
  * Post an already-signed document to `POST /v1/trust-tasks` and return its
  * `#response` payload. A refusal throws an [`ApiError`] carrying the
  * `trust-task-error`'s `code` and `details`.

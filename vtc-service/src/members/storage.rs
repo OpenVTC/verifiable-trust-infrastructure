@@ -54,7 +54,11 @@ pub async fn store_member(ks: &KeyspaceHandle, member: &Member) -> Result<(), Ap
         String::from_utf8(member_key(&member.did)).expect("member key is ASCII"),
         member,
     )
-    .await
+    .await?;
+    // Every member write — admission, edit, departure — passes here or
+    // through `delete_member` (`crate::admin_events`).
+    crate::admin_events::notify(crate::admin_events::Topic::Members);
+    Ok(())
 }
 
 static EDIT_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -96,7 +100,9 @@ pub async fn edit_member(
 
 /// Delete a member by DID. Idempotent.
 pub async fn delete_member(ks: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
-    ks.remove(member_key(did)).await
+    ks.remove(member_key(did)).await?;
+    crate::admin_events::notify(crate::admin_events::Topic::Members);
+    Ok(())
 }
 
 /// Return every member. Whole-keyspace walk — use

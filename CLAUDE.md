@@ -1078,6 +1078,50 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vtc-service/src/admin_actions/`.
 - **Docs**: `docs/03-vtc/admin-access.md`, `docs/05-design-notes/vtc-admin-roles.md`.
 
+### VTC admin console live channel (`vtc/admin/events/*`)
+- **What**: An open admin console learns *when* to re-read — the action list,
+  acknowledgements, join requests, members, single-administrator mode, the
+  configuration — without polling every read on a timer. One stream per
+  console session; polling stays the fallback.
+- **Transport**: HTTPS binding 0.3 §2.1 **streamed responses** — the signed
+  `vtc/admin/events/subscribe/0.1` document POSTed to the ordinary
+  `/v1/trust-tasks` door with `Accept: text/event-stream, application/json;q=0.5`,
+  answered `200 text/event-stream` with the signed `#response` as the first
+  event and `vtc/admin/events/event/0.1` documents after it (one per `data:`
+  line, no `event:` field, SSE `id` = resume token, heartbeats as comments).
+  Why SSE and not TSP/DIDComm: the console is a browser holding only a console
+  key, and no other binding defines a streamed response — a subscribe arriving
+  any other way is `streamUnavailable`. Why `fetch` and not `EventSource`:
+  every (re)connection must be a freshly signed POST; resumption is in-band
+  `since` only (`Last-Event-ID` is a cross-check, mismatch → `malformedRequest`).
+- **Hints only — the invariant**: an event carries `topic`, `at`,
+  `resumeToken` and, on `actions` / `acknowledgements` / `joinRequests`, the
+  recipient's `count`. Never a record, a record id or a DID, in any member
+  including `ext`. The console re-fetches the topic's own signed read, so
+  authorization stays on every read and the stream needs no model of its own.
+  Do not "optimise" a hint into carrying the changed row: that is the moment
+  the stream needs per-record authorization and diverges from the reads.
+- **Invariants to preserve**: refusals are JSON and open no stream; nothing
+  but hints and heartbeats after the `#response` (never a `trust-task-error`);
+  standing is re-checked on every ACL change, before every hint and once a
+  heartbeat, and a shrink **ends** the stream rather than dropping a topic; the
+  stream ends no later than the signer's ACL entry / console-key delegation /
+  document `expiresAt`, and within an hour; caps 5 per administrator, 256 in
+  all (`tooManyStreams`); the subscribe's response is never recorded for
+  redelivery (a replay answers `204`); the bus is fed from storage seams
+  (action save/delete, join-request store/delete, member store/delete, ACL
+  store/delete, config override and profile writes) and carries no row data;
+  no lock across an await (R1.3); the console's live status is derived from
+  bytes arriving, never latched (R6.2).
+- **Code**: `vtc-service/src/admin_events/` (bus, tokens, caps, standing,
+  stream), `vtc-service/src/trust_tasks/event_tasks.rs` (the subscribe
+  handler), `vtc-service/src/routes/trust_tasks.rs` (Accept negotiation, the
+  stream slot), `admin-ui/src/lib/{live-events,use-live-events}.ts`,
+  `admin-ui/src/components/LiveIndicator.tsx`, `cnm-cli/src/actions_watch.rs`
+  (`cnm actions watch`).
+- **Docs**: `docs/03-vtc/website-and-admin.md` (*Live updates, and polling as
+  the fallback*).
+
 ### VTC git namespaces (`git-ns/*`)
 - **What**: A VTC governs repositories on the forges it has bound — who may
   create them, who owns each, whose commits its CI check accepts — and

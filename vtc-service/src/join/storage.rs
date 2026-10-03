@@ -70,7 +70,11 @@ pub async fn store_join_request(
         String::from_utf8(key(request.id)).expect("key is ASCII"),
         request,
     )
-    .await
+    .await?;
+    // Created, decided, withdrawn, supplemented: every change to a request is
+    // a store here (`crate::admin_events`).
+    crate::admin_events::notify(crate::admin_events::Topic::JoinRequests);
+    Ok(())
 }
 
 /// Delete a join request and the vetting facts recorded for it.
@@ -78,7 +82,9 @@ pub async fn delete_join_request(ks: &KeyspaceHandle, id: Uuid) -> Result<(), Ap
     ks.remove(vetting_facts_key(id)).await?;
     ks.remove(credential_resends_key(id)).await?;
     ks.remove(criterion_key(id)).await?;
-    ks.remove(key(id)).await
+    ks.remove(key(id)).await?;
+    crate::admin_events::notify(crate::admin_events::Topic::JoinRequests);
+    Ok(())
 }
 
 /// Key prefix of the criterion record kept for a join request. Distinct from

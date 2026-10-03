@@ -4,8 +4,10 @@
 // read (a console key may sign reads).
 //
 // The count is fetched at sign-in, whenever the tab regains focus or becomes
-// visible, and every 60 s while the console is open. It is a hint, not the
-// source of truth: the Actions page reads the list itself.
+// visible, whenever the live channel hints that it moved
+// (`lib/use-live-events.ts`), and on a poll: every 60 s while that channel is
+// offline, every 5 minutes while it is live. It is a hint, not the source of
+// truth: the Actions page reads the list itself.
 //
 // The same read carries the list's `ext["org.openvtc"]` — the operator writes
 // waiting for this administrator's acknowledgement and the cooling-offs
@@ -16,6 +18,7 @@ import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { fetchActionsAttention, type ActionsAttention } from "./actions-api";
+import { useLivePollMs } from "./use-live-events";
 
 /** The Actions plugin's id — the shell draws its nav badge. */
 export const ACTIONS_PLUGIN_ID = "actions";
@@ -23,7 +26,8 @@ export const ACTIONS_PLUGIN_ID = "actions";
 /** The react-query key the badge count lives under. */
 export const WAITING_COUNT_KEY = ["actions-waiting"] as const;
 
-/** How often the count is polled while signed in. */
+/** How often the count is polled while signed in and the live channel is
+ *  offline (`OFFLINE_POLL_MS`; while live, `LIVE_POLL_MS`). */
 export const WAITING_POLL_MS = 60_000;
 
 /** The `(N) ` prefix the tab title carries. */
@@ -104,11 +108,12 @@ export function useWaitingCount(enabled: boolean): number {
  * Critical banners show. Empty while unknown or on any failure.
  */
 export function useActionsAttention(enabled: boolean): ActionsAttention {
+  const pollMs = useLivePollMs();
   const query = useQuery({
     queryKey: WAITING_COUNT_KEY,
     queryFn: fetchActionsAttention,
     enabled,
-    refetchInterval: enabled ? WAITING_POLL_MS : false,
+    refetchInterval: enabled ? pollMs : false,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: false,
     staleTime: 0,

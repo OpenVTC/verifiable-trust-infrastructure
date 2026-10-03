@@ -762,6 +762,11 @@ const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
     // (VTI-VTC-023, trust-tasks-tf #719). The console only reads it, to pin
     // the summary template; a document of this type answers `unsupportedType`.
     "https://trusttasks.org/spec/vtc/operator/offline-write/0.1",
+    // A streamed document the console receives on its live channel and never
+    // sends: hints the VTC writes after the subscribe's `#response`
+    // (`crate::admin_events`). A document of this type answers
+    // `unsupportedType`.
+    "https://trusttasks.org/spec/vtc/admin/events/event/0.1",
 ];
 
 /// Document types the console sends that the *spine* dispatches rather than
@@ -783,6 +788,9 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2",
     // An operator's offline write, acknowledged (VTI-VTC-023).
     "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2",
+    // The console's live channel (`trust_tasks::event_tasks`): its success is
+    // a streamed response on this door (HTTPS binding 0.3 §2.1).
+    "https://trusttasks.org/spec/vtc/admin/events/subscribe/0.1",
     // Custom administrative roles (`trust_tasks::role_tasks`): the Roles
     // page's reads, and the definitions it sends for approval.
     "https://trusttasks.org/spec/vtc/roles/list/0.1",

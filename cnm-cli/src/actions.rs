@@ -1,5 +1,6 @@
-//! `cnm actions {list,show,cancel}` — the community's administrator action
-//! list (`docs/05-design-notes/vtc-action-list.md`).
+//! `cnm actions {list,show,cancel,watch}` — the community's administrator
+//! action list (`docs/05-design-notes/vtc-action-list.md`), and its live
+//! channel (`actions_watch`).
 //!
 //! An operation that needs other administrators' approval is parked by the VTC
 //! as an action and completes itself on the approval that reaches its
@@ -37,6 +38,18 @@ pub enum ActionsCommands {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Stay connected and print a line whenever something you administer
+    /// changes — which topic, and for actions, acknowledgements and join
+    /// requests your count. Never what changed: read the topic for that.
+    /// HTTPS only (`vtc/admin/events/subscribe/0.1`); Ctrl-C to stop.
+    Watch {
+        /// Topics to watch (repeatable). Default: every topic you may read.
+        #[arg(long = "topic", value_enum)]
+        topics: Vec<crate::actions_watch::WatchTopic>,
+        /// One JSON object per line instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -64,6 +77,11 @@ pub async fn run(
     target: &VtcTarget,
     transport: TransportChoice,
 ) -> CliResult<()> {
+    // The live channel is a streamed HTTPS response, signed per subscribe: it
+    // needs no authenticated session, and no other transport can carry it.
+    if let ActionsCommands::Watch { topics, json } = &command {
+        return crate::actions_watch::watch(keyring_key, target, topics, *json).await;
+    }
     let vtc = vtc::connect_for_tasks(keyring_key, target, transport).await?;
     let result = async {
         match command {
@@ -113,6 +131,7 @@ pub async fn run(
                 );
                 Ok(())
             }
+            ActionsCommands::Watch { .. } => unreachable!("handled before connecting"),
         }
     }
     .await;

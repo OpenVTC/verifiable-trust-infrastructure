@@ -261,6 +261,13 @@ async fn handle_members_list(
     if let Err(reject) = admin_with::<members_list::Payload>(state, ctx, &doc).await {
         return reject;
     }
+    // Whatever this read demands, the live `members` topic demands too
+    // (`admin_events::read_capability`, one table for both).
+    if let Some(cap) = crate::admin_events::read_capability(crate::admin_events::Topic::Members)
+        && let Err(reject) = super::capable_signer(state, ctx, &doc, cap, None).await
+    {
+        return reject;
+    }
     let query: crate::routes::members::read::ListMembersQuery = match parse_payload(&doc) {
         Ok(q) => q,
         Err(reject) => return reject,
@@ -345,6 +352,14 @@ async fn handle_join_requests_list(
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     if let Err(reject) = admin_with::<join_requests_list::Payload>(state, ctx, &doc).await {
+        return reject;
+    }
+    // Whatever this read demands, the live `joinRequests` topic demands too
+    // (`admin_events::read_capability`, one table for both).
+    if let Some(cap) =
+        crate::admin_events::read_capability(crate::admin_events::Topic::JoinRequests)
+        && let Err(reject) = super::capable_signer(state, ctx, &doc, cap, None).await
+    {
         return reject;
     }
     let query: crate::routes::join_requests::read::ListJoinRequestsQuery = match parse_payload(&doc)
