@@ -75,6 +75,10 @@ mod acl_tasks;
 // The administrator action list: `vtc/admin/actions/*` and the
 // `task-consent/decision` that completes a parked operation (VTI-APV-017).
 pub(crate) mod action_tasks;
+// The administrator console's live channel: `vtc/admin/events/subscribe`,
+// whose success opens an event stream on the HTTPS door
+// (`crate::admin_events`).
+pub(crate) mod event_tasks;
 // The administrator's operational verbs: the registry reconciler, the audit
 // log, the runtime configuration, admin invites and sessions.
 pub(crate) mod admin_tasks;
@@ -801,6 +805,7 @@ async fn dispatch_trust_task_validated(
             || step_up_approver_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
             || admin_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
             || community_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
+            || event_tasks::UNRECORDED_RESPONSES.contains(&type_uri.as_str())
         {
             None
         } else {
@@ -859,7 +864,7 @@ async fn dispatch_trust_task_validated(
 /// `issuedAt` (`vta_sdk::trust_task_sign::build_unsigned`, and
 /// `VtaClient::dispatch_trust_task` for every transport), and 52 of the 95
 /// specifications this service binds declare the member REQUIRED in any case.
-fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
+pub(super) fn freshness_policy() -> trust_tasks_rs::FreshnessPolicy {
     // The window this node also advertises in its `trust-task-discovery/0.3`
     // answer (VTI-TRN-047): one value, so the two cannot drift.
     vti_common::trust_task::acceptance::VTI_ACCEPTANCE_WINDOW
@@ -1275,6 +1280,9 @@ async fn dispatch_typed(
         crate::acl::admin_consent::DECISION_TYPE
         | crate::acl::admin_consent::DECISION_V0_2_TYPE => {
             Box::pin(action_tasks::handle_decision(state, ctx, doc)).await
+        }
+        event_tasks::SUBSCRIBE_TYPE => {
+            Box::pin(event_tasks::handle_subscribe(state, ctx, doc)).await
         }
         uri if action_tasks::URIS.contains(&uri) => {
             match Box::pin(action_tasks::dispatch(state, ctx, doc, uri)).await {
@@ -2684,6 +2692,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     action_tasks::SHOW_V0_2_TYPE,
     action_tasks::CANCEL_V0_2_TYPE,
     action_tasks::ACKNOWLEDGE_V0_2_TYPE,
+    // The console's live channel (hints only): its success opens an event
+    // stream, which only the HTTPS door can carry — every other transport is
+    // answered `streamUnavailable`.
+    event_tasks::SUBSCRIBE_TYPE,
     // Members' step-up passkeys: the invite, its redemption, an
     // administrator's revocation for the member, and an administrator's
     // listing of them. No REST route serves them.

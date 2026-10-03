@@ -905,6 +905,25 @@ fn table() -> Vec<Conformance> {
             json!({ "actionId": ACTION_ID }),
             json!({ "action": sample_offline_write() })
         ),
+        // ─── the console's live channel ──────────────────────────────
+        // The response is the first event of the stream it opens; the
+        // hints after it are `event/0.1` documents (`admin_events.rs`
+        // holds their shape against that schema).
+        checked!(
+            s::admin::events::subscribe::v0_1::Payload,
+            s::admin::events::subscribe::v0_1::Response,
+            json!({
+                "topics": ["actions", "acknowledgements", "joinRequests", "members",
+                           "singleAdminMode", "config"],
+                "since": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            }),
+            json!({
+                "topics": ["actions", "acknowledgements", "members", "singleAdminMode"],
+                "heartbeatSeconds": 25,
+                "resumed": true,
+                "resumeToken": "e1.AAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBB",
+            })
+        ),
         // ─── custom administrative roles ─────────────────────────────
         // Responses rendered by the handler's own renderers.
         checked!(

@@ -26,6 +26,7 @@ mod action_list_queues;
 mod admin_authority_stopgaps;
 mod admin_bootstrap;
 mod admin_config;
+mod admin_events;
 mod admin_invites;
 mod admin_passkeys;
 mod admin_roles;

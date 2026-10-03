@@ -5,6 +5,7 @@ import { ChevronsLeft, ChevronsRight, Menu, RefreshCw, X } from "lucide-react";
 
 import { getPlugins, subscribePlugins, type PluginManifest } from "@/plugin-api";
 import { BreakGlassBanner } from "@/components/BreakGlassBanner";
+import { LiveIndicator } from "@/components/LiveIndicator";
 import { PluginHost } from "@/components/PluginHost";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import {
@@ -35,6 +36,7 @@ import {
   usePendingJoinRequests,
 } from "@/lib/community-counts";
 import { pluginVisible } from "@/lib/viewer";
+import { useLiveEvents } from "@/lib/use-live-events";
 import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { useToast } from "@/lib/toast";
@@ -202,6 +204,12 @@ export default function App() {
       !pathname.startsWith("/install") &&
       mayCount(probe.data?.capabilities, JOIN_DECIDE_CAP),
   );
+  // The live channel (lib/use-live-events.ts): one subscription for the
+  // session, whose hints re-read the badge, banner, tile and page queries
+  // above and below; the polls stay as the fallback.
+  useLiveEvents(
+    needsSigning && signing.data?.state === "ready" && !pathname.startsWith("/install"),
+  );
   const [bannerHidden, setBannerHidden] = useState(bannerDismissed);
 
   // Re-arm the session-expiry guard whenever a fresh session lands.
@@ -348,6 +356,7 @@ export default function App() {
             </button>
           </div>
           <SessionBadge whoami={probe.data} />
+          {needsSigning && <LiveIndicator />}
           <ThemeSwitcher />
         </header>
         <ul>

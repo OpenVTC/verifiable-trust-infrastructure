@@ -417,7 +417,10 @@ gesture bound to the move.
    72 hours*", linking to it. A sends nothing again.
 3. Each approver finds the action in the console's **Actions** page (or `cnm
    actions list`) and approves or declines it, signing with their own DID
-   (§4 step 6). One decline closes it for everyone.
+   (§4 step 6). One decline closes it for everyone. An open console learns of
+   a new action within a second over its live channel (a hint, never the
+   action — `website-and-admin.md`, *Live updates*), and polls every minute
+   when that channel is down; `cnm actions watch` does the same on a terminal.
 4. The approval that reaches the threshold **runs the stored operation**. The
    VTC re-checks everything first, against the community as it is then
    (VTI-APV-017):

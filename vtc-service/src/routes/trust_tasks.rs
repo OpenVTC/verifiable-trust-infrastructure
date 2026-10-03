@@ -37,8 +37,10 @@
 
 use axum::body::Bytes;
 use axum::extract::{Extension, State};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
+use crate::admin_events::{StreamSlot, accepts_event_stream};
 use crate::routing::trust_task_admission::{Admission, ClientAddress, TrustTaskLimits};
 use crate::server::AppState;
 use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core_admitted};
@@ -54,6 +56,15 @@ use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core_admitted};
 ///
 /// Administrator verbs are dispatched here too — their authority is the
 /// verified signer's ACL entry, read when the document executes.
+///
+/// ## Streamed responses (HTTPS binding 0.3 §2.1)
+///
+/// A request sent with `Accept: text/event-stream` may be answered with a
+/// stream — today only `vtc/admin/events/subscribe/0.1`
+/// (`crate::admin_events`). The document runs through the whole pipeline
+/// first; a refusal is the ordinary JSON `trust-task-error`, and only a
+/// success opens `200 text/event-stream`, whose first event is the signed
+/// `#response`. Every other task answers JSON whatever `Accept` says.
 #[utoipa::path(
     post, path = "/trust-tasks", tag = "trust-tasks",
     request_body(
@@ -71,17 +82,39 @@ pub async fn dispatch(
     State(state): State<AppState>,
     Extension(ClientAddress(address)): Extension<ClientAddress>,
     Extension(limits): Extension<TrustTaskLimits>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     let admission = match Admission::begin(&state, &limits, address, &body).await {
         Ok(admission) => admission,
         Err(limited) => return limited.into_response(),
     };
-    let outcome =
-        dispatch_trust_task_core_admitted(&state, &JoinAuthCtx::rest(), &body, &admission, address)
-            .await;
+    let slot = StreamSlot::new(
+        accepts_event_stream(headers.get(header::ACCEPT).and_then(|v| v.to_str().ok())),
+        headers
+            .get("last-event-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+    );
+    let outcome = slot
+        .scope(dispatch_trust_task_core_admitted(
+            &state,
+            &JoinAuthCtx::rest(),
+            &body,
+            &admission,
+            address,
+        ))
+        .await;
     match admission.finish() {
-        Ok(()) => outcome.into_response(),
+        Ok(()) => match slot.take() {
+            // A granted stream behind a success: the signed `#response` is
+            // its first event. Dropping an unopened grant releases its place
+            // under the stream caps.
+            Some(grant) if outcome.status == StatusCode::OK => {
+                crate::admin_events::respond(state, grant, outcome.body)
+            }
+            _ => outcome.into_response(),
+        },
         Err(limited) => limited.into_response(),
     }
 }

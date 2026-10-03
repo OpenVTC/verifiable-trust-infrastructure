@@ -437,7 +437,10 @@ pub async fn store_profile(
     ks: &KeyspaceHandle,
     profile: &CommunityProfile,
 ) -> Result<(), AppError> {
-    ks.insert(PROFILE_STORAGE_KEY.to_vec(), profile).await
+    ks.insert(PROFILE_STORAGE_KEY.to_vec(), profile).await?;
+    // Half of what `vtc/config/export` reads (`crate::admin_events`).
+    crate::admin_events::notify(crate::admin_events::Topic::Config);
+    Ok(())
 }
 
 /// Iterate profile fields as `(key, old_value, new_value)` triples

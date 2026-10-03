@@ -15,6 +15,7 @@
 pub mod acl;
 pub mod acl_cli;
 pub mod admin_actions;
+pub mod admin_events;
 #[cfg(feature = "admin-ui")]
 pub mod admin_ui;
 pub mod audit_checkpoint;
