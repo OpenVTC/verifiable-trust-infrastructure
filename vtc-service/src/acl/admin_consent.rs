@@ -135,6 +135,10 @@ pub enum Act {
     /// authority. The subject names the purpose; the consent is pinned to the
     /// revision active for it now.
     ChangeAuthorityPolicy(crate::policy::PolicyPurpose),
+    /// **VTI-VTC-023** — an operator's offline write, surfaced to every
+    /// remaining administrator to acknowledge. Nothing is consented to: it
+    /// already happened. Never gated, never executed.
+    OperatorWrite,
 }
 
 impl Act {
@@ -145,12 +149,14 @@ impl Act {
             Self::ReduceUnrestricted => "VTI-APV-019",
             Self::LowerThreshold => "VTI-APV-020",
             Self::ChangeAuthorityPolicy(_) => "VTI-VTC-022",
+            Self::OperatorWrite => "VTI-VTC-023",
         }
     }
 
     pub(crate) fn approver_set(self) -> &'static str {
         match self {
             Self::ReduceUnrestricted => APPROVER_SET_EXCEPT_SUBJECT,
+            Self::OperatorWrite => "administrators",
             _ => APPROVER_SET,
         }
     }
@@ -175,6 +181,7 @@ impl Act {
             Self::ReduceUnrestricted => s::KIND_REDUCE_AUTHORITY,
             Self::LowerThreshold => s::KIND_THRESHOLD_LOWER,
             Self::ChangeAuthorityPolicy(_) => s::KIND_POLICY_AUTHORITY,
+            Self::OperatorWrite => s::KIND_OPERATOR_WRITE,
         }
     }
 }
@@ -440,6 +447,7 @@ pub async fn gesture_then_consent_for(
             approvers,
             threshold,
             pin,
+            cooling_off: None,
         },
     )
     .await?;
@@ -458,23 +466,55 @@ pub enum Reduction {
     /// consented. Spend it with the write.
     Consented(ReadyGrant),
     /// The subject is a live unrestricted admin and nobody else is left who
-    /// could consent. The gesture suffices; once the write lands the caller
-    /// records it at `Critical` and notifies the subject
-    /// ([`record_unopposed_reduction`]).
+    /// could consent. The gesture sufficed — after the cooling-off, when one is
+    /// configured (`acl.removal_cooling_off`, §8.2), in which case this is the
+    /// parked action landing and carries its grant. Once the write lands the
+    /// caller records it at `Critical` and notifies the subject
+    /// ([`after_reduction`]).
+    Unopposed(Option<ReadyGrant>),
+}
+
+/// Whether anyone other than the requester and the subject agreed to a
+/// reduction — the `agreement` an authority-reduced notice carries
+/// (VTI-APV-019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Agreement {
+    /// Another unrestricted administrator consented.
+    Consented,
+    /// The subject was a scoped administrator: the requester's gesture is the
+    /// whole gate, and no third party reviewed it.
+    StepUpOnly,
+    /// The subject was an unrestricted administrator and nobody else could
+    /// consent: audited at `Critical`.
     Unopposed,
+}
+
+impl Agreement {
+    /// The notice's `agreement`: `consented` only when a third party agreed.
+    /// A step-up-only reduction is reported `unopposed` — nobody but the
+    /// decider reviewed it, which is the distinction the subject is owed.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Self::Consented => "consented",
+            Self::StepUpOnly | Self::Unopposed => "unopposed",
+        }
+    }
 }
 
 impl Reduction {
     /// Spend the consent, if this reduction carries one. Call it with the
-    /// write, after every other check.
-    ///
-    /// `Ok(true)` when the reduction is [`Self::Unopposed`] — the caller's cue
-    /// to [`record_unopposed_reduction`] once the write lands.
-    pub async fn spend(self, state: &AppState) -> Result<bool, AppError> {
+    /// write, after every other check. What it comes to for the notice and
+    /// the audit ([`after_reduction`]).
+    pub async fn spend(self, state: &AppState) -> Result<Agreement, AppError> {
         match self {
-            Self::StepUpOnly => Ok(false),
-            Self::Consented(ready) => ready.spend(state).await.map(|()| false),
-            Self::Unopposed => Ok(true),
+            Self::StepUpOnly => Ok(Agreement::StepUpOnly),
+            Self::Consented(ready) => ready.spend(state).await.map(|()| Agreement::Consented),
+            Self::Unopposed(ready) => {
+                if let Some(ready) = ready {
+                    ready.spend(state).await?;
+                }
+                Ok(Agreement::Unopposed)
+            }
         }
     }
 }
@@ -496,11 +536,17 @@ pub enum ReductionGate {
 /// subject is **another** live unrestricted admin, it is also parked for the
 /// consent of an unrestricted admin who is neither the requester nor the
 /// subject (**VTI-APV-019**), through the same machinery as APV-014
-/// ([`Act::ReduceUnrestricted`]). Where no such admin exists — two unrestricted
-/// admins in all — the gesture alone suffices and [`Reduction::Unopposed`] says
-/// so: the VTC cannot tell a removal of a compromised co-admin from a
-/// compromised admin's removal of the other, and must not make the first
-/// impossible.
+/// ([`Act::ReduceUnrestricted`]).
+///
+/// Where no such admin exists — two unrestricted admins in all — the VTC cannot
+/// tell a removal of a compromised co-admin from a compromised admin's removal
+/// of the other, and must not make the first impossible. So the gesture alone
+/// suffices, but not at once: the reduction is parked for a **cooling-off**
+/// (`acl.removal_cooling_off`, default 24 h, §8.2) that both can see, and lands
+/// by itself when it ends unless the requester cancels it. The subject cannot
+/// block it; if the subject answers by asking to reduce the requester, the
+/// earlier request lands first ([`crate::admin_actions::refuse_if_reduced_first`]).
+/// A cooling-off of zero lands it at once ([`Reduction::Unopposed`]).
 ///
 /// The attrition guard ([`check_attrition`]) is asked first as well, so a
 /// reduction that would strand the community is refused before anybody is asked
@@ -517,20 +563,35 @@ pub async fn gate_reduction(
     gesture_reason: &str,
     consent_summary: &str,
 ) -> Result<ReductionGate, AppError> {
-    use super::bound_step_up::{self, Gate};
+    use super::bound_step_up::{self, EvidencedGate, Gate};
 
     let now = now_epoch();
     let unrestricted = is_live_unrestricted(subject, now) && subject.did != requester;
     if unrestricted {
         check_attrition(state, &subject.did).await?;
+        let executing = crate::admin_actions::executing();
+        // A cooling-off landing: the reduction it parked, unopposed, now.
+        if let Some(exec) = executing.as_ref().filter(|e| e.cooling_off) {
+            let action_id =
+                crate::admin_actions::recheck_cooling_off(state, exec, requester, &subject.did, op)
+                    .await?;
+            return Ok(ReductionGate::Cleared(Reduction::Unopposed(Some(
+                ReadyGrant { action_id },
+            ))));
+        }
         let third = approvers_for(state, Act::ReduceUnrestricted, requester, &subject.did, now)
             .await?
             .len();
+        // First to act wins (§8.2): with nobody else to decide, a
+        // counter-request lands the earlier one.
+        if executing.is_none() && third == 0 {
+            crate::admin_actions::refuse_if_reduced_first(state, requester, &subject.did).await?;
+        }
         // An approved action executing this reduction goes through its consent
         // whatever the count is now: approvals that no longer suffice fail it
         // closed, rather than letting the unopposed path run it on the gesture
         // the requester made when there *were* approvers (VTI-APV-017).
-        if third > 0 || crate::admin_actions::executing().is_some() {
+        if third > 0 || executing.is_some() {
             return Ok(
                 match gesture_then_consent_for(
                     state,
@@ -547,6 +608,65 @@ pub async fn gate_reduction(
                     SignedGate::StepUpRequired(r) => ReductionGate::StepUpRequired(r),
                 },
             );
+        }
+        let window = crate::config_store::live_action_setting(
+            crate::config_store::REMOVAL_COOLING_OFF,
+            &state.config.read().await.clone(),
+            &ConfigStore::new(state.config_ks.clone()),
+        )
+        .await?;
+        if window > 0 {
+            // The same operation already cooling off: point at it.
+            if let Some(open) = crate::admin_actions::open_for(state, requester, op).await? {
+                return Err(crate::admin_actions::parked_error(state, &open).await);
+            }
+            crate::admin_actions::check_limits(
+                state,
+                Act::ReduceUnrestricted,
+                requester,
+                &subject.did,
+            )
+            .await?;
+            let evidence = match bound_step_up::redeem_or_request_with_evidence(
+                state,
+                requester,
+                op.type_uri,
+                op.payload,
+                gesture_reason,
+            )
+            .await?
+            {
+                EvidencedGate::Required(request) => {
+                    return Ok(ReductionGate::StepUpRequired(request));
+                }
+                EvidencedGate::Satisfied(evidence) => evidence,
+            };
+            warn!(
+                requester,
+                subject = %subject.did,
+                task = op.type_uri,
+                window,
+                "ending an unrestricted admin's authority with nobody else left to consent \
+                 (VTI-APV-019): parked for its cooling-off"
+            );
+            let pin = pin_for(state, Act::ReduceUnrestricted, &subject.did).await?;
+            let action = crate::admin_actions::park(
+                state,
+                crate::admin_actions::Parking {
+                    act: Act::ReduceUnrestricted,
+                    requester,
+                    subject: &subject.did,
+                    op,
+                    summary: consent_summary,
+                    evidence,
+                    approvers: Vec::new(),
+                    threshold: 0,
+                    pin,
+                    cooling_off: Some(window),
+                },
+            )
+            .await?;
+            return Err(crate::admin_actions::parked_error(state, &action).await);
         }
     }
     Ok(
@@ -565,9 +685,10 @@ pub async fn gate_reduction(
                     subject = %subject.did,
                     task = op.type_uri,
                     "ending an unrestricted admin's authority with nobody else left to consent \
-                     (VTI-APV-019): the requester's step-up is the only gate"
+                     (VTI-APV-019), with no cooling-off configured: the requester's step-up is \
+                     the only gate"
                 );
-                ReductionGate::Cleared(Reduction::Unopposed)
+                ReductionGate::Cleared(Reduction::Unopposed(None))
             }
             Gate::Satisfied => ReductionGate::Cleared(Reduction::StepUpOnly),
             Gate::Required(r) => ReductionGate::StepUpRequired(r),
@@ -576,13 +697,14 @@ pub async fn gate_reduction(
 }
 
 /// [`gate_reduction`] for a door about to end or reduce `prior`, settled to one
-/// answer: `Ok(false)` to go ahead, `Ok(true)` to go ahead and then
-/// [`record_unopposed_reduction`], or the refusal — [`TaskError::StepUp`] with
-/// the ceremony inline when no gesture is recorded yet, or the parked action.
+/// answer: `Ok(None)` when nothing gated it (not a live administrator's
+/// entry), `Ok(Some(agreement))` to go ahead and then [`after_reduction`], or
+/// the refusal — [`TaskError::StepUp`] with the ceremony inline when no gesture
+/// is recorded yet, or the parked action (an approval, or a cooling-off).
 ///
 /// Only an **administrator**'s live entry is gated (`vtc-action-list.md` §7b
 /// item 1); ending an expired or non-admin entry is unchanged, and answers
-/// `Ok(false)` without asking anything. Call it last before the write.
+/// `Ok(None)` without asking anything. Call it last before the write.
 ///
 /// [`TaskError::StepUp`]: crate::error::TaskError::StepUp
 pub async fn settle_reduction(
@@ -592,19 +714,57 @@ pub async fn settle_reduction(
     op: Operation<'_>,
     gesture_reason: &str,
     consent_summary: &str,
-) -> Result<bool, crate::error::TaskError> {
+) -> Result<Option<Agreement>, crate::error::TaskError> {
     if prior.role != VtcRole::Admin || prior.is_expired(now_epoch()) {
-        return Ok(false);
+        return Ok(None);
     }
     match gate_reduction(state, requester, prior, op, gesture_reason, consent_summary).await? {
-        ReductionGate::Cleared(reduction) => Ok(reduction.spend(state).await?),
+        ReductionGate::Cleared(reduction) => Ok(Some(reduction.spend(state).await?)),
         ReductionGate::StepUpRequired(request) => Err(crate::error::TaskError::step_up(request)),
     }
 }
 
-/// Record a [`Reduction::Unopposed`] once its write has landed: a `Critical`
-/// audit row (**VTI-APV-019**). Telling the subject is the caller's, because
-/// which notice fits depends on the act — a removal sends the removal notice.
+/// Once a gated reduction's write has landed: an unopposed one is recorded at
+/// `Critical` ([`record_unopposed_reduction`], VTI-APV-019), and — unless the
+/// subject was removed from the community, which the removal notice tells them
+/// (`notify: false`) — the subject is sent `vtc/members/authority-reduced-notice`
+/// saying what happened, on whose authority and whether anyone else agreed.
+///
+/// `after` is the subject's entry now (`None`: revoked). Called after the
+/// write, never before: a refusal later in the write must not leave a row or a
+/// notice claiming it happened. The notice is best-effort and durable; nothing
+/// here undoes the write.
+#[allow(clippy::too_many_arguments)]
+pub async fn after_reduction(
+    state: &AppState,
+    decided_by: &str,
+    prior: &VtcAclEntry,
+    after: Option<&VtcAclEntry>,
+    agreement: Agreement,
+    task: &str,
+    reason: Option<&str>,
+    notify: bool,
+) -> Result<(), AppError> {
+    if agreement == Agreement::Unopposed {
+        record_unopposed_reduction(state, decided_by, prior, task).await?;
+    }
+    if notify {
+        crate::ceremony::authority_reduced_notice::send(
+            state,
+            prior,
+            after,
+            agreement,
+            decided_by,
+            chrono::Utc::now(),
+            reason,
+        )
+        .await;
+    }
+    Ok(())
+}
+
+/// Record an unopposed reduction once its write has landed: a `Critical`
+/// audit row (**VTI-APV-019**).
 ///
 /// Called after the write, never before: a refusal later in the write (the
 /// attrition guard under its lock) must not leave a row saying it happened.
@@ -733,7 +893,7 @@ pub(crate) async fn pin_for(
     subject: &str,
 ) -> Result<StatePin, AppError> {
     let value = match act {
-        Act::GrantUnrestricted | Act::ReduceUnrestricted => {
+        Act::GrantUnrestricted | Act::ReduceUnrestricted | Act::OperatorWrite => {
             return state_pin(state, subject).await;
         }
         // VTI-APV-020: the consent is to lowering *this* threshold. Once it

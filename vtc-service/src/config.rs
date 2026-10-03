@@ -132,6 +132,20 @@ pub struct AclConfig {
     /// the same kind of action against the same subject again (§7a.1).
     #[serde(default = "default_action_decline_cooldown")]
     pub action_decline_cooldown: u64,
+    /// Seconds a reduction of an unrestricted administrator waits before it
+    /// lands when nobody but the requester and the subject could consent to it
+    /// — the two-administrator case (VTI-APV-019,
+    /// `docs/05-design-notes/vtc-action-list.md` §8.2). Default 24 hours,
+    /// bounded 0 to 7 days; 0 lands it at once. The requester may cancel it
+    /// meanwhile; the subject sees it coming but cannot block it.
+    #[serde(default = "default_removal_cooling_off")]
+    pub removal_cooling_off: u64,
+    /// Whether a raised action is also pushed, VTC-signed, to each approver's
+    /// devices as `task-consent/request/0.1`. **Off by default**
+    /// (`vtc-action-list.md` §11.6): the action list is the source of truth,
+    /// and a push is best-effort at most.
+    #[serde(default)]
+    pub consent_request_push: bool,
 }
 
 impl Default for AclConfig {
@@ -142,6 +156,8 @@ impl Default for AclConfig {
             action_max_open_per_requester: default_action_max_open_per_requester(),
             action_max_open: default_action_max_open(),
             action_decline_cooldown: default_action_decline_cooldown(),
+            removal_cooling_off: default_removal_cooling_off(),
+            consent_request_push: false,
         }
     }
 }
@@ -165,6 +181,11 @@ pub(crate) fn default_action_max_open() -> u64 {
 
 pub(crate) fn default_action_decline_cooldown() -> u64 {
     3600
+}
+
+/// 24 hours (`vtc-action-list.md` §11.4).
+pub(crate) fn default_removal_cooling_off() -> u64 {
+    24 * 3600
 }
 
 /// Trust Task document-dispatch settings. **Empty of live settings**: every

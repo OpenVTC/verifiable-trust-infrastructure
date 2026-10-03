@@ -202,6 +202,27 @@ fn invite_key(token: &str) -> String {
 fn redeem_key(id: &str) -> String {
     format!("redeem:{id}")
 }
+/// Wrong claim codes presented against one install token at `claim/start 0.3`.
+fn install_wrong_key(jti: &Uuid) -> String {
+    format!("install_wrong:{jti}")
+}
+
+/// Count one more wrong claim code against `jti`; the new count.
+async fn count_wrong_install_code(state: &AppState, jti: &Uuid) -> Result<u32, AppError> {
+    // Serialised with the binding lock so two wrong guesses racing each other
+    // both count.
+    let _guard = crate::acl::approver::lock().await;
+    let key = install_wrong_key(jti);
+    let wrong = state
+        .step_up_approvers_ks
+        .get::<u32>(key.clone())
+        .await?
+        .unwrap_or(0)
+        .saturating_add(1);
+    state.step_up_approvers_ks.insert(key, &wrong).await?;
+    Ok(wrong)
+}
+
 fn claim_key(id: &str) -> String {
     format!("claim:{id}")
 }
@@ -498,6 +519,56 @@ pub async fn issue_invite(
         "expiresAt": epoch_to_utc(minted.expires_at),
     }))
     .map_err(|e| AppError::Internal(format!("invite response: {e}")).into())
+}
+
+/// The invite every newly created administrator gets (`vtc-approver-step-up.md`
+/// §6c, settled default §11.4): minted when the action that made them completes,
+/// issued by its requester, and handed to that requester once on the action's
+/// record — they deliver the claim code separately. The creation already took
+/// the requester's step-up and another administrator's consent (VTI-APV-014),
+/// so the invite rests on that anchor (R2) and costs nothing extra.
+///
+/// `Ok(None)` when the subject already holds a live step-up approver.
+pub(crate) async fn invite_new_administrator(
+    state: &AppState,
+    creator: &str,
+    subject: &str,
+) -> Result<Option<Value>, AppError> {
+    if !crate::acl::approver::live_approvers(state, subject)
+        .await?
+        .is_empty()
+    {
+        return Ok(None);
+    }
+    let public_url = state.public_url.as_deref().unwrap_or_default();
+    let minted = mint_invite(
+        &state.step_up_approvers_ks,
+        public_url,
+        subject,
+        creator,
+        EnrolledVia::Invite,
+        Some("new administrator".into()),
+        DEFAULT_INVITE_TTL_SECS,
+    )
+    .await?;
+    audit(
+        state,
+        creator,
+        StepUpApproverData {
+            enrolled_via: Some(EnrolledVia::Invite.as_str().into()),
+            anchor: Some(creator.into()),
+            expires_at: Some(epoch_to_utc(minted.expires_at)),
+            ..stage("invited", subject)
+        },
+    )
+    .await?;
+    info!(admin = %creator, %subject, invite_id = %minted.invite_id, "step-up approver invite issued for a new administrator");
+    Ok(Some(json!({
+        "inviteId": minted.invite_id,
+        "url": minted.url,
+        "claimCode": minted.claim_code,
+        "expiresAt": epoch_to_utc(minted.expires_at),
+    })))
 }
 
 /// R4: an invite minted on the host with the daemon stopped
@@ -1136,6 +1207,22 @@ pub async fn claim_start_v0_3(
         .await
         .map_err(|e| AppError::Internal(format!("claim-code verify task failed: {e}")))??;
     if !ok {
+        // The fifth wrong code voids the install token (claim/start 0.3, as
+        // the approver invite's: the code is the second channel, and guessing
+        // at it must not be free). Answered alike, so the count is no oracle.
+        let wrong = count_wrong_install_code(state, &jti).await?;
+        if wrong >= MAX_WRONG_CODES {
+            store.delete_token(&jti).await?;
+            state
+                .step_up_approvers_ks
+                .remove(install_wrong_key(&jti))
+                .await?;
+            warn!(
+                %jti,
+                security_alert = true,
+                "install token voided after {MAX_WRONG_CODES} wrong claim codes"
+            );
+        }
         return Err(install_invalid_token_start());
     }
     // Item 2: the founder's DID comes from the token the operator minted,

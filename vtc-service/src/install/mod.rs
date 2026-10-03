@@ -74,6 +74,15 @@ pub async fn record_offline_acl_write(
     contexts: &[String],
 ) -> Result<(), vti_common::error::AppError> {
     let install = InstallTokenStore::new(store.keyspace(crate::store::keyspaces::INSTALL)?);
+    // Who must acknowledge it (VTI-VTC-023): every administrator holding a role
+    // as the write is made.
+    let now = crate::auth::session::now_epoch();
+    let admins = crate::acl::list_acl_entries(&store.keyspace(crate::store::keyspaces::ACL)?)
+        .await?
+        .into_iter()
+        .filter(|e| e.role == crate::acl::VtcRole::Admin && !e.is_expired(now))
+        .map(|e| e.did)
+        .collect();
     install
         .record_break_glass(&PendingBreakGlassAcl {
             command: command.to_string(),
@@ -83,6 +92,7 @@ pub async fn record_offline_acl_write(
             contexts: contexts.to_vec(),
             operator_hostname: gethostname::gethostname().to_string_lossy().into_owned(),
             invoked_at: chrono::Utc::now(),
+            admins,
         })
         .await
 }

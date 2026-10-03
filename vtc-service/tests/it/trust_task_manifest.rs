@@ -774,6 +774,8 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/admin/actions/list/0.1",
     "https://trusttasks.org/spec/vtc/admin/actions/show/0.1",
     "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1",
+    // An operator's offline write, acknowledged (VTI-VTC-023).
+    "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.1",
     "https://trusttasks.org/spec/task-consent/decision/0.2",
     // Their bearer routes stayed for `vtc-client`; the console already signed
     // them, and now nothing else binds them either.
@@ -882,6 +884,10 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // token is the credential, not a proof).
     "https://trusttasks.org/spec/vtc/install/claim/start/0.2",
     "https://trusttasks.org/spec/vtc/install/claim/finish/0.2",
+    // The wallet founder's claim under their own DID, with an approver device
+    // (`vtc-approver-step-up.md` §6b).
+    "https://trusttasks.org/spec/vtc/install/claim/start/0.3",
+    "https://trusttasks.org/spec/vtc/install/claim/finish/0.3",
     "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1",
 ];
 

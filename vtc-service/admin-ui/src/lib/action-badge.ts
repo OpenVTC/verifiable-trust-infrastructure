@@ -6,11 +6,16 @@
 // The count is fetched at sign-in, whenever the tab regains focus or becomes
 // visible, and every 60 s while the console is open. It is a hint, not the
 // source of truth: the Actions page reads the list itself.
+//
+// The same read carries the list's `ext["org.openvtc"]` — the operator writes
+// waiting for this administrator's acknowledgement and the cooling-offs
+// against them — which drive the shell's two Critical banners
+// (`components/ActionsAlertBanners.tsx`).
 
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { fetchWaitingCount } from "./actions-api";
+import { fetchActionsAttention, type ActionsAttention } from "./actions-api";
 
 /** The Actions plugin's id — the shell draws its nav badge. */
 export const ACTIONS_PLUGIN_ID = "actions";
@@ -54,15 +59,31 @@ export function dismissBanner(): void {
   }
 }
 
+const NOTHING: ActionsAttention = Object.freeze({
+  waiting: 0,
+  operatorWritesUnacknowledged: [],
+  coolingOffAgainstMe: [],
+}) as ActionsAttention;
+
 /**
  * The number of actions waiting for the signed-in administrator, kept fresh
  * while `enabled`, with the tab title following it. `0` while unknown or on
  * any failure — the badge is decoration and must never take the shell down.
  */
 export function useWaitingCount(enabled: boolean): number {
+  return useActionsAttention(enabled).waiting;
+}
+
+/**
+ * [`useWaitingCount`]'s read, whole: the count, plus the operator writes
+ * waiting for this administrator's acknowledgement (VTI-VTC-023) and the
+ * cooling-offs reducing their own authority (VTI-APV-019) — what the shell's
+ * Critical banners show. Empty while unknown or on any failure.
+ */
+export function useActionsAttention(enabled: boolean): ActionsAttention {
   const query = useQuery({
     queryKey: WAITING_COUNT_KEY,
-    queryFn: fetchWaitingCount,
+    queryFn: fetchActionsAttention,
     enabled,
     refetchInterval: enabled ? WAITING_POLL_MS : false,
     refetchIntervalInBackground: true,
@@ -86,7 +107,8 @@ export function useWaitingCount(enabled: boolean): number {
     };
   }, [enabled, refetch]);
 
-  const count = enabled && typeof query.data === "number" ? query.data : 0;
+  const attention = enabled && query.data ? query.data : NOTHING;
+  const count = attention.waiting;
 
   useEffect(() => {
     document.title = titleWithCount(document.title, count);
@@ -98,5 +120,5 @@ export function useWaitingCount(enabled: boolean): number {
     [],
   );
 
-  return count;
+  return attention;
 }

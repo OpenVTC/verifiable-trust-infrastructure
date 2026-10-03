@@ -152,11 +152,11 @@ pub(super) async fn handle_update(
         Ok(p) => p,
         Err(e) => return task_error_to_reject(&doc, &e),
     };
-    let unopposed = match settle_signed_gate(state, &actor, &doc, &plan).await {
+    let reduced = match settle_signed_gate(state, &actor, &doc, &plan).await {
         Ok(u) => u,
         Err(refusal) => return refusal,
     };
-    commit_settled(state, &actor, &doc, plan, unopposed).await
+    commit_settled(state, &actor, &doc, plan, reduced).await
 }
 
 /// `acl/revoke/0.1` — remove an entry, or reduce its scopes.
@@ -246,15 +246,22 @@ async fn manager(
 /// A write that takes authority away from a live administrator — a narrowing
 /// rewrite, an expiry brought forward — needs the gesture too, and narrowing
 /// **another unrestricted** administrator also needs the consent of one who is
-/// neither the requester nor the subject (**VTI-APV-019**). `Ok(Some(prior))`
-/// means nobody else was left to give it: the caller commits, then records the
-/// reduction at `Critical` ([`crate::acl::admin_consent::record_unopposed_reduction`]).
+/// neither the requester nor the subject (**VTI-APV-019**). `Ok(Some((prior,
+/// agreement)))` is such a reduction, cleared: the caller commits, then tells
+/// the subject and records an unopposed one at `Critical`
+/// ([`crate::acl::admin_consent::after_reduction`]).
 pub(super) async fn settle_signed_gate(
     state: &AppState,
     actor: &AuthClaims,
     doc: &TrustTask<Value>,
     plan: &ops::GrantPlan,
-) -> Result<Option<crate::acl::VtcAclEntry>, TrustTaskOutcome> {
+) -> Result<
+    Option<(
+        crate::acl::VtcAclEntry,
+        crate::acl::admin_consent::Agreement,
+    )>,
+    TrustTaskOutcome,
+> {
     use crate::acl::bound_step_up::{self, Gate};
 
     let type_uri = doc.type_uri.to_string();
@@ -294,7 +301,7 @@ pub(super) async fn settle_signed_gate(
     } else if let Some(prior) = plan.reduces_admin.as_ref() {
         // One gesture covers a rewrite that moves a scoped admin sideways —
         // some authority dropped, some conferred.
-        let unopposed = crate::acl::admin_consent::settle_reduction(
+        let agreement = crate::acl::admin_consent::settle_reduction(
             state,
             &actor.did,
             prior,
@@ -307,7 +314,7 @@ pub(super) async fn settle_signed_gate(
         )
         .await
         .map_err(|e| super::helpers::task_error_to_reject(doc, &e))?;
-        return Ok(unopposed.then(|| prior.clone()));
+        return Ok(agreement.map(|a| (prior.clone(), a)));
     } else if plan.confers_admin {
         let reason = format!(
             "Grant administrator authority over {} to {subject}",
@@ -372,23 +379,32 @@ pub(super) async fn settle_consent_gate(
 }
 
 /// Commit a planned `acl/grant` or `acl/update` whose gate
-/// ([`settle_signed_gate`]) has settled, and record an unopposed reduction
-/// (VTI-APV-019) once the write has landed.
+/// ([`settle_signed_gate`]) has settled and, for a reduction of an
+/// administrator, tell the subject and record an unopposed one (VTI-APV-019)
+/// once the write has landed.
 pub(super) async fn commit_settled(
     state: &AppState,
     actor: &AuthClaims,
     doc: &TrustTask<Value>,
     plan: ops::GrantPlan,
-    unopposed: Option<crate::acl::VtcAclEntry>,
+    reduced: Option<(
+        crate::acl::VtcAclEntry,
+        crate::acl::admin_consent::Agreement,
+    )>,
 ) -> TrustTaskOutcome {
+    let after = plan.entry.clone();
     match ops::commit_grant(state, actor, plan).await {
         Ok((_status, envelope)) => {
-            if let Some(prior) = unopposed
-                && let Err(e) = crate::acl::admin_consent::record_unopposed_reduction(
+            if let Some((prior, agreement)) = reduced
+                && let Err(e) = crate::acl::admin_consent::after_reduction(
                     state,
                     &actor.did,
                     &prior,
+                    Some(&after),
+                    agreement,
                     &doc.type_uri.to_string(),
+                    doc.payload["reason"].as_str(),
+                    true,
                 )
                 .await
             {

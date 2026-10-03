@@ -50,11 +50,16 @@ pub const KIND_REDUCE_AUTHORITY: &str = "acl.reduce.authority";
 pub const KIND_THRESHOLD_LOWER: &str = "config.threshold.lower";
 pub const KIND_POLICY_AUTHORITY: &str = "policy.authority.change";
 pub const KIND_INVITE_CREATE: &str = "admin.invite.create";
+/// An operator's offline write, raised for acknowledgement (VTI-VTC-023).
+pub const KIND_OPERATOR_WRITE: &str = "operator.offlineWrite";
 
-const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+pub(crate) const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 const ACL_UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
 const ACL_CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
-const ACL_REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+pub(crate) const ACL_REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+pub(crate) const APPROVER_INVITE: &str =
+    "https://trusttasks.org/spec/auth/step-up/approver/invite/0.1";
+const EMERGENCY_BOOTSTRAP: &str = super::OPERATOR_EMERGENCY_BOOTSTRAP_URI;
 const INVITES_CREATE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const CONFIG_PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
@@ -77,6 +82,9 @@ const REDUCE_EFFECT: &str = "{subject} loses unrestricted authority in this comm
 const THRESHOLD_EFFECT: &str = "Fewer administrators will be needed to make an unrestricted \
                                 administrator — including the next one this requester asks for.";
 const POLICY_EFFECT: &str = "The rules that decide who holds authority in this community change.";
+const OPERATOR_EFFECT: &str = "Written with {command} on {host} at {at}, while the service was \
+                               stopped. It is already in effect: acknowledging records that you \
+                               have seen it, and changes nothing.";
 
 /// Every template this build renders.
 pub const TEMPLATES: &[Template] = &[
@@ -215,6 +223,55 @@ pub const TEMPLATES: &[Template] = &[
         effect: POLICY_EFFECT,
         fields: &[f("id", "/id", "text"), f("purpose", "/purpose", "text")],
     },
+    Template {
+        kind: KIND_OPERATOR_WRITE,
+        type_uri: ACL_GRANT,
+        title: "The operator gave {subject} the {role} role offline",
+        effect: OPERATOR_EFFECT,
+        fields: &[
+            f("subject", "/entry/subject", "did"),
+            f("role", "/entry/role", "text"),
+            f("scopes", "/entry/scopes", "capabilityList"),
+            f("command", "/command", "text"),
+            f("host", "/operatorHost", "text"),
+            f("at", "/invokedAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_OPERATOR_WRITE,
+        type_uri: ACL_REVOKE,
+        title: "The operator removed {subject}'s access offline",
+        effect: OPERATOR_EFFECT,
+        fields: &[
+            f("subject", "/entry/subject", "did"),
+            f("command", "/command", "text"),
+            f("host", "/operatorHost", "text"),
+            f("at", "/invokedAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_OPERATOR_WRITE,
+        type_uri: APPROVER_INVITE,
+        title: "The operator issued a step-up approver invite for {subject} offline",
+        effect: OPERATOR_EFFECT,
+        fields: &[
+            f("subject", "/entry/subject", "did"),
+            f("command", "/command", "text"),
+            f("host", "/operatorHost", "text"),
+            f("at", "/invokedAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_OPERATOR_WRITE,
+        type_uri: EMERGENCY_BOOTSTRAP,
+        title: "The operator ran an emergency bootstrap and replaced every administrator",
+        effect: OPERATOR_EFFECT,
+        fields: &[
+            f("command", "/command", "text"),
+            f("host", "/operatorHost", "text"),
+            f("at", "/invokedAt", "datetime"),
+        ],
+    },
 ];
 
 /// The digest of every template, pinned. A change to a template's prose,
@@ -287,6 +344,26 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_POLICY_AUTHORITY,
         POLICY_ACTIVATE,
         "zQmTqKd5UoQZfTy7giJU9KFWFyhUbqxAtr5XWoUB9BLncBL",
+    ),
+    (
+        KIND_OPERATOR_WRITE,
+        ACL_GRANT,
+        "zQmPBTVVVBZgfZafx5347YBELteEgvumprYp1wVEFQ8GJmJ",
+    ),
+    (
+        KIND_OPERATOR_WRITE,
+        ACL_REVOKE,
+        "zQmSTfE5673DiE2CNEnkmq5StjrQcQHMEm3JVEvc3rfqNAs",
+    ),
+    (
+        KIND_OPERATOR_WRITE,
+        APPROVER_INVITE,
+        "zQmaRsraYXDuqh9P397D4F9dAHQAwsdwKmM9A6Kh4yVEAVx",
+    ),
+    (
+        KIND_OPERATOR_WRITE,
+        EMERGENCY_BOOTSTRAP,
+        "zQmW9QyZwNvMYHenHrcAeaRB5ZRcz2Nz2A2w5JqrWb7qFEp",
     ),
 ];
 

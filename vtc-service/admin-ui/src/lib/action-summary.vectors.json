@@ -174,5 +174,171 @@
       "title": "Activate policy {id} for {purpose}"
     },
     "typeUri": "https://trusttasks.org/spec/policy/activate/0.1"
+  },
+  {
+    "kind": "operator.offlineWrite",
+    "name": "operator granted a role offline",
+    "payload": {
+      "command": "vtc acl grant",
+      "entry": {
+        "role": "admin",
+        "scopes": [],
+        "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+      },
+      "invokedAt": "2026-10-02T08:30:00Z",
+      "operatorHost": "vtc-host-1"
+    },
+    "summary": {
+      "effect": "Written with {command} on {host} at {at}, while the service was stopped. It is already in effect: acknowledging records that you have seen it, and changes nothing.",
+      "fields": {
+        "at": {
+          "format": "datetime",
+          "pointer": "/invokedAt",
+          "value": "2026-10-02T08:30:00Z"
+        },
+        "command": {
+          "format": "text",
+          "pointer": "/command",
+          "value": "vtc acl grant"
+        },
+        "host": {
+          "format": "text",
+          "pointer": "/operatorHost",
+          "value": "vtc-host-1"
+        },
+        "role": {
+          "format": "text",
+          "pointer": "/entry/role",
+          "value": "admin"
+        },
+        "scopes": {
+          "format": "capabilityList",
+          "pointer": "/entry/scopes",
+          "value": []
+        },
+        "subject": {
+          "format": "did",
+          "pointer": "/entry/subject",
+          "value": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        }
+      },
+      "templateDigest": "zQmPBTVVVBZgfZafx5347YBELteEgvumprYp1wVEFQ8GJmJ",
+      "title": "The operator gave {subject} the {role} role offline"
+    },
+    "typeUri": "https://trusttasks.org/spec/acl/grant/0.1"
+  },
+  {
+    "kind": "operator.offlineWrite",
+    "name": "operator removed access offline",
+    "payload": {
+      "command": "vtc acl remove",
+      "entry": {
+        "role": "admin",
+        "scopes": [],
+        "subject": "did:webvh:QmScidExample:community.example:carol"
+      },
+      "invokedAt": "2026-10-02T09:00:00Z",
+      "operatorHost": "vtc-host-1"
+    },
+    "summary": {
+      "effect": "Written with {command} on {host} at {at}, while the service was stopped. It is already in effect: acknowledging records that you have seen it, and changes nothing.",
+      "fields": {
+        "at": {
+          "format": "datetime",
+          "pointer": "/invokedAt",
+          "value": "2026-10-02T09:00:00Z"
+        },
+        "command": {
+          "format": "text",
+          "pointer": "/command",
+          "value": "vtc acl remove"
+        },
+        "host": {
+          "format": "text",
+          "pointer": "/operatorHost",
+          "value": "vtc-host-1"
+        },
+        "subject": {
+          "format": "did",
+          "pointer": "/entry/subject",
+          "value": "did:webvh:QmScidExample:community.example:carol"
+        }
+      },
+      "templateDigest": "zQmSTfE5673DiE2CNEnkmq5StjrQcQHMEm3JVEvc3rfqNAs",
+      "title": "The operator removed {subject}'s access offline"
+    },
+    "typeUri": "https://trusttasks.org/spec/acl/revoke/0.1"
+  },
+  {
+    "kind": "operator.offlineWrite",
+    "name": "operator issued an approver invite offline",
+    "payload": {
+      "command": "vtc admin enrol-approver --invite",
+      "entry": {
+        "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+      },
+      "invokedAt": "2026-10-02T09:15:00Z",
+      "operatorHost": "ops-laptop"
+    },
+    "summary": {
+      "effect": "Written with {command} on {host} at {at}, while the service was stopped. It is already in effect: acknowledging records that you have seen it, and changes nothing.",
+      "fields": {
+        "at": {
+          "format": "datetime",
+          "pointer": "/invokedAt",
+          "value": "2026-10-02T09:15:00Z"
+        },
+        "command": {
+          "format": "text",
+          "pointer": "/command",
+          "value": "vtc admin enrol-approver --invite"
+        },
+        "host": {
+          "format": "text",
+          "pointer": "/operatorHost",
+          "value": "ops-laptop"
+        },
+        "subject": {
+          "format": "did",
+          "pointer": "/entry/subject",
+          "value": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        }
+      },
+      "templateDigest": "zQmaRsraYXDuqh9P397D4F9dAHQAwsdwKmM9A6Kh4yVEAVx",
+      "title": "The operator issued a step-up approver invite for {subject} offline"
+    },
+    "typeUri": "https://trusttasks.org/spec/auth/step-up/approver/invite/0.1"
+  },
+  {
+    "kind": "operator.offlineWrite",
+    "name": "operator ran an emergency bootstrap",
+    "payload": {
+      "command": "vtc admin emergency-bootstrap",
+      "invokedAt": "2026-10-02T10:00:00Z",
+      "operatorHost": "vtc-host-1"
+    },
+    "summary": {
+      "effect": "Written with {command} on {host} at {at}, while the service was stopped. It is already in effect: acknowledging records that you have seen it, and changes nothing.",
+      "fields": {
+        "at": {
+          "format": "datetime",
+          "pointer": "/invokedAt",
+          "value": "2026-10-02T10:00:00Z"
+        },
+        "command": {
+          "format": "text",
+          "pointer": "/command",
+          "value": "vtc admin emergency-bootstrap"
+        },
+        "host": {
+          "format": "text",
+          "pointer": "/operatorHost",
+          "value": "vtc-host-1"
+        }
+      },
+      "templateDigest": "zQmW9QyZwNvMYHenHrcAeaRB5ZRcz2Nz2A2w5JqrWb7qFEp",
+      "title": "The operator ran an emergency bootstrap and replaced every administrator"
+    },
+    "typeUri": "urn:openvtc:vtc:operator:emergency-bootstrap"
   }
 ]

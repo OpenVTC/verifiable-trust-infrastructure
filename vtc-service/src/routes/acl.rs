@@ -521,6 +521,7 @@ pub(crate) async fn commit_grant(
         None
     };
     store_acl_entry(&state.acl_ks, &entry).await?;
+    crate::admin_actions::record_effect(state).await;
 
     // A reduced entry must bind now, not when the subject's access token
     // expires: the `AuthClaims` extractor reads role and contexts from the JWT.
@@ -1125,7 +1126,7 @@ pub(crate) async fn revoke_entry(
         // Narrowing an administrator is a reduction like any other
         // (VTI-APV-019). A scope reduction never reaches an unrestricted
         // entry — it holds no scopes to drop — so this is the gesture alone.
-        let unopposed = crate::acl::admin_consent::settle_reduction(
+        let agreement = crate::acl::admin_consent::settle_reduction(
             state,
             &actor.did,
             &prior,
@@ -1137,6 +1138,7 @@ pub(crate) async fn revoke_entry(
         entry.updated_at = Some(now_epoch());
         entry.updated_by = Some(actor.did.clone());
         store_acl_entry(&acl, &entry).await?;
+        crate::admin_actions::record_effect(state).await;
 
         // A shrunk scope set is a privilege reduction; the subject's
         // live tokens still carry the old scopes.
@@ -1157,12 +1159,18 @@ pub(crate) async fn revoke_entry(
                 )
                 .await?;
         }
-        if unopposed {
-            crate::acl::admin_consent::record_unopposed_reduction(
+        // Once it has landed: the subject is told, and an unopposed
+        // reduction is audited at `Critical` (VTI-APV-019).
+        if let Some(agreement) = agreement {
+            crate::acl::admin_consent::after_reduction(
                 state,
                 &actor.did,
                 &prior,
+                Some(&entry),
+                agreement,
                 op.type_uri,
+                reason,
+                true,
             )
             .await?;
         }
@@ -1228,7 +1236,7 @@ pub(crate) async fn revoke_entry(
             .await
             .map_err(attrition)?;
     }
-    let unopposed = crate::acl::admin_consent::settle_reduction(
+    let agreement = crate::acl::admin_consent::settle_reduction(
         state,
         &actor.did,
         &prior,
@@ -1253,6 +1261,7 @@ pub(crate) async fn revoke_entry(
     }
 
     delete_acl_entry(&acl, &did).await?;
+    crate::admin_actions::record_effect(state).await;
 
     // The removed entry's live sessions go with it: the extractor trusts the
     // JWT's role and contexts until it expires, and an entry that no longer
@@ -1272,28 +1281,25 @@ pub(crate) async fn revoke_entry(
             .await?;
     }
 
-    // Nobody else was left to consent: the removal is recorded at the highest
-    // severity and the removed admin is told (VTI-APV-019). After the write,
-    // so a refusal under the lock leaves no row claiming it happened.
-    if unopposed {
-        drop(_admin_set);
-        crate::acl::admin_consent::record_unopposed_reduction(
+    // The removed administrator is told — `revoked`, and whether anyone else
+    // agreed — and an unopposed removal is recorded at the highest severity
+    // (VTI-APV-019). After the write, so a refusal under the lock leaves no row
+    // or notice claiming it happened. A member is never revoked here (refused
+    // above in favour of the leave ceremony), so this is never a removal from
+    // the community and never sent beside the removal notice.
+    drop(_admin_set);
+    if let Some(agreement) = agreement {
+        crate::acl::admin_consent::after_reduction(
             state,
             &actor.did,
             &prior,
+            None,
+            agreement,
             op.type_uri,
+            reason,
+            true,
         )
         .await?;
-        crate::ceremony::removal_notice::send(
-            state,
-            &did,
-            vta_sdk::protocols::members::RemovalCode::AdminRemoved,
-            "purge",
-            reason.map(str::to_string),
-            &Utc::now().to_rfc3339(),
-            &actor.did,
-        )
-        .await;
     }
 
     info!(

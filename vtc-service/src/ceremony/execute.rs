@@ -166,11 +166,13 @@ pub async fn apply(
         } => {
             let disposition = parse_disposition(disposition.as_deref());
             let outcome = depart(state, &subject, disposition, actor_did).await?;
+            crate::admin_actions::record_effect(state).await;
             Ok(EffectOutcome::Departed(outcome))
         }
         EffectPlan::Remint { subject, role } => {
             let role = parse_role(&role)?;
             let outcome = remint(state, &subject, role).await?;
+            crate::admin_actions::record_effect(state).await;
             Ok(EffectOutcome::Reminted(Box::new(outcome)))
         }
         EffectPlan::NoStateChange => Ok(EffectOutcome::None),

@@ -6,8 +6,11 @@ dtgwg-vti-spec (VTI-APV-015 as amended, VTI-APV-016). The VTC side — §10 step
 2–5 and step 7 (factor store, gate, enrolment R1–R4, revocation, install claim
 0.3, console) — is implemented: `vtc-service/src/acl/approver.rs`,
 `acl/bound_step_up.rs`, `step_up_approver.rs`,
-`trust_tasks/step_up_approver_tasks.rs`. The browser plugin (step 6), the
-console's 0.3 install page, and mobile approvers (phase 2) are not.
+`trust_tasks/step_up_approver_tasks.rs`. The console's 0.3 install page
+(offered beside the 0.2 passkey claim) and the automatic approver enrolment
+invite for every administrator made by a completed action (§6c, §11.4) are
+implemented too, with action-list phase A2. The browser plugin's step-up
+signing (step 6) and mobile approvers (phase 2) are not.
 
 Builds on `vtc-operation-bound-step-up.md` (the bound step-up this extends),
 `vtc-console-signing.md` (§6f, two factors), and the step-up passkey invite

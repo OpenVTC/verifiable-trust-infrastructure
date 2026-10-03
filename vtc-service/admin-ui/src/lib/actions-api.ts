@@ -1,8 +1,14 @@
-// The administrator action list — `vtc/admin/actions/{list,show,cancel}` and
-// the approver's `task-consent/decision/0.2`
+// The administrator action list — `vtc/admin/actions/{list,show,cancel,
+// acknowledge}` and the approver's `task-consent/decision/0.2`
 // (docs/05-design-notes/vtc-action-list.md §6, §7).
 //
-// Reads and cancel are signed with this browser's console key, like every
+// Two categories share the list. An `approval` waits for other administrators'
+// decisions (or, under VTI-APV-019's two-administrator rule, waits out a
+// cooling-off and lands unopposed). An `acknowledge` item is an operator's
+// offline write (VTI-VTC-023): already in effect, it needs each administrator
+// to record that they have seen it, and acknowledging changes nothing.
+//
+// Reads, cancel and acknowledge are signed with this browser's console key, like every
 // other administrator read. A **decision** is not: an approval's proof is the
 // approver's authorization, so it is signed by the approver's own DID through
 // the wallet (`signTrustTask({asDid})`, the VTA holds the key) — exactly as
@@ -27,6 +33,8 @@ import { serializeAssertion } from "./webauthn";
 export const ACTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
 export { ACTIONS_SHOW_TASK };
 export const ACTIONS_CANCEL_TASK = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1";
+export const ACTIONS_ACKNOWLEDGE_TASK =
+  "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.1";
 export const DECISION_TASK = "https://trusttasks.org/spec/task-consent/decision/0.2";
 
 /** The longest `reason` a decision or cancel carries. */
@@ -42,15 +50,42 @@ export type ClosedReason =
   | "expired"
   | "cancelledByRequester"
   | "invalidated"
-  | "failedRecheck";
+  | "failedRecheck"
+  /** An operator's offline write every expected administrator acknowledged. */
+  | "acknowledged";
 
-export type CallerRole = "approver" | "requester" | "observer";
+/** `acknowledger`: an operator's offline write waits for this caller's
+ *  acknowledgement (VTI-VTC-023). */
+export type CallerRole = "approver" | "requester" | "observer" | "acknowledger";
+
+export type ActionCategory = "approval" | "acknowledge";
 
 export type ActionsView = "waitingForMe" | "requestedByMe" | "history" | "all";
 
 export interface ActionApproval {
   subject: string;
   at: string;
+}
+
+/** A reduction of an unrestricted administrator that nobody but the requester
+ *  and the subject could consent to (VTI-APV-019): it lands by itself at
+ *  `landsAt` unless the requester cancels it. */
+export interface CoolingOff {
+  landsAt: string;
+  subject: string;
+  agreement: "unopposed";
+  /** The caller is the administrator it reduces — who sees it coming but
+   *  cannot block it. */
+  againstYou: boolean;
+}
+
+/** A step-up approver enrolment invite for the new administrator a completed
+ *  grant made, shown to its requester once (`show`, then dropped). */
+export interface ApproverInviteResult {
+  inviteId: string;
+  url: string;
+  claimCode: string;
+  expiresAt: string;
 }
 
 export interface ActionExt {
@@ -62,17 +97,24 @@ export interface ActionExt {
   /** What the completed act returned — an invite's `installUrl` and
    *  `claimCode`, which `show` hands the requester once. */
   result?: Record<string, unknown>;
+  /** `acknowledge` items: always `critical`. */
+  severity?: "critical";
+  /** `acknowledge` items: whether this caller has acknowledged it. */
+  acknowledgedByMe?: boolean;
+  coolingOff?: CoolingOff;
+  approverInvite?: ApproverInviteResult;
 }
 
 export interface Action {
   actionId: string;
-  category: "approval";
+  category: ActionCategory;
   kind: string;
   typeUri: string;
   requester: string;
   status: ActionStatus;
   createdAt: string;
-  expiresAt: string;
+  /** Absent on an `acknowledge` item and on a cooling-off: neither lapses. */
+  expiresAt?: string;
   closedAt?: string;
   closedReason?: ClosedReason;
   approvals: ActionApproval[];
@@ -82,8 +124,11 @@ export interface Action {
   challenge?: string;
   payload: Record<string, unknown>;
   payloadDigest: string;
-  requesterOpenActions: number;
-  threshold: number;
+  /** Absent on an `acknowledge` item. */
+  requesterOpenActions?: number;
+  /** Absent on an `acknowledge` item and on a cooling-off: no approval is
+   *  needed, and a published threshold cannot say zero. */
+  threshold?: number;
   summary: ActionSummaryWire;
   ext?: { "org.openvtc"?: ActionExt };
 }
@@ -93,10 +138,45 @@ export interface ActionCounts {
   requestedByMe: number;
 }
 
+/** A cooling-off reducing the caller's own authority (VTI-APV-019). */
+export interface CoolingOffAgainstMe {
+  actionId: string;
+  requester: string;
+  landsAt: string;
+}
+
+/** The list response's `ext["org.openvtc"]` — computed over every action, not
+ *  only the page, so the shell's banners can read it off the badge's read. */
+export interface ActionsListExt {
+  /** Action ids of operator writes waiting for the caller's acknowledgement. */
+  operatorWritesUnacknowledged?: string[];
+  coolingOffAgainstMe?: CoolingOffAgainstMe[];
+}
+
 export interface ActionsListResponse {
   actions: Action[];
   counts: ActionCounts;
   nextCursor?: string;
+  ext?: { "org.openvtc"?: ActionsListExt };
+}
+
+/** What the shell shows outside the Actions page: the badge count and the
+ *  two Critical banners. */
+export interface ActionsAttention {
+  waiting: number;
+  operatorWritesUnacknowledged: string[];
+  coolingOffAgainstMe: CoolingOffAgainstMe[];
+}
+
+/** Whether `action` is an operator's offline write (VTI-VTC-023). */
+export function isAcknowledgeItem(action: Action): boolean {
+  return action.category === "acknowledge";
+}
+
+/** The cooling-off `action` waits out, if it is one (VTI-APV-019). */
+export function coolingOffOf(action: Action): CoolingOff | null {
+  const c = actionExt(action).coolingOff;
+  return c && typeof c.landsAt === "string" ? c : null;
 }
 
 export interface ActionsListQuery {
@@ -144,8 +224,27 @@ export function listActions(query: ActionsListQuery): Promise<ActionsListRespons
 
 /** How many actions wait for this administrator — the badge. */
 export async function fetchWaitingCount(): Promise<number> {
+  return (await fetchActionsAttention()).waiting;
+}
+
+/**
+ * The badge count and the list's ext, from one `waitingForMe` read of one
+ * row: the ext covers every action regardless of the page.
+ */
+export async function fetchActionsAttention(): Promise<ActionsAttention> {
   const body = await listActions({ view: "waitingForMe", limit: 1 });
-  return body.counts?.waitingForMe ?? 0;
+  const ext = body.ext?.["org.openvtc"] ?? {};
+  return {
+    waiting: body.counts?.waitingForMe ?? 0,
+    operatorWritesUnacknowledged: Array.isArray(ext.operatorWritesUnacknowledged)
+      ? ext.operatorWritesUnacknowledged.filter((id) => typeof id === "string")
+      : [],
+    coolingOffAgainstMe: Array.isArray(ext.coolingOffAgainstMe)
+      ? ext.coolingOffAgainstMe.filter(
+          (c) => !!c && typeof c.actionId === "string" && typeof c.landsAt === "string",
+        )
+      : [],
+  };
 }
 
 export async function showAction(actionId: string): Promise<Action> {
@@ -158,6 +257,16 @@ export async function cancelAction(actionId: string, reason?: string): Promise<A
   const payload: Record<string, unknown> = { actionId };
   if (trimmed) payload.reason = trimmed.slice(0, MAX_REASON_LEN);
   return (await postSignedTrustTask<{ action: Action }>(ACTIONS_CANCEL_TASK, payload)).action;
+}
+
+/**
+ * Record that you have seen an operator's offline write (VTI-VTC-023). It is
+ * already in effect; acknowledging changes nothing. The console key may sign
+ * this, as it may a read or a cancel.
+ */
+export async function acknowledgeAction(actionId: string): Promise<Action> {
+  return (await postSignedTrustTask<{ action: Action }>(ACTIONS_ACKNOWLEDGE_TASK, { actionId }))
+    .action;
 }
 
 // ── Deciding (the approver's own DID, through the wallet) ───────────
@@ -298,6 +407,26 @@ export function explainCancelError(e: unknown): string {
       return "Only the administrator who raised an action can cancel it.";
     case "notOpen":
       return "That action has already closed.";
+    default:
+      return (e as Error | null)?.message ?? String(e);
+  }
+}
+
+/** Whether `e` says the caller had already acknowledged the item — not a
+ *  failure: the earlier acknowledgement stands. */
+export function isAlreadyAcknowledged(e: unknown): boolean {
+  return codeTail(e) === "alreadyAcknowledged";
+}
+
+/** What to tell an administrator whose acknowledgement failed. */
+export function explainAcknowledgeError(e: unknown): string {
+  switch (codeTail(e)) {
+    case "notFound":
+      return "That item no longer exists.";
+    case "notAcknowledgeable":
+      return "This is not an operator's change waiting for your acknowledgement.";
+    case "alreadyAcknowledged":
+      return "You have already acknowledged this; your earlier acknowledgement stands.";
     default:
       return (e as Error | null)?.message ?? String(e);
   }

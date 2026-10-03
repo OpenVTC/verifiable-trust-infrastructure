@@ -103,6 +103,11 @@ it does not create the community profile. The first `vtc admin invite`, or a
 later claim, is what gives that DID a way into the console. Because of the
 `409` rule above, the claim itself will not write a second ACL entry.
 
+Like every offline write, this one is raised in **Actions** at the next start
+for the administrators to acknowledge. With no administrator when it ran, it
+is for every administrator there is now, so the first admin acknowledges it
+after signing in (see [below](#adding-a-second-admin-later)).
+
 **You also need the DID's private key.** Setup shows the admin DID's key only
 once, in the interactive wizard, behind a confirmation. `vtc setup --from`
 never prints it. For scripts and CI, mint a dedicated admin key on the VTC
@@ -191,12 +196,13 @@ that DID instead of registering a passkey (`vtc/install/claim/{start,finish}/0.3
 1. Mint the install token for the persona's DID (`vtc setup`, or `vtc admin
    invite --did <persona DID>` with the daemon stopped). Deliver the URL and
    the claim code separately.
-2. A client that speaks claim 0.3 sends the token and claim code; the
+2. Open the install URL. The console's install page offers this claim (0.3)
+   alongside the passkey claim (0.2). It sends the token and claim code; the
    founder's wallet signs the finish **as the persona** — checked against the
    persona's live DID document — and the browser plugin's approver identity
-   signs an enrolment statement over the claim's challenge. (The console's
-   install page still drives the passkey claim, 0.2; a 0.3 page waits on the
-   plugin release that signs approver statements.)
+   signs an enrolment statement over the claim's challenge, as the founder's
+   step-up factor. Five wrong claim codes void the install token; each is
+   answered `invalidToken`, so the answers don't reveal the count.
 3. The bootstrap writes the founder's admin row and binds the approver as their
    step-up factor (`enrolledVia: install`). They step up with it from then on;
    no passkey is ever registered.
@@ -215,6 +221,7 @@ wallet-only — the operator mints the same invite on the host:
 vtc admin enrol-approver --did did:webvh:…:alice --ttl 900
 # prints the enrolment URL and, separately, the claim code
 # start the daemon; it audits the invite as AclBreakGlassWritten
+# and raises it in Actions for the administrators to acknowledge
 ```
 
 The subject opens the URL, types the code, and signs the redemption with their
@@ -253,7 +260,17 @@ operation itself (VTI-APV-017). One decline closes it. Actions last 72 hours by
 default (`acl.action_lifetime`, 15 minutes to 14 days, runtime-patchable).
 The same applies to removing another unrestricted admin, lowering the consent
 threshold, and changing authority policy
-([`admin-access.md`](admin-access.md) §3.2).
+([`admin-access.md`](admin-access.md) §3.2). With only two unrestricted admins,
+a removal has nobody to approve it, so it lands after a 24-hour cooling-off
+the requester can cancel (`acl.removal_cooling_off`,
+[`admin-access.md`](admin-access.md) §3.4).
+
+When the operation makes a new unrestricted admin, the VTC also issues that
+admin an approver enrolment invite. The requester sees it once, on the
+completed action in **Actions**: send the new admin the URL, and the claim
+code by a separate channel. They redeem it at `/admin/enrol-approver` to bind
+their approver device as their step-up factor
+([`admin-access.md`](admin-access.md) §3.1a).
 
 Approvers find waiting actions in the console's **Actions** page and approve
 there with the browser wallet, which signs the decision as their own DID. An
@@ -278,9 +295,21 @@ you installed without one, add the second offline with `vtc acl add`, daemon
 stopped.
 
 Every offline ACL change — `vtc acl add` and `remove`, `vtc create-did-key
---admin`, `vtc admin invite` — skips these checks by design, and each is
-recorded: the daemon writes an `AclBreakGlassWritten` audit row for it when it
-next starts, naming the command, the DID and the host it ran on.
+--admin`, `vtc admin invite`, `vtc admin enrol-approver`, `vtc admin
+emergency-bootstrap` — skips these checks by design, and each is recorded:
+the daemon writes an `AclBreakGlassWritten` (or `EmergencyBootstrapInvoked`)
+audit row for it when it next starts, naming the command, the DID and the host
+it ran on.
+
+It also raises the write in **Actions** as an item to acknowledge
+(VTI-VTC-023). It is for the administrators who held an admin role when the
+write was made and still hold one; if none remain — and always after an
+emergency bootstrap — it is for every administrator now. **After any offline
+`vtc acl` or `vtc admin` command, those administrators must sign in and
+acknowledge it**: until they do, the console shows each of them a `Critical`
+banner that cannot be dismissed. Acknowledging is audited, and does not undo
+the write; it closes the item once everyone it is for has acknowledged
+([`admin-access.md`](admin-access.md) §3.5).
 
 ## Part 2 — the first vetter
 
@@ -379,6 +408,7 @@ vetting criterion when you want applicants to be able to join by it.
 | Check | How |
 |---|---|
 | The admin can sign in | Console sign-in with the passkey, or `vtc acl list` (daemon stopped) shows an `admin` entry |
+| Offline writes are acknowledged | No `Critical` operator-write banner in the console; **Actions** has nothing left to acknowledge |
 | A script can authenticate | `POST /v1/auth/` returns a token, not `403` |
 | `cnm` can administer the community | `cnm vetting vetters list` answers; if it prints `vtc acl add`, run that |
 | The first vetter is a member | **Members** lists the DID |

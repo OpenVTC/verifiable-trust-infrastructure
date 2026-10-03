@@ -292,6 +292,7 @@ pub(crate) async fn commit_invite(
             Some(req.did.clone()),
         )
         .await?;
+    crate::admin_actions::record_effect(state).await;
 
     let install_url = format!(
         "{}/admin/install?token={}",

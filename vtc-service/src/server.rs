@@ -1284,7 +1284,11 @@ pub async fn run(
     // present-challenge / credx-pending rows, and `Failed` registry sync jobs
     // accumulated forever. Unconditional — unlike the registry syncer, it has
     // no external dependency. Runs on its own task until shutdown.
-    // The action list's expiry and invalidation sweep (VTI-APV-008, §4.4).
+    // The action list's sweep (VTI-APV-008, §4.4): expiry, invalidation,
+    // acknowledgement, cooling-offs that are due (VTI-APV-019) — and, on its
+    // first pass, at startup, the reconciliation of any action a crash left
+    // `executing` (R2.1): nothing is running in this new process, so every one
+    // is settled from the effect it recorded.
     crate::admin_actions::spawn_sweeper(state.clone(), shutdown_rx.clone());
     crate::join::retention::RetentionSweeper::spawn(
         state.join_requests_ks.clone(),
@@ -1356,43 +1360,10 @@ pub async fn run(
         }
     }
 
-    // M0.10: consume + audit any pending emergency-bootstrap marker
-    // left behind by `vtc admin emergency-bootstrap`. The marker is
-    // **one-shot**: `take_pending_emergency` deletes it as part of
-    // reading, so a restart loop emits the loud event exactly once.
-    if let (Some(pending), Some(writer)) = (
-        state
-            .install_store
-            .take_pending_emergency()
-            .await
-            .ok()
-            .flatten(),
-        state.audit_writer.as_ref(),
-    ) {
-        warn!(
-            operator_hostname = %pending.operator_hostname,
-            invoked_at = %pending.invoked_at,
-            "EMERGENCY BOOTSTRAP was invoked since the daemon last ran — auditing now",
-        );
-        if let Err(e) = writer
-            .write(
-                "did:key:vtc-emergency",
-                None,
-                vti_common::audit::AuditEvent::EmergencyBootstrapInvoked(
-                    vti_common::audit::EmergencyBootstrapData {
-                        operator_hostname: pending.operator_hostname,
-                        invoked_at: pending.invoked_at,
-                    },
-                ),
-            )
-            .await
-        {
-            error!(error = %e, "failed to emit EmergencyBootstrapInvoked envelope");
-        }
-    }
-
-    // VTI-APV-014 / VTI-APV-016: audit every write an offline command made
-    // while the daemon was stopped.
+    // M0.10, VTI-APV-014 / VTI-APV-016 / VTI-VTC-023: audit every write an
+    // offline command made while the daemon was stopped — the emergency
+    // bootstrap included — and raise each for every remaining administrator to
+    // acknowledge.
     audit_offline_break_glass(&state).await;
 
     // Snapshot the CORS allowlist + routing config before the
@@ -2343,54 +2314,147 @@ async fn wait_for_handle<T>(
     }
 }
 
-/// Audit every write an offline command made while the daemon was stopped —
-/// an ACL grant or removal (VTI-APV-014), or a step-up approver invite minted
-/// on the host (`vtc admin enrol-approver`, VTI-APV-016). Each skipped the
-/// rules the daemon enforces by design; this is the row that says so. Taken
-/// (and deleted) as it is read, so a restart loop audits each once. Called at
-/// boot, once the audit writer is online.
+/// Surface every write an offline command made while the daemon was stopped —
+/// an ACL grant or removal (VTI-APV-014), a step-up approver invite minted on
+/// the host (`vtc admin enrol-approver`, VTI-APV-016), an emergency bootstrap.
+/// Each skipped the rules the daemon enforces by design. For each, this writes
+/// the audit row that says so and raises an `acknowledge` item every remaining
+/// administrator must acknowledge (**VTI-VTC-023**,
+/// [`crate::admin_actions::raise_operator_item`]). Called at boot, once the
+/// audit writer is online.
+///
+/// Remote-first (CLAUDE.md R2.1): a marker is cleared only after its item is
+/// raised. A crash in between raises it again on the next boot — under the
+/// same id, so once — rather than losing it; at worst its audit row is written
+/// twice, never not at all.
 pub async fn audit_offline_break_glass(state: &AppState) {
-    // VTI-APV-014: audit every ACL write an offline command made while the
-    // daemon was stopped. Each skipped the consent and attrition rules by
-    // design; this is the row that says so. Taken (and deleted) as it is read,
-    // so a restart loop audits each once.
-    if let Some(writer) = state.audit_writer.as_ref() {
-        match state.install_store.take_break_glass().await {
-            Ok(writes) => {
-                for w in writes {
+    use crate::admin_actions::{OperatorWrite, operator_item_raised, raise_operator_item};
+
+    // M0.10: an emergency bootstrap wiped every administrator, so its item is
+    // for whoever administers the community next (`vtc-admin-roles.md` §2).
+    match state.install_store.peek_pending_emergency().await {
+        Ok(Some(pending)) => {
+            let write = OperatorWrite {
+                marker: format!(
+                    "emergency:{}:{}",
+                    pending.operator_hostname,
+                    pending.invoked_at.to_rfc3339()
+                ),
+                command: "vtc admin emergency-bootstrap".into(),
+                action: "emergencyBootstrap".into(),
+                did: None,
+                role: None,
+                scopes: Vec::new(),
+                operator_host: pending.operator_hostname.clone(),
+                invoked_at: pending.invoked_at,
+                acknowledgers: None,
+            };
+            match operator_item_raised(state, &write.marker).await {
+                Ok(true) => {}
+                Ok(false) => {
                     warn!(
-                        command = %w.command,
-                        action = %w.action,
-                        did = %w.did,
-                        operator_hostname = %w.operator_hostname,
-                        invoked_at = %w.invoked_at,
-                        "an offline change (break-glass) was made since the daemon last ran \
-                         — auditing now",
+                        operator_hostname = %pending.operator_hostname,
+                        invoked_at = %pending.invoked_at,
+                        "EMERGENCY BOOTSTRAP was invoked since the daemon last ran — auditing now",
                     );
-                    let subject = w.did.clone();
-                    if let Err(e) = writer
+                    if let Some(writer) = state.audit_writer.as_ref()
+                        && let Err(e) = writer
+                            .write(
+                                "did:key:vtc-emergency",
+                                None,
+                                vti_common::audit::AuditEvent::EmergencyBootstrapInvoked(
+                                    vti_common::audit::EmergencyBootstrapData {
+                                        operator_hostname: pending.operator_hostname.clone(),
+                                        invoked_at: pending.invoked_at,
+                                    },
+                                ),
+                            )
+                            .await
+                    {
+                        error!(error = %e, "failed to emit EmergencyBootstrapInvoked envelope");
+                    }
+                    if let Err(e) = raise_operator_item(state, &write).await {
+                        error!(error = %e, "could not raise the emergency bootstrap for acknowledgement; kept for the next boot");
+                        return;
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "could not read the action list; the emergency marker is kept");
+                    return;
+                }
+            }
+            if let Err(e) = state.install_store.clear_pending_emergency().await {
+                error!(error = %e, "could not clear the emergency-bootstrap marker");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => error!(error = %e, "failed to read the emergency-bootstrap marker"),
+    }
+
+    let writes = match state.install_store.pending_break_glass().await {
+        Ok(w) => w,
+        Err(e) => {
+            error!(error = %e, "failed to read queued break-glass ACL writes");
+            return;
+        }
+    };
+    for (key, w) in writes {
+        let write = OperatorWrite {
+            marker: format!("break-glass:{}", String::from_utf8_lossy(&key)),
+            command: w.command.clone(),
+            action: w.action.clone(),
+            did: Some(w.did.clone()),
+            role: (!w.role.is_empty()).then(|| w.role.clone()),
+            scopes: w.contexts.clone(),
+            operator_host: w.operator_hostname.clone(),
+            invoked_at: w.invoked_at,
+            acknowledgers: (!w.admins.is_empty()).then(|| w.admins.clone()),
+        };
+        match operator_item_raised(state, &write.marker).await {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!(
+                    command = %w.command,
+                    action = %w.action,
+                    did = %w.did,
+                    operator_hostname = %w.operator_hostname,
+                    invoked_at = %w.invoked_at,
+                    "an offline change (break-glass) was made since the daemon last ran \
+                     — auditing now and raising it for every administrator to acknowledge",
+                );
+                if let Some(writer) = state.audit_writer.as_ref()
+                    && let Err(e) = writer
                         .write(
                             "did:key:vtc-break-glass",
-                            Some(&subject),
+                            Some(&w.did),
                             vti_common::audit::AuditEvent::AclBreakGlassWritten(
                                 vti_common::audit::BreakGlassAclData {
-                                    command: w.command,
-                                    action: w.action,
-                                    did: w.did,
-                                    role: w.role,
-                                    contexts: w.contexts,
-                                    operator_hostname: w.operator_hostname,
+                                    command: w.command.clone(),
+                                    action: w.action.clone(),
+                                    did: w.did.clone(),
+                                    role: w.role.clone(),
+                                    contexts: w.contexts.clone(),
+                                    operator_hostname: w.operator_hostname.clone(),
                                     invoked_at: w.invoked_at,
                                 },
                             ),
                         )
                         .await
-                    {
-                        error!(error = %e, "failed to emit AclBreakGlassWritten envelope");
-                    }
+                {
+                    error!(error = %e, "failed to emit AclBreakGlassWritten envelope");
+                }
+                if let Err(e) = raise_operator_item(state, &write).await {
+                    error!(error = %e, "could not raise an offline write for acknowledgement; kept for the next boot");
+                    continue;
                 }
             }
-            Err(e) => error!(error = %e, "failed to read queued break-glass ACL writes"),
+            Err(e) => {
+                error!(error = %e, "could not read the action list; the break-glass marker is kept");
+                continue;
+            }
+        }
+        if let Err(e) = state.install_store.clear_break_glass(key).await {
+            error!(error = %e, "could not clear a break-glass marker");
         }
     }
 }

@@ -138,6 +138,7 @@ pub(crate) async fn patch_config(
             });
             continue;
         }
+        crate::admin_actions::record_effect(state).await;
 
         info!(
             key = %key,
@@ -430,6 +431,7 @@ fn lookup_live(cfg: &crate::config::AppConfig, key: &str) -> Value {
         crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD => {
             Value::Number(cfg.acl.unrestricted_admin_consent_threshold.into())
         }
+        crate::config_store::CONSENT_REQUEST_PUSH => Value::Bool(cfg.acl.consent_request_push),
         other => crate::config_store::action_key_live(cfg, other)
             .map(|n| Value::Number(n.into()))
             .unwrap_or(Value::Null),
@@ -473,6 +475,12 @@ fn apply_to_live(cfg: &mut crate::config::AppConfig, key: &str, value: &Value) -
         && let Some(n) = value.as_u64().filter(|n| *n >= 1)
     {
         cfg.acl.unrestricted_admin_consent_threshold = n;
+        return true;
+    }
+    if key == crate::config_store::CONSENT_REQUEST_PUSH
+        && let Some(b) = value.as_bool()
+    {
+        cfg.acl.consent_request_push = b;
         return true;
     }
     // The action-list settings are read live by `crate::admin_actions` too;
@@ -803,6 +811,7 @@ pub(crate) async fn import_inner(
             continue;
         }
         config_overrides_applied.push(key.clone());
+        crate::admin_actions::record_effect(state).await;
         let mut change = ConfigChange {
             key: key.clone(),
             old_value: old_value.clone(),

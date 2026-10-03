@@ -219,13 +219,26 @@ async fn vti_apv_019_removing_an_unrestricted_admin_needs_a_third_party() {
 }
 
 /// The two-admin rule: with nobody but requester and subject, the requester's
-/// gesture is enough — a compromised co-admin must stay removable — and the
-/// removal is audited at `Critical`.
+/// gesture is enough — a compromised co-admin must stay removable — after a
+/// cooling-off both can see (`vtc-action-list.md` §8.2), and the removal is
+/// audited at `Critical` when it lands. The cooling-off itself is
+/// `action_list_a2.rs`; here it is set to zero.
 #[tokio::test]
 async fn vti_apv_019_a_two_admin_removal_takes_the_step_up_and_is_audited_critical() {
     let mut fix = fixture().await;
     let a = requester(&mut fix).await;
     let b = admin(&fix).await;
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            PATCH,
+            json!({ "overrides": { "acl.removal_cooling_off": 0 } }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
     let revoke = signed(&a, REVOKE, json!({ "subject": b.did })).await;
 
     let (status, reply) = post(&fix.vtc, &revoke).await;

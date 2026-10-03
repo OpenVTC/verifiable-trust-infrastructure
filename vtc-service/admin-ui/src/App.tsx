@@ -19,9 +19,10 @@ import {
   ACTIONS_PLUGIN_ID,
   bannerDismissed,
   dismissBanner,
-  useWaitingCount,
+  useActionsAttention,
   waitingSentence,
 } from "@/lib/action-badge";
+import { CoolingOffBanner, OperatorWriteBanner } from "@/components/ActionsAlertBanners";
 import { isSuperAdmin } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
@@ -175,9 +176,12 @@ export default function App() {
   // How many administrator actions wait for this admin (lib/action-badge.ts):
   // the Actions nav badge, the banner below and the tab title. Only once the
   // browser can sign — the count is a signed read.
-  const waiting = useWaitingCount(
+  // The same read carries the operator writes awaiting this admin's
+  // acknowledgement and the cooling-offs against them — the Critical banners.
+  const attention = useActionsAttention(
     needsSigning && signing.data?.state === "ready" && !pathname.startsWith("/install"),
   );
+  const waiting = attention.waiting;
   const [bannerHidden, setBannerHidden] = useState(bannerDismissed);
 
   // Re-arm the session-expiry guard whenever a fresh session lands.
@@ -356,6 +360,11 @@ export default function App() {
         {/* Not dismissible: it clears when every self-granted elevated right
             has been ratified or revoked (git-ns/right/break-glass). */}
         <BreakGlassBanner />
+        {/* Not dismissible either: an operator's offline write clears when
+            acknowledged (VTI-VTC-023), a cooling-off against you when it is
+            cancelled or lands (VTI-APV-019). */}
+        <OperatorWriteBanner actionIds={attention.operatorWritesUnacknowledged} />
+        <CoolingOffBanner items={attention.coolingOffAgainstMe} />
         {renewSoon && !pathname.startsWith("/console-keys") && (
           <div className="signing-renew-banner" role="status">
             <strong>This browser's signing key expires soon.</strong>

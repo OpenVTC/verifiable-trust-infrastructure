@@ -281,6 +281,52 @@ async fn claim_start_v0_3_answers_the_codes_its_spec_declares() {
     );
 }
 
+/// The fifth wrong claim code voids the install token: the right code after it
+/// opens nothing, and the token's state is gone. Every attempt answers alike,
+/// so the count is no oracle (claim/start 0.3, as the approver invite's).
+#[tokio::test]
+async fn claim_start_v0_3_five_wrong_codes_void_the_install_token() {
+    let fix = fixture().await;
+    let founder = Party::new();
+    let (token, code) = token_for(&fix, &founder.did).await;
+    let jti = vtc_service::install::parse_install_token(&fix.signer, &token)
+        .unwrap()
+        .jti
+        .parse::<uuid::Uuid>()
+        .unwrap();
+    for _ in 0..4 {
+        let wrong = vtc_service::install::claim_secret::generate();
+        let (_, out) = start(&fix, &token, &wrong).await;
+        assert_eq!(tt_error_code(&out), Some(START_V0_3_ERR_INVALID_TOKEN));
+    }
+    // Four wrong codes: the right one still opens the claim.
+    let (status, opened) = start(&fix, &token, &code).await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let (_, out) = start(
+        &fix,
+        &token,
+        &vtc_service::install::claim_secret::generate(),
+    )
+    .await;
+    assert_eq!(tt_error_code(&out), Some(START_V0_3_ERR_INVALID_TOKEN));
+    assert!(
+        fix.vtc
+            .state
+            .install_store
+            .get_token(&jti)
+            .await
+            .unwrap()
+            .is_none(),
+        "voided"
+    );
+    let (_, out) = start(&fix, &token, &code).await;
+    assert_eq!(
+        tt_error_code(&out),
+        Some(START_V0_3_ERR_INVALID_TOKEN),
+        "the right code opens nothing once the token is void: {out}"
+    );
+}
+
 #[tokio::test]
 async fn claim_finish_v0_3_answers_the_codes_its_spec_declares() {
     let fix = fixture().await;

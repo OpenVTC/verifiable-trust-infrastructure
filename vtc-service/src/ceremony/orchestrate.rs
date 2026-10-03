@@ -354,7 +354,7 @@ async fn run_role_change(
     // (VTI-APV-019). Only the signed `acl/change-role` door carries an
     // operation to bind them to; a door that has none (`vtc/members/update`)
     // is refused rather than let through.
-    let mut unopposed = None;
+    let mut demotion = None;
     if let Some(prior) = demoted.as_ref() {
         let StepUpSource::BoundTo { type_uri, payload } = source else {
             return Err(AppError::Forbidden(format!(
@@ -374,8 +374,8 @@ async fn run_role_change(
         )
         .await
         {
-            Ok(true) => unopposed = Some((prior.clone(), type_uri)),
-            Ok(false) => {}
+            Ok(Some(agreement)) => demotion = Some((prior.clone(), type_uri, agreement)),
+            Ok(None) => {}
             Err(crate::error::TaskError::StepUp { request, .. }) => {
                 return Ok(RoleChangeOutcome::StepUpRequired(request));
             }
@@ -392,15 +392,24 @@ async fn run_role_change(
             "remint effect did not produce an outcome".into(),
         ));
     };
-    // Nobody else was left to consent to this demotion: recorded at the
-    // highest severity, once it has landed (VTI-APV-019). A member subject is
-    // sent the re-minted role credential below. There is no specified notice
-    // for a role change, so an ACL-only subject is told nothing beyond what the
-    // audit log shows — a gap the specification has to close
-    // (`member-removal-notice` covers removal only).
-    if let Some((prior, type_uri)) = unopposed {
-        crate::acl::admin_consent::record_unopposed_reduction(state, actor_did, &prior, type_uri)
-            .await?;
+    // A demotion of an administrator, once it has landed: the subject is sent
+    // `vtc/members/authority-reduced-notice` (`demoted`, whether anyone else
+    // agreed), and one nobody else could consent to is recorded at the highest
+    // severity (VTI-APV-019). A member subject is also sent the re-minted role
+    // credential below.
+    if let Some((prior, type_uri, agreement)) = demotion {
+        let after = crate::acl::get_acl_entry(&state.acl_ks, subject_did).await?;
+        crate::acl::admin_consent::after_reduction(
+            state,
+            actor_did,
+            &prior,
+            after.as_ref(),
+            agreement,
+            type_uri,
+            None,
+            true,
+        )
+        .await?;
     }
 
     // Deliver the re-minted role VAC to the member's wallet over DIDComm so it
@@ -733,7 +742,7 @@ pub async fn remove_inner(
     // The removal of an administrator by another: after the decision, before
     // the effect (VTI-APV-019). The executor's no-last-admin invariant still
     // runs under its lock below.
-    let mut unopposed = None;
+    let mut reduction = None;
     if actor_did != target_did
         && let Some(prior) = target_acl.as_ref()
         && prior.role == VtcRole::Admin
@@ -746,7 +755,7 @@ pub async fn remove_inner(
             ))
             .into());
         };
-        if crate::acl::admin_consent::settle_reduction(
+        if let Some(agreement) = crate::acl::admin_consent::settle_reduction(
             state,
             actor_did,
             prior,
@@ -756,7 +765,7 @@ pub async fn remove_inner(
         )
         .await?
         {
-            unopposed = Some(op.type_uri);
+            reduction = Some((op.type_uri, agreement));
         }
     }
 
@@ -794,10 +803,12 @@ pub async fn remove_inner(
 
     // Nobody else was left to consent: recorded at the highest severity once
     // the removal has landed (VTI-APV-019). The removal notice below tells the
-    // subject.
-    if let (Some(task), Some(prior)) = (unopposed, target_acl.as_ref()) {
-        crate::acl::admin_consent::record_unopposed_reduction(state, actor_did, prior, task)
-            .await?;
+    // subject — never the authority-reduced notice as well (`notify: false`).
+    if let (Some((task, agreement)), Some(prior)) = (reduction, target_acl.as_ref()) {
+        crate::acl::admin_consent::after_reduction(
+            state, actor_did, prior, None, agreement, task, None, false,
+        )
+        .await?;
     }
 
     // M2.14: the executor flipped the revocation bit (best-effort). Emit the

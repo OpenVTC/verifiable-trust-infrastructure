@@ -9,9 +9,27 @@
 
 import { Link } from "react-router-dom";
 
+import { formatIso } from "@/lib/format";
 import { parkedOf, type ParkedAction } from "@/lib/parked-action";
 
 export function ParkedNotice({ action }: { action: ParkedAction }) {
+  // A cooling-off (VTI-APV-019) asks nobody for approval: it lands by itself
+  // unless the requester cancels it, so "N must approve" would be false.
+  if (action.coolingOffUntil) {
+    return (
+      <section className="card success parked-notice" role="status">
+        <h3>Sent — lands after a cooling-off</h3>
+        <p>{action.message}</p>
+        <p>
+          Lands by itself at <strong>{formatIso(action.coolingOffUntil)}</strong> unless you
+          cancel it.
+        </p>
+        <p>
+          <Link to={action.path}>View the action</Link>
+        </p>
+      </section>
+    );
+  }
   return (
     <section className="card success parked-notice" role="status">
       <h3>Sent for approval</h3>

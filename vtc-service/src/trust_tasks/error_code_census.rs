@@ -997,6 +997,12 @@ fn action_witnesses() -> Vec<Witness> {
             "unrestricted_admin_consent.rs",
             "an_approval_action_is_not_acknowledgeable"
         ),
+        witness!(
+            a::acknowledge::v0_1::error_codes::ALREADY_ACKNOWLEDGED,
+            c::ACKNOWLEDGE_ALREADY_ACKNOWLEDGED,
+            "action_list_a2.rs",
+            "vti_vtc_023_every_offline_writer_raises_an_acknowledge_item"
+        ),
     ]
 }
 
@@ -1168,11 +1174,6 @@ fn unwitnessed() -> Vec<DeclaredErrorCode> {
         // before anything else, so different bytes are `chunkMismatch` first;
         // the same bytes are the idempotent `stored: false`.
         s::website::upload::chunk::v0_1::error_codes::ALREADY_STORED,
-        // `alreadyAcknowledged` needs an `acknowledge`-category action, and
-        // nothing raises one yet: operator-write acknowledge items are the
-        // action list's phase A2 (`vtc-action-list.md` §8.3b). Every action
-        // A1 raises is an approval, answered `notAcknowledgeable`.
-        s::admin::actions::acknowledge::v0_1::error_codes::ALREADY_ACKNOWLEDGED,
         // BASELINE-END
     ]
 }

@@ -57,6 +57,7 @@
 //! drives this same pipeline.
 
 pub mod assemble;
+pub mod authority_reduced_notice;
 pub mod effects;
 pub mod evaluate;
 pub mod execute;

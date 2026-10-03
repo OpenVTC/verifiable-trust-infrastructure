@@ -17,7 +17,11 @@ const WHOAMI: WhoamiResponse = {
 };
 const LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
 
-const reads = vi.hoisted(() => ({ waiting: 2, calls: [] as [string, unknown][] }));
+const reads = vi.hoisted(() => ({
+  waiting: 2,
+  calls: [] as [string, unknown][],
+  ext: {} as Record<string, unknown>,
+}));
 
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
@@ -26,7 +30,11 @@ vi.mock("@/lib/api", async (original) => ({
   postSignedRead: vi.fn(async (type: string, payload: unknown) => {
     reads.calls.push([type, payload]);
     if (type === LIST) {
-      return { actions: [], counts: { waitingForMe: reads.waiting, requestedByMe: 0 } };
+      return {
+        actions: [],
+        counts: { waitingForMe: reads.waiting, requestedByMe: 0 },
+        ext: { "org.openvtc": reads.ext },
+      };
     }
     return { items: [], entries: [], truncated: false, breakGlass: [], records: [] };
   }),
@@ -70,6 +78,7 @@ beforeAll(() => {
 beforeEach(() => {
   reads.waiting = 2;
   reads.calls.length = 0;
+  reads.ext = { operatorWritesUnacknowledged: [], coolingOffAgainstMe: [] };
   sessionStorage.clear();
   document.title = "VTC Admin";
 });
@@ -119,5 +128,63 @@ describe("the Actions badge", () => {
     expect(screen.queryByText(/waiting for your approval/)).toBeNull();
     expect(screen.queryByLabelText(/waiting for you/)).toBeNull();
     expect(document.title).toBe("VTC Admin");
+  });
+});
+
+// The two Critical banners (VTI-VTC-023, VTI-APV-019): read off the same
+// list response's ext, and never dismissable — each clears only when what it
+// reports does.
+describe("the Critical action banners", () => {
+  const REQUESTER = "did:key:z6MkRequesterBobYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY";
+  const LANDS_AT = "2026-10-05T09:00:00Z";
+
+  it("shows a non-dismissable banner while an operator write awaits acknowledgement", async () => {
+    reads.ext = { operatorWritesUnacknowledged: ["ack-1"], coolingOffAgainstMe: [] };
+    shell();
+    const text = await screen.findByText(
+      "The operator changed this community's access control offline. Acknowledge it in Actions.",
+    );
+    const banner = text.closest('[role="alert"]') as HTMLElement;
+    expect(banner).toBeTruthy();
+    expect(within(banner).queryByRole("button")).toBeNull();
+    expect(within(banner).getByRole("link", { name: "Open Actions" }).getAttribute("href")).toBe(
+      "/actions?action=ack-1",
+    );
+    // Dismissing the waiting-count banner leaves it in place.
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss for this session" }));
+    expect(screen.getByText(/access control offline/)).toBeTruthy();
+  });
+
+  it("stays on the Actions page too", async () => {
+    reads.ext = { operatorWritesUnacknowledged: ["ack-1", "ack-2"], coolingOffAgainstMe: [] };
+    shell("/actions");
+    expect(await screen.findByText(/access control offline/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open Actions" }).getAttribute("href")).toBe(
+      "/actions",
+    );
+  });
+
+  it("shows a non-dismissable banner while a cooling-off reduces your authority", async () => {
+    reads.ext = {
+      operatorWritesUnacknowledged: [],
+      coolingOffAgainstMe: [{ actionId: "cool-1", requester: REQUESTER, landsAt: LANDS_AT }],
+    };
+    shell();
+    const text = await screen.findByText(/has asked to reduce your authority/);
+    expect(text.textContent).toContain(
+      `It takes effect at ${new Date(LANDS_AT).toLocaleString()} unless they cancel it.`,
+    );
+    const banner = text.closest('[role="alert"]') as HTMLElement;
+    expect(within(banner).queryByRole("button")).toBeNull();
+    expect(
+      within(banner).getByRole("link", { name: "View the action" }).getAttribute("href"),
+    ).toBe("/actions?action=cool-1");
+  });
+
+  it("shows neither when the ext is empty", async () => {
+    shell();
+    await screen.findByText("2 actions waiting for your approval.");
+    expect(screen.queryByText(/access control offline/)).toBeNull();
+    expect(screen.queryByText(/reduce your authority/)).toBeNull();
   });
 });

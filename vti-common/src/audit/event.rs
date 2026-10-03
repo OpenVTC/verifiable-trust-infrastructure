@@ -725,6 +725,17 @@ pub enum AuditEvent {
     /// approving the next one, and each of those approvers' cards carries the
     /// same flag. Nothing is refused by it; the per-requester cap does that.
     AdminActionBurst(AdminActionBurstData),
+
+    /// An approved action's operation has written its effect — recorded by
+    /// the operation itself, at its write, while the action executes
+    /// (VTI-APV-017).
+    ///
+    /// It is how an execution interrupted by a crash is reconciled
+    /// truthfully: the action was persisted as executing (with
+    /// `execution_id`) before the operation ran, so on restart a row naming
+    /// that execution says the effect landed, and its absence that it did
+    /// not (CLAUDE.md R2.1).
+    AdminActionEffect(AdminActionEffectData),
 }
 
 /// How much an audit event matters to someone reviewing the log. Ordered:
@@ -854,6 +865,7 @@ impl AuditEvent {
             Self::GitNsBreakGlass(..) => "GitNsBreakGlass",
             Self::AuthorityReducedUnopposed(..) => "AuthorityReducedUnopposed",
             Self::AdminActionBurst(..) => "AdminActionBurst",
+            Self::AdminActionEffect(..) => "AdminActionEffect",
         }
     }
 
@@ -1072,6 +1084,19 @@ pub struct AdminActionBurstData {
     pub raised: u32,
     /// The window, in seconds.
     pub window_secs: u64,
+}
+
+/// Payload for [`AuditEvent::AdminActionEffect`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminActionEffectData {
+    /// The action whose operation wrote its effect.
+    pub action_id: String,
+    /// The execution that wrote it — one per attempt, persisted with the
+    /// action before the operation ran.
+    pub execution_id: String,
+    /// The Trust Task type URI of the operation.
+    pub task: String,
 }
 
 /// Payload for [`AuditEvent::GitNsBreakGlass`].

@@ -57,6 +57,12 @@ export class ParkedAction extends Error {
   readonly expiresAt?: string;
   /** The task that was parked. */
   readonly typeUri?: string;
+  /**
+   * Set when nobody but the requester and the subject could consent, so the
+   * act waits out a cooling-off and lands by itself at this time unless the
+   * requester cancels it (VTI-APV-019). No approval is asked for.
+   */
+  readonly coolingOffUntil?: string;
 
   constructor(fields: {
     actionId: string;
@@ -67,6 +73,7 @@ export class ParkedAction extends Error {
     approvals?: number;
     expiresAt?: string;
     typeUri?: string;
+    coolingOffUntil?: string;
   }) {
     super(fields.message ?? parkedSentence(fields));
     this.name = "ParkedAction";
@@ -77,6 +84,12 @@ export class ParkedAction extends Error {
     this.approvals = fields.approvals;
     this.expiresAt = fields.expiresAt;
     this.typeUri = fields.typeUri;
+    this.coolingOffUntil = fields.coolingOffUntil;
+  }
+
+  /** Whether this act waits out a cooling-off rather than for approvals. */
+  get coolingOff(): boolean {
+    return this.coolingOffUntil !== undefined;
   }
 
   /** Where the console shows this action. */
@@ -90,7 +103,9 @@ function parkedSentence(f: {
   threshold?: number;
   approvers?: number;
   expiresAt?: string;
+  coolingOffUntil?: string;
 }): string {
+  if (f.coolingOffUntil) return coolingOffSentence(f.coolingOffUntil);
   const k = f.threshold;
   const n = f.approvers;
   const who =
@@ -99,6 +114,14 @@ function parkedSentence(f: {
       : "";
   const when = f.expiresAt ? ` before ${new Date(f.expiresAt).toLocaleString()}` : "";
   return `Sent for approval${who}${when}.`;
+}
+
+/** The notice for an act that waits out a cooling-off (VTI-APV-019). */
+export function coolingOffSentence(until: string): string {
+  return (
+    `Nobody else can consent to this, so no approval is asked for: it lands by itself ` +
+    `after a cooling-off, at ${new Date(until).toLocaleString()}, unless you cancel it.`
+  );
 }
 
 /**
@@ -125,6 +148,7 @@ export function parkedActionFromDocument(doc: unknown): ParkedAction | null {
     approvals: num(ext.approvals),
     expiresAt: str(ext.expiresAt),
     typeUri: str(p.inResponseTo?.typeUri),
+    coolingOffUntil: str(ext.coolingOffUntil),
   });
 }
 

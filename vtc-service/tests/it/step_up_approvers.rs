@@ -472,11 +472,11 @@ async fn vti_apv_015_a_console_key_cannot_sign_an_approver_answer() {
 
     let st = step_up_statement(&vtc, &approver, &admin.did, &request).await;
     let (_, out) = answer(&vtc, &console, &request, st.clone()).await;
-    assert!(
-        matches!(
-            error_code(&out),
-            Some("permissionDenied") | Some("auth/step-up/approve-response:subjectMismatch")
-        ),
+    // Refused at the spine, before the step-up is looked up, under the code
+    // approve-response 0.6 declares for it.
+    assert_eq!(
+        error_code(&out),
+        Some("auth/step-up/approve-response:subjectMismatch"),
         "a console key's proof is never an approver answer: {out}"
     );
     let (_, ok) = answer(&vtc, &admin, &request, st).await;
