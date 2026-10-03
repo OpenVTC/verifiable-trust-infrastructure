@@ -169,6 +169,7 @@ can do (`capabilities`). It answers `decision` (`allow`, or `deny` with a
 | `maintainer_grants_commit` | `false` | a maintainer may grant `git.commit.sign` on their repository |
 | `cascade_on_departure` | `false` | grants a departed member issued are revoked with them, instead of going to review (re-affirmed, or withdrawn at the deadline) |
 | `role_drift` | `"report"` | `"enforce"` re-projects forge roles changed outside the VTC |
+| `pr_open`, `pr_open_overrides`, `pr_exempt`, `pr_close_message`, `pr_join_hint` | `"anyone"`, `{}`, `["dependabot[bot]"]`, built in, derived | the pull-request gate — see [The pull-request gate](#the-pull-request-gate) |
 
 ## What is published
 
@@ -265,8 +266,11 @@ whose resources — its drift items' included — lies outside the namespace is
 refused whole, before anything is applied; a transfer's `to` alone is exempt,
 recorded as where the repository went. This is `git-ns/bridge/event/0.2`
 ([trust-tasks #627](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/627)).
-The VTC serves 0.1, 0.2 and 0.3 — 0.3 only adds `roleMapReported` (below) —
-and applies 0.2's rules to all three.
+The VTC serves 0.1, 0.2, 0.3 and 0.4 — 0.3 only adds `roleMapReported`
+(below), 0.4 only `pullRequestOpened` ([The pull-request
+gate](#the-pull-request-gate)) — and applies 0.2's rules to all four. Serving
+0.4 is what lists it in the VTC's `trust-task-discovery` answer, which is how a
+bridge learns it may report pull requests here.
 
 ### The bridge's role map, and re-projecting roles
 
@@ -321,17 +325,135 @@ It is normal-class, audited as `gitNs.roles.reprojected`, and refused in
 manual mode (`manualMode`) and while the bridge has lost its access
 (`noForgeAccess`). The shipped policy evaluates it as `roles.reproject`.
 
-Every job goes out as `git-ns/bridge/job/0.4`
-([trust-tasks #635](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/635)),
-and only to a bridge that lists 0.4 when asked with `trust-task-discovery`
-(asked again hourly, so an upgrade is noticed). A bridge that does not is sent
-nothing: in-line jobs (binding, account links, a `roleAdded` revert) are
-refused with "upgrade the bridge", and queued jobs wait with that as their
-last error. A bridge before 0.4 would read a `git.ns.admin` entry as
-ownership, which is why there is no downgrade.
+Every job goes out as `git-ns/bridge/job/0.5` to a bridge that lists 0.5
+when asked with `trust-task-discovery`, and as `git-ns/bridge/job/0.4`
+([trust-tasks #635](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/635))
+to one that lists only 0.4 (asked again hourly, so an upgrade is noticed). 0.5
+is 0.4 plus `closePullRequest`, with the same meaning for every other kind, so
+a 0.4-only bridge is unaffected; `closePullRequest` goes to no bridge without
+0.5. A bridge that lists neither is sent nothing: in-line jobs (binding,
+account links, a `roleAdded` revert) are refused with "upgrade the bridge",
+and queued jobs wait with that as their last error. A bridge before 0.4 would
+read a `git.ns.admin` entry as ownership, which is why there is no downgrade.
 
 Jobs are queued in `git_ns_jobs`; role projection retries
 forever, everything else within a budget. `GET /v1/git-ns/jobs` shows them.
+
+## The pull-request gate
+
+On GitHub and Forgejo anyone who can read a public repository can open a pull
+request against it, and the forge offers no way to restrict that. A community
+can: its bridge reports every pull request opened, or closed-and-reopened, on
+a governed repository (`git-ns/bridge/event/0.4` `pullRequestOpened`), the VTC
+decides whether its author may open one there, and when not, sends the bridge a
+`closePullRequest` job (`git-ns/bridge/job/0.5`), which posts the community's
+message on the pull request and closes it — reported as the steps `comment`
+then `close`. The specification is
+[trust-tasks #723](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/723).
+
+**This is hygiene, not the merge gate.** The required commit-trust check that
+bootstrapping installs (`requiredCheck`) is still what keeps untrusted commits
+out of a governed repository, and nothing here weakens it. The gate fails
+open: if the VTC or the bridge is down, if the bridge does not take job 0.5,
+or if a setting cannot be read, the pull request stays open — and nothing the
+required check refuses can be merged through it. A pull request the gate left
+open is not "approved" by anything.
+
+### Settings
+
+Read from the active `gitNamespace` policy's `settings`, like the other
+settings above (community-wide, with per-namespace and per-repository levels
+through `pr_open_overrides`):
+
+| Setting | Default | Effect |
+|---|---|---|
+| `pr_open` | `"anyone"` | who may open a pull request: `"anyone"` (no gate), `"members"`, `"committers"`, `"maintainers"`, or `{"roles": ["moderator", "custom:reviewer"]}` |
+| `pr_open_overrides` | `{}` | `{"github.com/acme": "members", "github.com/acme/docs": "anyone"}` — a repository's entry wins over its namespace's, which wins over `pr_open` |
+| `pr_exempt` | `["dependabot[bot]"]` | forge logins always allowed (compared case-insensitively) |
+| `pr_close_message` | built in | the Markdown posted before closing, with `{author}`, `{repo}`, `{community}` and `{join_hint}` |
+| `pr_join_hint` | derived | the sentence `{join_hint}` renders to; it may use `{community}` and `{repo}`. Absent, it names the community profile's public URL if there is one, and asks the author to link a forge account to their membership |
+
+A value the VTC cannot read is logged and replaced by that key's default — for
+`pr_open`, `"anyone"`. The shipped default policy sets `pr_open: "anyone"`, so
+installing this changes nothing until a community opts in:
+
+```rego
+settings := {
+	# … the other settings …
+	"pr_open": "committers",
+	"pr_open_overrides": {"github.com/acme/website": "anyone"},
+	"pr_exempt": ["dependabot[bot]", "renovate[bot]"],
+	"pr_close_message": "Thanks, {author}! **{repo}** takes pull requests from {community}'s committers only, so this one was closed automatically.\n\n{join_hint}",
+}
+```
+
+### Who is allowed
+
+A pull request on a repository the VTC does not record as `active` in a
+bridge-mode namespace is ignored, as is every pull request under `"anyone"`.
+Otherwise the author's forge account is matched — by forge and account id,
+never by login — through account links ([Linking a forge
+account](#linking-a-forge-account)) to a member, and:
+
+| Level | Allowed when the author's linked account belongs to |
+|---|---|
+| `members` | a current member |
+| `committers` | a holder of `git.commit.sign` on the repository, explicit or implied (a namespace-wide grant, `maintain`, `own`, a namespace admin) |
+| `maintainers` | a holder of `git.repo.maintain` or higher, explicit or implied |
+| `roles` | a current member whose VTC ACL role is listed |
+
+Whatever the level, these are **always allowed**: an owner or maintainer of
+the repository (explicit or implied, so a namespace admin), the bridge's own
+app account (`<slug>[bot]`, once the bridge has reported its app), and a login
+in `pr_exempt`. An account linked to nobody is allowed only under `"anyone"`.
+`pr_exempt` matches logins, which a forge can reassign after a rename; use it
+for bot accounts (`[bot]` logins are reserved on GitHub), not people.
+
+**Reopening.** When an owner or maintainer of the repository (or the bridge)
+reopens a pull request the gate closed, that is an **override**: the VTC
+leaves it open and does not close it again in answer to that reopen. A reopen
+by anyone else — the author included — is checked again exactly as an opening
+is: it neither overrides the earlier close nor is refused for being a reopen.
+The bridge also declines a queued close of a pull request reopened after the
+job was issued.
+
+### The message
+
+The message is public once posted, so it carries only the four placeholders:
+the author's forge login (which the forge already shows; a value that is not
+a plausible login renders as "there"), the repository as `owner/name`, the
+community's name and the join hint. No DID, membership state, role or reason
+from the VTC's records can be rendered into it. It is capped at 16384
+characters.
+
+### What is recorded
+
+Only the closes. Each close the VTC orders is a `closePullRequest` job,
+which appears in `git-ns/activity/list` as `gitNs.job.closePullRequest` with
+its state (it is left out of `git-ns/bridge/job/list` 0.1, whose job-kind list
+predates job 0.5); when the bridge reports the pull request closed
+(`succeeded`, `close` applied), the VTC audits
+`gitNs.pullRequest.closed` with the repository and a detail of `{number,
+author (login), level}`. A pull request that was allowed, or reopened by a
+maintainer, leaves no record. A failed close is the job's `failed` or
+`partial` state; jobs are retried on transport failures like any other.
+
+### Bridge requirements
+
+The bridge must take `git-ns/bridge/job/0.5` (and report events at
+`git-ns/bridge/event/0.4`), and its forge credentials must be able to comment
+on and close pull requests — for a GitHub App, the **Pull requests: write**
+permission and the `pull_request` webhook event. If the gate is configured
+for a namespace whose bridge does not list job 0.5, the VTC sends it no
+`closePullRequest`, drops any it had queued, and tells the namespace's
+administrators once: a warning in the log and a `gitNs.pullRequest.gateUnenforced`
+row in their activity feed. It is told again only if the bridge later takes
+0.5 and then loses it.
+
+The configured level is not yet shown on the namespace card or in `cnm git
+view --admin`: `git-ns/namespace/list/0.1`'s namespace rows admit no further
+members. Read the active `gitNamespace` policy instead (the admin console's
+policy view, or `GET /v1/policies`).
 
 ## Drift
 

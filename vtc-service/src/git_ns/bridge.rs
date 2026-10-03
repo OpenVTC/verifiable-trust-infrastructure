@@ -39,7 +39,8 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::git_ns::bridge::{
-    event::v0_3 as event_wire, job::v0_4 as job_wire, result::v0_1 as result_wire,
+    event::v0_4 as event_wire, job::v0_4 as job_wire, job::v0_5 as job_wire5,
+    result::v0_1 as result_wire,
 };
 use vta_sdk::protocol::matching::{Protocol, ProtocolMatch, ServiceCapabilities, select_protocol};
 use vti_common::error::AppError;
@@ -60,10 +61,16 @@ use super::rules;
 use super::store::{self, Snapshot};
 use super::wire;
 
-/// `git-ns/bridge/job/0.4`, the only version the VTC sends.
+/// `git-ns/bridge/job/0.4` — what the VTC sends a bridge that lists 0.4 and
+/// not 0.5.
 pub const JOB_TYPE: &str = <job_wire::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+/// `git-ns/bridge/job/0.5` — 0.4 plus `closePullRequest`. A 0.4 document is a
+/// valid 0.5 document with the same meaning, so a bridge that lists 0.5 is
+/// sent every job as 0.5 (it only SHOULD keep accepting 0.4), and
+/// `closePullRequest` goes to no other bridge.
+pub const JOB_TYPE_V0_5: &str = <job_wire5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 /// `trust-task-discovery/0.2`: the VTC asks a bridge whether it takes
-/// [`JOB_TYPE`] before sending it a job.
+/// [`JOB_TYPE`] or [`JOB_TYPE_V0_5`] before sending it a job.
 pub const DISCOVERY_TYPE: &str = "https://trusttasks.org/spec/trust-task-discovery/0.2";
 
 /// How long to wait for a bridge's `trust-task-discovery` answer.
@@ -97,6 +104,9 @@ pub enum JobKind {
     Inspect,
     BeginBind,
     BeginAccountLink,
+    /// `git-ns/bridge/job` 0.5 only: comment on a pull request the
+    /// pull-request policy does not allow, then close it ([`super::pr_gate`]).
+    ClosePullRequest,
 }
 
 impl JobKind {
@@ -109,6 +119,7 @@ impl JobKind {
             JobKind::Inspect => "inspect",
             JobKind::BeginBind => "beginBind",
             JobKind::BeginAccountLink => "beginAccountLink",
+            JobKind::ClosePullRequest => "closePullRequest",
         }
     }
 
@@ -170,6 +181,22 @@ pub struct BridgeJob {
     /// The bridge's `git-ns/bridge/result` payload, once recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// For a `closePullRequest` job: what the audit of the close needs, and
+    /// nothing more (`git-ns/bridge/event/0.4`, *Retention*).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pull_request: Option<PullRequestClose>,
+}
+
+/// What a `closePullRequest` job is recorded with: the pull request, its
+/// author's forge login (what the forge already shows) and the policy level
+/// that refused it. No DID, no membership state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestClose {
+    pub number: u64,
+    pub author_login: String,
+    /// `members`, `committers`, `maintainers` or `roles`.
+    pub level: String,
 }
 
 /// What a caller asks to be queued.
@@ -218,6 +245,35 @@ fn target_of(job: &BridgeJob) -> Option<&str> {
 /// for the same target makes an older one that has not yet been sent
 /// pointless: it is cancelled rather than sent first and then overwritten.
 pub async fn enqueue(state: &AppState, new: NewJob) -> Result<Option<String>, AppError> {
+    enqueue_with(state, new, None).await
+}
+
+/// Queue a `closePullRequest` job ([`super::pr_gate`]) — unless one for the
+/// same pull request is still open, which a repeated event would otherwise
+/// duplicate (the job is idempotent, so this is tidiness, not correctness).
+pub async fn enqueue_close_pull_request(
+    state: &AppState,
+    new: NewJob,
+    pr: PullRequestClose,
+) -> Result<Option<String>, AppError> {
+    let repo = new.payload.get("repo").cloned();
+    if list_jobs(&state.git_ns.jobs_ks).await?.iter().any(|j| {
+        j.kind == JobKind::ClosePullRequest
+            && j.namespace_id == new.namespace_id
+            && j.state.is_open()
+            && j.payload.get("repo") == repo.as_ref()
+            && j.pull_request.as_ref().map(|p| p.number) == Some(pr.number)
+    }) {
+        return Ok(None);
+    }
+    enqueue_with(state, new, Some(pr)).await
+}
+
+async fn enqueue_with(
+    state: &AppState,
+    new: NewJob,
+    pull_request: Option<PullRequestClose>,
+) -> Result<Option<String>, AppError> {
     let Some(ns) = store::get_namespace(&state.git_ns.ks, &new.namespace_id).await? else {
         return Ok(None);
     };
@@ -267,6 +323,7 @@ pub async fn enqueue(state: &AppState, new: NewJob) -> Result<Option<String>, Ap
         accepted_at: None,
         last_error: None,
         result: None,
+        pull_request,
     };
     put_job(&state.git_ns.jobs_ks, &job).await?;
     debug!(job_id, kind = job.kind.as_str(), "git-ns bridge job queued");
@@ -308,6 +365,7 @@ pub async fn record_inline_job(
             accepted_at: Some(t),
             last_error: None,
             result: None,
+            pull_request: None,
         },
     )
     .await
@@ -381,7 +439,27 @@ pub trait BridgeClient: Send + Sync {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeJobSupport {
     pub takes_v0_4: bool,
+    /// Lists `git-ns/bridge/job/0.5`. Absent in a record written before 0.5
+    /// existed, which reads as "no" until the record is next refreshed.
+    #[serde(default)]
+    pub takes_v0_5: bool,
     pub checked_at: DateTime<Utc>,
+}
+
+impl BridgeJobSupport {
+    /// The version a job of `kind` goes out as, or `None` when this bridge
+    /// may be sent no such job. 0.5 wherever the bridge lists it — it is a
+    /// superset of 0.4 with the same meaning — else 0.4; `closePullRequest`
+    /// exists only in 0.5.
+    pub fn type_for(&self, kind: Option<JobKind>) -> Option<&'static str> {
+        if self.takes_v0_5 {
+            Some(JOB_TYPE_V0_5)
+        } else if self.takes_v0_4 && kind != Some(JobKind::ClosePullRequest) {
+            Some(JOB_TYPE)
+        } else {
+            None
+        }
+    }
 }
 
 fn support_key(bridge_did: &str) -> String {
@@ -390,85 +468,135 @@ fn support_key(bridge_did: &str) -> String {
 
 fn outdated(bridge_did: &str) -> BridgeSendError {
     BridgeSendError::Outdated(format!(
-        "the git-ns bridge {bridge_did} does not take git-ns/bridge/job 0.4, the only version \
-         this VTC sends; upgrade the bridge"
+        "the git-ns bridge {bridge_did} does not take git-ns/bridge/job 0.4 or 0.5, the only \
+         versions this VTC sends; upgrade the bridge"
     ))
 }
 
-/// Whether `bridge_did` takes `git-ns/bridge/job` 0.4, asking it with
+fn outdated_for_pull_requests(bridge_did: &str) -> BridgeSendError {
+    BridgeSendError::Outdated(format!(
+        "the git-ns bridge {bridge_did} does not take git-ns/bridge/job 0.5, so it cannot close \
+         pull requests; upgrade the bridge"
+    ))
+}
+
+/// The bridge's last answer, if it is still fresh — without asking it. For a
+/// caller that must not wait on the bridge (an event handler holding the
+/// store lock while the bridge waits for its acknowledgement).
+pub async fn cached_job_support(state: &AppState, bridge_did: &str) -> Option<BridgeJobSupport> {
+    let cached: Option<BridgeJobSupport> = state
+        .git_ns
+        .jobs_ks
+        .get(support_key(bridge_did))
+        .await
+        .ok()
+        .flatten();
+    cached.filter(|c| c.checked_at + chrono::Duration::minutes(DISCOVERY_TTL_MINUTES) > now())
+}
+
+/// Which `git-ns/bridge/job` versions `bridge_did` takes, asking it with
 /// `trust-task-discovery` when the last answer is missing or stale.
 ///
 /// `git-ns/bridge/job` 0.4 forbids sending 0.4 to a bridge that has not
 /// shown it takes it: a bridge before 0.4 — including one that reads later
 /// minor versions forward-compatibly — would take a `git.ns.admin` entry as
-/// ownership. So a bridge that refuses discovery, or does not list 0.4, is
-/// sent nothing. Only a transient failure is passed on as one.
-pub async fn bridge_takes_v0_4(
+/// ownership. 0.5 says the same of itself. So a bridge that refuses
+/// discovery, or lists neither, is sent nothing. Only a transient failure is
+/// passed on as one.
+pub async fn bridge_job_support(
     state: &AppState,
     bridge_did: &str,
-) -> Result<bool, BridgeSendError> {
+) -> Result<BridgeJobSupport, BridgeSendError> {
     let ks = &state.git_ns.jobs_ks;
     let cached: Option<BridgeJobSupport> = ks.get(support_key(bridge_did)).await.ok().flatten();
     if let Some(c) = &cached
         && c.checked_at + chrono::Duration::minutes(DISCOVERY_TTL_MINUTES) > now()
     {
-        return Ok(c.takes_v0_4);
+        return Ok(c.clone());
     }
-    let takes = match state
+    let (takes_v0_4, takes_v0_5) = match state
         .git_ns
         .bridge
         .discover_jobs(bridge_did, DISCOVERY_TIMEOUT)
         .await
     {
-        Ok(types) => types.iter().any(|t| t == JOB_TYPE),
+        Ok(types) => (
+            types.iter().any(|t| t == JOB_TYPE),
+            types.iter().any(|t| t == JOB_TYPE_V0_5),
+        ),
         Err(BridgeSendError::Rejected { code, .. }) => {
             debug!(bridge = %bridge_did, %code, "the bridge refused trust-task-discovery");
-            false
+            (false, false)
         }
         Err(e) => return Err(e),
     };
-    if !takes && cached.as_ref().is_none_or(|c| c.takes_v0_4) {
+    let takes = takes_v0_4 || takes_v0_5;
+    let took = cached.as_ref().map(|c| c.takes_v0_4 || c.takes_v0_5);
+    if !takes && took.is_none_or(|t| t) {
         warn!(
             bridge = %bridge_did,
-            "the git-ns bridge does not take git-ns/bridge/job 0.4; no job is sent to it until \
-             it is upgraded"
+            "the git-ns bridge takes neither git-ns/bridge/job 0.4 nor 0.5; no job is sent to it \
+             until it is upgraded"
         );
-    } else if takes && cached.as_ref().is_some_and(|c| !c.takes_v0_4) {
-        info!(bridge = %bridge_did, "the git-ns bridge now takes git-ns/bridge/job 0.4");
+    } else if takes && took == Some(false) {
+        info!(bridge = %bridge_did, "the git-ns bridge now takes git-ns/bridge/job");
     }
     let record = BridgeJobSupport {
-        takes_v0_4: takes,
+        takes_v0_4,
+        takes_v0_5,
         checked_at: now(),
     };
     if let Err(e) = ks.insert(support_key(bridge_did), &record).await {
         warn!(error = %e, "could not record the bridge's job versions");
     }
-    Ok(takes)
+    Ok(record)
 }
 
-/// Send one job as `git-ns/bridge/job` 0.4 — once the bridge has shown it
-/// takes 0.4.
-pub async fn send_v0_4(
+/// The kind a job payload carries.
+fn kind_of(payload: &Value) -> Option<JobKind> {
+    payload
+        .get("kind")
+        .cloned()
+        .and_then(|k| serde_json::from_value(k).ok())
+}
+
+/// Send one job, as `git-ns/bridge/job` 0.5 to a bridge that lists 0.5 and
+/// as 0.4 to one that lists only 0.4 — once the bridge has shown it takes
+/// the version. A `closePullRequest` goes only to a bridge that lists 0.5.
+pub async fn send_versioned(
     state: &AppState,
     bridge_did: &str,
     payload: &Value,
     timeout: Duration,
 ) -> Result<job_wire::Response, BridgeSendError> {
-    if !bridge_takes_v0_4(state, bridge_did).await? {
-        return Err(outdated(bridge_did));
-    }
+    let kind = kind_of(payload);
+    let support = bridge_job_support(state, bridge_did).await?;
+    let Some(type_uri) = support.type_for(kind) else {
+        return Err(
+            if kind == Some(JobKind::ClosePullRequest) && support.takes_v0_4 {
+                outdated_for_pull_requests(bridge_did)
+            } else {
+                outdated(bridge_did)
+            },
+        );
+    };
+    // The acknowledgement of 0.5 is 0.4's, member for member.
     let out = state
         .git_ns
         .bridge
-        .send_job(bridge_did, JOB_TYPE, payload, timeout)
+        .send_job(bridge_did, type_uri, payload, timeout)
         .await;
-    // A bridge that listed 0.4 and then refuses it (downgraded since) is
-    // asked again next time rather than trusted for the rest of the hour.
+    // A bridge that listed a version and then refuses it (downgraded since)
+    // is asked again next time rather than trusted for the rest of the hour.
     if let Err(BridgeSendError::Rejected { code, .. }) = &out
         && matches!(code.as_str(), "unsupportedType" | "unsupportedVersion")
     {
         let _ = state.git_ns.jobs_ks.remove(support_key(bridge_did)).await;
-        return Err(outdated(bridge_did));
+        return Err(if kind == Some(JobKind::ClosePullRequest) {
+            outdated_for_pull_requests(bridge_did)
+        } else {
+            outdated(bridge_did)
+        });
     }
     out
 }
@@ -480,7 +608,7 @@ pub async fn send_inline(
     bridge_did: &str,
     payload: &Value,
 ) -> OpResult<job_wire::Response> {
-    match send_v0_4(state, bridge_did, payload, INLINE_TIMEOUT).await {
+    match send_versioned(state, bridge_did, payload, INLINE_TIMEOUT).await {
         Ok(ack) if ack.accepted => Ok(ack),
         Ok(_) => Err(OpError::Unavailable(
             "the bridge reports it already finished this job, which a fresh one cannot be; \
@@ -504,7 +632,7 @@ pub async fn send_job_inline(
     bridge_did: &str,
     payload: &Value,
 ) -> Result<job_wire::Response, BridgeSendError> {
-    send_v0_4(state, bridge_did, payload, INLINE_TIMEOUT).await
+    send_versioned(state, bridge_did, payload, INLINE_TIMEOUT).await
 }
 
 /// The production [`BridgeClient`]: resolves the bridge's DID, picks the
@@ -790,8 +918,9 @@ pub async fn dispatch_due(state: &AppState) -> Result<(), AppError> {
             }
             continue;
         }
-        let outcome = send_v0_4(state, &job.bridge_did, &job.payload, QUEUED_TIMEOUT).await;
+        let outcome = send_versioned(state, &job.bridge_did, &job.payload, QUEUED_TIMEOUT).await;
         job.attempts += 1;
+        let mut pr_gate_unenforced = false;
         match outcome {
             Ok(_ack) => {
                 // `accepted: false` means the bridge already finished it and
@@ -810,6 +939,16 @@ pub async fn dispatch_due(state: &AppState) -> Result<(), AppError> {
                 );
                 job.state = JobState::Failed;
                 job.last_error = Some(format!("{code}: {message}"));
+            }
+            // `git-ns/bridge/job` 0.5: a bridge that does not take 0.5 is
+            // sent no `closePullRequest`. Waiting for an upgrade would close
+            // the pull request long after anyone could tell why, so the job is
+            // dropped and the namespace's administrators are told the gate is
+            // not enforced there ([`super::pr_gate::note_unenforced`]).
+            Err(BridgeSendError::Outdated(m)) if job.kind == JobKind::ClosePullRequest => {
+                job.state = JobState::Cancelled;
+                job.last_error = Some(m);
+                pr_gate_unenforced = true;
             }
             Err(BridgeSendError::Transient(m) | BridgeSendError::Outdated(m)) => {
                 job.last_error = Some(m);
@@ -836,6 +975,20 @@ pub async fn dispatch_due(state: &AppState) -> Result<(), AppError> {
         };
         if written && job.state == JobState::Failed {
             note_job_failure(state, &job).await?;
+        }
+        if written && pr_gate_unenforced {
+            super::pr_gate::note_unenforced(state, &job.namespace_id, &job.bridge_did).await;
+        }
+        // A bridge that took this job and lists 0.5 can close pull requests:
+        // a notice that it could not is out of date, and a later loss of 0.5
+        // is told again.
+        if written
+            && job.state == JobState::Accepted
+            && cached_job_support(state, &job.bridge_did)
+                .await
+                .is_some_and(|s| s.takes_v0_5)
+        {
+            super::pr_gate::clear_unenforced(state, &job.namespace_id).await;
         }
     }
     Ok(())
@@ -1449,6 +1602,9 @@ pub async fn handle_result(
                 store::put_link(&state.git_ns.ks, &attempt).await?;
             }
         }
+        JobKind::ClosePullRequest => {
+            super::pr_gate::record_close_result(state, issuer, &job, &steps).await;
+        }
         JobKind::ProjectRoles | JobKind::Archive => {
             if job.state != JobState::Succeeded {
                 warn!(
@@ -1627,7 +1783,7 @@ async fn detach(state: &AppState, actor: &str, repo: &mut Repo, why: &str) -> Re
     Ok(())
 }
 
-// ── git-ns/bridge/event (0.1, 0.2 and 0.3, read as 0.3) ─────────────────────
+// ── git-ns/bridge/event (0.1 to 0.4, read as 0.4) ───────────────────────────
 
 fn s(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_string)
@@ -2064,6 +2220,19 @@ pub async fn handle_event(
         "bindCompleted" => {
             let job_id = s(&event, "jobId").unwrap_or_default();
             complete_binding(state, issuer, &ns, &job_id, &event).await?;
+        }
+        "pullRequestOpened" => {
+            // `git-ns/bridge/event` 0.4, request step 6. The event is
+            // acknowledged whatever the gate decides: a close is a queued job,
+            // sent after this answer, and nothing about the pull request is
+            // kept beyond what that job's audit needs.
+            let parsed: event_wire::ForgeEvent = serde_json::from_value(event.clone())
+                .map_err(|e| OpError::Malformed(format!("pullRequestOpened: {e}")))?;
+            let pr = super::pr_gate::PullRequestOpened::from_wire(parsed)
+                .ok_or_else(|| OpError::Malformed("not a pullRequestOpened event".into()))?;
+            inside(&pr.resource)?;
+            let repo = find(Some(pr.forge_id.as_str()), Some(pr.resource.as_str()));
+            super::pr_gate::on_pull_request_opened(state, &snap, &ns, repo.as_ref(), &pr).await?;
         }
         "roleMapReported" => {
             // `git-ns/bridge/event` 0.3, request step 5.

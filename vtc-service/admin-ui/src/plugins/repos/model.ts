@@ -920,6 +920,8 @@ const ACTIVITY: Record<string, string> = {
   "gitNs.right.breakGlass": "broke the glass — self-granted",
   "gitNs.right.breakGlassRatified": "break-glass ratified",
   "gitNs.right.breakGlassRevoked": "break-glass revoked",
+  "gitNs.pullRequest.closed": "pull request closed — its author may not open one here",
+  "gitNs.pullRequest.gateUnenforced": "pull-request policy not enforced — the bridge cannot close pull requests (needs git-ns/bridge/job 0.5)",
 };
 
 /** An activity item's action in words. Unknown actions are shown verbatim

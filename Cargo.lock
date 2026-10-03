@@ -10568,9 +10568,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.27.1"
+version = "0.27.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d0492772d3d4b6345b4f622508f40ca143b582c279839ce4793f946344961a5"
+checksum = "6b8bf480c13e79e23ac3aaca5f03cc249b469fef91d5cf1248d4483f5622aef0"
 dependencies = [
  "async-trait",
  "chrono",

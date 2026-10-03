@@ -73,6 +73,8 @@ struct FakeBridge {
     types: Mutex<Vec<String>>,
     /// Discovery requests answered.
     discoveries: Mutex<u32>,
+    /// When set, the bridge lists `git-ns/bridge/job/0.5` beside 0.4.
+    takes_v0_5: Mutex<bool>,
 }
 
 #[async_trait]
@@ -89,7 +91,11 @@ impl BridgeClient for FakeBridge {
                 message: "this bridge handles git-ns/bridge/job only".into(),
             });
         }
-        Ok(vec![super::bridge::JOB_TYPE.into()])
+        let mut types = vec![super::bridge::JOB_TYPE.to_string()];
+        if *self.takes_v0_5.lock().unwrap() {
+            types.push(super::bridge::JOB_TYPE_V0_5.to_string());
+        }
+        Ok(types)
     }
 
     async fn send_job(
@@ -5057,6 +5063,7 @@ async fn a_queued_namespace_level_job_is_dropped_not_delivered() {
             accepted_at: None,
             last_error: None,
             result: None,
+            pull_request: None,
         },
     )
     .await
@@ -7596,3 +7603,4 @@ async fn namespace_list_signed_by_a_console_key_answers_its_administrator() {
 
 mod break_glass_queue;
 mod c3;
+mod pr_gate;

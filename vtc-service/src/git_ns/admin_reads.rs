@@ -1059,6 +1059,12 @@ pub(crate) async fn bridge_job_list(
         .await?
         .into_iter()
         .filter(|j| covered.contains(&j.namespace_id))
+        // `bridge/job/list` 0.1's `JobKind` names job 0.4's seven kinds and
+        // not 0.5's `closePullRequest`, so a row for one would make the whole
+        // answer invalid. They are left out until the list's specification
+        // catches up; `activity/list` (whose `action` is open) shows them as
+        // `gitNs.job.closePullRequest`.
+        .filter(|j| j.kind != bridge::JobKind::ClosePullRequest)
         .filter(|j| {
             state_filter
                 .as_deref()

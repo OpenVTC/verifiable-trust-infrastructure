@@ -35,6 +35,7 @@ pub mod migrate;
 pub mod model;
 pub mod ops;
 pub mod policy;
+pub mod pr_gate;
 pub mod projection;
 pub mod reproject;
 pub mod role_map;
