@@ -8,10 +8,11 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::info;
 
+#[cfg(test)]
+use super::vsock_pool::MAX_MESSAGE_SIZE;
+use super::vsock_pool::{BoxStream, ConnectionPool, Connector};
 use crate::error::AppError;
 
 // ---------------------------------------------------------------------------
@@ -29,8 +30,6 @@ const OP_PERSIST: u8 = 0x06;
 const STATUS_OK: u8 = 0x00;
 const STATUS_NOT_FOUND: u8 = 0x01;
 const STATUS_ERROR: u8 = 0x02;
-
-const MAX_MESSAGE_SIZE: u32 = 16 * 1024 * 1024;
 
 fn encode_bytes(buf: &mut Vec<u8>, data: &[u8]) {
     buf.extend_from_slice(&(data.len() as u32).to_be_bytes());
@@ -64,54 +63,14 @@ fn encode_keyspace(buf: &mut Vec<u8>, name: &str) {
 // Connection
 // ---------------------------------------------------------------------------
 
-/// A connection to the parent's storage proxy over vsock.
-struct VsockConnection {
-    stream: tokio_vsock::VsockStream,
-}
-
-impl VsockConnection {
-    async fn connect(cid: u32, port: u32) -> Result<Self, AppError> {
-        let addr = tokio_vsock::VsockAddr::new(cid, port);
-        let stream = tokio_vsock::VsockStream::connect(addr)
-            .await
-            .map_err(AppError::vsock("vsock connect"))?;
-        tracing::trace!(cid, port, "vsock connected");
-        Ok(Self { stream })
-    }
-
-    async fn request(&mut self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
-        // Write frame
-        self.stream
-            .write_u32(payload.len() as u32)
-            .await
-            .map_err(AppError::vsock("vsock write"))?;
-        self.stream
-            .write_all(payload)
-            .await
-            .map_err(AppError::vsock("vsock write"))?;
-        self.stream
-            .flush()
-            .await
-            .map_err(AppError::vsock("vsock flush"))?;
-
-        // Read frame
-        let len = self
-            .stream
-            .read_u32()
-            .await
-            .map_err(AppError::vsock("vsock read"))?;
-        if len > MAX_MESSAGE_SIZE {
-            return Err(AppError::Internal(format!(
-                "vsock response too large: {len} > {MAX_MESSAGE_SIZE}"
-            )));
-        }
-        let mut buf = vec![0u8; len as usize];
-        self.stream
-            .read_exact(&mut buf)
-            .await
-            .map_err(AppError::vsock("vsock read"))?;
-        Ok(buf)
-    }
+/// Open a vsock connection to the parent's storage proxy.
+async fn connect_vsock(cid: u32, port: u32) -> Result<BoxStream, AppError> {
+    let addr = tokio_vsock::VsockAddr::new(cid, port);
+    let stream = tokio_vsock::VsockStream::connect(addr)
+        .await
+        .map_err(AppError::vsock("vsock connect"))?;
+    tracing::trace!(cid, port, "vsock connected");
+    Ok(Box::new(stream))
 }
 
 // ---------------------------------------------------------------------------
@@ -122,25 +81,43 @@ impl VsockConnection {
 const PARENT_CID: u32 = 3;
 /// Default vsock port for the storage proxy.
 const DEFAULT_STORAGE_PORT: u32 = 5500;
+/// Upper bound on simultaneous storage connections to the parent.
+///
+/// High enough that storage round trips stop being the bottleneck on the
+/// enclave sizes we run (1 to 6 vCPUs), low enough that a burst cannot open
+/// an unbounded number of sockets on the parent.
+const DEFAULT_MAX_CONNECTIONS: usize = 8;
 
 /// A key-value store backed by the parent's storage proxy over vsock.
 ///
 /// Drop-in replacement for `Store` when running inside a Nitro Enclave.
+///
+/// Storage operations run concurrently over a bounded pool of connections
+/// (see [`super::vsock_pool`]); each operation is still one request and
+/// response.
 #[derive(Clone)]
 pub struct VsockStore {
-    conn: Arc<Mutex<Option<VsockConnection>>>,
-    port: u32,
+    pool: Arc<ConnectionPool>,
 }
 
 impl VsockStore {
     /// Connect to the parent's storage proxy.
     pub async fn connect(port: Option<u32>) -> Result<Self, AppError> {
         let port = port.unwrap_or(DEFAULT_STORAGE_PORT);
-        let conn = VsockConnection::connect(PARENT_CID, port).await?;
-        info!(port, "connected to parent storage proxy via vsock");
-        Ok(Self {
-            conn: Arc::new(Mutex::new(Some(conn))),
+        // Connect once up front so a missing proxy fails the boot here.
+        let first = connect_vsock(PARENT_CID, port).await?;
+        info!(
             port,
+            max_connections = DEFAULT_MAX_CONNECTIONS,
+            "connected to parent storage proxy via vsock"
+        );
+        let connector: Connector = Arc::new(move || Box::pin(connect_vsock(PARENT_CID, port)));
+        Ok(Self {
+            pool: Arc::new(ConnectionPool::new(
+                connector,
+                DEFAULT_MAX_CONNECTIONS,
+                first,
+            )),
         })
     }
 
@@ -148,8 +125,7 @@ impl VsockStore {
     /// with each operation.
     pub fn keyspace(&self, name: &str) -> Result<VsockKeyspaceHandle, AppError> {
         Ok(VsockKeyspaceHandle {
-            conn: Arc::clone(&self.conn),
-            port: self.port,
+            pool: Arc::clone(&self.pool),
             keyspace: name.to_string(),
             #[cfg(feature = "encryption")]
             encryption_key: None,
@@ -159,30 +135,8 @@ impl VsockStore {
     /// Flush the parent's store to disk.
     pub async fn persist(&self) -> Result<(), AppError> {
         let payload = vec![OP_PERSIST];
-        let resp = self.send(&payload).await?;
+        let resp = self.pool.request(&payload).await?;
         decode_ok(&resp)
-    }
-
-    /// Send a request, reconnecting once on failure.
-    async fn send(&self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
-        let mut guard = self.conn.lock().await;
-
-        // Try on existing connection
-        if let Some(ref mut conn) = *guard {
-            match conn.request(payload).await {
-                Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    warn!("storage request failed, reconnecting: {e}");
-                    *guard = None;
-                }
-            }
-        }
-
-        // Reconnect
-        let mut conn = VsockConnection::connect(PARENT_CID, self.port).await?;
-        let resp = conn.request(payload).await?;
-        *guard = Some(conn);
-        Ok(resp)
     }
 }
 
@@ -196,8 +150,7 @@ impl VsockStore {
 /// Encryption is applied enclave-side before sending over vsock.
 #[derive(Clone)]
 pub struct VsockKeyspaceHandle {
-    conn: Arc<Mutex<Option<VsockConnection>>>,
-    port: u32,
+    pool: Arc<ConnectionPool>,
     keyspace: String,
     #[cfg(feature = "encryption")]
     encryption_key: Option<Arc<zeroize::Zeroizing<[u8; 32]>>>,
@@ -395,7 +348,8 @@ impl VsockKeyspaceHandle {
     /// Non-atomic compare-and-move: the vsock proto has no multi-op opcode, so
     /// this is `get` + compare + `insert` + `delete` across round-trips. The
     /// same documented gap as `take_raw`'s fallback; callers that need
-    /// exactly-one semantics also serialise in-process.
+    /// exactly-one semantics also serialise in-process. Pooled connections
+    /// change nothing here: the steps were never under one lock.
     pub async fn move_if_unchanged<V: Serialize>(
         &self,
         old_key: impl Into<Vec<u8>>,
@@ -421,24 +375,10 @@ impl VsockKeyspaceHandle {
         }
     }
 
-    /// Send a request, reconnecting once on failure.
+    /// Send one request over a pooled connection (reconnecting once on
+    /// failure) and return the response.
     async fn send(&self, payload: &[u8]) -> Result<Vec<u8>, AppError> {
-        let mut guard = self.conn.lock().await;
-
-        if let Some(ref mut conn) = *guard {
-            match conn.request(payload).await {
-                Ok(resp) => return Ok(resp),
-                Err(e) => {
-                    warn!("storage request failed, reconnecting: {e}");
-                    *guard = None;
-                }
-            }
-        }
-
-        let mut conn = VsockConnection::connect(PARENT_CID, self.port).await?;
-        let resp = conn.request(payload).await?;
-        *guard = Some(conn);
-        Ok(resp)
+        self.pool.request(payload).await
     }
 
     fn maybe_encrypt(&self, store_key: &[u8], plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
