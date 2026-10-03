@@ -97,13 +97,15 @@ pub async fn dispatch(
             .map(str::to_string),
     );
     let outcome = slot
-        .scope(dispatch_trust_task_core_admitted(
+        // Boxed: see `StreamSlot::scope` — inline, the task-local wrapper
+        // would add the spine's whole future to this handler's poll frame.
+        .scope(Box::pin(dispatch_trust_task_core_admitted(
             &state,
             &JoinAuthCtx::rest(),
             &body,
             &admission,
             address,
-        ))
+        )))
         .await;
     match admission.finish() {
         Ok(()) => match slot.take() {

@@ -683,8 +683,21 @@ impl StreamSlot {
     }
 
     /// Run `fut` with this slot visible to the subscribe handler.
-    pub(crate) async fn scope<F: std::future::Future>(&self, fut: F) -> F::Output {
-        STREAM_SLOT.scope(self.clone(), fut).await
+    ///
+    /// Not an `async fn`, and the future is boxed: the spine's dispatch is one
+    /// of the largest futures in the service, and an async wrapper holding it
+    /// inline adds its whole size to the poll frame of every document the door
+    /// dispatches — which overflowed the 2 MiB test-thread stack on the
+    /// deepest paths (a reduction's notice, a join review) under
+    /// `vetting-pcs`. Boxed, the wrapper costs a pointer.
+    pub(crate) fn scope<'a, T>(
+        &self,
+        fut: std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>,
+    ) -> tokio::task::futures::TaskLocalFuture<
+        StreamSlot,
+        std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>,
+    > {
+        STREAM_SLOT.scope(self.clone(), fut)
     }
 }
 
