@@ -7,7 +7,7 @@ const SERVICE_NAME: &str = "cnm-cli";
 /// Legacy keyring key (pre multi-community).
 const LEGACY_KEYRING_KEY: &str = "session";
 
-fn store() -> SessionStore {
+pub(crate) fn store() -> SessionStore {
     SessionStore::new(
         SERVICE_NAME,
         crate::config::config_dir().expect("could not determine config directory"),

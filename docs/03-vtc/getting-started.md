@@ -293,6 +293,38 @@ Drop files into `/var/lib/community/site/` directly (`scp`, `rsync`,
 [`website-and-admin.md`](website-and-admin.md) for the
 full surface.
 
+## Administering from `cnm`
+
+`cnm` keeps two kinds of identity, each minted on your machine and granted by
+an administrator rather than handed over:
+
+**Your personal VTA** — `cnm setup` onboards it the way `pnm setup` does:
+
+```sh
+cnm setup                      # interactive
+# or, scripted (one JSON line per phase on stdout, as `pnm setup` prints):
+cnm setup --name home          # {"slug":"home","admin_did":"did:key:…","state":"pending"}
+#   grant that DID: `vta import-did --did <did> --role admin` on the VTA host,
+#   `admin_did = "<did>"` in a new VTA's setup.toml, or
+#   `pnm acl create --did <did> --role admin --label cnm` from an admin's pnm
+cnm setup continue home --vta-did <personal VTA DID>
+```
+
+`continue` authenticates and rotates: the temporary DID is swapped for a fresh
+`did:key` and its ACL entry removed, so the DID you passed around does not stay
+live. Run before the grant, it prints the grant commands and stays resumable.
+If `pnm` on the same machine already administers that VTA, the wizard offers
+**Bootstrap from your existing pnm session**: it uses `pnm`'s session once to
+grant cnm's own new key (an unrestricted admin — creating a top-level context
+per community needs one), then rotates as above; `pnm`'s key is never copied.
+**I have a sealed bundle from an admin** remains for air-gapped or remote
+grants (`cnm bootstrap request`, then the armored bundle and its digest).
+
+**Each community** — `cnm community add` gives every community its own key, so
+communities you run are not linked by a shared identity. See
+[`bootstrap-runbook.md`](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row)
+for the grant and `cnm community continue`.
+
 ## Where to go next
 
 | If you want to… | Read |

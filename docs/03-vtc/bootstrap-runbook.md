@@ -148,10 +148,53 @@ the install claim, or it trips the `409` rule above.
 `cnm vetting …`, `cnm audit verify`, `cnm backup …` and `cnm did-log install`
 drive this VTC's admin routes ([`vetting.md`](vetting.md) §7). They sign in to
 the VTC directly, with the VTC's DID as the audience, as the `cnm` community
-profile's **own** DID: the one the community VTA provisioned for it, which
-`cnm auth status` shows as `Client DID`. A fresh VTC's ACL has no entry for
-that DID, and `backup` and `audit verify` need a **super-admin**: an `admin`
-entry with no contexts.
+profile's **own** DID, which `cnm community list` shows as `Identity`. A fresh
+VTC's ACL has no entry for that DID, and `backup` and `audit verify` need a
+**super-admin**: an `admin` entry with no contexts.
+
+#### The usual way: a fresh identity for this community
+
+`cnm community add` mints a `did:key` for this community alone — an operator
+who runs several communities holds a different key in each, so nothing links
+them — and walks the grant the way `pnm setup` does for a VTA:
+
+```sh
+# 1. Mint the community's identity; prints the grant routes and one JSON line.
+cnm community add "Storm Network" --vtc-did <VTC DID>
+#    {"slug":"storm-network","admin_did":"did:key:z6Mk…","state":"pending"}
+
+# 2. Grant that DID admin at the VTC — any one of:
+#    a. new community: co_admin_did = "<did>" in the `vtc setup --from` TOML
+#    b. VTC host, daemon stopped:
+vtc --config /srv/vtc/config.toml acl add --did <did> --role admin --label cnm
+#    c. an existing administrator, online:
+#       cnm --community <theirs> access grant <did> --role admin --label cnm
+#       or the console's Access control → Add entry. A community-wide admin
+#       grant made online waits in Actions for a second administrator.
+
+# 3. Confirm: cnm signs in to the VTC as that DID and makes the profile usable.
+cnm community continue storm-network
+#    {"slug":"storm-network","admin_did":"did:key:z6Mk…","state":"complete"}
+```
+
+Until `continue` succeeds the community is listed as *pending grant* and no
+command can select it. A `continue` before the grant prints the routes again
+and changes nothing, so re-run it once the grant lands. The VTC has no
+key-rotation task (no `acl/swap-key`; a successor admin entry would itself
+need a second administrator's consent), so — unlike the personal VTA — the
+minted key is kept: only its DID was ever shown.
+
+`--reuse-identity <community>` shares another community's key instead. It is
+never done without that flag, because the shared key links the two
+communities to anyone who sees both ACLs. Holding a community identity as a
+persona on the personal VTA, rather than as a local `did:key`, is not
+supported yet.
+
+#### A profile that already exists
+
+For a community added before this — from a sealed credential, or "Generate
+from personal VTA" — the profile's DID is the one `cnm auth status` shows as
+`Client DID`:
 
 1. **Tell `cnm` which VTC.** The DID is the one `vtc setup` printed for the
    community, not the community VTA's:

@@ -68,6 +68,9 @@ tempfile = "3"
 wiremock = "0.6"
 ed25519-dalek = { workspace = true }
 multibase = { workspace = true }
+# `InMemorySessionBackend`: the setup tests drive the session store without the
+# OS keyring. Path-only, so publishing strips it rather than pinning a version.
+vta-sdk = { path = "../vta-sdk", features = ["test-support"] }
 
 [lints]
 workspace = true

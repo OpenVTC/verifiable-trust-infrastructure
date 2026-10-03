@@ -8,6 +8,8 @@ mod consent;
 mod did_log;
 mod git;
 mod member;
+mod onboard;
+mod pnm_profile;
 mod setup;
 mod vetting;
 mod vtc;
@@ -141,8 +143,37 @@ impl From<TransportOpt> for vta_sdk::session::TransportChoice {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initial setup wizard
-    Setup,
+    /// Initial setup wizard: the personal VTA, then a community.
+    ///
+    /// The personal VTA is onboarded the way `pnm setup` onboards one: cnm
+    /// mints an ephemeral did:key, an administrator grants it, and on the
+    /// first authentication cnm rotates to a fresh did:key and drops the temp
+    /// one. If `pnm` on this machine already administers the same VTA, the
+    /// wizard offers to make the grant with that session instead; a sealed
+    /// bundle from an administrator stays available for air-gapped setups.
+    ///
+    ///   # Interactive:
+    ///   cnm setup
+    ///
+    ///   # Phase 1 (non-interactive — JSON on stdout):
+    ///   cnm setup --name home
+    ///
+    ///   # Phase 2, once the grant is made (non-interactive — JSON on stdout):
+    ///   cnm setup continue home --vta-did did:webvh:...
+    Setup {
+        #[command(subcommand)]
+        command: Option<SetupCommands>,
+
+        /// Non-interactive phase 1: a name for the personal VTA. Combining
+        /// with `continue` is an error.
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Non-interactive phase 1: replace a *pending* personal-VTA setup.
+        /// Never replaces a completed one.
+        #[arg(long)]
+        overwrite: bool,
+    },
 
     /// Community management
     Community {
@@ -457,8 +488,41 @@ enum CommunityCommands {
         /// Community slug to set as default
         name: String,
     },
-    /// Add a new community
-    Add,
+    /// Add a new community, with an admin identity of its own.
+    ///
+    /// Without a name: interactive. With one: mints a fresh did:key for this
+    /// community alone, parks it as pending, prints the grant commands and one
+    /// JSON line (`{slug, admin_did, state}`). Finish with
+    /// `cnm community continue <slug> --vtc-did <did>` once it is granted.
+    Add {
+        /// The community's name. Omit for the interactive wizard.
+        name: Option<String>,
+        /// The local slug (default: derived from the name).
+        #[arg(long)]
+        slug: Option<String>,
+        /// Use the identity of this existing community instead of minting
+        /// one. The two communities then share a key, which links them to
+        /// anyone who sees both ACLs — never done without this flag.
+        #[arg(long, value_name = "COMMUNITY")]
+        reuse_identity: Option<String>,
+        /// The community's VTA, if it has one.
+        #[arg(long)]
+        vta_did: Option<String>,
+        /// Replace a *pending* community of the same slug.
+        #[arg(long)]
+        overwrite: bool,
+    },
+    /// Finish adding a community: authenticate to its VTC as the pending
+    /// identity (which works once an administrator has granted it) and make
+    /// the community usable. The VTC is `--vtc-did`, else the one given to
+    /// `add`; `--url` overrides the API base its DID document advertises.
+    Continue {
+        /// The pending community's slug.
+        name: String,
+        /// The community's VTA, if it has one.
+        #[arg(long)]
+        vta_did: Option<String>,
+    },
     /// Delete a community connection from this machine: its local config
     /// entry and stored credential.
     ///
@@ -489,6 +553,26 @@ enum CommunityCommands {
     SetVtc {
         /// The VTC's DID (`did:webvh:…`).
         did: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum SetupCommands {
+    /// Finish a pending personal-VTA setup: bind the VTA DID, authenticate
+    /// (which rotates the temporary did:key to a fresh one and removes the
+    /// temp ACL entry), and — interactively — go on to add a community.
+    ///
+    /// Interactive on a terminal without `--vta-did`; with it, prints one JSON
+    /// line. Re-run it if the grant was not in place yet.
+    Continue {
+        /// The name given to `cnm setup --name` (checked when given).
+        name: Option<String>,
+        /// The personal VTA's DID. Must start with `did:`.
+        #[arg(long)]
+        vta_did: Option<String>,
+        /// The VTA's REST URL, for a did:key VTA that advertises none.
+        #[arg(long)]
+        vta_url: Option<String>,
     },
 }
 
@@ -940,7 +1024,7 @@ fn requires_auth(cmd: &Commands) -> bool {
         cmd,
         Commands::Health
             | Commands::Auth { .. }
-            | Commands::Setup
+            | Commands::Setup { .. }
             | Commands::Community { .. }
             | Commands::Bootstrap { .. }
             // These authenticate to the community itself — the VTC, with the
@@ -1240,6 +1324,21 @@ async fn main() {
             std::process::exit(1);
         }
 
+        // A community added for its VTC alone holds an identity with no VTA
+        // bound; say so rather than let the SDK report a pending setup.
+        if let Some(s) = auth::loaded_session(&keyring_key)
+            && s.vta_did.is_none()
+        {
+            eprintln!(
+                "Error: this command administers the community's VTA, and this community \
+                 profile has none — it was added for its VTC.\n\n\
+                 The community's own verbs work with it: cnm access, cnm actions, cnm git, \
+                 cnm vetting, cnm member.\n\
+                 A community's VTA is recorded when the community is added or continued:\n  \
+                 cnm community add <name> --vta-did <did>   (or `continue … --vta-did <did>`)"
+            );
+            std::process::exit(1);
+        }
         match auth::connect(url_override.as_deref(), cli.transport.into(), &keyring_key).await {
             Ok(c) => c,
             Err(e) => {
@@ -1252,9 +1351,42 @@ async fn main() {
     };
 
     let result = match cli.command {
-        Commands::Setup => setup::run_setup_wizard().await,
+        Commands::Setup {
+            command,
+            name,
+            overwrite,
+        } => match (command, name) {
+            (None, None) => setup::run_setup_wizard().await,
+            (None, Some(name)) => setup::start_personal_non_interactive(&name, overwrite).await,
+            (
+                Some(SetupCommands::Continue {
+                    name,
+                    vta_did,
+                    vta_url,
+                }),
+                None,
+            ) => {
+                setup::continue_personal(
+                    name.as_deref(),
+                    vta_did.as_deref(),
+                    vta_url.as_deref(),
+                    cli.transport.into(),
+                )
+                .await
+            }
+            (Some(_), Some(_)) => Err("conflicting options: `--name` is for phase 1, \
+                 `continue` is for phase 2 — pass one or the other, not both."
+                .into()),
+        },
         Commands::Community { command } => {
-            cmd_community(command, &cnm_config, cli.community.as_deref()).await
+            cmd_community(
+                command,
+                &cnm_config,
+                cli.community.as_deref(),
+                cli.vtc_did.as_deref(),
+                url_override.as_deref(),
+            )
+            .await
         }
         Commands::Health => cmd_health(&client, &keyring_key, &cnm_config).await,
         Commands::Auth { command } => match command {
@@ -1675,10 +1807,12 @@ async fn cmd_community(
     command: CommunityCommands,
     cnm_config: &config::CnmConfig,
     community_override: Option<&str>,
+    vtc_did: Option<&str>,
+    url: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         CommunityCommands::List => {
-            if cnm_config.communities.is_empty() {
+            if cnm_config.communities.is_empty() && cnm_config.pending_communities.is_empty() {
                 println!("No communities configured.");
                 println!("\nRun `cnm setup` to configure your first community.");
                 return Ok(());
@@ -1688,6 +1822,12 @@ async fn cmd_community(
                 let marker = if slug == default { " (default)" } else { "" };
                 println!("  {slug}{marker}");
                 println!("    Name: {}", community.name);
+                // Which key this community signs with — each community has its
+                // own unless one was explicitly reused.
+                match auth::loaded_session(&community_keyring_key(slug)) {
+                    Some(s) => println!("    Identity: {}", onboard::short_did(&s.client_did)),
+                    None => println!("    Identity: (none stored)"),
+                }
                 if let Some(ref did) = community.vta_did {
                     println!("    DID:  {did}");
                 }
@@ -1697,6 +1837,13 @@ async fn cmd_community(
                 if let Some(ref vtc) = community.vtc_did {
                     println!("    VTC:  {vtc}");
                 }
+                println!();
+            }
+            for (slug, p) in &cnm_config.pending_communities {
+                println!("  {slug} {YELLOW}(pending grant){RESET}");
+                println!("    Name: {}", p.name);
+                println!("    Identity: {}", onboard::short_did(&p.admin_did));
+                println!("    Finish: cnm community continue {slug} --vtc-did <vtc-did>");
                 println!();
             }
             Ok(())
@@ -1720,9 +1867,35 @@ async fn cmd_community(
             println!("Default community set to '{name}'.");
             Ok(())
         }
-        CommunityCommands::Add => setup::add_community().await,
+        CommunityCommands::Add {
+            name,
+            slug,
+            reuse_identity,
+            vta_did,
+            overwrite,
+        } => {
+            setup::add_community(setup::AddCommunityArgs {
+                name,
+                slug,
+                reuse_identity,
+                vtc_did: vtc_did.map(str::to_string),
+                vta_did,
+                overwrite,
+            })
+            .await
+        }
+        CommunityCommands::Continue { name, vta_did } => {
+            setup::continue_community(&name, vtc_did, vta_did.as_deref(), url).await
+        }
         CommunityCommands::Delete { name, yes } => {
-            let config = config::load_config()?;
+            let mut config = config::load_config()?;
+            // A pending community has no grant to revoke yet: drop its key.
+            if config.pending_communities.remove(&name).is_some() {
+                auth::logout(&community_keyring_key(&name));
+                config::save_config(&config)?;
+                println!("{GREEN}✓{RESET} Pending community '{name}' deleted.");
+                return Ok(());
+            }
             if !config.communities.contains_key(&name) {
                 return Err(format!("community '{name}' not found.").into());
             }
@@ -1746,7 +1919,6 @@ async fn cmd_community(
                 }
             }
 
-            let mut config = config;
             config.communities.remove(&name);
             // Clear default if it was the deleted community
             if config.default_community.as_deref() == Some(&name) {
@@ -2575,7 +2747,11 @@ mod tests {
 
     #[test]
     fn test_requires_auth_setup_false() {
-        assert!(!requires_auth(&Commands::Setup));
+        assert!(!requires_auth(&Commands::Setup {
+            command: None,
+            name: None,
+            overwrite: false,
+        }));
     }
 
     #[test]

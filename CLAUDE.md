@@ -484,8 +484,19 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vta import-did --did <temp> --role admin` offline → VTA starts → PNM
   authenticates → on first authenticated call PNM **auto-rotates** to a
   fresh `did:key`, creates the new ACL entry, deletes the temp one.
-- **Code**: `pnm-cli/src/setup.rs`, `vta-service/src/main.rs` (`import-did`).
-- **Docs**: `docs/02-vta/cold-start.md` §3–6.
+- **cnm** onboards its personal VTA the same way (`cnm setup` /
+  `cnm setup --name` → grant → `cnm setup continue [<name>] --vta-did`, which
+  authenticates and rotates there and then). Two alternatives: borrow an
+  existing `pnm` session on the same machine to grant cnm's *own* new key
+  (read-only on pnm's profile; pnm's key is used in memory once, never
+  stored), or the sealed bundle (digest-pinned, unchanged). Communities get an
+  identity **each** (`cnm community add` → grant at the VTC →
+  `cnm community continue`); the VTC has no rotation task, so that key is
+  kept. Sharing one across communities takes `--reuse-identity`.
+- **Code**: `pnm-cli/src/setup.rs`, `vta-service/src/main.rs` (`import-did`),
+  `cnm-cli/src/{onboard,setup,pnm_profile}.rs`.
+- **Docs**: `docs/02-vta/cold-start.md` §3–6, `docs/03-vtc/getting-started.md`
+  ("Administering from `cnm`"), `docs/03-vtc/bootstrap-runbook.md`.
 
 ### Deferred VTA-DID setup (non-TEE)
 - **What**: Mint the PNM admin `did:key` *before* the VTA exists, so
