@@ -1297,17 +1297,25 @@ the default policy bundle for every vtc-service test, Argon2id at 64 MiB in
 vta-backup (89s of one CI run). The first build after a `Cargo.lock` change
 pays for the optimisation once.
 
-**On macOS the vtc-service suites are slow for a reason neither change
-touches.** Measured on an 18-core Mac (load average 3–7 from other builds;
-treat as indicative): `cargo test -p vtc-service --lib` 1085s / 1111s at
-opt-level 0, 984s at 2, 893s under nextest; the `it` binary 1434s / 2689s.
-Linux CI runs the same lib binary in ~141s. A sampled test spends 2.9s wall
-for 0.5s of CPU, nearly all of it in `fcntl(F_FULLFSYNC)` — `lsm_tree`'s
-`fsync_directory` while `build_test_vtc` creates its twenty-odd fjall
-keyspaces. `File::sync_all` is `F_FULLFSYNC` on macOS, a whole-device cache
-flush, so parallel test processes queue on the disk rather than the CPU. To
-iterate on vtc-service locally, filter (`cargo nextest run -p vtc-service
-<substring>`) rather than run the suite.
+**On macOS the test fixtures used to queue on the disk.** Measured on an
+18-core Mac (load average 3–7 from other builds; treat as indicative):
+`cargo test -p vtc-service --lib` 1085s / 1111s at opt-level 0, 984s at 2,
+893s under nextest; the `it` binary 1434s / 2689s. Linux CI runs the same lib
+binary in ~141s. A sampled test spent 2.9s wall for 0.5s of CPU, nearly all
+of it in `fcntl(F_FULLFSYNC)` — `lsm_tree`'s `fsync_directory` while
+`build_test_vtc` created its ~45 fjall keyspaces. `File::sync_all` is
+`F_FULLFSYNC` on macOS, a whole-device cache flush, so parallel test
+processes queued on the disk rather than the CPU. fjall has no setting that
+skips those fsyncs (keyspace creation is durable unconditionally), so the
+fixtures (`TestVtc`, and `vta_service::test_support`'s `open_test_store`,
+`build_signing_test_app_state*` and `build_test_app_with`) now copy a
+pre-built template database instead of creating keyspaces —
+`vti_common::store::test_fixture`, published once under
+`$TMPDIR/vti-store-templates/`. `ceremony::`, `backup::tests` and `acl::`
+(157 tests) went 16.3s → 3.6s on the real disk; running with `TMPDIR` on a
+RAM disk is no longer needed for tests built on those fixtures. Unit tests
+that call `Store::open` themselves still create their keyspaces the slow way;
+a new multi-keyspace fixture should use `open_with_keyspaces`.
 
 ## A merge is not evidence that anything passed
 
