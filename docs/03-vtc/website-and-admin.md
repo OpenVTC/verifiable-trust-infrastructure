@@ -313,6 +313,37 @@ placeholder":
   component model the placeholder couldn't carry — toasts,
   modals, sortable tables, a session-expiry redirect.
 
+### What the console shows at a glance
+
+Navigation follows the viewer's capabilities, and two nav entries carry a
+count bubble while something waits:
+
+- **Actions** — actions waiting for your approval (`vtc/admin/actions/list`
+  `counts.waitingForMe`), with a banner after sign-in and the count in the tab
+  title.
+- **Join requests** — join requests awaiting an administrator's decision,
+  for a viewer holding `vtc.join.decide`. Hidden at zero.
+
+Both are fetched at sign-in, whenever the tab regains focus or becomes
+visible, and every 60 s. The dashboard opens with a **Members** tile (current
+members, for `vtc.members.manage`) and a **Join requests** tile (the badge's
+pending count, for `vtc.join.decide`), each linking to its screen and hidden
+from a viewer without the capability.
+
+Neither listing carries a total — `totalEstimate` is left unset, and the
+join-request status filter is applied to each page after it is read — so the
+console walks `vtc/members/list/0.1` and `vtc/join-requests/list/0.1` page by
+page at the schema maximum (200) until the cursor runs out, and reports a
+floor (`10000+`) past 50 pages.
+
+Every page size the console sends a signed listing is held to that listing's
+specification maximum: `admin-ui/src/lib/list-limits.json` pins the maxima,
+`vtc-service`'s `console_list_limits` test compares them to the generated
+schemas, the console's `list-limits.test.ts` census checks every call site,
+and the signer refuses an over-limit page before signing. A page size over
+the maximum is refused by the VTC as `malformedRequest`; that is how the
+admission-criteria page read nothing until #1921.
+
 Operators wanting a different UX point `admin_ui.mode = "external"`
 at their own origin; that knob skips the embedded SPA and adds the
 operator-supplied origin to `cors.allowed_origins` so an

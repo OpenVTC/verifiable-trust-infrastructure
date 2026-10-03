@@ -19,6 +19,11 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import { postSignedRead } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
+import {
+  countPendingJoinRequests,
+  formatTally,
+  PENDING_JOIN_REQUESTS_KEY,
+} from "@/lib/community-counts";
 import { formatIso } from "@/lib/format";
 import { gestureFromConfirm, parkedOf } from "@/lib/signed-act";
 import { useToast } from "@/lib/toast";
@@ -61,27 +66,11 @@ import {
 } from "@/lib/ceremony-manifest";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
-const TRUST_TASK_JOIN_REQUESTS =
-  "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
-
 // Queues a refer verdict can route to that map to an actionable admin
 // surface. The moderator queue is the join-requests inbox.
 const QUEUE_LINKS: Record<string, { label: string; to: string }> = {
   moderator: { label: "Join requests", to: "/join-requests" },
 };
-
-interface JoinRequestsPage {
-  items: unknown[];
-  totalEstimate?: number;
-}
-
-async function fetchPendingCount(): Promise<number> {
-  const page = await postSignedRead<JoinRequestsPage>(TRUST_TASK_JOIN_REQUESTS, {
-    status: "pending",
-    limit: 50,
-  });
-  return page.totalEstimate ?? page.items.length;
-}
 
 type Effect = "allow" | "deny" | "refer" | "request_more";
 
@@ -1177,10 +1166,14 @@ function SimFields({
 // would be referred" to "go act on it".
 function ReferQueue({ queue }: { queue: string }) {
   const link = QUEUE_LINKS[queue];
+  // The Join requests badge's count (lib/community-counts.ts), shared through
+  // its cache key. It walks every page: the listing filters by status after
+  // reading a page, so the first page's length undercounts.
   const pending = useQuery({
-    queryKey: ["pending-count", queue],
-    queryFn: fetchPendingCount,
+    queryKey: PENDING_JOIN_REQUESTS_KEY,
+    queryFn: countPendingJoinRequests,
     enabled: !!link,
+    select: formatTally,
   });
   return (
     <div className="cer-refer">

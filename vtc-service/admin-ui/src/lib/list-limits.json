@@ -1,0 +1,21 @@
+{
+  "https://trusttasks.org/spec/git-ns/account/list/0.1": 500,
+  "https://trusttasks.org/spec/git-ns/activity/list/0.1": 500,
+  "https://trusttasks.org/spec/git-ns/bridge/job/list/0.1": 500,
+  "https://trusttasks.org/spec/git-ns/projection/show/0.1": 500,
+  "https://trusttasks.org/spec/git-ns/right/issued-by-departed/0.1": 500,
+  "https://trusttasks.org/spec/git-ns/right/list/0.1": 500,
+  "https://trusttasks.org/spec/vtc/admin/actions/list/0.2": 100,
+  "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1": 200,
+  "https://trusttasks.org/spec/vtc/endorsements/list/0.1": 200,
+  "https://trusttasks.org/spec/vtc/join-requests/list/0.1": 200,
+  "https://trusttasks.org/spec/vtc/members/list/0.1": 200,
+  "https://trusttasks.org/spec/vtc/registry/records/list/0.1": 200,
+  "https://trusttasks.org/spec/vtc/registry/sync-jobs/list/0.1": 200,
+  "https://trusttasks.org/spec/vtc/relationships/list/0.2": 200,
+  "https://trusttasks.org/spec/vtc/rooms/list/0.1": 100,
+  "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2": 50,
+  "https://trusttasks.org/spec/vtc/vetting/revocations/list/0.1": 100,
+  "https://trusttasks.org/spec/vtc/vetting/vetters/grants/list/0.1": 100,
+  "https://trusttasks.org/spec/vtc/vetting/vetters/list/0.1": 100
+}
