@@ -3636,6 +3636,32 @@ a.button.primary:hover {
 .breakglass-banner a {
   font-weight: 600;
 }
+/* Single-administrator mode (VTI-APV-022): a standing condition, not an
+   alarm, so not the break-glass red — but distinct from every other banner:
+   a heavy dashed border and hatched background that read at a glance, in
+   both themes, without relying on colour alone (the headline says it). */
+.single-admin-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 3px dashed var(--warning);
+  border-radius: var(--radius-sm);
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--warning) 14%, transparent) 0 10px,
+    color-mix(in srgb, var(--warning) 6%, transparent) 10px 20px
+  );
+  overflow-wrap: anywhere;
+}
+.single-admin-banner > strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.06em;
+}
 /* The console's signing key is close to expiry (App.tsx). A reminder, not an
    alarm: the key still works, and renewing is one passkey confirmation. */
 .signing-renew-banner {

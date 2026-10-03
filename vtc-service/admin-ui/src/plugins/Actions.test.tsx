@@ -625,6 +625,51 @@ describe("coolingOffOf", () => {
   });
 });
 
+// ── Single-administrator mode (VTI-APV-022) ─────────────────────────
+
+describe("an operation whose consent single-administrator mode waived", () => {
+  it("is marked in the history, with no approvals and no threshold", async () => {
+    const done: Action = {
+      ...mine,
+      status: "completed",
+      closedReason: "thresholdMet",
+      closedAt: "2026-10-02T11:00:00Z",
+      threshold: undefined,
+      expiresAt: undefined,
+      ext: {
+        "org.openvtc": {
+          consentWaived: { mode: "singleAdministrator", requirement: "VTI-APV-018" },
+        },
+      },
+    };
+    anyView([done]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action act-2" });
+    expect(within(card).getByText("Consent waived")).toBeTruthy();
+    expect(within(card).getByText(/VTI-APV-018, VTI-APV-022/)).toBeTruthy();
+    expect(
+      within(card).getByText("None — consent waived by single-administrator mode."),
+    ).toBeTruthy();
+    expect(
+      within(card).getByText("Consent waived — single-administrator mode (VTI-APV-022)"),
+    ).toBeTruthy();
+    expect(within(card).queryByText(/ of \d/)).toBeNull();
+  });
+
+  it("is not marked when consent was given", async () => {
+    const done: Action = {
+      ...mine,
+      status: "completed",
+      closedReason: "thresholdMet",
+      closedAt: "2026-10-02T11:00:00Z",
+    };
+    anyView([done]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action act-2" });
+    expect(within(card).queryByText("Consent waived")).toBeNull();
+  });
+});
+
 // ── A new administrator's approver invite ───────────────────────────
 
 describe("the approver invite of a completed grant", () => {

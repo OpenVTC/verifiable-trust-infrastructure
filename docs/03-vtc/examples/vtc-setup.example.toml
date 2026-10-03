@@ -59,6 +59,19 @@ context = "default"   # the VTA context this community provisions under
 # admin invite. Omit to install a single administrator.
 # co_admin_did = "did:key:z6Mk…"
 
+# ── Single-administrator mode (optional) ────────────────────────────────
+# For a community run by one person (VTI-APV-022). Wherever nobody but the
+# requester could consent to an operation that ordinarily needs another
+# administrator's approval, the requester's passkey step-up bound to that
+# operation authorizes it instead — audited at the highest severity and shown
+# to every administrator in every session. The moment a second eligible
+# administrator exists, their consent is required again. Writes
+# `[acl] single_admin_mode = true` to config.toml; it can be changed afterwards
+# only there, on the host, and by a restart — never online. `vtc setup
+# --single-admin` sets it too. Has no effect beside co_admin_did (setup warns).
+# Default false.
+# single_admin_mode = true
+
 # ── DID hosting (optional) ──────────────────────────────────────────────
 # Omit the whole [webvh] table for the serverless default: the VTC
 # self-hosts its did.jsonl at base_url with a server-assigned path.

@@ -1372,6 +1372,12 @@ pub async fn run(
     // acknowledge.
     audit_offline_break_glass(&state).await;
 
+    // VTI-APV-022 item 4: single-administrator mode is never quiet — a
+    // `Critical` row at every start with it in effect, and another when host
+    // configuration turned it on or off since the last start. A start that
+    // cannot record it does not proceed.
+    crate::acl::single_admin::audit_on_boot(&state).await?;
+
     // Snapshot the CORS allowlist + routing config before the
     // AppState `move` into the REST thread. Both layers are fixed
     // at start-up; a future `POST /v1/admin/config/reload` can

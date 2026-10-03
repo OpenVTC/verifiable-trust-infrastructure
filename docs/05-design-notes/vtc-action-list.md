@@ -531,6 +531,66 @@ decline, only acknowledge, and acknowledging is audited.
 4. The policy-optional rules, and the rule-list surface (`pnm`-style `vtc
    approvals require …` and a console page).
 
+### 8.5 Single-administrator mode (VTI-APV-022)
+
+VTI-APV-014 and VTI-APV-018 – 020 are SHOULD, and VTI-APV-022 is the one way a
+node may not apply them: **single-administrator mode**, `[acl]
+single_admin_mode` in `config.toml` (`crate::acl::single_admin`).
+
+**Semantics.** At the consent gate (`admin_consent::gesture_then_consent_for`),
+after the approver set is computed exactly as without the mode: if it is
+**empty** — nobody but the requester (and, for a reduction, the subject) holds
+and may approve the stake — and the mode is on, the gate does not refuse
+(`refuse_if_unmeetable`) and does not park. It asks for the requester's gesture
+bound to the operation (VTI-APV-015) as it always does, and once that is spent
+hands back a `ReadyGrant` that is a **waiver** rather than an approval. Spending
+it writes a `Critical` `SingleAdminMode { event: consentWaived }` audit row
+naming the requirement, task, kind and payload digest — **before** the write, so
+no waived operation can land unrecorded (a failure to audit refuses the
+operation). Once the write lands, `record_effect` enters the operation in the
+history: an `approval`-category record created closed (`completed`,
+`thresholdMet`), no approvers, no threshold on the wire (as a cooling-off), and
+`ext.org.openvtc.consentWaived = {mode: "singleAdministrator", requirement}`.
+The action-list limits (§7a.1) are skipped with the park: nothing waits.
+
+If **anyone** is eligible — even fewer than the threshold — the mode does
+nothing (item 2): the operation parks, or is refused as unmeetable, exactly as
+before. So a sole administrator in the mode grants a colleague
+`community-admin` on their own step-up, and from then on every grant waits for
+that colleague. No change to the mode is needed in either direction.
+
+**Reductions are unchanged.** VTI-APV-019 already lets a reduction proceed
+without a third party's consent wherever none exists — requester's step-up,
+notice to the subject, `Critical` audit — with or without the mode. The mode
+does **not** also skip the §8.2 cooling-off. The subject of a reduction is
+another administrator who holds what is being taken away, which makes them, for
+every grant of that stake, an eligible approver; letting one credential remove
+them at once and then act on the waiver is a two-step way around item 2 — the
+same "attack the control without granting anything" that VTI-APV-019's
+rationale names. A community that wants no cooling-off sets
+`acl.removal_cooling_off = 0`, which is a visible, audited configuration change
+rather than a property of the mode.
+
+**Host-only (item 1).** The key is not in `config_store::REGISTRY`;
+`config/patch` and `vtc/config/import` refuse `acl.single_admin_mode` by name
+with the host-side fix (`config_store::host_only_refusal`); `config/reload`
+only re-reads registry keys. Setup writes it (`vtc setup --single-admin`,
+`single_admin_mode = true` in the setup TOML, or the wizard's question), and
+only when chosen.
+
+**Reported (item 3).** `vtc/admin/actions/list` carries
+`ext.org.openvtc.singleAdminMode` — the response's extension point, not a new
+member of its `additionalProperties: false` schema — on the read every console
+page makes for the badge. The console shows a permanent, non-dismissable banner
+and a dashboard tile; `cnm actions list` prints a notice.
+
+**Audited (item 4).** At every start, after the offline-write audit: a
+`SingleAdminMode` row `enabled`/`disabled` when the value differs from the one
+recorded at the last start (`install ▸ install:single_admin_mode`, host state,
+not backed up), then `inEffect` if it is on. Written before the recorded value
+is updated, so a crash re-audits rather than loses the change; a start that
+cannot write them does not proceed.
+
 ## 8a. Rollout
 
 Decided 2026-10-02: net-new. Existing VTCs are reinstalled and restored from

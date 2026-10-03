@@ -127,6 +127,16 @@ pub(crate) struct VtcWizardInputs {
     #[serde(default)]
     pub co_admin_did: Option<String>,
 
+    /// Run the community in **single-administrator mode** (VTI-APV-022):
+    /// where nobody but the requester could consent to an operation that
+    /// ordinarily needs another administrator's consent, the requester's
+    /// passkey gesture bound to it authorizes it instead, audited at
+    /// `Critical`. Writes `[acl] single_admin_mode = true` to the generated
+    /// `config.toml`; changeable afterwards only on the host. `vtc setup
+    /// --single-admin` sets it too. Default `false`.
+    #[serde(default)]
+    pub single_admin_mode: bool,
+
     /// Where the VTC's `did:webvh` is published. All fields optional; an
     /// empty `[webvh]` table (or omitting it) reproduces the serverless
     /// default — the VTC self-hosts its `did.jsonl` at `base_url` with a
@@ -167,7 +177,13 @@ fn default_context() -> String {
 /// same plan the interactive collector produces, ready for [`apply`].
 /// Validates the inputs and loads (does not generate) the pre-authorised
 /// ephemeral setup key.
-pub(crate) fn parse_from_toml(file_path: &Path) -> Result<WizardPlan, AppError> {
+///
+/// `single_admin` (`--single-admin`) turns single-administrator mode on
+/// whatever the file says.
+pub(crate) fn parse_from_toml(
+    file_path: &Path,
+    single_admin: bool,
+) -> Result<WizardPlan, AppError> {
     let raw = std::fs::read_to_string(file_path)
         .map_err(|e| AppError::Config(format!("read setup file {}: {e}", file_path.display())))?;
     let inputs: VtcWizardInputs = toml::from_str(&raw)
@@ -212,6 +228,7 @@ pub(crate) fn parse_from_toml(file_path: &Path) -> Result<WizardPlan, AppError> 
             co_admin_did: super::wizard::normalize_co_admin_did(
                 inputs.co_admin_did.as_deref().unwrap_or(""),
             )?,
+            single_admin_mode: inputs.single_admin_mode || single_admin,
         },
         webvh: inputs.webvh,
         secrets: inputs.secrets,
@@ -323,12 +340,12 @@ fn validate(inputs: &VtcWizardInputs) -> Result<(), AppError> {
 
 /// `vtc setup --from <file>`: parse → [`apply`] → terse summary. The
 /// non-interactive counterpart to [`run_setup_wizard`](super::wizard::run_setup_wizard).
-pub async fn run_setup_from_file(file_path: PathBuf) -> Result<(), AppError> {
+pub async fn run_setup_from_file(file_path: PathBuf, single_admin: bool) -> Result<(), AppError> {
     eprintln!(
         "Running non-interactive VTC setup from {} ...",
         file_path.display()
     );
-    let plan = parse_from_toml(&file_path)?;
+    let plan = parse_from_toml(&file_path, single_admin)?;
     let outcome = apply(plan).await?;
     print_setup_summary_terse(&outcome);
     Ok(())
@@ -346,6 +363,7 @@ fn print_setup_summary_terse(outcome: &SetupOutcome) {
     println!("data_dir={}", outcome.data_dir.display());
     println!("install_url={}", outcome.install_url);
     println!("claim_code={}", outcome.claim_code);
+    println!("single_admin_mode={}", outcome.single_admin_mode);
     // VTI-11: the ACL is empty until the install is claimed; this is the
     // headless way to seed the admin (run with the daemon stopped).
     println!(
@@ -642,7 +660,7 @@ keyring_service = "vtc-test"
         let toml_path = dir.path().join("setup.toml");
         std::fs::write(&toml_path, toml).expect("write toml");
 
-        let plan = parse_from_toml(&toml_path).expect("parse_from_toml");
+        let plan = parse_from_toml(&toml_path, false).expect("parse_from_toml");
         assert_eq!(
             plan.setup_key.did, key_did,
             "the plan must carry the pre-authorised key loaded from disk"
@@ -666,12 +684,48 @@ keyring_service = "vtc-test"
 
         // `WizardPlan` deliberately holds the setup key and isn't `Debug`,
         // so match rather than `unwrap_err()` (which needs `T: Debug`).
-        let err = match parse_from_toml(&toml_path) {
+        let err = match parse_from_toml(&toml_path, false) {
             Ok(_) => panic!("expected a missing-setup-key error"),
             Err(e) => e.to_string(),
         };
         assert!(err.contains("load setup key"), "{err}");
         assert!(err.contains("admin ACL"), "actionable hint present: {err}");
+    }
+
+    // ── single-administrator mode (VTI-APV-022) ────────────────────
+
+    /// `single_admin_mode = true` in the setup file, or `--single-admin`,
+    /// sets it; neither leaves it off.
+    #[test]
+    fn vti_apv_022_single_admin_mode_from_the_file_or_the_flag() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (key_path, _) = persist_setup_key(dir.path());
+        let write = |extra: &str| {
+            let toml = format!(
+                "{extra}\n{}",
+                minimal_toml(
+                    dir.path().join("config.toml").to_str().unwrap(),
+                    key_path.to_str().unwrap(),
+                )
+            );
+            let path = dir.path().join("setup.toml");
+            std::fs::write(&path, toml).expect("write toml");
+            path
+        };
+        let plain = write("");
+        let off = parse_from_toml(&plain, false)
+            .map_err(|e| e.to_string())
+            .unwrap();
+        assert!(!off.inputs.single_admin_mode, "off unless chosen");
+        let flagged = parse_from_toml(&plain, true)
+            .map_err(|e| e.to_string())
+            .unwrap();
+        assert!(flagged.inputs.single_admin_mode, "--single-admin sets it");
+        let in_file = write("single_admin_mode = true");
+        let on = parse_from_toml(&in_file, false)
+            .map_err(|e| e.to_string())
+            .unwrap();
+        assert!(on.inputs.single_admin_mode, "the file sets it");
     }
 
     // ── co-admin (VTI-APV-014) ──────────────────────────────────────

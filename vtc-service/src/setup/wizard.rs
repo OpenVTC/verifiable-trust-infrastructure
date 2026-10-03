@@ -64,9 +64,15 @@ use crate::keys::seed_store::create_secret_store;
 use crate::setup::VtcKeyBundle;
 
 /// Entry point bound to `Commands::Setup` in `main.rs`.
-pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppError> {
+///
+/// `single_admin` (`--single-admin`) answers the single-administrator-mode
+/// question in advance.
+pub async fn run_setup_wizard(
+    config_path: Option<PathBuf>,
+    single_admin: bool,
+) -> Result<(), AppError> {
     intro_banner();
-    let plan = collect_interactive(config_path).await?;
+    let plan = collect_interactive(config_path, single_admin).await?;
     let outcome = apply(plan).await?;
     print_setup_summary_interactive(&outcome)?;
     Ok(())
@@ -78,11 +84,14 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
 /// did-hosting picker). The non-interactive `setup --from <toml>` path
 /// builds the same plan from a file and feeds it to the same [`apply`],
 /// so the two never drift.
-async fn collect_interactive(config_path: Option<PathBuf>) -> Result<WizardPlan, AppError> {
+async fn collect_interactive(
+    config_path: Option<PathBuf>,
+    single_admin: bool,
+) -> Result<WizardPlan, AppError> {
     let config_path = prompt_config_path(config_path)?;
     refuse_if_already_set_up(&config_path)?;
 
-    let inputs = prompt_inputs()?;
+    let inputs = prompt_inputs(single_admin)?;
 
     // 1. Resolve the VTA DID once, up front. This doubles as an early
     //    "is the VTA DID valid?" check — bail-fast on a typo rather than
@@ -224,6 +233,9 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
         secrets,
         messaging,
     )?;
+    // VTI-APV-022: written only when chosen (`skip_serializing_if`), so a
+    // config.toml that does not mention it is a community without it.
+    app_config.acl.single_admin_mode = inputs.single_admin_mode;
 
     // 7. Persist the key bundle via the chosen backend.
     //
@@ -275,6 +287,9 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     // either daemon's auth. The install URL attaches a passkey to this
     // DID for browser-based admin UI access.
     let admin_did = provision.admin_did().to_string();
+    if let Some(warning) = single_admin_warning(&inputs) {
+        eprintln!("{warning}");
+    }
     if inputs.co_admin_did.as_deref() == Some(admin_did.as_str()) {
         return Err(AppError::Config(format!(
             "the second administrator ({admin_did}) is the first one; name a different DID, \
@@ -307,6 +322,20 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
         install_url,
         claim_code,
         admin_key_json: admin_key_summary,
+        single_admin_mode: inputs.single_admin_mode,
+    })
+}
+
+/// The warning for single-administrator mode chosen beside a second
+/// administrator: allowed, but it has no effect while that administrator is
+/// eligible to consent (VTI-APV-022 item 2).
+pub(crate) fn single_admin_warning(inputs: &WizardInputs) -> Option<String> {
+    (inputs.single_admin_mode && inputs.co_admin_did.is_some()).then(|| {
+        "warning: single-administrator mode is set, and a second administrator \
+         (co_admin_did) is installed too. The mode waives another administrator's consent \
+         only where nobody but the requester could give it, so it has no effect while the \
+         second administrator is eligible to consent (VTI-APV-022)."
+            .to_string()
     })
 }
 
@@ -321,6 +350,12 @@ fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppErro
     println!("Admin DID:     {}", outcome.admin_did);
     println!("Config:        {}", outcome.config_path.display());
     println!("Data dir:      {}", outcome.data_dir.display());
+    if outcome.single_admin_mode {
+        println!(
+            "Single-administrator mode: on ([acl] single_admin_mode in config.toml; \
+             VTI-APV-022)"
+        );
+    }
     println!();
     if let Some(key_json) = outcome.admin_key_json.as_deref() {
         // The admin private key lands in the terminal scrollback / any
@@ -422,6 +457,13 @@ pub(crate) struct WizardInputs {
     /// bootstrap writes it alongside the first admin; it needs no passkey to
     /// consent, since a decision is a document its DID signs.
     pub(crate) co_admin_did: Option<String>,
+    /// Run the community in **single-administrator mode** (VTI-APV-022):
+    /// where nobody but the requester could consent to an operation that
+    /// ordinarily needs another administrator's consent, the requester's
+    /// passkey gesture bound to it authorizes it, audited at `Critical`. Host
+    /// configuration — written to `config.toml` as `[acl] single_admin_mode =
+    /// true`, only when chosen, and never settable online.
+    pub(crate) single_admin_mode: bool,
 }
 
 /// A messaging transport a community can advertise.
@@ -488,6 +530,9 @@ pub(crate) struct SetupOutcome {
     /// returned one. Sensitive — the interactive path gates its display
     /// behind a confirm; the non-interactive path never prints it.
     pub(crate) admin_key_json: Option<String>,
+    /// Whether the community was set up in single-administrator mode
+    /// (VTI-APV-022).
+    pub(crate) single_admin_mode: bool,
 }
 
 /// Where the VTC's `did:webvh` is published, as chosen by the operator
@@ -544,7 +589,7 @@ pub(crate) fn refuse_if_already_set_up(config_path: &std::path::Path) -> Result<
     Ok(())
 }
 
-fn prompt_inputs() -> Result<WizardInputs, AppError> {
+fn prompt_inputs(single_admin: bool) -> Result<WizardInputs, AppError> {
     println!();
     println!("Provisioning a fresh VTC requires the daemon's base URL, the VTA's DID,");
     println!("and the context name. The VTA's transport endpoints are resolved from");
@@ -610,6 +655,25 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
         .map_err(prompt_err)?;
     let co_admin_did = normalize_co_admin_did(&co_admin_did)?;
 
+    let single_admin_mode = if single_admin {
+        true
+    } else {
+        println!();
+        println!("A community run by one person has nobody to give that consent. In");
+        println!("single-administrator mode, wherever no administrator but you could");
+        println!("consent, your own passkey gesture bound to the operation authorizes it");
+        println!("instead — audited at the highest severity, and shown to every");
+        println!("administrator in every session. The moment a second eligible");
+        println!("administrator exists, their consent is required again. It can be");
+        println!("changed only on this host, in config.toml (VTI-APV-022).");
+        println!();
+        Confirm::new()
+            .with_prompt("Run as a single-administrator community?")
+            .default(false)
+            .interact()
+            .map_err(prompt_err)?
+    };
+
     // The VTC DID's hosting target (did-hosting server, domain, path) is
     // collected later, in `select_webvh_target`, after the ACL grant — at
     // that point the ephemeral key can authenticate to the VTA and
@@ -618,6 +682,7 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
 
     Ok(WizardInputs {
         co_admin_did,
+        single_admin_mode,
         base_url,
         vta_did,
         context,
@@ -2016,6 +2081,71 @@ mod tests {
         assert!(msg.contains("--name \"VTC\""));
         assert!(msg.contains("--admin-did did:key:zAbc"));
         assert!(msg.contains("--admin-expires 1h --admin-handoff"));
+    }
+
+    fn sample_config(cfg_path: &std::path::Path) -> AppConfig {
+        build_app_config(
+            cfg_path.to_path_buf(),
+            "did:webvh:scid:vtc.example.com".into(),
+            "did:webvh:scid:vta.example.com".into(),
+            "https://vtc.example.com".into(),
+            cfg_path.parent().unwrap().join("data"),
+            secrets_choice_to_config(SecretsBackendChoice::Keyring {
+                service: "vtc".into(),
+            }),
+            None,
+        )
+        .unwrap()
+    }
+
+    /// VTI-APV-022: setup writes `[acl] single_admin_mode = true` only when it
+    /// was chosen, and the daemon reads it back as on.
+    #[test]
+    fn vti_apv_022_setup_writes_single_admin_mode_only_when_chosen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("config.toml");
+
+        let config = sample_config(&cfg_path);
+        assert!(!config.acl.single_admin_mode, "off by default");
+        write_config_toml(&cfg_path, &config).unwrap();
+        let written = std::fs::read_to_string(&cfg_path).unwrap();
+        assert!(
+            !written.contains("single_admin_mode"),
+            "not written unless chosen:\n{written}"
+        );
+
+        let mut config = sample_config(&cfg_path);
+        config.acl.single_admin_mode = true;
+        write_config_toml(&cfg_path, &config).unwrap();
+        let written = std::fs::read_to_string(&cfg_path).unwrap();
+        let parsed: toml::Value = toml::from_str(&written).unwrap();
+        assert_eq!(
+            parsed["acl"]["single_admin_mode"].as_bool(),
+            Some(true),
+            "{written}"
+        );
+        let reloaded = AppConfig::load(Some(cfg_path.clone())).unwrap();
+        assert!(reloaded.acl.single_admin_mode);
+    }
+
+    /// Chosen beside a second administrator: allowed, with a warning that it
+    /// has no effect while that administrator can consent.
+    #[test]
+    fn vti_apv_022_single_admin_beside_a_co_admin_warns() {
+        let inputs = |single, co: Option<&str>| WizardInputs {
+            base_url: "https://vtc.example.com".into(),
+            vta_did: "did:webvh:vta".into(),
+            context: "default".into(),
+            registry_did: None,
+            transports: Vec::new(),
+            co_admin_did: co.map(String::from),
+            single_admin_mode: single,
+        };
+        assert!(single_admin_warning(&inputs(true, None)).is_none());
+        assert!(single_admin_warning(&inputs(false, Some("did:key:z6MkCo"))).is_none());
+        let w = single_admin_warning(&inputs(true, Some("did:key:z6MkCo"))).unwrap();
+        assert!(w.contains("no effect"), "{w}");
+        assert!(w.contains("VTI-APV-022"), "{w}");
     }
 
     #[cfg(unix)]

@@ -63,6 +63,7 @@ const NOTHING: ActionsAttention = Object.freeze({
   waiting: 0,
   operatorWritesUnacknowledged: [],
   coolingOffAgainstMe: [],
+  singleAdminMode: false,
 }) as ActionsAttention;
 
 /**

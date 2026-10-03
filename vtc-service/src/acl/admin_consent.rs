@@ -59,6 +59,16 @@
 //! There is no re-send: a client that answers `consent_required` by sending
 //! the operation again is not supported (design §8a).
 //!
+//! ## Single-administrator mode (VTI-APV-022)
+//!
+//! On a node configured on the host for it ([`crate::acl::single_admin`]), an
+//! **empty** approver set does not refuse: once the requester's gesture bound
+//! to the operation is spent, it stands in for the consent nobody else could
+//! give, and [`ReadyGrant::spend`] audits the waiver at `Critical`. A non-empty
+//! set parks exactly as without the mode. Reductions ([`gate_reduction`]) are
+//! not affected: they keep the VTI-APV-019 path and its cooling-off
+//! (`vtc-action-list.md` §8.5).
+//!
 //! ## The other acts it gates
 //!
 //! The same machinery also gates the acts that could otherwise undo APV-018
@@ -397,13 +407,37 @@ pub async fn check_attrition(state: &AppState, subject: &str) -> Result<(), AppE
 /// Other administrators' consent, found sufficient for the operation now being
 /// executed. Only an approved action's execution produces one
 /// ([`crate::admin_actions`], VTI-APV-017): a submission parks instead.
+///
+/// Or, in single-administrator mode with nobody but the requester eligible to
+/// consent, the requester's own operation-bound gesture standing in for that
+/// consent (**VTI-APV-022**).
 #[derive(Debug)]
 #[must_use = "a ReadyGrant authorizes nothing until it is spent with the write"]
 pub struct ReadyGrant {
-    action_id: String,
+    ready: Ready,
+}
+
+#[derive(Debug)]
+enum Ready {
+    /// An approved action executing (VTI-APV-017).
+    Approved { action_id: String },
+    /// Consent waived by single-administrator mode (VTI-APV-022).
+    Waived(Box<crate::admin_actions::Waiver>),
 }
 
 impl ReadyGrant {
+    pub(crate) fn approved(action_id: String) -> Self {
+        Self {
+            ready: Ready::Approved { action_id },
+        }
+    }
+
+    /// Whether this is single-administrator mode's waiver rather than other
+    /// administrators' consent.
+    pub fn is_waived(&self) -> bool {
+        matches!(self.ready, Ready::Waived(_))
+    }
+
     /// Spend the consent. Call it with the write, after every other check.
     ///
     /// The action itself is closed — and each approver's challenge consumed, as
@@ -411,10 +445,28 @@ impl ReadyGrant {
     /// landed, under the same status transition that made this execution the
     /// only one ([`crate::admin_actions`]). This records that the gate was
     /// reached on the way.
-    pub async fn spend(self, _state: &AppState) -> Result<(), AppError> {
-        crate::admin_actions::note_gate_spent(&self.action_id);
-        Ok(())
+    ///
+    /// A waiver (VTI-APV-022 item 4) is audited here at `Critical`, and the
+    /// operation is entered in the action list's history once its write lands
+    /// ([`crate::admin_actions::record_effect`]).
+    pub async fn spend(self, state: &AppState) -> Result<(), AppError> {
+        match self.ready {
+            Ready::Approved { action_id } => {
+                crate::admin_actions::note_gate_spent(&action_id);
+                Ok(())
+            }
+            Ready::Waived(waiver) => crate::admin_actions::spend_waiver(state, *waiver).await,
+        }
     }
+}
+
+/// Whether this node runs in **single-administrator mode** (VTI-APV-022).
+///
+/// Host configuration, read once at start: `[acl] single_admin_mode` is not in
+/// the runtime config registry, so nothing on the operation surface — a
+/// `config/patch`, an import, a reload — changes the value held here.
+pub async fn single_admin_mode(state: &AppState) -> bool {
+    state.config.read().await.acl.single_admin_mode
 }
 
 /// What the signed door has once it has asked for both things an unrestricted
@@ -489,7 +541,7 @@ pub async fn gesture_then_consent_for(
     if let Some(exec) = crate::admin_actions::executing() {
         let action_id =
             crate::admin_actions::recheck(state, &exec, act, requester, subject, op).await?;
-        return Ok(SignedGate::Ready(ReadyGrant { action_id }));
+        return Ok(SignedGate::Ready(ReadyGrant::approved(action_id)));
     }
 
     // The same operation already waiting: point at it, and ask nothing again.
@@ -502,15 +554,22 @@ pub async fn gesture_then_consent_for(
     // asking the requester for one.
     let approvers = approvers_for(state, act, &stake, requester, subject, now).await?;
     let threshold = threshold(state).await?;
-    refuse_if_unmeetable(
-        act,
-        &stake,
-        approvers.len() as u64,
-        threshold,
-        consent_summary,
-    )?;
-    // §7a.1: the action-list limits, before the gesture too.
-    crate::admin_actions::check_limits(state, act, requester, subject).await?;
+    // VTI-APV-022: single-administrator mode waives the consent only where
+    // nobody but the requester could give it. One other eligible party — even
+    // one too few to meet the threshold — and consent applies as it always
+    // does (item 2).
+    let waive = approvers.is_empty() && single_admin_mode(state).await;
+    if !waive {
+        refuse_if_unmeetable(
+            act,
+            &stake,
+            approvers.len() as u64,
+            threshold,
+            consent_summary,
+        )?;
+        // §7a.1: the action-list limits, before the gesture too.
+        crate::admin_actions::check_limits(state, act, requester, subject).await?;
+    }
 
     let evidence = match bound_step_up::redeem_or_request_with_evidence(
         state,
@@ -524,6 +583,23 @@ pub async fn gesture_then_consent_for(
         EvidencedGate::Required(request) => return Ok(SignedGate::StepUpRequired(request)),
         EvidencedGate::Satisfied(evidence) => evidence,
     };
+
+    if waive {
+        // The requester's gesture, bound to this operation and now spent,
+        // stands in for the consent nobody else could give (VTI-APV-022).
+        // Spending the grant audits it at `Critical`.
+        return Ok(SignedGate::Ready(ReadyGrant {
+            ready: Ready::Waived(Box::new(crate::admin_actions::Waiver::new(
+                act,
+                stake,
+                requester,
+                subject,
+                op,
+                consent_summary,
+                evidence,
+            )?)),
+        }));
+    }
 
     let pin = pin_for(state, act, subject).await?;
     let action = crate::admin_actions::park(
@@ -680,7 +756,7 @@ pub async fn gate_reduction(
                 crate::admin_actions::recheck_cooling_off(state, exec, requester, &subject.did, op)
                     .await?;
             return Ok(ReductionGate::Cleared(Reduction::Unopposed(Some(
-                ReadyGrant { action_id },
+                ReadyGrant::approved(action_id),
             ))));
         }
         let third = approvers_for(
@@ -956,7 +1032,7 @@ pub async fn require(
             op,
         )
         .await?;
-        return Ok(ReadyGrant { action_id });
+        return Ok(ReadyGrant::approved(action_id));
     }
     let stake = Act::GrantUnrestricted.stake_or_default(stake);
     // A consent nobody could give is the more useful thing to say first.
@@ -970,6 +1046,16 @@ pub async fn require(
     )
     .await?
     .len() as u64;
+    // Single-administrator mode waives the consent only on a passkey gesture
+    // bound to the operation (VTI-APV-022, VTI-APV-015) — which only a signed
+    // document carries.
+    if approvers == 0 && single_admin_mode(state).await {
+        return Err(AppError::Forbidden(format!(
+            "{summary} needs, in single-administrator mode, your passkey gesture bound to the \
+             operation (VTI-APV-022), which only a signed {} document can carry",
+            op.type_uri
+        )));
+    }
     refuse_if_unmeetable(
         Act::GrantUnrestricted,
         &stake,

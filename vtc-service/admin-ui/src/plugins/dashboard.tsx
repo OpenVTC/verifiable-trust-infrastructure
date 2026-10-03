@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 
 import { CopyButton } from "@/components/CopyButton";
 import { fetchHealth, fetchBuildInfo, fetchDiagnostics } from "@/lib/api";
+import { WAITING_COUNT_KEY } from "@/lib/action-badge";
+import { fetchActionsAttention } from "@/lib/actions-api";
 import { formatDuration } from "@/lib/format";
 import {
   fetchPendingWithVetting,
@@ -34,6 +36,14 @@ export function Dashboard() {
     queryKey: vettingKeys.revocations,
     queryFn: fetchRevocations,
   });
+  // Single-administrator mode (VTI-APV-022): the same signed action-list read
+  // the shell's badge and banner make, shared through its cache key.
+  const attention = useQuery({
+    queryKey: WAITING_COUNT_KEY,
+    queryFn: fetchActionsAttention,
+    retry: false,
+  });
+  const singleAdminMode = attention.data?.singleAdminMode === true;
   const needsReview = withdrawals.data?.filter(
     (r) => r.reviewState === "needsReview",
   ).length;
@@ -113,6 +123,15 @@ export function Dashboard() {
       <h2>Dashboard</h2>
 
       <div className="stat-tiles">
+        {singleAdminMode && (
+          <StatTile
+            label="Administration"
+            value="Single admin mode"
+            foot="Your step-up stands in for a second administrator's consent (VTI-APV-022)"
+            tone="warn"
+            to="/actions"
+          />
+        )}
         <StatTile
           label="Daemon status"
           value={status ?? "…"}

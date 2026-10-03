@@ -48,6 +48,7 @@ import {
   canDecideHere,
   cancelAction,
   coolingOffOf,
+  consentWaivedOf,
   explainAcknowledgeError,
   isAcknowledgeItem,
   isAlreadyAcknowledged,
@@ -277,6 +278,7 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
   const open = action.status === "open";
   const ack = isAcknowledgeItem(action);
   const cooling = coolingOffOf(action);
+  const waived = consentWaivedOf(action);
 
   return (
     <article
@@ -287,6 +289,14 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
         <p className="action-severity">
           <span className="chip danger">Critical</span>{" "}
           <strong>The operator changed access control offline</strong>
+        </p>
+      )}
+      {waived && (
+        <p className="action-severity">
+          <span className="chip warning">Consent waived</span>{" "}
+          <strong>Single-administrator mode</strong> — nobody but the requester could consent,
+          so their passkey gesture bound to this operation authorized it ({waived.requirement},
+          VTI-APV-022).
         </p>
       )}
       {summary.state === "checking" && <p className="lead">Checking this action…</p>}
@@ -343,7 +353,12 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
             </dd>
             <dt>Created</dt>
             <dd>{formatIso(action.createdAt)}</dd>
-            {cooling ? (
+            {waived ? (
+              <>
+                <dt>Approvals</dt>
+                <dd>None — consent waived by single-administrator mode.</dd>
+              </>
+            ) : cooling ? (
               <>
                 <dt>Approvals</dt>
                 <dd>
@@ -592,7 +607,11 @@ function ClosedFacts({ action, book }: { action: Action; book: NameBook }) {
       {action.closedReason && (
         <>
           <dt>Why it closed</dt>
-          <dd>{CLOSED_REASON_TEXT[action.closedReason] ?? action.closedReason}</dd>
+          <dd>
+            {consentWaivedOf(action)
+              ? "Consent waived — single-administrator mode (VTI-APV-022)"
+              : (CLOSED_REASON_TEXT[action.closedReason] ?? action.closedReason)}
+          </dd>
         </>
       )}
       {ext.closedMessage && (

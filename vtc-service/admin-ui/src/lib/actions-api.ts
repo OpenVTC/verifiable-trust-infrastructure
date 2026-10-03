@@ -127,6 +127,17 @@ export interface ActionExt {
   /** `acknowledge` items: whether this caller has acknowledged it. */
   acknowledgedByMe?: boolean;
   approverInvite?: ApproverInviteResult;
+  /** Present on an operation single-administrator mode let through on the
+   *  requester's own gesture, nobody else being eligible to consent
+   *  (VTI-APV-022). Completed at once; it carries no threshold. */
+  consentWaived?: ConsentWaived;
+}
+
+/** How an action's consent was waived (VTI-APV-022). */
+export interface ConsentWaived {
+  mode: "singleAdministrator";
+  /** The requirement whose consent was waived (`VTI-APV-018`, …). */
+  requirement: string;
 }
 
 export interface Action {
@@ -179,6 +190,9 @@ export interface ActionsListExt {
   /** Action ids of operator writes waiting for the caller's acknowledgement. */
   operatorWritesUnacknowledged?: string[];
   coolingOffAgainstMe?: CoolingOffAgainstMe[];
+  /** Whether the community runs in single-administrator mode (VTI-APV-022)
+   *  — reported to every administrator in every session while it does. */
+  singleAdminMode?: boolean;
 }
 
 export interface ActionsListResponse {
@@ -194,11 +208,20 @@ export interface ActionsAttention {
   waiting: number;
   operatorWritesUnacknowledged: string[];
   coolingOffAgainstMe: CoolingOffAgainstMe[];
+  /** Single-administrator mode is in effect (VTI-APV-022). */
+  singleAdminMode: boolean;
 }
 
 /** Whether `action` is an operator's offline write (VTI-VTC-023). */
 export function isAcknowledgeItem(action: Action): boolean {
   return action.category === "acknowledge";
+}
+
+/** How `action`'s consent was waived, if single-administrator mode let it
+ *  through (VTI-APV-022). */
+export function consentWaivedOf(action: Action): ConsentWaived | null {
+  const w = actionExt(action).consentWaived;
+  return w && typeof w.requirement === "string" ? w : null;
 }
 
 /** The cooling-off `action` waits out, if it is one (VTI-APV-019): a 0.2
@@ -305,6 +328,7 @@ export async function fetchActionsAttention(): Promise<ActionsAttention> {
           (c) => !!c && typeof c.actionId === "string" && typeof c.landsAt === "string",
         )
       : [],
+    singleAdminMode: ext.singleAdminMode === true,
   };
 }
 
