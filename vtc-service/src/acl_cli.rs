@@ -128,6 +128,7 @@ pub struct AclAddArgs {
 pub async fn run_acl_add(args: AclAddArgs) -> CliResult {
     // Parse everything first so a typo fails before we touch the store.
     let role = VtcRole::from_str(&args.role)?;
+    role.refuse_unassignable()?;
     if !args.contexts.is_empty() {
         return Err(format!(
             "a community holds no contexts (VTI-VTC-010), so --contexts {} cannot be held — \
@@ -157,6 +158,10 @@ pub async fn run_acl_add(args: AclAddArgs) -> CliResult {
         updated_at: None,
         updated_by: None,
         expires_at: args.expires.map(|ttl| now.saturating_add(ttl)),
+        resource_grants: existing
+            .as_ref()
+            .map(|e| e.resource_grants.clone())
+            .unwrap_or_default(),
     };
     store_acl_entry(&acl_ks, &entry).await?;
     // The break-glass bypasses the consent and attrition rules; the daemon

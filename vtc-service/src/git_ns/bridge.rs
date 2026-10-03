@@ -1040,6 +1040,7 @@ pub async fn desired_roles_for_repo(
             subject_was_member: true,
             granter_was_member: true,
             break_glass: None,
+            review: None,
         })
         .collect();
     let rights = highest_repo_rights(
@@ -1143,7 +1144,7 @@ pub async fn project_roles(state: &AppState, force: bool) -> Result<(), AppError
     // run it only when some namespace could consume it (VTI-47: an idle
     // community spent ~7% CPU on this scan). A namespace bound between this
     // check and the locked load below is projected on the next tick.
-    if !Snapshot::load(&state.git_ns.ks)
+    if !Snapshot::load(&state.git_ns)
         .await?
         .namespaces
         .iter()
@@ -1154,7 +1155,7 @@ pub async fn project_roles(state: &AppState, force: bool) -> Result<(), AppError
     let accounts = linked_accounts(state).await?;
     let t = now();
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     for ns in snap.namespaces.iter().filter(|n| projects_roles(n)) {
         let ns_scope = Scope::Namespace(ns.id.clone());
         let ns_res = ns.resource();
@@ -1317,7 +1318,7 @@ pub async fn handle_result(
                 if repo.forge_id.is_none()
                     && let Some(fid) = forge_id.clone()
                 {
-                    let snap = Snapshot::load(&state.git_ns.ks).await?;
+                    let snap = Snapshot::load(&state.git_ns).await?;
                     match snap.forge_id_held_elsewhere(&fid, &repo.id) {
                         Some(other) => {
                             warn!(
@@ -1572,7 +1573,7 @@ fn merge_repo_report(repo: &mut Repo, r: RepoForgeReport) {
 async fn fold_away(state: &AppState, repo_id: &str) -> Result<(), AppError> {
     store::delete_repo(&state.git_ns.ks, repo_id).await?;
     store::put_rights(
-        &state.git_ns.ks,
+        &state.git_ns,
         &Scope::Repo(repo_id.to_string()),
         &Default::default(),
     )
@@ -1584,7 +1585,7 @@ async fn fold_away(state: &AppState, repo_id: &str) -> Result<(), AppError> {
 /// adopted.
 async fn detach(state: &AppState, actor: &str, repo: &mut Repo, why: &str) -> Result<(), AppError> {
     let scope = Scope::Repo(repo.id.clone());
-    let set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let set = store::get_rights(&state.git_ns, &scope).await?;
     for row in &set.rows {
         audit(
             state,
@@ -1601,7 +1602,7 @@ async fn detach(state: &AppState, actor: &str, repo: &mut Repo, why: &str) -> Re
         )
         .await;
     }
-    store::put_rights(&state.git_ns.ks, &scope, &Default::default()).await?;
+    store::put_rights(&state.git_ns, &scope, &Default::default()).await?;
     repo.state = RepoState::Detached;
     repo.roles_digest = None;
     // The forge id leaves with the repository: a detached row is not
@@ -1651,7 +1652,7 @@ pub async fn handle_event(
         .unwrap_or_default();
 
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let ns = snap
         .namespace(&ns_id)
         .cloned()
@@ -2158,7 +2159,7 @@ pub async fn handle_event(
         }
     }
     if !concerned.is_empty() {
-        let snap = Snapshot::load(&state.git_ns.ks).await?;
+        let snap = Snapshot::load(&state.git_ns).await?;
         for resource in concerned {
             let Some(mut repo) = snap
                 .repos
@@ -2269,7 +2270,7 @@ async fn complete_binding(
     let binder = ops::standing(state, &ns.bound_by).await?;
     if binder.member {
         let scope = Scope::Namespace(ns.id.clone());
-        let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+        let mut set = store::get_rights(&state.git_ns, &scope).await?;
         if !set
             .rows
             .iter()
@@ -2285,8 +2286,9 @@ async fn complete_binding(
                 subject_was_member: true,
                 granter_was_member: true,
                 break_glass: None,
+                review: None,
             });
-            store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+            store::put_rights(&state.git_ns, &scope, &set).await?;
             audit(
                 state,
                 &ns.bound_by,
@@ -2338,7 +2340,7 @@ pub async fn service_grant(state: &AppState, ns: &Namespace) -> OpResult<()> {
         return Ok(());
     };
     let scope = Scope::Namespace(ns.id.clone());
-    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut set = store::get_rights(&state.git_ns, &scope).await?;
     if set
         .rows
         .iter()
@@ -2393,8 +2395,9 @@ pub async fn service_grant(state: &AppState, ns: &Namespace) -> OpResult<()> {
         subject_was_member: false,
         granter_was_member: false,
         break_glass: None,
+        review: None,
     });
-    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    store::put_rights(&state.git_ns, &scope, &set).await?;
     audit(
         state,
         &vtc_did,
@@ -2561,6 +2564,7 @@ mod tests {
             subject_was_member: true,
             granter_was_member: true,
             break_glass: None,
+            review: None,
         }
     }
 

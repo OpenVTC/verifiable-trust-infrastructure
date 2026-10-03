@@ -147,6 +147,11 @@ export function registerBuiltinPlugins(): void {
     path: "/repos",
     iconComponent: FolderGit2,
     reactComponent: Repos,
+    // Git-namespace rights are capabilities on the ACL entry (phase C3): the
+    // page is for whoever administers a namespace or manages a repository —
+    // at any qualifier — and a community administrator, whose `git.ns.admin`
+    // is community-wide.
+    capabilities: ["git.ns.admin", "git.repo.manage"],
   });
 
   registerPlugin({

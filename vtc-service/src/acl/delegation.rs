@@ -160,13 +160,40 @@ pub async fn on_granter_changed(
 /// granter. Returns how many entries were re-pointed.
 pub async fn repoint(state: &AppState, old: &str, new: &str) -> Result<u32, AppError> {
     let mut repointed = 0;
+    // The entry's resource grants moved with it (phase C3): the holder index
+    // follows, and every git grant this subject delegated names it anew.
+    let _git = crate::git_ns::store::write_lock().await;
+    if get_acl_entry(&state.acl_ks, new)
+        .await?
+        .is_some_and(|e| !e.resource_grants.is_empty())
+    {
+        super::resource_grant::index_holder(&state.acl_ks, new, true).await?;
+    }
+    super::resource_grant::index_holder(&state.acl_ks, old, false).await?;
     for mut e in list_acl_entries(&state.acl_ks).await? {
+        let mut changed = false;
         if e.delegated_by.as_deref() == Some(old) {
             e.delegated_by = Some(new.to_string());
-            store_acl_entry(&state.acl_ks, &e).await?;
+            changed = true;
             repointed += 1;
         }
+        for g in e.resource_grants.iter_mut() {
+            if g.delegated_by == old {
+                g.delegated_by = new.to_string();
+                changed = true;
+            }
+            if let Some(r) = g.review.as_mut()
+                && r.granter == old
+            {
+                r.granter = new.to_string();
+                changed = true;
+            }
+        }
+        if changed {
+            store_acl_entry(&state.acl_ks, &e).await?;
+        }
     }
+    drop(_git);
     for mut review in list(state).await? {
         let moved = review.subject == old;
         if moved {

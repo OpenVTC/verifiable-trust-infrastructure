@@ -49,6 +49,7 @@ fn entry(did: &str, role: VtcRole) -> VtcAclEntry {
         updated_at: None,
         updated_by: None,
         expires_at: None,
+        resource_grants: Vec::new(),
     }
 }
 

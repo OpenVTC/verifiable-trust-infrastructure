@@ -31,6 +31,7 @@ pub mod break_glass;
 pub mod bridge;
 pub mod drift;
 pub mod lifecycle;
+pub mod migrate;
 pub mod model;
 pub mod ops;
 pub mod policy;
@@ -108,6 +109,9 @@ impl Default for GitNsConfig {
 pub struct GitNsHandles {
     /// Namespaces, repositories, rights, link attempts — the source of truth.
     pub ks: KeyspaceHandle,
+    /// The ACL: every right is a resource grant on its holder's entry
+    /// (phase C3, `crate::acl::resource_grant`).
+    pub acl_ks: KeyspaceHandle,
     /// Bridge jobs.
     pub jobs_ks: KeyspaceHandle,
     /// What has been published to the Trust Registry, and the audit cursor.
@@ -126,6 +130,7 @@ impl GitNsHandles {
         use crate::store::keyspaces;
         Ok(Self {
             ks: store.keyspace(keyspaces::GIT_NS)?,
+            acl_ks: store.keyspace(keyspaces::ACL)?,
             jobs_ks: store.keyspace(keyspaces::GIT_NS_JOBS)?,
             projection_ks: store.keyspace(keyspaces::GIT_NS_PROJECTION)?,
             bridge: Arc::new(bridge::MessagingBridgeClient::new(

@@ -90,6 +90,7 @@ async fn build_fixture() -> Fixture {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await
@@ -140,6 +141,7 @@ async fn seed_member_with_session(fix: &Fixture, did: &str, role: VtcRole) -> St
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await

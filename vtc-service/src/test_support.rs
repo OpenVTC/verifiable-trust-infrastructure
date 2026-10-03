@@ -432,6 +432,9 @@ impl TestVtcBuilder {
             ks: store
                 .keyspace(crate::store::keyspaces::GIT_NS)
                 .expect("git_ns ks"),
+            acl_ks: store
+                .keyspace(crate::store::keyspaces::ACL)
+                .expect("acl ks"),
             jobs_ks: store
                 .keyspace(crate::store::keyspaces::GIT_NS_JOBS)
                 .expect("git_ns_jobs ks"),
@@ -611,6 +614,7 @@ impl TestVtc {
                     updated_at: None,
                     updated_by: None,
                     expires_at: None,
+                    resource_grants: Vec::new(),
                 },
             )
             .await

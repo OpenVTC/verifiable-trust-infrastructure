@@ -113,6 +113,7 @@ async fn build_fixture() -> Fixture {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await
@@ -232,6 +233,7 @@ async fn seed_member(fix: &Fixture, did: &str, role: VtcRole) {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await

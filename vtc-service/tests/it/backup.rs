@@ -605,6 +605,7 @@ async fn the_export_task_answers_with_the_code_its_spec_declares() {
                 updated_at: None,
                 updated_by: None,
                 expires_at: None,
+                resource_grants: Vec::new(),
             },
         )
         .await

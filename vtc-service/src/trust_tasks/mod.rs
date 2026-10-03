@@ -5597,6 +5597,7 @@ mod tests {
                     updated_at: None,
                     updated_by: None,
                     expires_at: None,
+                    resource_grants: Vec::new(),
                 },
             )
             .await
@@ -5981,6 +5982,7 @@ mod members_admin_tests {
                 updated_at: None,
                 updated_by: None,
                 expires_at: None,
+                resource_grants: Vec::new(),
             },
         )
         .await
@@ -6241,6 +6243,7 @@ mod members_admin_tests {
                 updated_at: None,
                 updated_by: None,
                 expires_at: Some(1),
+                resource_grants: Vec::new(),
             },
         )
         .await
@@ -6455,6 +6458,7 @@ mod members_admin_tests {
                 updated_at: None,
                 updated_by: None,
                 expires_at: Some(1),
+                resource_grants: Vec::new(),
             },
         )
         .await

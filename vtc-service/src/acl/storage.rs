@@ -157,13 +157,29 @@ pub async fn get_acl_entry(
 
 /// Store (create or overwrite) an ACL entry.
 pub async fn store_acl_entry(ks: &KeyspaceHandle, entry: &VtcAclEntry) -> Result<(), AppError> {
-    ks.insert(acl_key(&entry.did), entry).await
+    ks.insert(acl_key(&entry.did), entry).await?;
+    if !entry.resource_grants.is_empty() {
+        super::resource_grant::index_holder(ks, &entry.did, true).await?;
+    }
+    Ok(())
 }
 
 /// Delete an ACL entry by DID. Idempotent — `Ok(())` whether the
 /// row existed or not.
+///
+/// The resource grants the entry held go with it — they confer nothing
+/// without a live entry (**VTI-ACL-037**) — and are kept aside for the
+/// git-namespace lifecycle, which records each revocation and orphans what the
+/// subject owned alone ([`super::resource_grant::keep_departed`]).
 pub async fn delete_acl_entry(ks: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
-    ks.remove(acl_key(did)).await
+    if let Some(bytes) = ks.get_raw(acl_key(did).as_bytes()).await?
+        && let Ok(entry) = decode(&bytes)
+        && !entry.resource_grants.is_empty()
+    {
+        super::resource_grant::keep_departed(ks, did, &entry.resource_grants).await?;
+    }
+    ks.remove(acl_key(did)).await?;
+    super::resource_grant::index_holder(ks, did, false).await
 }
 
 /// Return every ACL entry in the keyspace. Unbounded — intended
@@ -234,6 +250,7 @@ mod tests {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         }
     }
 

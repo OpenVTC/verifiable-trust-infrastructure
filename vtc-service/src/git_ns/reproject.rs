@@ -39,7 +39,7 @@ pub async fn roles_reproject(
     let reason = p.reason.as_ref().map(|r| r.to_string());
     let (ns, repos) = {
         let _guard = store::write_lock().await;
-        let snap = Snapshot::load(&state.git_ns.ks).await?;
+        let snap = Snapshot::load(&state.git_ns).await?;
         let t = now();
         let resource = ops::parse_resource(&p.resource)?;
         // Step 1.

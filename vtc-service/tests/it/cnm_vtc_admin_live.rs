@@ -56,6 +56,7 @@ async fn grant_super_admin(vtc: &TestVtc, did: &str) {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await

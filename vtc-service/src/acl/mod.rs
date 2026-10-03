@@ -9,6 +9,7 @@ pub mod elevation;
 pub mod entry;
 pub mod granting;
 pub mod migrate;
+pub mod resource_grant;
 pub mod role;
 pub mod roles;
 pub mod single_admin;

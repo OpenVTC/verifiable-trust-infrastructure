@@ -24,7 +24,39 @@ holders of `vtc.backup.restore` (§7); a subject rolling its own entry to a new
 key with `acl/swap-key/0.1` (VTI-CLT-025 – 032), delegations following it; and
 `auth/whoami` naming the caller's live capabilities, which the console
 navigates by. The operator-write acknowledge items (§2) shipped with the action
-list (A2). Deferred: folding git-ns rights into capabilities (phase C3).
+list (A2).
+
+**Phase C3 is implemented**: git-ns rights are capabilities on the ACL entry
+(VTI-VTC-020, VTI-ACL-035 – 037). Each right is a **resource grant** in the
+entry's `resourceGrants` (`acl/resource_grant.rs`) — `git.ns.admin`,
+`git.repo.manage` graded `create` / `own` / `maintain`, or `git.commit.sign`,
+qualified by `git-ns:<forge>/<owner>` or `git-repo:<forge>/<owner>/<repo-id>`,
+each with its own `delegatedBy`, expiry, reason and break-glass mark — and the
+separate rights store is gone, migrated at boot and on backup import
+(`git_ns/migrate.rs`). Three decisions refine §5 and §9 as written:
+
+- **Resource grants sit beside the administrative role, not in its
+  ceiling.** §9 mapped `own` / `maintain` to `repo-manager`, but an entry has
+  one administrative role (§11.1) and a git right is held by members with no
+  administrative role, external signers and the bridge; and each git grant is
+  separately a delegation. So a grant is bounded at write time by the
+  granter's own holding at a covering qualifier (VTI-ACL-037, -071), and by the
+  fixed rules of `git-ns/right/grant/0.3`, not by a role ceiling. The
+  `repo-manager` role is unchanged: a qualified administrative ceiling for
+  someone who administers repositories through `acl/*`.
+- **Grades narrow `git.repo.manage`.** `own` is the capability in full on one
+  repository; `maintain` confers no management (it is what the forge projection
+  makes a maintainer); `create` at a namespace confers creation and nothing over
+  the repositories already in it. VTI-ACL-035 bounds what a qualified
+  capability confers from above, so a grade that confers less is within it —
+  and it is what keeps "an implied `repo.create` carries no creator ownership"
+  and the owner/maintainer forge roles intact.
+- **The bridge and external signers hold an entry of community role
+  `application`** (Appendix F's question), created with the first grant and
+  removed with the last; never a membership, never signs in, never an elevated
+  right. A departed granter's git grants go to review grant by grant
+  (`acl.grants.review` with `gitGrants`), and are withdrawn at the deadline —
+  the default that kept them in force is gone.
 
 ---
 

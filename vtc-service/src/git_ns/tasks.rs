@@ -473,7 +473,7 @@ pub(crate) async fn handle_view(doc: TrustTask<view::Payload>, ctx: GitNsCtx) ->
             Some(r) => Some(super::model::Resource::parse(r).map_err(OpError::Malformed)?),
             None => None,
         };
-        let snap = Snapshot::load(&ctx.state.git_ns.ks).await?;
+        let snap = Snapshot::load(&ctx.state.git_ns).await?;
         Ok(super::view::for_member(&snap, &who, filter.as_ref())?)
     }
     .await;
@@ -501,7 +501,7 @@ pub(crate) async fn handle_view_v2(
             Some(r) => Some(super::model::Resource::parse(r).map_err(OpError::Malformed)?),
             None => None,
         };
-        let snap = Snapshot::load(&ctx.state.git_ns.ks).await?;
+        let snap = Snapshot::load(&ctx.state.git_ns).await?;
         let member = crate::members::get_member(&ctx.state.members_ks, &who).await?;
         Ok(super::view::for_member_v2(
             &snap,
@@ -536,7 +536,7 @@ pub(crate) async fn handle_view_v4(
             Some(r) => Some(super::model::Resource::parse(r).map_err(OpError::Malformed)?),
             None => None,
         };
-        let snap = Snapshot::load(&ctx.state.git_ns.ks).await?;
+        let snap = Snapshot::load(&ctx.state.git_ns).await?;
         let member = crate::members::get_member(&ctx.state.members_ks, &who).await?;
         Ok(super::view::for_member_v4(
             &snap,

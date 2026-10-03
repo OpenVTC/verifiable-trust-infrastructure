@@ -184,8 +184,11 @@ pub async fn apply(
 /// privilege ceiling already rejected an `admin` grant on join before
 /// the plan was built, so this is the final wire-form parse.
 fn parse_role(role: &str) -> Result<VtcRole, AppError> {
-    role.parse::<VtcRole>()
-        .map_err(|_| AppError::Validation(format!("effect plan carries an unknown role: {role}")))
+    let parsed = role.parse::<VtcRole>().map_err(|_| {
+        AppError::Validation(format!("effect plan carries an unknown role: {role}"))
+    })?;
+    parsed.refuse_unassignable()?;
+    Ok(parsed)
 }
 
 /// Admit a DID as a member: write the ACL row + Member record, issue
@@ -219,11 +222,19 @@ async fn admit(
 ) -> Result<AdmitOutcome, AppError> {
     let _guard = LAST_ADMIN_LOCK.lock().await;
 
-    if get_acl_entry(&state.acl_ks, subject_did).await?.is_some() {
-        return Err(AppError::Conflict(format!(
-            "{subject_did} already has an ACL row; refusing to admit a duplicate membership"
-        )));
-    }
+    // A non-member's `application` entry — held only for the git rights it
+    // carries (the bridge, an external signer) — is not a membership: joining
+    // turns it into one and keeps those grants. Anything else is a member.
+    let _git = crate::git_ns::store::write_lock().await;
+    let prior_grants = match get_acl_entry(&state.acl_ks, subject_did).await? {
+        Some(e) if e.is_application() => e.resource_grants,
+        Some(_) => {
+            return Err(AppError::Conflict(format!(
+                "{subject_did} already has an ACL row; refusing to admit a duplicate membership"
+            )));
+        }
+        None => Vec::new(),
+    };
 
     let acl = VtcAclEntry {
         did: subject_did.to_string(),
@@ -239,8 +250,10 @@ async fn admit(
         updated_at: None,
         updated_by: None,
         expires_at: None,
+        resource_grants: prior_grants,
     };
     store_acl_entry(&state.acl_ks, &acl).await?;
+    drop(_git);
 
     let mut member = Member::fresh(subject_did);
     member.publish_consent = publish_consent;

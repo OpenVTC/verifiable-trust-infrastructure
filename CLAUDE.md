@@ -1033,9 +1033,28 @@ new flow, update both this section and the relevant `docs/*.md`.
   projections of it.
 - **Wire**: the `git-ns/*` Trust Tasks, generated types under
   `trust_tasks_rs::specs::git_ns`, served on the document dispatcher. Authority
-  is the proof signer's **git rights**, read from the VTC's records at
-  execution time — never a bearer token, and never the community-admin role
-  (which only binds). The admin REST routes (`/v1/git-ns/*`) are read-only
+  is the proof signer's **git rights**, read at execution time — never a bearer
+  token, and never the community-admin role (whose community-wide
+  `git.ns.admin` only binds, reseats a headless namespace and ratifies). **One
+  authority model (VTI-VTC-020, phase C3):** a git right is a *resource grant*
+  on the holder's ACL entry (`acl::resource_grant`) — `git.ns.admin`,
+  `git.repo.manage` graded `create`/`own`/`maintain`, or `git.commit.sign`,
+  qualified by `git-ns:<forge>/<owner>` or `git-repo:<forge>/<owner>/<repo-id>`,
+  each with its own `delegatedBy`. There is no separate rights store: `git_ns::
+  store::{get,put}_rights` and `Snapshot::load` read and write the entries
+  (through a `git-holder:` index in the `acl` keyspace), and the fixed rules run
+  over that. Grants sit beside the administrative role, never in its ceiling;
+  `acl/*` writes keep them (`routes::acl::commit_grant` re-reads them under the
+  git-ns lock) and must never drop them. A grant is also bounded by the
+  granter's entry (`resource_grant::granter_covers`, VTI-ACL-071). A non-member
+  holding a grant (the bridge, an external signer) gets an entry of community
+  role `application` — never a membership, never signs in, never an elevated
+  right, not assignable by any caller — removed with its last grant. Removing
+  an entry tombstones its grants (`git-departed:`) for the lifecycle to record;
+  a departed granter's grants go to `acl.grants.review` (`gitGrants`) and are
+  withdrawn at the deadline. The old `rights:*` rows are migrated at boot and
+  on backup import (`git_ns::migrate`); unmappable ones are kept inert under
+  `rights-unmapped:*` with an acknowledge item. The admin REST routes (`/v1/git-ns/*`) are read-only
   console projections; the administrator's view, namespace and repository
   listings and break-glass list are signed reads (`git-ns/view/0.5`,
   `git-ns/namespace/list`, `git-ns/repo/list` in `git_ns::admin_reads`),

@@ -122,6 +122,51 @@ export function useIsCommunityAdmin(): boolean {
   return isCommunityAdmin(useWhoami());
 }
 
+// ─── git namespaces (phase C3: git rights are capabilities on the entry) ──
+
+/** The resource qualifier a namespace's capabilities are held at. */
+export function gitNsQualifier(nsResource: string): string {
+  return `git-ns:${nsResource}`;
+}
+
+/**
+ * The community-administrator capability the `git-ns/*` verbs reserved to
+ * one (binding, reseating a headless namespace, ratifying) sign with:
+ * `git.ns.admin` held **community-wide**. The VTC reads the same thing
+ * (`git_ns::ops::Standing::community_admin`).
+ */
+export function isGitCommunityAdmin(who: WhoamiResponse | null | undefined): boolean {
+  return holds(who?.capabilities, "git.ns.admin");
+}
+
+export function useIsGitCommunityAdmin(): boolean {
+  return isGitCommunityAdmin(useWhoami());
+}
+
+/** Whether `caps` administers the namespace at `nsResource`: `git.ns.admin`
+ *  there (a namespace administrator's resource grant) or community-wide. */
+export function administersNamespace(
+  caps: ReadonlyArray<string> | null | undefined,
+  nsResource: string,
+): boolean {
+  return holds(caps, "git.ns.admin", gitNsQualifier(nsResource));
+}
+
+/** Whether `caps` may create a repository in the namespace at `nsResource`:
+ *  its administrator, or a holder of `git.repo.manage` there — in full, or at
+ *  the creation grade the VTC lists as `git.repo.manage/create@…`. */
+export function mayCreateIn(
+  caps: ReadonlyArray<string> | null | undefined,
+  nsResource: string,
+): boolean {
+  const q = gitNsQualifier(nsResource);
+  return (
+    administersNamespace(caps, nsResource) ||
+    holds(caps, "git.repo.manage", q) ||
+    !!caps?.includes(`git.repo.manage/create@${q}`)
+  );
+}
+
 /**
  * Whether the shell shows a plugin's nav entry to `who`: any of its
  * `capabilities` held at any qualifier, and a `super-admin` scope (a

@@ -470,7 +470,7 @@ pub(crate) async fn namespace_list(
     actor: &str,
     p: namespace_list_v0_1::Payload,
 ) -> OpResult<namespace_list_v0_1::Response> {
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let admin = administered(state, &snap, actor).await?;
     let named = p.namespace.map(String::from);
     let covered = covered(
@@ -558,7 +558,7 @@ pub(crate) async fn repo_list(
     actor: &str,
     p: repo_list_v0_1::Payload,
 ) -> OpResult<repo_list_v0_1::Response> {
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let admin = administered(state, &snap, actor).await?;
     let named = p.namespace.map(String::from);
     let covered = covered(
@@ -677,7 +677,7 @@ pub(crate) async fn view_v5(
         Some(r) => Some(Resource::parse(&r.to_string()).map_err(OpError::Malformed)?),
         None => None,
     };
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let member = crate::members::get_member(&state.members_ks, actor).await?;
     let mut v = match p.scope.unwrap_or(view_v0_5::PayloadScope::Member) {
         view_v0_5::PayloadScope::Administrator => {
@@ -871,7 +871,7 @@ pub(crate) async fn right_list(
         None => None,
     };
     let subject = p.subject.as_ref().map(|s| s.to_string());
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
     let mut cache = BTreeMap::new();
     let mut rights = Vec::new();
@@ -955,7 +955,7 @@ pub(crate) async fn right_issued_by_departed(
         ));
     }
     let settings = crate::git_ns::policy::active_settings(state).await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let mut cache = BTreeMap::new();
     let mut granters = Vec::new();
     for (granter, rows) in lifecycle::issued_by_departed(state).await? {
@@ -1046,7 +1046,7 @@ pub(crate) async fn bridge_job_list(
     actor: &str,
     p: bridge_job_list_v0_1::Payload,
 ) -> OpResult<bridge_job_list_v0_1::Response> {
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let admin = administered(state, &snap, actor).await?;
     let named = p.namespace.as_ref().map(|n| n.to_string());
     let covered = covered(
@@ -1129,7 +1129,7 @@ pub(crate) async fn projection_show(
     };
     let registry_configured =
         state.registry_client.is_some() && state.config.read().await.vtc_did.is_some();
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let want = projection::desired_all(state, &snap, now()).await?;
     let have = projection::published(state).await?;
     let pending_changes = want
@@ -1312,7 +1312,7 @@ pub(crate) async fn activity_list(
     actor: &str,
     p: activity_list_v0_1::Payload,
 ) -> OpResult<activity_list_v0_1::Response> {
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let admin = administered(state, &snap, actor).await?;
     let named = p.namespace.as_ref().map(|n| n.to_string());
     let covered = covered(

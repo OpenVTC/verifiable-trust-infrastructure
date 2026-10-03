@@ -763,6 +763,7 @@ pub async fn run(
     // publishes into `didcomm_cell`.
     let git_ns = crate::git_ns::GitNsHandles {
         ks: store.keyspace(keyspaces::GIT_NS)?,
+        acl_ks: store.keyspace(keyspaces::ACL)?,
         jobs_ks: store.keyspace(keyspaces::GIT_NS_JOBS)?,
         projection_ks: store.keyspace(keyspaces::GIT_NS_PROJECTION)?,
         bridge: Arc::new(crate::git_ns::bridge::MessagingBridgeClient::new(
@@ -868,6 +869,10 @@ pub async fn run(
     // must not lock an administrator out. A row that cannot be mapped refuses
     // the boot, naming the DID and the fix — never dropped.
     crate::acl::migrate::migrate_on_boot(&state).await?;
+    // Phase C3: git-namespace rights are resource grants on the ACL entries.
+    // Any left in the old rights store move onto them now, before a git-ns
+    // task is authorized from the entries (VTI-VTC-020).
+    crate::git_ns::migrate::migrate_on_boot(&state).await?;
 
     // Heal missing AdminEntries: any DID with an Admin ACL grant +
     // a PasskeyUser but no AdminEntry gets the AdminEntry synthesised
@@ -1204,7 +1209,7 @@ pub async fn run(
         // Say so at boot when a role-derived grant lands inside a bound git
         // namespace: from now on the git-ns projection publishes it, not this
         // relay, and an operator reading the config should know why.
-        if let Ok(snap) = crate::git_ns::store::Snapshot::load(&git_ns_ks).await {
+        if let Ok(snap) = crate::git_ns::store::Snapshot::load_records(&git_ns_ks).await {
             for resource in crate::git_ns::projection::hook_overlaps(&snap, &git_trust_cfg) {
                 warn!(
                     %resource,

@@ -3536,7 +3536,7 @@ export interface components {
             reason: "notFailed" | "notFound";
         };
         /**
-         * @description One of `admin`, `moderator`, `issuer`, `member`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.
+         * @description One of `admin`, `moderator`, `issuer`, `member`, `application`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.
          * @example admin
          */
         VtcRole: string;

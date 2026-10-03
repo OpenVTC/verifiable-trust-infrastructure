@@ -88,6 +88,7 @@ async fn seed(fix: &Fixture, _token: &str, count: usize) -> String {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await

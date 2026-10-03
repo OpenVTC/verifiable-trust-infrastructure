@@ -150,6 +150,7 @@ async fn seed_join_ceremony(mock: &MockVtcTransport) -> String {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await

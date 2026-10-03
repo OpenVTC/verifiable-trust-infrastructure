@@ -74,6 +74,14 @@ pub enum VtcRole {
     Issuer,
     /// Standard member. Default role on join.
     Member,
+    /// **Not a membership.** A subject the community holds an entry for only
+    /// so that the resource grants it holds have a live entry to sit on
+    /// (**VTI-ACL-037**): the bridge serving a namespace, holding
+    /// `git.commit.sign` there, or an external signer a repository's owners
+    /// chose to trust. It never signs in, never counts as a member, never
+    /// holds an administrative role or an elevated right, and is removed with
+    /// its last grant (`vtc-admin-roles.md` §9).
+    Application,
     /// Community-defined custom role. Receives **no implicit
     /// grants** from the standard permission matrix; the only
     /// authoritative source of `Custom` permissions is
@@ -93,6 +101,7 @@ impl VtcRole {
             VtcRole::Moderator => "moderator".into(),
             VtcRole::Issuer => "issuer".into(),
             VtcRole::Member => "member".into(),
+            VtcRole::Application => "application".into(),
             VtcRole::Custom(name) => format!("{CUSTOM_PREFIX}{name}"),
         }
     }
@@ -131,7 +140,29 @@ impl VtcRole {
             VtcRole::Admin => Some(super::AdminRole::CommunityAdmin),
             VtcRole::Moderator => Some(super::AdminRole::Moderator),
             VtcRole::Issuer => Some(super::AdminRole::CredentialOfficer),
-            VtcRole::Member | VtcRole::Custom(_) => None,
+            VtcRole::Member | VtcRole::Application | VtcRole::Custom(_) => None,
+        }
+    }
+
+    /// Whether a caller may assign this community role — every role except
+    /// [`VtcRole::Application`], which only the git-namespace store writes,
+    /// for a subject that holds resource grants and no membership.
+    pub fn is_assignable(&self) -> bool {
+        !matches!(self, VtcRole::Application)
+    }
+
+    /// The refusal for an [`Self::is_assignable`] failure.
+    pub fn refuse_unassignable(&self) -> Result<(), AppError> {
+        if self.is_assignable() {
+            Ok(())
+        } else {
+            Err(AppError::Validation(
+                "`application` is not a role anyone assigns: the community writes it only for a \
+                 subject that holds git rights without being a member (the bridge, an external \
+                 signer). Grant git rights with git-ns/right/grant, and admit a member with the \
+                 join or invitation flow"
+                    .into(),
+            ))
         }
     }
 
@@ -170,6 +201,7 @@ impl FromStr for VtcRole {
             "moderator" => Ok(VtcRole::Moderator),
             "issuer" => Ok(VtcRole::Issuer),
             "member" => Ok(VtcRole::Member),
+            "application" => Ok(VtcRole::Application),
             other => {
                 if let Some(name) = other.strip_prefix(CUSTOM_PREFIX) {
                     validate_custom_name(name)?;
@@ -177,7 +209,7 @@ impl FromStr for VtcRole {
                 } else {
                     Err(AppError::Validation(format!(
                         "unknown VTC role '{other}'. Expected one of admin, moderator, issuer, \
-                         member, or custom:<name>."
+                         member, application, or custom:<name>."
                     )))
                 }
             }
@@ -211,7 +243,7 @@ impl utoipa::PartialSchema for VtcRole {
                 utoipa::openapi::Type::String,
             ))
             .description(Some(
-                "One of `admin`, `moderator`, `issuer`, `member`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.",
+                "One of `admin`, `moderator`, `issuer`, `member`, `application`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.",
             ))
             .examples([serde_json::json!("admin")])
             .into()
@@ -286,6 +318,7 @@ mod tests {
             (VtcRole::Moderator, "moderator"),
             (VtcRole::Issuer, "issuer"),
             (VtcRole::Member, "member"),
+            (VtcRole::Application, "application"),
         ] {
             let serialised = serde_json::to_string(&variant).unwrap();
             assert_eq!(serialised, format!("\"{wire}\""));
@@ -293,6 +326,19 @@ mod tests {
             assert_eq!(deserialised, variant);
             assert_eq!(variant.to_string(), wire);
         }
+    }
+
+    /// `application` marks a non-member holding git rights (phase C3): it
+    /// reads back from a stored entry, implies no authority, and no caller
+    /// may assign it.
+    #[test]
+    fn the_application_role_is_stored_but_never_assigned() {
+        let r: VtcRole = serde_json::from_str("\"application\"").unwrap();
+        assert_eq!(r, VtcRole::Application);
+        assert!(r.implied_admin_role().is_none());
+        assert!(!r.is_assignable());
+        assert!(r.refuse_unassignable().is_err());
+        assert!(VtcRole::Member.refuse_unassignable().is_ok());
     }
 
     #[test]

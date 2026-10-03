@@ -6478,7 +6478,7 @@
       },
       "VtcRole": {
         "type": "string",
-        "description": "One of `admin`, `moderator`, `issuer`, `member`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.",
+        "description": "One of `admin`, `moderator`, `issuer`, `member`, `application`, or                  `custom:<name>` where `<name>` is 1..=64 lowercase                  alphanumerics, `-`, or `_`.",
         "examples": [
           "admin"
         ]

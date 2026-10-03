@@ -402,7 +402,7 @@ impl HookRelay {
         let Some(ks) = &self.git_ns_ks else {
             return false;
         };
-        match crate::git_ns::store::Snapshot::load(ks).await {
+        match crate::git_ns::store::Snapshot::load_records(ks).await {
             Ok(snap) => crate::git_ns::projection::in_bound_namespace(&snap, resource),
             Err(e) => {
                 warn!(error = %e, "hook relay could not read the git-ns records; writing anyway");

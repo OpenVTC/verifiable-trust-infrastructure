@@ -206,6 +206,7 @@ async fn vtc_client_authenticates_and_installs() {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await

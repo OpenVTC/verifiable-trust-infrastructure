@@ -78,6 +78,32 @@ The built-in administrative roles:
 A `community-admin` holding its full ceiling is what earlier releases called an
 "unrestricted administrator". Reading the ACL takes any administrative role.
 
+**Git rights are capabilities on the entry too.** The rights the `git-ns/*`
+tasks grant — namespace admin, repository creation, ownership, maintenance,
+commit signing — are **resource grants** on the holder's entry: `git.ns.admin`
+or `git.repo.manage` (graded `create`, `own` or `maintain`) or
+`git.commit.sign`, qualified by `git-ns:<forge>/<owner>` or by
+`git-repo:<forge>/<owner>/<repo-id>`, each with its own granter
+(`delegatedBy`) and history. They sit beside the administrative role rather
+than inside it: a member with no administrative role can own a repository, and
+an entry's one role does not have to be `repo-manager` to hold a git right.
+They are granted and revoked only through `git-ns/right/grant` and
+`git-ns/right/revoke` (same task URIs and wire types as before), bounded by
+the granter's own entry (VTI-ACL-037, VTI-ACL-071) on top of the git rights
+model's fixed rules; `acl/*` writes keep them unchanged, and `acl/show` /
+`acl/list` 0.2 show them in `ext["org.openvtc"].resourceGrants` (without the
+granter's reason). A subject that holds git rights without being a member —
+the bridge, an external signer — has an entry of the community role
+`application`, which never signs in and is never a membership. A departed
+granter's git grants go to review like any delegation (§3.2): re-affirmed, or
+withdrawn at the deadline. `git.ns.admin` held **community-wide** (a
+`community-admin`'s) is the git namespaces' community-administrator
+capability — it binds, reseats and ratifies — not a namespace administrator's
+grant authority. See [Git namespaces](git-namespaces.md#rights-are-capabilities-on-the-acl-entry).
+The console's **Repos** page is shown to whoever holds `git.ns.admin` or
+`git.repo.manage` at any qualifier, and offers each action only where the
+viewer's entry holds what it needs there.
+
 **Custom roles.** A community can define its own roles when the built-in set
 does not fit — `events-team` = `vtc.surface.admin` + `vtc.invitations.manage`,
 or a repo manager who is also a vetting lead, since an entry holds one
@@ -133,6 +159,14 @@ Nobody deciding within the action lifetime (`acl.action_lifetime`) withdraws
 them too. Editing and saving an entry under review re-affirms it as before. A
 granter who rolls to a new key (§1.4) has not left: the entries it granted
 follow it.
+
+The **git rights** a departed member granted are reviewed the same way, one
+grant at a time: a separate `acl.grants.review` item lists them in its
+payload's `gitGrants` (subject, right, resource), each grant stays in force and
+marked meanwhile, **Re-affirm** puts each under an approver whose own entry
+covers it, and **Withdraw** — or the deadline — revokes them. A grant with no
+granter to depart (a binding's first admin, a creator's own ownership, a
+break-glass, the bridge's service grant) is never reviewed.
 
 ### 1.4 Rolling your own entry to a new key
 
