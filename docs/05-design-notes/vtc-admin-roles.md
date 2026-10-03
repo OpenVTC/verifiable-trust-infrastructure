@@ -8,11 +8,23 @@ Status: **accepted direction** (2026-10-02, §1 decided with the maintainer). Co
 APV-014 trigger (§7, VTI-APV-018), explicit act scope (§8), the §9 migration
 (on backup import, and in place at boot for a VTC upgraded over its own
 store), and `acl/*/0.2` beside 0.1 (`vtc-service/src/acl/capability.rs`,
-`acl/granting.rs`, `acl/delegation.rs`, `acl/migrate.rs`). Deferred: custom
-roles (§6.2, phase C2), folding git-ns rights into capabilities (phase C3), the
-operator-write acknowledge items (§2) and the departed-granter review as an
-action-list item (§6.3: C1 lists the review on the entry and withdraws by a
-sweeper).
+`acl/granting.rs`, `acl/delegation.rs`, `acl/migrate.rs`).
+
+**Phase C2 is implemented**: custom roles (§6.2) as records in the `acl`
+keyspace, served as `vtc/roles/{define,list,show,delete}/0.1`
+(`acl/roles.rs`, `trust_tasks/role_tasks.rs`) — define and delete through the
+action list under `vtc.roles.assign` + `vtc.approvals.admin`, the ceiling
+bounded by the requester's and every approver's own holdings, an entry naming
+an undefined role conferring nothing; approver sets read off approve authority
+alone (VTI-ACL-040), so the least-privilege `approver` counts for every act
+(`admin_consent::may_approve`); the departed-granter review as an action-list
+item (`acl.grants.review`, §6.3), with the sweeper kept as the backstop and an
+expired granter now noticed by it; a backup restore's commit parked for the
+holders of `vtc.backup.restore` (§7); a subject rolling its own entry to a new
+key with `acl/swap-key/0.1` (VTI-CLT-025 – 032), delegations following it; and
+`auth/whoami` naming the caller's live capabilities, which the console
+navigates by. The operator-write acknowledge items (§2) shipped with the action
+list (A2). Deferred: folding git-ns rights into capabilities (phase C3).
 
 ---
 

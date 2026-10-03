@@ -45,6 +45,13 @@ export const OPERATOR_OFFLINE_WRITE_URI = "https://trusttasks.org/spec/vtc/opera
 /** The `typeUri` the boot-time ACL migration's acknowledge item is recorded under. */
 export const OPERATOR_ACL_MIGRATION_URI = "urn:openvtc:vtc:operator:acl-migration";
 
+/** A departed granter's grants, raised for re-affirmation (`vtc-admin-roles.md`
+ *  §6.3): approving re-affirms them, declining withdraws them. */
+export const KIND_GRANTS_REVIEW = "acl.grants.review";
+
+/** The record type a grants review is raised under — never a task anybody sends. */
+export const GRANTS_REVIEW_URI = "urn:openvtc:vtc:acl:grants-review";
+
 /**
  * The pinned template digest for each `(kind, typeUri)`.
  *
@@ -96,6 +103,17 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmQZTPg2MeWt1C8oAvoLMGJNY9DpxvB6bRjvQwJT7ns9Ah",
   [pinKey(KIND_OPERATOR_WRITE, OPERATOR_ACL_MIGRATION_URI)]:
     "zQmcx336K693LHuAKosCP9avuLZWauw1vome6VBxWBFDiqK",
+  // Custom administrative roles (`vtc-admin-roles.md` §6.2).
+  [pinKey("acl.role.define", `${SPEC}/vtc/roles/define/0.1`)]:
+    "zQmf6erEaANYgarV9c8frmZSZ8R5XuomNdXxGNQ8FAZ2QUh",
+  [pinKey("acl.role.delete", `${SPEC}/vtc/roles/delete/0.1`)]:
+    "zQmNmqjjmZmPfvapiR91YcFDgXtg1xdAw3QNwaQemrEHL8U",
+  // Restoring a backup replaces the ACL (§7).
+  [pinKey("backup.restore", `${SPEC}/backup/finalize-import/0.1`)]:
+    "zQmY89pWbScF2Mj1B1tWXJrtKPyhqcWDJDiV8eKCTchKscE",
+  // A departed granter's grants, for re-affirmation (§6.3).
+  [pinKey(KIND_GRANTS_REVIEW, GRANTS_REVIEW_URI)]:
+    "zQmes3QBrvXfxcwu7tyU7gk58b8RrLfrQiteFRJGCwDYS4S",
 });
 
 function pinKey(kind: string, typeUri: string): string {

@@ -28,6 +28,7 @@ mod admin_config;
 mod admin_invites;
 mod admin_passkeys;
 mod admin_roles;
+mod admin_roles_c2;
 mod admin_verbs_spine;
 mod audit_list;
 mod audit_signout;

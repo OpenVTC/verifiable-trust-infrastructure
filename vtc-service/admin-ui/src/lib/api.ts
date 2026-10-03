@@ -818,6 +818,19 @@ export interface WhoamiResponse {
   roles: string[];
   /** The contexts this session may act in — was `allowedContexts`. */
   scopes: string[];
+  /**
+   * What the caller's ACL entry lets it do now, as `cap` or `cap@resource`
+   * (`auth/whoami/0.1` `capabilities`), read live by the VTC on every call.
+   * What the console gates navigation and actions on. Omitted when empty.
+   */
+  capabilities?: string[];
+  /** `org.openvtc`: the administrative role, and what the caller may approve. */
+  ext?: {
+    "org.openvtc"?: {
+      adminRole?: string | null;
+      approves?: string[];
+    };
+  };
 }
 
 const WHOAMI_TASK = "https://trusttasks.org/spec/auth/whoami/0.1";

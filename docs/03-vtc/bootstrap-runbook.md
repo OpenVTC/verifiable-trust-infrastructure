@@ -179,10 +179,25 @@ cnm community continue storm-network
 
 Until `continue` succeeds the community is listed as *pending grant* and no
 command can select it. A `continue` before the grant prints the routes again
-and changes nothing, so re-run it once the grant lands. The VTC has no
-key-rotation task (no `acl/swap-key`; a successor admin entry would itself
-need a second administrator's consent), so — unlike the personal VTA — the
-minted key is kept: only its DID was ever shown.
+and changes nothing, so re-run it once the grant lands.
+
+Once the grant is confirmed, `continue` **rotates** the identity, as the
+personal VTA's setup does: it mints a fresh `did:key` and asks the VTC to move
+the granted entry onto it (`acl/swap-key/0.1`, signed by the granted key and
+carrying a short-lived link proof from the new one). The entry keeps exactly
+the authority it was granted — a rotation is never a grant, so no second
+administrator is asked — and the DID that travelled to the granting
+administrator loses all standing. The JSON line names the new DID. The new key
+is stored before the swap is sent and promoted once the VTC accepts it, so an
+interruption between the two is recovered on the next run. If the VTC refuses
+the swap, the granted key stays in use and `continue` says why; retry with
+`cnm community rotate storm-network`, which also rotates a configured
+community's key at any later time (after a suspected compromise, say).
+
+Two identities are not rotated, because their key is held somewhere the VTC's
+swap does not reach: one bound to a community VTA (`--vta-did`), whose own ACL
+entry would be left naming the old DID, and one shared with another community
+(`--reuse-identity`).
 
 `--reuse-identity <community>` shares another community's key instead. It is
 never done without that flag, because the shared key links the two

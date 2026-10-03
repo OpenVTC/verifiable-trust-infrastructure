@@ -58,6 +58,8 @@ sha2 = { workspace = true }
 # a multibase multihash — what an approver recomputes before deciding.
 serde_json_canonicalizer = { workspace = true }
 multibase = { workspace = true }
+# `acl_swap_key`: the link proof is signed by the new key, rebuilt from its seed.
+ed25519-dalek = { workspace = true }
 base64 = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }

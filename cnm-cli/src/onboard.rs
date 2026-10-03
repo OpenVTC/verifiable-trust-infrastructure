@@ -14,11 +14,22 @@
 //!   operator manages share no key that links them. Minted, parked in
 //!   [`CnmConfig::pending_communities`], granted at the community's VTC, and
 //!   confirmed by `cnm community continue`, which authenticates to the VTC
-//!   (DI-signed `auth/authenticate`, the VTC's DID as audience). A VTC has no
-//!   key-rotation task — no `acl/swap-key`, and a successor admin entry is an
-//!   unrestricted grant that takes a second administrator's consent
-//!   (VTI-APV-014) — so the minted key is kept rather than a rotation invented.
-//!   Its private half never left this machine; only the DID was shown.
+//!   (DI-signed `auth/authenticate`, the VTC's DID as audience) and then
+//!   **rotates** the identity at the VTC (`acl/swap-key/0.1`, VTI-CLT-025 –
+//!   032), so the DID that travelled to the granting administrator does not
+//!   stay live. The successor entry carries exactly the granted authority — a
+//!   rotation is never a grant, so it takes no second administrator. `cnm
+//!   community rotate` rolls a configured community's identity the same way.
+//!
+//!   Two identities are not rotated, because their key is also held somewhere
+//!   the VTC's swap does not reach: one shared with another community
+//!   (`--reuse-identity`), and one bound to a community VTA, whose own ACL
+//!   entry would be left naming the old DID.
+//!
+//!   The new key is written to a side slot of the session store **before**
+//!   the swap is sent, and promoted only once the VTC accepts it
+//!   (VTI-CLT-033): a crash between the two leaves the new key on disk, and
+//!   the next `cnm community rotate` adopts it ([`recover_rotation`]).
 //!
 //! The functions here change a [`CnmConfig`] and a [`SessionStore`] handed in,
 //! and never save the config: the caller does, after the step succeeds. That is
@@ -487,7 +498,8 @@ pub fn begin_community(
 /// Authenticates to the VTC as the pending identity — which only succeeds once
 /// an administrator has granted it — then moves the community from pending to
 /// configured. On a refusal nothing local changes; the error carries the grant
-/// commands. The key is not rotated: see the module docs.
+/// commands. Then the identity is rotated at the VTC (module docs); a rotation
+/// that fails leaves the confirmed, minted key in place and says why.
 pub async fn continue_community(
     config: &mut CnmConfig,
     store: &SessionStore,
@@ -495,7 +507,7 @@ pub async fn continue_community(
     vtc_did: Option<&str>,
     vta_did: Option<&str>,
     url: Option<&str>,
-) -> CliResult<String> {
+) -> CliResult<CommunityConfirmed> {
     let pending = config
         .pending_communities
         .get(slug)
@@ -538,6 +550,13 @@ pub async fn continue_community(
         .or(pending.vta_did.clone());
 
     let target = crate::vtc::resolve_target(Some(&vtc_did), url).await?;
+    // A rotation an earlier `continue` committed but did not finish recording.
+    let session = match recover_rotation(store, &key, &target).await? {
+        Some(_) => store
+            .loaded_session(&key)
+            .ok_or("the recovered identity vanished from the session store")?,
+        None => session,
+    };
     crate::vtc::confirm_identity(&target, &session.client_did, &session.private_key_multibase)
         .await
         .map_err(|e| {
@@ -565,14 +584,197 @@ pub async fn continue_community(
         CommunityConfig {
             name: pending.name,
             context_id,
-            vta_did,
+            vta_did: vta_did.clone(),
             vtc_did: Some(vtc_did),
         },
     );
     if config.default_community.is_none() {
         config.default_community = Some(slug.to_string());
     }
-    Ok(session.client_did)
+    let rotation =
+        match rotation_blocker(config, store, slug, &session.client_did, vta_did.as_deref()) {
+            Some(reason) => Rotation::Skipped(reason),
+            None => match rotate_identity(
+                store,
+                &key,
+                &target,
+                &session.client_did,
+                &session.private_key_multibase,
+            )
+            .await
+            {
+                Ok(to) => Rotation::Rotated {
+                    from: session.client_did.clone(),
+                    to,
+                },
+                Err(e) => Rotation::Failed(e.to_string()),
+            },
+        };
+    let did = match &rotation {
+        Rotation::Rotated { to, .. } => to.clone(),
+        _ => session.client_did,
+    };
+    Ok(CommunityConfirmed { did, rotation })
+}
+
+/// What `continue_community` confirmed: the DID cnm now authenticates to the
+/// community as, and what became of the rotation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommunityConfirmed {
+    pub did: String,
+    pub rotation: Rotation,
+}
+
+/// What a community identity's rotation at its VTC came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rotation {
+    /// The VTC moved the entry onto a fresh key.
+    Rotated { from: String, to: String },
+    /// Not attempted, and why: the key is also held where the swap does not
+    /// reach.
+    Skipped(String),
+    /// Attempted and refused; the previous key is still the one in use.
+    Failed(String),
+}
+
+/// Why a community identity must not be rotated at its VTC alone, if it must
+/// not: its key is bound to a community VTA, or shared with another community.
+fn rotation_blocker(
+    config: &CnmConfig,
+    store: &SessionStore,
+    slug: &str,
+    did: &str,
+    vta_did: Option<&str>,
+) -> Option<String> {
+    if let Some(vta) = vta_did {
+        return Some(format!(
+            "this identity is bound to the community VTA {vta}, whose ACL entry the VTC's swap \
+             does not move; rotating at the VTC alone would strand it there"
+        ));
+    }
+    let shared = config
+        .communities
+        .keys()
+        .chain(config.pending_communities.keys())
+        .filter(|s| s.as_str() != slug)
+        .find(|s| {
+            store
+                .loaded_session(&community_keyring_key(s))
+                .is_some_and(|o| o.client_did == did)
+        });
+    shared.map(|other| {
+        format!(
+            "this identity is shared with community '{other}' (--reuse-identity); rotating it \
+             here would leave '{other}' holding a key the VTC no longer accepts"
+        )
+    })
+}
+
+/// The session-store slot a rotation's new key waits in until the VTC has
+/// accepted it.
+fn rotation_slot(keyring_key: &str) -> String {
+    format!("{keyring_key}.rotating")
+}
+
+/// Roll the identity stored under `keyring_key` onto a fresh `did:key` at
+/// `target` (`acl/swap-key/0.1`). Returns the new DID.
+///
+/// Ordering (VTI-CLT-033 – 035): mint; write the new key to the side slot;
+/// send the swap; only once the VTC accepts it, write the new key over the
+/// identity and drop the slot. A refusal drops the slot and leaves the old
+/// key — still the authoritative one — exactly as it was.
+async fn rotate_identity(
+    store: &SessionStore,
+    keyring_key: &str,
+    target: &crate::vtc::VtcTarget,
+    old_did: &str,
+    old_key: &str,
+) -> CliResult<String> {
+    let (new_did, new_key) = mint();
+    let slot = rotation_slot(keyring_key);
+    store.store_pending_vta_binding(&slot, &new_did, &new_key)?;
+    if let Err(e) = crate::vtc::swap_key(target, old_did, old_key, &new_did, &new_key).await {
+        store.logout(&slot);
+        return Err(e);
+    }
+    store.store_pending_vta_binding(keyring_key, &new_did, &new_key)?;
+    store.logout(&slot);
+    Ok(new_did)
+}
+
+/// Finish a rotation a crash interrupted: a new key left in the side slot is
+/// adopted when the VTC accepts it (the swap committed), and discarded when it
+/// does not (it never did). Returns the adopted DID.
+pub async fn recover_rotation(
+    store: &SessionStore,
+    keyring_key: &str,
+    target: &crate::vtc::VtcTarget,
+) -> CliResult<Option<String>> {
+    let slot = rotation_slot(keyring_key);
+    let Some(waiting) = store.loaded_session(&slot) else {
+        return Ok(None);
+    };
+    let accepted =
+        crate::vtc::confirm_identity(target, &waiting.client_did, &waiting.private_key_multibase)
+            .await
+            .is_ok();
+    if accepted {
+        store.store_pending_vta_binding(
+            keyring_key,
+            &waiting.client_did,
+            &waiting.private_key_multibase,
+        )?;
+    }
+    store.logout(&slot);
+    Ok(accepted.then_some(waiting.client_did))
+}
+
+/// `cnm community rotate <slug>`: roll a configured community's identity at
+/// its VTC onto a fresh key. Refused for an identity bound to a community VTA
+/// or shared with another community (module docs). Returns `(from, to)`.
+pub async fn rotate_community(
+    config: &CnmConfig,
+    store: &SessionStore,
+    slug: &str,
+    vtc_did: Option<&str>,
+    url: Option<&str>,
+) -> CliResult<(String, String)> {
+    let community = config.communities.get(slug).ok_or_else(|| {
+        format!("no configured community '{slug}'; `cnm community list` shows them")
+    })?;
+    let key = community_keyring_key(slug);
+    let vtc_did = vtc_did
+        .map(str::to_string)
+        .or_else(|| community.vtc_did.clone())
+        .ok_or_else(|| {
+            format!(
+                "community '{slug}' names no VTC. Record it with `cnm community set-vtc <did>` \
+                 or pass --vtc-did"
+            )
+        })?;
+    let target = crate::vtc::resolve_target(Some(&vtc_did), url).await?;
+    recover_rotation(store, &key, &target).await?;
+    let session = store
+        .loaded_session(&key)
+        .ok_or_else(|| format!("community '{slug}' has no stored identity"))?;
+    if let Some(reason) = rotation_blocker(
+        config,
+        store,
+        slug,
+        &session.client_did,
+        community.vta_did.as_deref(),
+    ) {
+        return Err(format!("not rotating: {reason}").into());
+    }
+    let new_did = rotate_identity(
+        store,
+        &key,
+        &target,
+        &session.client_did,
+        &session.private_key_multibase,
+    )
+    .await?;
+    Ok((session.client_did, new_did))
 }
 
 /// `did:key:z6MkhaXg…uQ` — enough of a DID to tell two apart in a list.
@@ -1057,8 +1259,14 @@ mod tests {
         )
         .await
         .unwrap();
-        // The VTC has no rotation path: the minted key is the one kept.
-        assert_eq!(confirmed, did);
+        // Bound to a community VTA, whose own entry the VTC's swap would not
+        // move: the minted key is kept, and the reason said.
+        assert_eq!(confirmed.did, did);
+        assert!(
+            matches!(&confirmed.rotation, Rotation::Skipped(why) if why.contains("community VTA")),
+            "{:?}",
+            confirmed.rotation
+        );
         assert!(config.pending_communities.is_empty());
         let c = &config.communities["alpha"];
         assert_eq!(
@@ -1088,6 +1296,234 @@ mod tests {
                 .to_string()
                 .contains("already set up")
         );
+    }
+
+    /// Answer `acl/swap-key/0.1` on `server`: success (`accept`), or the
+    /// refusal a VTC sends when the link proof does not verify.
+    async fn mock_swap(server: &wiremock::MockServer, accept: bool) {
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let reply = if accept {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "urn:uuid:22222222-2222-2222-2222-222222222222",
+                "type": "https://trusttasks.org/spec/acl/swap-key/0.1#response",
+                "payload": {
+                    "entry": { "subject": "did:key:z6MkNew", "role": "admin" },
+                    "previousSubject": "did:key:z6MkOld",
+                },
+            }))
+        } else {
+            ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "id": "urn:uuid:33333333-3333-3333-3333-333333333333",
+                "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+                "payload": {
+                    "code": "acl/swap-key:linkProofInvalid",
+                    "message": "the link proof is not signed by newSubject",
+                    "retryable": false,
+                },
+            }))
+        };
+        Mock::given(method("POST"))
+            .and(path("/v1/trust-tasks"))
+            .and(body_string_contains("acl/swap-key"))
+            .respond_with(reply)
+            .mount(server)
+            .await;
+    }
+
+    /// The `acl/swap-key` document the mock VTC received, if any.
+    async fn swap_document(server: &wiremock::MockServer) -> Option<serde_json::Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| serde_json::from_slice::<serde_json::Value>(&r.body).ok())
+            .find(|d| {
+                d["type"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("acl/swap-key"))
+            })
+    }
+
+    fn pending_alpha(store: &SessionStore, config: &mut CnmConfig) -> String {
+        begin_community(
+            config,
+            store,
+            "Alpha",
+            "alpha",
+            &CommunityIdentity::Fresh,
+            Some("did:webvh:QmVtc:vtc.example.com"),
+            None,
+            false,
+        )
+        .unwrap()
+    }
+
+    /// VTI-CLT-025 – 033: with no community VTA bound, `continue` rolls the
+    /// granted key onto a fresh one at the VTC — signed by the granted key,
+    /// carrying the new key's link proof — and only then stores the new key.
+    #[tokio::test]
+    async fn continue_rotates_the_granted_key_at_the_vtc() {
+        let server = mock_vtc(true).await;
+        mock_swap(&server, true).await;
+        let store = store();
+        let mut config = CnmConfig::default();
+        let granted = pending_alpha(&store, &mut config);
+        let base = format!("{}/v1", server.uri());
+        let confirmed = continue_community(&mut config, &store, "alpha", None, None, Some(&base))
+            .await
+            .unwrap();
+        let Rotation::Rotated { from, to } = &confirmed.rotation else {
+            panic!("expected a rotation, got {:?}", confirmed.rotation);
+        };
+        assert_eq!(from, &granted);
+        assert_ne!(to, &granted);
+        assert_eq!(&confirmed.did, to);
+
+        let doc = swap_document(&server).await.expect("a swap was sent");
+        assert_eq!(doc["payload"]["currentSubject"], granted.as_str());
+        assert_eq!(doc["payload"]["newSubject"], to.as_str());
+        assert_eq!(doc["issuer"], granted.as_str());
+        let proof = doc["payload"]["linkProof"].as_str().expect("a VP-JWT");
+        assert_eq!(
+            vta_sdk::protocols::acl_management::swap::peek_presentation_holder(proof).unwrap(),
+            *to
+        );
+
+        let key = community_keyring_key("alpha");
+        assert_eq!(&store.loaded_session(&key).unwrap().client_did, to);
+        assert!(
+            store.loaded_session(&rotation_slot(&key)).is_none(),
+            "the side slot is cleared once the VTC accepts"
+        );
+        assert!(config.communities.contains_key("alpha"));
+    }
+
+    /// A refused swap keeps the granted key — still the authoritative one —
+    /// and the community is set up regardless; the error says why.
+    #[tokio::test]
+    async fn a_refused_swap_keeps_the_granted_key() {
+        let server = mock_vtc(true).await;
+        mock_swap(&server, false).await;
+        let store = store();
+        let mut config = CnmConfig::default();
+        let granted = pending_alpha(&store, &mut config);
+        let base = format!("{}/v1", server.uri());
+        let confirmed = continue_community(&mut config, &store, "alpha", None, None, Some(&base))
+            .await
+            .unwrap();
+        assert_eq!(confirmed.did, granted);
+        assert!(
+            matches!(&confirmed.rotation, Rotation::Failed(why) if why.contains("linkProofInvalid")),
+            "{:?}",
+            confirmed.rotation
+        );
+        let key = community_keyring_key("alpha");
+        assert_eq!(store.loaded_session(&key).unwrap().client_did, granted);
+        assert!(store.loaded_session(&rotation_slot(&key)).is_none());
+        assert!(config.communities.contains_key("alpha"));
+    }
+
+    fn configured(store: &SessionStore, vta_did: Option<&str>) -> (CnmConfig, String) {
+        let mut config = CnmConfig::default();
+        let (did, key) = mint();
+        store
+            .store_pending_vta_binding(&community_keyring_key("alpha"), &did, &key)
+            .unwrap();
+        config.communities.insert(
+            "alpha".into(),
+            CommunityConfig {
+                name: "Alpha".into(),
+                context_id: None,
+                vta_did: vta_did.map(str::to_string),
+                vtc_did: Some("did:webvh:QmVtc:vtc.example.com".into()),
+            },
+        );
+        (config, did)
+    }
+
+    /// `cnm community rotate` rolls a configured community's identity the
+    /// same way.
+    #[tokio::test]
+    async fn rotate_rolls_a_configured_community_onto_a_fresh_key() {
+        let server = mock_vtc(true).await;
+        mock_swap(&server, true).await;
+        let store = store();
+        let (config, old) = configured(&store, None);
+        let base = format!("{}/v1", server.uri());
+        let (from, to) = rotate_community(&config, &store, "alpha", None, Some(&base))
+            .await
+            .unwrap();
+        assert_eq!(from, old);
+        assert_ne!(to, old);
+        let key = community_keyring_key("alpha");
+        assert_eq!(store.loaded_session(&key).unwrap().client_did, to);
+        let doc = swap_document(&server).await.expect("a swap was sent");
+        assert_eq!(doc["payload"]["currentSubject"], old.as_str());
+    }
+
+    /// Refused, with nothing sent, for an identity bound to a community VTA or
+    /// shared with another community.
+    #[tokio::test]
+    async fn rotate_refuses_an_identity_held_elsewhere() {
+        let server = mock_vtc(true).await;
+        mock_swap(&server, true).await;
+        let base = format!("{}/v1", server.uri());
+
+        let store_a = store();
+        let (config, old) = configured(&store_a, Some("did:webvh:QmVta:vta.example.com"));
+        let err = rotate_community(&config, &store_a, "alpha", None, Some(&base))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("community VTA"), "{err}");
+        let key = community_keyring_key("alpha");
+        assert_eq!(store_a.loaded_session(&key).unwrap().client_did, old);
+
+        let store_b = store();
+        let (mut config, shared) = configured(&store_b, None);
+        let private = store_b.loaded_session(&key).unwrap().private_key_multibase;
+        store_b
+            .store_pending_vta_binding(&community_keyring_key("beta"), &shared, &private)
+            .unwrap();
+        config.communities.insert(
+            "beta".into(),
+            CommunityConfig {
+                name: "Beta".into(),
+                context_id: None,
+                vta_did: None,
+                vtc_did: Some("did:webvh:QmOther:vtc.example.com".into()),
+            },
+        );
+        let err = rotate_community(&config, &store_b, "alpha", None, Some(&base))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("shared with community 'beta'"), "{err}");
+        assert!(swap_document(&server).await.is_none(), "nothing was sent");
+    }
+
+    /// A rotation the VTC committed but this machine did not finish recording
+    /// is adopted from the side slot on the next run (VTI-CLT-033).
+    #[tokio::test]
+    async fn an_interrupted_rotation_is_adopted() {
+        let server = mock_vtc(true).await;
+        let store = store();
+        let _ = configured(&store, None);
+        let (new_did, new_key) = mint();
+        let key = community_keyring_key("alpha");
+        store
+            .store_pending_vta_binding(&rotation_slot(&key), &new_did, &new_key)
+            .unwrap();
+        let target = crate::vtc::VtcTarget {
+            did: "did:webvh:QmVtc:vtc.example.com".into(),
+            base: format!("{}/v1", server.uri()),
+        };
+        let adopted = recover_rotation(&store, &key, &target).await.unwrap();
+        assert_eq!(adopted.as_deref(), Some(new_did.as_str()));
+        assert_eq!(store.loaded_session(&key).unwrap().client_did, new_did);
+        assert!(store.loaded_session(&rotation_slot(&key)).is_none());
     }
 
     #[test]

@@ -502,14 +502,41 @@ pub async fn continue_community(
 ) -> CliResult {
     let mut config = load_config()?;
     let store = auth::store();
-    let did = onboard::continue_community(&mut config, &store, slug, vtc_did, vta_did, url).await?;
+    let confirmed =
+        onboard::continue_community(&mut config, &store, slug, vtc_did, vta_did, url).await?;
     save_config(&config)?;
+    let did = &confirmed.did;
     eprintln!("\x1b[1;32mCommunity '{slug}' ready.\x1b[0m cnm authenticates to it as {did}.");
+    report_rotation(slug, &confirmed.rotation);
+    onboard::emit_json(slug, did, "complete")?;
+    Ok(())
+}
+
+/// Say what became of a community identity's rotation at its VTC.
+fn report_rotation(slug: &str, rotation: &onboard::Rotation) {
+    match rotation {
+        onboard::Rotation::Rotated { from, .. } => {
+            eprintln!("  Rotated off the granted key: {from} no longer has standing at the VTC.")
+        }
+        onboard::Rotation::Skipped(why) => eprintln!("  Not rotated: {why}."),
+        onboard::Rotation::Failed(why) => eprintln!(
+            "\x1b[33m  The key was not rotated, and the granted one is still in use:\x1b[0m \
+             {why}\n  Retry with: cnm community rotate {slug}"
+        ),
+    }
+}
+
+/// `cnm community rotate [<slug>]` — roll a configured community's identity at
+/// its VTC onto a fresh key.
+pub async fn rotate_community(slug: &str, vtc_did: Option<&str>, url: Option<&str>) -> CliResult {
+    let config = load_config()?;
+    let store = auth::store();
+    let (from, to) = onboard::rotate_community(&config, &store, slug, vtc_did, url).await?;
     eprintln!(
-        "  The VTC has no key-rotation task, so this minted key is kept; its private half \
-         never left this machine."
+        "\x1b[1;32mCommunity '{slug}' rotated.\x1b[0m cnm authenticates to it as {to}; {from} \
+         no longer has standing at the VTC."
     );
-    onboard::emit_json(slug, &did, "complete")?;
+    onboard::emit_json(slug, &to, "rotated")?;
     Ok(())
 }
 
@@ -601,9 +628,14 @@ async fn community_step_interactive(config: &mut CnmConfig, store: &SessionStore
             {
                 return Ok(());
             }
-            let did = onboard::continue_community(config, store, &community_slug, None, None, None)
-                .await?;
-            eprintln!("\x1b[1;32mCommunity '{community_slug}' ready\x1b[0m as {did}.");
+            let confirmed =
+                onboard::continue_community(config, store, &community_slug, None, None, None)
+                    .await?;
+            eprintln!(
+                "\x1b[1;32mCommunity '{community_slug}' ready\x1b[0m as {}.",
+                confirmed.did
+            );
+            report_rotation(&community_slug, &confirmed.rotation);
             Ok(())
         }
         "import" => import_community(config, &community_name, &community_slug).await,

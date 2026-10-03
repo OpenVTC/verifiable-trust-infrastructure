@@ -78,6 +78,33 @@ The built-in administrative roles:
 A `community-admin` holding its full ceiling is what earlier releases called an
 "unrestricted administrator". Reading the ACL takes any administrative role.
 
+**Custom roles.** A community can define its own roles when the built-in set
+does not fit — `events-team` = `vtc.surface.admin` + `vtc.invitations.manage`,
+or a repo manager who is also a vetting lead, since an entry holds one
+administrative role. A custom role is a record in the ACL model (stored beside
+the entries, carried by a backup), never policy:
+
+- `vtc/roles/list/0.1` and `vtc/roles/show/0.1` (any administrator) show every
+  role with the ceilings it is enforced by, and how many entries hold it. The
+  console's **Roles** page reads them.
+- `vtc/roles/define/0.1` creates a role (or replaces one, with `replaces:
+  true`), and `vtc/roles/delete/0.1` deletes one. Both take `vtc.roles.assign`
+  **and** `vtc.approvals.admin`, your step-up, and the approval of other
+  holders of both: they wait in the action list (§3.2). Built-in roles cannot
+  be defined, replaced or deleted (`builtInRole`).
+- A role's ceiling cannot name what its defining administrators — you and the
+  approvers whose approval runs it — do not hold, nor an approve scope they may
+  not approve (`exceedsDefinerAuthority`). `git.commit.sign` is additive and
+  never sits in a ceiling (`additiveCapability`).
+- A role is deleted only when no entry holds it, expired entries and grants
+  waiting in the action list included (`inUse`, with the count).
+- A role is a ceiling read **now**: replacing one changes what every holder may
+  do at once, and a narrowing ends their sessions. An entry naming a role the
+  community has no definition for confers nothing, sign-in included
+  (VTI-ACL-011).
+- Grant a custom role exactly as a built-in one: `acl/grant/0.2` with `role:
+  "events-team"`, or the console's Add entry.
+
 In the console, **Access control** shows each entry's administrative role, what
 it **administers** (its capabilities, with their resources), and its community
 role. "everything" appears only for a community administrator holding its full
@@ -95,11 +122,37 @@ ceiling, and "nothing" for an entry with no administrative role. Offline, run
 
 Each refusal names its code (`acl/grant:delegationExceedsGranter`,
 `capabilityOutsideCeiling`, `approveWiderThanGranter`, …). The VTC records the
-granter as the entry's `delegatedBy`. When a granter leaves or is narrowed, the
-entries they granted that they no longer cover go **to review** (the console
-marks them *under review*), and are withdrawn — the administrative role
-removed, the membership kept — unless an administrator re-affirms them by
-editing and saving them within the action lifetime (`acl.action_lifetime`).
+granter as the entry's `delegatedBy`. When a granter leaves — removed,
+narrowed so that it no longer covers them, or expired — the entries they
+granted go **to review**: one item in the **Actions** list (kind
+`acl.grants.review`) for the holders who may approve `vtc.roles.assign`, the
+entries under review excepted. **Re-affirm** (approve) keeps each grant the
+approver covers, under the approver's own authority; **Withdraw** (decline)
+removes them at once — the administrative role removed, the membership kept.
+Nobody deciding within the action lifetime (`acl.action_lifetime`) withdraws
+them too. Editing and saving an entry under review re-affirms it as before. A
+granter who rolls to a new key (§1.4) has not left: the entries it granted
+follow it.
+
+### 1.4 Rolling your own entry to a new key
+
+`acl/swap-key/0.1` moves **your own** entry to a new key, with its authority
+exactly as it was — role, capabilities, approve scope, label, expiry and
+provenance (VTI-CLT-025 – 032). It is the one change you may make to your own
+entry (VTI-ACL-052), and it confers nothing, so it needs no approval:
+
+- the document is signed by the entry's current key, never a console key;
+- it carries a **link proof**: a short-lived (at most 15 minutes) VP-JWT
+  `AclSwapRequest` signed by the new key and addressed to this community, so a
+  stolen old key cannot move the entry to a key the thief holds;
+- the rotation is audited (`AclKeyRotated`) **before** it commits, and the
+  move is one atomic write: concurrent rotations of one entry, one wins;
+- the old key's sessions end; your membership row and the entries you granted
+  follow the new key.
+
+`cnm community continue` rotates the key an administrator granted to a fresh
+one this way, and `cnm community rotate <slug>` rotates a configured
+community's key at any time.
 
 ### 1.3 How an administrator proves who they are
 
@@ -243,11 +296,23 @@ These operations need the consent of **other** administrators:
 | taking authority-conferring capabilities away from **another** entry: `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update`, `vtc/members/admin-remove` | the same, the subject excluded | VTI-APV-019 |
 | lowering `acl.unrestricted_admin_consent_threshold`, by `config/patch` or `vtc/config/import` (raising it stays immediate) | holders of `vtc.roles.assign` | VTI-APV-020 |
 | `policy/upsert` and `policy/activate` for the purposes that decide authority | holders of `vtc.policy.admin` at that purpose | VTI-VTC-022 |
+| `vtc/roles/define`, `vtc/roles/delete` | holders of `vtc.roles.assign` and `vtc.approvals.admin` | VTI-APV-018 |
+| committing a backup restore (`backup/finalize-import` with `confirm: true`) — it replaces the ACL | holders of `vtc.backup.restore` | VTI-APV-018 |
+| a departed granter's grants (raised by the community itself) | holders of `vtc.roles.assign`; one approval re-affirms | VTI-ACL-071 |
 
-An approver must hold **and** be able to approve (its approve scope) every
-capability at stake, at a covering resource: a repo manager for `acme` approves
-inside `acme` only. A is never an approver of their own request, and for a
-reduction the subject is not one either. The number needed is the consent
+An approver is anyone whose **approve scope** reaches every capability at
+stake, at a covering resource (VTI-ACL-040): a repo manager for `acme` approves
+inside `acme` only, and the least-privilege `approver` role — acts nowhere,
+approves as granted — counts like anyone else (VTI-ACL-041). A role definition
+is the exception that asks more: its ceiling is bounded by what each approver
+actually holds, so an approver who holds nothing makes it fail at execution.
+A is never an approver of their own request, and for a reduction the subject
+is not one either.
+
+A restore is previewed (the backup opened, nothing written) before it is
+parked, so a wrong password is refused at once; approvers are shown which
+bundle is restored, never its password, and the staged bytes are kept until
+the action closes. The number needed is the consent
 threshold (§2.2). A reduction with nobody left to approve it waits out a
 cooling-off instead (§3.4).
 
@@ -694,3 +759,8 @@ Promotions that Alice starts need an approver other than Alice: here, Bob.
 | push requests to approvers' devices | `acl.consent_request_push = true` (default `false`) |
 | require two approvers | set `acl.unrestricted_admin_consent_threshold = 2` (needs 3+ community admins) |
 | see who did what | Audit trail (`vtc.audit.read`); filter for `AclBreakGlassWritten` or `EmergencyBootstrapInvoked` to see offline writes |
+| define a role of our own | Roles → Define role → it waits in Actions → another holder of `vtc.roles.assign` + `vtc.approvals.admin` approves |
+| delete a custom role | move or revoke every holder first, then Roles → Delete (waits in Actions) |
+| keep or drop a departed granter's grants | Actions → the `acl.grants.review` item → Re-affirm or Withdraw |
+| move my admin entry to a new key | `cnm community rotate <slug>`, or `acl/swap-key/0.1` with a link proof from the new key |
+| restore a backup | `backup/*` upload, preview, then commit — the commit waits in Actions for another holder of `vtc.backup.restore` |

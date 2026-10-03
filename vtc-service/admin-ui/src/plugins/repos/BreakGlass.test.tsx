@@ -61,6 +61,10 @@ const signedInAs = (subject: string, roles: string[] = ["admin"], scopes: string
   },
   roles,
   scopes,
+  // A community administrator is read from the capabilities whoami reports.
+  ...(roles.includes("admin") && scopes.length === 0
+    ? { capabilities: ["vtc.roles.assign"], ext: { "org.openvtc": { adminRole: "community-admin" } } }
+    : {}),
 });
 
 const DOCS_BREAK_GLASS_RIGHT = rightRow({

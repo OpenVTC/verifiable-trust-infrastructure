@@ -40,7 +40,8 @@ use crate::{HolderKey, MAX_DOCUMENT_RESPONSE_BYTES, VtcClient, VtcError, decode_
 pub use trust_tasks_rs::specs::acl::{
     change_role::v0_1 as change_role, grant::v0_1 as grant, grant::v0_2 as grant_v0_2,
     list::v0_1 as list, list::v0_2 as list_v0_2, revoke::v0_1 as revoke, show::v0_1 as show,
-    show::v0_2 as show_v0_2, update::v0_1 as update, update::v0_2 as update_v0_2,
+    show::v0_2 as show_v0_2, swap_key::v0_1 as swap_key, update::v0_1 as update,
+    update::v0_2 as update_v0_2,
 };
 
 /// The Type URI of each task in the family, read off the generated payloads.
@@ -57,7 +58,12 @@ pub mod task {
     pub const SHOW_V0_2: &str = <super::show_v0_2::Payload as Payload>::TYPE_URI;
     pub const GRANT_V0_2: &str = <super::grant_v0_2::Payload as Payload>::TYPE_URI;
     pub const UPDATE_V0_2: &str = <super::update_v0_2::Payload as Payload>::TYPE_URI;
+    pub const SWAP_KEY: &str = <super::swap_key::Payload as Payload>::TYPE_URI;
 }
+
+/// How long a swap link proof lives: the VTC refuses one longer-lived than
+/// fifteen minutes (VTI-CLT-026, short-lived), and the swap is sent at once.
+pub const SWAP_LINK_PROOF_TTL_SECS: u64 = 300;
 
 /// `acl/list/0.2` filters. Every member is optional. `resource` (and the
 /// unused-at-a-community `context`) need a `direction`: `actingIn`, `subtree`
@@ -449,6 +455,62 @@ impl VtcClient {
         }
         let payload = checked::<update_v0_2::Payload>(body)?;
         self.acl_task(task::UPDATE_V0_2, payload, key, update_v0_2::ERROR_CODES)
+            .await
+    }
+
+    /// Roll `key`'s own ACL entry onto a new key (`acl/swap-key/0.1`,
+    /// VTI-CLT-025 – 032): the entry moves to `new_did` with its authority
+    /// exactly as it was, and `key`'s DID loses all standing.
+    ///
+    /// The document is signed by `key` — the entry's current subject, never a
+    /// key acting for it — and carries the link proof the VTC requires: a
+    /// short-lived VP-JWT signed by the new key and addressed to this VTC,
+    /// proving the new key consents and is held. `new_did` must be the
+    /// `did:key` of `new_private_key_multibase`.
+    ///
+    /// The caller persists the new key **before** this returns to anything
+    /// that could fail: once the VTC answers, the old key is worthless.
+    pub async fn acl_swap_key(
+        &self,
+        key: &HolderKey,
+        new_did: &str,
+        new_private_key_multibase: &str,
+        reason: Option<&str>,
+    ) -> Result<swap_key::Response, VtcError> {
+        let seed = vta_sdk::did_key::decode_private_key_multibase(new_private_key_multibase)
+            .map_err(|e| VtcError::Signing(format!("the new key does not decode: {e}")))?;
+        let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let derived = format!(
+            "did:key:{}",
+            vta_sdk::did_key::ed25519_multibase_pubkey(&signing.verifying_key().to_bytes())
+        );
+        if derived != new_did {
+            return Err(VtcError::Signing(format!(
+                "{new_did} is not the did:key of the new private key ({derived})"
+            )));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let link_proof = vta_sdk::protocols::acl_management::swap::build_swap_presentation(
+            &signing,
+            new_did,
+            &self.vtc_did,
+            now,
+            SWAP_LINK_PROOF_TTL_SECS,
+            None,
+        );
+        let mut body = serde_json::json!({
+            "currentSubject": key.holder_did(),
+            "newSubject": new_did,
+            "linkProof": link_proof,
+        });
+        if let Some(reason) = reason {
+            body["reason"] = serde_json::json!(reason);
+        }
+        let payload = checked::<swap_key::Payload>(body)?;
+        self.acl_task(task::SWAP_KEY, payload, key, swap_key::ERROR_CODES)
             .await
     }
 
