@@ -23,7 +23,7 @@ import {
   waitingSentence,
 } from "@/lib/action-badge";
 import { CoolingOffBanner, OperatorWriteBanner } from "@/components/ActionsAlertBanners";
-import { isSuperAdmin } from "@/lib/viewer";
+import { pluginVisible } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { useToast } from "@/lib/toast";
@@ -280,15 +280,11 @@ export default function App() {
   }
   const renewSoon = signing.data?.state === "ready" && signing.data.renewSoon;
 
-  // A "super admin" is Admin role with no context restrictions.
-  // Scope-filtered plugins surface server errors as 403s anyway, but
-  // hiding them from the nav keeps the UX coherent.
-  const superAdmin = isSuperAdmin(probe.data);
-  const plugins = allPlugins.filter((p) => {
-    if (!p.scopes || p.scopes.length === 0) return true;
-    if (p.scopes.includes("super-admin")) return superAdmin;
-    return true;
-  });
+  // Navigation follows the viewer's capabilities, read live behind `whoami`
+  // (`vtc-admin-roles.md` §4) — not the session's role hint, which every
+  // administrative role shares. The VTC still refuses what the entry does not
+  // hold; hiding it keeps the UX coherent.
+  const plugins = allPlugins.filter((p) => pluginVisible(probe.data, p));
 
   return (
     <div

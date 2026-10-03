@@ -783,6 +783,12 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2",
     // An operator's offline write, acknowledged (VTI-VTC-023).
     "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2",
+    // Custom administrative roles (`trust_tasks::role_tasks`): the Roles
+    // page's reads, and the definitions it sends for approval.
+    "https://trusttasks.org/spec/vtc/roles/list/0.1",
+    "https://trusttasks.org/spec/vtc/roles/show/0.1",
+    "https://trusttasks.org/spec/vtc/roles/define/0.1",
+    "https://trusttasks.org/spec/vtc/roles/delete/0.1",
     "https://trusttasks.org/spec/task-consent/decision/0.2",
     // Their bearer routes stayed for `vtc-client`; the console already signed
     // them, and now nothing else binds them either.

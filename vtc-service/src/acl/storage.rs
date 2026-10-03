@@ -144,7 +144,13 @@ pub async fn get_acl_entry(
     let key = acl_key(did);
     let raw = ks.get_raw(key.as_bytes()).await?;
     match raw {
-        Some(bytes) => Ok(Some(decode(&bytes)?)),
+        Some(bytes) => {
+            let mut entry = decode(&bytes)?;
+            // A custom role's ceiling is its definition as stored now
+            // (VTI-ACL-011: none stored, nothing conferred).
+            super::roles::resolve(ks, &mut entry).await?;
+            Ok(Some(entry))
+        }
         None => Ok(None),
     }
 }
@@ -165,7 +171,9 @@ pub async fn delete_acl_entry(ks: &KeyspaceHandle, did: &str) -> Result<(), AppE
 /// emergency-bootstrap cleanup, not for user-facing list
 /// endpoints. Use [`list_acl_entries_paginated`] for those.
 pub async fn list_acl_entries(ks: &KeyspaceHandle) -> Result<Vec<VtcAclEntry>, AppError> {
-    iter(ks).await
+    let mut entries = iter(ks).await?;
+    super::roles::resolve_all(ks, &mut entries).await?;
+    Ok(entries)
 }
 
 /// Paginated list. Signs the cursor under `audit_key` so it can't
@@ -187,7 +195,9 @@ pub async fn list_acl_entries_paginated(
     let mut pairs = ks.prefix_iter_raw(b"acl:".to_vec()).await?;
     pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
     let snapshot_id: u64 = pairs.len() as u64;
-    paginate(pairs, cursor, limit, &audit_key.key, snapshot_id, decode)
+    let mut page = paginate(pairs, cursor, limit, &audit_key.key, snapshot_id, decode)?;
+    super::roles::resolve_all(ks, &mut page.items).await?;
+    Ok(page)
 }
 
 // ---------------------------------------------------------------------------

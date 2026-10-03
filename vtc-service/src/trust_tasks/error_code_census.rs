@@ -926,6 +926,7 @@ fn witnesses() -> Vec<Witness> {
         ),
     ];
     table.extend(action_witnesses());
+    table.extend(role_witnesses());
     #[cfg(feature = "vetting-pcs")]
     table.extend(pcs_witnesses());
     table
@@ -1002,6 +1003,75 @@ fn action_witnesses() -> Vec<Witness> {
             c::ACKNOWLEDGE_ALREADY_ACKNOWLEDGED,
             "action_list_a2.rs",
             "vti_vtc_023_every_offline_writer_raises_an_acknowledge_item"
+        ),
+    ]
+}
+
+/// Custom roles' declared codes (`vtc/roles/*`), each driven over the signed
+/// door in `admin_roles_c2.rs`.
+fn role_witnesses() -> Vec<Witness> {
+    use crate::acl::roles::codes as c;
+    use trust_tasks_rs::specs::vtc::roles as r;
+    vec![
+        witness!(
+            r::define::v0_1::error_codes::BUILT_IN_ROLE,
+            c::DEFINE_BUILT_IN_ROLE,
+            "admin_roles_c2.rs",
+            "vtc_roles_define_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            r::define::v0_1::error_codes::EXISTS,
+            c::DEFINE_EXISTS,
+            "admin_roles_c2.rs",
+            "vtc_roles_define_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            r::define::v0_1::error_codes::NOT_FOUND,
+            c::DEFINE_NOT_FOUND,
+            "admin_roles_c2.rs",
+            "vtc_roles_define_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            r::define::v0_1::error_codes::UNKNOWN_CAPABILITY,
+            c::DEFINE_UNKNOWN_CAPABILITY,
+            "admin_roles_c2.rs",
+            "vtc_roles_define_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            r::define::v0_1::error_codes::ADDITIVE_CAPABILITY,
+            c::DEFINE_ADDITIVE_CAPABILITY,
+            "admin_roles_c2.rs",
+            "vtc_roles_define_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            r::define::v0_1::error_codes::EXCEEDS_DEFINER_AUTHORITY,
+            c::DEFINE_EXCEEDS_DEFINER_AUTHORITY,
+            "admin_roles_c2.rs",
+            "vtc_roles_define_refuses_with_its_declared_codes"
+        ),
+        witness!(
+            r::delete::v0_1::error_codes::BUILT_IN_ROLE,
+            c::DELETE_BUILT_IN_ROLE,
+            "admin_roles_c2.rs",
+            "vtc_roles_delete_refuses_a_held_role_and_deletes_an_unheld_one"
+        ),
+        witness!(
+            r::delete::v0_1::error_codes::NOT_FOUND,
+            c::DELETE_NOT_FOUND,
+            "admin_roles_c2.rs",
+            "vtc_roles_delete_refuses_a_held_role_and_deletes_an_unheld_one"
+        ),
+        witness!(
+            r::delete::v0_1::error_codes::IN_USE,
+            c::DELETE_IN_USE,
+            "admin_roles_c2.rs",
+            "vtc_roles_delete_refuses_a_held_role_and_deletes_an_unheld_one"
+        ),
+        witness!(
+            r::show::v0_1::error_codes::NOT_FOUND,
+            c::SHOW_NOT_FOUND,
+            "admin_roles_c2.rs",
+            "vtc_roles_delete_refuses_a_held_role_and_deletes_an_unheld_one"
         ),
     ]
 }

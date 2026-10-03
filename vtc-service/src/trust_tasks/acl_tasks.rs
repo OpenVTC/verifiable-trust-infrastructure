@@ -797,6 +797,90 @@ pub(super) async fn handle_revoke_v0_2(
     commit_settled(state, &actor, &doc, plan, reduced, Render::Revoke).await
 }
 
+// ─── rolling one's own entry to a new key ────────────────────────────────
+
+/// `acl/swap-key/0.1` — the subject rolls its own entry to a new key, its
+/// authority exactly as it was (**VTI-CLT-025 – 032**, VTI-ACL-052).
+///
+/// Signed by the subject itself — never a console key acting for it — and
+/// carrying a link proof signed by the new key ([`ops::swap_key`]). No
+/// gesture and no consent: nothing is granted, so there is nothing for anyone
+/// else to agree to (VTI-APV-018 is about authority that did not exist before).
+pub(super) async fn handle_swap_key(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use swap::error_codes as c;
+    use trust_tasks_rs::specs::acl::swap_key::v0_1 as swap;
+    let checked: swap::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let Some(signer) = ctx.verified_signer.as_deref() else {
+        return reject_with(&doc, RejectReason::ProofRequired);
+    };
+    let reason = doc.payload["reason"].as_str();
+    let outcome = ops::swap_key(
+        state,
+        signer,
+        checked.current_subject.as_str(),
+        checked.new_subject.as_str(),
+        doc.payload.get("linkProof"),
+        reason,
+    )
+    .await;
+    let (entry, repointed) = match outcome {
+        Ok(ok) => ok,
+        Err(ops::SwapError::NotHolder(m)) => {
+            return reject_with_code(&doc, extended_code(c::NOT_HOLDER.code), m, None);
+        }
+        Err(ops::SwapError::SubjectNotFound(m)) => {
+            return reject_with_code(&doc, extended_code(c::SUBJECT_NOT_FOUND.code), m, None);
+        }
+        Err(ops::SwapError::SubjectAlreadyInUse(m)) => {
+            return reject_with_code(&doc, extended_code(c::SUBJECT_ALREADY_IN_USE.code), m, None);
+        }
+        Err(ops::SwapError::LinkProofRequired) => {
+            return reject_with_code(
+                &doc,
+                extended_code(c::LINK_PROOF_REQUIRED.code),
+                "this community requires a link proof: a VP-JWT (AclSwapRequest) signed by \
+                 newSubject and addressed to this community (VTI-CLT-026)",
+                None,
+            );
+        }
+        Err(ops::SwapError::LinkProofInvalid(reason, m)) => {
+            return reject_with_code(
+                &doc,
+                extended_code(c::LINK_PROOF_INVALID.code),
+                m,
+                Some(json!({ "reason": reason })),
+            );
+        }
+        Err(ops::SwapError::App(e)) => return app_error_to_reject(&doc, &e),
+    };
+    let previous = checked.current_subject.to_string();
+    let review = crate::acl::delegation::review_for(state, &entry.did)
+        .await
+        .ok()
+        .flatten();
+    let body = json!({
+        "entry": ops::render_v0_1(entry.clone()),
+        "previousSubject": previous,
+        // 0.1's AclEntry cannot state an administrative role; the entry as it
+        // now stands, every axis explicit, rides beside it.
+        "ext": { "org.openvtc": {
+            "entry": ops::render_v0_2(&entry, review.as_ref()),
+            "delegationsRepointed": repointed,
+        }},
+    });
+    match ops::conform::<swap::Response>(body) {
+        Ok(r) => success_response(&doc, r),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
 // ─── the gate and the commit ─────────────────────────────────────────────
 
 /// Settle what a planned ACL write needs before it may be written, on the

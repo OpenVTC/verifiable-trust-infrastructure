@@ -7661,6 +7661,20 @@
           "scopes"
         ],
         "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the caller's ACL entry lets it do **now**, as `cap[@resource]` —\nthe published member for exactly this (`auth/whoami/0.1`\n`capabilities`: \"resolved as they would be enforced\"). Read from the\nlive entry on every call, never from the session, so a console renders\nnavigation and actions per capability rather than per role. A hint for\nwhat to offer: every operation still asks the entry itself."
+          },
+          "ext": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "`org.openvtc`: the administrative role, and what the caller may\napprove — which the published members have no place for."
+          },
           "roles": {
             "type": "array",
             "items": {

@@ -87,8 +87,20 @@ export interface PluginManifest {
   readonly iconComponent?: ComponentType<{
     "aria-hidden"?: boolean | "true" | "false";
   }>;
-  /** UX-only scope hint. Server still enforces. */
+  /**
+   * UX-only scope hint. Server still enforces. `super-admin` reads as "a
+   * community administrator" (`community-admin` holding `vtc.roles.assign`).
+   * Superseded by `capabilities` for anything that names one.
+   */
   readonly scopes?: ReadonlyArray<"admin" | "super-admin">;
+  /**
+   * UX-only capability hint: the shell shows the nav entry when the viewer
+   * holds **any** of these, at any qualifier (`whoami.capabilities`;
+   * `docs/05-design-notes/vtc-admin-roles.md` §4). Absent or empty: any
+   * administrator. The VTC still decides every operation against the
+   * viewer's entry.
+   */
+  readonly capabilities?: ReadonlyArray<string>;
   /**
    * **Built-in plugins only**: a React component the shell renders
    * directly instead of a custom element. Lets first-party plugins

@@ -1467,6 +1467,19 @@ pub struct WhoamiResponse {
     /// The contexts this session may act in — `allowedContexts` under the
     /// canonical name.
     pub scopes: Vec<String>,
+    /// What the caller's ACL entry lets it do **now**, as `cap[@resource]` —
+    /// the published member for exactly this (`auth/whoami/0.1`
+    /// `capabilities`: "resolved as they would be enforced"). Read from the
+    /// live entry on every call, never from the session, so a console renders
+    /// navigation and actions per capability rather than per role. A hint for
+    /// what to offer: every operation still asks the entry itself.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    /// `org.openvtc`: the administrative role, and what the caller may
+    /// approve — which the published members have no place for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub ext: Option<serde_json::Value>,
 }
 
 /// The canonical `Session` shape.
@@ -1500,8 +1513,38 @@ pub struct SessionView {
         (status = 401, description = "Missing or invalid bearer token"),
     ),
 )]
-pub async fn whoami(auth: AuthClaims) -> Json<WhoamiResponse> {
+pub async fn whoami(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    auth: AuthClaims,
+) -> Json<WhoamiResponse> {
+    // The live entry, read now (VTI-ACL-034): what the console may offer.
+    let entry = crate::acl::get_acl_entry(&state.acl_ks, &auth.did)
+        .await
+        .ok()
+        .flatten()
+        .filter(|e| !e.is_expired(now_epoch()));
+    let capabilities = entry
+        .as_ref()
+        .map(crate::acl::VtcAclEntry::capability_list)
+        .unwrap_or_default();
+    let ext = entry.as_ref().map(|e| {
+        let approves: Vec<String> = if e.admin.approve.is_all() {
+            e.admin
+                .effective_approvable()
+                .iter()
+                .map(crate::acl::CapRef::display)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        serde_json::json!({ "org.openvtc": {
+            "adminRole": e.admin.admin_role.as_ref().map(|r| r.to_string()),
+            "approves": approves,
+        }})
+    });
     Json(WhoamiResponse {
+        capabilities,
+        ext,
         session: SessionView {
             id: auth.session_id,
             subject: auth.did,

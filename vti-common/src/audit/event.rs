@@ -745,6 +745,66 @@ pub enum AuditEvent {
     /// that execution says the effect landed, and its absence that it did
     /// not (CLAUDE.md R2.1).
     AdminActionEffect(AdminActionEffectData),
+
+    /// A community defined or replaced a **custom administrative role**
+    /// (`vtc/roles/define/0.1`) — a named ceiling every entry holding it is
+    /// bounded by. Executed only after an N-of-M approval; `approvers` names
+    /// who agreed. A replacement that narrows the ceiling is a privilege
+    /// reduction for every holder, and `narrowed` says so.
+    AdminRoleDefined(AdminRoleChangeData),
+
+    /// A community deleted a custom administrative role that no entry held
+    /// (`vtc/roles/delete/0.1`).
+    AdminRoleDeleted(AdminRoleChangeData),
+
+    /// A subject rolled its own ACL entry to a new key (`acl/swap-key/0.1`,
+    /// **VTI-CLT-025 – 032**): the entry moved to `new_did` with its authority
+    /// exactly as it was. Written **before** the move commits; a node that
+    /// cannot write it does not move the entry (VTI-CLT-032).
+    AclKeyRotated(AclKeyRotatedData),
+}
+
+/// Payload for [`AuditEvent::AdminRoleDefined`] / [`AuditEvent::AdminRoleDeleted`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminRoleChangeData {
+    /// The role's name.
+    pub name: String,
+    /// The ceiling after the change, as `cap[@resource]` (empty on a delete).
+    #[serde(default)]
+    pub ceiling: Vec<String>,
+    /// The approve ceiling after the change (empty on a delete).
+    #[serde(default)]
+    pub approve_scope: Vec<String>,
+    /// Whether this replaced an existing definition.
+    #[serde(default)]
+    pub replaced: bool,
+    /// Whether the replacement narrowed what holders could exercise or
+    /// approve — a privilege reduction for each of them.
+    #[serde(default)]
+    pub narrowed: bool,
+    /// How many entries held the role when the change was made.
+    #[serde(default)]
+    pub holders: u32,
+    /// The administrators whose approval the change executed under.
+    #[serde(default)]
+    pub approvers: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::AclKeyRotated`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AclKeyRotatedData {
+    /// The subject swapped out.
+    pub old_did: String,
+    /// The subject swapped in, proven by its own key.
+    pub new_did: String,
+    /// The administrative role the entry holds (or its community role, with
+    /// none) — unchanged by the rotation.
+    pub role: String,
+    /// The operator's free-text reason, if the request carried one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// How much an audit event matters to someone reviewing the log. Ordered:
@@ -876,6 +936,9 @@ impl AuditEvent {
             Self::AclMigrated(..) => "AclMigrated",
             Self::AdminActionBurst(..) => "AdminActionBurst",
             Self::AdminActionEffect(..) => "AdminActionEffect",
+            Self::AdminRoleDefined(..) => "AdminRoleDefined",
+            Self::AdminRoleDeleted(..) => "AdminRoleDeleted",
+            Self::AclKeyRotated(..) => "AclKeyRotated",
         }
     }
 

@@ -523,6 +523,16 @@ enum CommunityCommands {
         #[arg(long)]
         vta_did: Option<String>,
     },
+    /// Roll this machine's identity for a community onto a fresh key, at the
+    /// community's VTC (`acl/swap-key/0.1`): the entry keeps exactly its
+    /// authority and the old DID loses all standing. `continue` already does
+    /// this once; run it again to rotate on a schedule or after a suspected
+    /// compromise. Refused for an identity shared with another community or
+    /// bound to a community VTA.
+    Rotate {
+        /// The community's slug (default: the active community).
+        name: Option<String>,
+    },
     /// Delete a community connection from this machine: its local config
     /// entry and stored credential.
     ///
@@ -1966,6 +1976,13 @@ async fn cmd_community(
                 }
             }
             Ok(())
+        }
+        CommunityCommands::Rotate { name } => {
+            let slug = match name {
+                Some(n) => n,
+                None => config::resolve_community(community_override, cnm_config)?.0,
+            };
+            setup::rotate_community(&slug, vtc_did, url).await
         }
         CommunityCommands::Ping => cmd_community_ping(cnm_config).await,
         CommunityCommands::SetVtc { did } => {

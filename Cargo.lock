@@ -11710,6 +11710,7 @@ version = "0.15.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
+ "ed25519-dalek 3.0.0",
  "multibase",
  "reqwest",
  "serde",

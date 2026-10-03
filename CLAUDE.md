@@ -998,6 +998,28 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vta-service/src/routes/did_templates.rs`, `vta-service/src/operations/did_templates.rs`.
 - **Docs**: `docs/02-vta/did-templates.md`.
 
+### VTC role-based administration (`acl/*/0.2`, `vtc/roles/*`)
+- **What**: VTC authority is capabilities (optionally resource-qualified)
+  bounded by an administrative role's ceiling; built-in roles plus **custom
+  roles** stored in the `acl` keyspace (`role:<name>`). Every gate asks the
+  live entry (`VtcAclEntry::can`); a custom role is resolved from its stored
+  definition on every read, and an entry naming an undefined role confers
+  nothing (VTI-ACL-011).
+- **Invariants to preserve**: `vtc/roles/define|delete`, authority-conferring
+  grants, reductions, threshold lowering, authority policy and a backup
+  restore's commit all park in the action list; approvers are read off
+  **approve scope** (`admin_consent::may_approve`), so the least-privilege
+  `approver` counts. A role's ceiling is bounded by its requester's **and
+  approvers'** holdings. A departed (removed, narrowed or expired) granter's
+  grants become one `acl.grants.review` action; the delegation sweeper is the
+  backstop. `acl/swap-key/0.1` is the only self-modification: same authority,
+  link proof from the new key, audited before the atomic move, delegations
+  re-pointed.
+- **Code**: `vtc-service/src/acl/{capability,roles,granting,delegation,admin_consent}.rs`,
+  `vtc-service/src/trust_tasks/{acl_tasks,role_tasks}.rs`,
+  `vtc-service/src/admin_actions/`.
+- **Docs**: `docs/03-vtc/admin-access.md`, `docs/05-design-notes/vtc-admin-roles.md`.
+
 ### VTC git namespaces (`git-ns/*`)
 - **What**: A VTC governs repositories on the forges it has bound — who may
   create them, who owns each, whose commits its CI check accepts — and
