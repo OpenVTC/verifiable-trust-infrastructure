@@ -126,9 +126,9 @@ async fn main() {
 
     eprintln!("Config loaded. Initializing tracing...");
 
-    // Initialize tracing. When vsock-log is enabled, logs are tee'd to both
-    // stderr (visible in debug mode) and a vsock channel on port 5700 (visible
-    // via enclave-proxy in production mode). The initial connection is awaited
+    // Initialize tracing. When vsock-log is enabled, logs go to a vsock
+    // channel on port 5700 (visible via enclave-proxy), and to stderr (the
+    // console, visible only in debug mode) only while that channel is down. The initial connection is awaited
     // (with a 2s timeout) so early boot logs are forwarded before bootstrap.
     #[cfg(feature = "vsock-log")]
     {

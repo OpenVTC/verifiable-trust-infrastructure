@@ -4,10 +4,18 @@
 //! Uses a bounded mpsc channel to decouple the synchronous `Write` impl
 //! (called by tracing-subscriber) from the async vsock I/O. If the channel
 //! fills up (proxy down for a while), log lines are silently dropped on
-//! the vsock side — stderr output is always unaffected.
+//! the vsock side.
+//!
+//! Lines go to stderr only while the vsock connection is down (boot,
+//! reconnects). Inside the enclave stderr is the console: a production
+//! enclave runs without `--debug-mode`, so nobody can read it, and each
+//! write is synchronous and serialised on the `Stderr` lock. Writing every
+//! line there capped request throughput (load tests: about 97 signs/s with
+//! the tee against at least 160 without the per-request lines).
 
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::mpsc;
 use tracing_subscriber::fmt::MakeWriter;
@@ -38,6 +46,7 @@ pub async fn start() -> TeeMakeWriter {
     use tokio_vsock::{VsockAddr, VsockStream};
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>(CHANNEL_CAPACITY);
+    let connected = Arc::new(AtomicBool::new(false));
 
     // Try to establish the initial connection synchronously (with timeout)
     // so early boot logs aren't lost.
@@ -66,7 +75,7 @@ pub async fn start() -> TeeMakeWriter {
             }
         };
 
-    tokio::spawn(vsock_drain_task(rx, initial_stream));
+    tokio::spawn(vsock_drain_task(rx, initial_stream, connected.clone()));
 
     // Install panic hook that flushes remaining logs before aborting.
     let panic_tx = tx.clone();
@@ -81,7 +90,15 @@ pub async fn start() -> TeeMakeWriter {
         default_hook(info);
     }));
 
-    TeeMakeWriter { tx: Arc::new(tx) }
+    TeeMakeWriter {
+        tx: Arc::new(tx),
+        connected,
+        console: stderr_console,
+    }
+}
+
+fn stderr_console() -> Box<dyn Write + Send> {
+    Box::new(std::io::stderr())
 }
 
 /// Heartbeat interval — sent over the vsock log channel when idle.
@@ -95,9 +112,13 @@ const HEARTBEAT_LINE: &[u8] = b"__heartbeat__\n";
 /// Background task: drains the channel and writes to the vsock stream.
 /// Sends periodic heartbeats when idle so the proxy can detect dead connections.
 /// Reconnects with backoff if the connection drops.
+///
+/// `connected` is true while a connection is up; the writer sends lines to
+/// stderr only while it is false.
 async fn vsock_drain_task(
     mut rx: mpsc::Receiver<Vec<u8>>,
     initial_stream: Option<tokio_vsock::VsockStream>,
+    connected: Arc<AtomicBool>,
 ) {
     use tokio::io::AsyncWriteExt;
     use tokio_vsock::VsockAddr;
@@ -110,6 +131,7 @@ async fn vsock_drain_task(
     } else {
         connect_with_backoff(&addr, &mut rx).await
     };
+    connected.store(true, Ordering::SeqCst);
 
     loop {
         tokio::select! {
@@ -117,8 +139,11 @@ async fn vsock_drain_task(
                 match msg {
                     Some(buf) => {
                         if AsyncWriteExt::write_all(&mut stream, &buf).await.is_err() {
-                            // Connection lost — reconnect
+                            // Connection lost — reconnect, with stderr as the
+                            // fallback meanwhile.
+                            connected.store(false, Ordering::SeqCst);
                             stream = connect_with_backoff(&addr, &mut rx).await;
+                            connected.store(true, Ordering::SeqCst);
                             // Retry writing this buffer on the new connection
                             let _ = AsyncWriteExt::write_all(&mut stream, &buf).await;
                         }
@@ -130,7 +155,9 @@ async fn vsock_drain_task(
                 // No log data for a while — send heartbeat to keep connection alive
                 // and let the proxy know we're still running.
                 if AsyncWriteExt::write_all(&mut stream, HEARTBEAT_LINE).await.is_err() {
+                    connected.store(false, Ordering::SeqCst);
                     stream = connect_with_backoff(&addr, &mut rx).await;
+                    connected.store(true, Ordering::SeqCst);
                 }
             }
         }
@@ -168,13 +195,17 @@ async fn connect_with_backoff(
 }
 
 // ---------------------------------------------------------------------------
-// MakeWriter that tees to stderr + vsock channel
+// MakeWriter: vsock channel, with stderr as the fallback
 // ---------------------------------------------------------------------------
 
 /// A `MakeWriter` that produces `TeeWriter` instances.
 #[derive(Clone)]
 pub struct TeeMakeWriter {
     tx: Arc<mpsc::Sender<Vec<u8>>>,
+    /// Whether the vsock forwarder is connected. Set by the drain task.
+    connected: Arc<AtomicBool>,
+    /// Opens the fallback console writer (stderr; a buffer in tests).
+    console: fn() -> Box<dyn Write + Send>,
 }
 
 impl<'a> MakeWriter<'a> for TeeMakeWriter {
@@ -182,33 +213,37 @@ impl<'a> MakeWriter<'a> for TeeMakeWriter {
 
     fn make_writer(&'a self) -> Self::Writer {
         TeeWriter {
-            stderr: std::io::stderr(),
+            console: (!self.connected.load(Ordering::SeqCst)).then(self.console),
             tx: self.tx.clone(),
             vsock_buf: Vec::with_capacity(256),
         }
     }
 }
 
-/// Writes each log line to both stderr (always) and the vsock channel
-/// (best-effort). The vsock side buffers until `flush` is called or the
-/// writer is dropped, then sends the complete line over the channel.
+/// Writes each log line to the vsock channel (best-effort), and to stderr
+/// only when the vsock forwarder was disconnected as the line started. The
+/// vsock side buffers until `flush` is called or the writer is dropped, then
+/// sends the complete line over the channel.
 pub struct TeeWriter {
-    stderr: std::io::Stderr,
+    console: Option<Box<dyn Write + Send>>,
     tx: Arc<mpsc::Sender<Vec<u8>>>,
     vsock_buf: Vec<u8>,
 }
 
 impl Write for TeeWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // Always write to stderr
-        self.stderr.write_all(buf)?;
+        if let Some(console) = self.console.as_mut() {
+            console.write_all(buf)?;
+        }
         // Buffer for vsock (will be sent on flush/drop)
         self.vsock_buf.extend_from_slice(buf);
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.stderr.flush()?;
+        if let Some(console) = self.console.as_mut() {
+            console.flush()?;
+        }
         if !self.vsock_buf.is_empty() {
             // Best-effort send — if channel is full, drop silently
             let _ = self.tx.try_send(std::mem::take(&mut self.vsock_buf));
@@ -223,5 +258,83 @@ impl Drop for TeeWriter {
         if !self.vsock_buf.is_empty() {
             let _ = self.tx.try_send(std::mem::take(&mut self.vsock_buf));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// Console output captured by `test_console`, shared across the tests in
+    /// this module (they run in one process), so each test uses a distinct
+    /// marker and looks only for its own.
+    static CONSOLE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+    struct TestConsole;
+
+    impl Write for TestConsole {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            CONSOLE.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_console() -> Box<dyn Write + Send> {
+        Box::new(TestConsole)
+    }
+
+    fn console_has(marker: &[u8]) -> bool {
+        CONSOLE
+            .lock()
+            .unwrap()
+            .windows(marker.len())
+            .any(|w| w == marker)
+    }
+
+    fn make_writer(connected: bool) -> (TeeMakeWriter, mpsc::Receiver<Vec<u8>>) {
+        let (tx, rx) = mpsc::channel(8);
+        let make = TeeMakeWriter {
+            tx: Arc::new(tx),
+            connected: Arc::new(AtomicBool::new(connected)),
+            console: test_console,
+        };
+        (make, rx)
+    }
+
+    #[test]
+    fn test_connected_line_skips_console() {
+        let (make, mut rx) = make_writer(true);
+        let mut w = make.make_writer();
+        w.write_all(b"connected-line\n").unwrap();
+        w.flush().unwrap();
+        assert_eq!(rx.try_recv().unwrap(), b"connected-line\n");
+        assert!(!console_has(b"connected-line"), "console must stay quiet");
+    }
+
+    #[test]
+    fn test_disconnected_line_goes_to_console_and_channel() {
+        let (make, mut rx) = make_writer(false);
+        let mut w = make.make_writer();
+        w.write_all(b"fallback-line\n").unwrap();
+        w.flush().unwrap();
+        assert!(console_has(b"fallback-line"), "console is the fallback");
+        assert_eq!(rx.try_recv().unwrap(), b"fallback-line\n");
+    }
+
+    #[test]
+    fn test_reconnect_stops_console_output() {
+        let (make, mut rx) = make_writer(false);
+        make.make_writer().write_all(b"before-reconnect\n").unwrap();
+        make.connected.store(true, Ordering::SeqCst);
+        make.make_writer().write_all(b"after-reconnect\n").unwrap();
+        assert!(console_has(b"before-reconnect"));
+        assert!(!console_has(b"after-reconnect"));
+        assert_eq!(rx.try_recv().unwrap(), b"before-reconnect\n");
+        assert_eq!(rx.try_recv().unwrap(), b"after-reconnect\n");
     }
 }
