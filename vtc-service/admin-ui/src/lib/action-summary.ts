@@ -32,6 +32,12 @@ import { base58btcDecode, base58btcEncode, jcsCanonicalize } from "./jcs";
 
 const SPEC = "https://trusttasks.org/spec";
 
+/** An operator's offline write, raised for acknowledgement (VTI-VTC-023). */
+export const KIND_OPERATOR_WRITE = "operator.offlineWrite";
+
+/** The `typeUri` an operator's offline emergency bootstrap is recorded under. */
+export const OPERATOR_EMERGENCY_BOOTSTRAP_URI = "urn:openvtc:vtc:operator:emergency-bootstrap";
+
 /**
  * The pinned template digest for each `(kind, typeUri)`.
  *
@@ -66,6 +72,15 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQma1zFb7cvRpSH7erp14W83wYZW5vP7cke1yLwcwQZdEie",
   [pinKey("policy.authority.change", `${SPEC}/policy/activate/0.1`)]:
     "zQmTqKd5UoQZfTy7giJU9KFWFyhUbqxAtr5XWoUB9BLncBL",
+  // An operator's offline write, raised for acknowledgement (VTI-VTC-023).
+  [pinKey(KIND_OPERATOR_WRITE, `${SPEC}/acl/grant/0.1`)]:
+    "zQmPBTVVVBZgfZafx5347YBELteEgvumprYp1wVEFQ8GJmJ",
+  [pinKey(KIND_OPERATOR_WRITE, `${SPEC}/acl/revoke/0.1`)]:
+    "zQmSTfE5673DiE2CNEnkmq5StjrQcQHMEm3JVEvc3rfqNAs",
+  [pinKey(KIND_OPERATOR_WRITE, `${SPEC}/auth/step-up/approver/invite/0.1`)]:
+    "zQmaRsraYXDuqh9P397D4F9dAHQAwsdwKmM9A6Kh4yVEAVx",
+  [pinKey(KIND_OPERATOR_WRITE, OPERATOR_EMERGENCY_BOOTSTRAP_URI)]:
+    "zQmW9QyZwNvMYHenHrcAeaRB5ZRcz2Nz2A2w5JqrWb7qFEp",
 });
 
 function pinKey(kind: string, typeUri: string): string {

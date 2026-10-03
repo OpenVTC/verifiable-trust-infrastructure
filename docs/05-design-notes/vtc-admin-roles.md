@@ -37,15 +37,18 @@ Agreed on 2026-10-02:
 Since the operator can't be constrained, what they do is made **visible**
 instead:
 
-- **Every offline write is surfaced as an action.** `AclBreakGlassWritten` and
-  `emergency-bootstrap` already leave a marker that the daemon audits at its
-  next start. They will also raise an **acknowledge** item in every remaining
-  administrator's action list, and a `Critical` banner, naming the command, the
-  DIDs and the host. The item can't be dismissed without acknowledging it, and
-  acknowledging is audited. Administrators can't undo the operator's act, but
-  they can't fail to learn of it.
+- **Every offline write is surfaced as an action** (VTI-VTC-023; implemented
+  in action-list phase A2, `vtc-action-list.md` §8.3b). `AclBreakGlassWritten`
+  and `emergency-bootstrap` leave a marker that the daemon audits at its next
+  start. It also raises an **acknowledge** item (kind `operator.offlineWrite`)
+  for the administrators who held an admin role when the write was made and
+  still hold one, and a `Critical` console banner, naming the command, the
+  DIDs, the host and the time. The banner can't be dismissed; acknowledging
+  (`vtc/admin/actions/acknowledge/0.1`) is audited. Administrators can't undo
+  the operator's act, but they can't fail to learn of it.
 - `emergency-bootstrap` wipes every admin, so it has nobody to tell at that
-  moment. Its item is raised for the new administrators and stays in History.
+  moment. Its item is raised for the new administrators (as is any item whose
+  original administrators have all gone) and stays in History.
 - Guides and the console say plainly that approvals protect against
   administrators, not the operator.
 

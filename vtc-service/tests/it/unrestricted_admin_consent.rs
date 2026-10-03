@@ -849,8 +849,9 @@ async fn vti_apv_006_007_only_another_unrestricted_admin_decides() {
     assert_eq!(action(&fix, &a, &id).await["status"], "open");
 }
 
-/// `approverSigned` evidence is refused with a typed reason until the approver
-/// store lands (A2); it is never ignored.
+/// `approverSigned` evidence that is no statement is refused with a typed
+/// reason; evidence is never ignored. The accepted and refused statements are
+/// `action_list_a2.rs::vti_apv_017_approver_signed_decision_evidence_is_verified`.
 #[tokio::test]
 async fn approver_signed_evidence_is_refused_not_ignored() {
     let mut fix = fixture().await;
@@ -870,10 +871,7 @@ async fn approver_signed_evidence_is_refused_not_ignored() {
         Some("task-consent/decision:evidenceInvalid"),
         "{reply}"
     );
-    assert_eq!(
-        reply["payload"]["details"]["reason"],
-        "approverSignedUnsupported"
-    );
+    assert_eq!(reply["payload"]["details"]["reason"], "statementInvalid");
     assert_eq!(action(&fix, &a, &id).await["status"], "open");
 }
 
@@ -1454,7 +1452,8 @@ async fn vti_apv_009_a_revoke_that_would_strand_the_threshold_is_refused() {
 }
 
 /// At the default threshold a two-admin community can still remove one of
-/// them: nobody else is left to approve, so the gesture is enough.
+/// them: nobody else is left to approve, so the gesture is enough — after the
+/// cooling-off (VTI-APV-019, `vtc-action-list.md` §8.2).
 #[tokio::test]
 async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
     let mut fix = fixture().await;
@@ -1466,6 +1465,14 @@ async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
         &signed(&a, REVOKE, json!({ "subject": b.did })).await,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id = parked_action(&body).expect("cooling off");
+    assert!(entry(&fix, &b.did).await.is_some());
+    let mut rec = record(&fix, &id).await;
+    rec.cooling_off_until = Some(1);
+    put_record(&fix, &rec).await;
+    vtc_service::admin_actions::sweep_once(&fix.vtc.state)
+        .await
+        .unwrap();
     assert!(entry(&fix, &b.did).await.is_none());
 }

@@ -3760,6 +3760,21 @@ a.button.primary:hover {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* An operator's offline write (VTI-VTC-023): Critical, like the banner. */
+.action-card.action-critical {
+  border: 2px solid var(--danger);
+  background: var(--danger-tint);
+}
+.action-severity {
+  margin: 0 0 var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.action-severity strong {
+  color: var(--danger);
+}
 .action-title {
   margin: 0;
   font-size: var(--text-base);

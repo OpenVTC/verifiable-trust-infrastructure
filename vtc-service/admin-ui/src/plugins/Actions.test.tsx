@@ -9,6 +9,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { postSignedTrustTask, type WhoamiResponse } from "@/lib/api";
 import { matchCode, payloadDigestOf, wireDigest } from "@/lib/action-summary";
 import {
+  ACTIONS_ACKNOWLEDGE_TASK,
   ACTIONS_CANCEL_TASK,
   ACTIONS_LIST_TASK,
   ACTIONS_SHOW_TASK,
@@ -353,6 +354,258 @@ describe("the Actions page", () => {
     expect(within(card).getByText("Approved by 2 administrators.")).toBeTruthy();
     expect(within(card).getByText("https://vtc.example/install#t")).toBeTruthy();
     expect(within(card).getByText("ABCD-1234")).toBeTruthy();
+  });
+});
+
+// ── Operator offline writes (VTI-VTC-023) ───────────────────────────
+
+const OP_GRANT = (vectors as unknown as Vector[]).find(
+  (v) => v.kind === "operator.offlineWrite" && v.typeUri.endsWith("/acl/grant/0.1"),
+)!;
+
+async function operatorWrite(overrides: Partial<Action> = {}): Promise<Action> {
+  return {
+    actionId: "ack-1",
+    category: "acknowledge",
+    kind: OP_GRANT.kind,
+    typeUri: OP_GRANT.typeUri,
+    requester: VTC,
+    status: "open",
+    createdAt: "2026-10-02T08:31:00Z",
+    approvals: [{ subject: REQUESTER, at: "2026-10-02T09:00:00Z" }],
+    approversRemaining: 2,
+    callerRole: "acknowledger",
+    payload: OP_GRANT.payload,
+    payloadDigest: await payloadDigestOf(OP_GRANT.payload),
+    summary: OP_GRANT.summary,
+    ext: { "org.openvtc": { severity: "critical", acknowledgedByMe: false } },
+    ...overrides,
+  };
+}
+
+/** Every view answers with `actions`. */
+function anyView(actions: Action[], extra: ReturnType<typeof taskRoute>[] = []) {
+  return mockFetch([
+    ...NAME_BOOK_ROUTES,
+    { path: "/health", body: { status: "ok", version: "t", vtc_did: VTC } },
+    taskRoute(ACTIONS_LIST_TASK, { actions, counts: { waitingForMe: actions.length, requestedByMe: 0 } }),
+    ...extra,
+  ]);
+}
+
+describe("an operator's offline write", () => {
+  it("renders as a Critical card with who, when, the host and who has acknowledged", async () => {
+    anyView([await operatorWrite()]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action ack-1" });
+    expect(within(card).getByText("Critical")).toBeTruthy();
+    expect(card.className).toContain("action-critical");
+    expect(
+      await within(card).findByText(
+        "The operator gave did:key:z6MkhaXg…pbnnEGta2doK the admin role offline",
+      ),
+    ).toBeTruthy();
+    expect(within(card).getByText(/Written with vtc acl grant on vtc-host-1 at/)).toBeTruthy();
+    expect(within(card).getByText(/The operator, acting as the community/)).toBeTruthy();
+    expect(within(card).getByText("2 administrators")).toBeTruthy();
+    // No approval vocabulary: no threshold, no expiry, no Approve.
+    expect(within(card).queryByText(/expires in/)).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+
+  it("acknowledges with a console-key-signed acknowledge task", async () => {
+    const before = await operatorWrite();
+    const requests = anyView(
+      [before],
+      [
+        taskRoute(ACTIONS_ACKNOWLEDGE_TASK, {
+          action: { ...before, ext: { "org.openvtc": { severity: "critical", acknowledgedByMe: true } } },
+        }),
+      ],
+    );
+    render();
+    const card = await screen.findByRole("article", { name: "Action ack-1" });
+    fireEvent.click(await within(card).findByRole("button", { name: "Acknowledge" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, ACTIONS_ACKNOWLEDGE_TASK)).toEqual([{ actionId: "ack-1" }]),
+    );
+    expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(ACTIONS_ACKNOWLEDGE_TASK, {
+      actionId: "ack-1",
+    });
+    expect(await screen.findByText(/your acknowledgement is recorded/)).toBeTruthy();
+  });
+
+  it("treats alreadyAcknowledged as no failure", async () => {
+    anyView(
+      [await operatorWrite()],
+      [
+        taskRoute(
+          ACTIONS_ACKNOWLEDGE_TASK,
+          { code: "vtc/admin/actions/acknowledge:alreadyAcknowledged", message: "already" },
+          409,
+        ),
+      ],
+    );
+    render();
+    fireEvent.click(await screen.findByRole("button", { name: "Acknowledge" }));
+    expect(
+      await screen.findByText(/already acknowledged this; your earlier acknowledgement stands/),
+    ).toBeTruthy();
+  });
+
+  it("offers no button once you have acknowledged, or to an observer", async () => {
+    anyView([
+      await operatorWrite({
+        ext: { "org.openvtc": { severity: "critical", acknowledgedByMe: true } },
+      }),
+      await operatorWrite({ actionId: "ack-2", callerRole: "observer" }),
+    ]);
+    render();
+    const mineDone = await screen.findByRole("article", { name: "Action ack-1" });
+    expect(await within(mineDone).findByText("You have acknowledged this.")).toBeTruthy();
+    const observed = screen.getByRole("article", { name: "Action ack-2" });
+    await within(observed).findByText(/The operator gave/);
+    expect(within(observed).queryByRole("button", { name: "Acknowledge" })).toBeNull();
+    expect(within(mineDone).queryByRole("button", { name: "Acknowledge" })).toBeNull();
+  });
+
+  it("shows a closed acknowledgement's outcome", async () => {
+    anyView([
+      await operatorWrite({
+        status: "completed",
+        closedReason: "acknowledged",
+        closedAt: "2026-10-02T12:00:00Z",
+        approversRemaining: undefined,
+      }),
+    ]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action ack-1" });
+    expect(await within(card).findByText("Every administrator acknowledged it")).toBeTruthy();
+  });
+});
+
+// ── Cooling-offs (VTI-APV-019) ──────────────────────────────────────
+
+const REDUCE = {
+  kind: "acl.reduce.authority",
+  typeUri: "https://trusttasks.org/spec/acl/revoke/0.1",
+};
+
+async function coolingOff(overrides: Partial<Action> & { againstYou?: boolean } = {}) {
+  const { againstYou = false, ...rest } = overrides;
+  const v = (vectors as unknown as Vector[]).find(
+    (x) => x.kind === REDUCE.kind && x.typeUri === REDUCE.typeUri,
+  )!;
+  const subject = (v.payload as { subject: string }).subject;
+  const action: Action = {
+    actionId: "cool-1",
+    category: "approval",
+    kind: v.kind,
+    typeUri: v.typeUri,
+    requester: REQUESTER,
+    status: "open",
+    createdAt: "2026-10-02T09:00:00Z",
+    approvals: [],
+    approversRemaining: 0,
+    callerRole: "requester",
+    payload: v.payload,
+    payloadDigest: await payloadDigestOf(v.payload),
+    summary: v.summary,
+    requesterOpenActions: 1,
+    ext: {
+      "org.openvtc": {
+        coolingOff: { landsAt: LANDS_AT, subject, agreement: "unopposed", againstYou },
+      },
+    },
+    ...rest,
+  };
+  return action;
+}
+
+const LANDS_AT = "2026-10-05T09:00:00Z";
+
+describe("a cooling-off", () => {
+  it("shows its requester when it lands, and offers Cancel — no threshold, no expiry", async () => {
+    anyView([await coolingOff()]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action cool-1" });
+    const lands = within(card).getByText(/Lands by itself at/);
+    expect(lands.textContent).toContain(new Date(LANDS_AT).toLocaleString());
+    expect(lands.textContent).toMatch(/unless .* cancels it\./);
+    expect(within(card).getByText(/None needed/)).toBeTruthy();
+    expect(within(card).queryByText(/expires in/)).toBeNull();
+    expect(within(card).queryByText(/ of \d/)).toBeNull();
+    expect(within(card).getByRole("button", { name: "Cancel request" })).toBeTruthy();
+    expect(within(card).queryByText(/This is against you/)).toBeNull();
+  });
+
+  it("tells its subject it is against them and cannot be blocked, with no buttons", async () => {
+    anyView([await coolingOff({ callerRole: "observer", againstYou: true })]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action cool-1" });
+    expect(
+      within(card).getByText(/This is against you: it reduces your own authority, and you cannot approve or block/),
+    ).toBeTruthy();
+    expect(within(card).queryByRole("button")).toBeNull();
+  });
+});
+
+// ── A new administrator's approver invite ───────────────────────────
+
+describe("the approver invite of a completed grant", () => {
+  it("is shown to the requester once, with copy buttons and the separate-channel note", async () => {
+    const done: Action = {
+      ...mine,
+      status: "completed",
+      closedReason: "thresholdMet",
+      closedAt: "2026-10-02T11:00:00Z",
+      ext: {
+        "org.openvtc": {
+          approverInvite: {
+            inviteId: "inv_1",
+            url: "https://vtc.example/admin/enrol-approver#token=sua_abc",
+            claimCode: "7KQ4-MX2P-9TDA",
+            expiresAt: "2026-10-02T11:15:00Z",
+          },
+        },
+      },
+    };
+    routes([], [taskRoute(ACTIONS_SHOW_TASK, { action: done })]);
+    render(undefined, "/actions?action=act-2");
+    const invite = await screen.findByRole("region", {
+      name: "Approver invite for the new administrator",
+    });
+    expect(within(invite).getByText("https://vtc.example/admin/enrol-approver#token=sua_abc")).toBeTruthy();
+    expect(within(invite).getByText("7KQ4-MX2P-9TDA")).toBeTruthy();
+    expect(within(invite).getByText("Shown once.")).toBeTruthy();
+    expect(within(invite).getByText("separate channels")).toBeTruthy();
+    expect(within(invite).getByRole("button", { name: "Copy invite link" })).toBeTruthy();
+    expect(within(invite).getByRole("button", { name: "Copy claim code" })).toBeTruthy();
+  });
+
+  it("is not shown to anyone but the requester", async () => {
+    const done: Action = {
+      ...waiting,
+      challenge: undefined,
+      callerRole: "observer",
+      status: "completed",
+      closedReason: "thresholdMet",
+      closedAt: "2026-10-02T11:00:00Z",
+      ext: {
+        "org.openvtc": {
+          approverInvite: {
+            inviteId: "inv_1",
+            url: "https://vtc.example/x",
+            claimCode: "CODE",
+            expiresAt: "2026-10-02T11:15:00Z",
+          },
+        },
+      },
+    };
+    routes([], [taskRoute(ACTIONS_SHOW_TASK, { action: done })]);
+    render(undefined, "/actions?action=act-1");
+    await screen.findByRole("article", { name: "Action act-1" });
+    expect(screen.queryByText("CODE")).toBeNull();
   });
 });
 

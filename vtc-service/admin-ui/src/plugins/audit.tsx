@@ -77,6 +77,9 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   WebsiteFileDeleted: "Public website file deleted",
   WebsiteBundleDeployed: "Public website bundle deployed",
   WebsiteGenerationRolledBack: "Public website rolled back",
+  AuthorityReducedUnopposed: "Unrestricted admin's authority reduced unopposed (VTI-APV-019)",
+  AdminActionBurst: "Admin raised a burst of actions for approval",
+  AdminActionEffect: "An approved action's operation took effect",
 };
 
 // Events that fire on a schedule or at daemon-internal lifecycle

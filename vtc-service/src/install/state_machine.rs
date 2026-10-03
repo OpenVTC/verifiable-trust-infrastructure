@@ -379,6 +379,22 @@ impl InstallTokenStore {
         Ok(value)
     }
 
+    /// Read the pending-emergency-bootstrap marker **without** deleting it.
+    /// The daemon raises the acknowledge item it calls for (VTI-VTC-023) and
+    /// only then clears the marker ([`Self::clear_pending_emergency`]), so a
+    /// crash between the two raises it again rather than losing it (R2.1).
+    pub async fn peek_pending_emergency(
+        &self,
+    ) -> Result<Option<PendingEmergencyBootstrap>, AppError> {
+        self.ks.get(EMERGENCY_PENDING_KEY.to_vec()).await
+    }
+
+    /// Delete the pending-emergency-bootstrap marker once it has been acted on.
+    pub async fn clear_pending_emergency(&self) -> Result<(), AppError> {
+        let _guard = INSTALL_TOKEN_LOCK.lock().await;
+        self.ks.remove(EMERGENCY_PENDING_KEY.to_vec()).await
+    }
+
     /// Record the co-admin `vtc setup` was given. One per install: a later
     /// call replaces it, which only a re-run of setup can make.
     pub async fn record_co_admin(&self, did: &str) -> Result<(), AppError> {
@@ -410,8 +426,35 @@ impl InstallTokenStore {
         self.ks.insert(key, pending).await
     }
 
+    /// Every queued break-glass write with its store key, oldest first,
+    /// **without** deleting any. The daemon raises each as an acknowledge item
+    /// (VTI-VTC-023) and then clears it ([`Self::clear_break_glass`]), so a
+    /// crash between the two raises it again — idempotently, by the key —
+    /// rather than losing it (R2.1).
+    pub async fn pending_break_glass(
+        &self,
+    ) -> Result<Vec<(Vec<u8>, PendingBreakGlassAcl)>, AppError> {
+        let mut out = Vec::new();
+        for (key, value) in self.ks.prefix_iter_raw(BREAK_GLASS_PREFIX.to_vec()).await? {
+            match serde_json::from_slice::<PendingBreakGlassAcl>(&value) {
+                Ok(p) => out.push((key, p)),
+                Err(e) => {
+                    tracing::warn!(error = %e, "dropping an unreadable break-glass record");
+                    self.ks.remove(key).await?;
+                }
+            }
+        }
+        out.sort_by_key(|(_, p)| p.invoked_at);
+        Ok(out)
+    }
+
+    /// Delete one queued break-glass write once it has been acted on.
+    pub async fn clear_break_glass(&self, key: Vec<u8>) -> Result<(), AppError> {
+        self.ks.remove(key).await
+    }
+
     /// Read and delete every queued break-glass write, oldest first by the
-    /// time it was made. The daemon calls this once at startup.
+    /// time it was made.
     pub async fn take_break_glass(&self) -> Result<Vec<PendingBreakGlassAcl>, AppError> {
         let _guard = INSTALL_TOKEN_LOCK.lock().await;
         let mut out = Vec::new();
@@ -527,6 +570,11 @@ pub struct PendingBreakGlassAcl {
     pub contexts: Vec<String>,
     pub operator_hostname: String,
     pub invoked_at: DateTime<Utc>,
+    /// The administrators holding a role when the write was made — who must
+    /// acknowledge it (VTI-VTC-023). Empty in a marker written before this
+    /// was recorded; the daemon then asks every administrator.
+    #[serde(default)]
+    pub admins: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------

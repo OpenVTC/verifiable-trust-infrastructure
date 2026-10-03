@@ -11,7 +11,14 @@
 //
 // `?action=<id>` shows one action (`vtc/admin/actions/show`) — where a parked
 // act's success notice links, and where a completed invite's install URL and
-// claim code are shown to its requester.
+// claim code, or a new administrator's approver invite, are shown to its
+// requester.
+//
+// Two further shapes share the cards: an operator's offline write
+// (`category: acknowledge`, VTI-VTC-023), Critical, with an Acknowledge button
+// signed by the console key like cancel; and a cooling-off (VTI-APV-019) — no
+// threshold, no expiry — that lands by itself unless its requester cancels it,
+// and that its subject can see but not block.
 
 import { useEffect, useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -30,9 +37,15 @@ import {
 import { WAITING_COUNT_KEY } from "@/lib/action-badge";
 import {
   MAX_REASON_LEN,
+  acknowledgeAction,
   actionExt,
   canDecideHere,
   cancelAction,
+  coolingOffOf,
+  explainAcknowledgeError,
+  isAcknowledgeItem,
+  isAlreadyAcknowledged,
+  type ApproverInviteResult,
   cnmApproveCommand,
   cnmDenyCommand,
   decideAction,
@@ -88,7 +101,9 @@ export function Actions() {
       <h2>Actions</h2>
       <p className="lead">
         Changes to who holds authority here wait for other administrators to
-        approve them. Each one completes by itself once enough have.
+        approve them. Each one completes by itself once enough have. A change the
+        operator made offline is already in effect and waits only for each
+        administrator to acknowledge it.
       </p>
       <ActionList view={view} onView={(v) => setParams({ tab: v })} />
     </section>
@@ -250,9 +265,20 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
   const ext = actionExt(action);
   const code = matchCode(action.payloadDigest);
   const open = action.status === "open";
+  const ack = isAcknowledgeItem(action);
+  const cooling = coolingOffOf(action);
 
   return (
-    <article className="card action-card" aria-label={`Action ${action.actionId}`}>
+    <article
+      className={`card action-card${ack ? " action-critical" : ""}`}
+      aria-label={`Action ${action.actionId}`}
+    >
+      {ack && (
+        <p className="action-severity">
+          <span className="chip danger">Critical</span>{" "}
+          <strong>The operator changed access control offline</strong>
+        </p>
+      )}
       {summary.state === "checking" && <p className="lead">Checking this action…</p>}
       {summary.state === "refused" && (
         <section className="card error" role="alert">
@@ -267,35 +293,93 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
         <dd>
           <code className="action-code">Code: {code ?? "unavailable"}</code>
         </dd>
-        <dt>Requested by</dt>
-        <dd>
-          <NamedDid book={book} did={action.requester} />
-        </dd>
-        <dt>Created</dt>
-        <dd>{formatIso(action.createdAt)}</dd>
-        <dt>Approvals</dt>
-        <dd>
-          {action.approvals.length} of {action.threshold}
-          {action.approvals.length > 0 && (
-            <ul className="action-approvers">
-              {action.approvals.map((a) => (
-                <li key={a.subject}>
-                  <NamedDid book={book} did={a.subject} /> <small>{formatIso(a.at)}</small>
-                </li>
-              ))}
-            </ul>
-          )}
-        </dd>
-        {open && (
+        {ack ? (
           <>
-            <dt>Time left</dt>
-            <dd>{timeLeft(action.expiresAt)}</dd>
-            <dt>Requester's open actions</dt>
-            <dd>{action.requesterOpenActions}</dd>
+            {/* The operator acts as the community: the requester is the
+                VTC's own DID (VTI-VTC-023). */}
+            <dt>Written by</dt>
+            <dd>
+              The operator, acting as the community (<NamedDid book={book} did={action.requester} />)
+            </dd>
+            <dt>Recorded</dt>
+            <dd>{formatIso(action.createdAt)}</dd>
+            <dt>Acknowledged by</dt>
+            <dd>
+              {action.approvals.length === 0 ? "Nobody yet" : <ApprovalList action={action} book={book} />}
+            </dd>
+            {open && action.approversRemaining !== undefined && (
+              <>
+                <dt>Still to acknowledge</dt>
+                <dd>
+                  {action.approversRemaining} administrator
+                  {action.approversRemaining === 1 ? "" : "s"}
+                </dd>
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <dt>Requested by</dt>
+            <dd>
+              <NamedDid book={book} did={action.requester} />
+            </dd>
+            <dt>Created</dt>
+            <dd>{formatIso(action.createdAt)}</dd>
+            {cooling ? (
+              <>
+                <dt>Approvals</dt>
+                <dd>
+                  None needed — nobody but the requester and the administrator it reduces
+                  can consent to it.
+                </dd>
+              </>
+            ) : (
+              <>
+                <dt>Approvals</dt>
+                <dd>
+                  {action.threshold !== undefined
+                    ? `${action.approvals.length} of ${action.threshold}`
+                    : action.approvals.length}
+                  {action.approvals.length > 0 && <ApprovalList action={action} book={book} />}
+                </dd>
+              </>
+            )}
+            {open && cooling && (
+              <>
+                <dt>Cooling-off</dt>
+                <dd>
+                  Lands by itself at <strong>{formatIso(cooling.landsAt)}</strong> unless{" "}
+                  <NamedDid book={book} did={action.requester} /> cancels it.
+                </dd>
+              </>
+            )}
+            {open && !cooling && action.expiresAt && (
+              <>
+                <dt>Time left</dt>
+                <dd>{timeLeft(action.expiresAt)}</dd>
+              </>
+            )}
+            {open && action.requesterOpenActions !== undefined && (
+              <>
+                <dt>Requester's open actions</dt>
+                <dd>{action.requesterOpenActions}</dd>
+              </>
+            )}
           </>
         )}
         {!open && <ClosedFacts action={action} book={book} />}
       </dl>
+
+      {open && cooling?.againstYou && (
+        <p className="action-burst" role="note">
+          <span className="button-icon" aria-hidden="true">
+            <AlertTriangle />
+          </span>
+          This is against you: it reduces your own authority, and you cannot approve or block
+          it. Only <NamedDid book={book} did={action.requester} /> can stop it, by cancelling
+          it before {formatIso(cooling.landsAt)}.
+        </p>
+      )}
 
       {ext.burst && (
         <p className="action-burst" role="status">
@@ -311,7 +395,15 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
         <ActionResult result={ext.result} />
       )}
 
-      <ActionButtons action={action} summaryOk={summary.state === "ok"} />
+      {action.status === "completed" &&
+        action.callerRole === "requester" &&
+        ext.approverInvite && <ApproverInviteView invite={ext.approverInvite} />}
+
+      {ack ? (
+        <AcknowledgeButton action={action} summaryOk={summary.state === "ok"} />
+      ) : (
+        <ActionButtons action={action} summaryOk={summary.state === "ok"} />
+      )}
 
       {!detail && (
         <p className="action-link">
@@ -350,7 +442,114 @@ const CLOSED_REASON_TEXT: Record<ClosedReason, string> = {
   cancelledByRequester: "The requester cancelled it",
   invalidated: "Something it depended on changed",
   failedRecheck: "It no longer passed its checks when it ran",
+  acknowledged: "Every administrator acknowledged it",
 };
+
+function ApprovalList({ action, book }: { action: Action; book: NameBook }) {
+  return (
+    <ul className="action-approvers">
+      {action.approvals.map((a) => (
+        <li key={a.subject}>
+          <NamedDid book={book} did={a.subject} /> <small>{formatIso(a.at)}</small>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The step-up approver invite for the administrator a completed grant made,
+ * shown to its requester once: the VTC drops it after this `show`.
+ */
+function ApproverInviteView({ invite }: { invite: ApproverInviteResult }) {
+  return (
+    <section className="card success" aria-label="Approver invite for the new administrator">
+      <h3>Approver invite for the new administrator</h3>
+      <p>
+        <strong>Shown once.</strong> The new administrator enrols a step-up approver with this
+        invite. Send them the link and the claim code by <strong>separate channels</strong> —
+        the link by one (email, chat), the code by another (in person, a call, a different
+        messenger). Either alone is useless.
+      </p>
+      <dl className="action-fields">
+        <div>
+          <dt>Invite link</dt>
+          <dd>
+            <code>{invite.url}</code> <CopyButton value={invite.url} label="Copy invite link" />
+          </dd>
+        </div>
+        <div>
+          <dt>Claim code</dt>
+          <dd>
+            <code>{invite.claimCode}</code>{" "}
+            <CopyButton value={invite.claimCode} label="Copy claim code" />
+          </dd>
+        </div>
+        <div>
+          <dt>Expires</dt>
+          <dd>{formatIso(invite.expiresAt)}</dd>
+        </div>
+      </dl>
+    </section>
+  );
+}
+
+// ── Acknowledging an operator's offline write (VTI-VTC-023) ─────────
+
+function AcknowledgeButton({ action, summaryOk }: { action: Action; summaryOk: boolean }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const ext = actionExt(action);
+
+  const acknowledge = useMutation({
+    mutationFn: () => acknowledgeAction(action.actionId),
+    onSuccess: () => {
+      toast.push("success", "Acknowledged — your acknowledgement is recorded.");
+    },
+    onError: (err) => {
+      // Not a failure: an acknowledgement from another tab or device stands.
+      if (isAlreadyAcknowledged(err)) {
+        toast.push("info", explainAcknowledgeError(err));
+        return;
+      }
+      toast.push("error", explainAcknowledgeError(err));
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ACTIONS_KEY });
+      void qc.invalidateQueries({ queryKey: WAITING_COUNT_KEY });
+    },
+  });
+
+  if (action.status !== "open") return null;
+  if (ext.acknowledgedByMe || (acknowledge.isSuccess && !acknowledge.isPending)) {
+    return (
+      <p className="action-acknowledged" role="status">
+        You have acknowledged this.
+      </p>
+    );
+  }
+  if (action.callerRole !== "acknowledger") return null;
+  if (!summaryOk) return null;
+  return (
+    <div className="action-buttons">
+      <p>
+        This change is already in effect. Acknowledging records that you have seen it, and
+        changes nothing.
+      </p>
+      <div className="form-actions">
+        <button
+          type="button"
+          className="primary"
+          disabled={acknowledge.isPending}
+          aria-busy={acknowledge.isPending}
+          onClick={() => acknowledge.mutate()}
+        >
+          {acknowledge.isPending ? "Signing…" : "Acknowledge"}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 const STATUS_CHIP: Record<Action["status"], string> = {
   open: "accent",
@@ -443,6 +642,13 @@ function ActionButtons({ action, summaryOk }: { action: Action; summaryOk: boole
   const decide = useMutation({
     mutationFn: async (args: { decision: "approve" | "deny"; reason?: string }) => {
       if (!approverDid) throw new Error("No signed-in administrator to sign as.");
+      // Evidence is a passkey assertion only. The VTC also accepts
+      // `approverSigned` decision evidence — an `auth/step-up/approver/attest/0.1`
+      // statement with `purpose: "decision"`, subject = this signer, audience =
+      // the VTC, challenge = the decision's, boundTo = its payloadDigest — but
+      // the VTA browser plugin's `attestApprover` signs `purpose: "enrol"` only
+      // and has no decision method, so the console does not ask it for one.
+      // Add that path once the plugin can answer it.
       let evidence: WebauthnEvidence | undefined;
       if (args.decision === "approve" && amr?.includes("passkey")) {
         try {

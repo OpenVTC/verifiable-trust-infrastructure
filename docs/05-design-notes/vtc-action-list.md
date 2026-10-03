@@ -3,10 +3,13 @@
 Status: **accepted** (2026-10-02; §7a, §7b, §8a decided with the maintainer).
 **Phase A1 is implemented**: §4–§7 for every consent-gated VTC operation
 (VTI-APV-014, VTI-APV-019, VTI-APV-020, VTI-VTC-022), and `task-consent/decision/0.2`
-with `webauthn` evidence. What A1 leaves to A2 is listed in §10. It changes
-how consent is collected and finished at the VTC, adds wire tasks that need a
-specification first (§9), and depends on `vtc-approver-step-up.md` for the
-approver-signed evidence the console will add later (§6).
+with `webauthn` evidence. **Phase A2 is implemented** (§10): acknowledge items
+for operator writes (§8.3b, VTI-VTC-023), the authority-reduced notice and the
+two-admin cooling-off (§8.2, VTI-APV-019), `approverSigned` decision evidence
+(§6), crash-safe execution, and device pushes off by default. What is still
+deferred is listed at the end of §10. It changes how consent is collected and
+finished at the VTC, adds wire tasks that need a specification first (§9), and
+depends on `vtc-approver-step-up.md` for the approver-signed evidence (§6).
 
 Two deviations from the text below, as built:
 
@@ -211,9 +214,14 @@ member, never a substitute for the proof:
   attaches a WebAuthn assertion whose challenge is the UTF-8 bytes of the
   decision's challenge. The VTC verifies it against that approver's registered
   passkeys, with user verification required, as for a step-up.
-- `approverSigned` (A2): the approver device's statement from
-  `vtc-approver-step-up.md`. Refused in A1 (`evidenceInvalid`, reason
-  `approverSignedUnsupported`) until the approver store lands.
+- `approverSigned` (built in A2): the approver device's statement from
+  `vtc-approver-step-up.md` — an `auth/step-up/approver/attest/0.1` with
+  purpose `decision`, subject the decision's signer, audience the VTC,
+  challenge the decision's challenge, `boundTo` its `payloadDigest`, by a
+  step-up approver bound to the signer. (A1 refused it as
+  `approverSignedUnsupported`.) The console does not send it yet: the plugin's
+  `attestApprover` signs enrolment statements only (§10). `cnm` and other
+  clients can.
 
 Without a wallet, the console shows the `cnm consent approve --action
 <actionId>` command instead of the buttons.
@@ -504,7 +512,7 @@ ACL as it changes.
 
 ### 8.3b Operator writes are actions too
 
-Every `AclBreakGlassWritten` and `emergency-bootstrap` raises an
+Built in A2 (§10). Every `AclBreakGlassWritten` and `emergency-bootstrap` raises an
 **acknowledge** item in each remaining administrator's list, with a `Critical`
 banner until it is acknowledged (`vtc-admin-roles.md` §2). It has no approve or
 decline, only acknowledge, and acknowledging is audited.
@@ -571,10 +579,87 @@ evidence. The lifetimes and limits of §5 and §7a.1 are community config
 The console's Actions page, badge, banner and submit notice, and `cnm actions
 {list,show}` / `cnm consent {approve,deny} --action`, ship with it.
 
-**Deferred to A2.** Acknowledge items for operator writes (§8.3b: the
-acknowledge task exists and answers `notAcknowledgeable`), the authority-reduced
-notice, the two-admin 24 h cooling-off (§8.2), `approverSigned` evidence, and
-`requireRequesterAtCompletion` (§4.3).
+**Landed in A2.**
+
+1. **Operator writes are acknowledged** (§8.3b, VTI-VTC-023,
+   `vtc-admin-roles.md` §2). Every offline access-control write (`vtc acl
+   add` / `remove`, `vtc admin invite`, `vtc create-did-key --admin`, `vtc
+   admin enrol-approver`, `vtc admin emergency-bootstrap`) is, at the daemon's
+   next start, audited as before (`AclBreakGlassWritten` /
+   `EmergencyBootstrapInvoked`) **and** raised as an `acknowledge`-category
+   action of kind `operator.offlineWrite`, its summary naming the command, the
+   DIDs, the host and the time. No approve or decline, no expiry, no threshold.
+   Expected acknowledgers: the administrators (any admin role) who held one
+   when the write was made, less anyone who has since lost every admin role;
+   if none remain — and always for an emergency bootstrap — every
+   administrator now. Each acknowledges with the signed
+   `vtc/admin/actions/acknowledge/0.1` (audited); when all have, it closes
+   `completed` / `acknowledged`. A repeat answers `alreadyAcknowledged`, a
+   non-expected caller `notAcknowledgeable`. Markers are cleared only after the
+   item is raised, so a crash raises it again, once, under a stable id. The
+   console shows a non-dismissable `Critical` banner while the viewer has one
+   unacknowledged.
+2. **Authority-reduced notice** (VTI-APV-019). After any reduction of an
+   admin entry lands — `acl/revoke` (full or scope), downward
+   `acl/change-role`, narrowing `acl/update` / `acl/grant` — by consent, after
+   a cooling-off, or on a scoped-admin requester's step-up alone, the subject
+   gets a VTC-signed `vtc/members/authority-reduced-notice/0.1` (durable push,
+   TSP > DIDComm > REST): `code` (`revoked` | `demoted` | `narrowed`),
+   `previousRole`, `resultingRole` (absent for `revoked`), `agreement`
+   (`consented` | `unopposed`; `unopposed` whenever no third party agreed),
+   `reason` when given, `decidedAt`, `decidedBy`. Not sent for
+   `vtc/members/admin-remove`, whose removal notice covers it; never both. (An
+   ACL-only admin revoked unopposed used to get a removal notice.)
+3. **Two-admin cooling-off** (§8.2). With no approver but requester and
+   subject, the reduction of an unrestricted admin is parked, after the
+   requester's step-up, with no approvers and a cooling-off
+   (`acl.removal_cooling_off`, default 86400 s, bounds 0–604800, live; `0`
+   restores immediate landing). On the wire it is category `approval` with no
+   `threshold` and no `expiresAt`, and `ext["org.openvtc"].coolingOff =
+   {landsAt, subject, agreement, againstYou}`. The requester can cancel; the
+   subject sees it and a `Critical` banner but cannot block it. The sweeper
+   (every minute) lands it when the window ends: audited
+   `AuthorityReducedUnopposed` at `Critical`, notice `unopposed`, closed
+   `completed` / `thresholdMet` with a closed message saying it landed
+   unopposed. A third unrestricted admin appearing invalidates it. First to act
+   wins: a counter-request from the subject lands the earlier one immediately,
+   is refused saying so, and the subject's own open actions are invalidated.
+4. **Pushes off by default.** `task-consent/request/0.1` pushes to approvers'
+   devices run only when `acl.consent_request_push` (boolean, default `false`,
+   live) is set.
+5. **`approverSigned` decision evidence** (§6) is verified and accepted.
+6. **Crash-safe execution** (CLAUDE.md R2.1, Remote-First). An approved action is persisted
+   `executing`, with an execution id, before its operation runs; the operation
+   records its effect at its write (a marker plus an `AdminActionEffect` audit
+   row naming action and execution). An action found executing with no live
+   execution — at startup or by the sweeper — is reconciled from that
+   evidence: `completed` if the effect landed, `failed` if it never wrote. This
+   replaces the blind `failed` after 10 minutes.
+7. **Approver-step-up leftovers.** `vtc/install/claim/start/0.3` voids the
+   install token after five wrong claim codes, answering `invalidToken` each
+   time. Every administrator made by a completed action (`acl/grant`,
+   `acl/update`, `acl/change-role` to unrestricted admin) is issued a step-up
+   approver enrolment invite (`vtc-approver-step-up.md` §6c, §11.4), shown once
+   to the requester on the completed action as
+   `ext["org.openvtc"].approverInvite` (URL and claim code). An approve-response
+   0.6 signed by a console key is refused
+   `auth/step-up/approve-response:subjectMismatch` (was `permissionDenied`).
+   The console's install page offers claim 0.3 beside the 0.2 passkey claim.
+
+**Still deferred.**
+
+- `requireRequesterAtCompletion` (§4.3, §7.2's **Complete**): not built.
+- A "pending" notice to the subject of a cooling-off, outside the console. No
+  such notice is specified; it needs an upstream task first. Until then the
+  console banner and the action list are how the subject learns.
+- Approving from the console with an approver device. The VTC accepts
+  `approverSigned`, but the browser plugin has no method that signs a
+  `decision`-purpose statement; the console approves with `webauthn` evidence
+  only.
+- **Upstream schema note.** The published Action schema cannot express a
+  threshold of zero. A cooling-off therefore omits `threshold` and `expiresAt`
+  and carries `ext["org.openvtc"].coolingOff`; the schema should say how an
+  action with no approvers is represented.
 
 The plan as written:
 

@@ -78,6 +78,8 @@ pub enum ConfigKeyKind {
     /// A count constrained to `min..=max`, inclusive — [`Self::U64Range`] for a
     /// value that is not a duration, so the refusal does not call it seconds.
     CountRange { min: u64, max: u64 },
+    /// `true` or `false`.
+    Bool,
     /// Restricted set of strings — the value must be one of the
     /// listed variants. Useful for `log.level` ∈ {"trace", "debug",
     /// "info", "warn", "error"}.
@@ -131,6 +133,11 @@ pub const ACTION_MAX_OPEN_PER_REQUESTER: &str = "acl.action_max_open_per_request
 pub const ACTION_MAX_OPEN: &str = "acl.action_max_open";
 /// The runtime key for [`crate::config::AclConfig::action_decline_cooldown`].
 pub const ACTION_DECLINE_COOLDOWN: &str = "acl.action_decline_cooldown";
+/// The runtime key for [`crate::config::AclConfig::removal_cooling_off`] — the
+/// two-administrator cooling-off (VTI-APV-019, `vtc-action-list.md` §8.2).
+pub const REMOVAL_COOLING_OFF: &str = "acl.removal_cooling_off";
+/// The runtime key for [`crate::config::AclConfig::consent_request_push`].
+pub const CONSENT_REQUEST_PUSH: &str = "acl.consent_request_push";
 
 /// The action-list keys: `(key, env var, value in AppConfig)`. One table, so the
 /// four overlay arms below cannot disagree about which keys exist.
@@ -140,6 +147,7 @@ fn action_key_value(key: &str, cfg: &AppConfig) -> Option<u64> {
         ACTION_MAX_OPEN_PER_REQUESTER => cfg.acl.action_max_open_per_requester,
         ACTION_MAX_OPEN => cfg.acl.action_max_open,
         ACTION_DECLINE_COOLDOWN => cfg.acl.action_decline_cooldown,
+        REMOVAL_COOLING_OFF => cfg.acl.removal_cooling_off,
         _ => return None,
     })
 }
@@ -150,6 +158,7 @@ fn action_key_default(key: &str) -> Option<u64> {
         ACTION_MAX_OPEN_PER_REQUESTER => crate::config::default_action_max_open_per_requester(),
         ACTION_MAX_OPEN => crate::config::default_action_max_open(),
         ACTION_DECLINE_COOLDOWN => crate::config::default_action_decline_cooldown(),
+        REMOVAL_COOLING_OFF => crate::config::default_removal_cooling_off(),
         _ => return None,
     })
 }
@@ -160,6 +169,7 @@ fn action_key_env(key: &str) -> Option<&'static str> {
         ACTION_MAX_OPEN_PER_REQUESTER => "VTC_ACL_ACTION_MAX_OPEN_PER_REQUESTER",
         ACTION_MAX_OPEN => "VTC_ACL_ACTION_MAX_OPEN",
         ACTION_DECLINE_COOLDOWN => "VTC_ACL_ACTION_DECLINE_COOLDOWN",
+        REMOVAL_COOLING_OFF => "VTC_ACL_REMOVAL_COOLING_OFF",
         _ => return None,
     })
 }
@@ -171,6 +181,7 @@ pub(crate) fn set_action_key(cfg: &mut AppConfig, key: &str, n: u64) -> bool {
         ACTION_MAX_OPEN_PER_REQUESTER => cfg.acl.action_max_open_per_requester = n,
         ACTION_MAX_OPEN => cfg.acl.action_max_open = n,
         ACTION_DECLINE_COOLDOWN => cfg.acl.action_decline_cooldown = n,
+        REMOVAL_COOLING_OFF => cfg.acl.removal_cooling_off = n,
         _ => return false,
     }
     true
@@ -321,6 +332,27 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         requires_restart: false,
         sensitive: false,
     },
+    // The two-administrator cooling-off (VTI-APV-019, §8.2): how long an
+    // unopposed reduction of an unrestricted administrator waits before it
+    // lands. Zero lands it at once; a week is the most a removal of a
+    // compromised co-administrator may be held up.
+    ConfigKeyDef {
+        key: REMOVAL_COOLING_OFF,
+        kind: ConfigKeyKind::U64Range {
+            min: 0,
+            max: 7 * 24 * 3600,
+        },
+        requires_restart: false,
+        sensitive: false,
+    },
+    // Whether a raised action is also pushed to approvers' devices (§11.6).
+    // Off by default: the action list is the source of truth.
+    ConfigKeyDef {
+        key: CONSENT_REQUEST_PUSH,
+        kind: ConfigKeyKind::Bool,
+        requires_restart: false,
+        sensitive: false,
+    },
 ];
 
 /// Look up a key's metadata. `None` means the key is not
@@ -454,6 +486,7 @@ fn toml_layer_value(key: &str, cfg: &AppConfig) -> Option<Value> {
             (n != crate::config::default_unrestricted_admin_consent_threshold())
                 .then(|| Value::Number(serde_json::Number::from(n)))
         }
+        CONSENT_REQUEST_PUSH => cfg.acl.consent_request_push.then_some(Value::Bool(true)),
         "auth.admin_idle_timeout" => {
             if cfg.auth.admin_idle_timeout == DEFAULT_ADMIN_IDLE_TIMEOUT {
                 None
@@ -488,6 +521,7 @@ fn default_layer_value(key: &str) -> Value {
         "auth.admin_idle_timeout" => {
             Value::Number(serde_json::Number::from(DEFAULT_ADMIN_IDLE_TIMEOUT))
         }
+        CONSENT_REQUEST_PUSH => Value::Bool(false),
         other => match action_key_default(other) {
             Some(n) => Value::Number(n.into()),
             None => Value::Null, // unreachable for registry keys
@@ -514,6 +548,10 @@ fn env_layer_value(key: &str) -> Option<Value> {
                 .and_then(|s| s.parse::<u64>().ok())
                 .map(|n| Value::Number(serde_json::Number::from(n)))
         }
+        CONSENT_REQUEST_PUSH => std::env::var("VTC_ACL_CONSENT_REQUEST_PUSH")
+            .ok()
+            .and_then(|s| s.parse::<bool>().ok())
+            .map(Value::Bool),
         "auth.admin_idle_timeout" => std::env::var("VTC_AUTH_ADMIN_IDLE_TIMEOUT")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
@@ -523,6 +561,23 @@ fn env_layer_value(key: &str) -> Option<Value> {
             .and_then(|s| s.parse::<u64>().ok())
             .map(|n| Value::Number(serde_json::Number::from(n))),
     }
+}
+
+/// Whether consent requests are pushed to approvers' devices **now**: env, then
+/// the database layer, then the in-memory value — read live, so a
+/// `config/patch` binds the next action without a reload. A stored value that
+/// is not a boolean (a corrupt row) is ignored for the in-memory one.
+pub async fn live_consent_request_push(
+    cfg: &AppConfig,
+    db: &ConfigStore,
+) -> Result<bool, AppError> {
+    let layered = match env_layer_value(CONSENT_REQUEST_PUSH) {
+        Some(v) => Some(v),
+        None => db.get(CONSENT_REQUEST_PUSH).await?,
+    };
+    Ok(layered
+        .and_then(|v| v.as_bool())
+        .unwrap_or(cfg.acl.consent_request_push))
 }
 
 /// The unrestricted-admin consent threshold in force now: env, then the database
@@ -614,6 +669,13 @@ fn set_app_config_field(cfg: &mut AppConfig, key: &str, value: &Value) {
                 %value,
                 "config override `{UNRESTRICTED_ADMIN_CONSENT_THRESHOLD}` is not a count of at \
                  least 1 — ignored"
+            ),
+        },
+        CONSENT_REQUEST_PUSH => match value.as_bool() {
+            Some(b) => cfg.acl.consent_request_push = b,
+            None => tracing::warn!(
+                %value,
+                "config override `{CONSENT_REQUEST_PUSH}` is not a boolean — ignored"
             ),
         },
         "auth.admin_idle_timeout" => match value.as_u64() {
@@ -708,6 +770,13 @@ pub fn validate_value(def: &ConfigKeyDef, value: &Value) -> Result<(), AppError>
             ))),
             None => Err(AppError::Validation(format!(
                 "{} must be an unsigned integer",
+                def.key
+            ))),
+        },
+        ConfigKeyKind::Bool => match value.as_bool() {
+            Some(_) => Ok(()),
+            None => Err(AppError::Validation(format!(
+                "{} must be true or false",
                 def.key
             ))),
         },

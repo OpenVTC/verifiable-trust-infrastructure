@@ -45,6 +45,38 @@
 //! submitted (VTI-OPS-024…027). Execution dispatches this service's own stored
 //! copy past the spine, so the document is never accepted twice.
 //!
+//! ## Acknowledge items (VTI-VTC-023)
+//!
+//! An operator's offline write — `vtc acl add/remove`, `vtc admin invite`,
+//! `vtc admin enrol-approver`, `vtc create-did-key --admin`, `vtc admin
+//! emergency-bootstrap` — happened outside the operation surface and cannot be
+//! refused. It is raised at the next boot as an `acknowledge`-category action
+//! ([`raise_operator_item`]): no approve, no decline, no expiry; every
+//! administrator who held a role when the write was made (minus any who has
+//! since lost every admin role) acknowledges it, and acknowledging is audited.
+//! An emergency bootstrap wiped the administrators it would have told, so its
+//! item is for whoever administers the community now.
+//!
+//! ## The two-administrator cooling-off (VTI-APV-019, §8.2)
+//!
+//! A reduction of an unrestricted administrator that nobody but the requester
+//! and the subject could consent to is parked with no approvers and a
+//! cooling-off ([`ActionRecord::cooling_off_until`]). It lands by itself when
+//! the window ends ([`sweep_once`]) unless the requester cancels it; the subject
+//! sees it coming. If the subject meanwhile asks to reduce the requester, the
+//! earlier request lands first ([`refuse_if_reduced_first`]) and the subject's
+//! own actions are then invalidated: first to act wins.
+//!
+//! ## Crash-safe execution (CLAUDE.md R2.1)
+//!
+//! An action is persisted `executing`, with an execution id, before its
+//! operation runs. The operation records its effect at its write
+//! ([`record_effect`]: a marker beside the action and an `AdminActionEffect`
+//! audit row naming the action and execution). An action found `executing` by
+//! no live execution of this process — a crash, at boot or later — is
+//! reconciled from that evidence ([`reconcile`]): `completed` if the effect
+//! landed, `failed` if it did not, never a blind guess.
+//!
 //! ## Lock order
 //!
 //! [`ACTION_LOCK`] is **not** held across the execution: the handlers take the
@@ -71,6 +103,8 @@ pub mod codes {
     pub const ACKNOWLEDGE_NOT_FOUND: &str = a::acknowledge::v0_1::error_codes::NOT_FOUND.code;
     pub const ACKNOWLEDGE_NOT_ACKNOWLEDGEABLE: &str =
         a::acknowledge::v0_1::error_codes::NOT_ACKNOWLEDGEABLE.code;
+    pub const ACKNOWLEDGE_ALREADY_ACKNOWLEDGED: &str =
+        a::acknowledge::v0_1::error_codes::ALREADY_ACKNOWLEDGED.code;
 }
 
 use std::collections::{HashMap, VecDeque};
@@ -110,12 +144,42 @@ pub const BURST_WINDOW_SECS: u64 = 600;
 /// anti-scripting).
 pub const DECISIONS_PER_MINUTE: usize = 10;
 
-/// An action left `executing` this long was interrupted — the process died
-/// mid-execution — and is failed closed by the sweeper.
-const INTERRUPTED_AFTER_SECS: u64 = 600;
-
 const ACTION_PREFIX: &str = "action:";
 const WIRE_PREFIX: &str = "wire:";
+/// `effect:<action id>` → the execution id whose operation wrote its effect.
+const EFFECT_PREFIX: &str = "effect:";
+
+/// The `kind` of an operator's offline write, raised for acknowledgement.
+pub const KIND_OPERATOR_WRITE: &str = summary::KIND_OPERATOR_WRITE;
+
+/// Executions running in this process, by execution id. An action whose
+/// `executing` record names none of these was interrupted — the process that
+/// started it is gone — and is reconciled ([`reconcile`]). Registered before the
+/// record is saved `executing`, so the sweeper can never mistake a live
+/// execution for an interrupted one.
+static IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+fn in_flight_insert(id: &str) {
+    IN_FLIGHT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(id.to_string());
+}
+
+fn in_flight_remove(id: &str) {
+    IN_FLIGHT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(id);
+}
+
+fn in_flight(id: &str) -> bool {
+    IN_FLIGHT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .contains(id)
+}
 
 /// Serialises every change to an action's record in this process — raise,
 /// decide, cancel, invalidate, sweep. fjall is not multi-process safe, so a
@@ -167,6 +231,7 @@ pub enum ClosedReason {
     CancelledByRequester,
     Invalidated,
     FailedRecheck,
+    Acknowledged,
 }
 
 impl ClosedReason {
@@ -178,6 +243,30 @@ impl ClosedReason {
             Self::CancelledByRequester => "cancelledByRequester",
             Self::Invalidated => "invalidated",
             Self::FailedRecheck => "failedRecheck",
+            Self::Acknowledged => "acknowledged",
+        }
+    }
+}
+
+/// Which kind of decision an action waits for — the published `category`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum Category {
+    /// Approvers approve or decline, N-of-M; the operation executes on the
+    /// N-th approval — or, for a cooling-off, when the window ends.
+    #[default]
+    Approval,
+    /// Something that already happened outside the operation surface — an
+    /// operator's offline write — that every remaining administrator
+    /// acknowledges (VTI-VTC-023).
+    Acknowledge,
+}
+
+impl Category {
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Approval => "approval",
+            Self::Acknowledge => "acknowledge",
         }
     }
 }
@@ -264,6 +353,26 @@ pub struct ActionRecord {
     /// the requester once, by `show`, then dropped.
     #[serde(default)]
     pub result_secret: bool,
+    #[serde(default)]
+    pub category: Category,
+    /// For an unopposed reduction (VTI-APV-019, §8.2): when the cooling-off
+    /// ends and the operation lands by itself. `None` for everything else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooling_off_until: Option<u64>,
+    /// The execution persisted with `executing`, before the operation ran
+    /// (R2.1) — what [`record_effect`] names and [`reconcile`] looks for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    /// For an acknowledge item: the administrators holding a role when the
+    /// write was made. `None` (an emergency bootstrap, which wiped them) means
+    /// whoever administers the community now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledgers: Option<Vec<String>>,
+    /// The step-up approver invite minted for a new administrator when this
+    /// action made one (`vtc-approver-step-up.md` §6c, §11.4) — a bearer secret
+    /// (the claim code) shown to the requester once, then dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver_invite: Option<Value>,
 }
 
 impl ActionRecord {
@@ -334,6 +443,7 @@ async fn delete(state: &AppState, rec: &ActionRecord) -> Result<(), AppError> {
             .remove(wire_key(&slot.wire_digest))
             .await?;
     }
+    state.admin_actions_ks.remove(effect_key(&rec.id)).await?;
     state.admin_actions_ks.remove(action_key(&rec.id)).await
 }
 
@@ -355,7 +465,13 @@ pub(crate) struct Executing {
     pub requester: String,
     pub type_uri: String,
     pub digest: String,
+    /// The execution persisted with the action (R2.1).
+    pub execution_id: String,
+    /// An unopposed reduction landing after its cooling-off, rather than an
+    /// approval completing (VTI-APV-019, §8.2).
+    pub cooling_off: bool,
     gate_spent: Arc<AtomicBool>,
+    effect_recorded: Arc<AtomicBool>,
 }
 
 tokio::task_local! {
@@ -393,6 +509,55 @@ pub(crate) fn note_gate_spent(action_id: &str) {
             e.gate_spent.store(true, Ordering::SeqCst);
         }
     });
+}
+
+/// Record, at the write, that the executing action's operation has written its
+/// effect (R2.1). A no-op outside an execution, and once per execution.
+///
+/// Called by each operation an action can execute, immediately after the store
+/// write that *is* its effect: the marker beside the action and an
+/// `AdminActionEffect` audit row naming the action and this execution. A crash
+/// after the write and before the action closes is then reconciled as
+/// `completed`; a crash before it, as `failed` ([`reconcile`]). Best-effort by
+/// design: the write has already happened, and failing the operation because
+/// its evidence could not be written would leave the effect in place and the
+/// operation reported as refused.
+pub(crate) async fn record_effect(state: &AppState) {
+    let Ok(exec) = EXECUTING.try_with(Clone::clone) else {
+        return;
+    };
+    if exec.effect_recorded.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if let Err(e) = state
+        .admin_actions_ks
+        .insert_raw(
+            effect_key(&exec.action_id),
+            exec.execution_id.as_bytes().to_vec(),
+        )
+        .await
+    {
+        warn!(action = %exec.action_id, error = %e, "could not mark an action's effect");
+    }
+    if let Some(writer) = state.audit_writer.as_ref()
+        && let Err(e) = writer
+            .write(
+                &exec.requester,
+                None,
+                AuditEvent::AdminActionEffect(vti_common::audit::AdminActionEffectData {
+                    action_id: exec.action_id.clone(),
+                    execution_id: exec.execution_id.clone(),
+                    task: exec.type_uri.clone(),
+                }),
+            )
+            .await
+    {
+        warn!(action = %exec.action_id, error = %e, "could not audit an action's effect");
+    }
+}
+
+fn effect_key(action_id: &str) -> String {
+    format!("{EFFECT_PREFIX}{action_id}")
 }
 
 fn transport_name(t: JoinTransport) -> &'static str {
@@ -500,6 +665,10 @@ pub(crate) struct Parking<'a> {
     pub approvers: Vec<String>,
     pub threshold: u64,
     pub pin: StatePin,
+    /// `Some(window)` parks an unopposed reduction for its cooling-off
+    /// (VTI-APV-019, §8.2): no approvers, threshold 0, and it lands by itself
+    /// `window` seconds from now unless the requester cancels it.
+    pub cooling_off: Option<u64>,
 }
 
 /// Park the operation being dispatched as an action. The requester's gesture
@@ -519,6 +688,7 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
     let now = now_epoch();
     let lifetime = setting(state, crate::config_store::ACTION_LIFETIME).await?;
     let digest = task_consent::payload_digest(p.op.type_uri, p.op.payload)?;
+    let cooling_off_until = p.cooling_off.map(|w| now.saturating_add(w));
 
     let mut approvers = Vec::with_capacity(p.approvers.len());
     for did in &p.approvers {
@@ -563,7 +733,9 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
         summary_text: p.summary.to_string(),
         status: Status::Open,
         created_at: now,
-        expires_at: now.saturating_add(lifetime),
+        // A cooling-off never lapses — it lands. Its `expires_at` is only the
+        // moment it does, for ordering; the wire never shows it as an expiry.
+        expires_at: cooling_off_until.unwrap_or_else(|| now.saturating_add(lifetime)),
         executing_since: None,
         closed_at: None,
         closed_reason: None,
@@ -571,6 +743,11 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
         closed_by: None,
         result: None,
         result_secret: false,
+        category: Category::Approval,
+        cooling_off_until,
+        execution_id: None,
+        acknowledgers: None,
+        approver_invite: None,
     };
 
     let recent = {
@@ -647,12 +824,23 @@ pub(crate) async fn parked_error(state: &AppState, rec: &ActionRecord) -> AppErr
             "approvers": eligible,
             "approvals": rec.approvals.len(),
             "expiresAt": rfc3339(rec.expires_at),
+            "coolingOffUntil": rec.cooling_off_until.map(rfc3339),
             "message": parked_message(rec, eligible),
         }),
     }
 }
 
 fn parked_message(rec: &ActionRecord, eligible: u64) -> String {
+    if let Some(until) = rec.cooling_off_until {
+        return format!(
+            "Nobody but you and {} can consent to this, so it waits out a cooling-off and \
+             lands by itself in {} ({}) unless you cancel it. They can see it coming but \
+             cannot block it (VTI-APV-019).",
+            rec.subject,
+            human_duration(until.saturating_sub(now_epoch())),
+            rfc3339(until)
+        );
+    }
     let left = rec.expires_at.saturating_sub(now_epoch());
     format!(
         "Sent for approval — {} of {} unrestricted administrator(s) must approve within {}.",
@@ -667,12 +855,18 @@ fn parked_message(rec: &ActionRecord, eligible: u64) -> String {
 /// re-submits after, it *is* the continuation — expecting
 /// `vtc/admin/actions/show` with the action's id.
 pub(crate) fn next_step_payload(doc_id: &str, doc_type: &str, details: &Value) -> Value {
-    json!({
+    let cooling_off = details["coolingOffUntil"].is_string();
+    let reason = if cooling_off {
+        "the operation waits out a cooling-off in the action list and then lands by itself"
+    } else {
+        "the operation waits in the action list until enough administrators approve it"
+    };
+    let mut payload = json!({
         "continuation": "proceed",
         "expects": [{
             "typeUri": crate::trust_tasks::action_tasks::SHOW_TYPE,
             "hint": { "actionId": details["actionId"] },
-            "reason": "the operation waits in the action list until enough administrators approve it",
+            "reason": reason,
         }],
         "inResponseTo": { "id": doc_id, "typeUri": doc_type },
         "message": details["message"],
@@ -684,7 +878,11 @@ pub(crate) fn next_step_payload(doc_id: &str, doc_type: &str, details: &Value) -
             "approvals": details["approvals"],
             "expiresAt": details["expiresAt"],
         }},
-    })
+    });
+    if cooling_off {
+        payload["ext"]["org.openvtc"]["coolingOffUntil"] = details["coolingOffUntil"].clone();
+    }
+    payload
 }
 
 // ─── the re-check at execution (VTI-APV-017) ─────────────────────────────
@@ -771,34 +969,76 @@ pub(crate) async fn recheck(
     Ok(rec.id)
 }
 
+/// The reduction gate, reached again while an unopposed reduction lands after
+/// its cooling-off (VTI-APV-019, §8.2): the operation must be the one parked,
+/// the subject's entry unmoved, and still nobody but the requester and the
+/// subject able to consent — a third administrator who has appeared since
+/// decides it instead. `Ok(action id)` when it may land.
+pub(crate) async fn recheck_cooling_off(
+    state: &AppState,
+    exec: &Executing,
+    requester: &str,
+    subject: &str,
+    op: Operation<'_>,
+) -> Result<String, AppError> {
+    let digest = task_consent::payload_digest(op.type_uri, op.payload)?;
+    if exec.requester != requester || exec.type_uri != op.type_uri || exec.digest != digest {
+        return Err(AppError::Forbidden(
+            "a cooling-off lands only the operation that was parked".into(),
+        ));
+    }
+    let rec = load(state, &exec.action_id)
+        .await?
+        .ok_or_else(|| AppError::Internal("the executing action is gone".into()))?;
+    if rec.status != Status::Executing || rec.cooling_off_until.is_none() {
+        return Err(AppError::Conflict(
+            "this action is no longer the one executing".into(),
+        ));
+    }
+    if rec.subject != subject {
+        return Err(AppError::Conflict(
+            "the operation now concerns a different subject than was parked".into(),
+        ));
+    }
+    if admin_consent::pin_for(state, rec.act, subject).await? != rec.state_pin {
+        return Err(AppError::Conflict(format!(
+            "{subject} has changed since this was parked; nothing was written"
+        )));
+    }
+    let now = now_epoch();
+    if !admin_consent::approvers_for(state, rec.act, requester, subject, now)
+        .await?
+        .is_empty()
+    {
+        return Err(AppError::Conflict(
+            "another unrestricted administrator can now consent to this, so it no longer lands \
+             on a cooling-off; send it again for them to decide"
+                .into(),
+        ));
+    }
+    Ok(rec.id)
+}
+
 // ─── lapse and invalidation (§4.4) ───────────────────────────────────────
 
-/// Apply expiry and invalidation to one record. `true` if it changed.
+/// Apply expiry, invalidation and acknowledgement completion to one record.
+/// `true` if it changed. An `executing` record is [`reconcile`]'s, never this.
 async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bool, AppError> {
-    match rec.status {
-        Status::Open => {}
-        Status::Executing => {
-            if rec
-                .executing_since
-                .is_some_and(|t| t.saturating_add(INTERRUPTED_AFTER_SECS) <= now)
-            {
-                rec.close(
-                    Status::Failed,
-                    ClosedReason::FailedRecheck,
-                    Some(
-                        "execution was interrupted before it finished; check the audit log for \
-                         whether the operation took effect"
-                            .into(),
-                    ),
-                    now,
-                );
-                return Ok(true);
-            }
-            return Ok(false);
-        }
-        _ => return Ok(false),
+    if rec.status != Status::Open {
+        return Ok(false);
     }
-    if now >= rec.expires_at {
+    if rec.category == Category::Acknowledge {
+        // VTI-VTC-023: complete once every remaining administrator expected to
+        // acknowledge it has. Never expires; never invalidated.
+        let admins = live_admins(state, now).await?;
+        let expected = expected_acknowledgers(rec, &admins);
+        if !rec.approvals.is_empty() && expected.iter().all(|d| rec.approved_by(d)) {
+            rec.close(Status::Completed, ClosedReason::Acknowledged, None, now);
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+    if rec.cooling_off_until.is_none() && now >= rec.expires_at {
         rec.close(Status::Expired, ClosedReason::Expired, None, now);
         return Ok(true);
     }
@@ -827,6 +1067,25 @@ async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bo
         );
         return Ok(true);
     }
+    if rec.cooling_off_until.is_some() {
+        // VTI-APV-019: it lands unopposed only while nobody else could consent.
+        let others =
+            admin_consent::approvers_for(state, rec.act, &rec.requester, &rec.subject, now).await?;
+        if !others.is_empty() {
+            rec.close(
+                Status::Cancelled,
+                ClosedReason::Invalidated,
+                Some(
+                    "another unrestricted administrator can now consent to this, so it no \
+                     longer lands on a cooling-off; send it again for them to decide"
+                        .into(),
+                ),
+                now,
+            );
+            return Ok(true);
+        }
+        return Ok(false);
+    }
     let t = tally(state, rec).await?;
     if t.eligible < t.needed {
         rec.close(
@@ -841,6 +1100,36 @@ async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bo
         return Ok(true);
     }
     Ok(false)
+}
+
+/// Every live administrator, scoped or not — who an acknowledge item can be
+/// for (VTI-VTC-023).
+async fn live_admins(state: &AppState, now: u64) -> Result<Vec<String>, AppError> {
+    Ok(crate::acl::list_acl_entries(&state.acl_ks)
+        .await?
+        .into_iter()
+        .filter(|e| e.role == crate::acl::VtcRole::Admin && !e.is_expired(now))
+        .map(|e| e.did)
+        .collect())
+}
+
+/// Who must acknowledge `rec` now: the administrators who held a role when the
+/// write was made, minus any who has since lost every admin role — or, when
+/// none of them remains (or none was recorded: an emergency bootstrap wiped
+/// them), every administrator now.
+fn expected_acknowledgers(rec: &ActionRecord, admins: &[String]) -> Vec<String> {
+    let kept: Vec<String> = rec
+        .acknowledgers
+        .iter()
+        .flatten()
+        .filter(|d| admins.contains(d))
+        .cloned()
+        .collect();
+    if kept.is_empty() {
+        admins.to_vec()
+    } else {
+        kept
+    }
 }
 
 /// Settle every action, and prune closed ones past their 30 days of history.
@@ -859,15 +1148,128 @@ async fn refresh_locked(state: &AppState) -> Result<(), AppError> {
             delete(state, &rec).await?;
             continue;
         }
+        if rec.status == Status::Executing {
+            // Interrupted: no execution in this process owns it (R2.1).
+            if rec.execution_id.as_deref().is_none_or(|id| !in_flight(id)) {
+                reconcile(state, &mut rec, now).await?;
+                save(state, &rec).await?;
+                let stage = if rec.status == Status::Completed {
+                    "completed"
+                } else {
+                    "failed"
+                };
+                audit(state, &rec, &rec.requester.clone(), stage, Vec::new()).await;
+                warn!(
+                    action = %rec.id,
+                    status = rec.status.wire(),
+                    "an interrupted execution was reconciled from its recorded effect"
+                );
+            }
+            continue;
+        }
         if settle(state, &mut rec, now).await? {
             save(state, &rec).await?;
-            let stage = match rec.status {
-                Status::Expired => "expired",
-                Status::Failed => "failed",
+            let stage = match (rec.status, rec.closed_reason) {
+                (Status::Expired, _) => "expired",
+                (Status::Failed, _) => "failed",
+                (_, Some(ClosedReason::Acknowledged)) => "completed",
                 _ => "invalidated",
             };
             audit(state, &rec, &rec.requester.clone(), stage, Vec::new()).await;
             info!(action = %rec.id, status = rec.status.wire(), "action closed");
+        }
+    }
+    Ok(())
+}
+
+/// Settle an action left `executing` by an execution that is no longer
+/// running — the process died between persisting `executing` and closing it
+/// (CLAUDE.md R2.1). Decided from evidence, never by age:
+///
+/// - the operation recorded its effect for this execution ([`record_effect`]:
+///   the marker, or failing that its `AdminActionEffect` audit row) — it
+///   landed: `completed`;
+/// - no record, and the state the operation writes has moved from the pin it
+///   was approved against — the effect landed in the instant between its
+///   write and its record: `completed`;
+/// - neither — it never wrote: `failed`, and nothing took effect.
+pub(crate) async fn reconcile(
+    state: &AppState,
+    rec: &mut ActionRecord,
+    now: u64,
+) -> Result<(), AppError> {
+    let exec_id = rec.execution_id.clone().unwrap_or_default();
+    let marked = state
+        .admin_actions_ks
+        .get_raw(effect_key(&rec.id))
+        .await?
+        .is_some_and(|v| exec_id.is_empty() || v == exec_id.as_bytes());
+    let recorded = marked || effect_audited(state, &rec.id, &exec_id).await?;
+    let pin_moved = !recorded
+        && rec.category == Category::Approval
+        && admin_consent::pin_for(state, rec.act, &rec.subject).await? != rec.state_pin;
+    if recorded || pin_moved {
+        rec.close(
+            Status::Completed,
+            ClosedReason::ThresholdMet,
+            Some(
+                "the operation took effect; the record of its completion was interrupted and has \
+                 been reconciled from the effect it wrote"
+                    .into(),
+            ),
+            now,
+        );
+    } else {
+        rec.close(
+            Status::Failed,
+            ClosedReason::FailedRecheck,
+            Some(
+                "execution was interrupted before the operation wrote anything; nothing took \
+                 effect"
+                    .into(),
+            ),
+            now,
+        );
+    }
+    Ok(())
+}
+
+/// Whether an `AdminActionEffect` row names this action and execution.
+async fn effect_audited(
+    state: &AppState,
+    action_id: &str,
+    exec_id: &str,
+) -> Result<bool, AppError> {
+    for (_, value) in state.audit_ks.prefix_iter_raw(Vec::new()).await? {
+        let Ok(env) = serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&value) else {
+            continue;
+        };
+        if let AuditEvent::AdminActionEffect(d) = &env.event
+            && d.action_id == action_id
+            && (exec_id.is_empty() || d.execution_id == exec_id)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// One pass of housekeeping: settle every action (expiry, invalidation,
+/// acknowledgement, reconciliation of interrupted executions), then land every
+/// cooling-off whose window has ended (VTI-APV-019, §8.2). What the sweeper
+/// runs each minute — and what a test drives directly.
+pub async fn sweep_once(state: &AppState) -> Result<(), AppError> {
+    refresh_all(state).await?;
+    let now = now_epoch();
+    let due: Vec<String> = all(state)
+        .await?
+        .into_iter()
+        .filter(|r| r.status == Status::Open && r.cooling_off_until.is_some_and(|u| u <= now))
+        .map(|r| r.id)
+        .collect();
+    for id in due {
+        if let Err(e) = land_cooling_off(state, &id).await {
+            warn!(action = %id, error = %e, "a cooling-off could not land");
         }
     }
     Ok(())
@@ -882,7 +1284,7 @@ pub fn spawn_sweeper(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            if let Err(e) = refresh_all(&state).await {
+            if let Err(e) = sweep_once(&state).await {
                 warn!(error = %e, "action-list sweep failed");
             }
             tokio::select! {
@@ -941,9 +1343,6 @@ pub(crate) enum DecisionError {
     RequesterExcluded,
     ActionMismatch,
     EvidenceInvalid(&'static str),
-    /// `approverSigned` evidence: the approver store it is checked against is a
-    /// later change (A2). Refused, never ignored.
-    EvidenceUnsupported,
     /// More than [`DECISIONS_PER_MINUTE`] decisions by this approver.
     RateLimited,
     Internal(AppError),
@@ -984,7 +1383,7 @@ pub(crate) async fn decide(
     input: DecisionInput,
 ) -> Result<Decided, DecisionError> {
     let now = now_epoch();
-    let mut rec = {
+    let rec = {
         let _guard = ACTION_LOCK.lock().await;
         let Some(mut rec) = by_wire(state, &input.payload_digest).await? else {
             return Err(DecisionError::NoPending);
@@ -1026,7 +1425,17 @@ pub(crate) async fn decide(
         }
         let evidence = match input.evidence.as_ref() {
             None => None,
-            Some(ev) => Some(verify_evidence(state, approver, &slot.challenge, ev).await?),
+            Some(ev) => Some(
+                verify_evidence(
+                    state,
+                    approver,
+                    &slot.challenge,
+                    &slot.wire_digest,
+                    (rec.created_at, rec.expires_at),
+                    ev,
+                )
+                .await?,
+            ),
         };
 
         if !input.approve {
@@ -1082,9 +1491,11 @@ pub(crate) async fn decide(
         }
         // Out of `open` under the lock: a second N-th approval arriving now
         // finds `executing` and is answered `noPending`. The execution itself
-        // runs outside the lock (module docs, *Lock order*).
-        rec.status = Status::Executing;
-        rec.executing_since = Some(now);
+        // runs outside the lock (module docs, *Lock order*). Persisted with
+        // its execution id before the operation runs (R2.1), and registered as
+        // running first, so the sweeper never mistakes it for an interrupted
+        // one.
+        begin_execution(&mut rec, now);
         save(state, &rec).await?;
         rec
     };
@@ -1097,8 +1508,60 @@ pub(crate) async fn decide(
     )
     .await;
 
-    let (completed, result, message) = execute(state, &rec).await;
     let approvers: Vec<String> = rec.approvals.iter().map(|a| a.did.clone()).collect();
+    let id = rec.id.clone();
+    let (completed, message) = run_and_close(state, rec, Some(approver), approvers.clone()).await?;
+    info!(action = %id, completed, "action executed on its final approval");
+    Ok(Decided::Granted {
+        action_id: id,
+        payload_digest: input.payload_digest,
+        approvals: approvers.len() as u64,
+        completed,
+        message,
+    })
+}
+
+/// Move `rec` to `executing` under a fresh execution id, registered as running
+/// in this process. The caller holds [`ACTION_LOCK`] and saves the record.
+fn begin_execution(rec: &mut ActionRecord, now: u64) {
+    let execution_id = format!("exe-{}", uuid::Uuid::new_v4().simple());
+    in_flight_insert(&execution_id);
+    rec.status = Status::Executing;
+    rec.executing_since = Some(now);
+    rec.execution_id = Some(execution_id);
+}
+
+/// Run an action already persisted `executing` and close it: `completed`, or
+/// `failed` with the refusal and nothing written. `(completed, refusal)`.
+///
+/// On completion of an act that made a new unrestricted administrator, an
+/// approver enrolment invite is minted for them (`vtc-approver-step-up.md`
+/// §6c, §11.4) and shown once to the requester, who delivers its claim code.
+async fn run_and_close(
+    state: &AppState,
+    rec: ActionRecord,
+    closed_by: Option<&str>,
+    approvers: Vec<String>,
+) -> Result<(bool, Option<String>), AppError> {
+    let execution_id = rec.execution_id.clone().unwrap_or_default();
+    let (mut completed, result, mut message) = execute(state, &rec).await;
+    // Refused after its write — an error later in the operation, or a panic —
+    // is not "nothing took effect": the effect it recorded says otherwise, and
+    // the action says what is true (R2.1).
+    if !completed
+        && state
+            .admin_actions_ks
+            .get_raw(effect_key(&rec.id))
+            .await?
+            .is_some_and(|v| v == execution_id.as_bytes())
+    {
+        completed = true;
+        message = Some(format!(
+            "the operation took effect, then reported an error: {}",
+            message.unwrap_or_else(|| "no detail".into())
+        ));
+    }
+    let mut rec = rec;
     {
         let _guard = ACTION_LOCK.lock().await;
         if let Some(latest) = load(state, &rec.id).await? {
@@ -1106,7 +1569,19 @@ pub(crate) async fn decide(
         }
         let at = now_epoch();
         if completed {
-            rec.close(Status::Completed, ClosedReason::ThresholdMet, None, at);
+            rec.close(
+                Status::Completed,
+                ClosedReason::ThresholdMet,
+                message.clone(),
+                at,
+            );
+            if rec.cooling_off_until.is_some() {
+                rec.closed_message = Some(
+                    "the cooling-off ended with nobody but the requester and the subject able \
+                     to consent, so it landed unopposed (VTI-APV-019)"
+                        .into(),
+                );
+            }
             rec.result_secret = is_secret_response(&rec.type_uri);
             rec.result = result;
         } else {
@@ -1117,25 +1592,91 @@ pub(crate) async fn decide(
                 at,
             );
         }
-        rec.closed_by = Some(approver.to_string());
+        rec.closed_by = closed_by.map(str::to_string);
         save(state, &rec).await?;
     }
+    in_flight_remove(&execution_id);
     audit(
         state,
         &rec,
-        approver,
+        closed_by.unwrap_or(&rec.requester),
         if completed { "completed" } else { "failed" },
-        approvers.clone(),
+        approvers,
     )
     .await;
-    info!(action = %rec.id, completed, "action executed on its final approval");
-    Ok(Decided::Granted {
-        action_id: rec.id,
-        payload_digest: input.payload_digest,
-        approvals: approvers.len() as u64,
-        completed,
-        message,
-    })
+    if completed
+        && rec.act == Act::GrantUnrestricted
+        && rec.type_uri != crate::trust_tasks::admin_tasks::INVITES_CREATE_TYPE
+    {
+        invite_new_administrator(state, &rec).await;
+    }
+    Ok((completed, message))
+}
+
+/// Mint a step-up approver enrolment invite for the administrator `rec` just
+/// made, and keep it on the action for the requester to collect once
+/// (`vtc-approver-step-up.md` §6c, §11.4). The creation already passed the
+/// requester's step-up and another administrator's consent, so the invite
+/// costs nothing extra and closes the gap before the new administrator meets
+/// it. Best-effort: the administrator exists either way, and can be invited
+/// from Settings if this fails.
+async fn invite_new_administrator(state: &AppState, rec: &ActionRecord) {
+    match crate::step_up_approver::invite_new_administrator(state, &rec.requester, &rec.subject)
+        .await
+    {
+        Ok(Some(invite)) => {
+            let _guard = ACTION_LOCK.lock().await;
+            if let Ok(Some(mut latest)) = load(state, &rec.id).await {
+                latest.approver_invite = Some(invite);
+                if let Err(e) = save(state, &latest).await {
+                    warn!(action = %rec.id, error = %e, "could not keep the approver invite");
+                }
+            }
+        }
+        Ok(None) => {}
+        Err(e) => warn!(
+            action = %rec.id,
+            subject = %rec.subject,
+            error = %e,
+            "no approver invite was minted for the new administrator; issue one from Settings"
+        ),
+    }
+}
+
+/// Land a cooling-off whose window has ended (VTI-APV-019, §8.2): settle it
+/// (it may have been invalidated meanwhile), move it to `executing` under the
+/// lock, and run it. Nothing if it is no longer open or not yet due.
+pub(crate) async fn land_cooling_off(state: &AppState, id: &str) -> Result<(), AppError> {
+    let now = now_epoch();
+    let rec = {
+        let _guard = ACTION_LOCK.lock().await;
+        let Some(mut rec) = load(state, id).await? else {
+            return Ok(());
+        };
+        if settle(state, &mut rec, now).await? {
+            save(state, &rec).await?;
+            audit(
+                state,
+                &rec,
+                &rec.requester.clone(),
+                "invalidated",
+                Vec::new(),
+            )
+            .await;
+            return Ok(());
+        }
+        if rec.status != Status::Open || rec.cooling_off_until.is_none_or(|u| u > now) {
+            return Ok(());
+        }
+        begin_execution(&mut rec, now);
+        save(state, &rec).await?;
+        rec
+    };
+    let (completed, _) = run_and_close(state, rec, None, Vec::new()).await?;
+    info!(action = %id, completed, "a cooling-off ended and its reduction ran");
+    // The subject, if removed, loses their own open actions now (§4.4) rather
+    // than at the next read.
+    refresh_all(state).await
 }
 
 fn is_secret_response(type_uri: &str) -> bool {
@@ -1169,7 +1710,10 @@ async fn execute(state: &AppState, rec: &ActionRecord) -> (bool, Option<Value>, 
         requester: rec.requester.clone(),
         type_uri: rec.type_uri.clone(),
         digest: rec.digest.clone(),
+        execution_id: rec.execution_id.clone().unwrap_or_default(),
+        cooling_off: rec.cooling_off_until.is_some(),
         gate_spent: Arc::new(AtomicBool::new(false)),
+        effect_recorded: Arc::new(AtomicBool::new(false)),
     };
     let gate_spent = exec.gate_spent.clone();
     // On a task of its own: the decision handler that got here is itself one
@@ -1224,6 +1768,8 @@ async fn verify_evidence(
     state: &AppState,
     approver: &str,
     challenge: &str,
+    wire_digest: &str,
+    window: (u64, u64),
     evidence: &Value,
 ) -> Result<String, DecisionError> {
     match evidence["kind"].as_str() {
@@ -1238,9 +1784,61 @@ async fn verify_evidence(
             .map_err(DecisionError::EvidenceInvalid)?;
             Ok(format!("webauthn:{cred}"))
         }
-        Some("approverSigned") => Err(DecisionError::EvidenceUnsupported),
+        Some("approverSigned") => {
+            // The approver's own step-up approver vouching for this decision
+            // (decision/0.2 `approverSigned`; `vtc-approver-step-up.md` §6):
+            // an attest/0.1 statement with purpose `decision`, whose subject is
+            // the decision's signer, audience this VTC, challenge the
+            // decision's own and boundTo its payloadDigest — each checked
+            // against this service's record of the slot, never the document.
+            let statement = evidence
+                .get("statement")
+                .filter(|s| s.is_object())
+                .ok_or(DecisionError::EvidenceInvalid("statementMissing"))?;
+            let offered: Vec<String> = crate::acl::approver::live_approvers(state, approver)
+                .await?
+                .into_iter()
+                .map(|r| r.approver_did)
+                .collect();
+            let verified = crate::acl::approver::verify_statement(
+                state,
+                statement,
+                &crate::acl::approver::ExpectedStatement {
+                    purpose: trust_tasks_rs::specs::auth::step_up::approver::attest::v0_1::PayloadPurpose::Decision,
+                    subject: approver,
+                    challenge,
+                    bound_to: wire_digest,
+                    not_before: epoch_utc(window.0),
+                    not_after: epoch_utc(window.1),
+                    approver: crate::acl::approver::ExpectedApprover::BoundAmong(&offered),
+                },
+            )
+            .await
+            .map_err(|e| match e {
+                crate::acl::approver::StatementError::Invalid(_) => {
+                    DecisionError::EvidenceInvalid("statementInvalid")
+                }
+                crate::acl::approver::StatementError::NotBound => {
+                    DecisionError::EvidenceInvalid("approverNotBound")
+                }
+                crate::acl::approver::StatementError::Internal(e) => DecisionError::Internal(e),
+            })?;
+            if let Err(e) = crate::acl::approver::record_use(
+                &state.step_up_approvers_ks,
+                verified.approver_did(),
+            )
+            .await
+            {
+                debug!(error = %e, "could not stamp the approver's last use");
+            }
+            Ok(format!("approverSigned:{}", verified.approver_did()))
+        }
         _ => Err(DecisionError::EvidenceInvalid("unknownKind")),
     }
+}
+
+fn epoch_utc(epoch: u64) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::from_timestamp(epoch as i64, 0).unwrap_or_default()
 }
 
 // ─── cancelling ───────────────────────────────────────────────────────────
@@ -1302,10 +1900,17 @@ pub(crate) async fn cancel(
 
 // ─── reading ─────────────────────────────────────────────────────────────
 
-/// Whether `caller` may see `rec`: its requester, one of its approvers, or an
-/// unrestricted administrator (the audit-read capability) as an observer.
+/// Whether `caller` — an administrator — may see `rec`: its requester, one of
+/// its approvers, the subject of a cooling-off (who must see it coming,
+/// VTI-APV-019), any administrator for an operator's offline write (VTI-VTC-023
+/// — it concerns the whole community), or an unrestricted administrator (the
+/// audit-read capability) as an observer.
 pub(crate) fn visible_to(rec: &ActionRecord, caller: &str, caller_unrestricted: bool) -> bool {
-    rec.requester == caller || rec.slot(caller).is_some() || caller_unrestricted
+    rec.requester == caller
+        || rec.slot(caller).is_some()
+        || (rec.cooling_off_until.is_some() && rec.subject == caller)
+        || rec.category == Category::Acknowledge
+        || caller_unrestricted
 }
 
 /// The four views of `vtc/admin/actions/list`.
@@ -1323,6 +1928,11 @@ pub(crate) struct Page {
     pub waiting_for_me: u64,
     pub requested_by_me: u64,
     pub next_offset: Option<usize>,
+    /// What the console's banners need beyond the counts (`ext.org.openvtc`):
+    /// the operator writes still waiting for the caller's acknowledgement
+    /// (VTI-VTC-023), and the cooling-offs that will reduce the caller
+    /// (VTI-APV-019).
+    pub ext: Value,
 }
 
 /// The caller's view of the action list: one page of `view`, and the badge
@@ -1343,17 +1953,29 @@ pub(crate) async fn list(
 
     let mut waiting_for_me = 0;
     let mut requested_by_me = 0;
+    let mut unacknowledged = Vec::new();
+    let mut against_me = Vec::new();
     let mut selected: Vec<&ActionRecord> = Vec::new();
     for rec in &records {
         if !visible_to(rec, caller, caller_unrestricted) {
             continue;
         }
-        let waiting = rec.status == Status::Open
-            && rec.slot(caller).is_some()
-            && !rec.approved_by(caller)
-            && ctx.eligible(rec).iter().any(|d| d == caller);
+        let waiting = ctx.waiting_for(rec, caller);
         if waiting {
             waiting_for_me += 1;
+            if rec.category == Category::Acknowledge {
+                unacknowledged.push(json!(rec.id));
+            }
+        }
+        if rec.status.is_open()
+            && rec.subject == caller
+            && let Some(until) = rec.cooling_off_until
+        {
+            against_me.push(json!({
+                "actionId": rec.id,
+                "requester": rec.requester,
+                "landsAt": rfc3339(until),
+            }));
         }
         let mine = rec.status.is_open() && rec.requester == caller;
         if mine {
@@ -1384,14 +2006,24 @@ pub(crate) async fn list(
         waiting_for_me,
         requested_by_me,
         next_offset,
+        ext: json!({
+            "operatorWritesUnacknowledged": unacknowledged,
+            "coolingOffAgainstMe": against_me,
+        }),
     })
 }
 
-/// Open views by `expiresAt` soonest first, `history` by `closedAt` newest
-/// first, and in `all` open before closed in those orders.
+/// Open views by `expiresAt` soonest first (non-expiring last, then by
+/// `createdAt`), `history` by `closedAt` newest first, and in `all` open
+/// before closed in those orders.
 fn order_key(rec: &ActionRecord) -> (u8, i64, u64) {
     if rec.status.is_open() {
-        (0, rec.expires_at as i64, rec.created_at)
+        let expiry = if rec.category == Category::Acknowledge {
+            i64::MAX
+        } else {
+            rec.expires_at as i64
+        };
+        (0, expiry, rec.created_at)
     } else {
         (1, -(rec.closed_at.unwrap_or(0) as i64), rec.created_at)
     }
@@ -1426,11 +2058,17 @@ pub(crate) async fn show(
     {
         view["ext"]["org.openvtc"]["consentRequest"] = doc;
     }
-    // A secret result (an invite's claim code) is shown to the requester once.
-    if rec.requester == caller && rec.result_secret && rec.result.is_some() {
+    // A secret result (an invite's claim code, a new administrator's approver
+    // invite) is shown to the requester once.
+    if rec.requester == caller
+        && ((rec.result_secret && rec.result.is_some()) || rec.approver_invite.is_some())
+    {
         let _guard = ACTION_LOCK.lock().await;
         if let Some(mut latest) = load(state, action_id).await? {
-            latest.result = None;
+            if latest.result_secret {
+                latest.result = None;
+            }
+            latest.approver_invite = None;
             save(state, &latest).await?;
         }
     }
@@ -1455,6 +2093,8 @@ struct ViewCtx<'a> {
     now: u64,
     threshold: u64,
     unrestricted: Vec<String>,
+    /// Every live administrator, scoped or not — who acknowledges (VTI-VTC-023).
+    admins: Vec<String>,
 }
 
 impl<'a> ViewCtx<'a> {
@@ -1468,6 +2108,7 @@ impl<'a> ViewCtx<'a> {
             now,
             threshold: admin_consent::threshold(state).await?,
             unrestricted: admin_consent::unrestricted_admins(state, now).await?,
+            admins: live_admins(state, now).await?,
         })
     }
 
@@ -1484,7 +2125,31 @@ impl<'a> ViewCtx<'a> {
             .collect()
     }
 
+    /// Whether `rec` is waiting on `caller`: an approval they may still decide,
+    /// or an operator's write they have yet to acknowledge.
+    fn waiting_for(&self, rec: &ActionRecord, caller: &str) -> bool {
+        if rec.status != Status::Open {
+            return false;
+        }
+        match rec.category {
+            Category::Acknowledge => {
+                !rec.approved_by(caller)
+                    && expected_acknowledgers(rec, &self.admins)
+                        .iter()
+                        .any(|d| d == caller)
+            }
+            Category::Approval => {
+                rec.slot(caller).is_some()
+                    && !rec.approved_by(caller)
+                    && self.eligible(rec).iter().any(|d| d == caller)
+            }
+        }
+    }
+
     fn render(&mut self, rec: &ActionRecord, caller: &str, detailed: bool) -> Value {
+        if rec.category == Category::Acknowledge {
+            return self.render_acknowledge(rec, caller);
+        }
         let eligible = self.eligible(rec);
         let approvals: Vec<Value> = rec
             .approvals
@@ -1529,27 +2194,56 @@ impl<'a> ViewCtx<'a> {
         {
             ext.insert("result".into(), result.clone());
         }
+        if rec.requester == caller
+            && detailed
+            && let Some(invite) = &rec.approver_invite
+        {
+            ext.insert("approverInvite".into(), invite.clone());
+        }
+        if let Some(until) = rec.cooling_off_until {
+            // VTI-APV-019 / §8.2: nobody else can consent, so there is no
+            // threshold and no expiry — it lands by itself at `landsAt`
+            // unless the requester cancels it. The subject sees it coming.
+            ext.insert(
+                "coolingOff".into(),
+                json!({
+                    "landsAt": rfc3339(until),
+                    "subject": rec.subject,
+                    "agreement": "unopposed",
+                    "againstYou": rec.subject == caller,
+                }),
+            );
+        }
 
         let mut action = json!({
             "actionId": rec.id,
-            "category": "approval",
+            "category": rec.category.wire(),
             "kind": rec.kind,
             "typeUri": rec.type_uri,
             "requester": rec.requester,
             "status": rec.status.wire(),
             "createdAt": rfc3339(rec.created_at),
-            "expiresAt": rfc3339(rec.expires_at),
             "approvals": approvals,
             "summary": summary::render(&rec.kind, &rec.type_uri, &rec.payload),
             "payload": rec.payload,
             "payloadDigest": summary::payload_digest(&rec.payload).unwrap_or_default(),
             "callerRole": caller_role,
             "requesterOpenActions": requester_open,
-            "threshold": rec.threshold.max(1),
             "ext": { "org.openvtc": Value::Object(ext) },
         });
+        if rec.cooling_off_until.is_none() {
+            // A cooling-off has neither: no approval is needed, and it does
+            // not lapse — the published `threshold` cannot say zero, so it is
+            // absent rather than a number that is not true.
+            action["expiresAt"] = json!(rfc3339(rec.expires_at));
+            action["threshold"] = json!(rec.threshold.max(1));
+        }
         if rec.status.is_open() {
-            let needed = rec.threshold.max(self.threshold);
+            let needed = if rec.cooling_off_until.is_some() {
+                0
+            } else {
+                rec.threshold.max(self.threshold)
+            };
             let valid = approvals.len() as u64;
             action["approversRemaining"] = json!(needed.saturating_sub(valid));
             if rec.status == Status::Open
@@ -1567,15 +2261,360 @@ impl<'a> ViewCtx<'a> {
         }
         action
     }
+
+    /// An operator's offline write (VTI-VTC-023): no threshold, no expiry, no
+    /// challenge — only who has acknowledged it and how many still must.
+    fn render_acknowledge(&self, rec: &ActionRecord, caller: &str) -> Value {
+        let expected = expected_acknowledgers(rec, &self.admins);
+        let approvals: Vec<Value> = rec
+            .approvals
+            .iter()
+            .map(|a| json!({ "subject": a.did, "at": rfc3339(a.at) }))
+            .collect();
+        let caller_role = if expected.iter().any(|d| d == caller) {
+            "acknowledger"
+        } else {
+            "observer"
+        };
+        let mut ext = Map::new();
+        ext.insert("severity".into(), json!("critical"));
+        ext.insert("acknowledgedByMe".into(), json!(rec.approved_by(caller)));
+        if let Some(m) = &rec.closed_message {
+            ext.insert("closedMessage".into(), json!(m));
+        }
+        let mut action = json!({
+            "actionId": rec.id,
+            "category": rec.category.wire(),
+            "kind": rec.kind,
+            "typeUri": rec.type_uri,
+            "requester": rec.requester,
+            "status": rec.status.wire(),
+            "createdAt": rfc3339(rec.created_at),
+            "approvals": approvals,
+            "summary": summary::render(&rec.kind, &rec.type_uri, &rec.payload),
+            "payload": rec.payload,
+            "payloadDigest": summary::payload_digest(&rec.payload).unwrap_or_default(),
+            "callerRole": caller_role,
+            "ext": { "org.openvtc": Value::Object(ext) },
+        });
+        if rec.status.is_open() {
+            let remaining = expected.iter().filter(|d| !rec.approved_by(d)).count();
+            action["approversRemaining"] = json!(remaining);
+        } else {
+            action["closedAt"] = json!(rfc3339(rec.closed_at.unwrap_or(rec.created_at)));
+            if let Some(r) = rec.closed_reason {
+                action["closedReason"] = json!(r.wire());
+            }
+        }
+        action
+    }
+}
+
+// ─── acknowledging an operator's write (VTI-VTC-023) ─────────────────────
+
+/// Why an acknowledgement was refused — `vtc/admin/actions/acknowledge`'s
+/// declared codes.
+#[derive(Debug)]
+pub(crate) enum AcknowledgeError {
+    NotFound,
+    NotAcknowledgeable,
+    AlreadyAcknowledged,
+    Internal(AppError),
+}
+
+impl From<AppError> for AcknowledgeError {
+    fn from(e: AppError) -> Self {
+        Self::Internal(e)
+    }
+}
+
+/// Record `caller`'s acknowledgement of an operator's offline write. The item
+/// completes (`closedReason: acknowledged`) once every administrator expected
+/// to acknowledge it has. Audited.
+pub(crate) async fn acknowledge(
+    state: &AppState,
+    caller: &str,
+    caller_unrestricted: bool,
+    action_id: &str,
+) -> Result<ActionRecord, AcknowledgeError> {
+    let now = now_epoch();
+    let rec = {
+        let _guard = ACTION_LOCK.lock().await;
+        let Some(mut rec) = load(state, action_id).await? else {
+            return Err(AcknowledgeError::NotFound);
+        };
+        if !visible_to(&rec, caller, caller_unrestricted) {
+            return Err(AcknowledgeError::NotFound);
+        }
+        if rec.category != Category::Acknowledge {
+            return Err(AcknowledgeError::NotAcknowledgeable);
+        }
+        // The earlier acknowledgement stands; the state the caller wanted is
+        // already true.
+        if rec.approved_by(caller) {
+            return Err(AcknowledgeError::AlreadyAcknowledged);
+        }
+        if settle(state, &mut rec, now).await? {
+            save(state, &rec).await?;
+        }
+        if rec.status != Status::Open {
+            return Err(AcknowledgeError::NotAcknowledgeable);
+        }
+        let admins = live_admins(state, now).await?;
+        if !expected_acknowledgers(&rec, &admins)
+            .iter()
+            .any(|d| d == caller)
+        {
+            return Err(AcknowledgeError::NotAcknowledgeable);
+        }
+        rec.approvals.push(Approval {
+            did: caller.to_string(),
+            at: now,
+            evidence: None,
+        });
+        settle(state, &mut rec, now).await?;
+        save(state, &rec).await?;
+        rec
+    };
+    audit(
+        state,
+        &rec,
+        caller,
+        "acknowledged",
+        vec![caller.to_string()],
+    )
+    .await;
+    if rec.status == Status::Completed {
+        audit(state, &rec, caller, "completed", Vec::new()).await;
+    }
+    info!(action = %rec.id, acknowledger = caller, "operator write acknowledged");
+    Ok(rec)
+}
+
+/// An offline write the daemon found queued at boot, to be raised as an
+/// acknowledge item (VTI-VTC-023).
+#[derive(Debug, Clone)]
+pub struct OperatorWrite {
+    /// Stable for the queued marker, so raising it twice — a crash between
+    /// raising and clearing the marker — finds the item already there.
+    pub marker: String,
+    pub command: String,
+    /// `grant`, `remove`, `approverInvite` or `emergencyBootstrap`.
+    pub action: String,
+    /// The DID written, when the write names one.
+    pub did: Option<String>,
+    pub role: Option<String>,
+    pub scopes: Vec<String>,
+    pub operator_host: String,
+    pub invoked_at: chrono::DateTime<chrono::Utc>,
+    /// The administrators holding a role when the write was made. `None` for
+    /// an emergency bootstrap, which wiped them.
+    pub acknowledgers: Option<Vec<String>>,
+}
+
+/// The action id an operator's write is raised under — a function of its
+/// marker, so the same write is never raised twice.
+fn operator_item_id(marker: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "act-op-{}",
+        &hex::encode(Sha256::digest(marker.as_bytes()))[..32]
+    )
+}
+
+/// Whether the write queued under `marker` has already been raised.
+pub async fn operator_item_raised(state: &AppState, marker: &str) -> Result<bool, AppError> {
+    Ok(load(state, &operator_item_id(marker)).await?.is_some())
+}
+
+/// The Trust Task an operator's write did, as the acknowledge item's
+/// `typeUri`. An emergency bootstrap is no Trust Task at all; it is named by a
+/// URN of this implementation's.
+pub const OPERATOR_EMERGENCY_BOOTSTRAP_URI: &str = "urn:openvtc:vtc:operator:emergency-bootstrap";
+
+/// Raise `write` as an acknowledge item, unless it already was. `Ok(true)` when
+/// raised now. Never subject to the requester limits: an operator's write is
+/// surfaced whatever else is open (VTI-VTC-023).
+pub async fn raise_operator_item(
+    state: &AppState,
+    write: &OperatorWrite,
+) -> Result<bool, AppError> {
+    let id = operator_item_id(&write.marker);
+    let type_uri = match write.action.as_str() {
+        "grant" => summary::ACL_GRANT,
+        "remove" => summary::ACL_REVOKE,
+        "approverInvite" => summary::APPROVER_INVITE,
+        _ => OPERATOR_EMERGENCY_BOOTSTRAP_URI,
+    };
+    let mut payload = json!({
+        "command": write.command,
+        "operatorHost": write.operator_host,
+        "invokedAt": write.invoked_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    });
+    if let Some(did) = &write.did {
+        let mut entry = json!({ "subject": did });
+        if let Some(role) = write.role.as_ref().filter(|r| !r.is_empty()) {
+            entry["role"] = json!(role);
+            entry["scopes"] = json!(write.scopes);
+        }
+        payload["entry"] = entry;
+    }
+    let vtc_did = state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "did:key:vtc-break-glass".into());
+    let now = now_epoch();
+    let digest = task_consent::payload_digest(type_uri, &payload)?;
+    let subject = write.did.clone().unwrap_or_default();
+    let rec = ActionRecord {
+        id: id.clone(),
+        kind: KIND_OPERATOR_WRITE.to_string(),
+        act: Act::OperatorWrite,
+        type_uri: type_uri.to_string(),
+        payload,
+        digest,
+        submitted_doc: Value::Null,
+        submitted_signer: String::new(),
+        transport: "host".into(),
+        // The operator acts as the community: the host holds its keys.
+        requester: vtc_did,
+        subject,
+        requester_step_up: RequesterStepUp {
+            kind: "host".into(),
+            credential_id: String::new(),
+            bound_to: String::new(),
+            at: now,
+        },
+        approver_set: "administrators".into(),
+        approvers: Vec::new(),
+        threshold: 0,
+        approvals: Vec::new(),
+        state_pin: StatePin {
+            resource: String::new(),
+            version: String::new(),
+        },
+        summary_text: write.command.clone(),
+        status: Status::Open,
+        created_at: now,
+        expires_at: now,
+        executing_since: None,
+        closed_at: None,
+        closed_reason: None,
+        closed_message: None,
+        closed_by: None,
+        result: None,
+        result_secret: false,
+        category: Category::Acknowledge,
+        cooling_off_until: None,
+        execution_id: None,
+        acknowledgers: write.acknowledgers.clone(),
+        approver_invite: None,
+    };
+    {
+        let _guard = ACTION_LOCK.lock().await;
+        if load(state, &id).await?.is_some() {
+            return Ok(false);
+        }
+        save(state, &rec).await?;
+    }
+    audit(state, &rec, &rec.requester.clone(), "raised", Vec::new()).await;
+    warn!(
+        action = %id,
+        command = %write.command,
+        host = %write.operator_host,
+        "an operator's offline write is waiting for every administrator's acknowledgement \
+         (VTI-VTC-023)"
+    );
+    Ok(true)
+}
+
+// ─── the two-administrator race (§8.2) ────────────────────────────────────
+
+/// First to act wins (VTI-APV-019, `vtc-action-list.md` §8.2): when
+/// `requester` asks to reduce `target` while a cooling-off raised by `target`
+/// to reduce `requester` is still open, the earlier request lands first — now —
+/// and this one is refused. The requester's own open actions are then
+/// invalidated by losing their authority (§4.4).
+pub(crate) async fn refuse_if_reduced_first(
+    state: &AppState,
+    requester: &str,
+    target: &str,
+) -> Result<(), AppError> {
+    let earlier = {
+        let _guard = ACTION_LOCK.lock().await;
+        let now = now_epoch();
+        let mut found = None;
+        for mut rec in all(state).await? {
+            if rec.status == Status::Open
+                && rec.cooling_off_until.is_some()
+                && rec.subject == requester
+                && rec.requester == target
+            {
+                rec.cooling_off_until = Some(now);
+                save(state, &rec).await?;
+                found = Some(rec);
+                break;
+            }
+        }
+        found
+    };
+    let Some(rec) = earlier else {
+        return Ok(());
+    };
+    warn!(
+        action = %rec.id,
+        requester,
+        target,
+        "a reduction answered by a counter-request: the earlier one lands first (§8.2)"
+    );
+    audit(state, &rec, requester, "accelerated", Vec::new()).await;
+    // Off this task: the request being refused may hold the locks the earlier
+    // one's operation takes.
+    let owned = state.clone();
+    let id = rec.id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = land_cooling_off(&owned, &id).await {
+            warn!(action = %id, error = %e, "the earlier reduction could not land");
+        }
+    });
+    Err(AppError::Conflict(format!(
+        "{target} asked to reduce your authority first ({}), so that request lands now and \
+         yours was not raised: in a community of two unrestricted administrators the first to \
+         act wins (VTI-APV-019)",
+        rec.id
+    )))
 }
 
 // ─── pushing the request to approvers' devices ───────────────────────────
 
 /// One VTC-signed `task-consent/request/0.1` per approver, carrying that
-/// approver's own challenge, pushed best-effort. The action list is the source
+/// approver's own challenge, pushed best-effort — and only when the community
+/// turned it on (`acl.consent_request_push`, default off, §11.6). The action list is the source
 /// of truth; a lost push loses nothing (§7.1). A copy an approver holds is
 /// what `cnm consent approve <file>` answers.
 async fn push_requests(state: &AppState, rec: &ActionRecord) {
+    if rec.approvers.is_empty() {
+        return;
+    }
+    // Off by default (§11.6): only when the community asked for it.
+    let cfg = state.config.read().await.clone();
+    match crate::config_store::live_consent_request_push(
+        &cfg,
+        &ConfigStore::new(state.config_ks.clone()),
+    )
+    .await
+    {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            debug!(error = %e, "could not read whether to push; the action list has it");
+            return;
+        }
+    }
     match sign_requests(state, rec, None).await {
         Ok(docs) => {
             let ttl = Duration::from_secs(rec.expires_at.saturating_sub(now_epoch()).max(60));
@@ -1634,6 +2673,9 @@ pub(crate) async fn sign_requests(
             json!({ "purpose": purpose.as_str() }),
             "The rules that decide who holds authority in this community change.",
         ),
+        // An operator's write is acknowledged, never consented to: nothing to
+        // sign a request for.
+        Act::OperatorWrite => return Ok(Vec::new()),
     };
     let effect = Effect::new(kind, rec.summary_text.clone())
         .detail(detail.as_object().cloned().unwrap_or_default());

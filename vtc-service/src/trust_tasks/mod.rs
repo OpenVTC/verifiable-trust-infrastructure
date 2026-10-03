@@ -572,6 +572,23 @@ async fn dispatch_trust_task_validated(
                         .await
                     {
                         Ok(None) => {}
+                        // approve-response 0.6 names this case: the proof
+                        // must be the subject DID's own, and a console key
+                        // signs as its own `did:key` — `subjectMismatch`.
+                        // Same refusal, at the same point; only the code is
+                        // the task's own.
+                        Ok(Some(_)) if type_uri == STEP_UP_APPROVE_RESPONSE_V0_6_TYPE => {
+                            return reject_with_code(
+                                &doc,
+                                helpers::extended_code(
+                                    step_up_approve_response_v0_6::error_codes::SUBJECT_MISMATCH
+                                        .code,
+                                ),
+                                "a delegated signing key is never accepted as the subject's own \
+                                 proof; sign the approve-response with the subject DID's own key",
+                                None,
+                            );
+                        }
                         Ok(Some(_)) => {
                             return reject_with(
                                 &doc,
@@ -4687,11 +4704,11 @@ async fn handle_acl_grant(
         Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    let unopposed = match acl_tasks::settle_signed_gate(state, &actor, &doc, &plan).await {
+    let reduced = match acl_tasks::settle_signed_gate(state, &actor, &doc, &plan).await {
         Ok(u) => u,
         Err(refusal) => return refusal,
     };
-    acl_tasks::commit_settled(state, &actor, &doc, plan, unopposed).await
+    acl_tasks::commit_settled(state, &actor, &doc, plan, reduced).await
 }
 
 /// `acl/change-role/0.1` — move a subject from `fromRole` to `toRole`.

@@ -7,6 +7,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  KIND_OPERATOR_WRITE,
+  OPERATOR_EMERGENCY_BOOTSTRAP_URI,
   PINNED_TEMPLATE_DIGESTS,
   SummaryRefusal,
   VerifiedSummary,
@@ -161,8 +163,83 @@ describe("refusal", () => {
     expect((out as SummaryRefusal).reason).toBe("badFormat");
   });
 
-  it("pins exactly thirteen (kind, typeUri) pairs", () => {
-    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(13);
+  it("pins exactly seventeen (kind, typeUri) pairs", () => {
+    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(17);
+  });
+});
+
+// The operator's offline writes (VTI-VTC-023): the four templates exactly as
+// `vtc-service/src/admin_actions/summary.rs` declares them. Their digests are
+// recomputed here, so a pin that drifted from the template text fails.
+describe("operator offline-write templates", () => {
+  const SPEC = "https://trusttasks.org/spec";
+  const EFFECT =
+    "Written with {command} on {host} at {at}, while the service was stopped. It is already in effect: acknowledging records that you have seen it, and changes nothing.";
+  const f = (pointer: string, format: string) => ({ pointer, format });
+  const tail = {
+    command: f("/command", "text"),
+    host: f("/operatorHost", "text"),
+    at: f("/invokedAt", "datetime"),
+  };
+  const TEMPLATES: { typeUri: string; title: string; fields: Record<string, unknown> }[] = [
+    {
+      typeUri: `${SPEC}/acl/grant/0.1`,
+      title: "The operator gave {subject} the {role} role offline",
+      fields: {
+        subject: f("/entry/subject", "did"),
+        role: f("/entry/role", "text"),
+        scopes: f("/entry/scopes", "capabilityList"),
+        ...tail,
+      },
+    },
+    {
+      typeUri: `${SPEC}/acl/revoke/0.1`,
+      title: "The operator removed {subject}'s access offline",
+      fields: { subject: f("/entry/subject", "did"), ...tail },
+    },
+    {
+      typeUri: `${SPEC}/auth/step-up/approver/invite/0.1`,
+      title: "The operator issued a step-up approver invite for {subject} offline",
+      fields: { subject: f("/entry/subject", "did"), ...tail },
+    },
+    {
+      typeUri: OPERATOR_EMERGENCY_BOOTSTRAP_URI,
+      title: "The operator ran an emergency bootstrap and replaced every administrator",
+      fields: { ...tail },
+    },
+  ];
+
+  for (const t of TEMPLATES) {
+    it(`pins the template for ${t.typeUri}`, () => {
+      const canonical = jcsCanonicalize({
+        kind: KIND_OPERATOR_WRITE,
+        typeUri: t.typeUri,
+        title: t.title,
+        effect: EFFECT,
+        fields: t.fields,
+      });
+      expect(PINNED_TEMPLATE_DIGESTS[`${KIND_OPERATOR_WRITE}\n${t.typeUri}`]).toBe(
+        nodeMultihash(Buffer.from(canonical, "utf8")),
+      );
+    });
+  }
+
+  it("has a shared vector for every operator template", () => {
+    for (const t of TEMPLATES) {
+      expect(
+        VECTORS.some((v) => v.kind === KIND_OPERATOR_WRITE && v.typeUri === t.typeUri),
+      ).toBe(true);
+    }
+  });
+
+  it("renders the offline grant as the sentence an acknowledger reads", async () => {
+    const v = VECTORS.find(
+      (x) => x.kind === KIND_OPERATOR_WRITE && x.typeUri === `${SPEC}/acl/grant/0.1`,
+    )!;
+    const s = await verified({ ...v, payloadDigest: await payloadDigestOf(v.payload) });
+    expect(s.title).toBe("The operator gave did:key:z6MkhaXg…pbnnEGta2doK the admin role offline");
+    expect(s.effect).toContain("Written with vtc acl grant on vtc-host-1 at ");
+    expect(s.effect).toContain("acknowledging records that you have seen it, and changes nothing.");
   });
 });
 

@@ -21,7 +21,9 @@ use vti_common::auth::extractor::AuthClaims;
 
 use super::helpers::{app_error_to_reject, extended_code, reject_with_code, success_response};
 use super::{JoinAuthCtx, TrustTaskOutcome, admin_signer, parse_spec_payload};
-use crate::admin_actions::{self, CancelError, Decided, DecisionError, DecisionInput, View};
+use crate::admin_actions::{
+    self, AcknowledgeError, CancelError, Decided, DecisionError, DecisionInput, View,
+};
 use crate::server::AppState;
 
 pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
@@ -157,6 +159,10 @@ async fn handle_list(
             "requestedByMe": page.requested_by_me,
         },
     });
+    // What the console's banners need beyond the counts: operator writes still
+    // to acknowledge (VTI-VTC-023) and cooling-offs against the caller
+    // (VTI-APV-019).
+    response["ext"] = json!({ "org.openvtc": page.ext });
     if let Some(next) = page.next_offset {
         response["nextCursor"] = json!(admin_actions::encode_cursor(
             view_name,
@@ -244,10 +250,10 @@ async fn handle_cancel(
     }
 }
 
-/// `vtc/admin/actions/acknowledge/0.1`. Acknowledge items — an operator's
-/// offline or break-glass write surfaced to every administrator
-/// (`vtc-admin-roles.md` §2) — have no producer in this build, so every action
-/// the caller can see answers `notAcknowledgeable`.
+/// `vtc/admin/actions/acknowledge/0.1` — an administrator records that they
+/// have seen an operator's offline write (**VTI-VTC-023**,
+/// `vtc-admin-roles.md` §2). A console key may sign it: acknowledging confers
+/// nothing.
 async fn handle_acknowledge(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -263,14 +269,26 @@ async fn handle_acknowledge(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match admin_actions::show(state, &caller.did, unrestricted, payload.action_id.as_str()).await {
-        Ok(Some(_)) => refuse(
+    match admin_actions::acknowledge(state, &caller.did, unrestricted, payload.action_id.as_str())
+        .await
+    {
+        Ok(rec) => match admin_actions::view_one(state, &caller.did, &rec).await {
+            Ok(action) => success_response(&doc, json!({ "action": action })),
+            Err(e) => app_error_to_reject(&doc, &e),
+        },
+        Err(AcknowledgeError::NotFound) => refuse(&doc, codes::NOT_FOUND.code, "no such action"),
+        Err(AcknowledgeError::NotAcknowledgeable) => refuse(
             &doc,
             codes::NOT_ACKNOWLEDGEABLE.code,
-            "this action is decided by approval, not acknowledged",
+            "this action is not an operator's write waiting for your acknowledgement: it is \
+             decided by approval, no longer open, or not addressed to you",
         ),
-        Ok(None) => refuse(&doc, codes::NOT_FOUND.code, "no such action"),
-        Err(e) => app_error_to_reject(&doc, &e),
+        Err(AcknowledgeError::AlreadyAcknowledged) => refuse(
+            &doc,
+            codes::ALREADY_ACKNOWLEDGED.code,
+            "you have already acknowledged this; the earlier acknowledgement stands",
+        ),
+        Err(AcknowledgeError::Internal(e)) => app_error_to_reject(&doc, &e),
     }
 }
 
@@ -403,13 +421,6 @@ pub(super) async fn handle_decision(
             extended_code(codes::EVIDENCE_INVALID.code),
             "the decision's evidence did not verify",
             Some(json!({ "reason": hint })),
-        ),
-        Err(DecisionError::EvidenceUnsupported) => reject_with_code(
-            &doc,
-            extended_code(codes::EVIDENCE_INVALID.code),
-            "approverSigned evidence is not supported by this community yet; send the decision \
-             without evidence, or with webauthn evidence",
-            Some(json!({ "reason": "approverSignedUnsupported" })),
         ),
         Err(DecisionError::RateLimited) => reject_with_code(
             &doc,

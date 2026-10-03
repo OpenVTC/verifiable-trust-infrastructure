@@ -109,7 +109,8 @@ A single administrator has three ways forward:
 2. **Add the second administrator offline**, once. Stop the daemon, then run
    `vtc acl add --did <did> --role admin --label "<name>"` or
    `vtc admin invite --did <did>`, and start it again. Each offline write is
-   recorded as an `AclBreakGlassWritten` audit row at the next start (§3.5).
+   recorded as an `AclBreakGlassWritten` audit row at the next start, and
+   raised in Actions for the administrators to acknowledge (§3.5).
 3. **Name the second administrator at install** (`co_admin_did`, §4 step 1),
    which avoids the problem altogether.
 
@@ -155,8 +156,10 @@ must come from the actor's **own additional factor**, one of:
   factor, such as the approver identity the VTA browser plugin holds behind a
   WebAuthn-unlocked key. It signs a statement over the challenge and the
   operation digest; the answer around it is signed by the actor's **own DID**
-  (the wallet signs it as the persona), never by a console key. This is how a
-  wallet administrator, who has no passkey at this VTC, steps up (VTI-APV-015).
+  (the wallet signs it as the persona), never by a console key; an answer
+  signed by a console key is refused with
+  `auth/step-up/approve-response:subjectMismatch`. This is how a wallet
+  administrator, who has no passkey at this VTC, steps up (VTI-APV-015).
 
 The refusal says which the VTC will take (`accepts`). Once an administrator
 holds a dedicated step-up factor — an approver or a step-up passkey — their
@@ -187,6 +190,12 @@ revoked one can never be bound again. A subject holds at most five. Revoking
 the last one is allowed — it costs the ability to step up with it, not the
 subject's authority — and is recovered through another invite.
 
+Every administrator made by a completed action (§3.2: an `acl/grant`,
+`acl/update` or `acl/change-role` to unrestricted admin) is issued an approver
+enrolment invite automatically. The requester sees it once, on the completed
+action (the URL and a claim code), and delivers the claim code to the new
+administrator by a separate channel.
+
 ### 3.2 Second-party consent: the action list
 
 These operations need the consent of **other** unrestricted administrators:
@@ -200,7 +209,8 @@ These operations need the consent of **other** unrestricted administrators:
 
 The approvers are every other live unrestricted administrator. A is never an
 approver of their own request, and for a reduction the subject is not one
-either. The number needed is the consent threshold (§2.2).
+either. The number needed is the consent threshold (§2.2). A reduction with
+nobody left to approve it waits out a cooling-off instead (§3.4).
 
 1. Administrator A sends the operation. Every check runs, and A's step-up is
    asked for **first**, so a thief holding only A's signing key cannot make the
@@ -222,7 +232,11 @@ either. The number needed is the consent threshold (§2.2).
    - the subject's entry hasn't changed since the approvers saw it.
 
    It runs at most once. If a check fails, the action closes `failed` and
-   nothing is written.
+   nothing is written. The action is recorded as `executing` before the
+   operation runs, and the operation records its effect when it writes, so an
+   action interrupted by a crash is settled from that record when the VTC next
+   looks at it: `completed` if the write landed, `failed` if it never did
+   rather than marked failed on a timer.
 
 An action is approved against the exact payload it parks, and each approver
 answers their own challenge. It ends in one of these ways:
@@ -247,13 +261,23 @@ Lifetimes and limits are community configuration, changeable at runtime with
 | `acl.action_max_open_per_requester` | 5 | 1 – 20 |
 | `acl.action_max_open` (whole community) | 50 | 10 – 500 |
 | `acl.action_decline_cooldown` (seconds; same requester, kind and subject after a decline) | 3600 | 0 – 86400 |
+| `acl.removal_cooling_off` (seconds; §3.4) | 86400 (24 h) | 0 – 604800 (7 days) |
+| `acl.consent_request_push` (push requests to approvers' devices) | `false` | boolean |
 
 More than three actions from one requester in 10 minutes writes a `Critical`
 `AdminActionBurst` audit row and flags that requester's cards for the
 approvers. An approver can make at most 10 decisions a minute.
 
-The VTC still pushes a VTC-signed `task-consent/request` to each approver's
-device, best-effort. The action list is the source of truth.
+The action list is the source of truth. The VTC can also push a VTC-signed
+`task-consent/request` to each approver's device, best-effort, but only when
+`acl.consent_request_push` is `true`; it is off by default.
+
+A decision may carry extra evidence beside its signature
+(`task-consent/decision/0.2`): `webauthn`, a passkey assertion, which the
+console adds, or `approverSigned`, a statement from a step-up approver bound to
+the signer (§3.1a), made for that decision's challenge and payload digest. The
+console approves with a passkey only; `cnm` and other clients can send
+`approverSigned`.
 
 ### 3.3 Separation of duties
 
@@ -273,40 +297,96 @@ the last spare approver can be removed. Narrowing an unrestricted administrator
 to scoped counts as a removal for this check.
 
 Every removal, demotion or narrowing of an administrator takes the requester's
-step-up. When the subject is another unrestricted administrator it is also an
-action for the other unrestricted administrators to approve (§3.2,
-VTI-APV-019). With only two unrestricted administrators nobody is left to
-approve, so the requester's step-up is enough. The write is then audited at
-`Critical` as `AuthorityReducedUnopposed`. The VTC cannot tell a removal of a
-compromised co-admin from a compromised admin removing the other, and must not
-make the first impossible. Run with three or more to close that window.
+step-up. For a scoped administrator that is all it takes. When the subject is
+another unrestricted administrator it is also an action for the other
+unrestricted administrators to approve (§3.2, VTI-APV-019).
 
-When an administrator loses privilege, their sessions are revoked and they
-receive a signed removal notice.
+**Two unrestricted administrators: the cooling-off.** With only the requester
+and the subject, nobody is left to approve. The VTC cannot tell a removal of a
+compromised co-admin from a compromised admin removing the other, and must not
+make the first impossible. So, after the requester's step-up, the operation is
+parked as an action with no approvers and a **cooling-off**
+(`acl.removal_cooling_off`, default 24 hours, 0 to 7 days, read live; `0`
+lands it at once, as before):
+
+- The requester sees it under **Requested by me** and can **Cancel** it until
+  it lands.
+- The subject sees it in their list and a `Critical` console banner — "*X has
+  asked to reduce your authority; it takes effect at T unless they cancel*" —
+  but cannot block it. If the subject is the attacker, a veto would protect
+  them.
+- When the window ends the VTC lands it by itself (the sweeper runs every
+  minute), audits it at `Critical` as `AuthorityReducedUnopposed`, and closes
+  the action `completed`, saying it landed unopposed.
+- If a third unrestricted administrator appears meanwhile, the action is
+  cancelled: there is now someone to approve, so send it again.
+- **First to act wins.** If the subject asks to reduce the requester while the
+  first request is open, the first request lands at once, the subject's request
+  is refused with a message saying so, and the subject's own open actions are
+  cancelled as they lose authority.
+
+The subject learns of a pending cooling-off only from the console and the
+action list; nothing is pushed to them until it lands. Run with three or more
+unrestricted administrators to close the window altogether.
+
+When an administrator loses privilege, their sessions are revoked and they are
+told with a VTC-signed notice:
+
+- **A reduction** — `acl/revoke` (whole entry or part of its scope), a
+  downward `acl/change-role`, or an `acl/update` or `acl/grant` that narrows
+  the entry — sends `vtc/members/authority-reduced-notice/0.1` (VTI-APV-019),
+  a durable push over TSP, DIDComm or REST, in that order of preference. It
+  says what happened (`revoked`, `demoted` or `narrowed`), the previous and
+  resulting role, who decided and when, the reason if one was given, and how it
+  was agreed: `consented` if another administrator approved, `unopposed` if
+  nobody did (a cooling-off, or a scoped admin reduced on the requester's
+  step-up alone).
+- **A removal from the community** (`vtc/members/admin-remove`) sends the
+  removal notice instead. Nobody gets both.
 
 ### 3.5 Everything is audited, including the break-glass
 
 The audit trail has a row for every grant, update, revocation, promotion,
 admin invite and passkey registration, and for every step of an action
 (`TaskConsentRecorded`, stage `parked`, `approved`, `declined`, `cancelled`,
-`invalidated`, `expired`, `completed` or `failed`). Offline writers (`vtc acl add` and
-`remove`, `vtc admin invite`, `vtc admin enrol-approver`, `vtc create-did-key
---admin`) cannot write the
-audit trail while the daemon is stopped, so they leave a marker. The daemon
-turns it into an `AclBreakGlassWritten` row at its next start, naming the
-command, the DID and the host it ran on.
+`invalidated`, `expired`, `completed` or `failed`).
+
+Offline writers (`vtc acl add` and `remove`, `vtc admin invite`, `vtc admin
+enrol-approver`, `vtc create-did-key --admin`, `vtc admin emergency-bootstrap`)
+cannot write the audit trail while the daemon is stopped, so they leave a
+marker. At its next start the daemon audits each one (`AclBreakGlassWritten`,
+or `EmergencyBootstrapInvoked`) and also raises it in the action list as an
+**acknowledge** item (VTI-VTC-023):
+
+- Its summary names the command, the DID or DIDs, the operator's host and the
+  time. It has no Approve or Decline, no expiry and no threshold.
+- It is for the administrators who held an admin role (scoped or unrestricted)
+  when the write was made, less anyone who has since lost every admin role. If
+  none of them remain — and always after an emergency bootstrap, which removed
+  them — it is for every administrator there is now.
+- Until you acknowledge it, the console shows a `Critical` banner that cannot
+  be dismissed, linking to **Actions**. **Acknowledge** signs
+  `vtc/admin/actions/acknowledge/0.1`; acknowledging is audited. When everyone
+  it is for has acknowledged, it closes `completed` (`acknowledged`) and stays
+  in **History** for 30 days. Acknowledging twice answers
+  `alreadyAcknowledged`; anyone it is not for gets `notAcknowledgeable`.
+- A marker is cleared only after its item is raised, so a crash in between
+  raises it once at the following start rather than losing it.
 
 Offline access is the operator's last resort and bypasses every check above. It
-needs the host itself. Protect the host the way you protect the community.
+needs the host itself. Approvals protect a community against its
+administrators, not against the operator: the operator can't be constrained,
+only made visible, which is what the acknowledge item does. Protect the host
+the way you protect the community.
 
 ### 3.6 Other limits
 
 | Control | Limit |
 |---|---|
-| Admin and install invites | single use, at most 24 hours, plus a claim code delivered separately (Argon2id-hashed) |
+| Admin and install invites | single use, at most 24 hours, plus a claim code delivered separately (Argon2id-hashed); at install claim 0.3, five wrong claim codes void the token, and each is answered `invalidToken`, so the count is no oracle |
 | Step-up passkey invites | issued by a different unrestricted administrator behind their own step-up, redeemed by the member's own signature; five wrong claim codes void the invite |
 | Step-up approver invites | the same, at most 24 hours (15 minutes by default); the redemption is signed by the invited subject's own DID and carries the approver's proof of possession |
-| Member notices | members get a signed notice when a step-up passkey is enrolled or revoked for them, naming who did it |
+| Member notices | members get a signed notice when a step-up passkey is enrolled or revoked for them, naming who did it; an administrator whose authority is reduced gets an authority-reduced notice (§3.4) |
 | Git-namespace break-glass | always a step-up, audited at `Critical`, announced to every other namespace administrator |
 
 ## 4. Walkthrough: first administrator, then a second one using the browser plugin
@@ -437,7 +517,8 @@ A founder who uses only a wallet can claim the install this way from the start:
 `vtc/install/claim/{start,finish}/0.3` claims the community under the DID the
 install token names (signed by that DID, checked against its live document) and
 binds the plugin's approver as the founder's step-up factor at bootstrap. The
-VTC serves it; the console's install page still drives the passkey claim
+console's install page offers it alongside the passkey claim (0.2): the wallet
+signs as the founder's DID and the approver device is the step-up factor
 (`bootstrap-runbook.md`, Path C).
 
 ### Step 6 — Make sure each approver can sign
@@ -449,10 +530,12 @@ DID**, never by a console key. There are two ways to sign one:
   Actions page sign the decision through the wallet, as the admin DID itself.
   The VTA holds that key, whether it is the admin `did:key` the VTA minted or
   the wallet persona. If the session also has a passkey, the console adds a
-  passkey assertion as an extra factor; it never replaces the signature.
+  passkey assertion as an extra factor; it never replaces the signature. The
+  console cannot yet add an approver device's statement instead: the plugin
+  signs approver statements for enrolment only.
 - **`cnm`**, for an administrator without a wallet. It signs with the
   `did:key` of its profile. The console shows the command to run instead of
-  the buttons.
+  the buttons. A client may attach `approverSigned` evidence (§3.2).
 
 Bob signs from the console. Alice signs from the console if she uses the
 wallet, or from `cnm` if she doesn't; for that, the `cnm` Client DID needs its
@@ -482,8 +565,10 @@ Say Bob makes Carol an unrestricted administrator:
    shows a six-character match code derived from the payload digest.
 3. Alice's approval reaches the threshold, so the VTC re-checks everything and
    runs Bob's stored operation. Carol has a row, and the action shows as
-   *completed* in both their **History**. Carol then follows steps 4 and 5 for
-   herself.
+   *completed* in both their **History**. Bob's completed action shows, once,
+   an approver enrolment invite for Carol (§3.1a); he sends her the URL and,
+   by another channel, the claim code. Carol then follows step 4, and enrols
+   her approver from the invite (step 5b) or a passkey (step 5).
 
 Promotions that Alice starts need an approver other than Alice: here, Bob.
 
@@ -491,16 +576,24 @@ Promotions that Alice starts need an approver other than Alice: here, Bob.
 
 - **Approver step-up needs a plugin that supports it.** The VTC accepts a
   step-up approver's statement (§3.1, step 5b); the browser plugin's
-  `approveStepUp` / `attestApprover` are a separate release. Until it ships,
-  step 5's passkey is the route. Mobile approvers are phase 2 of
+  `approveStepUp` is a separate release. Until it ships, step 5's passkey is
+  the route. Mobile approvers are phase 2 of
   [`../05-design-notes/vtc-approver-step-up.md`](../05-design-notes/vtc-approver-step-up.md).
-- **Two-admin removal has no cooling-off yet.** With two unrestricted
-  administrators, either can remove the other on their own step-up (§3.4). The
-  planned 24-hour cooling-off, the notice to the subject, and acknowledge items
-  for offline writes come in the action list's next phase
-  ([`../05-design-notes/vtc-action-list.md`](../05-design-notes/vtc-action-list.md) §10).
-- **A co-administrator named at install** has no install token of their own;
-  they enrol an approver through an invite (step 5b) after the bootstrap.
+- **The console approves with a passkey only.** The VTC accepts
+  `approverSigned` decision evidence (§3.2), but the plugin signs approver
+  statements for enrolment only, so the console has no way to make one for a
+  decision. `cnm` and other clients can.
+- **A cooling-off is not pushed to its subject.** The subject of a two-admin
+  reduction (§3.4) learns of it from the console banner and the action list;
+  the notice comes only when it lands. A "pending" notice needs a
+  specification first.
+- **The requester can't be required at completion.** An action completes on
+  the N-th approval; a policy that makes the requester finish it with a fresh
+  step-up (`requireRequesterAtCompletion`) is designed, not built
+  ([`../05-design-notes/vtc-action-list.md`](../05-design-notes/vtc-action-list.md) §4.3).
+- **A co-administrator named at install** has no install token of their own,
+  and is not made by an action, so gets no automatic invite; they enrol an
+  approver through an invite (step 5b) after the bootstrap.
 
 ## 6. Quick reference
 
@@ -515,7 +608,10 @@ Promotions that Alice starts need an approver other than Alice: here, Bob.
 | add, rotate or revoke your own approver | My passkeys → Approver devices |
 | approve a promotion | console → Actions → Waiting for me → Approve (wallet), or `cnm consent approve --action <actionId>` |
 | see what is waiting | console → Actions, or `cnm actions list` |
-| withdraw my request | console → Actions → Requested by me → Cancel |
+| withdraw my request, including a cooling-off | console → Actions → Requested by me → Cancel |
+| acknowledge an offline write | console → the banner, or Actions → Acknowledge |
 | give approvers longer | `acl.action_lifetime` (seconds, default 72 h, at most 14 days) |
+| change the two-admin cooling-off | `acl.removal_cooling_off` (seconds, default 86400, at most 604800; `0` lands at once) |
+| push requests to approvers' devices | `acl.consent_request_push = true` (default `false`) |
 | require two approvers | set `acl.unrestricted_admin_consent_threshold = 2` (needs 3+ unrestricted admins) |
-| see who did what | Audit trail (unrestricted admins only); filter for `AclBreakGlassWritten` to see offline writes |
+| see who did what | Audit trail (unrestricted admins only); filter for `AclBreakGlassWritten` or `EmergencyBootstrapInvoked` to see offline writes |

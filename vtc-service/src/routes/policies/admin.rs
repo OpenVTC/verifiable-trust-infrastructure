@@ -369,6 +369,7 @@ pub(crate) async fn upload_inner(
     policy.name = Some(body.name.clone());
     policy.description = body.description.clone();
     store_policy(&state.policies_ks, &policy).await?;
+    crate::admin_actions::record_effect(state).await;
 
     let sha256_hex = hex::encode(sha256);
     audit_writer
@@ -455,6 +456,7 @@ pub(crate) async fn activate_inner(
     store_policy(&state.policies_ks, &policy).await?;
 
     set_active_policy_id(&state.active_policies_ks, policy.purpose, id).await?;
+    crate::admin_actions::record_effect(state).await;
 
     let sha256_hex = hex::encode(policy.sha256);
     audit_writer
