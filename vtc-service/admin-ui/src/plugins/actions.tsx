@@ -32,6 +32,7 @@ import { AlertTriangle, RefreshCw } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { NamedDid } from "@/components/NamedDid";
 import {
+  KIND_GRANTS_REVIEW,
   SUMMARY_REFUSED_MESSAGE,
   SummaryRefusal,
   matchCode,
@@ -781,6 +782,12 @@ function ActionButtons({ action, summaryOk }: { action: Action; summaryOk: boole
   if (!action.challenge && !canCancel) return null;
 
   const busy = decide.isPending || cancel.isPending || (decidable && device.isPending);
+  // A departed granter's grants (`vtc-admin-roles.md` §6.3): approving
+  // re-affirms them under the approver's own authority; declining withdraws
+  // them now.
+  const review = action.kind === KIND_GRANTS_REVIEW;
+  const approveLabel = review ? "Re-affirm" : "Approve";
+  const declineLabel = review ? "Withdraw" : "Decline";
 
   return (
     <div className="action-buttons">
@@ -810,7 +817,7 @@ function ActionButtons({ action, summaryOk }: { action: Action; summaryOk: boole
               aria-busy={decide.isPending}
               onClick={() => decide.mutate({ decision: "approve" })}
             >
-              {decide.isPending ? "Signing…" : "Approve"}
+              {decide.isPending ? "Signing…" : approveLabel}
             </button>
           )}
           <button
@@ -822,7 +829,7 @@ function ActionButtons({ action, summaryOk }: { action: Action; summaryOk: boole
               setDeclining(true);
             }}
           >
-            Decline
+            {declineLabel}
           </button>
         </div>
       )}

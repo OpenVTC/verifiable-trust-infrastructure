@@ -323,7 +323,9 @@ grants (`cnm bootstrap request`, then the armored bundle and its digest).
 **Each community** — `cnm community add` gives every community its own key, so
 communities you run are not linked by a shared identity. See
 [`bootstrap-runbook.md`](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row)
-for the grant and `cnm community continue`.
+for the grant and `cnm community continue`, which then rotates the granted key
+to a fresh one at the VTC (`acl/swap-key`); `cnm community rotate` does it again
+later.
 
 ## Where to go next
 

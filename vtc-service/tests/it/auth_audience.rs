@@ -161,3 +161,41 @@ async fn health_is_exempt_from_trust_task() {
     let (status, _body) = request(&router, req).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+/// `auth/whoami/0.1` answers what the caller's entry lets it do **now** —
+/// `capabilities`, as enforced — so a console renders navigation per
+/// capability rather than per session role (`vtc-admin-roles.md` §4). The
+/// administrative role and what it may approve ride in `ext["org.openvtc"]`.
+#[tokio::test]
+async fn whoami_names_the_callers_live_capabilities() {
+    use vtc_service::acl::{AdminAuthority, AdminRole, VtcAclEntry, VtcRole, store_acl_entry};
+    let (router, _, vtc) = build_test_router().await;
+    let did = "did:key:z6MkAuditorWhoami";
+    store_acl_entry(
+        &vtc.state.acl_ks,
+        &VtcAclEntry::new(
+            did,
+            VtcRole::Member,
+            AdminAuthority::for_role(AdminRole::Auditor),
+            "did:key:vtc-install",
+        ),
+    )
+    .await
+    .unwrap();
+    let token = vtc.token(did, "admin", vec![]).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/auth/whoami")
+        .header("Trust-Task", "https://trusttasks.org/spec/auth/whoami/0.1")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = request(&router, req).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["capabilities"], serde_json::json!(["vtc.audit.read"]));
+    assert_eq!(v["ext"]["org.openvtc"]["adminRole"], "auditor");
+    assert_eq!(v["ext"]["org.openvtc"]["approves"], serde_json::json!([]));
+    let _: trust_tasks_rs::specs::auth::whoami::v0_1::Response =
+        serde_json::from_value(v).expect("conforms to auth/whoami/0.1");
+}

@@ -161,6 +161,20 @@ pub enum Act {
     /// remaining administrator to acknowledge. Nothing is consented to: it
     /// already happened. Never gated, never executed.
     OperatorWrite,
+    /// **VTI-APV-018** applied to the authority vocabulary
+    /// (`vtc-admin-roles.md` §6.2, §7) — defining, replacing or deleting a
+    /// custom role. The subject is the role's name; the consent is pinned to
+    /// its stored definition (or its absence).
+    ChangeRoles,
+    /// **VTI-APV-018** — restoring a backup (`vtc.backup.restore`), which
+    /// replaces the whole ACL (`vtc-admin-roles.md` §4, §7). The subject is
+    /// the bundle being restored.
+    RestoreBackup,
+    /// **VTI-ACL-071** — a departed granter's grants, raised for review
+    /// (`vtc-admin-roles.md` §6.3). Approving re-affirms them under the
+    /// approver's own authority; declining, or letting it lapse, withdraws
+    /// them. Raised by the community itself, never by a requester's document.
+    GrantsReview,
 }
 
 impl Act {
@@ -172,21 +186,24 @@ impl Act {
             Self::LowerThreshold => "VTI-APV-020",
             Self::ChangeAuthorityPolicy(_) => "VTI-VTC-022",
             Self::OperatorWrite => "VTI-VTC-023",
+            Self::ChangeRoles | Self::RestoreBackup => "VTI-APV-018",
+            Self::GrantsReview => "VTI-ACL-071",
         }
     }
 
     pub(crate) fn approver_set(self) -> &'static str {
         match self {
-            Self::ReduceUnrestricted => APPROVER_SET_EXCEPT_SUBJECT,
+            Self::ReduceUnrestricted | Self::GrantsReview => APPROVER_SET_EXCEPT_SUBJECT,
             Self::OperatorWrite => "administrators",
             _ => APPROVER_SET,
         }
     }
 
     /// Whether the subject is excluded from the approvers, beside the
-    /// requester. Only for a reduction, where the subject is a party to it.
+    /// requester. For a reduction, where the subject is a party to it; and
+    /// for a grants review, whose subject is the granter that left.
     pub(crate) fn excludes_subject(self) -> bool {
-        matches!(self, Self::ReduceUnrestricted)
+        matches!(self, Self::ReduceUnrestricted | Self::GrantsReview)
     }
 
     /// The stake an act carries when the caller names none: what its approvers
@@ -197,11 +214,19 @@ impl Act {
             Self::GrantUnrestricted
             | Self::ReduceUnrestricted
             | Self::LowerThreshold
-            | Self::OperatorWrite => vec![CapRef::all(Capability::RolesAssign)],
+            | Self::OperatorWrite
+            | Self::GrantsReview => vec![CapRef::all(Capability::RolesAssign)],
             Self::ChangeAuthorityPolicy(purpose) => vec![CapRef::new(
                 Capability::PolicyAdmin,
                 Some(ResourceQualifier::Policy(purpose)),
             )],
+            // §6.2: "only through an N-of-M action under vtc.roles.assign +
+            // vtc.approvals.admin".
+            Self::ChangeRoles => vec![
+                CapRef::all(Capability::RolesAssign),
+                CapRef::all(Capability::ApprovalsAdmin),
+            ],
+            Self::RestoreBackup => vec![CapRef::all(Capability::BackupRestore)],
         }
     }
 
@@ -229,6 +254,12 @@ impl Act {
             Self::LowerThreshold => s::KIND_THRESHOLD_LOWER,
             Self::ChangeAuthorityPolicy(_) => s::KIND_POLICY_AUTHORITY,
             Self::OperatorWrite => s::KIND_OPERATOR_WRITE,
+            Self::ChangeRoles if type_uri == crate::trust_tasks::role_tasks::DELETE_TYPE => {
+                s::KIND_ROLE_DELETE
+            }
+            Self::ChangeRoles => s::KIND_ROLE_DEFINE,
+            Self::RestoreBackup => s::KIND_BACKUP_RESTORE,
+            Self::GrantsReview => s::KIND_GRANTS_REVIEW,
         }
     }
 }
@@ -288,16 +319,21 @@ pub fn lost_conferring(prev: &VtcAclEntry, next: Option<&VtcAclEntry>, now: u64)
         .collect()
 }
 
-/// Whether `entry` may approve an action with this stake: live, holding **and**
-/// able to approve every capability in it at a covering qualifier
-/// (`vtc-admin-roles.md` §7; **VTI-ACL-040**: approve authority is its own
-/// axis).
+/// Whether `entry` may approve an action with this stake: live, and able to
+/// approve every capability in it at a covering qualifier
+/// (`vtc-admin-roles.md` §7).
+///
+/// Approve authority is **its own axis** (**VTI-ACL-040**): what decides
+/// whether a subject may bless a change is its approve scope, not whether it
+/// may also make the change. So the least-privilege approver — act `none`, an
+/// approve scope (**VTI-ACL-041**; the built-in `approver` role, or any entry
+/// granted `approveCapabilities` with act `none`) — counts for every kind of
+/// action its approve scope reaches. Approve scope is itself bounded: by the
+/// role's approve ceiling, and by the granter's own when it was conferred
+/// (**VTI-ACL-042**), so it reaches no further than someone who held it chose.
 #[must_use]
 pub fn may_approve(entry: &VtcAclEntry, stake: &[CapRef], now: u64) -> bool {
-    !entry.is_expired(now)
-        && stake
-            .iter()
-            .all(|c| entry.admin.holds(c) && entry.admin.can_approve(c))
+    !entry.is_expired(now) && stake.iter().all(|c| entry.admin.can_approve(c))
 }
 
 /// The DIDs of every live holder of `vtc.roles.assign`, unqualified — the
@@ -1158,6 +1194,15 @@ pub(crate) fn requester_still_authorized(
         // An operator write has no requester authority to lose: it is an item
         // to acknowledge (VTI-VTC-023).
         Act::OperatorWrite => true,
+        Act::ChangeRoles => {
+            entry.admin.can(Capability::RolesAssign, None)
+                && entry.admin.can(Capability::ApprovalsAdmin, None)
+        }
+        Act::RestoreBackup => entry.admin.can(Capability::BackupRestore, None),
+        // Raised by the community itself: there is no requester to lose
+        // anything (`requester_still_authorized` is never asked of it — see
+        // `crate::admin_actions::settle`).
+        Act::GrantsReview => true,
     }
 }
 
@@ -1180,6 +1225,16 @@ pub(crate) async fn pin_for(
                 .await?
                 .map(|id| id.to_string())
         ),
+        // The consent is to changing *this* definition: once it moves, what
+        // the approvers agreed to is not what would happen.
+        Act::ChangeRoles => json!(super::roles::get(&state.acl_ks, subject).await?),
+        // Nothing to pin beside the bundle itself, whose bytes are fixed by
+        // its committed digest: the restore replaces the ACL wholesale, and a
+        // changed ACL in the meantime is exactly what it overwrites.
+        Act::RestoreBackup => json!(subject),
+        // A review re-affirms what is still under review at execution, and
+        // nothing else; a change to one entry must not void the rest.
+        Act::GrantsReview => json!(subject),
     };
     Ok(StatePin {
         resource: subject.to_string(),
@@ -1318,6 +1373,49 @@ mod tests {
         let outside: Vec<CapRef> = vec!["git.ns.admin@git-ns:github.com/other".parse().unwrap()];
         assert!(may_approve(&rm, &inside, now));
         assert!(!may_approve(&rm, &outside, now));
+    }
+
+    /// VTI-ACL-041: the least-privilege approver — act `none`, an approve
+    /// scope — is an approver for every kind its approve scope reaches, though
+    /// it holds nothing.
+    #[test]
+    fn vti_acl_041_a_least_privilege_approver_counts_for_every_act() {
+        use crate::policy::PolicyPurpose;
+        let now = 1_000;
+        let approver = entry(AdminAuthority::for_role(AdminRole::Approver), None);
+        assert!(!approver.admin.can(Capability::RolesAssign, None));
+        for act in [
+            Act::GrantUnrestricted,
+            Act::ReduceUnrestricted,
+            Act::LowerThreshold,
+            Act::ChangeAuthorityPolicy(PolicyPurpose::Removal),
+            Act::ChangeRoles,
+            Act::RestoreBackup,
+            Act::GrantsReview,
+        ] {
+            assert!(may_approve(&approver, &act.default_stake(), now), "{act:?}");
+        }
+        // Narrowed to approving vetting only, it approves nothing else.
+        let mut vetting_only = AdminAuthority::for_role(AdminRole::Approver);
+        vetting_only.approve_capabilities = listed(&["vtc.vetting.manage"]);
+        let vetting_only = entry(vetting_only, None);
+        assert!(may_approve(
+            &vetting_only,
+            &[CapRef::all(Capability::VettingManage)],
+            now
+        ));
+        assert!(!may_approve(
+            &vetting_only,
+            &Act::GrantUnrestricted.default_stake(),
+            now
+        ));
+        // An auditor approves nothing.
+        let auditor = entry(AdminAuthority::for_role(AdminRole::Auditor), None);
+        assert!(!may_approve(
+            &auditor,
+            &Act::LowerThreshold.default_stake(),
+            now
+        ));
     }
 
     /// Each act is raised as its own kind, and every (kind, task) a gate can

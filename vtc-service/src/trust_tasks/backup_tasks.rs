@@ -485,6 +485,29 @@ async fn handle_finalize_import(
     };
 
     let confirm = req.confirm.unwrap_or(false);
+    let mut waived = false;
+    if confirm {
+        match restore_consent(state, actor, &doc, &envelope, req.password.as_str(), &id).await {
+            Ok(w) => waived = w,
+            Err(RestoreGate::Refused(reject)) => return reject,
+            Err(RestoreGate::Parked(e, expires_at)) => {
+                // The staged bytes must outlive the approval they wait for:
+                // the bundle's own expiry is a five-minute conversation.
+                if let Some(at) = expires_at
+                    && at > record.expires_at
+                {
+                    record.expires_at = at;
+                    record.state = BundleState::ImportPreviewed;
+                    if let Err(e) =
+                        bundle_store::store_bundle(&state.backup_bundles_ks, &record).await
+                    {
+                        return app_error_to_reject(&doc, &e);
+                    }
+                }
+                return app_error_to_reject(&doc, &e);
+            }
+        }
+    }
     let result = match crate::routes::backup::import_inner(
         state,
         &actor.did,
@@ -501,6 +524,15 @@ async fn handle_finalize_import(
     // A preview leaves the bundle open so the producer can commit it; a commit
     // ends it and its bytes.
     if confirm {
+        // An approved action executing this restore: its effect has landed.
+        crate::admin_actions::record_effect(state).await;
+        // The restore replaced the audit log, the waiver's `Critical` row
+        // (written before the commit, so an unauditable waiver is refused)
+        // with it: record it again in the log the community now has
+        // (VTI-APV-022 item 4).
+        if waived && let Err(e) = rerecord_waiver(state, actor, &doc).await {
+            return app_error_to_reject(&doc, &e);
+        }
         if let Err(e) = tokio::fs::remove_file(&path).await
             && e.kind() != std::io::ErrorKind::NotFound
         {
@@ -527,6 +559,122 @@ async fn handle_finalize_import(
         body["sourceDid"] = json!(source);
     }
     respond::<finalize_import::Response>(&doc, body)
+}
+
+/// Why a restore's commit did not go ahead yet.
+enum RestoreGate {
+    /// Refused outright: the backup does not open, or nobody could approve.
+    Refused(TrustTaskOutcome),
+    /// Parked for approval: the error the dispatcher answers with, and the
+    /// action's expiry.
+    Parked(AppError, Option<chrono::DateTime<chrono::Utc>>),
+}
+
+/// The consent a restore needs before it commits (`vtc-admin-roles.md` §4,
+/// §7): it replaces the whole ACL, so `vtc.backup.restore` is
+/// authority-conferring and the commit takes the requester's bound gesture
+/// and the N-of-M approval of its other approvers (**VTI-APV-018**).
+///
+/// The backup is opened first — a preview, which writes nothing — so a wrong
+/// password or an incompatible backup is refused before anyone is asked. The
+/// operation the approvers are shown, and the digest they approve, is the
+/// payload **without its password**: approvers see which bundle is restored,
+/// never the secret that opens it. The stored document that executes keeps it,
+/// in the action list, which no backup carries.
+async fn restore_consent(
+    state: &AppState,
+    actor: &Actor,
+    doc: &TrustTask<Value>,
+    envelope: &crate::backup::BackupEnvelope,
+    password: &str,
+    bundle: &uuid::Uuid,
+) -> Result<bool, RestoreGate> {
+    use crate::acl::admin_consent::{self, Act, Operation, SignedGate};
+    if crate::admin_actions::executing().is_none()
+        && let Err(e) =
+            crate::routes::backup::import_inner(state, &actor.did, envelope, password, false).await
+    {
+        return Err(RestoreGate::Refused(task_error_reject(doc, e)));
+    }
+    let mut shown = doc.payload.clone();
+    if let Some(map) = shown.as_object_mut() {
+        map.remove("password");
+    }
+    let type_uri = doc.type_uri.to_string();
+    let subject = bundle.to_string();
+    let gate = admin_consent::gesture_then_consent_for(
+        state,
+        Act::RestoreBackup,
+        &[],
+        &actor.did,
+        &subject,
+        Operation {
+            type_uri: &type_uri,
+            payload: &shown,
+        },
+        &format!("Restore this community from backup {subject}"),
+        &format!("Restore this community from backup {subject}"),
+    )
+    .await;
+    match gate {
+        Ok(SignedGate::Ready(ready)) => {
+            let waived = ready.is_waived();
+            ready
+                .spend(state)
+                .await
+                .map_err(|e| RestoreGate::Refused(app_error_to_reject(doc, &e)))?;
+            Ok(waived)
+        }
+        Ok(SignedGate::StepUpRequired(request)) => Err(RestoreGate::Refused(task_error_reject(
+            doc,
+            TaskError::step_up(request),
+        ))),
+        Err(e @ AppError::ApprovalRequired { .. }) => {
+            let expires = match &e {
+                AppError::ApprovalRequired { details, .. } => details["expiresAt"]
+                    .as_str()
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|t| t.with_timezone(&chrono::Utc)),
+                _ => None,
+            };
+            Err(RestoreGate::Parked(e, expires))
+        }
+        Err(e) => Err(RestoreGate::Refused(app_error_to_reject(doc, &e))),
+    }
+}
+
+/// Write a restore's single-administrator waiver into the audit log the
+/// restore just installed (see the caller).
+async fn rerecord_waiver(
+    state: &AppState,
+    actor: &Actor,
+    doc: &TrustTask<Value>,
+) -> Result<(), AppError> {
+    use crate::acl::admin_consent::Act;
+    let Some(writer) = state.audit_writer.as_ref() else {
+        return Ok(());
+    };
+    let mut shown = doc.payload.clone();
+    if let Some(map) = shown.as_object_mut() {
+        map.remove("password");
+    }
+    let type_uri = doc.type_uri.to_string();
+    writer
+        .write(
+            &actor.did,
+            shown["bundleId"].as_str(),
+            vti_common::audit::AuditEvent::SingleAdminMode(
+                vti_common::audit::SingleAdminModeData {
+                    event: "consentWaived".into(),
+                    requirement: Some(Act::RestoreBackup.requirement().into()),
+                    task: Some(type_uri.clone()),
+                    digest: Some(vti_common::task_consent::payload_digest(&type_uri, &shown)?),
+                    kind: Some(Act::RestoreBackup.kind(&type_uri).into()),
+                },
+            ),
+        )
+        .await?;
+    Ok(())
 }
 
 async fn handle_abort(state: &AppState, actor: &Actor, doc: TrustTask<Value>) -> TrustTaskOutcome {
@@ -925,6 +1073,181 @@ mod tests {
             "a preview writes nothing"
         );
 
+        // The commit replaces the ACL, so it is authority-conferring
+        // (`vtc-admin-roles.md` §7): it asks for the requester's gesture
+        // before anyone's approval, and writes nothing without them. The
+        // whole approved path is `tests/it/admin_roles_c2.rs`.
+        let out = send(
+            &fix,
+            &fix.super_admin,
+            FINALIZE_IMPORT_TYPE,
+            json!({ "bundleId": bundle_id, "password": PASSWORD, "confirm": true }),
+        )
+        .await;
+        assert!(!out.status.is_success(), "{}", payload_of(&out));
+        assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
+        assert!(
+            fix.vtc
+                .state
+                .members_ks
+                .get_raw(b"bulk:0".to_vec())
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing is restored before the gesture and the approval"
+        );
+    }
+
+    /// A restore replaces the ACL, so its commit is authority-conferring
+    /// (`vtc-admin-roles.md` §4, §7; **VTI-APV-018**): after the requester's
+    /// gesture it parks in the action list — shown to approvers without its
+    /// password — keeps its staged bytes alive while it waits, and lands on
+    /// another administrator's approval.
+    #[tokio::test]
+    async fn vti_apv_018_a_restore_parks_for_approval_and_lands_on_it() {
+        use crate::admin_actions::{ActionRecord, Decided, DecisionInput};
+        let fix = fixture().await;
+        seed_bulk(&fix).await;
+        let bytes = export(&fix, MIN).await;
+        fix.vtc
+            .state
+            .members_ks
+            .remove(b"bulk:0".to_vec())
+            .await
+            .unwrap();
+        let bundle_id = upload(&fix, &bytes, MAX_CHUNK_SIZE).await;
+
+        // The gesture is bound to what approvers are shown: no password.
+        crate::acl::bound_step_up::record_mark_for_test(
+            &fix.vtc.state,
+            &fix.super_admin.did,
+            FINALIZE_IMPORT_TYPE,
+            &json!({ "bundleId": bundle_id, "confirm": true }),
+        )
+        .await
+        .unwrap();
+        let out = send(
+            &fix,
+            &fix.super_admin,
+            FINALIZE_IMPORT_TYPE,
+            json!({ "bundleId": bundle_id, "password": PASSWORD, "confirm": true }),
+        )
+        .await;
+        let parked = payload_of(&out);
+        assert!(
+            parked["expects"][0]["hint"]["actionId"].is_string(),
+            "parked for approval: {parked}"
+        );
+        assert!(
+            fix.vtc
+                .state
+                .members_ks
+                .get_raw(b"bulk:0".to_vec())
+                .await
+                .unwrap()
+                .is_none(),
+            "nothing is restored before the approval"
+        );
+
+        let rec: ActionRecord = fix
+            .vtc
+            .state
+            .admin_actions_ks
+            .prefix_iter_raw(b"action:".to_vec())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_slice::<ActionRecord>(&v).ok())
+            .find(|r| r.kind == "backup.restore")
+            .expect("a restore action");
+        assert!(
+            rec.payload.get("password").is_none(),
+            "approvers are never shown the backup's password"
+        );
+        let staged = vti_common::backup_transfer::bundle_store::get_bundle(
+            &fix.vtc.state.backup_bundles_ks,
+            &vti_common::backup_transfer::parse_bundle_id(&bundle_id).unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            staged.expires_at.timestamp() as u64 >= rec.expires_at,
+            "the staged bytes outlive the approval they wait for"
+        );
+
+        let slot = rec
+            .approvers
+            .iter()
+            .find(|s| s.did == fix.other_super_admin.did)
+            .expect("the other administrator is an approver")
+            .clone();
+        let decided = crate::admin_actions::decide(
+            &fix.vtc.state,
+            &fix.other_super_admin.did,
+            DecisionInput {
+                challenge: slot.challenge,
+                payload_digest: slot.wire_digest,
+                approve: true,
+                reason: None,
+                action_id: Some(rec.id.clone()),
+                evidence: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                decided,
+                Decided::Granted {
+                    completed: true,
+                    ..
+                }
+            ),
+            "{decided:?}"
+        );
+        assert!(
+            fix.vtc
+                .state
+                .members_ks
+                .get_raw(b"bulk:0".to_vec())
+                .await
+                .unwrap()
+                .is_some(),
+            "the approved restore landed"
+        );
+    }
+
+    /// In single-administrator mode (VTI-APV-022), with nobody else able to
+    /// approve, a restore's commit lands on the requester's bound gesture —
+    /// the consent waived and audited `Critical`, like every other kind — and
+    /// parks nothing.
+    #[tokio::test]
+    async fn vti_apv_022_a_sole_admin_restores_on_their_own_gesture() {
+        let fix = fixture().await;
+        fix.vtc.state.config.write().await.acl.single_admin_mode = true;
+        for did in [&fix.other_super_admin.did, &fix.scoped_admin.did] {
+            crate::acl::delete_acl_entry(&fix.vtc.state.acl_ks, did)
+                .await
+                .unwrap();
+        }
+        seed_bulk(&fix).await;
+        let bytes = export(&fix, MIN).await;
+        fix.vtc
+            .state
+            .members_ks
+            .remove(b"bulk:0".to_vec())
+            .await
+            .unwrap();
+        let bundle_id = upload(&fix, &bytes, MAX_CHUNK_SIZE).await;
+        crate::acl::bound_step_up::record_mark_for_test(
+            &fix.vtc.state,
+            &fix.super_admin.did,
+            FINALIZE_IMPORT_TYPE,
+            &json!({ "bundleId": bundle_id, "confirm": true }),
+        )
+        .await
+        .unwrap();
         let committed = ok(&send(
             &fix,
             &fix.super_admin,
@@ -941,8 +1264,25 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some(),
-            "the commit restored the row"
+            "the restore landed on the requester's gesture alone"
         );
+        let waived = fix
+            .vtc
+            .state
+            .audit_ks
+            .prefix_iter_raw(Vec::new())
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|(_, v)| {
+                serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok()
+            })
+            .filter(|env| {
+                matches!(&env.event, vti_common::audit::AuditEvent::SingleAdminMode(d)
+                    if d.event == "consentWaived")
+            })
+            .count();
+        assert_eq!(waived, 1, "the waiver is audited");
     }
 
     /// `stream` — named, or meant by absence — needs an HTTPS endpoint this

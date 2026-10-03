@@ -10,12 +10,13 @@ pub mod entry;
 pub mod granting;
 pub mod migrate;
 pub mod role;
+pub mod roles;
 pub mod single_admin;
 pub mod storage;
 
 pub use capability::{
     AdminAuthority, AdminRole, CapRef, Capability, CapabilityGrant, CapabilityScope,
-    ResourceQualifier, VtcActScope,
+    ResourceQualifier, RoleCeilings, VtcActScope,
 };
 pub use entry::VtcAclEntry;
 pub use role::{VtcRole, as_vti_role};

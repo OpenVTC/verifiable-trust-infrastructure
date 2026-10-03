@@ -52,6 +52,20 @@ pub const KIND_POLICY_AUTHORITY: &str = "policy.authority.change";
 pub const KIND_INVITE_CREATE: &str = "admin.invite.create";
 /// An operator's offline write, raised for acknowledgement (VTI-VTC-023).
 pub const KIND_OPERATOR_WRITE: &str = "operator.offlineWrite";
+/// Defining or replacing a custom administrative role (`vtc-admin-roles.md`
+/// §6.2).
+pub const KIND_ROLE_DEFINE: &str = "acl.role.define";
+/// Deleting a custom administrative role.
+pub const KIND_ROLE_DELETE: &str = "acl.role.delete";
+/// Restoring a backup, which replaces the ACL (`vtc-admin-roles.md` §7).
+pub const KIND_BACKUP_RESTORE: &str = "backup.restore";
+/// A departed granter's grants, for re-affirmation (`vtc-admin-roles.md` §6.3).
+pub const KIND_GRANTS_REVIEW: &str = "acl.grants.review";
+
+/// The record type a grants review is raised under. Not a Trust Task: the
+/// community raises it itself, as it does the boot migration's item, and it is
+/// never sent or dispatched.
+pub const GRANTS_REVIEW_URI: &str = "urn:openvtc:vtc:acl:grants-review";
 
 const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 const ACL_UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
@@ -72,6 +86,9 @@ const CONFIG_PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const CONFIG_IMPORT: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
 const POLICY_UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const POLICY_ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
+const ROLES_DEFINE: &str = "https://trusttasks.org/spec/vtc/roles/define/0.1";
+const ROLES_DELETE: &str = "https://trusttasks.org/spec/vtc/roles/delete/0.1";
+const BACKUP_FINALIZE_IMPORT: &str = "https://trusttasks.org/spec/backup/finalize-import/0.1";
 
 const fn f(name: &'static str, pointer: &'static str, format: &'static str) -> FieldDef {
     FieldDef {
@@ -103,6 +120,17 @@ const ACL_MIGRATION_EFFECT: &str = "This VTC ran {command} when it started on {h
 const OPERATOR_EFFECT: &str = "Written at {at}, while the service was stopped. It is already in \
                                effect: acknowledging records that you have seen it, and changes \
                                nothing.";
+const ROLE_DEFINE_EFFECT: &str = "Anyone holding {name} may then hold at most {ceiling} and \
+                                  approve at most {approveScope}. Replacing a role changes what \
+                                  every holder may do at once.";
+const ROLE_DELETE_EFFECT: &str = "The role {name} leaves this community's vocabulary. Nobody holds \
+                                  it, so nobody's authority changes.";
+const BACKUP_RESTORE_EFFECT: &str = "Every record in the backup replaces this community's — its \
+                                     access control included, so who administers it afterwards \
+                                     is whoever the backup says.";
+const GRANTS_REVIEW_EFFECT: &str = "{granter} granted authority to {subjects} and no longer holds \
+                                    it. Approving re-affirms those grants under your own \
+                                    authority; declining, or letting this lapse, withdraws them.";
 
 /// Every template this build renders.
 pub const TEMPLATES: &[Template] = &[
@@ -332,6 +360,44 @@ pub const TEMPLATES: &[Template] = &[
             f("at", "/invokedAt", "datetime"),
         ],
     },
+    Template {
+        kind: KIND_ROLE_DEFINE,
+        type_uri: ROLES_DEFINE,
+        title: "Define the administrative role {name}",
+        effect: ROLE_DEFINE_EFFECT,
+        fields: &[
+            f("name", "/name", "text"),
+            f("ceiling", "/ceiling", "text"),
+            f("approveScope", "/approveScope", "text"),
+            f("replaces", "/replaces", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_ROLE_DELETE,
+        type_uri: ROLES_DELETE,
+        title: "Delete the administrative role {name}",
+        effect: ROLE_DELETE_EFFECT,
+        fields: &[f("name", "/name", "text"), f("reason", "/reason", "text")],
+    },
+    Template {
+        kind: KIND_BACKUP_RESTORE,
+        type_uri: BACKUP_FINALIZE_IMPORT,
+        title: "Restore this community from backup {bundleId}",
+        effect: BACKUP_RESTORE_EFFECT,
+        fields: &[f("bundleId", "/bundleId", "text")],
+    },
+    Template {
+        kind: KIND_GRANTS_REVIEW,
+        type_uri: GRANTS_REVIEW_URI,
+        title: "Re-affirm or withdraw the grants {granter} made",
+        effect: GRANTS_REVIEW_EFFECT,
+        fields: &[
+            f("granter", "/granter", "did"),
+            f("subjects", "/subjects", "capabilityList"),
+            f("deadline", "/deadline", "datetime"),
+        ],
+    },
 ];
 
 /// The digest of every template, pinned. A change to a template's prose,
@@ -444,6 +510,26 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_OPERATOR_WRITE,
         ACL_MIGRATION,
         "zQmcx336K693LHuAKosCP9avuLZWauw1vome6VBxWBFDiqK",
+    ),
+    (
+        KIND_ROLE_DEFINE,
+        ROLES_DEFINE,
+        "zQmf6erEaANYgarV9c8frmZSZ8R5XuomNdXxGNQ8FAZ2QUh",
+    ),
+    (
+        KIND_ROLE_DELETE,
+        ROLES_DELETE,
+        "zQmNmqjjmZmPfvapiR91YcFDgXtg1xdAw3QNwaQemrEHL8U",
+    ),
+    (
+        KIND_BACKUP_RESTORE,
+        BACKUP_FINALIZE_IMPORT,
+        "zQmY89pWbScF2Mj1B1tWXJrtKPyhqcWDJDiV8eKCTchKscE",
+    ),
+    (
+        KIND_GRANTS_REVIEW,
+        GRANTS_REVIEW_URI,
+        "zQmes3QBrvXfxcwu7tyU7gk58b8RrLfrQiteFRJGCwDYS4S",
     ),
 ];
 

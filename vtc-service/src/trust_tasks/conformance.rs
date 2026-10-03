@@ -416,6 +416,23 @@ fn sample_cooling_off(open: bool, caller_role: &str) -> serde_json::Value {
 
 /// An operator's offline write as an acknowledge item names it: the record
 /// type `vtc/operator/offline-write/0.1`, with the record as its payload.
+/// A replaced custom role, as `crate::acl::roles` stores it.
+fn sample_role() -> crate::acl::roles::RoleDefinition {
+    crate::acl::roles::RoleDefinition {
+        name: "events-team".into(),
+        description: Some("Runs the public pages and event invitations.".into()),
+        ceiling: vec![
+            "vtc.surface.admin".parse().unwrap(),
+            "git.repo.manage@git-ns:github.com/acme".parse().unwrap(),
+        ],
+        approve_scope: vec!["vtc.surface.admin".parse().unwrap()],
+        created_at: 1_790_000_000,
+        created_by: "did:key:z6MkDefiner".into(),
+        updated_at: Some(1_790_000_600),
+        updated_by: Some("did:key:z6MkReplacer".into()),
+    }
+}
+
 fn sample_offline_write() -> serde_json::Value {
     use crate::admin_actions::{OPERATOR_OFFLINE_WRITE_URI, summary};
     let payload = json!({
@@ -887,6 +904,49 @@ fn table() -> Vec<Conformance> {
             s::admin::actions::acknowledge::v0_2::Response,
             json!({ "actionId": ACTION_ID }),
             json!({ "action": sample_offline_write() })
+        ),
+        // ─── custom administrative roles ─────────────────────────────
+        // Responses rendered by the handler's own renderers.
+        checked!(
+            s::roles::define::v0_1::Payload,
+            s::roles::define::v0_1::Response,
+            json!({
+                "name": "events-team",
+                "description": "Runs the public pages and event invitations.",
+                "ceiling": [
+                    { "capability": "vtc.surface.admin" },
+                    { "capability": "git.repo.manage", "resource": "git-ns:github.com/acme" },
+                ],
+                "approveScope": [{ "capability": "vtc.surface.admin" }],
+                "replaces": false,
+                "reason": "delegating event operations",
+            }),
+            json!({
+                "role": crate::acl::roles::render(&sample_role()),
+                "ext": { "org.openvtc": { "affectedEntries": 0 } },
+            })
+        ),
+        checked!(
+            s::roles::list::v0_1::Payload,
+            s::roles::list::v0_1::Response,
+            json!({ "includeBuiltIn": true }),
+            json!({ "roles": crate::acl::AdminRole::BUILT_IN
+                .iter()
+                .map(crate::acl::roles::render_built_in)
+                .chain(std::iter::once(crate::acl::roles::render(&sample_role())))
+                .collect::<Vec<_>>() })
+        ),
+        checked!(
+            s::roles::show::v0_1::Payload,
+            s::roles::show::v0_1::Response,
+            json!({ "name": "events-team" }),
+            json!({ "role": crate::acl::roles::render(&sample_role()), "holders": 2 })
+        ),
+        checked!(
+            s::roles::delete::v0_1::Payload,
+            s::roles::delete::v0_1::Response,
+            json!({ "name": "events-team", "reason": "events moved elsewhere" }),
+            json!({ "deleted": "events-team" })
         ),
         // ─── admin ───────────────────────────────────────────────────
         checked!(

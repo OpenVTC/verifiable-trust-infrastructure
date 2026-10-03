@@ -27,6 +27,7 @@ import {
   Smartphone,
   Tag,
   Ticket,
+  UserCog,
   Users,
   Workflow,
 } from "lucide-react";
@@ -47,6 +48,7 @@ import { Profile } from "@/plugins/profile";
 import { Recognition } from "@/plugins/recognition";
 import { Relationships } from "@/plugins/relationshipsGraph";
 import { Repos } from "@/plugins/repos";
+import { Roles } from "@/plugins/roles";
 import { Rooms } from "@/plugins/rooms";
 import { Sessions } from "@/plugins/sessions";
 import { Vetting } from "@/plugins/vetting";
@@ -84,6 +86,7 @@ export function registerBuiltinPlugins(): void {
     path: "/join-requests",
     iconComponent: Inbox,
     reactComponent: JoinRequests,
+    capabilities: ["vtc.join.decide"],
   });
 
   registerPlugin({
@@ -92,6 +95,7 @@ export function registerBuiltinPlugins(): void {
     path: "/vetting",
     iconComponent: BadgeCheck,
     reactComponent: Vetting,
+    capabilities: ["vtc.vetting.manage"],
   });
 
   registerPlugin({
@@ -100,6 +104,7 @@ export function registerBuiltinPlugins(): void {
     path: "/invitations",
     iconComponent: Ticket,
     reactComponent: Invitations,
+    capabilities: ["vtc.invitations.manage"],
   });
 
   registerPlugin({
@@ -108,6 +113,7 @@ export function registerBuiltinPlugins(): void {
     path: "/recognition",
     iconComponent: Network,
     reactComponent: Recognition,
+    capabilities: ["vtc.registry.admin"],
   });
 
   registerPlugin({
@@ -124,6 +130,7 @@ export function registerBuiltinPlugins(): void {
     path: "/members",
     iconComponent: Users,
     reactComponent: Members,
+    capabilities: ["vtc.members.manage"],
   });
 
   registerPlugin({
@@ -150,12 +157,24 @@ export function registerBuiltinPlugins(): void {
     reactComponent: Acl,
   });
 
+  // The administrative role vocabulary: readable by every administrator,
+  // defined and deleted (through the action list) by holders of
+  // vtc.roles.assign and vtc.approvals.admin (`vtc-admin-roles.md` §6.2).
+  registerPlugin({
+    id: "roles",
+    label: "Roles",
+    path: "/roles",
+    iconComponent: UserCog,
+    reactComponent: Roles,
+  });
+
   registerPlugin({
     id: "profile",
     label: "Community profile",
     path: "/profile",
     iconComponent: Tag,
     reactComponent: Profile,
+    capabilities: ["vtc.surface.admin"],
   });
 
   registerPlugin({
@@ -180,7 +199,7 @@ export function registerBuiltinPlugins(): void {
     path: "/sessions",
     iconComponent: Smartphone,
     reactComponent: Sessions,
-    scopes: ["super-admin"],
+    capabilities: ["vtc.sessions.revoke"],
   });
 
   registerPlugin({
@@ -189,6 +208,6 @@ export function registerBuiltinPlugins(): void {
     path: "/audit",
     iconComponent: ClipboardList,
     reactComponent: Audit,
-    scopes: ["super-admin"],
+    capabilities: ["vtc.audit.read"],
   });
 }

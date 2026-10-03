@@ -123,6 +123,11 @@ pub(crate) mod step_up_passkey_tasks;
 // this is their only door.
 pub(crate) mod step_up_approver_tasks;
 
+// Custom administrative roles: `vtc/roles/{define,list,show,delete}/0.1`
+// (`vtc-admin-roles.md` §6.2). The records are `crate::acl::roles`'s; this is
+// their only door.
+pub(crate) mod role_tasks;
+
 // The integration tests' soft WebAuthn authenticator, for the spine tests that
 // drive a real passkey ceremony.
 #[cfg(test)]
@@ -1177,6 +1182,13 @@ async fn dispatch_typed(
                 None => unreachable!("policy_tasks::URIS names {uri}, which it does not route"),
             }
         }
+        uri if role_tasks::URIS.contains(&uri) => {
+            match Box::pin(role_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("role_tasks::URIS names {uri}, which it does not route"),
+            }
+        }
         uri if community_tasks::URIS.contains(&uri) => {
             match community_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
@@ -1250,6 +1262,7 @@ async fn dispatch_typed(
         ACL_LIST_V0_2_TYPE => acl_tasks::handle_list_v0_2(state, ctx, doc).await,
         ACL_UPDATE_V0_2_TYPE => acl_tasks::handle_update_v0_2(state, ctx, doc).await,
         ACL_REVOKE_V0_2_TYPE => acl_tasks::handle_revoke_v0_2(state, ctx, doc).await,
+        ACL_SWAP_KEY_TYPE => acl_tasks::handle_swap_key(state, ctx, doc).await,
         STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, ctx, doc).await,
         STEP_UP_APPROVE_RESPONSE_V0_5_TYPE => {
             handle_step_up_approve_response_v0_5(state, ctx, doc).await
@@ -1786,6 +1799,14 @@ mod spine_proof_tests {
         (
             vetting_wire::VETTING_VETTER_LIST_TYPE,
             "a public read of the vetter registry",
+        ),
+        (
+            role_tasks::LIST_TYPE,
+            "reads the role vocabulary; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            role_tasks::SHOW_TYPE,
+            "reads one role; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
             vetting_wire::VETTING_VETTER_SHOW_TYPE,
@@ -2681,6 +2702,14 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     step_up_approver_tasks::ENROLL_TYPE,
     step_up_approver_tasks::LIST_TYPE,
     step_up_approver_tasks::REVOKE_TYPE,
+    // Custom administrative roles (`vtc-admin-roles.md` §6.2): reads for any
+    // administrator, writes through the action list. No REST route.
+    role_tasks::DEFINE_TYPE,
+    role_tasks::LIST_TYPE,
+    role_tasks::SHOW_TYPE,
+    role_tasks::DELETE_TYPE,
+    // A subject rolling its own admin entry to a new key (VTI-CLT-025 – 032).
+    ACL_SWAP_KEY_TYPE,
     // backup/* — the chunked transfer `vtc/backup/import` could never be,
     // because its envelope does not fit one document.
     backup_tasks::INITIATE_EXPORT_TYPE,
@@ -2936,6 +2965,11 @@ pub(crate) const ACL_UPDATE_V0_2_TYPE: &str =
 /// `acl/revoke/0.2` — remove an entry, or narrow its act scope.
 pub(crate) const ACL_REVOKE_V0_2_TYPE: &str =
     <trust_tasks_rs::specs::acl::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/swap-key/0.1` — a subject rolls its own entry to a new key, its
+/// authority exactly preserved (VTI-CLT-025 – 032, VTI-ACL-052).
+pub(crate) const ACL_SWAP_KEY_TYPE: &str =
+    <trust_tasks_rs::specs::acl::swap_key::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `auth/step-up/approve-response/0.4` — the passkey gesture an
 /// operation-bound step-up asks for.
