@@ -1,8 +1,17 @@
 //! `cnm access …` — the community's own access-control list, on its VTC.
 //!
 //! Not `cnm acl`, which administers the community's **VTA**. This is the VTC's
-//! ACL: who may administer the community, moderate it, or act in its contexts
-//! — the list the admin console shows under *Access control*.
+//! ACL: who may administer the community, and with what — the list the admin
+//! console shows under *Access control*.
+//!
+//! Administration is role-based (`docs/05-design-notes/vtc-admin-roles.md`):
+//! an entry holds an **administrative role** (`community-admin`, `moderator`,
+//! `vetting-lead`, `repo-manager`, `credential-officer`, `auditor`, `approver`)
+//! whose ceiling `--capability` may narrow, optionally to a resource
+//! (`git.repo.manage@git-ns:github.com/acme`). `list`, `show`, `grant` and
+//! `update` speak `acl/*/0.2`; `change-role` moves the **community** role
+//! (`member`, `moderator`, `issuer`, `admin`) at 0.1, and `revoke` removes an
+//! entry.
 //!
 //! Every verb is a canonical `acl/*` Trust Task, signed with this profile's own
 //! key. They reach the VTC over TSP when it advertises it, else DIDComm, else
@@ -16,7 +25,7 @@ use clap::Subcommand;
 use serde_json::Value;
 use vta_cli_common::render::{DIM, GREEN, RESET, bin_name, is_json_output, print_json};
 use vta_sdk::session::TransportChoice;
-use vtc_client::acl::{AclGrant, AclListFilter, AclUpdate};
+use vtc_client::acl::{AclGrantV02, AclListFilterV02, AclUpdateV02};
 use vtc_client::{HolderKey, VtcError};
 
 use crate::auth;
@@ -28,14 +37,18 @@ type CliResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 pub enum AccessCommands {
     /// List the entries you may see.
     List {
-        /// Only entries with this role.
+        /// Only entries with this administrative role (`member` for none).
+        #[arg(long = "admin-role")]
+        admin_role: Option<String>,
+        /// Only entries holding this capability (e.g. vtc.roles.assign).
         #[arg(long)]
-        role: Option<String>,
-        /// Only entries touching this scope (context).
+        capability: Option<String>,
+        /// Only entries holding a capability at a qualifier related to this
+        /// resource (e.g. git-ns:github.com/acme), read in `--direction`.
         #[arg(long)]
-        scope: Option<String>,
-        /// How `--scope` reads the hierarchy: acting-in (default), subtree, any.
-        #[arg(long, requires = "scope")]
+        resource: Option<String>,
+        /// How `--resource` reads: actingIn (default), subtree, any.
+        #[arg(long, requires = "resource")]
         direction: Option<String>,
         /// Only subjects starting with this prefix.
         #[arg(long)]
@@ -51,13 +64,28 @@ pub enum AccessCommands {
     Grant {
         /// The subject DID.
         subject: String,
-        /// The role: admin, initiator, moderator, member or custom:<name>.
+        /// The administrative role: community-admin, moderator, vetting-lead,
+        /// repo-manager, credential-officer, auditor, approver — or member for
+        /// none.
+        #[arg(long = "admin-role")]
+        admin_role: String,
+        /// Narrow the role's ceiling to this capability, optionally at a
+        /// resource (cap@resource). Repeatable. Omitted: the full ceiling.
+        /// Granting an authority-conferring capability (vtc.roles.assign,
+        /// vtc.config.admin, …) needs another holder's consent.
+        #[arg(long = "capability")]
+        capabilities: Vec<String>,
+        /// Let the subject approve others' actions within its role.
         #[arg(long)]
-        role: String,
-        /// Scopes (contexts), comma-separated. None for an admin means
-        /// community-wide, which needs another administrator's consent.
-        #[arg(long, value_delimiter = ',')]
-        scopes: Vec<String>,
+        approve: bool,
+        /// Grant approve authority only — no act authority (the
+        /// least-privilege approver).
+        #[arg(long)]
+        approve_only: bool,
+        /// The community role, when it should differ from the one the
+        /// administrative role implies.
+        #[arg(long)]
+        community_role: Option<String>,
         /// A human-readable label.
         #[arg(long)]
         label: Option<String>,
@@ -68,14 +96,20 @@ pub enum AccessCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Amend an existing entry's label, scopes or expiry. Never its role.
+    /// Amend an existing entry's capabilities, approve authority, label or
+    /// expiry. Never its role.
     Update {
         /// The subject DID.
         subject: String,
-        /// The whole intended scope set, comma-separated. Dropping a scope the
-        /// entry holds is refused — use `revoke --scopes`.
-        #[arg(long, value_delimiter = ',')]
-        scopes: Option<Vec<String>>,
+        /// Replace the capability set: cap or cap@resource, repeatable.
+        #[arg(long = "capability", conflicts_with = "full_ceiling")]
+        capabilities: Vec<String>,
+        /// Return the entry to its role's full ceiling.
+        #[arg(long)]
+        full_ceiling: bool,
+        /// Set whether the subject may approve: true or false.
+        #[arg(long)]
+        approve: Option<bool>,
         /// Set the label.
         #[arg(long, conflicts_with = "clear_label")]
         label: Option<String>,
@@ -92,7 +126,9 @@ pub enum AccessCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Move a subject between roles; `--from` must be its current role.
+    /// Move a subject's community role (member, moderator, issuer, admin) —
+    /// with the administrative role it implies; `--from` must be its current
+    /// role.
     ChangeRole {
         /// The subject DID.
         subject: String,
@@ -106,13 +142,10 @@ pub enum AccessCommands {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Remove a subject's entry, or only some of its scopes.
+    /// Remove a subject's entry.
     Revoke {
         /// The subject DID.
         subject: String,
-        /// Remove only these scopes, comma-separated; the entry stays.
-        #[arg(long, value_delimiter = ',')]
-        scopes: Option<Vec<String>>,
         /// Why, recorded with the change.
         #[arg(long)]
         reason: Option<String>,
@@ -155,19 +188,29 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
     let fail = |e: VtcError| access_error(vtc, e);
     match command {
         AccessCommands::List {
-            role,
-            scope,
+            admin_role,
+            capability,
+            resource,
             direction,
             subject_prefix,
         } => {
-            let filter = AclListFilter {
-                role,
-                scope,
+            let direction = match (&resource, direction) {
+                (Some(_), None) => Some("actingIn".to_string()),
+                (_, d) => d,
+            };
+            let filter = AclListFilterV02 {
+                role: admin_role,
+                capability,
+                resource,
                 direction,
                 subject_prefix,
                 ..Default::default()
             };
-            let entries = vtc.client.acl_list_all(&filter, &key).await.map_err(fail)?;
+            let entries = vtc
+                .client
+                .acl_list_all_v0_2(&filter, &key)
+                .await
+                .map_err(fail)?;
             let values: Vec<Value> = entries
                 .iter()
                 .map(serde_json::to_value)
@@ -183,45 +226,76 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
             }
         }
         AccessCommands::Show { subject } => {
-            let shown = vtc.client.acl_show(&subject, &key).await.map_err(fail)?;
-            report(&serde_json::to_value(&shown)?, "entry")?;
+            let shown = vtc
+                .client
+                .acl_show_v0_2(&subject, &key)
+                .await
+                .map_err(fail)?;
+            let shown = serde_json::to_value(&shown)?;
+            if shown["entry"].is_null() && !is_json_output() {
+                println!("{DIM}{subject} holds no entry{RESET}");
+            } else {
+                report(&shown, "entry")?;
+            }
         }
         AccessCommands::Grant {
             subject,
-            role,
-            scopes,
+            admin_role,
+            capabilities,
+            approve,
+            approve_only,
+            community_role,
             label,
             expires,
             reason,
         } => {
-            let grant = AclGrant {
+            let grant = AclGrantV02 {
                 subject,
-                role,
-                scopes,
+                admin_role,
+                // No --capability: the role's full ceiling. Approve-only: none.
+                capabilities: if approve_only {
+                    Some(Vec::new())
+                } else {
+                    Some(capabilities).filter(|c| !c.is_empty())
+                },
+                approve: approve || approve_only,
+                act: !approve_only,
+                community_role,
                 label,
                 expires_at: expires.as_deref().map(expiry_from_now).transpose()?,
                 reason,
             };
-            let granted = vtc.client.acl_grant(&grant, &key).await.map_err(fail)?;
+            let granted = vtc
+                .client
+                .acl_grant_v0_2(&grant, &key)
+                .await
+                .map_err(fail)?;
             report(&serde_json::to_value(&granted)?, "granted")?;
         }
         AccessCommands::Update {
             subject,
-            scopes,
+            capabilities,
+            full_ceiling,
+            approve,
             label,
             clear_label,
             expires,
             permanent,
             reason,
         } => {
-            let update = AclUpdate {
+            let update = AclUpdateV02 {
                 subject,
                 label: if clear_label {
                     Some(None)
                 } else {
                     label.map(Some)
                 },
-                scopes,
+                capabilities: if full_ceiling {
+                    Some(None)
+                } else {
+                    Some(capabilities).filter(|c| !c.is_empty()).map(Some)
+                },
+                approve,
                 expires_at: if permanent {
                     Some(None)
                 } else {
@@ -233,7 +307,11 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 },
                 reason,
             };
-            let updated = vtc.client.acl_update(&update, &key).await.map_err(fail)?;
+            let updated = vtc
+                .client
+                .acl_update_v0_2(&update, &key)
+                .await
+                .map_err(fail)?;
             report(&serde_json::to_value(&updated)?, "updated")?;
         }
         AccessCommands::ChangeRole {
@@ -249,24 +327,17 @@ async fn run_command(command: AccessCommands, vtc: &Connected, keyring_key: &str
                 .map_err(fail)?;
             report(&serde_json::to_value(&changed)?, "role changed")?;
         }
-        AccessCommands::Revoke {
-            subject,
-            scopes,
-            reason,
-        } => {
+        AccessCommands::Revoke { subject, reason } => {
             let revoked = vtc
                 .client
-                .acl_revoke(&subject, scopes.as_deref(), reason.as_deref(), &key)
+                .acl_revoke(&subject, None, reason.as_deref(), &key)
                 .await
                 .map_err(fail)?;
             let v = serde_json::to_value(&revoked)?;
             if is_json_output() {
                 print_json(&v)?;
-            } else if v["entry"].is_null() {
-                println!("{GREEN}revoked{RESET} {subject} — the entry is removed");
             } else {
-                println!("{GREEN}scopes revoked{RESET}; {subject} now holds:");
-                print_entry(&v["entry"]);
+                println!("{GREEN}revoked{RESET} {subject} — the entry is removed");
             }
         }
     }
@@ -291,28 +362,41 @@ fn report(reply: &Value, verb: &str) -> CliResult {
     Ok(())
 }
 
+/// One line per entry: subject, administrative role, and what it may do —
+/// "everything" only for a community administrator holding its full ceiling,
+/// "nothing" for no administrative role or no act authority (the #746 class:
+/// two different authorities never print alike).
 fn print_entry(e: &Value) {
     let s = |k: &str| e.get(k).and_then(Value::as_str);
-    let scopes = e
-        .get("scopes")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .unwrap_or_default();
     let role = s("role").unwrap_or("?");
-    // An empty scope list is community-wide for an admin and nowhere for every
-    // other role — say which, rather than print nothing for both.
-    let scopes = match (scopes.is_empty(), role) {
-        (true, "admin") => "(community-wide)".to_string(),
-        (true, _) => "(none — acts nowhere)".to_string(),
-        (false, _) => scopes,
+    let acts = e["act"]["scope"] == "all";
+    let holds = match e["capabilities"]["scope"].as_str() {
+        _ if role == "member" => "nothing".to_string(),
+        _ if !acts => "acts nowhere (approves only)".to_string(),
+        Some("ceiling") if role == "community-admin" => "everything".to_string(),
+        Some("ceiling") => format!("the {role} ceiling"),
+        Some("none") => "nothing".to_string(),
+        Some("listed") => e["capabilities"]["grants"]
+            .as_array()
+            .map(|g| {
+                g.iter()
+                    .map(|g| match g["resource"].as_str() {
+                        Some(r) => format!("{}@{r}", g["capability"].as_str().unwrap_or("?")),
+                        None => g["capability"].as_str().unwrap_or("?").to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
+        _ => "?".to_string(),
     };
+    let community = e["ext"]["org.openvtc"]["communityRole"]
+        .as_str()
+        .map(|c| format!("  {DIM}community role {c}{RESET}"))
+        .unwrap_or_default();
+    let scopes = holds;
     println!(
-        "  {}  {role}  {scopes}{}{}",
+        "  {}  {role}  {scopes}{community}{}{}",
         s("subject").unwrap_or("?"),
         s("label").map(|l| format!("  \"{l}\"")).unwrap_or_default(),
         s("expiresAt")

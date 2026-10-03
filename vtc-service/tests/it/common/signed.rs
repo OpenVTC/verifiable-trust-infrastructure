@@ -35,9 +35,10 @@ pub async fn seed_role(vtc: &TestVtc, did: &str, role: VtcRole, contexts: &[&str
         &vtc.state.acl_ks,
         &VtcAclEntry {
             did: did.into(),
+            admin: vtc_service::acl::legacy_seed_authority(&role, contexts),
+            delegated_by: None,
             role,
             label: None,
-            allowed_contexts: contexts.iter().map(|c| c.to_string()).collect(),
             created_at: 0,
             created_by: "did:key:vtc-install".into(),
             updated_at: None,

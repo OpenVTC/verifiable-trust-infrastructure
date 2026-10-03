@@ -47,9 +47,10 @@ async fn seed(mock: &MockVtcTransport, did: &str, role: VtcRole, scopes: &[&str]
         &mock.vtc.state.acl_ks,
         &VtcAclEntry {
             did: did.into(),
+            admin: vtc_service::acl::legacy_seed_authority(&role, scopes),
+            delegated_by: None,
             role,
             label: None,
-            allowed_contexts: scopes.iter().map(|s| s.to_string()).collect(),
             created_at: 0,
             created_by: "did:key:vtc-install".into(),
             updated_at: None,
@@ -136,13 +137,7 @@ async fn stored(h: &Harness, did: &str) -> Option<VtcAclEntry> {
 #[tokio::test]
 async fn acl_show_answers_alike_on_every_transport() {
     let h = harness().await;
-    seed(
-        &h.mock,
-        "did:key:z6MkShowTarget",
-        VtcRole::Moderator,
-        &["ctx-a"],
-    )
-    .await;
+    seed(&h.mock, "did:key:z6MkShowTarget", VtcRole::Moderator, &[]).await;
     let mut answers = Vec::new();
     for t in TRANSPORTS {
         let doc = send(&h, t, SHOW, json!({ "subject": "did:key:z6MkShowTarget" })).await;
@@ -162,11 +157,11 @@ async fn acl_show_answers_alike_on_every_transport() {
 #[tokio::test]
 async fn acl_list_answers_alike_on_every_transport() {
     let h = harness().await;
-    seed(&h.mock, "did:key:z6MkListA", VtcRole::Member, &["ctx-a"]).await;
-    seed(&h.mock, "did:key:z6MkListB", VtcRole::Member, &["ctx-b"]).await;
+    seed(&h.mock, "did:key:z6MkListA", VtcRole::Member, &[]).await;
+    seed(&h.mock, "did:key:z6MkListB", VtcRole::Moderator, &[]).await;
     let mut answers = Vec::new();
     for t in TRANSPORTS {
-        let doc = send(&h, t, LIST, json!({ "scope": "ctx-a" })).await;
+        let doc = send(&h, t, LIST, json!({ "role": "moderator" })).await;
         assert!(!is_error(&doc), "{t}: {doc}");
         let subjects: Vec<&str> = doc["payload"]["entries"]
             .as_array()
@@ -174,7 +169,7 @@ async fn acl_list_answers_alike_on_every_transport() {
             .iter()
             .map(|e| e["subject"].as_str().unwrap())
             .collect();
-        assert_eq!(subjects, vec!["did:key:z6MkListA"], "{t}");
+        assert_eq!(subjects, vec!["did:key:z6MkListB"], "{t}");
         assert_eq!(doc["payload"]["truncated"], false, "{t}");
         answers.push(doc["payload"].clone());
     }
@@ -183,40 +178,33 @@ async fn acl_list_answers_alike_on_every_transport() {
     h.mock.shutdown().await;
 }
 
+/// A label amends alike on every transport; `scopes` names contexts a
+/// community does not hold (VTI-VTC-010), so it is refused and nothing moves.
 #[tokio::test]
 async fn acl_update_amends_and_refuses_alike_on_every_transport() {
     let h = harness().await;
     for t in TRANSPORTS {
         let subject = format!("did:key:z6MkUpdate{t}");
-        seed(&h.mock, &subject, VtcRole::Member, &["ctx-a"]).await;
+        seed(&h.mock, &subject, VtcRole::Member, &[]).await;
 
-        let doc = send(
-            &h,
-            t,
-            UPDATE,
-            json!({ "subject": subject, "label": "ops", "scopes": ["ctx-a", "ctx-b"] }),
-        )
-        .await;
+        let doc = send(&h, t, UPDATE, json!({ "subject": subject, "label": "ops" })).await;
         assert!(!is_error(&doc), "{t}: {doc}");
         assert_eq!(doc["payload"]["entry"]["label"], "ops", "{t}");
         let entry = stored(&h, &subject).await.unwrap();
-        assert_eq!(entry.allowed_contexts, vec!["ctx-a", "ctx-b"], "{t}");
+        assert_eq!(entry.label.as_deref(), Some("ops"), "{t}");
         assert_eq!(entry.role, VtcRole::Member, "{t}");
 
-        let narrowing = send(
+        let scoped = send(
             &h,
             t,
             UPDATE,
-            json!({ "subject": subject, "scopes": ["ctx-a"] }),
+            json!({ "subject": subject, "label": "elsewhere", "scopes": ["ctx-a"] }),
         )
         .await;
+        assert!(is_error(&scoped), "{t}: {scoped}");
         assert_eq!(
-            narrowing["payload"]["code"], "acl/update:narrowingNotPermitted",
-            "{t}: {narrowing}"
-        );
-        assert_eq!(
-            stored(&h, &subject).await.unwrap().allowed_contexts,
-            vec!["ctx-a", "ctx-b"],
+            stored(&h, &subject).await.unwrap().label.as_deref(),
+            Some("ops"),
             "{t}"
         );
     }
@@ -224,12 +212,14 @@ async fn acl_update_amends_and_refuses_alike_on_every_transport() {
     h.mock.shutdown().await;
 }
 
+/// Removal answers alike on every transport; a scope reduction names nothing
+/// a community entry holds, so it is refused and the entry stands.
 #[tokio::test]
 async fn acl_revoke_reduces_removes_and_refuses_alike_on_every_transport() {
     let h = harness().await;
     for t in TRANSPORTS {
         let subject = format!("did:key:z6MkRevoke{t}");
-        seed(&h.mock, &subject, VtcRole::Member, &["ctx-a", "ctx-b"]).await;
+        seed(&h.mock, &subject, VtcRole::Member, &[]).await;
 
         let reduced = send(
             &h,
@@ -238,12 +228,8 @@ async fn acl_revoke_reduces_removes_and_refuses_alike_on_every_transport() {
             json!({ "subject": subject, "scopes": ["ctx-b"] }),
         )
         .await;
-        assert!(!is_error(&reduced), "{t}: {reduced}");
-        assert_eq!(
-            reduced["payload"]["entry"]["scopes"],
-            json!(["ctx-a"]),
-            "{t}"
-        );
+        assert!(is_error(&reduced), "{t}: {reduced}");
+        assert!(stored(&h, &subject).await.is_some(), "{t}");
 
         let removed = send(&h, t, REVOKE, json!({ "subject": subject })).await;
         assert!(!is_error(&removed), "{t}: {removed}");

@@ -51,8 +51,8 @@ use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, parse_payload, reject_with, reject_with_code,
     success_response, task_error_to_reject,
 };
-use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
-use crate::acl::Role;
+use super::{JoinAuthCtx, admin_signer, capable_signer, parse_spec_payload};
+use crate::acl::{Capability, Role};
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -125,35 +125,18 @@ pub(super) async fn dispatch(
     })
 }
 
-/// The signer as an administrator (the bearer routes' `AdminAuth`), and its
+/// The signer, holding `cap` (`vtc-admin-roles.md` §4 "Gates"), and its
 /// payload validated against the published schema.
-async fn admin_with<P>(
+async fn capable_with<P>(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
+    cap: Capability,
 ) -> Result<(AuthClaims, P), TrustTaskOutcome>
 where
     P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
 {
-    let actor = admin_signer(state, ctx, doc).await?;
-    let payload = parse_spec_payload::<P>(doc)?;
-    Ok((actor, payload))
-}
-
-/// As [`admin_with`], for an **unrestricted** administrator (the bearer
-/// routes' `SuperAdminAuth`): an admin scoped to some contexts is refused.
-async fn super_admin_with<P>(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: &TrustTask<Value>,
-) -> Result<(AuthClaims, P), TrustTaskOutcome>
-where
-    P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
-{
-    let actor = admin_signer(state, ctx, doc).await?;
-    actor
-        .require_super_admin()
-        .map_err(|e| app_error_to_reject(doc, &e))?;
+    let actor = capable_signer(state, ctx, doc, cap, None).await?;
     let payload = parse_spec_payload::<P>(doc)?;
     Ok((actor, payload))
 }
@@ -196,7 +179,9 @@ async fn handle_diagnostics(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = admin_with::<diagnostics::Payload>(state, ctx, &doc).await {
+    if let Err(reject) =
+        capable_with::<diagnostics::Payload>(state, ctx, &doc, Capability::RegistryAdmin).await
+    {
         return reject;
     }
     match crate::routes::health::diagnostics(state).await {
@@ -210,10 +195,12 @@ async fn handle_sync_jobs_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (_, payload) = match admin_with::<sync_list::Payload>(state, ctx, &doc).await {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
+    let (_, payload) =
+        match capable_with::<sync_list::Payload>(state, ctx, &doc, Capability::RegistryAdmin).await
+        {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
     match crate::routes::registry_admin::sync_jobs_list(state, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -225,7 +212,14 @@ async fn handle_sync_jobs_retry(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, payload) = match admin_with::<sync_retry::Payload>(state, ctx, &doc).await {
+    let (actor, payload) = match capable_with::<sync_retry::Payload>(
+        state,
+        ctx,
+        &doc,
+        Capability::RegistryAdmin,
+    )
+    .await
+    {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -240,10 +234,13 @@ async fn handle_sync_jobs_discard(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, payload) = match admin_with::<sync_discard::Payload>(state, ctx, &doc).await {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
+    let (actor, payload) =
+        match capable_with::<sync_discard::Payload>(state, ctx, &doc, Capability::RegistryAdmin)
+            .await
+        {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
     match crate::routes::registry_admin::sync_jobs_discard(state, &actor.did, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -255,10 +252,13 @@ async fn handle_records_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (_, payload) = match admin_with::<records_list::Payload>(state, ctx, &doc).await {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
+    let (_, payload) =
+        match capable_with::<records_list::Payload>(state, ctx, &doc, Capability::RegistryAdmin)
+            .await
+        {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
     match crate::routes::registry_admin::records_list(state, payload).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -274,10 +274,11 @@ async fn handle_audit_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, _checked) = match super_admin_with::<audit_list::Payload>(state, ctx, &doc).await {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
+    let (actor, _checked) =
+        match capable_with::<audit_list::Payload>(state, ctx, &doc, Capability::AuditRead).await {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
     // The route's own query type: its filters, its cursor binding and its
     // refusal of the filters this maintainer does not implement.
     let query: crate::routes::audit::AuditQuery = match parse_payload(&doc) {
@@ -295,7 +296,14 @@ async fn handle_audit_verify(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, _) = match super_admin_with::<audit_verify::Payload>(state, ctx, &doc).await {
+    let (actor, _) = match capable_with::<audit_verify::Payload>(
+        state,
+        ctx,
+        &doc,
+        Capability::AuditRead,
+    )
+    .await
+    {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -312,10 +320,12 @@ async fn handle_config_show(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (_, payload) = match admin_with::<config_show::Payload>(state, ctx, &doc).await {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
+    let (_, payload) =
+        match capable_with::<config_show::Payload>(state, ctx, &doc, Capability::ConfigAdmin).await
+        {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
     let keys: Option<Vec<String>> = payload
         .keys
         .map(|keys| keys.into_iter().map(|k| k.to_string()).collect());
@@ -330,7 +340,14 @@ async fn handle_config_patch(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, payload) = match super_admin_with::<config_patch::Payload>(state, ctx, &doc).await {
+    let (actor, payload) = match capable_with::<config_patch::Payload>(
+        state,
+        ctx,
+        &doc,
+        Capability::ConfigAdmin,
+    )
+    .await
+    {
         Ok(p) => p,
         Err(reject) => return reject,
     };
@@ -372,10 +389,13 @@ async fn handle_config_reload(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, _) = match super_admin_with::<config_reload::Payload>(state, ctx, &doc).await {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
+    let (actor, _) =
+        match capable_with::<config_reload::Payload>(state, ctx, &doc, Capability::ConfigAdmin)
+            .await
+        {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
     match crate::routes::admin::config::reload_config(state, &actor.did).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -387,10 +407,13 @@ async fn handle_config_restart(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, _) = match super_admin_with::<config_restart::Payload>(state, ctx, &doc).await {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
+    let (actor, _) =
+        match capable_with::<config_restart::Payload>(state, ctx, &doc, Capability::ConfigAdmin)
+            .await
+        {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
     match crate::routes::admin::config::restart_config(state, &actor.did).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -404,7 +427,9 @@ async fn handle_invites_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = super_admin_with::<invite_list::Payload>(state, ctx, &doc).await {
+    if let Err(reject) =
+        capable_with::<invite_list::Payload>(state, ctx, &doc, Capability::RolesAssign).await
+    {
         return reject;
     }
     match crate::routes::admin::invites::list_invites(state).await {
@@ -436,13 +461,8 @@ async fn handle_invites_create(
         .as_u64()
         .is_some_and(|ttl| ttl > crate::routes::admin::invites::MAX_TTL_SECONDS)
     {
-        match admin_signer(state, ctx, &doc).await {
-            Err(reject) => return reject,
-            Ok(actor) => {
-                if let Err(e) = actor.require_super_admin() {
-                    return app_error_to_reject(&doc, &e);
-                }
-            }
+        if let Err(reject) = capable_signer(state, ctx, &doc, Capability::RolesAssign, None).await {
+            return reject;
         }
         return task_error_to_reject(
             &doc,
@@ -455,11 +475,13 @@ async fn handle_invites_create(
             ),
         );
     }
-    let (actor, _checked) = match super_admin_with::<invite_create::Payload>(state, ctx, &doc).await
-    {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
+    let (actor, _checked) =
+        match capable_with::<invite_create::Payload>(state, ctx, &doc, Capability::RolesAssign)
+            .await
+        {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
     let request: crate::routes::admin::invites::CreateInviteRequest = match parse_payload(&doc) {
         Ok(r) => r,
         Err(reject) => return reject,
@@ -470,16 +492,20 @@ async fn handle_invites_create(
     };
     if plan.grants_admin {
         let type_uri = doc.type_uri.to_string();
+        // What a community administrator holds that confers authority: what
+        // the inviter's fellow holders must approve (VTI-APV-018).
+        let stake = crate::acl::AdminAuthority::community_admin().conferring();
         let gate = admin_consent::gesture_then_consent(
             state,
             &actor.did,
             &request.did,
+            &stake,
             Operation {
                 type_uri: &type_uri,
                 payload: &doc.payload,
             },
             &format!(
-                "Invite {} to become an unrestricted administrator of this community",
+                "Invite {} to become a community administrator of this community",
                 request.did
             ),
             &crate::routes::acl::unrestricted_grant_summary(&request.did),
@@ -512,11 +538,13 @@ async fn handle_invites_revoke(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let (actor, payload) = match super_admin_with::<invite_revoke::Payload>(state, ctx, &doc).await
-    {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
+    let (actor, payload) =
+        match capable_with::<invite_revoke::Payload>(state, ctx, &doc, Capability::RolesAssign)
+            .await
+        {
+            Ok(p) => p,
+            Err(reject) => return reject,
+        };
     match crate::routes::admin::invites::revoke_invite(state, &actor.did, &payload.jti).await {
         Ok(response) => success_response(&doc, response),
         Err(e) => task_error_to_reject(&doc, &e),

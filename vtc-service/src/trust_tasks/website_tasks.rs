@@ -53,7 +53,7 @@ use super::helpers::{
     TrustTaskOutcome, app_error_to_reject, extended_code, reject_with, reject_with_code,
     success_response,
 };
-use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
+use super::{JoinAuthCtx, parse_spec_payload};
 use crate::error::AppError;
 use crate::server::AppState;
 use crate::website::paths::{PathError, canonical_within_root, canonical_within_root_for_create};
@@ -128,10 +128,15 @@ pub(super) async fn dispatch(
     doc: TrustTask<Value>,
     type_uri: &str,
 ) -> Option<TrustTaskOutcome> {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a.did,
-        Err(reject) => return Some(reject),
-    };
+    // The website is part of the community's public surface
+    // (`vtc.surface.admin`, vtc-admin-roles.md §4).
+    let actor =
+        match super::capable_signer(state, ctx, &doc, crate::acl::Capability::SurfaceAdmin, None)
+            .await
+        {
+            Ok(a) => a.did,
+            Err(reject) => return Some(reject),
+        };
     Some(match type_uri {
         BEGIN_TYPE => handle_begin(state, &actor, doc).await,
         CHUNK_TYPE => handle_chunk(state, &actor, doc).await,

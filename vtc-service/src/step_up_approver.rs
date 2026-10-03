@@ -302,23 +302,31 @@ async fn is_delegated_key(state: &AppState, signer: &str) -> Result<bool, AppErr
     )
 }
 
-/// Whether administrator `actor` has standing over `subject`: a community-wide
-/// administrator over anyone, a context-scoped one over a member whose entry
-/// lies in their contexts (the visibility `acl/show` applies).
+/// Whether administrator `actor` has standing over `subject`'s step-up
+/// factors: it holds `vtc.members.manage` (a member's factors are part of
+/// managing the member, `vtc-admin-roles.md` §4), and where the subject is an
+/// administrator, an entry that covers theirs (VTI-ACL-050) — a member manager
+/// does not manage the factors of an administrator wider than itself.
 pub(crate) async fn admin_covers(
     state: &AppState,
     actor: &AuthClaims,
     subject: &str,
 ) -> Result<bool, AppError> {
-    if actor.is_super_admin() {
-        return Ok(true);
+    let Some(actor_entry) = crate::acl::get_acl_entry(&state.acl_ks, &actor.did).await? else {
+        return Ok(false);
+    };
+    if !actor_entry.can(crate::acl::Capability::MembersManage, None) {
+        return Ok(false);
     }
     let entry = crate::acl::get_acl_entry(&state.acl_ks, subject)
         .await?
         .filter(|e| !e.is_expired(now_epoch()));
-    Ok(entry.as_ref().is_some_and(|e| {
-        vti_common::acl::is_acl_entry_visible(actor, &crate::routes::acl::as_vti_acl_entry(e))
-    }))
+    Ok(match entry {
+        Some(e) if e.is_administrator() => {
+            crate::acl::granting::covers_entry(&actor_entry, &e, now_epoch())
+        }
+        _ => true,
+    })
 }
 
 /// After a binding: a session elevated before it existed was stepped up

@@ -42,9 +42,13 @@ That decode is `vti_common::acl::act_scope_for`, reached in practice via
 every wire body are unchanged — this is a read-path abstraction, not a
 migration.
 
-The VTC shares the same decode: `VtcAclEntry::act_scope()` maps its own role
-enum through `as_vti_role` and calls the same `act_scope_for`, so the two
-services cannot disagree about what an empty scope set means.
+The VTC no longer uses this decode. Since role-based administration
+([`vtc-admin-roles.md`](vtc-admin-roles.md), phase C1) a VTC entry holds no
+context list at all (VTI-VTC-010): its act scope is stored **explicitly** as
+`all` or `none`, its authority is a capability set under an administrative
+role, and every gate asks `VtcAclEntry::can(capability, resource)`. The
+empty-list trap below therefore does not exist at the VTC; it remains the
+VTA's.
 
 The type and its `covers()` predicate live in `vta-sdk` beside `ApproveScope`,
 so the two axes read as one model. The *decode* stays in `vti-common` because
@@ -135,6 +139,10 @@ CLI prints the question it asked next to the count, because two directions over
 one `--context` produce two legitimate, differently-shaped lists.
 
 ### Why the VTC did not follow
+
+*Superseded:* the VTC now has no contexts, and `acl/list/0.2` filters by
+`capability` and `resource` with a `direction` (`vtc-admin-roles.md`). The
+paragraph below records the earlier reasoning.
 
 The VTC has the same one-directional filter (`GET /acl?scope=…`, ancestry-aware
 since the hierarchical-contexts work), but its listing is bound to the

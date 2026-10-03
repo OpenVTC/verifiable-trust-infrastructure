@@ -118,9 +118,10 @@ async fn seed_entry(
         &vtc.state.acl_ks,
         &vtc_service::acl::VtcAclEntry {
             did: did.into(),
+            admin: vtc_service::acl::legacy_seed_authority(&role, &scopes),
+            delegated_by: None,
             role,
             label: None,
-            allowed_contexts: scopes,
             created_at: now_epoch(),
             created_by: "test".into(),
             updated_at: None,
@@ -234,14 +235,7 @@ async fn entries_use_canonical_names_and_rfc3339_timestamps() {
     let fix = build().await;
     let token = admin_token(&fix).await;
     assert_eq!(
-        grant(
-            &fix,
-            &token,
-            "did:key:z6MkAlice",
-            "member",
-            json!(["ctx-a"])
-        )
-        .await,
+        grant(&fix, &token, "did:key:z6MkAlice", "member", json!([])).await,
         StatusCode::OK
     );
 
@@ -258,7 +252,7 @@ async fn entries_use_canonical_names_and_rfc3339_timestamps() {
         .iter()
         .find(|e| e["subject"] == "did:key:z6MkAlice")
         .expect("granted entry present");
-    assert_eq!(entry["scopes"], json!(["ctx-a"]));
+    assert_eq!(entry["scopes"], json!([]));
     assert!(
         entry["createdAt"].as_str().unwrap().contains('T'),
         "createdAt must be RFC3339: {entry}"
@@ -276,7 +270,7 @@ async fn grant_refuses_to_change_an_existing_role() {
     let fix = build().await;
     let token = admin_token(&fix).await;
     assert_eq!(
-        grant(&fix, &token, "did:key:z6MkBob", "member", json!(["ctx-a"])).await,
+        grant(&fix, &token, "did:key:z6MkBob", "member", json!([])).await,
         StatusCode::OK
     );
 
@@ -286,7 +280,9 @@ async fn grant_refuses_to_change_an_existing_role() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": { "subject": "did:key:z6MkBob", "role": "moderator", "scopes": ["ctx-a"] } })),
+        Some(
+            json!({ "entry": { "subject": "did:key:z6MkBob", "role": "moderator", "scopes": [] } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -298,19 +294,12 @@ async fn grant_refuses_to_change_an_existing_role() {
 }
 
 /// Re-granting the *same* role is how canonical expresses "the entry
-/// the maintainer should hold" — it rewrites scopes/label.
+/// the maintainer should hold" — it rewrites the label.
 #[tokio::test]
 async fn grant_with_the_same_role_rewrites_the_entry() {
     let fix = build().await;
     let token = admin_token(&fix).await;
-    grant(
-        &fix,
-        &token,
-        "did:key:z6MkCarol",
-        "member",
-        json!(["ctx-a"]),
-    )
-    .await;
+    grant(&fix, &token, "did:key:z6MkCarol", "member", json!([])).await;
 
     let (status, body) = call(
         &fix,
@@ -318,12 +307,12 @@ async fn grant_with_the_same_role_rewrites_the_entry() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": { "subject": "did:key:z6MkCarol", "role": "member", "scopes": ["ctx-a", "ctx-b"] } })),
+        Some(json!({ "entry": { "subject": "did:key:z6MkCarol", "role": "member", "scopes": [], "label": "Carol" } })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "rewrite, not create: {body}");
     // `{entry: …}` — the shape these tasks publish (#1109).
-    assert_eq!(body["entry"]["scopes"], json!(["ctx-a", "ctx-b"]));
+    assert_eq!(body["entry"]["label"], "Carol");
     assert!(
         body["entry"]["updatedAt"].as_str().is_some(),
         "a rewrite must stamp updatedAt: {body}"
@@ -335,7 +324,7 @@ async fn grant_with_the_same_role_rewrites_the_entry() {
 async fn change_role_enforces_the_from_role_guard() {
     let fix = build().await;
     let token = admin_token(&fix).await;
-    grant(&fix, &token, "did:key:z6MkDan", "member", json!(["ctx-a"])).await;
+    grant(&fix, &token, "did:key:z6MkDan", "member", json!([])).await;
 
     // Stale read: caller believes Dan is a moderator.
     let (status, body) = call(
@@ -353,62 +342,28 @@ async fn change_role_enforces_the_from_role_guard() {
         "a mismatched fromRole must not apply: {body}"
     );
 
-    // Correct fromRole applies.
+    // Correct fromRole applies (to a community role that confers no
+    // administrative authority, so no gesture is asked).
     let (status, body) = call(
         &fix,
         "PATCH",
         "/v1/acl/did:key:z6MkDan",
         CHANGE_ROLE,
         &token,
-        Some(json!({ "fromRole": "member", "toRole": "moderator" })),
+        Some(json!({ "fromRole": "member", "toRole": "custom:editor" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     // `{entry: …}` — the shape these tasks publish (#1109).
-    assert_eq!(body["entry"]["role"], "moderator");
+    assert_eq!(body["entry"]["role"], "custom:editor");
     assert!(body["entry"]["updatedAt"].as_str().is_some(), "{body}");
-}
-
-/// Canonical revoke has two modes. `scopes` reduces; omitting it
-/// removes. Conflating them would strip more authority than asked.
-#[tokio::test]
-async fn revoke_with_scopes_reduces_rather_than_removes() {
-    let fix = build().await;
-    let token = admin_token(&fix).await;
-    grant(
-        &fix,
-        &token,
-        "did:key:z6MkErin",
-        "member",
-        json!(["ctx-a", "ctx-b"]),
-    )
-    .await;
-
-    let (status, body) = call(
-        &fix,
-        "DELETE",
-        "/v1/acl/did:key:z6MkErin?scopes=ctx-a",
-        REVOKE,
-        &token,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    // Canonical `acl/revoke#response`: the entry the maintainer now holds.
-    assert_eq!(body["entry"]["scopes"], json!(["ctx-b"]), "{body}");
-
-    // The entry must survive, minus that one scope.
-    let (status, body) = call(&fix, "GET", "/v1/acl/did:key:z6MkErin", SHOW, &token, None).await;
-    assert_eq!(status, StatusCode::OK, "entry must survive: {body}");
-    // `{entry: …}` — the shape these tasks publish (#1109).
-    assert_eq!(body["entry"]["scopes"], json!(["ctx-b"]));
 }
 
 #[tokio::test]
 async fn revoke_without_scopes_removes_the_entry() {
     let fix = build().await;
     let token = admin_token(&fix).await;
-    grant(&fix, &token, "did:key:z6MkFred", "member", json!(["ctx-a"])).await;
+    grant(&fix, &token, "did:key:z6MkFred", "member", json!([])).await;
 
     let (status, body) = call(
         &fix,
@@ -425,32 +380,6 @@ async fn revoke_without_scopes_removes_the_entry() {
 
     let (status, _) = call(&fix, "GET", "/v1/acl/did:key:z6MkFred", SHOW, &token, None).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-}
-
-/// Emptying an entry's scope set would leave an *unscoped* entry —
-/// which is how a community-wide (super) grant is spelled. Revoking
-/// must never widen authority.
-#[tokio::test]
-async fn revoking_every_scope_is_refused_rather_than_unscoping() {
-    let fix = build().await;
-    let token = admin_token(&fix).await;
-    grant(&fix, &token, "did:key:z6MkGina", "member", json!(["ctx-a"])).await;
-
-    let (status, body) = call(
-        &fix,
-        "DELETE",
-        "/v1/acl/did:key:z6MkGina?scopes=ctx-a",
-        REVOKE,
-        &token,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-
-    let (status, body) = call(&fix, "GET", "/v1/acl/did:key:z6MkGina", SHOW, &token, None).await;
-    assert_eq!(status, StatusCode::OK, "entry must be untouched: {body}");
-    // `{entry: …}` — the shape these tasks publish (#1109).
-    assert_eq!(body["entry"]["scopes"], json!(["ctx-a"]));
 }
 
 /// The ACL has no REST route, under any method.
@@ -495,19 +424,20 @@ async fn list_filters_and_paginates() {
     let fix = build().await;
     let token = admin_token(&fix).await;
     for who in ["did:key:z6MkP1", "did:key:z6MkP2", "did:key:z6MkP3"] {
-        grant(&fix, &token, who, "member", json!(["ctx-a"])).await;
+        grant(&fix, &token, who, "member", json!([])).await;
     }
-    grant(
-        &fix,
-        &token,
-        "did:key:z6MkQ1",
-        "moderator",
-        json!(["ctx-b"]),
-    )
-    .await;
+    grant(&fix, &token, "did:key:z6MkQ1", "custom:editor", json!([])).await;
 
     // Role filter actually filters.
-    let (_, body) = call(&fix, "GET", "/v1/acl?role=moderator", LIST, &token, None).await;
+    let (_, body) = call(
+        &fix,
+        "GET",
+        "/v1/acl?role=custom:editor",
+        LIST,
+        &token,
+        None,
+    )
+    .await;
     let subjects: Vec<&str> = body["entries"]
         .as_array()
         .unwrap()
@@ -520,7 +450,7 @@ async fn list_filters_and_paginates() {
     let (_, page1) = call(
         &fix,
         "GET",
-        "/v1/acl?scope=ctx-a&pageSize=1",
+        "/v1/acl?role=member&pageSize=1",
         LIST,
         &token,
         None,
@@ -532,7 +462,7 @@ async fn list_filters_and_paginates() {
     let (status, _) = call(
         &fix,
         "GET",
-        &format!("/v1/acl?scope=ctx-a&pageSize=1&cursor={cursor}"),
+        &format!("/v1/acl?role=member&pageSize=1&cursor={cursor}"),
         LIST,
         &token,
         None,
@@ -543,7 +473,7 @@ async fn list_filters_and_paginates() {
     let (status, body) = call(
         &fix,
         "GET",
-        &format!("/v1/acl?scope=ctx-b&pageSize=1&cursor={cursor}"),
+        &format!("/v1/acl?role=moderator&pageSize=1&cursor={cursor}"),
         LIST,
         &token,
         None,
@@ -583,7 +513,7 @@ async fn revoking_a_members_acl_is_refused_and_names_the_removal_command() {
     let fix = build().await;
     let token = admin_token(&fix).await;
     const DID: &str = "did:key:z6MkHurdle";
-    grant(&fix, &token, DID, "member", json!(["ctx-a"])).await;
+    grant(&fix, &token, DID, "member", json!([])).await;
     make_member(&fix, DID).await;
 
     let (status, body) = call(
@@ -620,7 +550,7 @@ async fn revoking_the_acl_of_a_departed_member_is_allowed() {
     let fix = build().await;
     let token = admin_token(&fix).await;
     const DID: &str = "did:key:z6MkDeparted";
-    grant(&fix, &token, DID, "member", json!(["ctx-a"])).await;
+    grant(&fix, &token, DID, "member", json!([])).await;
 
     let mut member = vtc_service::members::Member::fresh(DID);
     member.tombstone();
@@ -640,34 +570,6 @@ async fn revoking_the_acl_of_a_departed_member_is_allowed() {
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
-/// Scope *reduction* orphans nothing — the entry survives, minus those scopes —
-/// so the guard must sit after that branch has returned. Putting it earlier
-/// would block an ordinary privilege reduction on every member in the
-/// community.
-#[tokio::test]
-async fn reducing_a_members_scopes_is_still_allowed() {
-    let fix = build().await;
-    let token = admin_token(&fix).await;
-    const DID: &str = "did:key:z6MkScoped";
-    grant(&fix, &token, DID, "member", json!(["ctx-a", "ctx-b"])).await;
-    make_member(&fix, DID).await;
-
-    let (status, body) = call(
-        &fix,
-        "DELETE",
-        &format!("/v1/acl/{DID}?scopes=ctx-a"),
-        REVOKE,
-        &token,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-
-    let (status, body) = call(&fix, "GET", &format!("/v1/acl/{DID}"), SHOW, &token, None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["entry"]["scopes"], json!(["ctx-b"]));
-}
-
 // ---------------------------------------------------------------------------
 // Admin promotion (#1645). `acl/change-role` is the task the specification
 // defines for role transitions, and since promotion moved here it carries the
@@ -681,20 +583,14 @@ async fn reducing_a_members_scopes_is_still_allowed() {
 /// request on `vtc/members/update` was refused — so the gate could simply be
 /// walked around.
 #[tokio::test]
-async fn vti_ops_051_change_role_to_admin_without_a_live_step_up_is_refused() {
+async fn vti_ops_051_change_role_conferring_authority_without_a_live_step_up_is_refused() {
     let fix = build().await;
     let token = admin_token(&fix).await;
-    // Scoped, so the gesture is the whole gate (an unrestricted admin also
-    // needs another admin's consent, `unrestricted_admin_consent.rs`).
+    // To moderator, which implies the moderator administrative role, so the
+    // gesture is the whole gate (a community administrator also needs another
+    // holder's consent, `unrestricted_admin_consent.rs`).
     assert_eq!(
-        grant(
-            &fix,
-            &token,
-            "did:key:z6MkCandidate",
-            "member",
-            json!(["ctx-a"])
-        )
-        .await,
+        grant(&fix, &token, "did:key:z6MkCandidate", "member", json!([])).await,
         StatusCode::OK
     );
     make_member(&fix, "did:key:z6MkCandidate").await;
@@ -705,7 +601,7 @@ async fn vti_ops_051_change_role_to_admin_without_a_live_step_up_is_refused() {
         "/v1/acl/did:key:z6MkCandidate",
         CHANGE_ROLE,
         &token,
-        Some(json!({ "fromRole": "member", "toRole": "admin" })),
+        Some(json!({ "fromRole": "member", "toRole": "moderator" })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -728,16 +624,16 @@ async fn vti_ops_051_change_role_to_admin_without_a_live_step_up_is_refused() {
 }
 
 /// A role change brings the whole role-change pipeline with it: the ACL row
-/// moves and the member's role VAC is re-minted at the new role. (A promotion
-/// to admin runs the same pipeline behind an operation-bound passkey gesture,
-/// driven end to end in `signed_step_up.rs`.)
+/// moves and the member's role VAC is re-minted at the new role. (A move that
+/// confers administrative authority runs the same pipeline behind an
+/// operation-bound passkey gesture, driven end to end in `signed_step_up.rs`.)
 #[tokio::test]
 async fn a_role_change_runs_the_role_change_pipeline() {
     let fix = build().await;
     let token = admin_token(&fix).await;
     const DID: &str = "did:key:z6MkPromoted";
     assert_eq!(
-        grant(&fix, &token, DID, "member", json!(["ctx-a"])).await,
+        grant(&fix, &token, DID, "member", json!([])).await,
         StatusCode::OK
     );
     make_member(&fix, DID).await;
@@ -748,18 +644,21 @@ async fn a_role_change_runs_the_role_change_pipeline() {
         &format!("/v1/acl/{DID}"),
         CHANGE_ROLE,
         &token,
-        Some(json!({ "fromRole": "member", "toRole": "moderator" })),
+        Some(json!({ "fromRole": "member", "toRole": "custom:editor" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["entry"]["role"], "moderator");
+    assert_eq!(body["entry"]["role"], "custom:editor");
     assert!(body["entry"]["updatedAt"].as_str().is_some(), "{body}");
 
     let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, DID)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(entry.role, vtc_service::acl::VtcRole::Moderator);
+    assert_eq!(
+        entry.role,
+        vtc_service::acl::VtcRole::Custom("editor".into())
+    );
 
     // The pipeline's effect, not just the ACL write: the role assertion was
     // re-issued at the new role and the member repointed at it.
@@ -812,8 +711,9 @@ async fn vti_ops_050_self_promotion_is_refused_on_the_change_role_path() {
     assert_eq!(entry.role, vtc_service::acl::VtcRole::Member);
 }
 
-/// An ordinary role change is unaffected — the gate is on conferring admin,
-/// not on touching a role.
+/// A role change that confers no administrative authority is unaffected —
+/// the gate is on conferring authority, not on touching a role. A custom
+/// community role implies no administrative role.
 #[tokio::test]
 async fn a_non_admin_role_change_needs_no_step_up() {
     let fix = build().await;
@@ -826,11 +726,11 @@ async fn a_non_admin_role_change_needs_no_step_up() {
         "/v1/acl/did:key:z6MkLateral",
         CHANGE_ROLE,
         &token,
-        Some(json!({ "fromRole": "member", "toRole": "moderator" })),
+        Some(json!({ "fromRole": "member", "toRole": "custom:editor" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["entry"]["role"], "moderator");
+    assert_eq!(body["entry"]["role"], "custom:editor");
 }
 
 /// The other door onto the same authority. `acl/grant` writes an entry rather
@@ -847,7 +747,7 @@ async fn vti_ops_051_granting_the_admin_role_without_a_step_up_is_refused() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": { "subject": "did:key:z6MkFreshAdmin", "role": "admin", "scopes": ["ctx-a"] } })),
+        Some(json!({ "entry": { "subject": "did:key:z6MkFreshAdmin", "role": "moderator", "scopes": [] } })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -877,14 +777,18 @@ async fn vti_ops_051_granting_the_admin_role_without_a_step_up_is_refused() {
 async fn re_granting_an_admin_at_the_same_scopes_needs_no_step_up() {
     let fix = build().await;
     const DID: &str = "did:key:z6MkScopedAdmin";
+    let expires = now_epoch() + 3600;
     seed_entry(
         &fix.vtc,
         DID,
-        vtc_service::acl::VtcRole::Admin,
-        vec!["ctx-a".into()],
-        None,
+        vtc_service::acl::VtcRole::Moderator,
+        vec![],
+        Some(expires),
     )
     .await;
+    let at = chrono::DateTime::from_timestamp(expires as i64, 0)
+        .unwrap()
+        .to_rfc3339();
 
     // Same role, same scopes, new label — with no gesture.
     let plain = admin_token(&fix).await;
@@ -895,8 +799,8 @@ async fn re_granting_an_admin_at_the_same_scopes_needs_no_step_up() {
         GRANT,
         &plain,
         Some(
-            json!({ "entry": { "subject": DID, "role": "admin", "scopes": ["ctx-a"],
-                                "label": "Ops on-call" } }),
+            json!({ "entry": { "subject": DID, "role": "moderator", "scopes": [],
+                                "label": "Ops on-call", "expiresAt": at } }),
         ),
     )
     .await;
@@ -914,9 +818,10 @@ async fn re_granting_an_admin_at_the_same_scopes_needs_no_step_up() {
         "/v1/acl",
         GRANT,
         &plain,
-        // Still scoped, so the gesture is the whole gate: an unrestricted
-        // admin also needs another admin's consent (`unrestricted_admin_consent.rs`).
-        Some(json!({ "entry": { "subject": DID, "role": "admin", "scopes": ["ctx-a", "ctx-b"] } })),
+        // Lifting the expiry: a longer life is authority never granted, and a
+        // moderator confers nothing authority-conferring, so the gesture is
+        // the whole gate.
+        Some(json!({ "entry": { "subject": DID, "role": "moderator", "scopes": [] } })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -957,63 +862,13 @@ async fn vti_ops_050_granting_yourself_the_admin_role_is_refused() {
     );
 }
 
-/// A context admin may not mint an admin over a context it does not hold.
-///
-/// Found while moving the promotion here, and closed with it. `create_acl` has
-/// always run `validate_acl_modification`; `update_acl` never did, and the
-/// existing `caller_covers_admin_target` guard only fires on an entry that is
-/// *already* admin — so a ctx-a admin could not demote a peer scoped to
-/// `[ctx-a, ctx-b]`, but could promote a **member** with those scopes into
-/// exactly that entry.
-#[tokio::test]
-async fn a_context_admin_cannot_promote_across_a_context_it_does_not_hold() {
-    let fix = build().await;
-    let super_token = admin_token(&fix).await;
-    const DID: &str = "did:key:z6MkCrossScope";
-    assert_eq!(
-        grant(&fix, &super_token, DID, "member", json!(["ctx-a", "ctx-b"])).await,
-        StatusCode::OK
-    );
-    make_member(&fix, DID).await;
-
-    // An admin of ctx-a only. The entry is *visible* to them (the scopes
-    // overlap), which is exactly what makes this reachable.
-    let ctx_admin = fix
-        .signer(vtc_service::acl::VtcRole::Admin, vec!["ctx-a".into()], None)
-        .await;
-
-    let (status, body) = call(
-        &fix,
-        "PATCH",
-        &format!("/v1/acl/{DID}"),
-        CHANGE_ROLE,
-        &ctx_admin,
-        Some(json!({ "fromRole": "member", "toRole": "admin" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-
-    let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, DID)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(entry.role, vtc_service::acl::VtcRole::Member);
-}
-
 /// A grant that does not confer admin is untouched by any of this.
 #[tokio::test]
 async fn granting_a_non_admin_role_needs_no_step_up() {
     let fix = build().await;
     let token = admin_token(&fix).await;
     assert_eq!(
-        grant(
-            &fix,
-            &token,
-            "did:key:z6MkPlain",
-            "member",
-            json!(["ctx-a"])
-        )
-        .await,
+        grant(&fix, &token, "did:key:z6MkPlain", "member", json!([])).await,
         StatusCode::OK
     );
 }
@@ -1028,11 +883,7 @@ async fn vti_acl_052_an_admin_cannot_rewrite_its_own_entry() {
     let fix = build().await;
     let expires = now_epoch() + 3600;
     let token = fix
-        .signer(
-            vtc_service::acl::VtcRole::Admin,
-            vec!["ctx-a".into()],
-            Some(expires),
-        )
+        .signer(vtc_service::acl::VtcRole::Moderator, vec![], Some(expires))
         .await;
     let me = token.as_str();
 
@@ -1042,7 +893,7 @@ async fn vti_acl_052_an_admin_cannot_rewrite_its_own_entry() {
         "/v1/acl",
         GRANT,
         &token,
-        Some(json!({ "entry": { "subject": me, "role": "admin", "scopes": ["ctx-a"] } })),
+        Some(json!({ "entry": { "subject": me, "role": "moderator", "scopes": [] } })),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -1079,11 +930,7 @@ async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
     let fix = build().await;
     let expires = now_epoch() + 3600;
     let token = fix
-        .signer(
-            vtc_service::acl::VtcRole::Admin,
-            vec!["ctx-a".into()],
-            Some(expires),
-        )
+        .signer(vtc_service::acl::VtcRole::Admin, vec![], Some(expires))
         .await;
     let at = |secs: u64| {
         chrono::DateTime::from_timestamp(secs as i64, 0)
@@ -1094,11 +941,11 @@ async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
     for (what, entry) in [
         (
             "permanent",
-            json!({ "subject": "did:key:z6MkSib1", "role": "member", "scopes": ["ctx-a"] }),
+            json!({ "subject": "did:key:z6MkSib1", "role": "member", "scopes": [] }),
         ),
         (
             "later",
-            json!({ "subject": "did:key:z6MkSib2", "role": "member", "scopes": ["ctx-a"],
+            json!({ "subject": "did:key:z6MkSib2", "role": "member", "scopes": [],
                     "expiresAt": at(expires + 60) }),
         ),
     ] {
@@ -1122,7 +969,7 @@ async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
         &token,
         Some(
             json!({ "entry": { "subject": "did:key:z6MkSib3", "role": "member",
-                                "scopes": ["ctx-a"], "expiresAt": at(expires) } }),
+                                "scopes": [], "expiresAt": at(expires) } }),
         ),
     )
     .await;
@@ -1131,64 +978,6 @@ async fn vti_acl_053_an_expiring_admin_cannot_grant_past_its_own_expiry() {
         StatusCode::OK,
         "within the granter's expiry: {body}"
     );
-}
-
-/// Overlap makes an entry visible, not manageable. An administrator of ctx-a
-/// could previously rewrite a `[ctx-a, ctx-b]` member entry down to `[ctx-a]`,
-/// strip `ctx-b` with a scoped revoke, or move its role — each a change to
-/// authority in a context it does not administer.
-#[tokio::test]
-async fn a_context_admin_cannot_manage_an_entry_straddling_its_scope() {
-    let fix = build().await;
-    let super_token = admin_token(&fix).await;
-    const DID: &str = "did:key:z6MkStraddler";
-    assert_eq!(
-        grant(&fix, &super_token, DID, "member", json!(["ctx-a", "ctx-b"])).await,
-        StatusCode::OK
-    );
-    let ctx_admin = fix
-        .signer(vtc_service::acl::VtcRole::Admin, vec!["ctx-a".into()], None)
-        .await;
-
-    let (status, body) = call(
-        &fix,
-        "POST",
-        "/v1/acl",
-        GRANT,
-        &ctx_admin,
-        Some(json!({ "entry": { "subject": DID, "role": "member", "scopes": ["ctx-a"] } })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "rewrite: {body}");
-
-    let (status, body) = call(
-        &fix,
-        "DELETE",
-        &format!("/v1/acl/{DID}?scopes=ctx-b"),
-        REVOKE,
-        &ctx_admin,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "scoped revoke: {body}");
-
-    let (status, body) = call(
-        &fix,
-        "PATCH",
-        &format!("/v1/acl/{DID}"),
-        CHANGE_ROLE,
-        &ctx_admin,
-        Some(json!({ "fromRole": "member", "toRole": "moderator" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "change-role: {body}");
-
-    let entry = vtc_service::acl::get_acl_entry(&fix.vtc.state.acl_ks, DID)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(entry.allowed_contexts, vec!["ctx-a", "ctx-b"]);
-    assert_eq!(entry.role, vtc_service::acl::VtcRole::Member);
 }
 
 // ---------------------------------------------------------------------------
@@ -1264,7 +1053,7 @@ async fn acl_show_and_list_answer_the_same_on_both_doors() {
         &fix.vtc,
         "did:key:z6MkParityShow",
         vtc_service::acl::VtcRole::Moderator,
-        vec!["ctx-a".into()],
+        vec![],
         None,
     )
     .await;
@@ -1287,11 +1076,11 @@ async fn acl_show_and_list_answer_the_same_on_both_doors() {
     assert_eq!(status, StatusCode::OK, "{doc}");
     assert_eq!(doc["payload"], rest, "acl/show: one operation, one answer");
 
-    let (status, rest) = call(&fix, "GET", "/v1/acl?scope=ctx-a", LIST, &token, None).await;
+    let (status, rest) = call(&fix, "GET", "/v1/acl?role=moderator", LIST, &token, None).await;
     assert_eq!(status, StatusCode::OK, "{rest}");
     let (status, doc) = post_doc(
         &fix,
-        &signed_doc(&admin, LIST, json!({ "scope": "ctx-a" })).await,
+        &signed_doc(&admin, LIST, json!({ "role": "moderator" })).await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{doc}");
@@ -1325,37 +1114,11 @@ async fn acl_revoke_answers_the_same_on_both_doors() {
             &fix.vtc,
             did,
             vtc_service::acl::VtcRole::Member,
-            vec!["ctx-a".into(), "ctx-b".into()],
+            vec![],
             None,
         )
         .await;
     }
-
-    // Scope reduction.
-    let (status, rest) = call(
-        &fix,
-        "DELETE",
-        "/v1/acl/did:key:z6MkParityRest?scopes=ctx-b",
-        REVOKE,
-        &token,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{rest}");
-    let (status, doc) = post_doc(
-        &fix,
-        &signed_doc(
-            &admin,
-            REVOKE,
-            json!({ "subject": "did:key:z6MkParityDoc", "scopes": ["ctx-b"] }),
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{doc}");
-    let mut from_doc = without_stamps(doc["payload"].clone());
-    from_doc["entry"]["subject"] = json!("did:key:z6MkParityRest");
-    assert_eq!(from_doc, without_stamps(rest), "acl/revoke (reduce)");
 
     // Removal.
     let (status, rest) = call(
@@ -1410,8 +1173,9 @@ async fn acl_revoke_answers_the_same_on_both_doors() {
     );
 }
 
-/// The refusals #1738 added — full cover to revoke, no self-modification — are
-/// the operation's, so both doors give them.
+/// The refusals #1738 added — full cover to revoke (VTI-ACL-050: an
+/// administrator without `vtc.roles.assign` covers nobody), no
+/// self-modification — are the operation's, so both doors give them.
 #[tokio::test]
 async fn acl_revoke_refuses_the_same_on_both_doors() {
     let fix = build().await;
@@ -1420,7 +1184,7 @@ async fn acl_revoke_refuses_the_same_on_both_doors() {
         &fix.vtc,
         "did:key:z6MkParityStraddle",
         vtc_service::acl::VtcRole::Member,
-        vec!["ctx-a".into(), "ctx-b".into()],
+        vec![],
         None,
     )
     .await;
@@ -1428,7 +1192,7 @@ async fn acl_revoke_refuses_the_same_on_both_doors() {
     let (status, rest) = call(
         &fix,
         "DELETE",
-        "/v1/acl/did:key:z6MkParityStraddle?scopes=ctx-a",
+        "/v1/acl/did:key:z6MkParityStraddle",
         REVOKE,
         &token,
         None,
@@ -1440,7 +1204,7 @@ async fn acl_revoke_refuses_the_same_on_both_doors() {
         &signed_doc(
             &scoped,
             REVOKE,
-            json!({ "subject": "did:key:z6MkParityStraddle", "scopes": ["ctx-a"] }),
+            json!({ "subject": "did:key:z6MkParityStraddle" }),
         )
         .await,
     )
@@ -1448,7 +1212,7 @@ async fn acl_revoke_refuses_the_same_on_both_doors() {
     assert_eq!(doc["payload"]["code"], "permissionDenied", "{doc}");
     for said in [doc["payload"]["message"].as_str(), rest["message"].as_str()] {
         assert!(
-            said.is_some_and(|m| m.contains("holds authority outside your contexts")),
+            said.is_some_and(|m| m.contains("holds authority outside yours")),
             "the same refusal on both doors: {doc} / {rest}"
         );
     }
@@ -1480,7 +1244,7 @@ async fn acl_revoke_refuses_the_same_on_both_doors() {
             .await
             .unwrap()
             .unwrap();
-    assert_eq!(entry.allowed_contexts, vec!["ctx-a", "ctx-b"]);
+    assert_eq!(entry.role, vtc_service::acl::VtcRole::Member, "untouched");
 }
 
 /// `?scopes=` naming nothing is refused, not read as "remove the entry":
@@ -1494,7 +1258,7 @@ async fn acl_revoke_with_an_empty_scope_list_removes_nothing() {
         &fix.vtc,
         "did:key:z6MkParityEmpty",
         vtc_service::acl::VtcRole::Member,
-        vec!["ctx-a".into()],
+        vec![],
         None,
     )
     .await;
@@ -1538,7 +1302,7 @@ async fn acl_update_writes_what_the_equivalent_grant_writes() {
             &fix.vtc,
             did,
             vtc_service::acl::VtcRole::Member,
-            vec!["ctx-a".into()],
+            vec![],
             None,
         )
         .await;
@@ -1551,7 +1315,7 @@ async fn acl_update_writes_what_the_equivalent_grant_writes() {
         &token,
         Some(json!({ "entry": {
             "subject": "did:key:z6MkParityGrant", "role": "member",
-            "scopes": ["ctx-a", "ctx-b"], "label": "ops",
+            "scopes": [], "label": "ops",
         } })),
     )
     .await;
@@ -1561,7 +1325,7 @@ async fn acl_update_writes_what_the_equivalent_grant_writes() {
         &signed_doc(
             &admin,
             UPDATE,
-            json!({ "subject": "did:key:z6MkParityUpdate", "scopes": ["ctx-a", "ctx-b"], "label": "ops" }),
+            json!({ "subject": "did:key:z6MkParityUpdate", "label": "ops" }),
         )
         .await,
     )

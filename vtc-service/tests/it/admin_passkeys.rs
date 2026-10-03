@@ -14,7 +14,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
-use vti_common::acl::{AclEntry, Role, store_acl_entry};
+use vtc_service::acl::{AdminAuthority, VtcAclEntry, VtcRole, store_acl_entry};
 use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::passkey::{
@@ -133,8 +133,15 @@ async fn build_fixture(with_audit: bool) -> Fixture {
     store_admin_entry(&vtc.state.passkey_ks, &admin_entry)
         .await
         .unwrap();
-    let acl_entry = AclEntry::new(admin_did.clone(), Role::Admin, "did:key:vtc-install")
-        .with_label(Some("install bootstrap".into()));
+    let acl_entry = VtcAclEntry {
+        label: Some("install bootstrap".into()),
+        ..VtcAclEntry::new(
+            &admin_did,
+            VtcRole::Admin,
+            AdminAuthority::community_admin(),
+            "did:key:vtc-install",
+        )
+    };
     store_acl_entry(&vtc.state.acl_ks, &acl_entry)
         .await
         .unwrap();
@@ -299,7 +306,14 @@ async fn list_is_empty_for_an_admin_with_no_passkeys() {
     let did = format!("did:key:z6Mk{}", Uuid::new_v4().simple());
     store_acl_entry(
         &fix.state.acl_ks,
-        &AclEntry::new(did.clone(), Role::Admin, "did:key:vtc-wallet"),
+        &VtcAclEntry {
+            ..VtcAclEntry::new(
+                &did,
+                VtcRole::Admin,
+                AdminAuthority::community_admin(),
+                "did:key:vtc-wallet",
+            )
+        },
     )
     .await
     .unwrap();

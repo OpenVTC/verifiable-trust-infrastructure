@@ -125,9 +125,10 @@ async fn signer(fix: &Fixture, role: VtcRole) -> Party {
         &fix.state.acl_ks,
         &VtcAclEntry {
             did: who.did.clone(),
+            admin: role.implied_authority(),
+            delegated_by: None,
             role,
             label: None,
-            allowed_contexts: vec![],
             created_at: now_epoch(),
             created_by: "test".into(),
             updated_at: None,

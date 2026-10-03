@@ -38,9 +38,10 @@ async fn seed(mock: &MockVtcTransport, did: &str, role: VtcRole) {
         &mock.vtc.state.acl_ks,
         &VtcAclEntry {
             did: did.into(),
+            admin: role.implied_authority(),
+            delegated_by: None,
             role,
             label: None,
-            allowed_contexts: vec![],
             created_at: 0,
             created_by: "did:key:vtc-install".into(),
             updated_at: None,

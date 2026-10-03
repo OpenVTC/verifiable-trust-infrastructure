@@ -716,6 +716,15 @@ pub enum AuditEvent {
     /// envelope's hashed `target_did_*` members.
     AuthorityReducedUnopposed(AuthorityReducedUnopposedData),
 
+    /// The VTC's ACL rows written before role-based administration were
+    /// migrated in place at boot (`vtc-admin-roles.md` §9). One row per boot
+    /// that migrated anything, naming the counts and every context-scoped
+    /// administrator that came across with **no** administrative role.
+    /// [`AuditSeverity::Critical`]: those subjects lost authority without any
+    /// administrator acting, and the remaining community administrators must
+    /// re-grant or accept that.
+    AclMigrated(AclMigratedData),
+
     /// One administrator raised more actions for approval in a short window
     /// than a person plausibly means to — the approval-fatigue pattern, where
     /// a compromised requester raises requests until a tired approver clicks
@@ -864,6 +873,7 @@ impl AuditEvent {
             Self::VtaOperation(..) => "VtaOperation",
             Self::GitNsBreakGlass(..) => "GitNsBreakGlass",
             Self::AuthorityReducedUnopposed(..) => "AuthorityReducedUnopposed",
+            Self::AclMigrated(..) => "AclMigrated",
             Self::AdminActionBurst(..) => "AdminActionBurst",
             Self::AdminActionEffect(..) => "AdminActionEffect",
         }
@@ -879,6 +889,7 @@ impl AuditEvent {
             Self::EmergencyBootstrapInvoked(..)
             | Self::GitNsBreakGlass(..)
             | Self::AuthorityReducedUnopposed(..)
+            | Self::AclMigrated(..)
             | Self::AdminActionBurst(..) => AuditSeverity::Critical,
             _ => AuditSeverity::Info,
         }
@@ -1069,6 +1080,19 @@ pub struct AuthorityReducedUnopposedData {
     pub prior_role: String,
     /// The subject's scopes before the act (empty: unrestricted).
     pub prior_scopes: Vec<String>,
+}
+
+/// Payload for [`AuditEvent::AclMigrated`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AclMigratedData {
+    /// Rows rewritten in the role-based shape.
+    pub migrated: u32,
+    /// Of those, the rows that came across holding an administrative role.
+    pub administrators: u32,
+    /// Context-scoped administrators that came across with no administrative
+    /// role, to be re-granted (`acl/update`) or let go.
+    pub lost_admin_authority: Vec<String>,
 }
 
 /// Payload for [`AuditEvent::AdminActionBurst`].

@@ -106,7 +106,8 @@ async fn build_fixture() -> Fixture {
             did: ADMIN_DID.into(),
             role: VtcRole::Admin,
             label: Some("test admin".into()),
-            allowed_contexts: vec![],
+            admin: VtcRole::Admin.implied_authority(),
+            delegated_by: None,
             created_at: now,
             created_by: "did:key:vtc-install".into(),
             updated_at: None,
@@ -222,9 +223,10 @@ async fn seed_member(fix: &Fixture, did: &str, role: VtcRole) {
         &fix.acl_ks,
         &VtcAclEntry {
             did: did.into(),
+            admin: role.implied_authority(),
+            delegated_by: None,
             role,
             label: None,
-            allowed_contexts: vec![],
             created_at: now,
             created_by: "did:key:vtc-install".into(),
             updated_at: None,
@@ -741,8 +743,42 @@ async fn member_credentials_refuses_a_non_admin() {
 // M1.5 — PATCH
 // ---------------------------------------------------------------------------
 
+/// A community role carrying no administrative authority moves here, through
+/// the role-change ceremony.
 #[tokio::test]
-async fn patch_member_role_member_to_moderator_succeeds_and_emits_audit() {
+async fn patch_member_role_member_to_a_custom_role_succeeds_and_emits_audit() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
+
+    let (status, body) = send(
+        &fix,
+        "PATCH",
+        "/v1/members/did:key:zM1",
+        UPDATE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({ "role": "custom:editor" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    // `update` wraps the row as `{member: …}` (#1094).
+    let body = &body["member"];
+    assert_eq!(body["role"], "custom:editor");
+
+    // Confirm the on-disk ACL row reflects the change.
+    let entry = vtc_service::acl::get_acl_entry(&fix.acl_ks, "did:key:zM1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.role, VtcRole::Custom("editor".into()));
+    assert!(!entry.is_administrator());
+}
+
+/// `moderator` implies the `moderator` administrative role, so moving to it
+/// changes administrative authority (VTI-ACL-030): this metadata door refuses
+/// it with `adminRoleForbidden`, naming `acl/change-role`, which carries the
+/// passkey gesture bound to the move — and changes nothing.
+#[tokio::test]
+async fn patch_member_role_to_a_role_implying_admin_authority_is_refused() {
     let fix = build_fixture().await;
     seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
 
@@ -755,17 +791,24 @@ async fn patch_member_role_member_to_moderator_succeeds_and_emits_audit() {
         Some(json!({ "role": "moderator" })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "got {body}");
-    // `update` wraps the row as `{member: …}` (#1094).
-    let body = &body["member"];
-    assert_eq!(body["role"], "moderator");
-
-    // Confirm the on-disk ACL row reflects the change.
+    assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
+    assert_eq!(
+        rest_error_code(&body),
+        UPDATE_ERR_ADMIN_ROLE_FORBIDDEN,
+        "{body}"
+    );
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("acl/change-role"),
+        "{body}"
+    );
     let entry = vtc_service::acl::get_acl_entry(&fix.acl_ks, "did:key:zM1")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(entry.role, VtcRole::Moderator);
+    assert_eq!(entry.role, VtcRole::Member);
 }
 
 /// `vtc/members/update/0.1` declares `adminRoleForbidden` and its consumer

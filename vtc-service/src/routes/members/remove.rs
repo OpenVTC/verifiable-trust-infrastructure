@@ -28,13 +28,13 @@ use serde::{Deserialize, Serialize};
 use vti_common::error::AppError;
 
 use crate::acl::admin_consent::Operation;
-use crate::acl::{get_acl_entry, is_acl_entry_visible};
+use crate::acl::get_acl_entry;
 use crate::auth::AuthClaims;
-use crate::ceremony::orchestrate::ADMIN_REMOVE_ERR_NOT_FOUND;
+
 use crate::ceremony::{LeaveOutcome, remove_inner};
 use crate::error::TaskError;
 use crate::members::Disposition;
-use crate::routes::acl::{as_vti_acl_entry, caller_covers_target};
+use crate::routes::acl::caller_covers_target;
 use crate::server::AppState;
 
 #[derive(Debug, Deserialize, Default)]
@@ -118,20 +118,19 @@ pub(crate) async fn admin_remove_inner(
         ))
         .into());
     }
-    if let Some(entry) = get_acl_entry(&state.acl_ks, target_did).await? {
-        if !is_acl_entry_visible(actor, &as_vti_acl_entry(&entry)) {
-            return Err(TaskError::declared(
-                ADMIN_REMOVE_ERR_NOT_FOUND,
-                AppError::NotFound(format!("member not found: {target_did}")),
-            ));
-        }
-        if !caller_covers_target(actor, &entry) {
-            return Err(AppError::Forbidden(format!(
-                "{target_did} holds authority outside your contexts — only an administrator \
-                 whose scope covers every context it acts in can remove it (VTI-ACL-050)"
-            ))
-            .into());
-        }
+    // Removing a member is `vtc.members.manage` (checked by the door). Removing
+    // an **administrator** also takes its administrative authority away, which
+    // only an administrator whose entry covers it may do (VTI-ACL-050).
+    if let Some(entry) = get_acl_entry(&state.acl_ks, target_did).await?
+        && entry.is_administrator()
+        && !caller_covers_target(state, actor_did, &entry).await?
+    {
+        return Err(AppError::Forbidden(format!(
+            "{target_did} is an administrator holding authority outside yours — only an \
+             administrator holding vtc.roles.assign over everything it holds can remove it \
+             (VTI-ACL-050)"
+        ))
+        .into());
     }
     remove_inner(
         state,

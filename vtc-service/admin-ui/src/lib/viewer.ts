@@ -5,11 +5,14 @@ import { useQuery } from "@tanstack/react-query";
 import { probeSession, type WhoamiResponse } from "@/lib/api";
 
 /**
- * A community ("super") administrator: the admin role with no context
- * restriction. It is what the VTC calls the community-administrator
- * capability. The shell uses it to hide super-admin plugins; a view uses it to
- * hide actions only such an admin can sign. The VTC decides either way — this
- * only keeps the console from offering what it would refuse.
+ * A signed-in administrator, as the session says: the admin session role with
+ * no context restriction. Since administration became role-based
+ * (`docs/05-design-notes/vtc-admin-roles.md`) every administrative role signs
+ * in this way — a moderator or an auditor as well as a community
+ * administrator — so this is only a hint for what the console offers. What the
+ * viewer may actually do is the capabilities its own ACL entry holds, which
+ * the VTC reads at every operation and refuses by name (`does not hold
+ * vtc.…`); the Access-control page shows them.
  */
 export function isSuperAdmin(who: WhoamiResponse | null | undefined): boolean {
   return !!who && who.roles.includes("admin") && who.scopes.length === 0;

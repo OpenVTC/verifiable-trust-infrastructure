@@ -363,13 +363,10 @@ pub async fn admin_list(
     let entry = crate::acl::get_acl_entry(&state.acl_ks, subject)
         .await?
         .filter(|e| !e.is_expired(now_epoch()));
-    // A community-wide administrator's authority covers every subject; a
-    // context-scoped one's, only a member whose entry lies in their contexts
-    // (the same visibility `acl/show` applies).
-    let within = actor.is_super_admin()
-        || entry.as_ref().is_some_and(|e| {
-            vti_common::acl::is_acl_entry_visible(actor, &crate::routes::acl::as_vti_acl_entry(e))
-        });
+    // Standing over a member's factors is `vtc.members.manage`, and over an
+    // administrator's an entry that covers theirs (VTI-ACL-050) — one rule with
+    // the step-up approver door.
+    let within = crate::step_up_approver::admin_covers(state, actor, subject).await?;
     if !within {
         return Err(unknown());
     }

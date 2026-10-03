@@ -307,6 +307,17 @@ async fn handle_members_solicit_vmc(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
+    if let Err(reject) = super::capable_signer(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::MembersManage,
+        None,
+    )
+    .await
+    {
+        return reject;
+    }
     let (_, payload) = match admin_with::<members_solicit_vmc::Payload>(state, ctx, &doc).await {
         Ok(p) => p,
         Err(reject) => return reject,

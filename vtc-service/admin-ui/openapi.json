@@ -670,7 +670,7 @@
     "schemas": {
       "AclEntryEnvelope": {
         "type": "object",
-        "description": "`{ entry: … }` — the shape `acl/{grant,show,change-role}/0.1` publish.\n\nAll three returned the row bare until #1109. The row itself always\nconformed; only the wrapper was missing, which is the same envelope defect\nthe VTC family carried on eight tasks. It went unseen here for longer\nbecause the shared `spec/{acl,audit,auth,config,policy}/*` families are\noutside the conformance table's census — a stated limit, since both daemons\nserve them — so no fixture ever described these responses. The\nresponse-conformance layer needed no census: it validated what the handler\nsent.",
+        "description": "`{ entry: … }` — the shape `acl/{grant,show,change-role}/0.1` publish.",
         "required": [
           "entry"
         ],
@@ -682,7 +682,7 @@
       },
       "AclEntryResponse": {
         "type": "object",
-        "description": "Canonical `acl/_shared` **AclEntry**.\n\nRenames from VTC's storage shape: `did` → `subject`,\n`allowed_contexts` → `scopes`. Timestamps are RFC3339 strings, not\nunix epochs — canonical types them `format: date-time`, and an\ninteger there would be a silent contract break rather than a\ncosmetic one.",
+        "description": "Canonical `acl/_shared/0.1` **AclEntry**.\n\n`scopes` is always empty: a VTC holds no contexts (**VTI-VTC-010**), and an\nentry renders to 0.1 only when its role says everything about its authority\n([`expressible_in_v0_1`]) — read under this community's 0.1 convention, an\nempty list on `admin` is the whole community and on every other role is\nnowhere, which is exactly what [`VtcRole::implied_authority`] gives.",
         "required": [
           "subject",
           "role",

@@ -4,9 +4,9 @@
 //! `POST /v1/trust-tasks` over HTTPS.
 //!
 //! The same calls, on the same client methods, must answer alike whichever
-//! transport the client was built for: a grant, a show that sees it, a
-//! widening update, a refused narrowing whose specification code survives the
-//! trip, and a revoke. Over a session the document is bound to its sender, so
+//! transport the client was built for: a 0.2 grant, a show that sees it, an
+//! update, a refused update whose specification code survives the trip, and a
+//! revoke. Over a session the document is bound to its sender, so
 //! a call whose key names another DID is refused before anything is sent —
 //! the counterpart of `git_ns_vtc_client.rs`'s same check for `git-ns/*`.
 //!
@@ -15,7 +15,7 @@
 
 #![cfg(feature = "transport-harness")]
 
-use vtc_client::acl::{AclGrant, AclUpdate};
+use vtc_client::acl::{AclGrantV02, AclUpdateV02};
 use vtc_client::{HolderKey, VtcClient, VtcError};
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::server::AppState;
@@ -42,7 +42,8 @@ async fn seed(state: &AppState, did: &str) {
             did: did.into(),
             role: VtcRole::Admin,
             label: None,
-            allowed_contexts: vec![],
+            admin: VtcRole::Admin.implied_authority(),
+            delegated_by: None,
             created_at: 0,
             created_by: "did:key:vtc-install".into(),
             updated_at: None,
@@ -54,87 +55,71 @@ async fn seed(state: &AppState, did: &str) {
     .expect("seed the community administrator");
 }
 
-/// Grant a `member` entry, show it, widen its scopes, refuse a narrowing
-/// update, and revoke it — over whatever transport `client` was built for.
+/// Grant a `member` entry, show it, amend its label, refuse an update outside
+/// its ceiling, and revoke it — over whatever transport `client` was built for.
 ///
-/// A `member` grant (not `admin`, and never community-wide) so none of this
-/// needs the passkey gesture or admin-consent ceremony `acl/grant` and
-/// `acl/update` ask for when the write confers administrator authority — that
-/// ceremony is exercised by `cnm access`'s own tests, not the transport wiring
-/// this file is for.
+/// A `member` grant with no administrative role, so none of this needs the
+/// passkey gesture or consent ceremony `acl/grant` and `acl/update` ask for
+/// when the write confers administrative authority — that is exercised by
+/// `admin_roles.rs`, not the transport wiring this file is for.
 async fn grant_show_widen_refuse_revoke(client: &VtcClient, key: &HolderKey, over: &str) {
     let subject = format!("did:key:z6MkSubject{over}");
 
     let granted = client
-        .acl_grant(
-            &AclGrant {
+        .acl_grant_v0_2(
+            &AclGrantV02 {
                 subject: subject.clone(),
-                role: "member".into(),
-                scopes: vec!["ctx-a".into()],
+                admin_role: "member".into(),
+                capabilities: Some(vec![]),
                 label: Some("test".into()),
-                expires_at: None,
-                reason: None,
+                ..Default::default()
             },
             key,
         )
         .await
         .unwrap_or_else(|e| panic!("grant over {over}: {e}"));
-    assert_eq!(granted.entry.subject, subject, "over {over}");
-    assert_eq!(granted.entry.role, "member", "over {over}");
-    assert_eq!(
-        granted.entry.scopes,
-        vec!["ctx-a".to_string()],
-        "over {over}"
-    );
+    let granted = serde_json::to_value(&granted).unwrap();
+    assert_eq!(granted["entry"]["subject"], subject, "over {over}");
+    assert_eq!(granted["entry"]["role"], "member", "over {over}");
 
     let shown = client
-        .acl_show(&subject, key)
+        .acl_show_v0_2(&subject, key)
         .await
         .unwrap_or_else(|e| panic!("show over {over}: {e}"));
-    let entry = shown
-        .entry
-        .unwrap_or_else(|| panic!("over {over}: no entry"));
-    assert_eq!(entry.subject, subject, "over {over}");
+    let shown = serde_json::to_value(&shown).unwrap();
+    assert_eq!(shown["entry"]["subject"], subject, "over {over}");
 
-    let widened = client
-        .acl_update(
-            &AclUpdate {
+    let amended = client
+        .acl_update_v0_2(
+            &AclUpdateV02 {
                 subject: subject.clone(),
-                label: None,
-                scopes: Some(vec!["ctx-a".into(), "ctx-b".into()]),
-                expires_at: None,
-                reason: None,
+                label: Some(Some("ops".into())),
+                ..Default::default()
             },
             key,
         )
         .await
-        .unwrap_or_else(|e| panic!("widen over {over}: {e}"));
-    assert_eq!(
-        widened.entry.scopes,
-        vec!["ctx-a".to_string(), "ctx-b".to_string()],
-        "over {over}"
-    );
+        .unwrap_or_else(|e| panic!("update over {over}: {e}"));
+    let amended = serde_json::to_value(&amended).unwrap();
+    assert_eq!(amended["entry"]["label"], "ops", "over {over}");
 
     // A refusal carries the specification's code, and the whole
-    // `trust-task-error` document, on every transport.
-    let narrowed = client
-        .acl_update(
-            &AclUpdate {
+    // `trust-task-error` document, on every transport: an entry with no
+    // administrative role has an empty ceiling.
+    let refused = client
+        .acl_update_v0_2(
+            &AclUpdateV02 {
                 subject: subject.clone(),
-                label: None,
-                scopes: Some(vec!["ctx-a".into()]),
-                expires_at: None,
-                reason: None,
+                capabilities: Some(Some(vec!["vtc.audit.read".into()])),
+                ..Default::default()
             },
             key,
         )
         .await
-        .expect_err("a narrowing update is refused");
+        .expect_err("a capability outside the ceiling is refused");
     assert!(
-        narrowed
-            .to_string()
-            .contains("acl/update:narrowingNotPermitted"),
-        "over {over}: {narrowed}"
+        refused.to_string().contains("capabilityOutsideCeiling"),
+        "over {over}: {refused}"
     );
 
     let revoked = client

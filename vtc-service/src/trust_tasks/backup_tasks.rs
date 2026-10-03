@@ -128,11 +128,33 @@ pub(super) async fn dispatch(
         Ok(a) => a,
         Err(reject) => return Some(reject),
     };
-    // Every verb is an unrestricted administrator's, and the shared ops check
-    // it too; checking here first means a refusal is the same whatever the
-    // payload says.
-    if let Err(e) = actor.require_super_admin() {
-        return Some(app_error_to_reject(&doc, &e));
+    // Export is `vtc.backup.export`; import replaces the ACL and is
+    // `vtc.backup.restore` (vtc-admin-roles.md §4). `abort` cancels a bundle
+    // of either kind, so either suffices — and a bundle belongs to whoever
+    // opened it. Checked before the payload, so a refusal is the same
+    // whatever the payload says.
+    {
+        use crate::acl::Capability::{BackupExport, BackupRestore};
+        let entry = match crate::acl::get_acl_entry(&state.acl_ks, &actor.did).await {
+            Ok(e) => e,
+            Err(e) => return Some(app_error_to_reject(&doc, &e)),
+        };
+        let can = |c| entry.as_ref().is_some_and(|e| e.can(c, None));
+        let (allowed, needed) = match handler {
+            Op::InitiateExport | Op::GetChunk | Op::CompleteExport => {
+                (can(BackupExport), BackupExport)
+            }
+            Op::InitiateImport | Op::PutChunk | Op::FinalizeImport => {
+                (can(BackupRestore), BackupRestore)
+            }
+            Op::Abort => (can(BackupExport) || can(BackupRestore), BackupExport),
+        };
+        if !allowed {
+            return Some(app_error_to_reject(
+                &doc,
+                &crate::acl::capability_refusal(&actor.did, needed, None),
+            ));
+        }
     }
     // The verbs that carry the password, or open the bundle it unlocks, are
     // served only end to end. The chunks are ciphertext.

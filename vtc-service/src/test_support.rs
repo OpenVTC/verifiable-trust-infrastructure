@@ -598,9 +598,10 @@ impl TestVtc {
                 &self.state.acl_ks,
                 &crate::acl::VtcAclEntry {
                     did: did.to_string(),
+                    admin: crate::acl::legacy_seed_authority(&vtc_role, &contexts),
+                    delegated_by: None,
                     role: vtc_role,
                     label: None,
-                    allowed_contexts: contexts.clone(),
                     created_at: now_epoch(),
                     created_by: "test-support".into(),
                     updated_at: None,

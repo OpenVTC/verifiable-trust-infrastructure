@@ -113,15 +113,28 @@ enum AclCommands {
         /// The subject DID the entry grants a role to.
         #[arg(long)]
         did: String,
-        /// Role: admin | moderator | issuer | member | custom:<name>.
+        /// Community role: admin | moderator | issuer | member | custom:<name>.
         #[arg(long, default_value = "member")]
         role: String,
         /// Human-readable label.
         #[arg(long)]
         label: Option<String>,
-        /// Comma-separated context IDs to scope the entry to.
-        #[arg(long, value_delimiter = ',')]
+        /// Refused: a community holds no contexts (VTI-VTC-010). Kept so an
+        /// old script fails loudly rather than being misread.
+        #[arg(long, value_delimiter = ',', hide = true)]
         contexts: Vec<String>,
+        /// Administrative role: community-admin | moderator | vetting-lead |
+        /// repo-manager | credential-officer | auditor | approver | none.
+        /// Omitted: the one the community role implies (admin →
+        /// community-admin, moderator → moderator, issuer →
+        /// credential-officer, anything else → none).
+        #[arg(long)]
+        admin_role: Option<String>,
+        /// Narrow the administrative role to this capability, optionally at
+        /// a resource (`git.repo.manage@git-ns:github.com/acme`). Repeatable.
+        /// Omitted: the role's full ceiling.
+        #[arg(long = "capability")]
+        capabilities: Vec<String>,
         /// Expiry in seconds from now (omit for no expiry).
         #[arg(long)]
         expires: Option<u64>,
@@ -355,6 +368,8 @@ async fn main() {
                     role,
                     label,
                     contexts,
+                    admin_role,
+                    capabilities,
                     expires,
                 } => {
                     acl_cli::run_acl_add(acl_cli::AclAddArgs {
@@ -363,6 +378,8 @@ async fn main() {
                         role,
                         label,
                         contexts,
+                        admin_role,
+                        capabilities,
                         expires,
                     })
                     .await
@@ -570,7 +587,10 @@ async fn run_invite_cli(
             did: admin_did.clone(),
             role: VtcRole::Admin,
             label: Some("vtc admin invite".into()),
-            allowed_contexts: vec![],
+            // `vtc-admin-roles.md` §9: an invited administrator is a
+            // community administrator with the full ceiling.
+            admin: vtc_service::acl::AdminAuthority::community_admin(),
+            delegated_by: None,
             created_at: now_epoch(),
             created_by: format!("vtc-cli/{}", env!("CARGO_PKG_VERSION")),
             updated_at: None,
@@ -586,7 +606,7 @@ async fn run_invite_cli(
             "grant",
             &entry.did,
             Some(&entry.role),
-            &entry.allowed_contexts,
+            &entry.capability_list(),
         )
         .await?;
     }

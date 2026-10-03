@@ -205,7 +205,8 @@ async fn the_member_and_inviter_verbs_answer_those_members() {
     }
 }
 
-/// A `Moderator` or `Issuer` manages only the invitations it issued: another
+/// A `Moderator` — holding `vtc.invitations.manage` and not `vtc.roles.assign`
+/// — manages only the invitations it issued: another
 /// inviter's (an administrator's here) is absent from its list, and revoking
 /// or delivering it is refused exactly as an invitation that does not exist
 /// is. It cannot confer a role by invitation either. An administrator sees
@@ -215,7 +216,8 @@ async fn an_inviter_below_admin_manages_only_its_own_invitations() {
     let (vtc, _) = vtc().await;
     let admin = admin(&vtc).await;
     let unknown = "urn:uuid:00000000-0000-4000-8000-000000000000";
-    for role in [VtcRole::Moderator, VtcRole::Issuer] {
+    {
+        let role = VtcRole::Moderator;
         let inviter = party_with_role(&vtc, role.clone(), &[]).await;
         let theirs = invitation(&vtc, &admin).await;
         let own = {
@@ -334,17 +336,35 @@ async fn the_admin_and_inviter_verbs_refuse_a_member() {
     }
 }
 
-/// A `Moderator` may invite but not run the administrator's reads.
+/// A `Moderator` holds the `moderator` administrative role, so it runs the
+/// administrator's reads, and `solicit-vmc` through the `vtc.members.manage`
+/// it holds (`vtc-admin-roles.md` §4). An auditor reads too, and is refused
+/// `solicit-vmc`, a capability it does not hold (VTI-ACL-030).
 #[tokio::test]
-async fn the_admin_verbs_refuse_a_moderator() {
+async fn the_admin_verbs_answer_by_administrative_role_and_capability() {
     let (vtc, request_id) = vtc().await;
     let moderator = party_with_role(&vtc, VtcRole::Moderator, &[]).await;
+    let auditor = Party::new();
+    vtc_service::acl::store_acl_entry(
+        &vtc.state.acl_ks,
+        &vtc_service::acl::VtcAclEntry::new(
+            &auditor.did,
+            VtcRole::Member,
+            vtc_service::acl::AdminAuthority::for_role(vtc_service::acl::AdminRole::Auditor),
+            "test",
+        ),
+    )
+    .await
+    .unwrap();
     for (uri, body, least) in verbs(&request_id, "x") {
         if least != Least::Admin {
             continue;
         }
-        let (_, doc) = call(&vtc, &moderator, uri, body).await;
-        assert_eq!(error_code(&doc), Some("permissionDenied"), "{uri}: {doc}");
+        let (_, doc) = call(&vtc, &moderator, uri, body.clone()).await;
+        assert_ne!(error_code(&doc), Some("permissionDenied"), "{uri}: {doc}");
+        let (_, doc) = call(&vtc, &auditor, uri, body).await;
+        let expected = (uri == MEMBERS_SOLICIT_VMC).then_some("permissionDenied");
+        assert_eq!(error_code(&doc), expected, "{uri}: {doc}");
     }
 }
 

@@ -40,7 +40,7 @@ const routes = (
   }),
   taskRoute("https://trusttasks.org/spec/vtc/members/removed/0.1", { removed: [] }),
   taskRoute("https://trusttasks.org/spec/vtc/members/show/0.1", { member: member(BOB, "Bob Mensah") }),
-  taskRoute("https://trusttasks.org/spec/acl/list/0.1", { entries: [], truncated: false }),
+  taskRoute("https://trusttasks.org/spec/acl/list/0.2", { entries: [], truncated: false }),
   taskRoute(
     TASK_RIGHT_LIST,
     over.rightsStatus

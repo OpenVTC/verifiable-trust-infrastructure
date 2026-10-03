@@ -1,8 +1,12 @@
-// ACL plugin — list + create + revoke.
+// ACL plugin — list, create, edit and revoke.
 //
-// The canonical `acl/*` family, each verb a signed document. List supports an
-// optional context filter (server-side). Create form takes DID, role,
-// optional label + allowed contexts + expires_at. Revoke removes the entry.
+// The canonical `acl/*` family, each verb a signed document. Administration is
+// role-based (`docs/05-design-notes/vtc-admin-roles.md`): each entry shows its
+// administrative role and what it may administer — its capabilities, narrowed
+// and qualified as granted — beside the community role its membership carries.
+// Add entry picks an administrative role and may narrow its capabilities, with
+// a resource for the ones that take one. Edit narrows or widens an existing
+// entry's capabilities. Revoke removes the entry.
 
 import { useEffect, useState } from "react";
 import {
@@ -14,12 +18,22 @@ import { Copy, Mail, Pencil, Plus, RefreshCw, ShieldCheck, X } from "lucide-reac
 
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import {
+  ADMIN_ROLES,
+  NO_ADMIN_ROLE,
+  adminRoleInfo,
+  capabilityInfo,
+  communityRoleOf,
+  describeAuthority,
   fetchAclPage,
   grantAcl,
+  grantLabel,
+  grantRequest,
   revokeAcl,
+  updateAcl,
   type AclEntry,
   type AclGrantRequest,
   type AclListResponse,
+  type CapabilityScope,
 } from "@/lib/acl";
 import {
   gestureFromConfirm,
@@ -47,44 +61,33 @@ import type {
   InvitesListResponse,
 } from "@/lib/wire-types";
 
-const fetchAcl = (scope: string | null): Promise<AclListResponse> =>
-  fetchAclPage(scope ? { scope } : {});
+const fetchAcl = (role: string | null): Promise<AclListResponse> =>
+  fetchAclPage(role ? { role } : {});
 
-// Granting `admin` may need a passkey gesture bound to this one grant (#1645):
-// the same gate the promotion path carries, because it is the same authority
-// by another route. The daemon asks for it only where the write actually
-// widens what the subject holds, so a label edit (`patchAclLabel`, which
-// re-grants at the existing role and scopes) does not. Making an unrestricted
-// admin is then parked for other administrators' approval: the grant throws a
+// Widening administrative authority asks for a passkey gesture bound to this
+// one grant (#1645), and granting an authority-conferring capability is then
+// parked for its other holders' approval (VTI-APV-018): the grant throws a
 // `ParkedAction`, which the toast shows as a success linking to the action.
 const createAcl = (req: AclGrantRequest, confirmGesture: ConfirmGesture): Promise<AclEntry> =>
   grantAcl(req, confirmGesture);
 
 // Revoking an administrator needs a passkey gesture bound to this one
-// revocation, and revoking another unrestricted one a third administrator's
-// approval (VTI-APV-019). `revokeAcl` asks for the first and parks the
-// revocation for the second; any other entry is removed with neither.
+// revocation, and taking authority-conferring capabilities away another
+// holder's approval (VTI-APV-019).
 const deleteAcl = (subject: string, confirmGesture: ConfirmGesture): Promise<void> =>
   revokeAcl(subject, confirmGesture);
 
-// A label edit is not a role change, so it goes through `acl/grant`
-// re-stating the entry with its existing role — `acl/change-role` is
-// role-only and would reject this.
+// A label edit is an `acl/update/0.2` that replaces the label and nothing
+// else, so it widens nothing and asks for no gesture.
 async function patchAclLabel(args: {
   entry: AclEntry;
   label: string;
   confirmGesture: ConfirmGesture;
 }): Promise<AclEntry> {
-  return grantAcl(
+  return updateAcl(
     {
-      entry: {
-        subject: args.entry.subject,
-        role: args.entry.role,
-        label: args.label,
-        scopes: args.entry.scopes,
-        // Absent, never null: the schema types it as a string.
-        ...(args.entry.expiresAt ? { expiresAt: args.entry.expiresAt } : {}),
-      },
+      subject: args.entry.subject,
+      label: args.label === "" ? null : args.label,
       reason: "label updated from the admin UI",
     },
     args.confirmGesture,
@@ -105,12 +108,13 @@ async function fetchInvites(): Promise<InvitesListResponse> {
 
 /**
  * Mint an admin invite, a signed document. Inviting someone who is not an
- * admin yet writes an unrestricted admin entry, so it costs what `acl/grant`
- * of one costs: a passkey gesture bound to this invite — asked for with
- * `confirmGesture` when the VTC refuses for want of one — and another admin's
- * approval (VTI-APV-014), for which the invite is parked as an action and
- * thrown as a `ParkedAction`. Its install URL and claim code are then shown
- * once, to the requester, on the completed action (Actions page).
+ * admin yet writes a community-administrator entry, so it costs what
+ * `acl/grant` of one costs: a passkey gesture bound to this invite — asked for
+ * with `confirmGesture` when the VTC refuses for want of one — and another
+ * community administrator's approval (VTI-APV-018), for which the invite is
+ * parked as an action and thrown as a `ParkedAction`. Its install URL and
+ * claim code are then shown once, to the requester, on the completed action
+ * (Actions page).
  */
 async function createInvite(
   req: CreateInviteRequest,
@@ -128,15 +132,16 @@ async function revokeInvite(jti: string): Promise<void> {
 }
 
 export function Acl() {
-  const [contextFilter, setContextFilter] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [editing, setEditing] = useState<AclEntry | null>(null);
   const queryClient = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
 
   const query = useQuery({
-    queryKey: ["acl", contextFilter],
-    queryFn: () => fetchAcl(contextFilter || null),
+    queryKey: ["acl", roleFilter],
+    queryFn: () => fetchAcl(roleFilter || null),
     placeholderData: (prev) => prev,
   });
 
@@ -158,13 +163,20 @@ export function Acl() {
       <section className="card">
         <div className="toolbar">
           <label className="field inline">
-            <span className="field-label">Filter by context</span>
-            <input
-              type="search"
-              placeholder="default / ctx-prod / …"
-              value={contextFilter}
-              onChange={(e) => setContextFilter(e.target.value)}
-            />
+            <span className="field-label">Filter by administrative role</span>
+            <select
+              aria-label="Filter by administrative role"
+              value={roleFilter}
+              onChange={(e) => setRoleFilter(e.target.value)}
+            >
+              <option value="">all entries</option>
+              {ADMIN_ROLES.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.title}
+                </option>
+              ))}
+              <option value={NO_ADMIN_ROLE}>no administrative role</option>
+            </select>
           </label>
           <div className="spacer" />
           <button
@@ -194,6 +206,16 @@ export function Acl() {
         />
       )}
 
+      {editing && (
+        <EditCapabilitiesForm
+          entry={editing}
+          onDone={() => {
+            setEditing(null);
+            void queryClient.invalidateQueries({ queryKey: ["acl"] });
+          }}
+        />
+      )}
+
       {query.error && (
         <section className="card error">
           <h3>Failed to load ACL</h3>
@@ -206,9 +228,10 @@ export function Acl() {
           <thead>
             <tr>
               <th>DID</th>
-              <th>Role</th>
+              <th>Administrative role</th>
+              <th>Administers</th>
+              <th>Community role</th>
               <th>Label</th>
-              <th>Contexts</th>
               <th>Expires</th>
               <th></th>
             </tr>
@@ -216,12 +239,12 @@ export function Acl() {
           <tbody>
             {query.isPending && (
               <tr>
-                <td colSpan={6}>Loading…</td>
+                <td colSpan={7}>Loading…</td>
               </tr>
             )}
             {query.data?.entries.length === 0 && (
               <tr>
-                <td colSpan={6}>
+                <td colSpan={7}>
                   <div className="empty-state">
                     <span className="empty-icon" aria-hidden="true">
                       <ShieldCheck />
@@ -229,63 +252,84 @@ export function Acl() {
                     <h4>No ACL entries match this filter</h4>
                     <p>
                       Use <strong>Add entry</strong> to grant access,
-                      or clear the context filter to see every entry.
+                      or clear the role filter to see every entry.
                     </p>
                   </div>
                 </td>
               </tr>
             )}
-            {query.data?.entries.map((e) => (
-              <tr key={e.subject}>
-                <td>
-                  <code title={e.subject}>{shortenDid(e.subject)}</code>
-                </td>
-                <td>
-                  <code>{e.role}</code>
-                </td>
-                <td>
-                  <EditableLabelCell entry={e} label={e.label ?? null} />
-                </td>
-                <td>
-                  {e.scopes.length === 0 ? (
-                    <span className="muted">all</span>
-                  ) : (
-                    e.scopes.map((c) => (
-                      <code key={c} className="chip">
-                        {c}
-                      </code>
-                    ))
-                  )}
-                </td>
-                <td>
-                  {e.expiresAt ? (
-                    <span title={String(e.expiresAt)}>
-                      {formatIso(e.expiresAt)}
-                    </span>
-                  ) : (
-                    <span className="muted">never</span>
-                  )}
-                </td>
-                <td>
-                  <button
-                    type="button"
-                    className="secondary destructive"
-                    disabled={revoke.isPending}
-                    onClick={async () => {
-                      const ok = await confirm({
-                        title: "Revoke ACL entry?",
-                        message: `${e.subject} loses access immediately. This cannot be undone.`,
-                        confirmLabel: "Revoke",
-                        destructive: true,
-                      });
-                      if (ok) revoke.mutate(e.subject);
-                    }}
-                  >
-                    Revoke
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {query.data?.entries.map((e) => {
+              const review = e.ext?.["org.openvtc"]?.delegationReview;
+              return (
+                <tr key={e.subject}>
+                  <td>
+                    <code title={e.subject}>{shortenDid(e.subject)}</code>
+                  </td>
+                  <td>
+                    {e.role === NO_ADMIN_ROLE ? (
+                      <span className="muted">none</span>
+                    ) : (
+                      <code>{e.role}</code>
+                    )}
+                    {review && (
+                      <span
+                        className="chip warning"
+                        title={`Granted by ${review.granter}, who has left or narrowed. Withdrawn at ${review.deadline} unless an administrator re-affirms it (Edit, then Save).`}
+                      >
+                        under review
+                      </span>
+                    )}
+                  </td>
+                  <td data-testid="administers">
+                    <AuthorityCell entry={e} />
+                  </td>
+                  <td>
+                    <code>{communityRoleOf(e)}</code>
+                  </td>
+                  <td>
+                    <EditableLabelCell entry={e} label={e.label ?? null} />
+                  </td>
+                  <td>
+                    {e.expiresAt ? (
+                      <span title={String(e.expiresAt)}>
+                        {formatIso(e.expiresAt)}
+                      </span>
+                    ) : (
+                      <span className="muted">never</span>
+                    )}
+                  </td>
+                  <td>
+                    <div className="row-actions">
+                      {e.role !== NO_ADMIN_ROLE && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => setEditing(e)}
+                        >
+                          Edit
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="secondary destructive"
+                        disabled={revoke.isPending}
+                        onClick={async () => {
+                          const ok = await confirm({
+                            title: "Revoke ACL entry?",
+                            message: `${e.subject} loses access immediately. This cannot be undone.`,
+                            confirmLabel: "Revoke",
+                            destructive: true,
+                          });
+                          if (ok) revoke.mutate(e.subject);
+                        }}
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </section>
@@ -293,6 +337,29 @@ export function Acl() {
       <InvitesPanel />
     </section>
   );
+}
+
+/**
+ * What an entry may administer. "everything" only for a community
+ * administrator holding its full ceiling, and "nothing" for no administrative
+ * role — never one word for both (#746).
+ */
+function AuthorityCell({ entry }: { entry: AclEntry }) {
+  const text = describeAuthority(entry);
+  if (text === "everything") return <strong>everything</strong>;
+  if (text === "nothing") return <span className="muted">nothing</span>;
+  if (entry.capabilities.scope === "listed" && entry.act.scope === "all") {
+    return (
+      <>
+        {entry.capabilities.grants.map((g) => (
+          <code key={grantLabel(g)} className="chip">
+            {grantLabel(g)}
+          </code>
+        ))}
+      </>
+    );
+  }
+  return <span>{text}</span>;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -362,9 +429,9 @@ function InvitesPanel() {
         <div className="toolbar">
           <h3 style={{ margin: 0 }}>Admin invites</h3>
           <p className="lead" style={{ margin: 0, flex: "1 1 auto" }}>
-            Mint one-shot install URLs for new admins. Each invite
-            grants its <code>did</code> the Admin role on first
-            passkey claim.
+            Mint one-shot install URLs for new community administrators.
+            Each invite grants its <code>did</code> the community-admin
+            role on first passkey claim.
           </p>
           <button
             type="button"
@@ -636,8 +703,8 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
     <form onSubmit={onSubmit} className="card form-stack">
       <h3>Invite a new admin</h3>
       <p className="lead">
-        Mirrors the <code>vtc admin invite</code> CLI: ensures an
-        Admin ACL grant for the DID, then mints a single-use install
+        Mirrors the <code>vtc admin invite</code> CLI: ensures a
+        community-admin grant for the DID, then mints a single-use install
         URL the recipient claims with a passkey.
       </p>
       <Field label="DID">
@@ -750,11 +817,82 @@ function chipForStatus(status: InviteSummary["status"]): string {
   }
 }
 
+/**
+ * Pick capabilities from a role's ceiling, each optionally at a resource. An
+ * empty selection means the role's full ceiling (nothing narrowed) — except
+ * for a role held only at a resource, where every pick needs one.
+ */
+function CapabilityPicker({
+  role,
+  selected,
+  onChange,
+}: {
+  role: string;
+  selected: Record<string, string | null>;
+  onChange: (next: Record<string, string | null>) => void;
+}) {
+  const info = adminRoleInfo(role);
+  if (!info || info.approveOnly) return null;
+  return (
+    <fieldset className="field">
+      <legend className="field-label">
+        {info.qualifiedOnly
+          ? "Capabilities (each needs a resource)"
+          : "Narrow to these capabilities (none ticked = the role's full ceiling)"}
+      </legend>
+      {info.ceiling.map((cap) => {
+        const meta = capabilityInfo(cap);
+        const ticked = cap in selected;
+        return (
+          <div key={cap} className="row-actions">
+            <label>
+              <input
+                type="checkbox"
+                aria-label={cap}
+                checked={ticked}
+                onChange={(e) => {
+                  const next = { ...selected };
+                  if (e.target.checked) next[cap] = null;
+                  else delete next[cap];
+                  onChange(next);
+                }}
+              />{" "}
+              <code>{cap}</code>{" "}
+              <span className="muted">{meta?.gates}</span>
+              {meta?.conferring && (
+                <span className="chip warning" title="Granting it needs another holder's approval">
+                  confers authority
+                </span>
+              )}
+            </label>
+            {ticked && meta && meta.qualifiers.length > 0 && (
+              <input
+                type="text"
+                aria-label={`${cap} resource`}
+                placeholder={`${meta.qualifiers.join(" | ")}:…${info.qualifiedOnly ? "" : " (optional)"}`}
+                value={selected[cap] ?? ""}
+                onChange={(e) =>
+                  onChange({ ...selected, [cap]: e.target.value === "" ? null : e.target.value })
+                }
+              />
+            )}
+          </div>
+        );
+      })}
+    </fieldset>
+  );
+}
+
+/** The picker's selection as `cap` / `cap@resource` strings. */
+const pickedCapabilities = (selected: Record<string, string | null>): string[] =>
+  Object.entries(selected).map(([cap, res]) => (res ? `${cap}@${res.trim()}` : cap));
+
 function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
   const [did, setDid] = useState("");
-  const [role, setRole] = useState("member");
+  const [role, setRole] = useState<string>(NO_ADMIN_ROLE);
+  const [selected, setSelected] = useState<Record<string, string | null>>({});
+  const [approve, setApprove] = useState(false);
   const [label, setLabel] = useState("");
-  const [contexts, setContexts] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const toast = useToast();
   const confirmGesture = gestureFromConfirm(useConfirm());
@@ -772,33 +910,31 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
     },
   });
 
+  const info = adminRoleInfo(role);
+  const confers = pickedOrCeiling(role, selected).some((c) => capabilityInfo(c)?.conferring);
+
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const scopes = contexts
-      .split(",")
-      .map((c) => c.trim())
-      .filter((c) => c.length > 0);
     const exp = expiresAt.trim();
-    mutation.mutate({
-      entry: {
+    mutation.mutate(
+      grantRequest({
         subject: did.trim(),
-        role: role.trim(),
+        role,
+        capabilities: pickedCapabilities(selected),
+        approve,
         // Blank optional fields are omitted, not null: the payload schema
         // types `label` and `expiresAt` as strings, so null is a 400.
-        ...(label.trim() === "" ? {} : { label: label.trim() }),
-        scopes,
-        // Canonical `expiresAt` is RFC3339. Accept either an ISO
-        // string or a unix epoch typed by the operator and normalise,
-        // rather than sending an integer the server now rejects.
-        ...(exp === ""
-          ? {}
-          : {
-              expiresAt: /^\d+$/.test(exp)
-                ? new Date(Number(exp) * 1000).toISOString()
-                : exp,
-            }),
-      },
-    });
+        label: label.trim() === "" ? undefined : label.trim(),
+        // Canonical `expiresAt` is RFC3339. Accept either an ISO string or a
+        // unix epoch typed by the operator and normalise.
+        expiresAt:
+          exp === ""
+            ? undefined
+            : /^\d+$/.test(exp)
+              ? new Date(Number(exp) * 1000).toISOString()
+              : exp,
+      }),
+    );
   };
 
   return (
@@ -813,34 +949,46 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
           required
         />
       </Field>
-      <Field label="Role">
-        <input
-          type="text"
-          placeholder="admin / moderator / member / custom:editor"
+      <Field label="Administrative role">
+        <select
+          aria-label="Administrative role"
           value={role}
-          onChange={(e) => setRole(e.target.value)}
-          required
-        />
-        {role.trim() === "admin" && (
+          onChange={(e) => {
+            setRole(e.target.value);
+            setSelected({});
+          }}
+        >
+          <option value={NO_ADMIN_ROLE}>none — a member with no administrative role</option>
+          {ADMIN_ROLES.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.title} ({r.id})
+            </option>
+          ))}
+        </select>
+        {confers && (
           <p className="muted">
-            Granting admin asks for your passkey before the entry is written.
+            This role gives authority to create authority. Granting it asks for
+            your passkey, then waits for another holder's approval.
           </p>
         )}
       </Field>
+      <CapabilityPicker role={role} selected={selected} onChange={setSelected} />
+      {info && !info.approveOnly && (
+        <label className="field">
+          <input
+            type="checkbox"
+            checked={approve}
+            onChange={(e) => setApprove(e.target.checked)}
+          />{" "}
+          May approve others' actions within this role
+        </label>
+      )}
       <Field label="Label (optional)">
         <input
           type="text"
           placeholder="e.g. ‘Ops on-call rotation 2026 Q1’"
           value={label}
           onChange={(e) => setLabel(e.target.value)}
-        />
-      </Field>
-      <Field label="Allowed contexts (comma-separated; blank = all)">
-        <input
-          type="text"
-          placeholder="default, ctx-prod"
-          value={contexts}
-          onChange={(e) => setContexts(e.target.value)}
         />
       </Field>
       <Field label="Expires at (unix seconds; blank = never)">
@@ -855,6 +1003,79 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
       <div className="form-actions">
         <button type="submit" className="primary" disabled={mutation.isPending}>
           {mutation.isPending ? "Creating…" : "Create entry"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** The capabilities a create form would grant: the ticked ones, or the
+ *  role's ceiling when none is ticked. */
+function pickedOrCeiling(role: string, selected: Record<string, string | null>): string[] {
+  const picked = Object.keys(selected);
+  return picked.length > 0 ? picked : (adminRoleInfo(role)?.ceiling ?? []);
+}
+
+/** The picker's starting selection for an entry's capability scope. */
+function selectionOf(scope: CapabilityScope): Record<string, string | null> {
+  if (scope.scope !== "listed") return {};
+  return Object.fromEntries(scope.grants.map((g) => [g.capability, g.resource ?? null]));
+}
+
+/**
+ * Narrow or widen an existing entry's capabilities (`acl/update/0.2`).
+ * Narrowing an administrator asks for your passkey, and taking an
+ * authority-conferring capability away another holder's approval; widening
+ * asks for your passkey, and an authority-conferring capability its other
+ * holders' approval. Saving unchanged re-affirms a delegation under review.
+ */
+function EditCapabilitiesForm({ entry, onDone }: { entry: AclEntry; onDone: () => void }) {
+  const [selected, setSelected] = useState<Record<string, string | null>>(
+    selectionOf(entry.capabilities),
+  );
+  const toast = useToast();
+  const confirmGesture = gestureFromConfirm(useConfirm());
+  const mutation = useMutation({
+    mutationFn: () => {
+      const picked = pickedCapabilities(selected);
+      const capabilities: CapabilityScope =
+        picked.length === 0
+          ? { scope: "ceiling" }
+          : grantRequest({ subject: entry.subject, role: entry.role, capabilities: picked }).entry
+              .capabilities;
+      return updateAcl(
+        { subject: entry.subject, capabilities, reason: "capabilities edited in the admin UI" },
+        confirmGesture,
+      );
+    },
+    onSuccess: () => {
+      toast.push("success", `Updated ${entry.subject}`);
+      onDone();
+    },
+    onError: (err) => {
+      toast.pushFromError(err, "Update failed");
+      if (parkedOf(err)) onDone();
+    },
+  });
+  return (
+    <form
+      className="card form-stack"
+      onSubmit={(e) => {
+        e.preventDefault();
+        mutation.mutate();
+      }}
+    >
+      <h3>
+        Edit <code>{shortenDid(entry.subject)}</code> — <code>{entry.role}</code>
+      </h3>
+      <p className="muted">Holds now: {describeAuthority(entry)}</p>
+      <CapabilityPicker role={entry.role} selected={selected} onChange={setSelected} />
+      <div className="form-actions">
+        <button type="submit" className="primary" disabled={mutation.isPending}>
+          {mutation.isPending ? "Saving…" : "Save"}
+        </button>
+        <button type="button" className="secondary" onClick={onDone}>
+          Cancel
         </button>
       </div>
     </form>

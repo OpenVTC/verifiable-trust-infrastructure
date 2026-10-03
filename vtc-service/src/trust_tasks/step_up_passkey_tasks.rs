@@ -1389,10 +1389,10 @@ mod tests {
         }
     }
 
-    /// A context-scoped administrator has authority over a member whose
-    /// entry names one of their contexts, and lists them like anyone else.
+    /// An administrator holding `vtc.members.manage` — a moderator — has
+    /// standing over a member's factors and lists them like anyone else.
     #[tokio::test]
-    async fn admin_list_by_a_scoped_administrator_over_a_member_in_their_context() {
+    async fn admin_list_by_a_moderator_holding_vtc_members_manage() {
         for t in TRANSPORTS {
             let mut fix = fixture().await;
             let member = fix.member.did.clone();
@@ -1403,7 +1403,7 @@ mod tests {
             scope(&fix, &member, VtcRole::Member, &["team-a"]).await;
 
             let out = send(&fix, t, &scoped, ADMIN_LIST_TYPE, list_of(&member)).await;
-            let got = listed(&out, "a scoped administrator in the member's context");
+            let got = listed(&out, "a moderator holds vtc.members.manage");
             assert_eq!(got.len(), 1, "{t:?}");
             assert_eq!(got[0].credential_id.as_str(), cred);
         }
@@ -1446,8 +1446,9 @@ mod tests {
         }
     }
 
-    /// A member outside the administrator's authority is answered exactly
-    /// as one that does not exist.
+    /// A member outside the administrator's authority — an administrator
+    /// without `vtc.members.manage`, here an auditor — is answered exactly as
+    /// one that does not exist.
     #[tokio::test]
     async fn admin_list_refuses_a_member_outside_the_administrators_authority() {
         for t in TRANSPORTS {
@@ -1456,8 +1457,17 @@ mod tests {
             let issued = invite_over(&mut fix, t, &member).await;
             redeem_over(&mut fix, t, &issued).await;
             let scoped = Party::new();
-            scope(&fix, &scoped.did, VtcRole::Admin, &["team-a"]).await;
-            scope(&fix, &member, VtcRole::Member, &["team-b"]).await;
+            crate::acl::store_acl_entry(
+                &fix.vtc.state.acl_ks,
+                &crate::acl::VtcAclEntry::new(
+                    &scoped.did,
+                    VtcRole::Member,
+                    crate::acl::AdminAuthority::for_role(crate::acl::AdminRole::Auditor),
+                    "test",
+                ),
+            )
+            .await
+            .unwrap();
 
             let outside = send(&fix, t, &scoped, ADMIN_LIST_TYPE, list_of(&member)).await;
             assert_code(

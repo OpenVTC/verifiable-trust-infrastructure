@@ -202,8 +202,9 @@ pub(super) async fn dispatch(
 
 // ─── authority, payloads and pages ───────────────────────────────────────
 
-/// The signer as an administrator (the routes' `AdminAuth`), with its payload
-/// held to the published schema.
+/// The signer as an administrator of any role, with its payload held to the
+/// published schema — the gate on this family's reads. A write asks the
+/// capability it needs instead ([`as_capable`]).
 async fn as_admin<P>(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -213,6 +214,22 @@ where
     P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
 {
     let actor = admin_signer(state, ctx, doc).await?;
+    parse_spec_payload::<P>(doc)?;
+    Ok(actor.did)
+}
+
+/// The signer holding `cap` (`vtc-admin-roles.md` §4 "Gates"), with its
+/// payload held to the published schema.
+async fn as_capable<P>(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+    cap: crate::acl::Capability,
+) -> Result<String, TrustTaskOutcome>
+where
+    P: trust_tasks_rs::validate::ValidatedPayload + serde::de::DeserializeOwned,
+{
+    let actor = super::capable_signer(state, ctx, doc, cap, None).await?;
     parse_spec_payload::<P>(doc)?;
     Ok(actor.did)
 }
@@ -326,7 +343,14 @@ async fn handle_branding_update(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_admin::<branding_update::Payload>(state, ctx, &doc).await {
+    let actor = match as_capable::<branding_update::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -356,7 +380,14 @@ async fn handle_requested_update(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_admin::<requested_update::Payload>(state, ctx, &doc).await {
+    let actor = match as_capable::<requested_update::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -407,7 +438,14 @@ async fn handle_join_discovery_update(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_admin::<join_discovery_update::Payload>(state, ctx, &doc).await {
+    let actor = match as_capable::<join_discovery_update::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -446,7 +484,14 @@ async fn handle_schemas_register(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_admin::<schemas_register::Payload>(state, ctx, &doc).await {
+    let actor = match as_capable::<schemas_register::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -546,7 +591,14 @@ async fn handle_schemas_delete(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_admin::<schemas_delete::Payload>(state, ctx, &doc).await {
+    let actor = match as_capable::<schemas_delete::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -594,7 +646,14 @@ async fn handle_accepts_register(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_admin::<accepts_register::Payload>(state, ctx, &doc).await {
+    let actor = match as_capable::<accepts_register::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -776,7 +835,14 @@ async fn handle_accepts_delete(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_admin::<accepts_delete::Payload>(state, ctx, &doc).await {
+    let actor = match as_capable::<accepts_delete::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::SurfaceAdmin,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -826,7 +892,14 @@ async fn handle_auto_grant_update(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match as_admin::<auto_grant_update::Payload>(state, ctx, &doc).await {
+    let actor = match as_capable::<auto_grant_update::Payload>(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::VettingManage,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -943,7 +1016,17 @@ async fn handle_edge_lifecycle(
     let (actor, capacity) = if signer == rel.issuer_did {
         (signer, "issuer")
     } else {
-        match admin_signer(state, ctx, &doc).await {
+        // Suspending or restoring another member's relationship is managing
+        // members (vtc-admin-roles.md §4).
+        match super::capable_signer(
+            state,
+            ctx,
+            &doc,
+            crate::acl::Capability::MembersManage,
+            None,
+        )
+        .await
+        {
             Ok(admin) => (admin.did, "admin"),
             Err(_) => return missing(&doc),
         }

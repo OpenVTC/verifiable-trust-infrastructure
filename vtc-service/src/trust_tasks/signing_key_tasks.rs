@@ -180,12 +180,14 @@ fn view(d: &ConsoleKeyDelegation, now: DateTime<Utc>) -> Value {
 
 /// Whether `did` holds a live ACL row here, and whether it is an
 /// administrator's.
-async fn standing(state: &AppState, did: &str) -> Result<Option<crate::acl::VtcRole>, AppError> {
+async fn standing(
+    state: &AppState,
+    did: &str,
+) -> Result<Option<crate::acl::VtcAclEntry>, AppError> {
     let now = crate::auth::session::now_epoch();
     Ok(crate::acl::get_acl_entry(&state.acl_ks, did)
         .await?
-        .filter(|e| !e.is_expired(now))
-        .map(|e| e.role))
+        .filter(|e| !e.is_expired(now)))
 }
 
 /// The identity a signer speaks for: itself, where it holds a live ACL row,
@@ -354,7 +356,10 @@ async fn handle_enroll(
     // the identity's own key makes a valid authorization, so from here the
     // enrolling party controls `identity`. Now the standing it lends.
     match standing(state, &identity).await {
-        Ok(Some(crate::acl::VtcRole::Admin)) => {}
+        // Any administrative role signs in to the console (vtc-admin-roles.md
+        // §6), so any may enrol a console key; what each may then do is its
+        // own entry's, read at every operation.
+        Ok(Some(entry)) if entry.is_administrator() => {}
         Ok(_) => {
             return app_error_to_reject(
                 &doc,
@@ -722,9 +727,10 @@ async fn handle_revoke(
         Ok(None) => return not_found(&doc),
         Err(e) => return app_error_to_reject(&doc, &e),
     };
-    // The key itself, the identity it acts for, or an unrestricted
-    // administrator (incident response). A narrower administrator may not
-    // disarm a peer's console: revocation cannot escalate, but it can deny
+    // The key itself, the identity it acts for, or a holder of
+    // `vtc.sessions.revoke` (incident response, vtc-admin-roles.md §4) whose
+    // entry covers the identity's (VTI-ACL-050). A narrower administrator may
+    // not disarm a peer's console: revocation cannot escalate, but it can deny
     // service.
     let authorized = if signer == key {
         true
@@ -733,11 +739,30 @@ async fn handle_revoke(
             Ok(i) => i,
             Err(e) => return app_error_to_reject(&doc, &e),
         };
-        let unrestricted = match super::admin_signer(state, ctx, &doc).await {
-            Ok(claims) => claims.is_super_admin(),
+        let responder = match super::admin_signer(state, ctx, &doc).await {
+            Ok(claims) => {
+                let actor = crate::acl::get_acl_entry(&state.acl_ks, &claims.did)
+                    .await
+                    .ok()
+                    .flatten();
+                let owner = crate::acl::get_acl_entry(&state.acl_ks, &existing.admin_did)
+                    .await
+                    .ok()
+                    .flatten();
+                actor.is_some_and(|a| {
+                    a.can(crate::acl::Capability::SessionsRevoke, None)
+                        && owner.as_ref().is_none_or(|o| {
+                            crate::acl::granting::covers_entry(
+                                &a,
+                                o,
+                                crate::auth::session::now_epoch(),
+                            )
+                        })
+                })
+            }
             Err(_) => false,
         };
-        identity.as_deref() == Some(existing.admin_did.as_str()) || unrestricted
+        identity.as_deref() == Some(existing.admin_did.as_str()) || responder
     };
     if !authorized {
         return not_found(&doc);

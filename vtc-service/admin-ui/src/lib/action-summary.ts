@@ -38,6 +38,9 @@ export const KIND_OPERATOR_WRITE = "operator.offlineWrite";
 /** The `typeUri` an operator's offline emergency bootstrap is recorded under. */
 export const OPERATOR_EMERGENCY_BOOTSTRAP_URI = "urn:openvtc:vtc:operator:emergency-bootstrap";
 
+/** The `typeUri` the boot-time ACL migration's acknowledge item is recorded under. */
+export const OPERATOR_ACL_MIGRATION_URI = "urn:openvtc:vtc:operator:acl-migration";
+
 /**
  * The pinned template digest for each `(kind, typeUri)`.
  *
@@ -46,6 +49,18 @@ export const OPERATOR_EMERGENCY_BOOTSTRAP_URI = "urn:openvtc:vtc:operator:emerge
  * new kind (or a changed template) needs an entry in both places.
  */
 export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.freeze({
+  [pinKey("acl.grant.authority", `${SPEC}/acl/grant/0.2`)]:
+    "zQmNiciJtH7xnKdQUxEwp44mpbCrVt8tfBrt1XKg7VfAc71",
+  [pinKey("acl.grant.authority", `${SPEC}/acl/update/0.2`)]:
+    "zQmQBA6WoTVVo2wBJrmkJwTnefj6q1Hgwc2BWFTCCPpWnQT",
+  [pinKey("acl.grant.authority", `${SPEC}/acl/change-role/0.2`)]:
+    "zQmVAPMeYXgX9bUi5HruaPFxBLsW1ZJNkbRss6VixMz48vt",
+  [pinKey("acl.reduce.authority", `${SPEC}/acl/revoke/0.2`)]:
+    "zQmfJss7J6uNUdyZPUC64BoJ971CdnTfgd6BVEQd7aFjYwD",
+  [pinKey("acl.reduce.authority", `${SPEC}/acl/update/0.2`)]:
+    "zQmNWjHGRwDCfUsvVFxx6o6eXczqjQTepMEKwkS3qqNo1N6",
+  [pinKey("acl.reduce.authority", `${SPEC}/acl/change-role/0.2`)]:
+    "zQmaAjJC1L9w3pbUTEbWfhzfBdUpv8pofDZvL6mWSpU2eWk",
   [pinKey("acl.grant.authority", `${SPEC}/acl/grant/0.1`)]:
     "zQmPrXgyRpZ57y4AekuZPspEkunnEbEhxvZuqrfoxrgsvr4",
   [pinKey("acl.grant.authority", `${SPEC}/acl/update/0.1`)]:
@@ -81,6 +96,8 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
     "zQmaRsraYXDuqh9P397D4F9dAHQAwsdwKmM9A6Kh4yVEAVx",
   [pinKey(KIND_OPERATOR_WRITE, OPERATOR_EMERGENCY_BOOTSTRAP_URI)]:
     "zQmW9QyZwNvMYHenHrcAeaRB5ZRcz2Nz2A2w5JqrWb7qFEp",
+  [pinKey(KIND_OPERATOR_WRITE, OPERATOR_ACL_MIGRATION_URI)]:
+    "zQmcx336K693LHuAKosCP9avuLZWauw1vome6VBxWBFDiqK",
 });
 
 function pinKey(kind: string, typeUri: string): string {

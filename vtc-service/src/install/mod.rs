@@ -80,7 +80,7 @@ pub async fn record_offline_acl_write(
     let admins = crate::acl::list_acl_entries(&store.keyspace(crate::store::keyspaces::ACL)?)
         .await?
         .into_iter()
-        .filter(|e| e.role == crate::acl::VtcRole::Admin && !e.is_expired(now))
+        .filter(|e| e.admin.is_administrator() && !e.is_expired(now))
         .map(|e| e.did)
         .collect();
     install

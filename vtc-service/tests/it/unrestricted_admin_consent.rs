@@ -74,9 +74,10 @@ async fn fixture() -> Fixture {
 fn row(did: &str, role: VtcRole, scopes: &[&str]) -> VtcAclEntry {
     VtcAclEntry {
         did: did.to_string(),
+        admin: vtc_service::acl::legacy_seed_authority(&role, scopes),
+        delegated_by: None,
         role,
         label: None,
-        allowed_contexts: scopes.iter().map(|s| s.to_string()).collect(),
         created_at: 0,
         created_by: "did:key:vtc-install".into(),
         updated_at: None,
@@ -298,7 +299,7 @@ async fn vti_apv_017_the_first_approval_completes_an_n_of_1_action_exactly_once(
     crate::common::signed::assert_conforms(DECISION_V0_2, &ack);
 
     let written = entry(&fix, &subject.did).await.expect("written");
-    assert!(written.is_super_admin());
+    assert!(written.is_community_admin());
     let done = action(&fix, &a, &id).await;
     assert_eq!(done["status"], "completed");
     assert_eq!(done["closedReason"], "thresholdMet");
@@ -350,7 +351,12 @@ async fn vti_apv_017_an_n_of_2_action_completes_on_the_second_approval() {
 
     let (_, ack) = decide(&fix.vtc, &c, &id, "approve").await;
     assert_eq!(ack["payload"]["status"], "granted", "{ack}");
-    assert!(entry(&fix, &subject.did).await.unwrap().is_super_admin());
+    assert!(
+        entry(&fix, &subject.did)
+            .await
+            .unwrap()
+            .is_community_admin()
+    );
     assert_eq!(action(&fix, &a, &id).await["status"], "completed");
 }
 
@@ -915,7 +921,12 @@ async fn webauthn_evidence_is_verified_against_the_approvers_passkey() {
     let (status, ack) = post(&fix.vtc, &signed(&b, DECISION_V0_2, good).await).await;
     assert_eq!(status, StatusCode::OK, "{ack}");
     assert_eq!(ack["payload"]["status"], "granted", "{ack}");
-    assert!(entry(&fix, &subject.did).await.unwrap().is_super_admin());
+    assert!(
+        entry(&fix, &subject.did)
+            .await
+            .unwrap()
+            .is_community_admin()
+    );
 }
 
 // ─── abuse limits (§7a.1) ────────────────────────────────────────────────
@@ -1289,7 +1300,12 @@ async fn vti_apv_014_an_invite_parks_and_its_secret_is_read_once() {
     .await;
     assert_eq!(action(&fix, &a, &id).await["kind"], "admin.invite.create");
     decide(&fix.vtc, &b, &id, "approve").await;
-    assert!(entry(&fix, &invitee.did).await.unwrap().is_super_admin());
+    assert!(
+        entry(&fix, &invitee.did)
+            .await
+            .unwrap()
+            .is_community_admin()
+    );
 
     let first = action(&fix, &a, &id).await;
     assert!(
@@ -1318,10 +1334,12 @@ async fn a_sole_admin_is_told_how_to_add_a_second_before_any_gesture() {
     assert!(step_up_request(&reply).is_none(), "{reply}");
     let message = reply.to_string();
     assert!(message.contains("vtc acl add"), "names the fix: {message}");
-    assert!(message.contains("VTI-APV-014"), "{message}");
+    assert!(message.contains("VTI-APV-018"), "{message}");
 }
 
-/// A scoped admin grant confers nothing gated: it takes the gesture alone.
+/// An administrative grant conferring nothing authority-conferring — a
+/// moderator — takes the gesture alone (VTI-APV-018 gates only the
+/// authority-conferring).
 #[tokio::test]
 async fn a_scoped_admin_grant_needs_no_approval() {
     let mut fix = fixture().await;
@@ -1333,13 +1351,18 @@ async fn a_scoped_admin_grant_needs_no_approval() {
         &signed(
             &a,
             GRANT,
-            json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": ["ctx-a"] } }),
+            json!({ "entry": { "subject": subject.did, "role": "moderator", "scopes": [] } }),
         )
         .await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{reply}");
-    assert!(!entry(&fix, &subject.did).await.unwrap().is_super_admin());
+    assert!(
+        !entry(&fix, &subject.did)
+            .await
+            .unwrap()
+            .is_community_admin()
+    );
 }
 
 /// VTI-APV-009: a threshold the community cannot meet is refused when written.

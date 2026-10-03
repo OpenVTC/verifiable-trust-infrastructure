@@ -183,16 +183,27 @@ pub(crate) async fn check_invite(
         return Err(out_of_range().into());
     }
 
-    // The grant below is an unrestricted admin entry — a community-wide
-    // super-admin. Only a caller that already is one may confer it
-    // (VTI-ACL-022, VTI-ACL-053); the admin role alone admits an administrator
-    // of a single context, who could otherwise mint community-wide authority
-    // for any DID it controls by inviting it.
-    if !actor.is_super_admin() {
-        return Err(AppError::Forbidden(
-            "only an unrestricted administrator can invite an administrator: the invite grants community-wide admin authority, which an administrator scoped to some contexts does not hold"
-                .into(),
-        )
+    // The grant below makes a community administrator with the full ceiling.
+    // Inviting one is granting one (vtc.roles.assign, design §4 "admin
+    // invites"), bounded by the inviter's own entry like any grant
+    // (VTI-ACL-071, VTI-ACL-053): only a caller who could have granted it with
+    // acl/grant may invite it.
+    let inviter = crate::acl::get_acl_entry(&state.acl_ks, &actor.did)
+        .await?
+        .ok_or_else(|| AppError::Forbidden(format!("{} has no ACL entry", actor.did)))?;
+    let mut invited = VtcAclEntry::new(
+        req.did.clone(),
+        VtcRole::Admin,
+        crate::acl::AdminAuthority::community_admin(),
+        actor.did.clone(),
+    );
+    invited.expires_at = None;
+    if let Err(refusal) =
+        crate::acl::granting::check_write(&inviter, &invited, crate::auth::session::now_epoch())
+    {
+        return Err(AppError::Forbidden(format!(
+            "inviting an administrator grants a community administrator: {refusal}"
+        ))
         .into());
     }
 
@@ -205,7 +216,7 @@ pub(crate) async fn check_invite(
     // non-Admin DIDs here, since that would mean a separate role change is
     // needed first).
     let grants_admin = match get_acl_entry(&state.acl_ks, &req.did).await? {
-        Some(existing) if existing.role == VtcRole::Admin => false,
+        Some(existing) if existing.is_community_admin() => false,
         Some(_) => {
             return Err(AppError::Conflict(format!(
                 "did {} already has a non-admin ACL grant; revoke it first \
@@ -257,7 +268,9 @@ pub(crate) async fn commit_invite(
             did: req.did.clone(),
             role: VtcRole::Admin,
             label: Some(label),
-            allowed_contexts: vec![],
+            admin: crate::acl::AdminAuthority::community_admin(),
+            // A grant is a delegation (vtc-admin-roles.md §6.3).
+            delegated_by: Some(actor.did.clone()),
             created_at: now_epoch(),
             created_by: format!("admin-ui/{}", env!("CARGO_PKG_VERSION")),
             updated_at: None,

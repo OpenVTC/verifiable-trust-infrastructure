@@ -39,7 +39,10 @@ async fn full_state_roundtrip_restores_rows_and_bundle() {
         .acl_ks
         .insert_raw(
             b"acl:did:key:z6MkMember".to_vec(),
-            br#"{"role":"member"}"#.to_vec(),
+            // A pre-role (legacy) row: the import maps it onto the role-based
+            // shape (`vtc-admin-roles.md` §9).
+            br#"{"did":"did:key:z6MkMember","role":"member","created_at":0,"created_by":"test"}"#
+                .to_vec(),
         )
         .await
         .unwrap();
@@ -75,7 +78,8 @@ async fn full_state_roundtrip_restores_rows_and_bundle() {
         .unwrap();
     assert_eq!(result.status, "imported");
 
-    // backed-up rows restored byte-identically
+    // backed-up rows restored byte-identically — but for the ACL, whose
+    // legacy rows the import migrates.
     let acl = b
         .state
         .acl_ks
@@ -84,7 +88,10 @@ async fn full_state_roundtrip_restores_rows_and_bundle() {
         .unwrap();
     assert_eq!(acl.len(), 1);
     assert_eq!(acl[0].0, b"acl:did:key:z6MkMember");
-    assert_eq!(acl[0].1, br#"{"role":"member"}"#.to_vec());
+    let migrated: vtc_service::acl::VtcAclEntry = serde_json::from_slice(&acl[0].1).unwrap();
+    assert_eq!(migrated.did, "did:key:z6MkMember");
+    assert_eq!(migrated.role, vtc_service::acl::VtcRole::Member);
+    assert!(!migrated.is_administrator(), "a member holds no admin role");
 
     let members = b
         .state
@@ -134,7 +141,11 @@ async fn preview_does_not_mutate() {
     a_store.set(b"bundle").await.unwrap();
     a.state
         .acl_ks
-        .insert_raw(b"acl:keep".to_vec(), b"keep".to_vec())
+        .insert_raw(
+            b"acl:did:key:z6MkKeep".to_vec(),
+            br#"{"did":"did:key:z6MkKeep","role":"member","created_at":0,"created_by":"test"}"#
+                .to_vec(),
+        )
         .await
         .unwrap();
     let envelope = export_backup(&a.state, &a_store, PW, false).await.unwrap();
@@ -587,7 +598,8 @@ async fn the_export_task_answers_with_the_code_its_spec_declares() {
                 did: admin_did.clone(),
                 role: VtcRole::Admin,
                 label: None,
-                allowed_contexts: vec![],
+                admin: VtcRole::Admin.implied_authority(),
+                delegated_by: None,
                 created_at: 0,
                 created_by: "did:key:vtc-install".into(),
                 updated_at: None,

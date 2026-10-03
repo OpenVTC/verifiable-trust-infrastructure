@@ -25,8 +25,12 @@
 //! route — as a host invariant in the role-change ceremony, which no policy
 //! edit can disable — and this route refuses the field outright.
 //!
-//! Non-admin role changes are still made here, and still run the role-change
-//! ceremony.
+//! Role changes that carry no administrative authority — between `member` and
+//! custom community roles — are still made here, and still run the role-change
+//! ceremony. Since role-based administration (`vtc-admin-roles.md`,
+//! VTI-ACL-030) `moderator` and `issuer` imply administrative roles, so a move
+//! to or from any role that does is refused here with the same code and sent
+//! to `acl/change-role`, whose passkey gesture is bound to the move.
 
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -101,6 +105,27 @@ pub(crate) async fn update_member_inner(
                  which requires a passkey gesture"
             )),
         ));
+    }
+
+    // A role that implies an administrative role (`moderator` → moderator,
+    // `issuer` → credential-officer), or a move away from one, changes
+    // administrative authority (VTI-ACL-030): that takes a passkey gesture
+    // bound to the operation, which only `acl/change-role` carries. This door
+    // moves community roles that carry no administrative authority.
+    if let Some(next) = &req.role {
+        let held = get_acl_entry(&state.acl_ks, did)
+            .await?
+            .is_some_and(|e| e.is_administrator());
+        if next.implied_admin_role().is_some() || held {
+            return Err(TaskError::declared(
+                UPDATE_ERR_ADMIN_ROLE_FORBIDDEN,
+                AppError::Validation(format!(
+                    "moving {did} to `{next}` changes administrative authority, which is not a \
+                     metadata update; use the signed acl/change-role {{\"fromRole\": \"<current \
+                     role>\", \"toRole\": \"{next}\"}}, which takes a passkey gesture bound to it"
+                )),
+            ));
+        }
     }
 
     // The role and the label live on the ACL row, and a subject may not modify

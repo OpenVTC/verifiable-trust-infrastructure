@@ -10,10 +10,15 @@ import {
   ACL_GRANT_TASK,
   ACL_LIST_TASK,
   ACL_REVOKE_TASK,
+  ACL_UPDATE_TASK,
+  type AclEntry,
   changeAclRole,
+  describeAuthority,
   fetchAllAcl,
   grantAcl,
+  grantRequest,
   revokeAcl,
+  updateAcl,
 } from "./acl";
 import { answerStepUp, type StepUpRequest } from "./bound-step-up";
 import type { SignedTrustTaskDocument } from "./console-key";
@@ -31,7 +36,14 @@ vi.mock("./bound-step-up", async (original) => ({
 }));
 
 const ALICE = "did:key:z6MkAlice";
-const entry = (subject: string, role = "member") => ({ subject, role, scopes: [] });
+const entry = (subject: string, role = "member"): AclEntry => ({
+  subject,
+  role,
+  act: { scope: role === "member" ? "none" : "all" },
+  keys: { scope: "none" },
+  capabilities: { scope: role === "member" ? "none" : "ceiling" },
+  approve: { scope: "none" },
+});
 
 const STEP_UP: StepUpRequest = {
   subject: "did:key:z6MkOperator",
@@ -60,11 +72,12 @@ describe("acl/list", () => {
     vi.mocked(postSignedRead)
       .mockResolvedValueOnce({ entries: [entry("a")], truncated: true, cursor: "next" })
       .mockResolvedValueOnce({ entries: [entry("b")], truncated: false });
-    const all = await fetchAllAcl({ scope: "ops" });
+    const all = await fetchAllAcl({ role: "auditor" });
     expect(all.map((e) => e.subject)).toEqual(["a", "b"]);
+    expect(ACL_LIST_TASK).toBe("https://trusttasks.org/spec/acl/list/0.2");
     expect(vi.mocked(postSignedRead).mock.calls).toEqual([
-      [ACL_LIST_TASK, { scope: "ops", pageSize: 200 }],
-      [ACL_LIST_TASK, { scope: "ops", pageSize: 200, cursor: "next" }],
+      [ACL_LIST_TASK, { role: "auditor", pageSize: 200 }],
+      [ACL_LIST_TASK, { role: "auditor", pageSize: 200, cursor: "next" }],
     ]);
   });
 
@@ -79,7 +92,7 @@ describe("acl/list", () => {
 const parked = (): ParkedAction =>
   new ParkedAction({
     actionId: "act-1",
-    message: "Sent for approval — 1 of 2 unrestricted administrator(s) must approve within 72 hours.",
+    message: "Sent for approval — 1 of 2 administrator(s) holding what is at stake must approve within 72 hours.",
     threshold: 1,
     approvers: 2,
   });
@@ -165,7 +178,7 @@ describe("an act that needs a passkey gesture", () => {
   it("is sent once when no gesture is asked for", async () => {
     vi.mocked(postSignedTrustTask).mockResolvedValueOnce({ entry: entry(ALICE) });
     const confirm = vi.fn();
-    const got = await grantAcl({ entry: { subject: ALICE, role: "member", scopes: [] } }, confirm);
+    const got = await grantAcl(grantRequest({ subject: ALICE, role: "member" }), confirm);
     expect(got.subject).toBe(ALICE);
     expect(confirm).not.toHaveBeenCalled();
     expect(vi.mocked(answerStepUp)).not.toHaveBeenCalled();
@@ -201,7 +214,7 @@ describe("an act that needs a passkey gesture", () => {
   it("sends nothing more when the operator declines", async () => {
     vi.mocked(postSignedTrustTask).mockRejectedValueOnce(stepUpRefusal());
     await expect(
-      grantAcl({ entry: { subject: ALICE, role: "admin", scopes: [] } }, async () => false),
+      grantAcl(grantRequest({ subject: ALICE, role: "community-admin" }), async () => false),
     ).rejects.toBeInstanceOf(GestureDeclinedError);
     expect(vi.mocked(answerStepUp)).not.toHaveBeenCalled();
     expect(vi.mocked(postSignedDocument)).not.toHaveBeenCalled();
@@ -211,14 +224,122 @@ describe("an act that needs a passkey gesture", () => {
     const refused: ApiError = { status: 403, message: "no", code: "permissionDenied" };
     vi.mocked(postSignedTrustTask).mockRejectedValueOnce(refused);
     await expect(
-      grantAcl({ entry: { subject: ALICE, role: "admin", scopes: [] } }, async () => true),
+      grantAcl(grantRequest({ subject: ALICE, role: "community-admin" }), async () => true),
     ).rejects.toBe(refused);
   });
 
   it("passes a grant parked for approval through as a ParkedAction", async () => {
     vi.mocked(postSignedTrustTask).mockRejectedValueOnce(parked());
     await expect(
-      grantAcl({ entry: { subject: ALICE, role: "admin", scopes: [] } }, async () => true),
+      grantAcl(grantRequest({ subject: ALICE, role: "community-admin" }), async () => true),
     ).rejects.toBeInstanceOf(ParkedAction);
   });
+});
+
+
+// The #746 class: two different authorities never read alike. "everything"
+// only for a community administrator acting with its full ceiling, "nothing"
+// for no administrative role or no capabilities.
+describe("describeAuthority", () => {
+  it("says everything only for a community administrator with its full ceiling", () => {
+    expect(describeAuthority(entry(ALICE, "community-admin"))).toBe("everything");
+    const narrowed: AclEntry = {
+      ...entry(ALICE, "community-admin"),
+      capabilities: { scope: "listed", grants: [{ capability: "vtc.audit.read" }] },
+    };
+    expect(describeAuthority(narrowed)).toBe("vtc.audit.read");
+  });
+
+  it("says nothing for no administrative role, and never everything", () => {
+    expect(describeAuthority(entry(ALICE, "member"))).toBe("nothing");
+    expect(
+      describeAuthority({ ...entry(ALICE, "moderator"), capabilities: { scope: "none" } }),
+    ).toBe("nothing");
+  });
+
+  it("names a role's ceiling and a qualified grant", () => {
+    expect(describeAuthority(entry(ALICE, "auditor"))).toBe("vtc.audit.read");
+    const rm: AclEntry = {
+      ...entry(ALICE, "repo-manager"),
+      capabilities: {
+        scope: "listed",
+        grants: [{ capability: "git.repo.manage", resource: "git-ns:github.com/acme" }],
+      },
+    };
+    expect(describeAuthority(rm)).toBe("git.repo.manage@git-ns:github.com/acme");
+  });
+
+  it("says approves only for the least-privilege approver", () => {
+    expect(
+      describeAuthority({
+        ...entry(ALICE, "approver"),
+        act: { scope: "none" },
+        capabilities: { scope: "none" },
+        approve: { scope: "all" },
+      }),
+    ).toBe("approves only");
+  });
+});
+
+// `acl/grant/0.2` states every axis; nothing is left for the VTC to infer.
+describe("grantRequest", () => {
+  it("states every axis, the full ceiling when nothing is narrowed", () => {
+    const req = grantRequest({ subject: ALICE, role: "moderator" });
+    expect(req.entry).toEqual({
+      subject: ALICE,
+      role: "moderator",
+      act: { scope: "all" },
+      keys: { scope: "none" },
+      capabilities: { scope: "ceiling" },
+      approve: { scope: "none" },
+    });
+  });
+
+  it("lists narrowed capabilities, with their resources", () => {
+    const req = grantRequest({
+      subject: ALICE,
+      role: "repo-manager",
+      capabilities: ["git.repo.manage@git-ns:github.com/acme"],
+      approve: true,
+    });
+    expect(req.entry.capabilities).toEqual({
+      scope: "listed",
+      grants: [{ capability: "git.repo.manage", resource: "git-ns:github.com/acme" }],
+    });
+    expect(req.entry.approve).toEqual({ scope: "all" });
+    expect(req.entry.approveCapabilities).toEqual({ scope: "ceiling" });
+  });
+
+  it("acts nowhere for no administrative role, and for the approver", () => {
+    expect(grantRequest({ subject: ALICE, role: "member" }).entry).toMatchObject({
+      act: { scope: "none" },
+      capabilities: { scope: "none" },
+    });
+    expect(grantRequest({ subject: ALICE, role: "approver" }).entry).toMatchObject({
+      act: { scope: "none" },
+      capabilities: { scope: "none" },
+      approve: { scope: "all" },
+    });
+  });
+
+  it("omits blank optional members rather than sending null", () => {
+    const req = grantRequest({ subject: ALICE, role: "auditor" });
+    expect("label" in req.entry).toBe(false);
+    expect("expiresAt" in req.entry).toBe(false);
+  });
+});
+
+describe("acl/update/0.2", () => {
+  it("sends only what it replaces", async () => {
+    vi.mocked(postSignedTrustTask).mockResolvedValueOnce({ entry: entry(ALICE, "auditor") });
+    await updateAcl({ subject: ALICE, label: "ops" }, vi.fn());
+    expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(ACL_UPDATE_TASK, {
+      subject: ALICE,
+      label: "ops",
+    });
+  });
+});
+
+it("grants at 0.2", () => {
+  expect(ACL_GRANT_TASK).toBe("https://trusttasks.org/spec/acl/grant/0.2");
 });

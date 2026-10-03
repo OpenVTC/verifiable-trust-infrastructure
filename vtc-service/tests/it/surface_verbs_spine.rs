@@ -83,12 +83,13 @@ async fn an_administrator_is_answered_on_every_verb() {
 }
 
 /// The presentation reads took any session; every other verb took
-/// `AdminAuth`. A moderator is refused the latter, and an unsigned document is
+/// `AdminAuth`. A party holding no administrative role is refused the latter,
+/// and an unsigned document is
 /// refused everything.
 #[tokio::test]
 async fn below_the_routes_role_and_unsigned_are_refused() {
     let vtc = vtc().await;
-    let moderator = party_with_role(&vtc, VtcRole::Moderator, &[]).await;
+    let moderator = party_with_role(&vtc, VtcRole::Member, &[]).await;
     for (task, body, any_entry) in verbs() {
         let (status, doc) = call(&vtc, &moderator, &task, body.clone()).await;
         if any_entry {

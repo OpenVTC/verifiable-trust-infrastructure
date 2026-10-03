@@ -27,48 +27,55 @@
 
 use vti_common::acl::Role;
 use vti_common::audit::AuditKey;
-use vti_common::auth::extractor::AuthClaims;
 use vti_common::auth::session::now_epoch;
 use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
 use vti_common::store::KeyspaceHandle;
 
-use super::VtcRole;
 use super::entry::{VtcAclEntry, decode, iter};
 
 fn acl_key(did: &str) -> String {
     format!("acl:{did}")
 }
 
-/// Map a stored [`VtcRole`] to the `vti_common::acl::Role` the JWT/session
-/// layer understands.
+/// Map a stored entry to the `vti_common::acl::Role` the JWT/session layer
+/// understands.
 ///
-/// Phase 1's auth/session/passkey stack is keyed to the VTA role taxonomy;
-/// only `Admin` has a session-layer equivalent. The other VTC roles
-/// (`Moderator`/`Issuer`/`Member`/`Custom`) are valid ACL records but carry
-/// no JWT-session semantics yet (Phase 2 makes `AuthClaims` VtcRole-aware),
-/// so they're refused with a clean `Forbidden`. Fails closed — no privilege
-/// is granted, and the message carries neither serde internals nor the role
-/// name (this is consumed on the unauthenticated `/auth/challenge` path).
-pub fn map_vtc_role_to_auth_role(role: &VtcRole) -> Result<Role, AppError> {
-    match role {
-        VtcRole::Admin => Ok(Role::Admin),
-        VtcRole::Moderator | VtcRole::Issuer | VtcRole::Member | VtcRole::Custom(_) => Err(
-            AppError::Forbidden("DID is not permitted to authenticate on this VTC".into()),
-        ),
+/// **Any administrative role** signs in (`vtc-admin-roles.md` §6): a
+/// moderator, an auditor or an approver reaches the console as well as a
+/// community administrator. What each may then *do* is never read from the
+/// session — every gate asks the entry's capabilities at execution time
+/// ([`super::VtcAclEntry::can`], [`require_capability`]). So the session role
+/// is only "an administrator of some kind", and is `Admin` for all of them.
+///
+/// An entry with no administrative role is refused with a clean `Forbidden`,
+/// whatever its community role — `member`, `issuer` and the community role
+/// `admin` with no administrative authority alike. Fails closed, and the
+/// message carries neither serde internals nor the role name (this is consumed
+/// on the unauthenticated `/auth/challenge` path).
+pub fn auth_role_for(entry: &VtcAclEntry) -> Result<Role, AppError> {
+    if entry.admin.is_administrator() {
+        Ok(Role::Admin)
+    } else {
+        Err(AppError::Forbidden(
+            "DID is not permitted to authenticate on this VTC".into(),
+        ))
     }
 }
 
 /// VTC analogue of `vti_common::acl::check_acl_full`: resolve a DID's auth
-/// role + allowed contexts from the VTC ACL, decoding the row as a
-/// [`VtcAclEntry`] and mapping `VtcRole → Role`.
+/// role from the VTC ACL.
 ///
 /// **Use this — not `vti_common::acl::check_acl[_full]` — for every
-/// auth-time ACL gate on the VTC store.** The vti-common helpers decode the
-/// row into the VTA `Role` taxonomy and hard-error
-/// (`AppError::Serialization` → HTTP 500 leaking the serde text) on any
-/// VTC-only role string. This decoder never 500s on a VTC role; it returns a
-/// clean `Forbidden` for absent / expired / non-admin rows. P0.16.
+/// auth-time ACL gate on the VTC store.** This decoder never 500s on a VTC
+/// role; it returns a clean `Forbidden` for absent / expired / non-administrator
+/// rows. P0.16.
+///
+/// The context list it returns is always empty: a VTC entry holds no contexts
+/// (**VTI-VTC-010**). That makes every administrator's session claims read as
+/// unscoped to the shared `vti_common` helpers — which is why **no gate in this
+/// service may be a claims check**. Each operation asks the capability it needs
+/// of the signer's live entry ([`require_capability`]).
 pub async fn resolve_auth_role(
     acl_ks: &KeyspaceHandle,
     did: &str,
@@ -79,8 +86,54 @@ pub async fn resolve_auth_role(
     if entry.is_expired(now_epoch()) {
         return Err(AppError::Forbidden(format!("ACL entry expired: {did}")));
     }
-    let role = map_vtc_role_to_auth_role(&entry.role)?;
-    Ok((role, entry.allowed_contexts))
+    let role = auth_role_for(&entry)?;
+    Ok((role, Vec::new()))
+}
+
+/// Read `did`'s live entry and require it to hold `cap` at `resource`
+/// (`None` = community-wide). **The** gate every administrative operation
+/// goes through (**VTI-ACL-030**, **-034**, **-036**): read now, never from a
+/// session or credential summarising it.
+///
+/// A missing, expired or insufficient entry is `Forbidden`, naming the
+/// capability so the operator knows which grant is missing.
+pub async fn require_capability(
+    acl_ks: &KeyspaceHandle,
+    did: &str,
+    cap: super::Capability,
+    resource: Option<&super::ResourceQualifier>,
+) -> Result<VtcAclEntry, AppError> {
+    let entry = get_acl_entry(acl_ks, did).await?;
+    match entry {
+        Some(e) if e.can(cap, resource) => Ok(e),
+        _ => Err(capability_refusal(did, cap, resource)),
+    }
+}
+
+/// [`require_capability`] at any qualifier.
+pub async fn require_any_capability(
+    acl_ks: &KeyspaceHandle,
+    did: &str,
+    cap: super::Capability,
+) -> Result<VtcAclEntry, AppError> {
+    let entry = get_acl_entry(acl_ks, did).await?;
+    match entry {
+        Some(e) if e.can_any(cap) => Ok(e),
+        _ => Err(capability_refusal(did, cap, None)),
+    }
+}
+
+/// The refusal for a missing capability.
+pub fn capability_refusal(
+    did: &str,
+    cap: super::Capability,
+    resource: Option<&super::ResourceQualifier>,
+) -> AppError {
+    let at = resource.map(|r| format!(" at {r}")).unwrap_or_default();
+    AppError::Forbidden(format!(
+        "{did} does not hold {cap}{at} — this operation needs it (VTI-ACL-030). An \
+         administrator holding vtc.roles.assign can grant it with acl/update"
+    ))
 }
 
 /// Retrieve an ACL entry by DID. `Ok(None)` if absent.
@@ -105,44 +158,6 @@ pub async fn store_acl_entry(ks: &KeyspaceHandle, entry: &VtcAclEntry) -> Result
 /// row existed or not.
 pub async fn delete_acl_entry(ks: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
     ks.remove(acl_key(did)).await
-}
-
-/// Validate that `caller` is allowed to assign `target_role`.
-///
-/// Mirrors `vti_common::acl::validate_role_assignment` but speaks
-/// VTC's role taxonomy:
-///
-/// - Only an `Admin` AuthClaims (vti-common's `Role::Admin`) can
-///   assign `VtcRole::Admin`.
-/// - Otherwise (`Moderator`, `Issuer`, `Member`, `Custom`), the
-///   caller must hold the vti-common `Role::Admin` or
-///   `Role::Initiator` role — the existing "management-level"
-///   caller bar.
-///
-/// AuthClaims' `role` field is still keyed to
-/// `vti_common::acl::Role` because Phase 1 keeps the JWT shape
-/// from Phase 0 unchanged. Phase 2 swaps the auth layer to a
-/// VtcRole-aware AuthClaims; for now this thin shim does the
-/// VTC-side mapping.
-pub fn validate_vtc_role_assignment(
-    caller: &AuthClaims,
-    target_role: &VtcRole,
-) -> Result<(), AppError> {
-    use vti_common::acl::Role as ViRole;
-    if matches!(
-        caller.role,
-        ViRole::Monitor | ViRole::Reader | ViRole::Application
-    ) {
-        return Err(AppError::Forbidden(
-            "insufficient role to assign roles".into(),
-        ));
-    }
-    if matches!(target_role, VtcRole::Admin) && caller.role != ViRole::Admin {
-        return Err(AppError::Forbidden(
-            "only admins can assign the admin role".into(),
-        ));
-    }
-    Ok(())
 }
 
 /// Return every ACL entry in the keyspace. Unbounded — intended
@@ -182,7 +197,7 @@ pub async fn list_acl_entries_paginated(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acl::VtcRole;
+    use crate::acl::{AdminAuthority, VtcRole};
     use vti_common::audit::AuditKeyStore;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
@@ -202,7 +217,8 @@ mod tests {
             did: did.into(),
             role,
             label: None,
-            allowed_contexts: vec![],
+            admin: AdminAuthority::none(),
+            delegated_by: None,
             created_at: 1,
             created_by: "did:key:vtc-install".into(),
             updated_at: None,
@@ -317,27 +333,32 @@ mod tests {
         assert!(page3.next_cursor.is_none());
     }
 
-    // ---- P0.16: VtcRole → auth Role resolution ----
+    // ---- P0.16: entry → auth Role resolution ----
 
+    /// Console sign-in admits any administrative role, not only a community
+    /// administrator (`vtc-admin-roles.md` §6).
     #[test]
-    fn admin_maps_to_admin_role() {
-        assert_eq!(
-            map_vtc_role_to_auth_role(&VtcRole::Admin).unwrap(),
-            Role::Admin
-        );
+    fn any_administrative_role_maps_to_the_admin_session_role() {
+        use crate::acl::capability::AdminRole;
+        for role in AdminRole::BUILT_IN {
+            let mut e = entry("did:key:zA", VtcRole::Member);
+            e.admin = AdminAuthority::for_role(role.clone());
+            assert_eq!(auth_role_for(&e).unwrap(), Role::Admin, "{role}");
+        }
     }
 
     #[test]
-    fn non_admin_roles_are_cleanly_forbidden() {
+    fn entries_without_an_administrative_role_are_cleanly_forbidden() {
         use axum::response::IntoResponse;
         for role in [
+            VtcRole::Admin,
             VtcRole::Moderator,
             VtcRole::Issuer,
             VtcRole::Member,
             VtcRole::custom("editor").unwrap(),
         ] {
-            let err = map_vtc_role_to_auth_role(&role)
-                .expect_err("non-admin role must not map to an auth role");
+            let err = auth_role_for(&entry("did:key:zA", role.clone()))
+                .expect_err("no administrative role must not map to an auth role");
             // 403, not 500 — the whole point of P0.16.
             assert_eq!(
                 err.into_response().status(),
@@ -349,7 +370,8 @@ mod tests {
 
     #[test]
     fn forbidden_message_carries_no_serde_internals_or_role_name() {
-        let AppError::Forbidden(msg) = map_vtc_role_to_auth_role(&VtcRole::Moderator).unwrap_err()
+        let AppError::Forbidden(msg) =
+            auth_role_for(&entry("did:key:zA", VtcRole::Moderator)).unwrap_err()
         else {
             panic!("expected Forbidden");
         };
@@ -361,23 +383,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_auth_role_admits_admin_with_contexts() {
+    async fn resolve_auth_role_admits_an_administrator_with_no_contexts() {
         let (ks, _dir) = temp_ks().await;
-        let mut e = entry("did:key:zAdmin", VtcRole::Admin);
-        e.allowed_contexts = vec!["ctx-a".into()];
+        let mut e = entry("did:key:zAdmin", VtcRole::Member);
+        e.admin = AdminAuthority::for_role(crate::acl::capability::AdminRole::Auditor);
         store_acl_entry(&ks, &e).await.unwrap();
 
         let (role, contexts) = resolve_auth_role(&ks, "did:key:zAdmin").await.unwrap();
         assert_eq!(role, Role::Admin);
-        assert_eq!(contexts, vec!["ctx-a".to_string()]);
+        assert_eq!(
+            contexts,
+            Vec::<String>::new(),
+            "a VTC entry holds no contexts"
+        );
+    }
+
+    #[tokio::test]
+    async fn require_capability_reads_the_live_entry() {
+        use crate::acl::Capability;
+        let (ks, _dir) = temp_ks().await;
+        let mut e = entry("did:key:zAud", VtcRole::Member);
+        e.admin = AdminAuthority::for_role(crate::acl::capability::AdminRole::Auditor);
+        store_acl_entry(&ks, &e).await.unwrap();
+        assert!(
+            require_capability(&ks, "did:key:zAud", Capability::AuditRead, None)
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            require_capability(&ks, "did:key:zAud", Capability::ConfigAdmin, None).await,
+            Err(AppError::Forbidden(_))
+        ));
+        assert!(matches!(
+            require_capability(&ks, "did:key:zNobody", Capability::AuditRead, None).await,
+            Err(AppError::Forbidden(_))
+        ));
     }
 
     #[tokio::test]
     async fn resolve_auth_role_forbids_non_admin_absent_and_expired() {
         let (ks, _dir) = temp_ks().await;
 
-        // Non-admin VTC role → clean Forbidden (would 500 via the VTA
-        // decoder pre-P0.16).
+        // No administrative role → clean Forbidden.
         store_acl_entry(&ks, &entry("did:key:zMod", VtcRole::Moderator))
             .await
             .unwrap();
@@ -394,6 +441,7 @@ mod tests {
 
         // Expired admin row → Forbidden (expiry honoured).
         let mut expired = entry("did:key:zStale", VtcRole::Admin);
+        expired.admin = AdminAuthority::community_admin();
         expired.expires_at = Some(1); // long past
         store_acl_entry(&ks, &expired).await.unwrap();
         assert!(matches!(

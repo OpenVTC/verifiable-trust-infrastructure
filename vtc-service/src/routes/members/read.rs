@@ -290,7 +290,7 @@ pub(crate) async fn list_admin_dids(state: &AppState) -> Result<Vec<String>, App
     let entries = list_acl_entries(&state.acl_ks).await?;
     Ok(entries
         .into_iter()
-        .filter(|e| matches!(e.role, VtcRole::Admin))
+        .filter(|e| e.admin.is_administrator())
         .map(|e| e.did)
         .collect())
 }

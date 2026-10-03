@@ -1237,12 +1237,18 @@ async fn dispatch_typed(
         ENDORSEMENT_TYPE_REGISTER_TYPE => handle_endorsement_type_register(state, ctx, doc).await,
         ENDORSEMENT_TYPE_DELETE_TYPE => handle_endorsement_type_delete(state, ctx, doc).await,
         BACKUP_EXPORT_TYPE => handle_backup_export(state, ctx, doc).await,
-        ACL_GRANT_TYPE => handle_acl_grant(state, ctx, doc).await,
-        ACL_CHANGE_ROLE_TYPE => handle_acl_change_role(state, ctx, doc).await,
+        ACL_GRANT_TYPE => acl_tasks::handle_grant(state, ctx, doc).await,
+        ACL_CHANGE_ROLE_TYPE => acl_tasks::handle_change_role(state, ctx, doc).await,
         ACL_SHOW_TYPE => acl_tasks::handle_show(state, ctx, doc).await,
         ACL_LIST_TYPE => acl_tasks::handle_list(state, ctx, doc).await,
         ACL_UPDATE_TYPE => acl_tasks::handle_update(state, ctx, doc).await,
         ACL_REVOKE_TYPE => acl_tasks::handle_revoke(state, ctx, doc).await,
+        ACL_GRANT_V0_2_TYPE => acl_tasks::handle_grant_v0_2(state, ctx, doc).await,
+        ACL_CHANGE_ROLE_V0_2_TYPE => acl_tasks::handle_change_role_v0_2(state, ctx, doc).await,
+        ACL_SHOW_V0_2_TYPE => acl_tasks::handle_show_v0_2(state, ctx, doc).await,
+        ACL_LIST_V0_2_TYPE => acl_tasks::handle_list_v0_2(state, ctx, doc).await,
+        ACL_UPDATE_V0_2_TYPE => acl_tasks::handle_update_v0_2(state, ctx, doc).await,
+        ACL_REVOKE_V0_2_TYPE => acl_tasks::handle_revoke_v0_2(state, ctx, doc).await,
         STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, ctx, doc).await,
         STEP_UP_APPROVE_RESPONSE_V0_5_TYPE => {
             handle_step_up_approve_response_v0_5(state, ctx, doc).await
@@ -1822,6 +1828,14 @@ mod spine_proof_tests {
         ),
         (
             ACL_LIST_TYPE,
+            "reads ACL rows; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            ACL_SHOW_V0_2_TYPE,
+            "reads an ACL row; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
+        ),
+        (
+            ACL_LIST_V0_2_TYPE,
             "reads ACL rows; the handler authorizes from the signer's own entry, so an unsigned caller is refused regardless",
         ),
         (
@@ -2612,6 +2626,16 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     ACL_LIST_TYPE,
     ACL_UPDATE_TYPE,
     ACL_REVOKE_TYPE,
+    // AclEntry 0.2: role-based administration — explicit act scope,
+    // capabilities with resource qualifiers, approve scope
+    // (`docs/05-design-notes/vtc-admin-roles.md`). 0.1 keeps working by the
+    // CONVENTIONS §8 mapping (`routes::acl` module docs).
+    ACL_GRANT_V0_2_TYPE,
+    ACL_CHANGE_ROLE_V0_2_TYPE,
+    ACL_SHOW_V0_2_TYPE,
+    ACL_LIST_V0_2_TYPE,
+    ACL_UPDATE_V0_2_TYPE,
+    ACL_REVOKE_V0_2_TYPE,
     // The gesture that operation-bound step-up asks for.
     STEP_UP_APPROVE_RESPONSE_TYPE,
     // 0.5: identical wire shape, but every response now carries the
@@ -2880,6 +2904,31 @@ pub(crate) const ACL_UPDATE_TYPE: &str = <acl_update::Payload as trust_tasks_rs:
 
 /// `acl/revoke/0.1` — remove an entry, or reduce its scopes.
 pub(crate) const ACL_REVOKE_TYPE: &str = <acl_revoke::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/grant/0.2` — AclEntry 0.2: an administrative role, explicit act scope,
+/// capabilities and approve scope.
+pub(crate) const ACL_GRANT_V0_2_TYPE: &str =
+    <trust_tasks_rs::specs::acl::grant::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/change-role/0.2` — move the administrative role, compare-and-swap.
+pub(crate) const ACL_CHANGE_ROLE_V0_2_TYPE: &str =
+    <trust_tasks_rs::specs::acl::change_role::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/show/0.2` — one entry, every axis stated.
+pub(crate) const ACL_SHOW_V0_2_TYPE: &str =
+    <trust_tasks_rs::specs::acl::show::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/list/0.2` — the entries, filterable by capability and resource.
+pub(crate) const ACL_LIST_V0_2_TYPE: &str =
+    <trust_tasks_rs::specs::acl::list::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/update/0.2` — amend act, capabilities, approve, label, expiry.
+pub(crate) const ACL_UPDATE_V0_2_TYPE: &str =
+    <trust_tasks_rs::specs::acl::update::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `acl/revoke/0.2` — remove an entry, or narrow its act scope.
+pub(crate) const ACL_REVOKE_V0_2_TYPE: &str =
+    <trust_tasks_rs::specs::acl::revoke::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `auth/step-up/approve-response/0.4` — the passkey gesture an
 /// operation-bound step-up asks for.
@@ -3277,12 +3326,17 @@ async fn handle_hidden_publish(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    if let Err(e) = actor.require_admin() {
-        return app_error_to_reject(&doc, &e);
+    // The capability check is the whole gate; the signer is not needed after it.
+    if let Err(reject) = capable_signer(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::VettingManage,
+        None,
+    )
+    .await
+    {
+        return reject;
     }
     let payload: trust_tasks_rs::specs::vtc::vetting::hidden::publish::v0_1::Payload =
         match parse_spec_payload(&doc) {
@@ -3498,7 +3552,15 @@ async fn handle_vetter_resend_v0_2(
     };
     let (actor_did, subject_did) = match body.member_did.as_ref() {
         Some(member_did) => {
-            let admin = match admin_signer(state, ctx, &doc).await {
+            let admin = match capable_signer(
+                state,
+                ctx,
+                &doc,
+                crate::acl::Capability::VettingManage,
+                None,
+            )
+            .await
+            {
                 Ok(a) => a,
                 Err(reject) => return reject,
             };
@@ -4011,6 +4073,29 @@ async fn admin_signer(
     resolve_admin_claims(state, doc, &signer).await
 }
 
+/// [`admin_signer`], held to **the capability the operation needs**
+/// (`vtc-admin-roles.md` §4 "Gates"; **VTI-ACL-030**, **-034**, **-036**).
+///
+/// The capability is read from the acting administrator's live entry — the
+/// signer's own, or the delegating administrator's for a console key — at
+/// execution time, through the one authorization question,
+/// [`crate::acl::VtcAclEntry::can`]. Never from the claims: every
+/// administrator's claims look alike (`crate::acl::resolve_auth_role`).
+/// `resource` narrows the question to one resource (`None` = community-wide).
+pub(crate) async fn capable_signer(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: &TrustTask<Value>,
+    cap: crate::acl::Capability,
+    resource: Option<&crate::acl::ResourceQualifier>,
+) -> Result<vti_common::auth::extractor::AuthClaims, TrustTaskOutcome> {
+    let claims = admin_signer(state, ctx, doc).await?;
+    crate::acl::require_capability(&state.acl_ks, &claims.did, cap, resource)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?;
+    Ok(claims)
+}
+
 /// Read `did`'s ACL row and shape it into the claims the admin verbs take.
 ///
 /// Split out of [`admin_signer`] because the delegated arm needs the identical
@@ -4066,7 +4151,15 @@ async fn handle_member_credentials(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
+    let actor = match capable_signer(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::MembersManage,
+        None,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -4121,7 +4214,15 @@ async fn handle_member_update(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
+    let actor = match capable_signer(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::MembersManage,
+        None,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -4152,7 +4253,15 @@ async fn handle_member_admin_remove(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
+    let actor = match capable_signer(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::MembersManage,
+        None,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -4200,13 +4309,18 @@ async fn handle_member_purge(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
+    let actor = match capable_signer(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::MembersManage,
+        None,
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    if let Err(e) = actor.require_super_admin() {
-        return app_error_to_reject(&doc, &e);
-    }
     let checked: member_purge::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -4255,10 +4369,11 @@ async fn handle_join_decide(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
+    let actor =
+        match capable_signer(state, ctx, &doc, crate::acl::Capability::JoinDecide, None).await {
+            Ok(a) => a,
+            Err(reject) => return reject,
+        };
     let checked: join_decide::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -4345,10 +4460,11 @@ async fn handle_community_profile_update(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
+    let actor =
+        match capable_signer(state, ctx, &doc, crate::acl::Capability::SurfaceAdmin, None).await {
+            Ok(a) => a,
+            Err(reject) => return reject,
+        };
     let _checked: community_profile_update::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -4384,7 +4500,9 @@ async fn handle_config_export(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = admin_signer(state, ctx, &doc).await {
+    if let Err(reject) =
+        capable_signer(state, ctx, &doc, crate::acl::Capability::ConfigAdmin, None).await
+    {
         return reject;
     }
     let _checked: config_export::Payload = match parse_spec_payload(&doc) {
@@ -4431,13 +4549,11 @@ async fn handle_config_import(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    if let Err(e) = actor.require_super_admin() {
-        return app_error_to_reject(&doc, &e);
-    }
+    let actor =
+        match capable_signer(state, ctx, &doc, crate::acl::Capability::ConfigAdmin, None).await {
+            Ok(a) => a,
+            Err(reject) => return reject,
+        };
     let _checked: config_import::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -4519,10 +4635,11 @@ async fn handle_endorsement_type_register(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
+    let actor =
+        match capable_signer(state, ctx, &doc, crate::acl::Capability::SurfaceAdmin, None).await {
+            Ok(a) => a,
+            Err(reject) => return reject,
+        };
     let _checked: endorsement_type_register::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -4550,10 +4667,11 @@ async fn handle_endorsement_type_delete(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
+    let actor =
+        match capable_signer(state, ctx, &doc, crate::acl::Capability::SurfaceAdmin, None).await {
+            Ok(a) => a,
+            Err(reject) => return reject,
+        };
     let checked: endorsement_type_delete::Payload = match parse_spec_payload(&doc) {
         Ok(b) => b,
         Err(reject) => return reject,
@@ -4604,13 +4722,11 @@ async fn handle_backup_export(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    if let Err(e) = actor.require_super_admin() {
-        return app_error_to_reject(&doc, &e);
-    }
+    let actor =
+        match capable_signer(state, ctx, &doc, crate::acl::Capability::BackupExport, None).await {
+            Ok(a) => a,
+            Err(reject) => return reject,
+        };
     if let Err(reject) = refuse_hop_by_hop_backup(ctx, &doc, "export") {
         return reject;
     }
@@ -4656,134 +4772,6 @@ pub(super) fn refuse_hop_by_hop_backup(
                  would exist in plaintext wherever TLS terminates. Send it over DIDComm or TSP"
             )),
         )),
-    }
-}
-
-// ─── acl/grant and its operation-bound step-up (#1641) ───────────────────
-
-/// `acl/grant/0.1` — write the entry the maintainer should hold for a subject.
-///
-/// Authority is the signer's ACL row, read now ([`admin_signer`]), and every
-/// check the bearer route makes is the same function here
-/// ([`crate::routes::acl::plan_grant`]). The one difference is the step-up. A
-/// grant that confers admin authority needs a passkey gesture, and the bearer
-/// route reads it from the session's live elevation; a document has no
-/// session, so here the gesture is **bound to this grant** — by a digest of its
-/// type and payload — and spent by it. See [`crate::acl::bound_step_up`].
-///
-/// Without a recorded gesture the grant is refused `permissionDenied`, with the
-/// ceremony inline in `details.stepUpRequest`. The spine releases the refused
-/// document's `id`, so once the admin has answered, the *same* document is
-/// sent again and succeeds. A changed payload finds no gesture.
-async fn handle_acl_grant(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    // The bearer route's `ManageAuth`, stated rather than left to the role
-    // checks inside `plan_grant` to imply.
-    if let Err(e) = actor.require_manage() {
-        return app_error_to_reject(&doc, &e);
-    }
-    let _checked: acl_grant::Payload = match parse_spec_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    // The generated entry also carries the VTA's `approve`, `stepUp` and
-    // `allowedKeys`, which a VTC entry has no field for. The bearer route's
-    // body refuses them rather than dropping them, and so does this door.
-    let body: crate::routes::acl::CreateAclRequest = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    let plan = match crate::routes::acl::plan_grant(state, &actor, body).await {
-        Ok(p) => p,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
-    let reduced = match acl_tasks::settle_signed_gate(state, &actor, &doc, &plan).await {
-        Ok(u) => u,
-        Err(refusal) => return refusal,
-    };
-    acl_tasks::commit_settled(state, &actor, &doc, plan, reduced).await
-}
-
-/// `acl/change-role/0.1` — move a subject from `fromRole` to `toRole`.
-///
-/// Administrator only, from the signer's ACL row — the bearer route's
-/// `AdminAuth`. The transition runs the role-change ceremony exactly as the
-/// bearer route does ([`crate::routes::acl::change_role_inner`]): the
-/// compare-and-swap on `fromRole`, the scope checks, the operator's
-/// `role_change` policy, the host invariants and the role-VAC re-mint.
-///
-/// A promotion to `admin` needs a passkey gesture, and here it is **bound to
-/// this operation** ([`crate::acl::bound_step_up`]) rather than read from a
-/// session. The pipeline decides first; only a promotion nothing else refuses
-/// is refused for want of a gesture, with the ceremony inline in
-/// `details.stepUpRequest`. The same document, re-sent once the gesture is
-/// recorded, spends it and completes.
-async fn handle_acl_change_role(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use trust_tasks_rs::{StandardCode, TrustTaskCode};
-
-    let actor = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    if let Err(e) = actor.require_admin() {
-        return app_error_to_reject(&doc, &e);
-    }
-    let checked: acl_change_role::Payload = match parse_spec_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-    // The bearer body is the payload without `subject`, which the route takes
-    // from its path. Read through that body so an unknown role or an `ext` is
-    // refused here as it is there.
-    let mut body = doc.payload.clone();
-    if let Some(map) = body.as_object_mut() {
-        map.remove("subject");
-    }
-    let req: crate::routes::acl::UpdateAclRequest = match serde_json::from_value(body) {
-        Ok(r) => r,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::MalformedRequest {
-                    reason: format!("payload parse: {e}"),
-                },
-            );
-        }
-    };
-
-    match crate::routes::acl::change_role_inner(
-        state,
-        &actor,
-        checked.subject.as_str(),
-        req,
-        crate::ceremony::StepUpSource::BoundTo {
-            type_uri: ACL_CHANGE_ROLE_TYPE,
-            payload: &doc.payload,
-        },
-    )
-    .await
-    {
-        Ok(crate::routes::acl::ChangeRoleOutcome::Changed(envelope)) => {
-            success_response(&doc, *envelope)
-        }
-        Ok(crate::routes::acl::ChangeRoleOutcome::StepUpRequired(request)) => reject_with_code(
-            &doc,
-            TrustTaskCode::Standard(StandardCode::PermissionDenied),
-            "a passkey gesture bound to this role change is required",
-            Some(crate::acl::bound_step_up::refusal_details(&request)),
-        ),
-        Err(e) => app_error_to_reject(&doc, &e),
     }
 }
 
@@ -5561,7 +5549,8 @@ mod tests {
                     did: did.into(),
                     role: VtcRole::Member,
                     label: None,
-                    allowed_contexts: vec![],
+                    admin: VtcRole::Member.implied_authority(),
+                    delegated_by: None,
                     created_at: 0,
                     created_by: "did:key:vtc-install".into(),
                     updated_at: None,
@@ -5942,9 +5931,10 @@ mod members_admin_tests {
             &vtc.state.acl_ks,
             &VtcAclEntry {
                 did: did.into(),
+                admin: crate::acl::legacy_seed_authority(&role, &contexts),
+                delegated_by: None,
                 role,
                 label: None,
-                allowed_contexts: contexts,
                 created_at: 0,
                 created_by: "did:key:vtc-install".into(),
                 updated_at: None,
@@ -6203,7 +6193,8 @@ mod members_admin_tests {
                 did: lapsed.did.clone(),
                 role: VtcRole::Admin,
                 label: None,
-                allowed_contexts: vec![],
+                admin: VtcRole::Admin.implied_authority(),
+                delegated_by: None,
                 created_at: 0,
                 created_by: "did:key:vtc-install".into(),
                 updated_at: None,
@@ -6221,27 +6212,43 @@ mod members_admin_tests {
 
     // ─── the scope gate `purge` rests on ─────────────────────────────────
 
-    /// **The `SuperAdminAuth` gate, kept.** `purge` is irreversible and the
-    /// REST route demanded a super-admin; a context-scoped admin passes
-    /// `AdminAuth` and must still be refused here.
-    ///
-    /// Decided through `ActScope`, never `allowed_contexts.is_empty()` — for a
-    /// non-admin that emptiness means the opposite.
-    #[tokio::test]
-    async fn a_context_scoped_admin_may_not_purge() {
-        let fix = fixture().await;
-        let doc = signed(
-            &fix.scoped_admin,
-            MEMBER_PURGE_TYPE,
-            json!({ "did": TARGET }),
+    // ─── the capability `purge` rests on ─────────────────────────────────
+
+    /// An administrator of this community, with a role, who does not hold
+    /// `vtc.members.manage`: an auditor.
+    async fn auditor(vtc: &TestVtc) -> Party {
+        let p = Party::new();
+        store_acl_entry(
+            &vtc.state.acl_ks,
+            &VtcAclEntry {
+                admin: crate::acl::AdminAuthority::for_role(crate::acl::AdminRole::Auditor),
+                ..VtcAclEntry::new(
+                    &p.did,
+                    VtcRole::Member,
+                    crate::acl::AdminAuthority::none(),
+                    "test",
+                )
+            },
         )
-        .await;
+        .await
+        .expect("seed an auditor");
+        p
+    }
+
+    /// **`purge` takes `vtc.members.manage`** (`vtc-admin-roles.md` §4). An
+    /// administrator without it — an auditor — is refused, and nothing is
+    /// erased (VTI-ACL-030).
+    #[tokio::test]
+    async fn vti_acl_030_purge_needs_vtc_members_manage() {
+        let fix = fixture().await;
+        let auditor = auditor(&fix.vtc).await;
+        let doc = signed(&auditor, MEMBER_PURGE_TYPE, json!({ "did": TARGET })).await;
         let out = dispatch(&fix.vtc, &doc).await;
 
         assert_eq!(
             error_code(&out).as_deref(),
             Some("permissionDenied"),
-            "purge is super-admin only: {}",
+            "purge takes vtc.members.manage: {}",
             String::from_utf8_lossy(&out.body)
         );
         assert!(
@@ -6400,7 +6407,8 @@ mod members_admin_tests {
                 did: fix.admin.did.clone(),
                 role: VtcRole::Admin,
                 label: None,
-                allowed_contexts: vec![],
+                admin: VtcRole::Admin.implied_authority(),
+                delegated_by: None,
                 created_at: 0,
                 created_by: "did:key:vtc-install".into(),
                 updated_at: None,
@@ -6419,24 +6427,30 @@ mod members_admin_tests {
     }
 
     /// **A delegation cannot reach further than the admin it acts for.** A key
-    /// delegated by a *context-scoped* admin is refused `purge` exactly as that
-    /// admin is — the delegation is a name lookup, not a widening.
+    /// delegated by an auditor is refused `purge` exactly as the auditor is —
+    /// the delegation is a name lookup, not a widening.
     #[tokio::test]
     async fn a_delegation_inherits_its_admins_ceiling_and_no_more() {
         let fix = fixture().await;
+        let auditor = auditor(&fix.vtc).await;
         let console = Party::new();
-        delegate(&fix.vtc, &console, &fix.scoped_admin.did).await;
+        delegate(&fix.vtc, &console, &auditor.did).await;
 
         let purge = signed(&console, MEMBER_PURGE_TYPE, json!({ "did": TARGET })).await;
         assert_eq!(
             error_code(&dispatch(&fix.vtc, &purge).await).as_deref(),
             Some("permissionDenied"),
-            "purge is super-admin only, delegation or not"
+            "purge takes vtc.members.manage, delegation or not"
         );
-        // …and it is not refused *everything*: the scoped admin's own reach is
-        // intact through the delegation. A ceiling copied one notch too tight
-        // is as much a regression as one copied too loose.
-        let read = signed(&console, MEMBER_CREDENTIALS_TYPE, json!({ "did": TARGET })).await;
+        // …and a moderator's delegation reaches what the moderator holds.
+        let moderating = Party::new();
+        delegate(&fix.vtc, &moderating, &fix.scoped_admin.did).await;
+        let read = signed(
+            &moderating,
+            MEMBER_CREDENTIALS_TYPE,
+            json!({ "did": TARGET }),
+        )
+        .await;
         assert!(dispatch(&fix.vtc, &read).await.status.is_success());
     }
 
@@ -7053,11 +7067,11 @@ mod join_decide_profile_tests {
         assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
     }
 
-    /// **Neither verb is super-admin-only, and neither is context-scoped.**
-    /// Both bearer routes take `AdminAuth`, which a context-scoped admin
-    /// satisfies, so this door must admit them too.
+    /// **Each verb takes its own capability** (`vtc-admin-roles.md` §4): a
+    /// moderator holds `vtc.join.decide` and decides, and does not hold
+    /// `vtc.surface.admin`, so it may not edit the profile.
     #[tokio::test]
-    async fn a_context_scoped_admin_may_decide_and_may_edit_the_profile() {
+    async fn a_moderator_may_decide_and_may_not_edit_the_profile() {
         let fix = fixture().await;
         let id = pending_request(&fix.vtc).await;
 
@@ -7070,7 +7084,7 @@ mod join_decide_profile_tests {
         let out = dispatch(&fix.vtc, &doc).await;
         assert!(
             out.status.is_success(),
-            "a context-scoped admin passes AdminAuth and must pass here: {}",
+            "a moderator holds vtc.join.decide: {}",
             String::from_utf8_lossy(&out.body)
         );
         assert_eq!(payload_of(&out)["status"], "rejected");
@@ -7082,9 +7096,10 @@ mod join_decide_profile_tests {
         )
         .await;
         let out = dispatch(&fix.vtc, &doc).await;
-        assert!(
-            out.status.is_success(),
-            "{}",
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("permissionDenied"),
+            "the profile takes vtc.surface.admin: {}",
             String::from_utf8_lossy(&out.body)
         );
     }
@@ -7695,25 +7710,24 @@ mod config_pair_tests {
         assert_eq!(stored_log_level(&fix.vtc).await, None);
     }
 
-    /// **Neither verb is super-admin-only, and neither is context-scoped.**
-    /// Both bearer routes take `AdminAuth`, which a context-scoped admin
-    /// satisfies, so this door must admit them too.
+    /// **Both verbs take `vtc.config.admin`** (`vtc-admin-roles.md` §4). An
+    /// administrator without it — a moderator — may do neither.
     #[tokio::test]
-    async fn a_context_scoped_admin_may_export_but_not_import() {
+    async fn vti_acl_030_config_export_and_import_need_vtc_config_admin() {
         let fix = fixture().await;
         let document = changed_document(&fix.vtc).await;
 
         let doc = signed(&fix.scoped_admin, CONFIG_EXPORT_TYPE, json!({})).await;
         let out = dispatch(&fix.vtc, &doc).await;
-        assert!(
-            out.status.is_success(),
-            "a context-scoped admin may export: {}",
+        assert_eq!(
+            error_code(&out).as_deref(),
+            Some("permissionDenied"),
+            "export takes vtc.config.admin: {}",
             String::from_utf8_lossy(&out.body)
         );
 
-        // An import writes community-wide configuration, so it needs an
-        // unrestricted admin (#1829): a context admin is refused and nothing
-        // is stored.
+        // An import writes community-wide configuration (#1829): refused, and
+        // nothing is stored.
         let doc = signed(
             &fix.scoped_admin,
             CONFIG_IMPORT_TYPE,
@@ -8002,23 +8016,15 @@ mod endorsement_type_tests {
         assert!(stored(&fix).await.is_none());
     }
 
-    /// Neither verb is super-admin-only or context-scoped: `AdminAuth` admits a
-    /// context-scoped admin, so this door must too.
+    /// Both verbs take `vtc.surface.admin` (`vtc-admin-roles.md` §4): a
+    /// moderator, who holds no such capability, is refused both.
     #[tokio::test]
-    async fn a_context_scoped_admin_may_register_and_delete() {
+    async fn vti_acl_030_endorsement_types_need_vtc_surface_admin() {
         let fix = fixture().await;
         let out = register(&fix, &fix.scoped_admin, json!({ "typeUri": TYPE })).await;
-        assert!(
-            out.status.is_success(),
-            "{}",
-            String::from_utf8_lossy(&out.body)
-        );
+        assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
         let out = delete(&fix, &fix.scoped_admin, TYPE).await;
-        assert!(
-            out.status.is_success(),
-            "{}",
-            String::from_utf8_lossy(&out.body)
-        );
+        assert_eq!(error_code(&out).as_deref(), Some("permissionDenied"));
     }
 
     // ─── the operations' own refusals ────────────────────────────────────

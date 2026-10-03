@@ -40,7 +40,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::acl::{VtcRole, delete_acl_entry, list_acl_entries};
+use crate::acl::{delete_acl_entry, list_acl_entries};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -272,7 +272,7 @@ pub async fn run_emergency_bootstrap_with_store(
     // --- destructive cleanup ----------------------------------------
     let mut admin_entries_cleared = 0;
     for entry in list_acl_entries(&acl_ks).await? {
-        if entry.role == VtcRole::Admin {
+        if entry.admin.is_administrator() {
             delete_acl_entry(&acl_ks, &entry.did).await?;
             admin_entries_cleared += 1;
         }

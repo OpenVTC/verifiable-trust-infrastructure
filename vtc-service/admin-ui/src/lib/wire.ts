@@ -416,29 +416,18 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /**
-         * @description `{ entry: … }` — the shape `acl/{grant,show,change-role}/0.1` publish.
-         *
-         *     All three returned the row bare until #1109. The row itself always
-         *     conformed; only the wrapper was missing, which is the same envelope defect
-         *     the VTC family carried on eight tasks. It went unseen here for longer
-         *     because the shared `spec/{acl,audit,auth,config,policy}/*` families are
-         *     outside the conformance table's census — a stated limit, since both daemons
-         *     serve them — so no fixture ever described these responses. The
-         *     response-conformance layer needed no census: it validated what the handler
-         *     sent.
-         */
+        /** @description `{ entry: … }` — the shape `acl/{grant,show,change-role}/0.1` publish. */
         AclEntryEnvelope: {
             entry: components["schemas"]["AclEntryResponse"];
         };
         /**
-         * @description Canonical `acl/_shared` **AclEntry**.
+         * @description Canonical `acl/_shared/0.1` **AclEntry**.
          *
-         *     Renames from VTC's storage shape: `did` → `subject`,
-         *     `allowed_contexts` → `scopes`. Timestamps are RFC3339 strings, not
-         *     unix epochs — canonical types them `format: date-time`, and an
-         *     integer there would be a silent contract break rather than a
-         *     cosmetic one.
+         *     `scopes` is always empty: a VTC holds no contexts (**VTI-VTC-010**), and an
+         *     entry renders to 0.1 only when its role says everything about its authority
+         *     ([`expressible_in_v0_1`]) — read under this community's 0.1 convention, an
+         *     empty list on `admin` is the whole community and on every other role is
+         *     nowhere, which is exactly what [`VtcRole::implied_authority`] gives.
          */
         AclEntryResponse: {
             createdAt: string;

@@ -16,6 +16,7 @@
 
 mod common;
 
+mod acl_boot_migration;
 mod acl_canonical;
 mod acl_cli;
 mod acl_trust_tasks;
@@ -26,6 +27,7 @@ mod admin_bootstrap;
 mod admin_config;
 mod admin_invites;
 mod admin_passkeys;
+mod admin_roles;
 mod admin_verbs_spine;
 mod audit_list;
 mod audit_signout;

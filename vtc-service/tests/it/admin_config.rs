@@ -445,9 +445,10 @@ async fn signer(fix: &Fixture, role: vtc_service::acl::VtcRole) -> Party {
         &fix.state.acl_ks,
         &vtc_service::acl::VtcAclEntry {
             did: party.did.clone(),
+            admin: role.implied_authority(),
+            delegated_by: None,
             role,
             label: None,
-            allowed_contexts: vec![],
             created_at: 0,
             created_by: "did:key:vtc-install".into(),
             updated_at: None,

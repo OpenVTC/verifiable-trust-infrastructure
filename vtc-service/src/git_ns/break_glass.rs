@@ -36,7 +36,6 @@ use vti_common::audit::{AuditEvent, GitNsBreakGlassData};
 use vti_common::capability_client::build_document;
 use vti_common::error::AppError;
 
-use crate::acl::VtcRole;
 use crate::acl::bound_step_up::{self, EvidencedGate, StepUpEvidence};
 use crate::server::AppState;
 
@@ -104,8 +103,7 @@ pub async fn audience(
     let now_epoch = crate::auth::session::now_epoch();
     let mut out = BTreeSet::new();
     for entry in crate::acl::list_acl_entries(&state.acl_ks).await? {
-        if entry.role == VtcRole::Admin
-            && matches!(entry.act_scope(), vti_common::acl::ActScope::All)
+        if entry.can(crate::acl::Capability::GitNsAdmin, None)
             && !entry.is_expired(now_epoch)
             && standing(state, &entry.did).await?.community_admin
         {

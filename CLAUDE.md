@@ -1063,7 +1063,11 @@ These are load-bearing — know they exist before adjusting nearby code.
   — or `has_context_access` / `can_act_in` / `is_super_admin`, which are
   built on them — and match on the `ActScope`. Same shape as the
   `ApproveScope` axis beside it in `vta-sdk/src/acl.rs`: act vs confer.
-  See `docs/05-design-notes/acl-scope-semantics.md`.
+  See `docs/05-design-notes/acl-scope-semantics.md`. **The VTC no longer has
+  contexts:** its administrative authority is capability-based (an
+  administrative role as a ceiling, explicit `act`, capabilities with resource
+  qualifiers — `docs/05-design-notes/vtc-admin-roles.md`), and every VTC gate
+  asks `VtcAclEntry::can(capability, resource)`, never a session's claims.
 - **Key custody: choosing a derivation path is holding a key.** Every key is
   a pure function of the seed and a path, so a gate that checks the caller's
   context but lets the caller name the path (or the key id) gates nothing.
