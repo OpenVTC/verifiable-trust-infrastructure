@@ -61,26 +61,12 @@ export async function postSignedWithStepUp<T>(
 }
 
 /**
- * Making someone an unrestricted admin also needs another unrestricted
- * admin's consent (VTI-APV-014). The daemon refuses with
- * `auth:consent_required` and sends the request to the other admins; there is
- * nothing for this browser to do but wait and try again. Say that, rather than
- * showing the code.
+ * A consent-gated act (making or removing an unrestricted administrator,
+ * lowering the consent threshold, changing an authority policy) is not refused
+ * pending consent any more. Once its step-up is answered the VTC parks it as
+ * an administrator action and answers with a `trust-task-next-step` reply,
+ * which the signed door throws as a [`ParkedAction`]: a success, shown as one,
+ * that completes by itself when enough administrators approve
+ * (`lib/parked-action.ts`).
  */
-export async function explainConsent<T>(call: Promise<T>): Promise<T> {
-  try {
-    return await call;
-  } catch (err) {
-    const e = err as { message?: string; details?: { reason?: unknown } } | null;
-    if (
-      e?.message === "auth:consent_required" ||
-      e?.details?.reason === "auth:consent_required"
-    ) {
-      throw new Error(
-        "Another unrestricted administrator has to approve this first. They have " +
-          "been sent the request — once one of them approves, do this again.",
-      );
-    }
-    throw err;
-  }
-}
+export { ParkedAction, parkedOf } from "./parked-action";

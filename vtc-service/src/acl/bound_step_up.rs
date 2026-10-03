@@ -739,6 +739,101 @@ fn public_key_credential(
     })
 }
 
+/// Verify a WebAuthn assertion whose challenge is `challenge` — bytes this
+/// service chose and handed out, not ones webauthn-rs minted — against `did`'s
+/// own registered passkeys (session passkeys, and step-up passkeys),
+/// user verification required. The credential id (hex) on success; a short
+/// machine-readable hint on failure.
+///
+/// For `task-consent/decision/0.2`'s `webauthn` evidence, whose challenge the
+/// specification fixes as the UTF-8 bytes of the decision's `challenge`
+/// (VTI-APV-015's gesture, offered by an approver as an additional factor on
+/// top of their own proof). webauthn-rs only verifies against a state it
+/// started, so a state is started over exactly these credentials and its
+/// challenge replaced with the one the approver was given; every check
+/// webauthn-rs makes — origin, RP id hash, signature, user verification,
+/// credential offered — still runs.
+pub(crate) async fn verify_assertion_over_challenge(
+    state: &AppState,
+    did: &str,
+    challenge: &[u8],
+    assertion: &Value,
+) -> Result<String, &'static str> {
+    use base64::Engine as _;
+    let webauthn = state.webauthn.as_ref().ok_or("noRelyingParty")?;
+    let mut passkeys = crate::step_up_passkey::credentials_of(state, did)
+        .await
+        .map_err(|_| "internal")?;
+    passkeys.extend(
+        get_passkey_user_by_did(&state.passkey_ks, did)
+            .await
+            .map_err(|_| "internal")?
+            .map(|u| u.credentials)
+            .unwrap_or_default(),
+    );
+    if passkeys.is_empty() {
+        return Err("noPasskey");
+    }
+    let (_, auth_state) = webauthn
+        .start_passkey_authentication(&passkeys)
+        .map_err(|_| "internal")?;
+    let mut state_json = serde_json::to_value(&auth_state).map_err(|_| "internal")?;
+    let slot = state_json.pointer_mut("/ast/challenge").ok_or("internal")?;
+    *slot = Value::String(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(challenge));
+    let auth_state: PasskeyAuthentication =
+        serde_json::from_value(state_json).map_err(|_| "internal")?;
+
+    let r = &assertion["response"];
+    let mut response = json!({
+        "authenticatorData": r["authenticatorData"],
+        "clientDataJSON": r["clientDataJSON"],
+        "signature": r["signature"],
+    });
+    if r["userHandle"].is_string() {
+        response["userHandle"] = r["userHandle"].clone();
+    }
+    let credential: PublicKeyCredential = serde_json::from_value(json!({
+        "id": assertion["id"],
+        "rawId": assertion["rawId"],
+        "response": response,
+        "type": "public-key",
+        "extensions": {},
+    }))
+    .map_err(|_| "unparseable")?;
+    let result = webauthn
+        .finish_passkey_authentication(&credential, &auth_state)
+        .map_err(|e| {
+            warn!(%did, error = %e, "decision evidence assertion did not verify");
+            "verificationFailed"
+        })?;
+    if !result.user_verified() {
+        return Err("userNotVerified");
+    }
+    let cred_id_hex = hex::encode(<_ as AsRef<[u8]>>::as_ref(result.cred_id()));
+    // The signature counter is WebAuthn's replay defence: persist it, on
+    // whichever store the credential lives in.
+    if let Ok(Some(mut user)) = get_passkey_user_by_cred(&state.passkey_ks, &cred_id_hex).await
+        && user.did == did
+    {
+        for cred in &mut user.credentials {
+            cred.update_credential(&result);
+        }
+        store_passkey_user(&state.passkey_ks, &user)
+            .await
+            .map_err(|_| "internal")?;
+    } else if let Ok(Some(user)) =
+        get_passkey_user_by_cred(&state.step_up_passkeys_ks, &cred_id_hex).await
+        && user.did == did
+    {
+        crate::step_up_passkey::record_use(&state.step_up_passkeys_ks, user, &result)
+            .await
+            .map_err(|_| "internal")?;
+    } else {
+        return Err("credentialUnregistered");
+    }
+    Ok(cred_id_hex)
+}
+
 /// Remove every mark, pending or redeemable, whose life has ended. A storage
 /// bound only: both reads above already treat an expired mark as absent.
 pub async fn sweep_expired(ks: &KeyspaceHandle, now: DateTime<Utc>) -> Result<usize, AppError> {

@@ -24,7 +24,9 @@ use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use vtc_service::members::{Member, get_member, store_member};
 use vtc_service::test_support::TestVtc;
 
-use crate::common::second_party::{Gesturer, consent_details, decide, step_up_request};
+use crate::common::second_party::{
+    Gesturer, decide, decision_payload, parked_action, show_action, step_up_request,
+};
 use crate::common::signed::{error_code, post, signed};
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
@@ -137,11 +139,17 @@ fn assert_step_up(status: StatusCode, reply: &Value) {
     );
 }
 
-fn assert_consent(reply: &Value, approver_set: &str) -> Value {
-    let details = consent_details(reply).unwrap_or_else(|| panic!("consent asked: {reply}"));
-    assert_eq!(details["approverSet"], approver_set, "{reply}");
-    assert_eq!(details["excludeRequester"], true);
-    details
+/// The operation was parked for approval (VTI-APV-017): its action's id.
+fn assert_parked(status: StatusCode, reply: &Value) -> String {
+    assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
+    parked_action(reply).unwrap_or_else(|| panic!("parked as an action: {reply}"))
+}
+
+/// The action as `who` sees it.
+async fn action(fix: &Fixture, who: &Party, id: &str) -> Value {
+    let (status, reply) = show_action(&fix.vtc, who, id).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    reply["payload"]["action"].clone()
 }
 
 // ─── 1. VTI-APV-019: removing, demoting, narrowing an administrator ─────────
@@ -163,39 +171,45 @@ async fn vti_apv_019_removing_an_unrestricted_admin_needs_a_third_party() {
     assert!(entry(&fix, &subject.did).await.is_some());
     fix.gesturer.gesture(&fix.vtc, &a, &reply).await;
 
-    // With it: consent, from somebody other than the subject.
-    let (_, reply) = post(&fix.vtc, &revoke).await;
-    let details = assert_consent(&reply, "unrestricted-admins-except-subject");
-    let asked: Vec<&str> = details["consentRequests"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| r["recipient"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        asked,
-        vec![third.did.as_str()],
-        "the subject is never asked"
-    );
+    // With it: parked for somebody other than the subject.
+    let (status, reply) = post(&fix.vtc, &revoke).await;
+    let id = assert_parked(status, &reply);
     assert!(
         entry(&fix, &subject.did).await.is_some(),
         "nothing removed yet"
     );
+    let theirs = action(&fix, &third, &id).await;
+    assert_eq!(theirs["callerRole"], "approver", "{theirs}");
+    assert!(theirs["challenge"].is_string(), "{theirs}");
+    let subjects = action(&fix, &subject, &id).await;
+    assert_eq!(
+        subjects["callerRole"], "observer",
+        "the subject is never asked"
+    );
+    assert!(subjects.get("challenge").is_none(), "{subjects}");
 
-    let (_, refused) = decide(&fix.vtc, &subject, &details, "approve").await;
+    // The subject answering with the approver's challenge is refused.
+    let stolen = signed(
+        &subject,
+        "https://trusttasks.org/spec/task-consent/decision/0.2",
+        decision_payload(&theirs, "approve"),
+    )
+    .await;
+    let (_, refused) = post(&fix.vtc, &stolen).await;
     assert_eq!(
         error_code(&refused),
         Some("task-consent/decision:notAnApprover"),
         "{refused}"
     );
 
-    let (status, ack) = decide(&fix.vtc, &third, &details, "approve").await;
+    let (status, ack) = decide(&fix.vtc, &third, &id, "approve").await;
     assert_eq!(status, StatusCode::OK, "{ack}");
     assert_eq!(ack["payload"]["status"], "granted", "{ack}");
-
-    let (status, reply) = post(&fix.vtc, &revoke).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    assert!(entry(&fix, &subject.did).await.is_none());
+    assert!(
+        entry(&fix, &subject.did).await.is_none(),
+        "removed on approval"
+    );
+    assert_eq!(action(&fix, &a, &id).await["status"], "completed");
     assert!(
         audit_rows(&fix, "AuthorityReducedUnopposed")
             .await
@@ -287,18 +301,15 @@ async fn vti_apv_019_demoting_an_unrestricted_admin_needs_a_third_party() {
     let (status, reply) = post(&fix.vtc, &demote).await;
     assert_step_up(status, &reply);
     fix.gesturer.gesture(&fix.vtc, &a, &reply).await;
-    let (_, reply) = post(&fix.vtc, &demote).await;
-    assert_consent(&reply, "unrestricted-admins-except-subject");
+    let (status, reply) = post(&fix.vtc, &demote).await;
+    let id = assert_parked(status, &reply);
     assert_eq!(
         entry(&fix, &subject.did).await.unwrap().role,
         VtcRole::Admin
     );
 
-    let (status, reply) = fix
-        .gesturer
-        .send_through(&fix.vtc, &a, &[&third], &demote)
-        .await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
+    let (status, ack) = decide(&fix.vtc, &third, &id, "approve").await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
     assert_eq!(
         entry(&fix, &subject.did).await.unwrap().role,
         VtcRole::Member
@@ -323,15 +334,12 @@ async fn vti_apv_019_narrowing_an_unrestricted_admin_needs_a_third_party() {
     let (status, reply) = post(&fix.vtc, &narrow).await;
     assert_step_up(status, &reply);
     fix.gesturer.gesture(&fix.vtc, &a, &reply).await;
-    let (_, reply) = post(&fix.vtc, &narrow).await;
-    assert_consent(&reply, "unrestricted-admins-except-subject");
+    let (status, reply) = post(&fix.vtc, &narrow).await;
+    let id = assert_parked(status, &reply);
     assert_eq!(entry(&fix, &subject.did).await.unwrap().expires_at, None);
 
-    let (status, reply) = fix
-        .gesturer
-        .send_through(&fix.vtc, &a, &[&third], &narrow)
-        .await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
+    let (status, ack) = decide(&fix.vtc, &third, &id, "approve").await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
     assert!(
         entry(&fix, &subject.did)
             .await
@@ -482,26 +490,28 @@ async fn vti_apv_020_lowering_the_threshold_needs_consent_at_the_current_thresho
     assert_step_up(status, &reply);
     fix.gesturer.gesture(&fix.vtc, &a, &reply).await;
 
-    let (_, reply) = post(&fix.vtc, &lower).await;
-    let details = assert_consent(&reply, "unrestricted-admins");
+    let (status, reply) = post(&fix.vtc, &lower).await;
+    let id = assert_parked(status, &reply);
     assert_eq!(
-        details["minApprovals"], 2,
+        action(&fix, &a, &id).await["threshold"],
+        2,
         "N is the threshold as it stands"
     );
     assert_eq!(live_threshold(&fix).await, 2, "nothing written yet");
 
     // One approval of two is not enough.
-    let (_, ack) = decide(&fix.vtc, &b, &details, "approve").await;
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
     assert_eq!(ack["payload"]["status"], "pending", "{ack}");
-    let (status, _) = post(&fix.vtc, &lower).await;
-    assert!(!status.is_success());
     assert_eq!(live_threshold(&fix).await, 2);
 
-    let (_, ack) = decide(&fix.vtc, &c, &details, "approve").await;
+    let (_, ack) = decide(&fix.vtc, &c, &id, "approve").await;
     assert_eq!(ack["payload"]["status"], "granted", "{ack}");
-    let (status, reply) = post(&fix.vtc, &lower).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    assert_eq!(reply["payload"]["applied"][0], THRESHOLD_KEY, "{reply}");
+    let done = action(&fix, &a, &id).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    assert_eq!(
+        done["ext"]["org.openvtc"]["result"]["applied"][0], THRESHOLD_KEY,
+        "{done}"
+    );
     assert_eq!(live_threshold(&fix).await, 1);
 }
 
@@ -598,13 +608,13 @@ async fn vti_vtc_022_an_authority_policy_needs_a_second_party() {
     let (status, reply) = post(&fix.vtc, &upload).await;
     assert_step_up(status, &reply);
     fix.gesturer.gesture(&fix.vtc, &a, &reply).await;
-    let (_, reply) = post(&fix.vtc, &upload).await;
-    let details = assert_consent(&reply, "unrestricted-admins");
-    let (_, ack) = decide(&fix.vtc, &b, &details, "approve").await;
-    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
     let (status, reply) = post(&fix.vtc, &upload).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    let id = reply["payload"]["policy"]["id"]
+    let action_id = assert_parked(status, &reply);
+    let (_, ack) = decide(&fix.vtc, &b, &action_id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    let done = action(&fix, &a, &action_id).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    let id = done["ext"]["org.openvtc"]["result"]["policy"]["id"]
         .as_str()
         .unwrap()
         .to_string();

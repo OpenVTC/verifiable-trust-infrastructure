@@ -267,6 +267,45 @@ pub(crate) async fn precheck_activate(
     Ok(policy.purpose)
 }
 
+/// Every check [`upload_inner`] makes before it writes, without writing — so a
+/// revision that has to wait for other administrators' approval
+/// (VTI-VTC-022) is refused for its own faults first, rather than parked and
+/// failed at execution (`vtc-action-list.md` §4.2: every check that does not
+/// need the approval runs at submission). [`upload_inner`] makes them again
+/// when it runs.
+pub(crate) async fn check_upload(state: &AppState, body: &UploadBody) -> Result<(), AppError> {
+    let unsupported = body.unsupported();
+    if !unsupported.is_empty() {
+        return Err(AppError::Validation(format!(
+            "this maintainer does not implement {}: it selects a policy by its \
+             activated (purpose) binding, not by appliesTo/priority matching, and \
+             modules carry no enabled flag. Refusing rather than accepting a \
+             selection hint that would never be honoured.",
+            unsupported.join(", "),
+        )));
+    }
+    let purpose = body.purpose()?;
+    if body.module.len() > POLICY_SOURCE_MAX_BYTES {
+        return Err(AppError::Validation(format!(
+            "module exceeds {POLICY_SOURCE_MAX_BYTES} bytes (got {})",
+            body.module.len(),
+        )));
+    }
+    let compiled = compile(&body.module, Uuid::new_v4())?;
+    validate_purpose_package(&compiled, purpose)?;
+    let current_version = max_version_for(&state.policies_ks, purpose).await?;
+    if let Some(expected) = body.expected_version
+        && expected != current_version
+    {
+        return Err(AppError::Conflict(format!(
+            "expectedVersion {expected} does not match the current revision \
+             {current_version} for purpose {}",
+            purpose.as_str(),
+        )));
+    }
+    Ok(())
+}
+
 /// Compile, check and store a revision as `actor` — `policy/upsert/0.2`, on the
 /// route and the spine alike.
 pub(crate) async fn upload_inner(

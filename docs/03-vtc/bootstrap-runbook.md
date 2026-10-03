@@ -171,7 +171,8 @@ entry with no contexts.
    `admin` and no contexts. The console asks for your passkey before it
    writes: granting `admin` requires a live step-up (VTI-OPS-051), so the
    operator doing the granting must already have one enrolled. If they do
-   not, use the offline command above.
+   not, use the offline command above. An unrestricted grant also waits in
+   **Actions** until another unrestricted admin approves it (below).
 
 When the VTC refuses the sign-in, `cnm` prints that same `vtc acl add`
 command. A VTC gives the same refusal whether or not the DID is enrolled, so
@@ -206,24 +207,32 @@ lost your passkey, the offline `vtc … acl add` above is the break-glass.
 Making someone an **unrestricted** admin — an admin grant with no scopes,
 promoting a member who has none, or an admin invite — takes a second person
 in a stronger sense too: another unrestricted admin has to consent
-(VTI-APV-014). The request is sent to them, and you send the same operation
-again once one has approved.
+(VTI-APV-014). The VTC does not refuse the operation: once your step-up is
+spent it **parks** it as an action and answers HTTP 202 with the action's id.
+You send nothing again. When enough other unrestricted admins have approved,
+the VTC re-checks everything against the community as it is then and runs the
+operation itself (VTI-APV-017). One decline closes it. Actions last 72 hours by
+default (`acl.action_lifetime`, 15 minutes to 14 days, runtime-patchable).
+The same applies to removing another unrestricted admin, lowering the consent
+threshold, and changing authority policy
+([`admin-access.md`](admin-access.md) §3.2).
 
-An approver without a device enrolled to receive the push answers from `cnm`.
-The requester relays the refusal they received (its `details.consentRequests`
-holds one VTC-signed request per approver), and the approver runs:
+Approvers find waiting actions in the console's **Actions** page and approve
+there with the browser wallet, which signs the decision as their own DID. An
+approver without a wallet answers from `cnm`:
 
 ```sh
-cnm consent show    refusal.json    # verify it and show what it asks
-cnm consent approve refusal.json    # asks you to type the requester's code
-cnm consent deny    refusal.json --reason "not expected"
+cnm actions list --view waiting                  # what is waiting for you
+cnm actions show <actionId>
+cnm consent approve --action <actionId>          # or pass --match-code <code>
+cnm consent deny    --action <actionId> --reason "not expected"
 ```
 
-`cnm` refuses a request the VTC did not sign, one addressed to another
-approver, and one that has expired. Approving needs the six-character code the
-requester's screen shows, typed or passed as `--match-code`. A code that
-differs means the change being approved is not the change that would run, so
-nothing is sent. Requests last 15 minutes.
+`cnm` fetches the action, renders what it does from the payload itself, and
+shows a six-character match code derived from the payload digest. With
+`--match-code`, a code that differs means the change being approved is not the
+change that would run, so nothing is sent. The file-based `cnm consent approve
+<request-file>` still answers a pushed `task-consent/request` document.
 
 A community with a single unrestricted admin has
 nobody to ask, which is why `vtc setup` takes an optional `co_admin_did`. If

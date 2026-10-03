@@ -323,6 +323,15 @@ upstream spec and a `trust-tasks-rs` bump first).
 
 ## 9. As built (step 4.2: the consent gate)
 
+> **Superseded at the VTC by the action list.** The refusal-and-re-send model
+> below (`auth:consent_required`, relayed `consentRequests`, the 15-minute
+> pending and 10-minute granted lifetimes, the `task-consent/granted` notice
+> prompting a re-send) is no longer how the VTC behaves. It now parks the
+> operation as an action (HTTP 202, `trust-task-next-step` naming the
+> `actionId`) and runs it itself, re-checked, on the approval that reaches the
+> threshold: see [`vtc-action-list.md`](vtc-action-list.md). The trigger,
+> approver set, threshold, ordering and state pin described here still apply.
+
 - **Code:** `vtc-service/src/acl/admin_consent.rs` — the trigger
   (`confers_unrestricted`), the approver set, the threshold, `require` (find a
   live consent or raise the request), `gesture_then_consent` (the signed door's
@@ -412,7 +421,8 @@ upstream spec and a `trust-tasks-rs` bump first).
   unchanged.
 - **Console:** the invite form steps up first and, like an unrestricted
   `acl/grant`, turns `auth:consent_required` into an instruction to wait for
-  another admin and try again.
+  another admin and try again. (Since the action list, it shows the parked
+  action instead; see `vtc-action-list.md` §7.3.)
 
 ## 11. As built (step 4.4: co-admin at install, audited break-glass)
 

@@ -327,21 +327,23 @@ fn print_entry(e: &Value) {
 /// carries the ceremony in its `details`; the operator completes it in the
 /// admin console, then re-runs the same command.
 fn access_error(vtc: &Connected, err: VtcError) -> Box<dyn std::error::Error> {
+    // Not a failure: parked for other administrators' approval, and it
+    // completes itself when enough approve (VTI-APV-017).
+    if let VtcError::Parked { action_id, message } = &err {
+        return format!(
+            "{message}\n  Nothing more to send: it runs when the approvals land. Follow it with \
+             `{bin} actions show {action_id}`, or withdraw it with `{bin} actions cancel \
+             {action_id}`.",
+            bin = bin_name()
+        )
+        .into();
+    }
     let text = err.to_string();
     if text.contains("stepUpRequest") || text.contains("passkey gesture") {
         return format!(
             "the VTC needs a passkey gesture from {} before it makes this change. Approve it in \
              the admin console, then run the same command again.\n({text})",
             vtc.client_did
-        )
-        .into();
-    }
-    if text.contains("consentRequests") {
-        return format!(
-            "another unrestricted administrator has to approve this first; they have been sent \
-             the request (`{} consent approve` answers it). Once one approves, run the same \
-             command again.\n({text})",
-            bin_name()
         )
         .into();
     }

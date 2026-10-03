@@ -1,41 +1,52 @@
-//! Second-party consent for unrestricted admin authority — **VTI-APV-014**.
+//! The administrator action list — consent-gated operations park and complete
+//! on the N-th approval (**VTI-APV-017**), over **VTI-APV-014** (unrestricted
+//! grants), **-019** (reductions), **-020** (threshold lowering) and
+//! **VTI-VTC-022** (authority policy).
 //!
-//! Creating an unrestricted admin, or widening an entry to unrestricted, needs
-//! another unrestricted admin's consent as well as the requester's own passkey
-//! gesture. These drive both doors end to end: the gesture, the
-//! `auth:consent_required` refusal with its VTC-signed requests, another
-//! admin's `task-consent/decision/0.1`, and the identical operation re-sent.
-//! Design: `docs/05-design-notes/vtc-operation-bound-step-up.md` §4.
+//! Each test drives the signed-document door end to end: the requester's
+//! operation-bound gesture, the parked answer (`trust-task-next-step/0.1`),
+//! `vtc/admin/actions/{list,show,cancel}` and the approvers'
+//! `task-consent/decision/0.2`. Design: `docs/05-design-notes/vtc-action-list.md`.
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
+use axum::http::StatusCode;
 use serde_json::{Value, json};
-use tower::ServiceExt;
-use uuid::Uuid;
-use vti_common::auth::passkey::build_webauthn;
-use vti_common::auth::passkey::store::{PasskeyUser, store_credential_mapping, store_passkey_user};
-
 use vti_rooms_dtg::test_support::Party;
-use webauthn_rs::prelude::{PublicKeyCredential, RequestChallengeResponse};
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+use vtc_service::admin_actions::ActionRecord;
 use vtc_service::test_support::{TEST_VTC_DID, TestVtc};
 
-use crate::common::second_party::Gesturer;
-use crate::common::webauthn_harness::SoftEd25519Authenticator;
+use crate::common::second_party::{
+    Gesturer, decide, decision_payload, parked_action, show_action, step_up_request,
+};
+use crate::common::signed::{error_code, post, signed};
+use vtc_service::admin_actions::codes::*;
+
+/// A `trust-task-error` reply's code — the census reads witnesses by this name.
+fn tt_error_code(doc: &Value) -> Option<&str> {
+    error_code(doc)
+}
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
-const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
-const DECISION: &str = "https://trusttasks.org/spec/task-consent/decision/0.1";
-const REQUEST: &str = "https://trusttasks.org/spec/task-consent/request/0.1";
+const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
+const ACTIVATE: &str = "https://trusttasks.org/spec/policy/activate/0.1";
+const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const CREATE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
+const LIST: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
+const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1";
+const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.1";
+const DECISION_V0_1: &str = "https://trusttasks.org/spec/task-consent/decision/0.1";
+const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
+const NEXT_STEP: &str = "https://trusttasks.org/spec/trust-task-next-step/0.1";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.1";
 const THRESHOLD_KEY: &str = "acl.unrestricted_admin_consent_threshold";
 
 struct Fixture {
     vtc: TestVtc,
-    authenticator: SoftEd25519Authenticator,
+    gesturer: Gesturer,
 }
 
 async fn fixture() -> Fixture {
@@ -43,6 +54,9 @@ async fn fixture() -> Fixture {
         .with_public_url(RP_ORIGIN)
         .with_signers(true)
         .with_audit(true)
+        .with_install_signer(std::sync::Arc::new(
+            vtc_service::install::InstallTokenSigner::from_master_seed(&[0xAB; 64]).unwrap(),
+        ))
         .build()
         .await;
     vtc_service::policy::default::install_defaults(
@@ -53,7 +67,7 @@ async fn fixture() -> Fixture {
     .unwrap();
     Fixture {
         vtc,
-        authenticator: SoftEd25519Authenticator::new(),
+        gesturer: Gesturer::new(),
     }
 }
 
@@ -71,737 +85,1318 @@ fn row(did: &str, role: VtcRole, scopes: &[&str]) -> VtcAclEntry {
     }
 }
 
-/// An unrestricted admin who signs with `Party`'s key and holds a passkey.
-async fn admin_with_passkey(fix: &mut Fixture) -> Party {
-    let party = admin(fix).await;
-    enrol_passkey(fix, &party.did).await;
+async fn seed(fix: &Fixture, role: VtcRole, scopes: &[&str]) -> Party {
+    let party = Party::new();
+    store_acl_entry(&fix.vtc.state.acl_ks, &row(&party.did, role, scopes))
+        .await
+        .unwrap();
     party
 }
 
-/// An unrestricted admin with no passkey — enough to consent, which is a
+/// An unrestricted admin with no passkey — enough to approve, which is a
 /// signed decision.
 async fn admin(fix: &Fixture) -> Party {
-    let party = Party::new();
-    store_acl_entry(&fix.vtc.state.acl_ks, &row(&party.did, VtcRole::Admin, &[]))
-        .await
-        .unwrap();
+    seed(fix, VtcRole::Admin, &[]).await
+}
+
+/// An unrestricted admin who holds a passkey, so can make the gesture.
+async fn requester(fix: &mut Fixture) -> Party {
+    let party = admin(fix).await;
+    fix.gesturer.enrol(&fix.vtc, &party.did).await;
     party
-}
-
-async fn enrol_passkey(fix: &mut Fixture, did: &str) {
-    let webauthn = build_webauthn(RP_ORIGIN).unwrap();
-    let user_uuid = Uuid::new_v4();
-    let (ccr, reg_state) =
-        vtc_service::webauthn::start_passkey_registration(&webauthn, user_uuid, did, did, None)
-            .unwrap();
-    let (cred, _) = fix.authenticator.register(&ccr, RP_ORIGIN);
-    let passkey =
-        vtc_service::webauthn::finish_passkey_registration(&webauthn, &cred, &reg_state).unwrap();
-    let cred_hex = hex::encode(<_ as AsRef<[u8]>>::as_ref(passkey.cred_id()));
-    let ks = &fix.vtc.state.passkey_ks;
-    store_passkey_user(
-        ks,
-        &PasskeyUser {
-            user_uuid,
-            did: did.to_string(),
-            display_name: did.to_string(),
-            credentials: vec![passkey],
-        },
-    )
-    .await
-    .unwrap();
-    store_credential_mapping(ks, &cred_hex, user_uuid)
-        .await
-        .unwrap();
-}
-
-async fn signed(from: &Party, type_uri: &str, payload: Value) -> Value {
-    let mut doc =
-        vta_sdk::trust_task_sign::build_unsigned(type_uri, payload, &from.did, TEST_VTC_DID)
-            .unwrap();
-    let key = vta_sdk::trust_task_sign::HolderKey::from_did_key(&from.did, &from.secret_multibase)
-        .unwrap();
-    vta_sdk::trust_task_sign::sign_in_place_with(&mut doc, &key)
-        .await
-        .unwrap();
-    serde_json::to_value(doc).unwrap()
-}
-
-async fn post(fix: &Fixture, doc: &Value) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/trust-tasks")
-        .header("Content-Type", "application/json")
-        .body(Body::from(serde_json::to_vec(doc).unwrap()))
-        .unwrap();
-    let resp = fix.vtc.router.clone().oneshot(req).await.unwrap();
-    let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, body["payload"].clone())
-}
-
-fn grant_unrestricted(subject: &str) -> Value {
-    json!({ "entry": { "subject": subject, "role": "admin", "scopes": [] } })
-}
-
-fn options(request: &Value) -> RequestChallengeResponse {
-    let mut inner = request["webauthn"].clone();
-    inner["timeout"] = inner.get("timeout").cloned().unwrap_or(json!(60000));
-    serde_json::from_value(json!({ "publicKey": inner })).expect("options re-wrap")
-}
-
-fn assertion(cred: &PublicKeyCredential) -> Value {
-    let v = serde_json::to_value(cred).unwrap();
-    let mut response = json!({
-        "authenticatorData": v["response"]["authenticatorData"],
-        "clientDataJSON": v["response"]["clientDataJSON"],
-        "signature": v["response"]["signature"],
-    });
-    if v["response"]["userHandle"].is_string() {
-        response["userHandle"] = v["response"]["userHandle"].clone();
-    }
-    json!({
-        "id": v["id"],
-        "rawId": v["rawId"],
-        "type": "public-key",
-        "response": response,
-        "clientExtensionResults": {},
-    })
-}
-
-/// Answer the step-up refusal `refusal` with the requester's passkey.
-async fn make_gesture(fix: &mut Fixture, requester: &Party, refusal: &Value) {
-    assert_eq!(refusal["code"], "permissionDenied", "{refusal}");
-    let request = refusal["details"]["stepUpRequest"].clone();
-    assert!(request.is_object(), "expected a step-up request: {refusal}");
-    let cred = fix
-        .authenticator
-        .authenticate(&options(&request), RP_ORIGIN);
-    let doc = signed(
-        requester,
-        APPROVE_RESPONSE,
-        json!({
-            "subject": request["subject"],
-            "challenge": request["challenge"],
-            "decision": "approved",
-            "evidence": { "kind": "webauthn", "assertion": assertion(&cred) },
-        }),
-    )
-    .await;
-    let (status, ack) = post(fix, &doc).await;
-    assert_eq!(status, StatusCode::OK, "{ack}");
-    assert_eq!(ack["status"], "recorded", "{ack}");
-}
-
-/// The consent refusal, checked for the shape the VTA's gate gives it.
-fn consent_required(refusal: &Value) -> Value {
-    assert_eq!(refusal["code"], "taskFailed", "{refusal}");
-    let details = refusal["details"].clone();
-    assert_eq!(details["reason"], "auth:consent_required", "{refusal}");
-    assert_eq!(details["approverSet"], "unrestricted-admins");
-    assert_eq!(details["excludeRequester"], true);
-    assert!(
-        details["payloadDigest"]
-            .as_str()
-            .is_some_and(|d| d.starts_with('z'))
-    );
-    assert!(details["challenge"].is_string());
-    details
-}
-
-async fn decide(
-    fix: &Fixture,
-    approver: &Party,
-    details: &Value,
-    decision: &str,
-) -> (StatusCode, Value) {
-    let doc = signed(
-        approver,
-        DECISION,
-        json!({
-            "challenge": details["challenge"],
-            "payloadDigest": details["payloadDigest"],
-            "decision": decision,
-        }),
-    )
-    .await;
-    post(fix, &doc).await
 }
 
 async fn entry(fix: &Fixture, did: &str) -> Option<VtcAclEntry> {
     get_acl_entry(&fix.vtc.state.acl_ks, did).await.unwrap()
 }
 
-/// The whole loop on the signed door: the requester's gesture, then another
-/// admin's consent, then the identical document goes through. Nothing is
-/// written before both, and the consent refusal does not cost the gesture.
-#[tokio::test]
-async fn vti_apv_014_an_unrestricted_grant_needs_another_admins_consent() {
-    let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let approver = admin(&fix).await;
-    let subject = Party::new();
+fn grant_unrestricted(subject: &str) -> Value {
+    json!({ "entry": { "subject": subject, "role": "admin", "scopes": [] } })
+}
 
-    let grant = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
+/// Send `doc` as `by`, answer the gesture it asks for, and return the reply
+/// that follows: for a gated act, the parked answer.
+async fn submit(fix: &mut Fixture, by: &Party, doc: &Value) -> (StatusCode, Value) {
+    let (status, reply) = post(&fix.vtc, doc).await;
+    if step_up_request(&reply).is_none() {
+        return (status, reply);
+    }
+    fix.gesturer.gesture(&fix.vtc, by, &reply).await;
+    post(&fix.vtc, doc).await
+}
 
-    // 1. The gesture first — nobody else has been asked yet.
-    let (status, refusal) = post(&fix, &grant).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
-    make_gesture(&mut fix, &requester, &refusal).await;
+/// [`submit`], held to having parked: the action's id.
+async fn park(fix: &mut Fixture, by: &Party, doc: &Value) -> String {
+    let (status, reply) = submit(fix, by, doc).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
+    parked_action(&reply).unwrap_or_else(|| panic!("parked: {reply}"))
+}
 
-    // 2. Then the consent.
-    let (status, refusal) = post(&fix, &grant).await;
-    assert_eq!(status.as_u16() / 100, 4, "{refusal}");
-    let details = consent_required(&refusal);
-    assert_eq!(details["minApprovals"], 1);
-    assert!(
-        entry(&fix, &subject.did).await.is_none(),
-        "nothing written yet"
-    );
-
-    // The request relayed to the approver: VTC-signed, addressed to them, and
-    // never to the requester.
-    let requests = details["consentRequests"].as_array().expect("relay copies");
-    assert_eq!(requests.len(), 1, "one request per approver: {requests:?}");
-    let req = &requests[0];
-    assert_eq!(req["type"], REQUEST);
-    assert_eq!(req["issuer"], TEST_VTC_DID);
-    assert_eq!(req["recipient"], approver.did.as_str());
-    assert!(req["proof"].is_object(), "the request is signed");
-    assert_eq!(req["payload"]["payloadDigest"], details["payloadDigest"]);
-    assert_eq!(req["payload"]["subject"], subject.did.as_str());
-    assert_eq!(req["payload"]["requester"], requester.did.as_str());
-
-    // Asking again re-finds the same request; it does not raise a new one.
-    let (_, again) = post(&fix, &grant).await;
-    assert_eq!(consent_required(&again)["challenge"], details["challenge"]);
-
-    // 3. Another admin approves.
-    let (status, ack) = decide(&fix, &approver, &details, "approve").await;
-    assert_eq!(status, StatusCode::OK, "{ack}");
-    assert_eq!(ack["status"], "granted", "{ack}");
-    assert_eq!(ack["payloadDigest"], details["payloadDigest"]);
-
-    // 4. The identical document goes through, on the gesture made in step 1.
-    let (status, reply) = post(&fix, &grant).await;
+async fn action(fix: &Fixture, who: &Party, id: &str) -> Value {
+    let (status, reply) = show_action(&fix.vtc, who, id).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
-    let written = entry(&fix, &subject.did)
-        .await
-        .expect("the grant was written");
-    assert_eq!(written.role, VtcRole::Admin);
-    assert!(written.is_super_admin());
+    reply["payload"]["action"].clone()
+}
 
-    // The consent is spent: with the entry gone again, the same grant in a
-    // fresh document is asked for consent again.
-    vtc_service::acl::delete_acl_entry(&fix.vtc.state.acl_ks, &subject.did)
+async fn list(fix: &Fixture, who: &Party, view: &str) -> Value {
+    let (status, reply) = post(&fix.vtc, &signed(who, LIST, json!({ "view": view })).await).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    crate::common::signed::assert_conforms(LIST, &reply);
+    reply["payload"].clone()
+}
+
+async fn patch_threshold(fix: &Fixture, by: &Party, n: u64) -> Value {
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(by, PATCH, json!({ "overrides": { THRESHOLD_KEY: n } })).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    reply["payload"].clone()
+}
+
+async fn record(fix: &Fixture, id: &str) -> ActionRecord {
+    fix.vtc
+        .state
+        .admin_actions_ks
+        .get(format!("action:{id}"))
+        .await
+        .unwrap()
+        .expect("the action is stored")
+}
+
+async fn put_record(fix: &Fixture, rec: &ActionRecord) {
+    fix.vtc
+        .state
+        .admin_actions_ks
+        .insert(format!("action:{}", rec.id), rec)
         .await
         .unwrap();
-    let fresh = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
-    let (_, refusal) = post(&fix, &fresh).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (_, refusal) = post(&fix, &fresh).await;
-    consent_required(&refusal);
 }
 
-/// VTI-APV-007: the requester never counts.
+/// Every audit row of `variant`.
+async fn audit_rows(fix: &Fixture, variant: &str) -> Vec<vti_common::audit::AuditEnvelope> {
+    fix.vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<vti_common::audit::AuditEnvelope>(&v).ok())
+        .filter(|env| env.event.variant_name() == variant)
+        .collect()
+}
+
+async fn consent_stages(fix: &Fixture, stage: &str) -> usize {
+    audit_rows(fix, "TaskConsentRecorded")
+        .await
+        .iter()
+        .filter(|env| match &env.event {
+            vti_common::audit::AuditEvent::TaskConsentRecorded(d) => d.stage == stage,
+            _ => false,
+        })
+        .count()
+}
+
+// ─── parking ─────────────────────────────────────────────────────────────
+
+/// VTI-APV-017 / §9.1 item 4: a gated operation is not refused. Once its
+/// gesture is spent it is parked, and the requester is answered with a
+/// `trust-task-next-step/0.1` — `proceed`, expecting `vtc/admin/actions/show`
+/// with the action's id — that the published schema admits.
 #[tokio::test]
-async fn vti_apv_007_the_requester_cannot_consent_to_their_own_grant() {
+async fn vti_apv_017_a_gated_operation_is_parked_with_a_next_step() {
     let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let _approver = admin(&fix).await;
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
     let subject = Party::new();
+    let grant = signed(&a, GRANT, grant_unrestricted(&subject.did)).await;
 
-    let grant = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    let details = consent_required(&refusal);
+    // The gesture first: nobody else is asked yet.
+    let (status, reply) = post(&fix.vtc, &grant).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(step_up_request(&reply).is_some(), "{reply}");
+    fix.gesturer.gesture(&fix.vtc, &a, &reply).await;
 
-    let (status, reply) = decide(&fix, &requester, &details, "approve").await;
-    assert_ne!(status, StatusCode::OK, "{reply}");
-    assert_eq!(
-        reply["code"], "task-consent/decision:requesterExcluded",
-        "{reply}"
+    let (status, reply) = post(&fix.vtc, &grant).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{reply}");
+    assert_eq!(reply["type"], NEXT_STEP, "{reply}");
+    assert_eq!(reply["issuer"], TEST_VTC_DID);
+    assert_eq!(reply["recipient"], a.did.as_str());
+    assert_eq!(reply["threadId"], grant["id"], "on the request's thread");
+    assert!(reply["proof"].is_object(), "signed: {reply}");
+    let p = &reply["payload"];
+    {
+        use trust_tasks_rs::validate::ValidatedPayload as _;
+        trust_tasks_rs::specs::trust_task_next_step::v0_1::Payload::validate_value(p)
+            .unwrap_or_else(|e| panic!("the next step conforms: {e}\n{p}"));
+    }
+    assert_eq!(p["continuation"], "proceed");
+    assert_eq!(p["expects"][0]["typeUri"], SHOW);
+    assert_eq!(p["inResponseTo"]["id"], grant["id"]);
+    assert_eq!(p["inResponseTo"]["typeUri"], GRANT);
+    assert!(
+        p["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Sent for approval"),
+        "{p}"
     );
-    assert!(entry(&fix, &subject.did).await.is_none());
-}
+    let id = p["expects"][0]["hint"]["actionId"].as_str().unwrap();
+    assert!(entry(&fix, &subject.did).await.is_none(), "nothing written");
 
-/// VTI-APV-006: approving an unrestricted entry takes unrestricted authority. A
-/// scoped admin and a member are refused.
-#[tokio::test]
-async fn vti_apv_006_only_an_unrestricted_admin_can_consent() {
-    let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let _approver = admin(&fix).await;
-    let scoped = Party::new();
-    store_acl_entry(
-        &fix.vtc.state.acl_ks,
-        &row(&scoped.did, VtcRole::Admin, &["ctx-a"]),
-    )
-    .await
-    .unwrap();
-    let member = Party::new();
-    store_acl_entry(
-        &fix.vtc.state.acl_ks,
-        &row(&member.did, VtcRole::Member, &[]),
-    )
-    .await
-    .unwrap();
-    let subject = Party::new();
+    // A redelivery of the same document is the recorded answer, not a second
+    // action (VTI-OPS-025).
+    let (status, again) = post(&fix.vtc, &grant).await;
+    assert!(status.is_success(), "{again}");
+    assert_eq!(parked_action(&again).as_deref(), Some(id));
+    // The same operation in a fresh document finds the open action.
+    let fresh = signed(&a, GRANT, grant_unrestricted(&subject.did)).await;
+    let (_, again) = post(&fix.vtc, &fresh).await;
+    assert_eq!(parked_action(&again).as_deref(), Some(id), "{again}");
 
-    let grant = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    let details = consent_required(&refusal);
-
-    // A scoped admin reaches the decision and is told it is not an approver.
-    let (status, reply) = decide(&fix, &scoped, &details, "approve").await;
-    assert_ne!(status, StatusCode::OK, "{reply}");
+    let shown = action(&fix, &a, id).await;
+    assert_eq!(shown["status"], "open");
+    assert_eq!(shown["kind"], "acl.grant.authority");
+    assert_eq!(shown["callerRole"], "requester");
+    assert_eq!(shown["threshold"], 1);
+    assert!(shown.get("challenge").is_none(), "never for the requester");
+    assert_eq!(shown["payload"], grant["payload"]);
     assert_eq!(
-        reply["code"], "task-consent/decision:notAnApprover",
-        "{reply}"
+        shown["summary"]["fields"]["subject"]["value"],
+        subject.did.as_str()
     );
-    // A member never gets that far: the signed admin door refuses a signer who
-    // may not act there, as it does for every admin verb.
-    let (status, reply) = decide(&fix, &member, &details, "approve").await;
-    assert_ne!(status, StatusCode::OK, "{reply}");
-    assert_eq!(reply["code"], "permissionDenied", "{reply}");
-
-    // Neither counted: the requester still has no consent.
-    let (_, refusal) = post(&fix, &grant).await;
-    consent_required(&refusal);
-    assert!(entry(&fix, &subject.did).await.is_none());
+    crate::common::signed::assert_conforms(SHOW, &json!({ "payload": { "action": shown } }));
+    assert_eq!(consent_stages(&fix, "parked").await, 1);
 }
 
-/// A declined consent is gone. The next ask raises a new request with a new
-/// challenge, and the old one cannot be approved.
+// ─── N-of-M completion ───────────────────────────────────────────────────
+
+/// N = 1: the approval completes the operation, exactly once.
 #[tokio::test]
-async fn a_declined_consent_is_not_redeemable() {
+async fn vti_apv_017_the_first_approval_completes_an_n_of_1_action_exactly_once() {
     let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let approver = admin(&fix).await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
     let subject = Party::new();
+    let grant = signed(&a, GRANT, grant_unrestricted(&subject.did)).await;
+    let id = park(&mut fix, &a, &grant).await;
 
-    let grant = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    let first = consent_required(&refusal);
-
-    let (status, ack) = decide(&fix, &approver, &first, "deny").await;
+    let theirs = action(&fix, &b, &id).await;
+    assert_eq!(theirs["callerRole"], "approver");
+    let payload = decision_payload(&theirs, "approve");
+    let decision = signed(&b, DECISION_V0_2, payload.clone()).await;
+    let (status, ack) = post(&fix.vtc, &decision).await;
     assert_eq!(status, StatusCode::OK, "{ack}");
-    assert_eq!(ack["status"], "denied");
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert_eq!(ack["payload"]["actionId"], id.as_str());
+    assert_eq!(
+        ack["payload"]["ext"]["org.openvtc"]["actionStatus"],
+        "completed"
+    );
+    crate::common::signed::assert_conforms(DECISION_V0_2, &ack);
 
-    let (_, refusal) = post(&fix, &grant).await;
-    let second = consent_required(&refusal);
-    assert_ne!(second["challenge"], first["challenge"], "a new request");
+    let written = entry(&fix, &subject.did).await.expect("written");
+    assert!(written.is_super_admin());
+    let done = action(&fix, &a, &id).await;
+    assert_eq!(done["status"], "completed");
+    assert_eq!(done["closedReason"], "thresholdMet");
+    assert_eq!(done["approvals"][0]["subject"], b.did.as_str());
+    assert_eq!(
+        done["ext"]["org.openvtc"]["result"]["entry"]["subject"],
+        subject.did.as_str()
+    );
 
-    let (status, reply) = decide(&fix, &approver, &first, "approve").await;
-    assert_ne!(status, StatusCode::OK);
-    assert_eq!(reply["code"], "task-consent/decision:noPending", "{reply}");
+    // Once: the same decision in a fresh document finds nothing to approve,
+    // and the operation ran a single time.
+    let again = signed(&b, DECISION_V0_2, payload).await;
+    let (_, reply) = post(&fix.vtc, &again).await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:noPending"),
+        "{reply}"
+    );
+    assert_eq!(consent_stages(&fix, "completed").await, 1);
+    assert_eq!(audit_rows(&fix, "AclGranted").await.len(), 1);
+}
+
+/// N = 2: the first approval is recorded, the second completes it.
+#[tokio::test]
+async fn vti_apv_017_an_n_of_2_action_completes_on_the_second_approval() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let c = admin(&fix).await;
+    patch_threshold(&fix, &a, 2).await;
+    let subject = Party::new();
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&subject.did)).await,
+    )
+    .await;
+    assert_eq!(action(&fix, &a, &id).await["threshold"], 2);
+
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "pending", "{ack}");
+    assert_eq!(ack["payload"]["approvals"], 1);
+    assert_eq!(ack["payload"]["needed"], 2);
+    assert!(entry(&fix, &subject.did).await.is_none());
+    let mid = action(&fix, &a, &id).await;
+    assert_eq!(mid["approversRemaining"], 1, "{mid}");
+    // An approver who has approved is not asked again.
+    assert!(action(&fix, &b, &id).await.get("challenge").is_none());
+
+    let (_, ack) = decide(&fix.vtc, &c, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert!(entry(&fix, &subject.did).await.unwrap().is_super_admin());
+    assert_eq!(action(&fix, &a, &id).await["status"], "completed");
+}
+
+/// Two N-th approvals arriving together: the operation runs once. The status
+/// leaves `open` under the lock, so one of them finds nothing to approve.
+#[tokio::test]
+async fn vti_apv_017_concurrent_final_approvals_execute_once() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let c = admin(&fix).await;
+    let subject = Party::new();
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&subject.did)).await,
+    )
+    .await;
+    let db = signed(
+        &b,
+        DECISION_V0_2,
+        decision_payload(&action(&fix, &b, &id).await, "approve"),
+    )
+    .await;
+    let dc = signed(
+        &c,
+        DECISION_V0_2,
+        decision_payload(&action(&fix, &c, &id).await, "approve"),
+    )
+    .await;
+    let ((sb, rb), (sc, rc)) = tokio::join!(post(&fix.vtc, &db), post(&fix.vtc, &dc));
+    let granted = [&rb, &rc]
+        .iter()
+        .filter(|r| r["payload"]["status"] == "granted")
+        .count();
+    assert_eq!(
+        granted, 1,
+        "exactly one completes it: {sb} {rb} / {sc} {rc}"
+    );
+    let refused: Vec<_> = [&rb, &rc]
+        .into_iter()
+        .filter_map(|r| tt_error_code(r))
+        .collect();
+    assert_eq!(refused, vec!["task-consent/decision:noPending"]);
+    assert_eq!(audit_rows(&fix, "AclGranted").await.len(), 1);
+    assert_eq!(consent_stages(&fix, "completed").await, 1);
+}
+
+// ─── deny, cancel, expiry ────────────────────────────────────────────────
+
+/// One deny closes the action for everyone ("`deny` aborts the pending
+/// request"). The other approver finds nothing to approve.
+#[tokio::test]
+async fn one_deny_closes_the_action_for_everyone() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let c = admin(&fix).await;
+    let subject = Party::new();
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&subject.did)).await,
+    )
+    .await;
+    let cs = action(&fix, &c, &id).await;
+
+    let mut deny = decision_payload(&action(&fix, &b, &id).await, "deny");
+    deny["reason"] = json!("not without a conversation first");
+    let (status, ack) = post(&fix.vtc, &signed(&b, DECISION_V0_2, deny).await).await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+    assert_eq!(ack["payload"]["status"], "denied");
+
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&c, DECISION_V0_2, decision_payload(&cs, "approve")).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:noPending"),
+        "{reply}"
+    );
+    let closed = action(&fix, &a, &id).await;
+    assert_eq!(closed["status"], "declined");
+    assert_eq!(closed["closedReason"], "declined");
+    assert_eq!(
+        closed["ext"]["org.openvtc"]["closedMessage"],
+        "not without a conversation first"
+    );
+    assert_eq!(closed["ext"]["org.openvtc"]["closedBy"], b.did.as_str());
     assert!(entry(&fix, &subject.did).await.is_none());
 }
 
-/// VTI-APV-004: a consent binds one payload. Consent to one grant does not
-/// authorize a grant to someone else.
+/// The requester withdraws their own action; nobody else can.
 #[tokio::test]
-async fn vti_apv_004_consent_to_one_grant_does_not_authorize_another() {
+async fn the_requester_cancels_and_nobody_else_can() {
     let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let approver = admin(&fix).await;
-    let intended = Party::new();
-    let other = Party::new();
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let subject = Party::new();
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&subject.did)).await,
+    )
+    .await;
+    let bs = action(&fix, &b, &id).await;
 
-    let grant = signed(&requester, GRANT, grant_unrestricted(&intended.did)).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    let details = consent_required(&refusal);
-    let (status, _) = decide(&fix, &approver, &details, "approve").await;
-    assert_eq!(status, StatusCode::OK);
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&b, CANCEL, json!({ "actionId": id })).await,
+    )
+    .await;
+    assert_eq!(tt_error_code(&reply), Some(CANCEL_NOT_REQUESTER), "{reply}");
 
-    let wrong = signed(&requester, GRANT, grant_unrestricted(&other.did)).await;
-    let (_, refusal) = post(&fix, &wrong).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (_, refusal) = post(&fix, &wrong).await;
-    let other_details = consent_required(&refusal);
-    assert_ne!(other_details["payloadDigest"], details["payloadDigest"]);
-    assert!(entry(&fix, &other.did).await.is_none());
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            CANCEL,
+            json!({ "actionId": id, "reason": "wrong person" }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    crate::common::signed::assert_conforms(CANCEL, &reply);
+    assert_eq!(reply["payload"]["action"]["status"], "cancelled");
+    assert_eq!(
+        reply["payload"]["action"]["closedReason"],
+        "cancelledByRequester"
+    );
+
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&a, CANCEL, json!({ "actionId": id })).await,
+    )
+    .await;
+    assert_eq!(tt_error_code(&reply), Some(CANCEL_NOT_OPEN), "{reply}");
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&b, DECISION_V0_2, decision_payload(&bs, "approve")).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:noPending")
+    );
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            CANCEL,
+            json!({ "actionId": "act-00000000000000000000" }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(tt_error_code(&reply), Some(CANCEL_NOT_FOUND), "{reply}");
+    assert!(entry(&fix, &subject.did).await.is_none());
 }
 
-/// A community with one unrestricted admin has nobody to consent. It is told
-/// how to add one, and it is told before being asked for a gesture it could
-/// not use.
+/// VTI-APV-008: an action past its `expiresAt` is never executable.
+#[tokio::test]
+async fn vti_apv_008_an_expired_action_cannot_be_approved() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let subject = Party::new();
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&subject.did)).await,
+    )
+    .await;
+    let bs = action(&fix, &b, &id).await;
+    // 72 hours by default.
+    let rec = record(&fix, &id).await;
+    assert_eq!(rec.expires_at - rec.created_at, 72 * 3600);
+
+    let mut lapsed = rec;
+    lapsed.expires_at = lapsed.created_at.saturating_sub(1);
+    put_record(&fix, &lapsed).await;
+
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&b, DECISION_V0_2, decision_payload(&bs, "approve")).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:noPending")
+    );
+    let closed = action(&fix, &a, &id).await;
+    assert_eq!(closed["status"], "expired");
+    assert_eq!(closed["closedReason"], "expired");
+    assert!(entry(&fix, &subject.did).await.is_none());
+}
+
+/// `acl.action_lifetime` binds actions raised after it changes, within its
+/// bounds; an open action keeps the `expiresAt` it was raised with.
+#[tokio::test]
+async fn the_action_lifetime_is_configurable_within_bounds() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
+    let first = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+    let before = record(&fix, &first).await.expires_at;
+
+    let reply = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            PATCH,
+            json!({ "overrides": { "acl.action_lifetime": 60 } }),
+        )
+        .await,
+    )
+    .await
+    .1;
+    assert_eq!(
+        reply["payload"]["rejected"][0]["key"], "acl.action_lifetime",
+        "below 15 minutes is refused: {reply}"
+    );
+    let reply = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            PATCH,
+            json!({ "overrides": { "acl.action_lifetime": 3600 } }),
+        )
+        .await,
+    )
+    .await
+    .1;
+    assert_eq!(
+        reply["payload"]["applied"][0], "acl.action_lifetime",
+        "{reply}"
+    );
+
+    let second = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+    let rec = record(&fix, &second).await;
+    assert_eq!(rec.expires_at - rec.created_at, 3600);
+    assert_eq!(record(&fix, &first).await.expires_at, before, "unchanged");
+}
+
+// ─── invalidation (§4.4) and the re-check at completion ──────────────────
+
+/// The requester stops being an unrestricted admin: their action is cancelled.
+#[tokio::test]
+async fn an_action_is_invalidated_when_the_requester_loses_authority() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+    store_acl_entry(
+        &fix.vtc.state.acl_ks,
+        &row(&a.did, VtcRole::Admin, &["ctx-a"]),
+    )
+    .await
+    .unwrap();
+    let closed = action(&fix, &b, &id).await;
+    assert_eq!(closed["status"], "cancelled", "{closed}");
+    assert_eq!(closed["closedReason"], "invalidated");
+}
+
+/// Somebody else edits the subject's entry: the approvers would no longer be
+/// approving what they saw.
+#[tokio::test]
+async fn an_action_is_invalidated_when_its_pinned_state_moves() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let subject = seed(&fix, VtcRole::Member, &[]).await;
+    let promote = signed(
+        &a,
+        CHANGE_ROLE,
+        json!({ "subject": subject.did, "fromRole": "member", "toRole": "admin" }),
+    )
+    .await;
+    let id = park(&mut fix, &a, &promote).await;
+    let bs = action(&fix, &b, &id).await;
+
+    let mut edited = row(&subject.did, VtcRole::Member, &[]);
+    edited.label = Some("renamed".into());
+    store_acl_entry(&fix.vtc.state.acl_ks, &edited)
+        .await
+        .unwrap();
+
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&b, DECISION_V0_2, decision_payload(&bs, "approve")).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:noPending")
+    );
+    let closed = action(&fix, &a, &id).await;
+    assert_eq!(closed["status"], "cancelled");
+    assert_eq!(closed["closedReason"], "invalidated");
+    assert_eq!(
+        entry(&fix, &subject.did).await.unwrap().role,
+        VtcRole::Member
+    );
+}
+
+/// The approver set can no longer reach the threshold (VTI-APV-009 on a live
+/// action): cancelled. One approver of several losing standing only stops
+/// counting.
+#[tokio::test]
+async fn an_action_is_invalidated_when_its_approvers_cannot_reach_the_threshold() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let c = admin(&fix).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+
+    // b approves, then loses standing: dropped from the count, still open.
+    patch_threshold(&fix, &a, 1).await;
+    store_acl_entry(&fix.vtc.state.acl_ks, &row(&b.did, VtcRole::Member, &[]))
+        .await
+        .unwrap();
+    let open = action(&fix, &a, &id).await;
+    assert_eq!(open["status"], "open", "{open}");
+    assert_eq!(open["ext"]["org.openvtc"]["approverCount"], 1);
+
+    // c goes too: nobody is left to approve.
+    vtc_service::acl::delete_acl_entry(&fix.vtc.state.acl_ks, &c.did)
+        .await
+        .unwrap();
+    let closed = action(&fix, &a, &id).await;
+    assert_eq!(closed["status"], "cancelled", "{closed}");
+    assert_eq!(closed["closedReason"], "invalidated");
+}
+
+/// A stale action fails closed at completion. Its document was signed by a
+/// console key acting for the requester; the key is revoked while the action
+/// waits. Nothing about the action itself moved, so it is still open — but
+/// executing it re-resolves the signer, which no longer acts for anybody, so
+/// the approval that meets the threshold fails it and writes nothing.
+#[tokio::test]
+async fn vti_apv_017_a_stale_action_fails_closed_at_completion() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let console = Party::new();
+    vtc_service::acl::console_key::enrol_delegation(
+        &fix.vtc.state.console_keys_ks,
+        &fix.vtc.state.acl_ks,
+        &console.did,
+        &a.did,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let subject = Party::new();
+    // Signed by the console key; the gesture is the admin's own.
+    let grant = signed(&console, GRANT, grant_unrestricted(&subject.did)).await;
+    let id = park(&mut fix, &a, &grant).await;
+    assert_eq!(action(&fix, &b, &id).await["requester"], a.did.as_str());
+
+    vtc_service::acl::console_key::revoke_delegation(
+        &fix.vtc.state.console_keys_ks,
+        &console.did,
+        &a.did,
+    )
+    .await
+    .unwrap();
+    assert_eq!(action(&fix, &a, &id).await["status"], "open");
+
+    let (status, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+    assert_eq!(
+        ack["payload"]["ext"]["org.openvtc"]["actionStatus"],
+        "failed"
+    );
+    let failed = action(&fix, &a, &id).await;
+    assert_eq!(failed["status"], "failed", "{failed}");
+    assert_eq!(failed["closedReason"], "failedRecheck");
+    assert!(entry(&fix, &subject.did).await.is_none(), "nothing written");
+}
+
+// ─── who may decide ──────────────────────────────────────────────────────
+
+/// A decision signed by a delegated console key is refused: an approval is the
+/// approver's own attestation, never a console key's.
+#[tokio::test]
+async fn a_console_key_signed_decision_is_refused() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let console = Party::new();
+    vtc_service::acl::console_key::enrol_delegation(
+        &fix.vtc.state.console_keys_ks,
+        &fix.vtc.state.acl_ks,
+        &console.did,
+        &b.did,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+    // The console key may read b's list…
+    let bs = action(&fix, &console, &id).await;
+    assert_eq!(bs["callerRole"], "approver");
+    // …but not decide for them.
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(&console, DECISION_V0_2, decision_payload(&bs, "approve")).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert_eq!(tt_error_code(&reply), Some("permissionDenied"), "{reply}");
+    assert_eq!(action(&fix, &a, &id).await["status"], "open");
+}
+
+/// VTI-APV-007: the requester never counts. VTI-APV-006: a scoped admin or a
+/// member cannot decide.
+#[tokio::test]
+async fn vti_apv_006_007_only_another_unrestricted_admin_decides() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let scoped = seed(&fix, VtcRole::Admin, &["ctx-a"]).await;
+    let member = seed(&fix, VtcRole::Member, &[]).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+    let bs = action(&fix, &b, &id).await;
+    let payload = decision_payload(&bs, "approve");
+
+    let (_, reply) = post(&fix.vtc, &signed(&a, DECISION_V0_2, payload.clone()).await).await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:requesterExcluded"),
+        "{reply}"
+    );
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&scoped, DECISION_V0_2, payload.clone()).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:notAnApprover"),
+        "{reply}"
+    );
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&member, DECISION_V0_2, payload.clone()).await,
+    )
+    .await;
+    assert!(tt_error_code(&reply).is_some(), "{reply}");
+
+    // A decision naming another action is refused.
+    let mut wrong = payload;
+    wrong["actionId"] = json!("act-ffffffffffffffffffffffffffffffff");
+    let (_, reply) = post(&fix.vtc, &signed(&b, DECISION_V0_2, wrong).await).await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:actionMismatch"),
+        "{reply}"
+    );
+    assert_eq!(action(&fix, &a, &id).await["status"], "open");
+}
+
+/// `approverSigned` evidence is refused with a typed reason until the approver
+/// store lands (A2); it is never ignored.
+#[tokio::test]
+async fn approver_signed_evidence_is_refused_not_ignored() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+    let mut payload = decision_payload(&action(&fix, &b, &id).await, "approve");
+    payload["evidence"] = json!({ "kind": "approverSigned", "statement": {} });
+    let (_, reply) = post(&fix.vtc, &signed(&b, DECISION_V0_2, payload).await).await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:evidenceInvalid"),
+        "{reply}"
+    );
+    assert_eq!(
+        reply["payload"]["details"]["reason"],
+        "approverSignedUnsupported"
+    );
+    assert_eq!(action(&fix, &a, &id).await["status"], "open");
+}
+
+/// The approver's own passkey, over their challenge, as additional evidence on
+/// a 0.2 decision: verified, user verification required, and the approval
+/// counts. A passkey assertion over some other challenge is refused.
+#[tokio::test]
+async fn webauthn_evidence_is_verified_against_the_approvers_passkey() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let mut approver_keys = Gesturer::new();
+    approver_keys.enrol(&fix.vtc, &b.did).await;
+    let subject = Party::new();
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&subject.did)).await,
+    )
+    .await;
+    let bs = action(&fix, &b, &id).await;
+    let challenge = bs["challenge"].as_str().unwrap();
+
+    let mut bad = decision_payload(&bs, "approve");
+    bad["evidence"] = json!({
+        "kind": "webauthn",
+        "assertion": approver_keys.assert_over(&fix.vtc, b"not the challenge").await,
+    });
+    let (_, reply) = post(&fix.vtc, &signed(&b, DECISION_V0_2, bad).await).await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some("task-consent/decision:evidenceInvalid"),
+        "{reply}"
+    );
+
+    let mut good = decision_payload(&bs, "approve");
+    good["evidence"] = json!({
+        "kind": "webauthn",
+        "assertion": approver_keys.assert_over(&fix.vtc, challenge.as_bytes()).await,
+    });
+    let (status, ack) = post(&fix.vtc, &signed(&b, DECISION_V0_2, good).await).await;
+    assert_eq!(status, StatusCode::OK, "{ack}");
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert!(entry(&fix, &subject.did).await.unwrap().is_super_admin());
+}
+
+// ─── abuse limits (§7a.1) ────────────────────────────────────────────────
+
+/// Open actions per requester are capped; the refusal comes before any
+/// gesture is asked for.
+#[tokio::test]
+async fn the_open_actions_per_requester_cap_is_enforced() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
+    let reply = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            PATCH,
+            json!({ "overrides": { "acl.action_max_open_per_requester": 1 } }),
+        )
+        .await,
+    )
+    .await
+    .1;
+    assert_eq!(
+        reply["payload"]["applied"][0],
+        "acl.action_max_open_per_requester"
+    );
+    park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+    assert!(status.is_client_error(), "{reply}");
+    assert!(
+        step_up_request(&reply).is_none(),
+        "no gesture asked: {reply}"
+    );
+    assert!(
+        reply
+            .to_string()
+            .contains("acl.action_max_open_per_requester"),
+        "{reply}"
+    );
+}
+
+/// After a decline the same requester cannot raise the same kind of action
+/// against the same subject until the cooldown passes.
+#[tokio::test]
+async fn a_declined_request_cannot_be_raised_again_during_the_cooldown() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let subject = Party::new();
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&subject.did)).await,
+    )
+    .await;
+    let (_, ack) = decide(&fix.vtc, &b, &id, "deny").await;
+    assert_eq!(ack["payload"]["status"], "denied");
+
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(&a, GRANT, grant_unrestricted(&subject.did)).await,
+    )
+    .await;
+    assert!(status.is_client_error(), "{reply}");
+    assert!(
+        reply.to_string().contains("acl.action_decline_cooldown"),
+        "{reply}"
+    );
+    // Another subject is unaffected.
+    park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+}
+
+/// More than three actions by one requester in ten minutes is a `Critical`
+/// audit row, and every approver's card says so.
+#[tokio::test]
+async fn a_burst_of_actions_is_audited_critical_and_flagged() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let mut last = String::new();
+    for _ in 0..4 {
+        last = park(
+            &mut fix,
+            &a,
+            &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+        )
+        .await;
+    }
+    let rows = audit_rows(&fix, "AdminActionBurst").await;
+    assert_eq!(rows.len(), 1, "the fourth crosses the line");
+    assert_eq!(
+        rows[0].event.severity(),
+        vti_common::audit::AuditSeverity::Critical
+    );
+    let card = action(&fix, &b, &last).await;
+    assert_eq!(card["ext"]["org.openvtc"]["burst"], true, "{card}");
+    assert_eq!(card["requesterOpenActions"], 4);
+}
+
+// ─── the list ────────────────────────────────────────────────────────────
+
+/// Who sees what: the requester its own, the approvers what waits for them
+/// (with their own challenge), an unrestricted subject as an observer; a
+/// scoped admin nothing, and a member is no administrator at all. The badge
+/// counts span the whole list.
+#[tokio::test]
+async fn the_list_shows_each_caller_what_is_theirs_to_see() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let c = admin(&fix).await;
+    let scoped = seed(&fix, VtcRole::Admin, &["ctx-a"]).await;
+    let member = seed(&fix, VtcRole::Member, &[]).await;
+    // A reduction of c: b approves, c only observes.
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, REVOKE, json!({ "subject": c.did })).await,
+    )
+    .await;
+
+    let mine = list(&fix, &a, "requestedByMe").await;
+    assert_eq!(mine["counts"]["requestedByMe"], 1);
+    assert_eq!(mine["counts"]["waitingForMe"], 0);
+    assert_eq!(mine["actions"][0]["actionId"], id.as_str());
+
+    let waiting = list(&fix, &b, "waitingForMe").await;
+    assert_eq!(waiting["counts"]["waitingForMe"], 1);
+    assert_eq!(waiting["actions"][0]["kind"], "acl.reduce.authority");
+    let ca = waiting["actions"][0]["challenge"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let subjects = list(&fix, &c, "waitingForMe").await;
+    assert_eq!(
+        subjects["counts"]["waitingForMe"], 0,
+        "the subject never decides"
+    );
+    let all = list(&fix, &c, "all").await;
+    assert_eq!(all["actions"][0]["callerRole"], "observer");
+
+    assert_eq!(list(&fix, &scoped, "all").await["actions"], json!([]));
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&member, LIST, json!({ "view": "all" })).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some(LIST_NOT_ADMINISTRATOR),
+        "{reply}"
+    );
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&member, SHOW, json!({ "actionId": id })).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some(SHOW_NOT_ADMINISTRATOR),
+        "{reply}"
+    );
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&scoped, SHOW, json!({ "actionId": id })).await,
+    )
+    .await;
+    assert_eq!(tt_error_code(&reply), Some(SHOW_NOT_FOUND), "{reply}");
+
+    // `since` is for history only, and a cursor is bound to its view.
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            LIST,
+            json!({ "view": "all", "since": "2026-01-01T00:00:00Z" }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(tt_error_code(&reply), Some(LIST_INVALID_FILTER));
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&a, LIST, json!({ "view": "all", "cursor": "bogus" })).await,
+    )
+    .await;
+    assert_eq!(tt_error_code(&reply), Some(LIST_INVALID_CURSOR));
+
+    // Completed, it leaves the waiting list and enters history.
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert!(ca.len() >= 16);
+    assert_eq!(
+        list(&fix, &b, "waitingForMe").await["counts"]["waitingForMe"],
+        0
+    );
+    let history = list(&fix, &a, "history").await;
+    assert_eq!(history["actions"][0]["status"], "completed");
+}
+
+/// `acknowledge` exists before anything raises an acknowledge item: an
+/// approval action answers `notAcknowledgeable`.
+#[tokio::test]
+async fn an_approval_action_is_not_acknowledgeable() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&b, ACKNOWLEDGE, json!({ "actionId": id })).await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some(ACKNOWLEDGE_NOT_ACKNOWLEDGEABLE),
+        "{reply}"
+    );
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(
+            &b,
+            ACKNOWLEDGE,
+            json!({ "actionId": "act-00000000000000000000" }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        tt_error_code(&reply),
+        Some(ACKNOWLEDGE_NOT_FOUND),
+        "{reply}"
+    );
+}
+
+// ─── every act kind ──────────────────────────────────────────────────────
+
+/// VTI-APV-019: removing another unrestricted admin parks for an approver who
+/// is neither party, and completes on that approval.
+#[tokio::test]
+async fn vti_apv_019_a_reduction_parks_and_completes() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let subject = admin(&fix).await;
+    let third = admin(&fix).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, REVOKE, json!({ "subject": subject.did })).await,
+    )
+    .await;
+    assert_eq!(action(&fix, &a, &id).await["kind"], "acl.reduce.authority");
+    let (_, ack) = decide(&fix.vtc, &third, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert!(entry(&fix, &subject.did).await.is_none());
+}
+
+/// VTI-APV-020: lowering the threshold parks at the threshold as it stands.
+#[tokio::test]
+async fn vti_apv_020_a_threshold_lowering_parks_and_completes() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let c = admin(&fix).await;
+    patch_threshold(&fix, &a, 2).await;
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, PATCH, json!({ "overrides": { THRESHOLD_KEY: 1 } })).await,
+    )
+    .await;
+    let shown = action(&fix, &a, &id).await;
+    assert_eq!(shown["kind"], "config.threshold.lower");
+    assert_eq!(shown["summary"]["fields"]["threshold"]["value"], 1);
+    decide(&fix.vtc, &b, &id, "approve").await;
+    let (_, ack) = decide(&fix.vtc, &c, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert_eq!(
+        vtc_service::acl::admin_consent::threshold(&fix.vtc.state)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+/// VTI-VTC-022: replacing an authority policy parks, and the approval runs it.
+#[tokio::test]
+async fn vti_vtc_022_an_authority_policy_change_parks_and_completes() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let src = "package vtc.removal\nimport rego.v1\n\
+               default decision := {\"effect\": \"deny\", \"with\": {\"code\": \"frozen\"}}\n";
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(
+            &a,
+            UPSERT,
+            json!({ "name": "removal", "module": src, "ext": { "org.openvtc.purpose": "removal" } }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        action(&fix, &a, &id).await["kind"],
+        "policy.authority.change"
+    );
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    let done = action(&fix, &a, &id).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    let pid = done["ext"]["org.openvtc"]["result"]["policy"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, ACTIVATE, json!({ "id": pid, "purpose": "removal" })).await,
+    )
+    .await;
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    assert_eq!(
+        vtc_service::policy::get_active_policy_id(
+            &fix.vtc.state.active_policies_ks,
+            vtc_service::policy::PolicyPurpose::Removal,
+        )
+        .await
+        .unwrap()
+        .map(|u| u.to_string()),
+        Some(pid)
+    );
+}
+
+/// An admin invite parks; on approval the requester reads the claim code once.
+#[tokio::test]
+async fn vti_apv_014_an_invite_parks_and_its_secret_is_read_once() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let invitee = Party::new();
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, CREATE_INVITE, json!({ "did": invitee.did })).await,
+    )
+    .await;
+    assert_eq!(action(&fix, &a, &id).await["kind"], "admin.invite.create");
+    decide(&fix.vtc, &b, &id, "approve").await;
+    assert!(entry(&fix, &invitee.did).await.unwrap().is_super_admin());
+
+    let first = action(&fix, &a, &id).await;
+    assert!(
+        first["ext"]["org.openvtc"]["result"]["installUrl"].is_string(),
+        "{first}"
+    );
+    let second = action(&fix, &a, &id).await;
+    assert!(
+        second["ext"]["org.openvtc"].get("result").is_none(),
+        "shown once: {second}"
+    );
+}
+
+/// A community with one unrestricted admin has nobody to approve. It is told
+/// how to add one before being asked for a gesture.
 #[tokio::test]
 async fn a_sole_admin_is_told_how_to_add_a_second_before_any_gesture() {
     let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let subject = Party::new();
-
-    let grant = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
-    let (status, refusal) = post(&fix, &grant).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
-    assert!(
-        refusal["details"].get("stepUpRequest").is_none(),
-        "no gesture for an act that cannot be consented to: {refusal}"
-    );
-    let message = refusal["message"].as_str().unwrap_or_default();
+    let a = requester(&mut fix).await;
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(&a, GRANT, grant_unrestricted(&Party::new().did)).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
+    assert!(step_up_request(&reply).is_none(), "{reply}");
+    let message = reply.to_string();
     assert!(message.contains("vtc acl add"), "names the fix: {message}");
     assert!(message.contains("VTI-APV-014"), "{message}");
 }
 
-/// A scoped admin grant is a conferral, not an unrestricted one: it takes the
-/// gesture and nothing else.
+/// A scoped admin grant confers nothing gated: it takes the gesture alone.
 #[tokio::test]
-async fn a_scoped_admin_grant_needs_no_consent() {
+async fn a_scoped_admin_grant_needs_no_approval() {
     let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
+    let a = requester(&mut fix).await;
     let subject = Party::new();
-
-    let grant = signed(
-        &requester,
-        GRANT,
-        json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": ["ctx-a"] } }),
+    let (status, reply) = submit(
+        &mut fix,
+        &a,
+        &signed(
+            &a,
+            GRANT,
+            json!({ "entry": { "subject": subject.did, "role": "admin", "scopes": ["ctx-a"] } }),
+        )
+        .await,
     )
     .await;
-    let (_, refusal) = post(&fix, &grant).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (status, reply) = post(&fix, &grant).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert!(!entry(&fix, &subject.did).await.unwrap().is_super_admin());
 }
 
-/// A consent is judged against the community when it is spent. An approver who
-/// has since lost unrestricted authority no longer counts, and the requester
-/// is asked again.
-#[tokio::test]
-async fn a_consent_lapses_when_its_approver_loses_authority() {
-    let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let approver = admin(&fix).await;
-    let _third = admin(&fix).await;
-    let subject = Party::new();
-
-    let grant = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    let details = consent_required(&refusal);
-    let (status, _) = decide(&fix, &approver, &details, "approve").await;
-    assert_eq!(status, StatusCode::OK);
-
-    store_acl_entry(
-        &fix.vtc.state.acl_ks,
-        &row(&approver.did, VtcRole::Admin, &["ctx-a"]),
-    )
-    .await
-    .unwrap();
-
-    let (_, refusal) = post(&fix, &grant).await;
-    let again = consent_required(&refusal);
-    assert_ne!(again["challenge"], details["challenge"], "asked again");
-    assert!(entry(&fix, &subject.did).await.is_none());
-}
-
-/// `acl/change-role` promoting a scopeless member lands an unrestricted admin,
-/// so it takes the same two things.
-#[tokio::test]
-async fn vti_apv_014_promoting_a_scopeless_member_needs_consent() {
-    let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let approver = admin(&fix).await;
-    let member = Party::new();
-    store_acl_entry(
-        &fix.vtc.state.acl_ks,
-        &row(&member.did, VtcRole::Member, &[]),
-    )
-    .await
-    .unwrap();
-
-    let promote = signed(
-        &requester,
-        CHANGE_ROLE,
-        json!({ "subject": member.did, "fromRole": "member", "toRole": "admin" }),
-    )
-    .await;
-    let (_, refusal) = post(&fix, &promote).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (_, refusal) = post(&fix, &promote).await;
-    let details = consent_required(&refusal);
-    assert_eq!(
-        entry(&fix, &member.did).await.unwrap().role,
-        VtcRole::Member
-    );
-
-    let (status, _) = decide(&fix, &approver, &details, "approve").await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, reply) = post(&fix, &promote).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    assert!(entry(&fix, &member.did).await.unwrap().is_super_admin());
-}
-
-async fn patch_threshold(fix: &Fixture, by: &Party, n: u64) -> Value {
-    let doc = signed(
-        by,
-        "https://trusttasks.org/spec/config/patch/0.1",
-        json!({ "overrides": { THRESHOLD_KEY: n } }),
-    )
-    .await;
-    let (status, reply) = post(fix, &doc).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    reply
-}
-
-/// VTI-APV-009: a threshold the community cannot meet is refused when it is
-/// written. One it can meet binds the next grant straight away, without a
-/// reload.
+/// VTI-APV-009: a threshold the community cannot meet is refused when written.
 #[tokio::test]
 async fn vti_apv_009_an_unmeetable_threshold_is_refused_when_written() {
     let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let first = admin(&fix).await;
-    // Two unrestricted admins: at most one can approve anyone's grant.
-    let reply = patch_threshold(&fix, &requester, 2).await;
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
+    let reply = patch_threshold(&fix, &a, 2).await;
     assert_eq!(reply["rejected"][0]["key"], THRESHOLD_KEY, "{reply}");
-    assert!(
-        reply["rejected"][0]["reason"]
-            .as_str()
-            .is_some_and(|r| r.contains("could never be met")),
-        "{reply}"
-    );
-
-    // A third makes two approvals possible.
-    let second = admin(&fix).await;
-    let reply = patch_threshold(&fix, &requester, 2).await;
+    let _c = admin(&fix).await;
+    let reply = patch_threshold(&fix, &a, 2).await;
     assert_eq!(reply["applied"][0], THRESHOLD_KEY, "{reply}");
-
-    let subject = Party::new();
-    let grant = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    let details = consent_required(&refusal);
-    assert_eq!(details["minApprovals"], 2, "{refusal}");
-
-    let (_, ack) = decide(&fix, &first, &details, "approve").await;
-    assert_eq!(ack["status"], "pending", "{ack}");
-    assert_eq!(ack["approvals"], 1);
-    assert_eq!(ack["needed"], 2);
-    let (status, _) = post(&fix, &grant).await;
-    assert!(!status.is_success(), "one approval of two is not enough");
-
-    let (_, ack) = decide(&fix, &second, &details, "approve").await;
-    assert_eq!(ack["status"], "granted", "{ack}");
-    let (status, reply) = post(&fix, &grant).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
 }
 
-// ─── attrition (VTI-APV-009): ending an unrestricted admin ─────────────────
-
-const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
-
-/// Three unrestricted admins and a threshold of 2: removing any one would leave
-/// two, of whom only one could ever approve the other's grant.
-async fn three_admins_threshold_two(fix: &Fixture) -> (Party, Party, Party) {
-    let a = admin(fix).await;
-    let b = admin(fix).await;
-    let c = admin(fix).await;
-    let reply = patch_threshold(fix, &a, 2).await;
-    assert_eq!(reply["applied"][0], THRESHOLD_KEY, "{reply}");
-    (a, b, c)
-}
-
-/// Lower the threshold back to 1. Since VTI-APV-020 that takes `by`'s gesture
-/// and the consent of the threshold as it stands, from `approvers`.
-async fn lower_threshold_to_one(
-    fix: &Fixture,
-    gesturer: &mut Gesturer,
-    by: &Party,
-    approvers: &[&Party],
-) {
-    let doc = signed(
-        by,
-        "https://trusttasks.org/spec/config/patch/0.1",
-        json!({ "overrides": { THRESHOLD_KEY: 1 } }),
-    )
-    .await;
-    let (status, reply) = gesturer.send_through(&fix.vtc, by, approvers, &doc).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    assert_eq!(reply["payload"]["applied"][0], THRESHOLD_KEY, "{reply}");
-}
-
-/// `acl/revoke` of an unrestricted admin that would strand the threshold is
-/// refused, names the fix, and writes nothing — before any gesture is asked
-/// for. Lowering the threshold first lets it through, with the gesture and a
-/// third admin's consent the removal now takes (VTI-APV-019).
+/// The approver's side as `cnm consent approve <file>` runs it: the VTC-signed
+/// request for their slot (pushed, and carried on `show`) verifies through
+/// `vta_sdk::task_consent`, and the 0.1 decision built from it completes the
+/// action.
 #[tokio::test]
-async fn vti_apv_009_a_revoke_that_would_strand_the_threshold_is_refused() {
-    let fix = fixture().await;
-    let (a, b, c) = three_admins_threshold_two(&fix).await;
-    let mut gesturer = Gesturer::new();
-    gesturer.enrol(&fix.vtc, &a.did).await;
-
-    let (status, body) = post(&fix, &signed(&a, REVOKE, json!({ "subject": c.did })).await).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    let message = body.to_string();
-    assert!(message.contains("config/patch"), "names the fix: {message}");
-    assert!(entry(&fix, &c.did).await.is_some(), "nothing removed");
-
-    lower_threshold_to_one(&fix, &mut gesturer, &a, &[&b, &c]).await;
-    let revoke = signed(&a, REVOKE, json!({ "subject": c.did })).await;
-    let (status, body) = gesturer.send_through(&fix.vtc, &a, &[&b], &revoke).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-}
-
-/// At the default threshold a two-admin community can still remove one of
-/// them: the compromised-admin case must never be a lockout. Nobody else is
-/// left to consent, so the requester's gesture is enough (VTI-APV-019).
-#[tokio::test]
-async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
-    let fix = fixture().await;
-    let a = admin(&fix).await;
+async fn vti_apv_014_a_signed_request_is_answered_through_the_sdk() {
+    use vta_sdk::task_consent::{ConsentRequest, extract_requests};
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
     let b = admin(&fix).await;
-    let mut gesturer = Gesturer::new();
-    gesturer.enrol(&fix.vtc, &a.did).await;
-    let revoke = signed(&a, REVOKE, json!({ "subject": b.did })).await;
-    let (status, body) = gesturer.send_through(&fix.vtc, &a, &[], &revoke).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-}
-
-/// An `acl/grant` rewrite that narrows an unrestricted admin to a scoped one is
-/// attrition too.
-#[tokio::test]
-async fn vti_apv_009_narrowing_an_unrestricted_admin_is_attrition() {
-    let fix = fixture().await;
-    let (a, b, c) = three_admins_threshold_two(&fix).await;
-    let mut gesturer = Gesturer::new();
-    gesturer.enrol(&fix.vtc, &a.did).await;
-    let narrow = json!({ "entry": { "subject": c.did, "role": "admin", "scopes": ["ctx-a"] } });
-
-    let (status, body) = post(&fix, &signed(&a, GRANT, narrow.clone()).await).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert!(
-        entry(&fix, &c.did).await.unwrap().is_super_admin(),
-        "unchanged"
-    );
-
-    lower_threshold_to_one(&fix, &mut gesturer, &a, &[&b, &c]).await;
-    let narrow = signed(&a, GRANT, narrow).await;
-    let (status, body) = gesturer.send_through(&fix.vtc, &a, &[&b], &narrow).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(!entry(&fix, &c.did).await.unwrap().is_super_admin());
-}
-
-/// A demotion through `acl/change-role` is attrition too.
-#[tokio::test]
-async fn vti_apv_009_demoting_an_unrestricted_admin_is_attrition() {
-    let fix = fixture().await;
-    let (a, _b, c) = three_admins_threshold_two(&fix).await;
-    let demote = json!({ "subject": c.did, "fromRole": "admin", "toRole": "member" });
-    let (status, body) = post(&fix, &signed(&a, CHANGE_ROLE, demote).await).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert_eq!(entry(&fix, &c.did).await.unwrap().role, VtcRole::Admin);
-}
-
-/// The last unrestricted admin cannot demote themselves while a scoped admin
-/// remains — the old last-admin guard counted the scoped admin and let it
-/// through, leaving nobody who could ever consent to an unrestricted grant.
-///
-/// A self-demotion is now refused before the attrition check runs: moving
-/// your own role in either direction modifies your own entry (VTI-ACL-052).
-/// The scoped admin cannot demote it either, since it does not cover the
-/// entry, so the attrition case stays unreachable from here.
-#[tokio::test]
-async fn the_last_unrestricted_admin_cannot_step_down_behind_a_scoped_one() {
-    let fix = fixture().await;
-    let a = admin(&fix).await;
-    let scoped = Party::new();
-    store_acl_entry(
-        &fix.vtc.state.acl_ks,
-        &row(&scoped.did, VtcRole::Admin, &["ctx-a"]),
-    )
-    .await
-    .unwrap();
-    let demote = json!({ "subject": a.did, "fromRole": "admin", "toRole": "member" });
-    let (status, body) = post(&fix, &signed(&a, CHANGE_ROLE, demote).await).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert!(body.to_string().contains("VTI-ACL-052"), "{body}");
-    assert!(entry(&fix, &a.did).await.unwrap().is_super_admin());
-}
-
-// ─── invites: an invited admin is unrestricted ─────────────────────────────
-
-const CREATE_INVITE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
-
-async fn invite_fixture() -> Fixture {
-    let vtc = TestVtc::builder()
-        .with_public_url(RP_ORIGIN)
-        .with_signers(true)
-        .with_audit(true)
-        .with_install_signer(std::sync::Arc::new(
-            vtc_service::install::InstallTokenSigner::from_master_seed(&[0xAB; 64]).unwrap(),
-        ))
-        .build()
-        .await;
-    Fixture {
-        vtc,
-        authenticator: SoftEd25519Authenticator::new(),
-    }
-}
-
-/// A scoped admin cannot invite: the entry an invite writes is unrestricted.
-/// Before VTI-APV-014 this was a way for a scoped admin to mint a community-wide
-/// one.
-#[tokio::test]
-async fn a_scoped_admin_cannot_invite_an_admin() {
-    let fix = invite_fixture().await;
-    let scoped = Party::new();
-    store_acl_entry(
-        &fix.vtc.state.acl_ks,
-        &row(&scoped.did, VtcRole::Admin, &["ctx-a"]),
-    )
-    .await
-    .unwrap();
-    let invitee = Party::new();
-    let (status, body) = post(
-        &fix,
-        &signed(&scoped, CREATE_INVITE, json!({ "did": invitee.did })).await,
+    let subject = Party::new();
+    let id = park(
+        &mut fix,
+        &a,
+        &signed(&a, GRANT, grant_unrestricted(&subject.did)).await,
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert!(entry(&fix, &invitee.did).await.is_none());
-}
+    let bs = action(&fix, &b, &id).await;
+    let request = bs["ext"]["org.openvtc"]["consentRequest"].clone();
+    let requests = extract_requests(&request);
+    assert_eq!(requests.len(), 1, "{bs}");
+    assert_eq!(requests[0]["recipient"], b.did.as_str());
+    assert_eq!(requests[0]["payload"]["challenge"], bs["challenge"]);
 
-/// An unrestricted admin's invite needs a passkey gesture bound to it and
-/// another admin's consent, like the grant it is — the same loop as
-/// `acl/grant`, on the same document each time.
-#[tokio::test]
-async fn vti_apv_014_an_invite_needs_the_gesture_and_another_admins_consent() {
-    let mut fix = invite_fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let approver = admin(&fix).await;
-    let invitee = Party::new();
-    let invite = signed(&requester, CREATE_INVITE, json!({ "did": invitee.did })).await;
-
-    // 1. The gesture first.
-    let (status, refusal) = post(&fix, &invite).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
-    make_gesture(&mut fix, &requester, &refusal).await;
-
-    // 2. Then the consent; nothing is written before both.
-    let (_, refusal) = post(&fix, &invite).await;
-    let details = consent_required(&refusal);
-    assert!(entry(&fix, &invitee.did).await.is_none(), "nothing written");
-
-    // 3. Another admin approves, and the identical document goes through.
-    let (status, ack) = decide(&fix, &approver, &details, "approve").await;
+    let resolver = resolver_knowing_the_vtc(&fix).await;
+    let verified = ConsentRequest::new(requests[0].clone())
+        .verify(TEST_VTC_DID, &b.did, &resolver, chrono::Utc::now())
+        .await
+        .expect("the VTC's own request verifies");
+    let decision = verified.decision(true, Some("checked")).unwrap();
+    let (status, ack) = post(
+        &fix.vtc,
+        &signed(&b, DECISION_V0_1, serde_json::to_value(&decision).unwrap()).await,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{ack}");
-    let (status, minted) = post(&fix, &invite).await;
-    assert_eq!(status, StatusCode::OK, "{minted}");
-    assert!(minted["installUrl"].is_string(), "{minted}");
-    assert!(entry(&fix, &invitee.did).await.unwrap().is_super_admin());
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    let _: vta_sdk::task_consent::decision::Response =
+        serde_json::from_value(ack["payload"].clone()).expect("the 0.1 response type");
+    assert!(entry(&fix, &subject.did).await.is_some());
 }
 
 /// A resolver that knows the test VTC's DID document, as an approver's resolver
@@ -837,91 +1432,40 @@ async fn resolver_knowing_the_vtc(fix: &Fixture) -> vta_sdk::trust_task_proof::T
     vta_sdk::trust_task_proof::TrustTaskVmResolver::new(client)
 }
 
-/// The approver's side as `cnm consent approve` runs it: the relayed request
-/// verifies through `vta_sdk::task_consent`, its match code agrees with the
-/// digest the refusal names, and the decision built from it is the one the VTC
-/// accepts. Driving a real VTC-signed request through the SDK verifier is the
-/// point — a proof that only round-trips through its own signer proves
-/// nothing about re-serialisation.
+// ─── attrition (VTI-APV-009): ending an unrestricted admin ─────────────────
+
+/// `acl/revoke` of an unrestricted admin that would strand the threshold is
+/// refused, names the fix, and writes nothing — before any gesture.
 #[tokio::test]
-async fn vti_apv_014_a_relayed_request_is_answered_through_the_sdk() {
-    use vta_sdk::task_consent::{ConsentRequest, TaskConsentError, extract_requests, match_code};
-
+async fn vti_apv_009_a_revoke_that_would_strand_the_threshold_is_refused() {
     let mut fix = fixture().await;
-    let requester = admin_with_passkey(&mut fix).await;
-    let approver = admin(&fix).await;
-    let subject = Party::new();
-
-    let grant = signed(&requester, GRANT, grant_unrestricted(&subject.did)).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    make_gesture(&mut fix, &requester, &refusal).await;
-    let (_, refusal) = post(&fix, &grant).await;
-    let details = consent_required(&refusal);
-
-    // What the approver is handed: the refusal's details, relayed.
-    let requests = extract_requests(&details);
-    assert_eq!(requests.len(), 1);
-    let resolver = resolver_knowing_the_vtc(&fix).await;
-    let now = chrono::Utc::now();
-
-    // Refused when it is addressed to somebody else, when the approver expects
-    // a different community, or when a byte of it has changed.
-    let wrong = ConsentRequest::new(requests[0].clone())
-        .verify(TEST_VTC_DID, &requester.did, &resolver, now)
-        .await;
-    assert!(
-        matches!(wrong, Err(TaskConsentError::WrongRecipient { .. })),
-        "{wrong:?}"
-    );
-    let wrong = ConsentRequest::new(requests[0].clone())
-        .verify("did:web:other.example", &approver.did, &resolver, now)
-        .await;
-    assert!(
-        matches!(wrong, Err(TaskConsentError::WrongIssuer { .. })),
-        "{wrong:?}"
-    );
-    let mut tampered = requests[0].clone();
-    tampered["payload"]["subject"] = json!(Party::new().did);
-    let wrong = ConsentRequest::new(tampered)
-        .verify(TEST_VTC_DID, &approver.did, &resolver, now)
-        .await;
-    assert!(
-        matches!(wrong, Err(TaskConsentError::ProofInvalid)),
-        "{wrong:?}"
-    );
-
-    // A fresh resolver for the genuine request. The failed verification above
-    // evicted the VTC's cached document to re-resolve it (VTI-KEY-134), and this
-    // test DID resolves nowhere but the preloaded cache.
-    let resolver = resolver_knowing_the_vtc(&fix).await;
-    let verified = ConsentRequest::new(requests[0].clone())
-        .verify(TEST_VTC_DID, &approver.did, &resolver, now)
-        .await
-        .expect("the VTC's own request verifies");
-    assert_eq!(verified.issuer(), TEST_VTC_DID);
-    assert_eq!(verified.payload().requester, requester.did);
-    // The approver's code is the requester's code.
-    assert_eq!(
-        verified.match_code(),
-        match_code(details["payloadDigest"].as_str().unwrap()).unwrap()
-    );
-
-    let decision = verified
-        .decision(true, Some("checked with the requester"))
-        .unwrap();
-    let doc = signed(
-        &approver,
-        DECISION,
-        serde_json::to_value(&decision).unwrap(),
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
+    let c = admin(&fix).await;
+    patch_threshold(&fix, &a, 2).await;
+    let (status, body) = post(
+        &fix.vtc,
+        &signed(&a, REVOKE, json!({ "subject": c.did })).await,
     )
     .await;
-    let (status, ack) = post(&fix, &doc).await;
-    assert_eq!(status, StatusCode::OK, "{ack}");
-    assert_eq!(ack["status"], "granted", "{ack}");
-    let _: vta_sdk::task_consent::decision::Response =
-        serde_json::from_value(ack).expect("the reply is the generated response type");
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.to_string().contains("config/patch"), "{body}");
+    assert!(entry(&fix, &c.did).await.is_some());
+}
 
-    let (status, reply) = post(&fix, &grant).await;
-    assert_eq!(status, StatusCode::OK, "{reply}");
-    assert!(entry(&fix, &subject.did).await.is_some());
+/// At the default threshold a two-admin community can still remove one of
+/// them: nobody else is left to approve, so the gesture is enough.
+#[tokio::test]
+async fn a_two_admin_community_can_still_remove_one_at_the_default_threshold() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let (status, body) = submit(
+        &mut fix,
+        &a,
+        &signed(&a, REVOKE, json!({ "subject": b.did })).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(entry(&fix, &b.did).await.is_none());
 }

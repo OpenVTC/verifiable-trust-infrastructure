@@ -106,6 +106,7 @@ pub use vta_sdk::trust_task_sign::HolderKey;
 const SESSION_TIMEOUT_SECS: u64 = 60;
 
 pub mod acl;
+pub mod actions;
 pub mod git_ns;
 pub mod rooms;
 
@@ -373,6 +374,42 @@ pub enum VtcError {
         /// The `trust-task-error` document, serialized.
         document: String,
     },
+    /// The operation was not refused: it needs other administrators'
+    /// approval, and the VTC parked it in its action list
+    /// (`trust-task-next-step/0.1`, VTI-APV-017). It completes itself when
+    /// enough of them approve; nothing is to be sent again. Follow it with
+    /// [`VtcClient::show_action`].
+    #[error("sent for approval as action {action_id}: {message}")]
+    Parked {
+        /// The action to follow.
+        action_id: String,
+        /// The VTC's own sentence, e.g. "Sent for approval — 1 of 2 …".
+        message: String,
+    },
+}
+
+/// `trust-task-next-step/0.1` — what the VTC answers a parked operation with.
+pub const NEXT_STEP_TYPE: &str =
+    <trust_tasks_rs::specs::trust_task_next_step::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `vtc/admin/actions/show/0.1` — what a parked operation's next step expects.
+pub const ACTION_SHOW_TYPE: &str =
+    <trust_tasks_rs::specs::vtc::admin::actions::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The parked action a `trust-task-next-step/0.1` document names, as
+/// [`VtcError::Parked`] — `None` for any other document.
+pub fn parked_from_next_step(type_uri: &str, payload: &serde_json::Value) -> Option<VtcError> {
+    if type_uri != NEXT_STEP_TYPE {
+        return None;
+    }
+    let action_id = payload["expects"][0]["hint"]["actionId"]
+        .as_str()?
+        .to_string();
+    let message = payload["message"]
+        .as_str()
+        .unwrap_or("waiting for approval")
+        .to_string();
+    Some(VtcError::Parked { action_id, message })
 }
 
 /// A single member of the community, as returned by `GET /members`. Mirrors the
@@ -984,10 +1021,19 @@ impl VtcClient {
     ) -> Result<serde_json::Value, VtcError> {
         #[cfg(feature = "didcomm")]
         if let Some(documents) = &self.documents {
-            return documents
+            let reply = documents
                 .dispatch_trust_task(type_uri, payload, SESSION_TIMEOUT_SECS)
                 .await
-                .map_err(|e| VtcError::Session(e.to_string()));
+                .map_err(|e| VtcError::Session(e.to_string()))?;
+            // The session hands back the payload alone; a parked operation's
+            // is the next step's, which names the action to follow.
+            if reply["continuation"] == "proceed"
+                && reply["expects"][0]["typeUri"] == ACTION_SHOW_TYPE
+                && let Some(parked) = parked_from_next_step(NEXT_STEP_TYPE, &reply)
+            {
+                return Err(parked);
+            }
+            return Ok(reply);
         }
         let Some(key) = &self.signer else {
             return Err(VtcError::NotAuthenticated);
@@ -1073,6 +1119,11 @@ impl VtcClient {
                 Err(_) => return Err(VtcError::Http { status, body: text }),
             };
         if (200..300).contains(&status) {
+            if let Some(parked) =
+                parked_from_next_step(&response_doc.type_uri.to_string(), &response_doc.payload)
+            {
+                return Err(parked);
+            }
             return Ok(response_doc.payload);
         }
         Err(document_error(
@@ -1171,6 +1222,90 @@ impl VtcClient {
         let reply = self
             .document(
                 vta_sdk::task_consent::DECISION_TYPE,
+                payload,
+                spec::ERROR_CODES,
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        decode_payload(reply, "task-consent decision")
+    }
+
+    /// One page of the administrator action list
+    /// (`vtc/admin/actions/list/0.1`): `view` is `waitingForMe`,
+    /// `requestedByMe`, `history` or `all`. The whole response payload —
+    /// `actions`, the badge `counts`, and `nextCursor` when more follow.
+    pub async fn list_actions(
+        &self,
+        view: &str,
+        cursor: Option<&str>,
+    ) -> Result<serde_json::Value, VtcError> {
+        use trust_tasks_rs::specs::vtc::admin::actions::list::v0_1 as spec;
+        let mut payload = serde_json::json!({ "view": view });
+        if let Some(c) = cursor {
+            payload["cursor"] = serde_json::json!(c);
+        }
+        self.document(
+            <spec::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+            payload,
+            spec::ERROR_CODES,
+            MAX_DOCUMENT_RESPONSE_BYTES,
+        )
+        .await
+    }
+
+    /// One action as this caller may see it (`vtc/admin/actions/show/0.1`) —
+    /// the `action` member, carrying this approver's own `challenge` when they
+    /// may decide it now.
+    pub async fn show_action(&self, action_id: &str) -> Result<serde_json::Value, VtcError> {
+        use trust_tasks_rs::specs::vtc::admin::actions::show::v0_1 as spec;
+        let reply = self
+            .document(
+                ACTION_SHOW_TYPE,
+                serde_json::json!({ "actionId": action_id }),
+                spec::ERROR_CODES,
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        Ok(reply["action"].clone())
+    }
+
+    /// Withdraw this caller's own open action (`vtc/admin/actions/cancel/0.1`).
+    pub async fn cancel_action(
+        &self,
+        action_id: &str,
+        reason: Option<&str>,
+    ) -> Result<serde_json::Value, VtcError> {
+        use trust_tasks_rs::specs::vtc::admin::actions::cancel::v0_1 as spec;
+        let mut payload = serde_json::json!({ "actionId": action_id });
+        if let Some(r) = reason {
+            payload["reason"] = serde_json::json!(r);
+        }
+        let reply = self
+            .document(
+                <spec::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                payload,
+                spec::ERROR_CODES,
+                MAX_DOCUMENT_RESPONSE_BYTES,
+            )
+            .await?;
+        Ok(reply["action"].clone())
+    }
+
+    /// Decide an action (`task-consent/decision/0.2`). `decision` carries the
+    /// action's `challenge` as this approver was shown it, the payload digest
+    /// salted with it, and the `actionId`. Signed by this client's own key,
+    /// which must be the approver's own DID: the VTC refuses a decision signed
+    /// by a delegated key.
+    pub async fn decide_action(
+        &self,
+        decision: &trust_tasks_rs::specs::task_consent::decision::v0_2::Payload,
+    ) -> Result<trust_tasks_rs::specs::task_consent::decision::v0_2::Response, VtcError> {
+        use trust_tasks_rs::specs::task_consent::decision::v0_2 as spec;
+        let payload =
+            serde_json::to_value(decision).map_err(|e| VtcError::InvalidPayload(e.to_string()))?;
+        let reply = self
+            .document(
+                <spec::Payload as trust_tasks_rs::Payload>::TYPE_URI,
                 payload,
                 spec::ERROR_CODES,
                 MAX_DOCUMENT_RESPONSE_BYTES,

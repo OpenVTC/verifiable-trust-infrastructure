@@ -75,9 +75,6 @@ impl RetentionSweeper {
     /// - operation-bound step-up marks past their five-minute life
     ///   (`step_up_marks_ks`). Also a storage bound: `crate::acl::bound_step_up`
     ///   treats an expired mark as absent on both reads.
-    /// - unrestricted-admin consent requests and grants past their life
-    ///   (`task_consent_ks`), the same storage bound for
-    ///   `crate::acl::admin_consent`.
     /// - step-up passkey invites and redemption/revocation ceremonies past
     ///   their life (`step_up_passkeys_ks`), the same storage bound for
     ///   `crate::step_up_passkey`. The credentials themselves are kept.
@@ -87,7 +84,6 @@ impl RetentionSweeper {
         sync_queue_ks: KeyspaceHandle,
         accepted_ids_ks: KeyspaceHandle,
         step_up_marks_ks: KeyspaceHandle,
-        task_consent_ks: KeyspaceHandle,
         step_up_passkeys_ks: KeyspaceHandle,
         backup_bundles_ks: KeyspaceHandle,
         backup_blob_dir: std::path::PathBuf,
@@ -116,7 +112,6 @@ impl RetentionSweeper {
                 warn!(error = %e, "initial retention sweep failed");
             }
             sweep_backup_bundles(&backup_bundles_ks, &backup_blob_dir).await;
-            sweep_task_consent(&task_consent_ks).await;
             sweep_step_up_passkeys(&step_up_passkeys_ks).await;
             loop {
                 tokio::select! {
@@ -138,7 +133,6 @@ impl RetentionSweeper {
                             warn!(error = %e, "retention sweep failed");
                         }
                         sweep_backup_bundles(&backup_bundles_ks, &backup_blob_dir).await;
-                        sweep_task_consent(&task_consent_ks).await;
                         sweep_step_up_passkeys(&step_up_passkeys_ks).await;
                     }
                 }
@@ -153,19 +147,6 @@ impl RetentionSweeper {
 async fn sweep_backup_bundles(ks: &KeyspaceHandle, blob_dir: &std::path::Path) {
     if let Err(e) = vti_common::backup_transfer::sweeper::sweep_bundles(ks, blob_dir).await {
         warn!(error = %e, "backup-bundle sweep failed");
-    }
-}
-
-/// Drop lapsed consent requests and grants. Its own pass for the same reason as
-/// [`sweep_backup_bundles`]: a failure here must not hold up the rest.
-async fn sweep_task_consent(ks: &KeyspaceHandle) {
-    match crate::acl::admin_consent::sweep_expired(ks, Utc::now()).await {
-        Ok(0) => {}
-        Ok(n) => info!(
-            expired = n,
-            "retention sweep purged lapsed consent requests and grants"
-        ),
-        Err(e) => warn!(error = %e, "consent sweep failed"),
     }
 }
 

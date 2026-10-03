@@ -22,8 +22,8 @@ import {
   type AclListResponse,
 } from "@/lib/acl";
 import {
-  explainConsent,
   gestureFromConfirm,
+  parkedOf,
   postSignedWithStepUp,
   type ConfirmGesture,
 } from "@/lib/signed-act";
@@ -54,14 +54,16 @@ const fetchAcl = (scope: string | null): Promise<AclListResponse> =>
 // the same gate the promotion path carries, because it is the same authority
 // by another route. The daemon asks for it only where the write actually
 // widens what the subject holds, so a label edit (`patchAclLabel`, which
-// re-grants at the existing role and scopes) does not.
+// re-grants at the existing role and scopes) does not. Making an unrestricted
+// admin is then parked for other administrators' approval: the grant throws a
+// `ParkedAction`, which the toast shows as a success linking to the action.
 const createAcl = (req: AclGrantRequest, confirmGesture: ConfirmGesture): Promise<AclEntry> =>
-  explainConsent(grantAcl(req, confirmGesture));
+  grantAcl(req, confirmGesture);
 
 // Revoking an administrator needs a passkey gesture bound to this one
 // revocation, and revoking another unrestricted one a third administrator's
-// consent (VTI-APV-019). `revokeAcl` asks for the first and explains the
-// second; any other entry is removed with neither.
+// approval (VTI-APV-019). `revokeAcl` asks for the first and parks the
+// revocation for the second; any other entry is removed with neither.
 const deleteAcl = (subject: string, confirmGesture: ConfirmGesture): Promise<void> =>
   revokeAcl(subject, confirmGesture);
 
@@ -106,14 +108,18 @@ async function fetchInvites(): Promise<InvitesListResponse> {
  * admin yet writes an unrestricted admin entry, so it costs what `acl/grant`
  * of one costs: a passkey gesture bound to this invite — asked for with
  * `confirmGesture` when the VTC refuses for want of one — and another admin's
- * consent (VTI-APV-014).
+ * approval (VTI-APV-014), for which the invite is parked as an action and
+ * thrown as a `ParkedAction`. Its install URL and claim code are then shown
+ * once, to the requester, on the completed action (Actions page).
  */
 async function createInvite(
   req: CreateInviteRequest,
   confirmGesture: ConfirmGesture,
 ): Promise<CreateInviteResponse> {
-  return explainConsent(
-    postSignedWithStepUp<CreateInviteResponse>(TRUST_TASK_INVITES_CREATE, req, confirmGesture),
+  return postSignedWithStepUp<CreateInviteResponse>(
+    TRUST_TASK_INVITES_CREATE,
+    req,
+    confirmGesture,
   );
 }
 
@@ -551,7 +557,12 @@ function CreateInviteForm({ onClose }: { onClose: () => void }) {
           : `Invited ${did} (ACL already had admin grant)`,
       );
     },
-    onError: (err) => toast.pushFromError(err, "Invite failed"),
+    onError: (err) => {
+      // A parked invite is a success: the toast links to the action, whose
+      // completed card shows the install URL and claim code.
+      toast.pushFromError(err, "Invite failed");
+      if (parkedOf(err)) onClose();
+    },
   });
 
   const onSubmit = (e: React.FormEvent) => {
@@ -754,7 +765,11 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
       toast.push("success", `Created ACL entry for ${entry.subject}`);
       onSuccess();
     },
-    onError: (err) => toast.pushFromError(err, "Create failed"),
+    onError: (err) => {
+      // A parked grant is a success: the toast says so, and the form closes.
+      toast.pushFromError(err, "Create failed");
+      if (parkedOf(err)) onSuccess();
+    },
   });
 
   const onSubmit = (e: React.FormEvent) => {

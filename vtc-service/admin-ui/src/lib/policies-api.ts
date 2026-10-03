@@ -6,7 +6,7 @@
 // defaults for. The Ceremonies plugin manages all of them.
 
 import { postSignedRead } from "@/lib/api";
-import { explainConsent, postSignedWithStepUp, type ConfirmGesture } from "@/lib/signed-act";
+import { postSignedWithStepUp, type ConfirmGesture } from "@/lib/signed-act";
 import type { PolicyPurpose } from "@/lib/wire-types";
 
 // One canonical task per verb (the shared upload/1.0 mount was retired
@@ -144,23 +144,22 @@ interface UpsertResponse {
  * Store a new revision. Changing a policy is for an unrestricted administrator
  * only, and a policy that decides authority (`roleChange`, `removal`, `join`,
  * `crossCommunityRoles`, `gitNamespace`) also takes a passkey gesture bound to
- * this upload and another unrestricted administrator's consent (VTI-VTC-022).
- * The VTC asks for the gesture where it needs one; the consent is explained.
+ * this upload and another unrestricted administrator's approval (VTI-VTC-022).
+ * The VTC asks for the gesture where it needs one, then parks the upload as an
+ * administrator action, thrown as a `ParkedAction` (`lib/parked-action.ts`).
  */
 export async function uploadPolicy(
   args: { purpose: Purpose; regoSource: string },
   confirmGesture: ConfirmGesture,
 ): Promise<PolicyRow> {
-  const res = await explainConsent(
-    postSignedWithStepUp<UpsertResponse>(
-      TRUST_TASK_UPSERT,
-      {
-        name: args.purpose,
-        module: args.regoSource,
-        ext: { [PURPOSE_EXT]: args.purpose },
-      },
-      confirmGesture,
-    ),
+  const res = await postSignedWithStepUp<UpsertResponse>(
+    TRUST_TASK_UPSERT,
+    {
+      name: args.purpose,
+      module: args.regoSource,
+      ext: { [PURPOSE_EXT]: args.purpose },
+    },
+    confirmGesture,
   );
   return res.policy;
 }
@@ -174,9 +173,7 @@ export async function activatePolicy(
   purpose: Purpose,
   confirmGesture: ConfirmGesture,
 ): Promise<unknown> {
-  return explainConsent(
-    postSignedWithStepUp<unknown>(TRUST_TASK_ACTIVATE, { id, purpose }, confirmGesture),
-  );
+  return postSignedWithStepUp<unknown>(TRUST_TASK_ACTIVATE, { id, purpose }, confirmGesture);
 }
 
 // ---------------------------------------------------------------------------

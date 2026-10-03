@@ -1,4 +1,5 @@
 mod access;
+mod actions;
 mod audit;
 mod auth;
 mod backup;
@@ -227,6 +228,13 @@ enum Commands {
     Consent {
         #[command(subcommand)]
         command: consent::ConsentCommands,
+    },
+
+    /// The administrator action list: operations waiting for approval, the
+    /// ones you asked for, and history.
+    Actions {
+        #[command(subcommand)]
+        command: actions::ActionsCommands,
     },
 
     /// Git namespaces: bind a forge owner, grant and revoke git rights,
@@ -942,6 +950,7 @@ fn requires_auth(cmd: &Commands) -> bool {
             | Commands::Vetting { .. }
             | Commands::Git { .. }
             | Commands::Consent { .. }
+            | Commands::Actions { .. }
             | Commands::Access { .. }
             | Commands::Member { .. }
             | Commands::Audit { .. }
@@ -1528,6 +1537,14 @@ async fn main() {
             match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
                 Ok((key, target)) => {
                     consent::run(command, &key, &target, cli.transport.into()).await
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Commands::Actions { command } => {
+            match community_vtc(&cli.community, &cli.vtc_did, &url_override, &cnm_config).await {
+                Ok((key, target)) => {
+                    actions::run(command, &key, &target, cli.transport.into()).await
                 }
                 Err(e) => Err(e),
             }

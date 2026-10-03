@@ -19,6 +19,7 @@ import {
   Inbox,
   KeyRound,
   LayoutDashboard,
+  ListChecks,
   Network,
   PenLine,
   Share2,
@@ -30,8 +31,10 @@ import {
   Workflow,
 } from "lucide-react";
 
+import { ACTIONS_PLUGIN_ID } from "@/lib/action-badge";
 import { registerPlugin } from "@/plugin-api";
 import { Acl } from "@/plugins/acl";
+import { Actions } from "@/plugins/actions";
 import { Audit } from "@/plugins/audit";
 import { Ceremonies } from "@/plugins/ceremonies";
 import { ConsoleKeys } from "@/plugins/consoleKeys";
@@ -55,6 +58,16 @@ export function registerBuiltinPlugins(): void {
     path: "/",
     iconComponent: LayoutDashboard,
     reactComponent: Dashboard,
+  });
+
+  // The administrator action list. Its nav badge (the count waiting for you)
+  // is drawn by the shell (`App.tsx`, `lib/action-badge.ts`).
+  registerPlugin({
+    id: ACTIONS_PLUGIN_ID,
+    label: "Actions",
+    path: "/actions",
+    iconComponent: ListChecks,
+    reactComponent: Actions,
   });
 
   registerPlugin({

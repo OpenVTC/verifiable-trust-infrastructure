@@ -72,6 +72,9 @@ mod discovery;
 // The canonical `acl/{show,list,update,revoke}` tasks, and the operation-bound
 // gate `acl/grant` shares with `acl/update`.
 mod acl_tasks;
+// The administrator action list: `vtc/admin/actions/*` and the
+// `task-consent/decision` that completes a parked operation (VTI-APV-017).
+pub(crate) mod action_tasks;
 // The administrator's operational verbs: the registry reconciler, the audit
 // log, the runtime configuration, admin invites and sessions.
 pub(crate) mod admin_tasks;
@@ -193,7 +196,6 @@ use vta_sdk::protocols::vetting::{
 use crate::join::{JoinSubmitOutcome, JoinTransport};
 use crate::server::AppState;
 
-pub(crate) use helpers::DETAILS_MAX_JCS_BYTES;
 pub(crate) use helpers::TrustTaskOutcome;
 // The one spelling of the framework error document's Type URI in this crate.
 // Re-exported so the messaging layer labels a type-less reply with the same
@@ -726,8 +728,22 @@ async fn dispatch_trust_task_validated(
         Err(e) => return reject_with(&doc, e.reject_reason()),
     };
 
-    // 4. Dispatch by type URI, then sign what comes back.
-    let outcome = dispatch_typed(state, ctx, doc, &type_uri).await;
+    // 4. Dispatch by type URI, then sign what comes back. The document as
+    //    received travels with the dispatch, so an operation that has to wait
+    //    for other administrators' approval is parked as exactly what its
+    //    requester signed (`crate::admin_actions`).
+    let submission = crate::admin_actions::Submission {
+        received: std::sync::Arc::new(received),
+        signer: ctx.verified_signer.clone(),
+        transport: ctx.transport,
+    };
+    let outcome = crate::admin_actions::with_submission(
+        submission,
+        // Boxed: the dispatcher is one large future, and the task-local adds
+        // a frame around it on the stack every document is dispatched on.
+        Box::pin(dispatch_typed(state, ctx, doc, &type_uri)),
+    )
+    .await;
     let outcome = sign_response(state, outcome).await;
 
     // Close out the claim taken at 3b.
@@ -911,6 +927,41 @@ pub(crate) async fn sign_response(state: &AppState, outcome: TrustTaskOutcome) -
             outcome
         }
     }
+}
+
+/// Dispatch an approved action's stored document — the requester's own, parked
+/// when it was submitted — through the handler it was sent to, and sign what
+/// comes back (`crate::admin_actions`, VTI-APV-017).
+///
+/// Past the spine on purpose: freshness and the replay record held the
+/// document once, when it arrived (VTI-OPS-024…027), and this service is
+/// executing its own stored copy, not accepting the document again. Every
+/// check the handler makes runs as it did on submission, against the community
+/// as it is now.
+async fn dispatch_parked(
+    state: &AppState,
+    ctx: JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let type_uri = doc.type_uri.to_string();
+    let outcome = dispatch_typed(state, &ctx, doc, &type_uri).await;
+    sign_response(state, outcome).await
+}
+
+/// [`dispatch_parked`] as `exec`'s execution, boxed behind a plain `fn` with a
+/// named return type. The executor is reached from a decision, which is one
+/// arm of [`dispatch_typed`]; an `async fn` cycle cannot prove its own future
+/// `Send`, and a concrete `dyn` return type is what breaks it.
+pub(crate) fn dispatch_parked_boxed<'a>(
+    state: &'a AppState,
+    ctx: JoinAuthCtx,
+    doc: TrustTask<Value>,
+    exec: crate::admin_actions::Executing,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = TrustTaskOutcome> + Send + 'a>> {
+    Box::pin(crate::admin_actions::executing_scope(
+        exec,
+        dispatch_parked(state, ctx, doc),
+    ))
 }
 
 async fn dispatch_typed(
@@ -1151,8 +1202,18 @@ async fn dispatch_typed(
         STEP_UP_APPROVE_RESPONSE_V0_5_TYPE => {
             handle_step_up_approve_response_v0_5(state, ctx, doc).await
         }
-        crate::acl::admin_consent::DECISION_TYPE => {
-            handle_task_consent_decision(state, ctx, doc).await
+        // Boxed: a decision that completes an action re-enters this dispatcher
+        // with the parked document.
+        crate::acl::admin_consent::DECISION_TYPE
+        | crate::acl::admin_consent::DECISION_V0_2_TYPE => {
+            Box::pin(action_tasks::handle_decision(state, ctx, doc)).await
+        }
+        uri if action_tasks::URIS.contains(&uri) => {
+            match Box::pin(action_tasks::dispatch(state, ctx, doc, uri)).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!("action_tasks::URIS names {uri}, which it does not route"),
+            }
         }
         discovery::DISCOVERY_V0_3_TYPE => discovery::handle(ctx, doc),
         other => unsupported_type_or_version(&doc, other),
@@ -2505,9 +2566,17 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // approver's own proof — the spine's `is_proof_required` enforces that
     // before this ever dispatches.
     STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
-    // Another admin's consent to an unrestricted grant (VTI-APV-014). The
+    // Another admin's decision on a parked action (VTI-APV-014, -017). The
     // request it answers is pushed by this service, never dispatched here.
+    // 0.2 adds the optional extra factor and the `actionId` locator.
     crate::acl::admin_consent::DECISION_TYPE,
+    crate::acl::admin_consent::DECISION_V0_2_TYPE,
+    // The action list: what is waiting, one action, withdrawing one, and
+    // acknowledging an operator's write (no producer yet).
+    action_tasks::LIST_TYPE,
+    action_tasks::SHOW_TYPE,
+    action_tasks::CANCEL_TYPE,
+    action_tasks::ACKNOWLEDGE_TYPE,
     // Members' step-up passkeys: the invite, its redemption, an
     // administrator's revocation for the member, and an administrator's
     // listing of them. No REST route serves them.
@@ -4874,84 +4943,6 @@ async fn handle_step_up_approve_response_v0_5(
         ),
         Err(ApproveError::ProofRequired) => reject_with(&doc, RejectReason::ProofRequired),
         Err(ApproveError::Internal(e)) => app_error_to_reject(&doc, &e),
-    }
-}
-
-/// `task-consent/decision/0.1` — another admin's answer to a request for
-/// consent to an unrestricted grant (VTI-APV-014).
-///
-/// The approver is the document's proven signer, resolved as every signed admin
-/// verb resolves it ([`admin_signer`]), and must be an unrestricted admin now
-/// and not the requester. Which operation is being consented to is this
-/// service's own record of the request, found by the salted digest — never
-/// anything the decision says. See [`crate::acl::admin_consent::decide`].
-async fn handle_task_consent_decision(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    use crate::acl::admin_consent::{self, Decided, DecisionError};
-    use decision::error_codes as codes;
-    use trust_tasks_rs::specs::task_consent::decision::v0_1 as decision;
-
-    let approver = match admin_signer(state, ctx, &doc).await {
-        Ok(a) => a,
-        Err(reject) => return reject,
-    };
-    let payload: decision::Payload = match parse_spec_payload(&doc) {
-        Ok(p) => p,
-        Err(reject) => return reject,
-    };
-    let refuse = |code: trust_tasks_rs::DeclaredErrorCode, message: &str| {
-        reject_with_code(&doc, extended_code(code.code), message, None)
-    };
-    match admin_consent::decide(state, &approver.did, &payload).await {
-        Ok(Decided::Granted {
-            payload_digest,
-            approvals,
-        }) => success_response(
-            &doc,
-            serde_json::json!({
-                "status": "granted",
-                "payloadDigest": payload_digest,
-                "approvals": approvals,
-            }),
-        ),
-        Ok(Decided::Pending {
-            payload_digest,
-            approvals,
-            needed,
-        }) => success_response(
-            &doc,
-            serde_json::json!({
-                "status": "pending",
-                "payloadDigest": payload_digest,
-                "approvals": approvals,
-                "needed": needed,
-            }),
-        ),
-        Ok(Decided::Denied { payload_digest }) => success_response(
-            &doc,
-            serde_json::json!({ "status": "denied", "payloadDigest": payload_digest }),
-        ),
-        Err(DecisionError::NoPending) => refuse(
-            codes::NO_PENDING,
-            "no consent request is waiting on this digest; it has lapsed, been decided, or was \
-             never made",
-        ),
-        Err(DecisionError::ChallengeMismatch) => refuse(
-            codes::CHALLENGE_MISMATCH,
-            "the challenge does not match the consent request",
-        ),
-        Err(DecisionError::NotAnApprover) => refuse(
-            codes::NOT_AN_APPROVER,
-            "only another unrestricted admin of this community can consent to this",
-        ),
-        Err(DecisionError::RequesterExcluded) => refuse(
-            codes::REQUESTER_EXCLUDED,
-            "the admin who asked for this cannot consent to it",
-        ),
-        Err(DecisionError::Internal(e)) => app_error_to_reject(&doc, &e),
     }
 }
 

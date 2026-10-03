@@ -7,7 +7,7 @@
 // (`acl/list`, `acl/grant`, …), written here beside the calls that send them.
 
 import { postSignedRead } from "./api";
-import { explainConsent, postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
+import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 import type { AclEntry, AclEntryEnvelope, AclListResponse } from "./wire-types";
 
 export type { AclEntry, AclListResponse };
@@ -67,7 +67,11 @@ export async function fetchAllAcl(filter: AclListFilter = {}): Promise<AclEntry[
   throw new Error(`the ACL is longer than ${MAX_ACL_PAGES} pages; narrow the filter`);
 }
 
-/** Grant (or re-state) an entry. Granting `admin` may need a passkey gesture. */
+/**
+ * Grant (or re-state) an entry. Granting `admin` may need a passkey gesture,
+ * and making an unrestricted admin is parked for other administrators'
+ * approval (VTI-APV-014) — thrown as a `ParkedAction` (`lib/parked-action.ts`).
+ */
 export async function grantAcl(
   req: AclGrantRequest,
   confirmGesture: ConfirmGesture,
@@ -84,16 +88,17 @@ export async function grantAcl(
  * Change an entry's role. `fromRole` is a compare-and-swap guard: the role on
  * screen is a read, and the VTC refuses the change if the row has moved since.
  * Promotion to `admin` may need a passkey gesture, and so does a demotion
- * from `admin` (VTI-APV-019). Making or unmaking an unrestricted admin also
- * waits on another unrestricted admin's consent, which is explained rather
- * than shown as a code.
+ * from `admin` (VTI-APV-019). Making or unmaking an unrestricted admin is
+ * parked for other administrators' approval and thrown as a `ParkedAction`.
  */
 export async function changeAclRole(
   args: { subject: string; fromRole: string; toRole: string; reason?: string },
   confirmGesture: ConfirmGesture,
 ): Promise<AclEntry> {
-  const body = await explainConsent(
-    postSignedWithStepUp<AclEntryEnvelope>(ACL_CHANGE_ROLE_TASK, args, confirmGesture),
+  const body = await postSignedWithStepUp<AclEntryEnvelope>(
+    ACL_CHANGE_ROLE_TASK,
+    args,
+    confirmGesture,
   );
   return body.entry;
 }
@@ -101,10 +106,13 @@ export async function changeAclRole(
 /**
  * Remove an entry outright. Removing an administrator needs a passkey gesture
  * bound to this removal, and removing another unrestricted administrator also
- * needs the consent of an administrator who is neither of you (VTI-APV-019).
+ * needs the approval of an administrator who is neither of you (VTI-APV-019),
+ * so it is parked and thrown as a `ParkedAction`.
  */
 export async function revokeAcl(subject: string, confirmGesture: ConfirmGesture): Promise<void> {
-  await explainConsent(
-    postSignedWithStepUp<{ entry: AclEntry | null }>(ACL_REVOKE_TASK, { subject }, confirmGesture),
+  await postSignedWithStepUp<{ entry: AclEntry | null }>(
+    ACL_REVOKE_TASK,
+    { subject },
+    confirmGesture,
   );
 }

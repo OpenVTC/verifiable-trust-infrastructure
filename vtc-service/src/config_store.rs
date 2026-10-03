@@ -121,6 +121,93 @@ const DEFAULT_ADMIN_IDLE_TIMEOUT: u64 = 900;
 /// The runtime key for [`crate::config::AclConfig::unrestricted_admin_consent_threshold`].
 pub const UNRESTRICTED_ADMIN_CONSENT_THRESHOLD: &str = "acl.unrestricted_admin_consent_threshold";
 
+/// The runtime key for [`crate::config::AclConfig::action_lifetime`] — how long
+/// an operation parked for approval stays open (VTI-APV-008,
+/// `vtc-action-list.md` §5).
+pub const ACTION_LIFETIME: &str = "acl.action_lifetime";
+/// The runtime key for [`crate::config::AclConfig::action_max_open_per_requester`].
+pub const ACTION_MAX_OPEN_PER_REQUESTER: &str = "acl.action_max_open_per_requester";
+/// The runtime key for [`crate::config::AclConfig::action_max_open`].
+pub const ACTION_MAX_OPEN: &str = "acl.action_max_open";
+/// The runtime key for [`crate::config::AclConfig::action_decline_cooldown`].
+pub const ACTION_DECLINE_COOLDOWN: &str = "acl.action_decline_cooldown";
+
+/// The action-list keys: `(key, env var, value in AppConfig)`. One table, so the
+/// four overlay arms below cannot disagree about which keys exist.
+fn action_key_value(key: &str, cfg: &AppConfig) -> Option<u64> {
+    Some(match key {
+        ACTION_LIFETIME => cfg.acl.action_lifetime,
+        ACTION_MAX_OPEN_PER_REQUESTER => cfg.acl.action_max_open_per_requester,
+        ACTION_MAX_OPEN => cfg.acl.action_max_open,
+        ACTION_DECLINE_COOLDOWN => cfg.acl.action_decline_cooldown,
+        _ => return None,
+    })
+}
+
+fn action_key_default(key: &str) -> Option<u64> {
+    Some(match key {
+        ACTION_LIFETIME => crate::config::default_action_lifetime(),
+        ACTION_MAX_OPEN_PER_REQUESTER => crate::config::default_action_max_open_per_requester(),
+        ACTION_MAX_OPEN => crate::config::default_action_max_open(),
+        ACTION_DECLINE_COOLDOWN => crate::config::default_action_decline_cooldown(),
+        _ => return None,
+    })
+}
+
+fn action_key_env(key: &str) -> Option<&'static str> {
+    Some(match key {
+        ACTION_LIFETIME => "VTC_ACL_ACTION_LIFETIME",
+        ACTION_MAX_OPEN_PER_REQUESTER => "VTC_ACL_ACTION_MAX_OPEN_PER_REQUESTER",
+        ACTION_MAX_OPEN => "VTC_ACL_ACTION_MAX_OPEN",
+        ACTION_DECLINE_COOLDOWN => "VTC_ACL_ACTION_DECLINE_COOLDOWN",
+        _ => return None,
+    })
+}
+
+/// Write an action-list key's value into `cfg`. `false` when `key` is not one.
+pub(crate) fn set_action_key(cfg: &mut AppConfig, key: &str, n: u64) -> bool {
+    match key {
+        ACTION_LIFETIME => cfg.acl.action_lifetime = n,
+        ACTION_MAX_OPEN_PER_REQUESTER => cfg.acl.action_max_open_per_requester = n,
+        ACTION_MAX_OPEN => cfg.acl.action_max_open = n,
+        ACTION_DECLINE_COOLDOWN => cfg.acl.action_decline_cooldown = n,
+        _ => return false,
+    }
+    true
+}
+
+/// The in-memory value of an action-list key, for the live view.
+pub(crate) fn action_key_live(cfg: &AppConfig, key: &str) -> Option<u64> {
+    action_key_value(key, cfg)
+}
+
+/// An action-list setting in force **now**: env, then the database layer, then
+/// the in-memory value — read live, as [`live_consent_threshold`] is, so a
+/// `config/patch` binds the next action without a reload. A stored value
+/// outside the key's bounds (a corrupt row) is ignored for the in-memory one.
+pub async fn live_action_setting(
+    key: &str,
+    cfg: &AppConfig,
+    db: &ConfigStore,
+) -> Result<u64, AppError> {
+    let fallback = action_key_value(key, cfg)
+        .ok_or_else(|| AppError::Internal(format!("{key} is not an action-list setting")))?;
+    let layered = match env_layer_value(key) {
+        Some(v) => Some(v),
+        None => db.get(key).await?,
+    };
+    let in_bounds = |n: &u64| match lookup(key).map(|d| d.kind) {
+        Some(ConfigKeyKind::U64Range { min, max } | ConfigKeyKind::CountRange { min, max }) => {
+            (min..=max).contains(n)
+        }
+        _ => true,
+    };
+    Ok(layered
+        .and_then(|v| v.as_u64())
+        .filter(in_bounds)
+        .unwrap_or(fallback))
+}
+
 /// The full catalog of UX-settable keys for Phase 0.
 ///
 /// Adding a new key requires:
@@ -191,6 +278,46 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
     ConfigKeyDef {
         key: UNRESTRICTED_ADMIN_CONSENT_THRESHOLD,
         kind: ConfigKeyKind::CountRange { min: 1, max: 16 },
+        requires_restart: false,
+        sensitive: false,
+    },
+    // The action list (`vtc-action-list.md` §5, §7a.1). Each is read live by
+    // `crate::admin_actions` when an action is raised, so none needs a restart,
+    // and none reaches back to an open action: it keeps the `expiresAt` it was
+    // raised with.
+    //
+    // VTI-APV-008: every action expires. Fifteen minutes is the shortest a
+    // human can be reached in; fourteen days is the longest an approval
+    // collected long ago may be spent on a community that has since moved on.
+    ConfigKeyDef {
+        key: ACTION_LIFETIME,
+        kind: ConfigKeyKind::U64Range {
+            min: 15 * 60,
+            max: 14 * 24 * 3600,
+        },
+        requires_restart: false,
+        sensitive: false,
+    },
+    // Approval fatigue (§7a.1): a compromised administrator raising requests
+    // until a tired approver clicks Approve.
+    ConfigKeyDef {
+        key: ACTION_MAX_OPEN_PER_REQUESTER,
+        kind: ConfigKeyKind::CountRange { min: 1, max: 20 },
+        requires_restart: false,
+        sensitive: false,
+    },
+    ConfigKeyDef {
+        key: ACTION_MAX_OPEN,
+        kind: ConfigKeyKind::CountRange { min: 10, max: 500 },
+        requires_restart: false,
+        sensitive: false,
+    },
+    ConfigKeyDef {
+        key: ACTION_DECLINE_COOLDOWN,
+        kind: ConfigKeyKind::U64Range {
+            min: 0,
+            max: 24 * 3600,
+        },
         requires_restart: false,
         sensitive: false,
     },
@@ -336,7 +463,10 @@ fn toml_layer_value(key: &str, cfg: &AppConfig) -> Option<Value> {
                 )))
             }
         }
-        _ => None,
+        other => {
+            let n = action_key_value(other, cfg)?;
+            (Some(n) != action_key_default(other)).then(|| Value::Number(n.into()))
+        }
     }
 }
 
@@ -358,7 +488,10 @@ fn default_layer_value(key: &str) -> Value {
         "auth.admin_idle_timeout" => {
             Value::Number(serde_json::Number::from(DEFAULT_ADMIN_IDLE_TIMEOUT))
         }
-        _ => Value::Null, // unreachable for registry keys
+        other => match action_key_default(other) {
+            Some(n) => Value::Number(n.into()),
+            None => Value::Null, // unreachable for registry keys
+        },
     }
 }
 
@@ -385,7 +518,10 @@ fn env_layer_value(key: &str) -> Option<Value> {
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .map(|n| Value::Number(serde_json::Number::from(n))),
-        _ => None,
+        other => std::env::var(action_key_env(other)?)
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|n| Value::Number(serde_json::Number::from(n))),
     }
 }
 
@@ -487,7 +623,20 @@ fn set_app_config_field(cfg: &mut AppConfig, key: &str, value: &Value) {
                 "config override `auth.admin_idle_timeout` is not a u64 — ignored"
             ),
         },
-        _ => {}
+        other => {
+            if action_key_value(other, cfg).is_some() {
+                match value.as_u64() {
+                    Some(n) => {
+                        set_action_key(cfg, other, n);
+                    }
+                    None => tracing::warn!(
+                        %value,
+                        key = other,
+                        "config override is not a u64 — ignored"
+                    ),
+                }
+            }
+        }
     }
 }
 

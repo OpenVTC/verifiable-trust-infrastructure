@@ -747,8 +747,13 @@ const SIOP_BODY_DISCRIMINATOR_TYPES: &[&str] =
 /// to send on their own: the wallet-signed `auth/signing-key/authorize/0.1`
 /// carried as `enroll/0.2`'s `authorization`. Neither a route nor the spine
 /// may serve one — `authorize/0.1` item 1 forbids acting on it alone.
-const EMBEDDED_DOCUMENT_TYPES: &[&str] =
-    &["https://trusttasks.org/spec/auth/signing-key/authorize/0.1"];
+///
+/// Also `trust-task-next-step/0.1`, which the console only ever *reads*: the
+/// answer to an operation parked in the action list. Nothing serves it either.
+const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
+    "https://trusttasks.org/spec/auth/signing-key/authorize/0.1",
+    "https://trusttasks.org/spec/trust-task-next-step/0.1",
+];
 
 /// Document types the console sends that the *spine* dispatches rather than
 /// the git-ns family: the answer to an operation-bound step-up
@@ -759,6 +764,13 @@ const EMBEDDED_DOCUMENT_TYPES: &[&str] =
 /// of a redemption the member's `cnm` started; and the admin verbs whose REST
 /// routes are gone.
 const SPINE_DOCUMENT_TYPES: &[&str] = &[
+    // The administrator action list (`trust_tasks::action_tasks`): its reads
+    // and withdrawal, signed by the console key, and an approver's decision,
+    // signed by the approver's own DID through the wallet.
+    "https://trusttasks.org/spec/vtc/admin/actions/list/0.1",
+    "https://trusttasks.org/spec/vtc/admin/actions/show/0.1",
+    "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1",
+    "https://trusttasks.org/spec/task-consent/decision/0.2",
     // Their bearer routes stayed for `vtc-client`; the console already signed
     // them, and now nothing else binds them either.
     "https://trusttasks.org/spec/vtc/join-requests/decide/0.1",

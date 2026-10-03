@@ -91,6 +91,15 @@ pub(crate) fn parse_payload<T: serde::de::DeserializeOwned>(
 /// - everything else → `internal_error`, with the cause logged and **not**
 ///   sent
 pub(crate) fn app_error_to_reject<P>(doc: &TrustTask<P>, err: &AppError) -> TrustTaskOutcome {
+    // Not a refusal at all: the operation was parked for other administrators'
+    // approval and will complete itself (VTI-APV-017). Every gate's caller
+    // already propagates its outcome as an `AppError`, so the parked answer
+    // rides the same path and is rendered here, once.
+    if let AppError::ApprovalRequired { code, details } = err
+        && *code == crate::admin_actions::ACTION_PARKED
+    {
+        return next_step_response(doc, details);
+    }
     let message = err.to_string();
     let reason = match err {
         AppError::Authentication(_)
@@ -388,6 +397,32 @@ pub(crate) fn success_response<P, R: Serialize>(
     }
 }
 
+/// `trust-task-next-step/0.1` — the reserved framework answer (SPEC §8.6) for
+/// an operation understood but not completable in isolation: here, one parked
+/// in the action list. Addressed back to the requester on the request's
+/// thread, like a `#response`, and answered `202 Accepted`: neither a result
+/// nor a failure.
+pub(crate) fn next_step_response<P>(doc: &TrustTask<P>, details: &Value) -> TrustTaskOutcome {
+    let payload =
+        crate::admin_actions::next_step_payload(&doc.id, &doc.type_uri.to_string(), details);
+    let mut next = doc.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
+    next.type_uri = super::action_tasks::NEXT_STEP_TYPE
+        .parse()
+        .expect("the next-step Type URI parses");
+    match serde_json::to_vec(&next) {
+        Ok(body) => TrustTaskOutcome {
+            status: StatusCode::ACCEPTED,
+            body,
+        },
+        Err(e) => reject_with(
+            doc,
+            RejectReason::InternalError {
+                reason: format!("next-step serialisation: {e}"),
+            },
+        ),
+    }
+}
+
 /// The courtesy acknowledgement of a fire-and-forget task (SPEC §4.4.2): the
 /// originating type with `#response` and a payload of exactly `{}`.
 ///
@@ -565,6 +600,7 @@ pub(crate) fn is_approval_type(type_uri: &str) -> bool {
     type_uri == super::STEP_UP_APPROVE_RESPONSE_TYPE
         || type_uri == super::STEP_UP_APPROVE_RESPONSE_V0_5_TYPE
         || type_uri == crate::acl::admin_consent::DECISION_TYPE
+        || type_uri == crate::acl::admin_consent::DECISION_V0_2_TYPE
 }
 
 #[cfg(test)]

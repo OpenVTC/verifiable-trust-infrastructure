@@ -314,8 +314,8 @@ impl TestVtcBuilder {
         let step_up_passkeys_ks = store
             .keyspace(crate::store::keyspaces::STEP_UP_PASSKEYS)
             .expect("step_up_passkeys ks");
-        let task_consent_ks = store
-            .keyspace(crate::store::keyspaces::TASK_CONSENT)
+        let admin_actions_ks = store
+            .keyspace(crate::store::keyspaces::ADMIN_ACTIONS)
             .expect("task_consent ks");
         let member_pushes_ks = store
             .keyspace(crate::store::keyspaces::MEMBER_PUSHES)
@@ -488,7 +488,7 @@ impl TestVtcBuilder {
             console_keys_ks,
             step_up_marks_ks,
             step_up_passkeys_ks,
-            task_consent_ks,
+            admin_actions_ks,
             member_pushes_ks,
             tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
             backup_bundles_ks,

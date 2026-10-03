@@ -141,11 +141,16 @@ pub const STEP_UP_MARKS: &str = "step_up_marks";
 /// or elevate a session. See `crate::step_up_passkey`.
 pub const STEP_UP_PASSKEYS: &str = "step_up_passkeys";
 
-/// Second-party consent for unrestricted admin authority (VTI-APV-014): the
-/// pending requests (`pending:<digest>`, indexed by `wire:<wireDigest>`) and
-/// completed grants (`grant:<digest>:<requester>`) of
-/// `vti_common::task_consent`. See `crate::acl::admin_consent`.
-pub const TASK_CONSENT: &str = "task_consent";
+/// The administrator action list (`docs/05-design-notes/vtc-action-list.md`):
+/// every operation parked for other administrators' approval — VTI-APV-014's
+/// unrestricted grants, VTI-APV-019's reductions, VTI-APV-020's threshold
+/// lowerings, VTI-VTC-022's authority-policy changes — at `action:<id>`, with
+/// each approver's salted wire digest indexed at `wire:<digest>`. Open actions,
+/// and closed ones for 30 days of history. See `crate::admin_actions`.
+///
+/// Replaces the `task_consent` keyspace the re-send model kept its pending
+/// requests and grants in (design §8a: net-new, nothing is migrated).
+pub const ADMIN_ACTIONS: &str = "admin_actions";
 
 /// Member pushes in flight and recently finished (`push:<id>`): the signed
 /// Trust Task, the transports still to try, and how it ended. Encrypted at rest
@@ -198,7 +203,7 @@ pub const ALL: &[&str] = &[
     CONSOLE_KEYS,
     STEP_UP_MARKS,
     STEP_UP_PASSKEYS,
-    TASK_CONSENT,
+    ADMIN_ACTIONS,
     MEMBER_PUSHES,
     BACKUP_BUNDLES,
     GIT_NS,
@@ -308,10 +313,13 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // host must not arrive with gestures that authorize break-glass there. A
     // member re-enrols through a fresh invite.
     STEP_UP_PASSKEYS,
-    // Consent requests and grants for unrestricted admin. Both live minutes
-    // and bind one operation against the ACL as it stood; restored elsewhere,
-    // a grant would authorize an act the approvers never saw on that host.
-    TASK_CONSENT,
+    // The administrator action list. An action binds one operation against the
+    // ACL as it stood on this host when it was raised — its approver set, its
+    // state pin, the approvals collected over it. Restored elsewhere, an open
+    // action would complete on a community its approvers never saw, so it is
+    // not carried (`vtc-action-list.md` §4.1); the audit log keeps every
+    // transition regardless.
+    ADMIN_ACTIONS,
     // Pushes in flight: delivery bookkeeping for this deployment's own
     // outbox, whose entries are not carried either. Restored elsewhere, a push
     // would be re-sent by a node that never queued it.

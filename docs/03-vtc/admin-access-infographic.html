@@ -370,8 +370,8 @@
 <!-- ── 5. Consent sequence ──────────────────────────────── -->
 <section id="consent"><div class="wrap">
   <p class="kicker">05 · How a second admin agrees</p>
-  <h2>Propose, approve, re-send</h2>
-  <p class="sub">The requester's own gesture comes first, so a thief holding only their signing key can't make the other administrators' devices ring. The VTC checks everything again before it writes.</p>
+  <h2>Propose, approve, complete</h2>
+  <p class="sub">The requester's own gesture comes first, so a thief holding only their signing key can't make the other administrators' devices ring. The operation is parked as an action; the approval that reaches the threshold runs it, after the VTC checks everything again.</p>
   <div class="diagram">
   <svg viewBox="0 0 980 470" role="img" aria-label="Consent sequence between administrator A, the VTC and administrator B">
     <defs>
@@ -397,20 +397,20 @@
       <line x1="140" y1="180" x2="486" y2="180" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
       <text x="152" y="172" fill="#e8edf7">③ A's passkey gesture, bound to the digest</text>
       <line x1="490" y1="220" x2="144" y2="220" stroke="#ffb454" stroke-width="1.6" marker-end="url(#arw)"/>
-      <text x="152" y="212" fill="#ffb454">④ consent_required</text>
+      <text x="152" y="212" fill="#ffb454">④ 202 · parked as an action</text>
       <line x1="490" y1="220" x2="836" y2="220" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
       <text x="502" y="212" fill="#e8edf7">④ VTC-signed task-consent/request</text>
       <rect x="700" y="244" width="280" height="44" rx="8" fill="#0d1322" stroke="#2a3450"/>
       <text x="840" y="264" text-anchor="middle" fill="#94a3c4" font-size="12.5">B checks the request and match code</text>
-      <text x="840" y="280" text-anchor="middle" fill="#94a3c4" font-size="12.5">cnm consent approve</text>
+      <text x="840" y="280" text-anchor="middle" fill="#94a3c4" font-size="12.5">console Actions (wallet) or cnm</text>
       <line x1="840" y1="310" x2="494" y2="310" stroke="#58e6a8" stroke-width="1.6" marker-end="url(#arg)"/>
       <text x="502" y="302" fill="#58e6a8">⑤ task-consent/decision · approved (B's own key)</text>
       <line x1="140" y1="360" x2="486" y2="360" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
-      <text x="152" y="352" fill="#e8edf7">⑥ the same acl/grant, sent again</text>
+      <text x="152" y="352" fill="#e8edf7">⑥ VTC runs the stored acl/grant</text>
       <rect x="360" y="376" width="260" height="58" rx="8" fill="#0d1322" stroke="#58e6a8"/>
       <text x="490" y="396" text-anchor="middle" fill="#58e6a8" font-size="12.5">B still unrestricted? threshold met?</text>
       <text x="490" y="412" text-anchor="middle" fill="#58e6a8" font-size="12.5">entry unchanged? → write, spend once</text>
-      <text x="490" y="428" text-anchor="middle" fill="#647196" font-size="11.5">pending 15 min · granted approval 10 min</text>
+      <text x="490" y="428" text-anchor="middle" fill="#647196" font-size="11.5">action lifetime 72 h by default · runs at most once</text>
     </g>
   </svg>
   </div>
@@ -491,7 +491,7 @@ co_admin_did = "did:webvh:…:bob"</pre>
       <div class="num">6</div>
       <div><span class="who">Alice · cnm</span>
         <h4>Make sure an approver can sign</h4>
-        <p>Approvals are signed by the admin DID's own key, never a console key. Today only <code>cnm consent approve</code> signs them, and only with a <code>did:key</code>. Bob's wallet <code>did:webvh</code> can't sign an approval yet, so give Alice's <code>cnm</code> Client DID its own unrestricted admin row (see the bootstrap runbook).</p>
+        <p>Approvals are signed by the admin DID's own key, never a console key. In the console the browser wallet signs them; an admin without a wallet uses <code>cnm consent approve --action</code>, which needs the <code>cnm</code> Client DID to have its own unrestricted admin row (see the bootstrap runbook). A passkey can be added as an extra factor, never instead of the signature.</p>
       </div>
     </div>
 
@@ -500,12 +500,12 @@ co_admin_did = "did:webvh:…:bob"</pre>
       <div><span class="who">Bob proposes · Alice approves</span>
         <h4>A third admin, entirely online</h4>
         <ol>
-          <li>Bob makes Carol unrestricted in the console and confirms with his passkey. The VTC answers <i>"another unrestricted administrator has to approve this first"</i>.</li>
-          <li>Bob passes the refusal on. Alice checks and approves:</li>
+          <li>Bob makes Carol unrestricted in the console and confirms with his passkey. The console shows <i>"Sent for approval — 1 of 1 must approve within 72 hours"</i>.</li>
+          <li>Alice sees it under <b>Actions → Waiting for me</b> and approves with her wallet, or from <code>cnm</code>:</li>
         </ol>
-        <pre>cnm consent show    refusal.json
-cnm consent approve refusal.json   # type Bob's match code</pre>
-        <ol start="3"><li>Bob sends the same operation again. Carol has her row, and repeats steps 4–5 for herself.</li></ol>
+        <pre>cnm actions list --view waiting
+cnm consent approve --action &lt;actionId&gt;</pre>
+        <ol start="3"><li>Alice's approval runs Bob's stored operation. Carol has her row, and repeats steps 4–5 for herself.</li></ol>
       </div>
     </div>
   </div>
@@ -514,14 +514,14 @@ cnm consent approve refusal.json   # type Bob's match code</pre>
 <!-- ── 7. Gaps ──────────────────────────────────────────── -->
 <section id="gaps"><div class="wrap">
   <p class="kicker">07 · Known gaps</p>
-  <h2>What wallet administrators can't do yet</h2>
+  <h2>What isn't built yet</h2>
   <div class="grid-3">
     <div class="card top warn"><span class="lbl">Step-up</span><h3>Needs a VTC passkey</h3><p>Workaround: step 5. Using the plugin's approver identity as the factor is designed in <code>vtc-approver-step-up.md</code> and waits on spec changes.</p></div>
-    <div class="card top warn"><span class="lbl">Approvals</span><h3>Can't sign consent</h3><p><code>cnm consent</code> signs only with a <code>did:key</code>, and the console has no approval screen.</p></div>
+    <div class="card top warn"><span class="lbl">Removal</span><h3>No cooling-off yet</h3><p>With two unrestricted admins, either can remove the other on their own step-up (audited <code>Critical</code>). The 24 h cooling-off comes in the next phase.</p></div>
     <div class="card top warn"><span class="lbl">Install</span><h3>No wallet-only founder</h3><p>The install claim can't yet be made under an existing DID. That is a planned version of <code>vtc/install/claim</code>.</p></div>
   </div>
 
-  <h3 style="margin-top:40px">Three holes in today's protections</h3>
+  <h3 style="margin-top:40px">Three holes, now closed</h3>
   <p style="color:var(--muted);max-width:74ch;margin:6px 0 18px">Found by a survey of every VTC operation on 2 October 2026. Together they let one compromised unrestricted admin get round the second-admin rule: remove the others, lower the threshold, then promote at will.</p>
   <div class="grid-3">
     <div class="card top hard"><span class="lbl">Hole 1</span><h3>Stripping the other admins</h3><p><code>acl/revoke</code>, demoting with <code>acl/change-role</code>, and <code>members/admin-remove</code> need no second admin. One admin can remove every other admin except the last.</p></div>
@@ -597,7 +597,7 @@ cnm consent approve refusal.json   # type Bob's match code</pre>
 
   <!-- action list -->
   <h3 style="margin-top:48px">The action list: N-of-M approvals that complete themselves</h3>
-  <p style="color:var(--muted);max-width:76ch;margin:6px 0 18px">Designed in <code>docs/05-design-notes/vtc-action-list.md</code> (proposed). An operation that needs other admins' agreement is <b>parked</b> as an action instead of refused. Approvers find it in the console whenever they next sign in. When N of them have approved, the VTC re-checks everything and runs it, and it disappears from everyone else's list.</p>
+  <p style="color:var(--muted);max-width:76ch;margin:6px 0 18px">Closed: each now needs other admins' agreement, as an action (<code>docs/05-design-notes/vtc-action-list.md</code>, phase A1 built). An operation that needs other admins' agreement is <b>parked</b> as an action instead of refused. Approvers find it in the console whenever they next sign in. When N of them have approved, the VTC re-checks everything and runs it, and it disappears from everyone else's list.</p>
 
   <div class="diagram">
   <svg viewBox="0 0 980 250" role="img" aria-label="Action lifecycle">
@@ -756,11 +756,11 @@ cnm consent approve refusal.json   # type Bob's match code</pre>
     <table>
       <tbody>
         <tr><td>add a scoped admin</td><td>Access control → Add entry → contexts set → your passkey</td></tr>
-        <tr><td>add an unrestricted admin (2+ admins)</td><td>Same, contexts blank → another admin approves → send it again</td></tr>
+        <tr><td>add an unrestricted admin (2+ admins)</td><td>Same, contexts blank → it waits in Actions → another admin approves and it runs</td></tr>
         <tr><td>add an unrestricted admin (the only admin)</td><td><code>vtc acl add --did … --role admin</code>, daemon stopped</td></tr>
         <tr><td>give an existing admin a passkey</td><td>Access control → Admin invites → Invite admin</td></tr>
         <tr><td>give a member a step-up passkey</td><td>Members → member → Step-up passkeys → Invite…</td></tr>
-        <tr><td>approve a promotion</td><td><code>cnm consent show</code> / <code>approve</code> on the relayed refusal</td></tr>
+        <tr><td>approve a promotion</td><td>Actions → Waiting for me → Approve, or <code>cnm consent approve --action &lt;actionId&gt;</code></td></tr>
         <tr><td>require two approvers</td><td><code>acl.unrestricted_admin_consent_threshold = 2</code> (needs 3+ unrestricted admins)</td></tr>
         <tr><td>see offline writes</td><td>Audit trail → <code>AclBreakGlassWritten</code></td></tr>
       </tbody>

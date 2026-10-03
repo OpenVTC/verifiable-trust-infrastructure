@@ -25,7 +25,6 @@ use super::signed::{post, signed};
 use super::webauthn_harness::SoftEd25519Authenticator;
 
 const APPROVE_RESPONSE: &str = "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
-const DECISION: &str = "https://trusttasks.org/spec/task-consent/decision/0.1";
 
 /// One soft authenticator holding every passkey it enrols.
 pub struct Gesturer {
@@ -86,6 +85,24 @@ impl Gesturer {
             .unwrap();
     }
 
+    /// An assertion by `did`'s enrolled passkey whose WebAuthn challenge is
+    /// exactly `challenge` — the shape `task-consent/decision/0.2`'s `webauthn`
+    /// evidence carries.
+    pub async fn assert_over(&mut self, vtc: &TestVtc, challenge: &[u8]) -> Value {
+        use base64::Engine as _;
+        let origin = origin(vtc).await;
+        let webauthn = build_webauthn(&origin).unwrap();
+        let passkeys = vti_common::auth::passkey::store::get_all_passkeys(&vtc.state.passkey_ks)
+            .await
+            .unwrap();
+        let (rcr, _) = webauthn.start_passkey_authentication(&passkeys).unwrap();
+        let mut v = serde_json::to_value(&rcr).unwrap();
+        v["publicKey"]["challenge"] =
+            json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(challenge));
+        let rcr: RequestChallengeResponse = serde_json::from_value(v).unwrap();
+        assertion(&self.authenticator.authenticate(&rcr, &origin))
+    }
+
     /// Answer the step-up refusal `refusal` (the whole reply document) with
     /// `requester`'s passkey.
     pub async fn gesture(&mut self, vtc: &TestVtc, requester: &Party, refusal: &Value) {
@@ -110,9 +127,12 @@ impl Gesturer {
         assert_eq!(ack["payload"]["status"], "recorded", "{ack}");
     }
 
-    /// Send `doc` again and again, answering each step-up with `requester`'s
-    /// passkey and each consent request with every one of `approvers`, until the
-    /// reply asks for neither. The final reply.
+    /// Send `doc`, answering each step-up with `requester`'s passkey, until it
+    /// is either answered or parked as an action. Parked, it is approved by
+    /// each of `approvers` in turn until it closes, and the reply returned is
+    /// the operation's own, as the requester reads it back from the action:
+    /// `#response` with the executed payload when it completed, a
+    /// `trust-task-error`-shaped refusal when it failed (VTI-APV-017).
     pub async fn send_through(
         &mut self,
         vtc: &TestVtc,
@@ -126,19 +146,125 @@ impl Gesturer {
                 self.gesture(vtc, requester, &reply).await;
                 continue;
             }
-            if let Some(details) = consent_details(&reply) {
+            if let Some(action_id) = parked_action(&reply) {
                 assert!(
                     !approvers.is_empty(),
-                    "consent asked and nobody to give it: {reply}"
+                    "parked for approval and nobody to give it: {reply}"
                 );
                 for approver in approvers {
-                    decide(vtc, approver, &details, "approve").await;
+                    let (_, shown) = show_action(vtc, approver, &action_id).await;
+                    if shown["payload"]["action"]["status"] != "open" {
+                        break;
+                    }
+                    let (status, ack) = decide(vtc, approver, &action_id, "approve").await;
+                    assert_eq!(status, StatusCode::OK, "approval refused: {ack}");
                 }
-                continue;
+                return outcome_of(vtc, requester, &action_id, doc).await;
             }
             return (status, reply);
         }
         panic!("the gate never settled for {doc}");
+    }
+}
+
+const NEXT_STEP: &str = "https://trusttasks.org/spec/trust-task-next-step/0.1";
+const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.1";
+const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
+
+/// The action a `trust-task-next-step/0.1` reply parked the operation as.
+pub fn parked_action(reply: &Value) -> Option<String> {
+    (reply["type"] == NEXT_STEP)
+        .then(|| reply["payload"]["expects"][0]["hint"]["actionId"].as_str())
+        .flatten()
+        .map(str::to_string)
+}
+
+async fn recipient(vtc: &TestVtc) -> String {
+    vtc.state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .unwrap_or_else(|| vtc_service::test_support::TEST_VTC_DID.to_string())
+}
+
+/// `vtc/admin/actions/show/0.1` as `who`: the whole reply.
+pub async fn show_action(vtc: &TestVtc, who: &Party, action_id: &str) -> (StatusCode, Value) {
+    let doc = super::signed::signed_to(
+        who,
+        &recipient(vtc).await,
+        SHOW,
+        json!({ "actionId": action_id }),
+    )
+    .await;
+    post(vtc, &doc).await
+}
+
+/// The decision payload `approver` sends on `action` (as `show` gave it to
+/// them): their own challenge, and the digest salted with it.
+pub fn decision_payload(action: &Value, decision: &str) -> Value {
+    let challenge = action["challenge"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no challenge for this caller: {action}"));
+    let wire = vti_common::task_consent::wire_digest(
+        action["typeUri"].as_str().unwrap(),
+        &action["payload"],
+        challenge,
+    )
+    .unwrap();
+    json!({
+        "challenge": challenge,
+        "payloadDigest": wire,
+        "decision": decision,
+        "actionId": action["actionId"],
+    })
+}
+
+/// `approver`'s `task-consent/decision/0.2` on `action_id`, read off `show`.
+pub async fn decide(
+    vtc: &TestVtc,
+    approver: &Party,
+    action_id: &str,
+    decision: &str,
+) -> (StatusCode, Value) {
+    let (_, shown) = show_action(vtc, approver, action_id).await;
+    let payload = decision_payload(&shown["payload"]["action"], decision);
+    let doc =
+        super::signed::signed_to(approver, &recipient(vtc).await, DECISION_V0_2, payload).await;
+    post(vtc, &doc).await
+}
+
+/// What the requester reads back once their action has closed, shaped as the
+/// operation's own reply would have been.
+async fn outcome_of(
+    vtc: &TestVtc,
+    requester: &Party,
+    action_id: &str,
+    doc: &Value,
+) -> (StatusCode, Value) {
+    let (_, shown) = show_action(vtc, requester, action_id).await;
+    let action = &shown["payload"]["action"];
+    let type_uri = doc["type"].as_str().unwrap_or_default();
+    match action["status"].as_str() {
+        Some("completed") => (
+            StatusCode::OK,
+            json!({
+                "type": format!("{type_uri}#response"),
+                "payload": action["ext"]["org.openvtc"]["result"],
+            }),
+        ),
+        _ => (
+            StatusCode::CONFLICT,
+            json!({
+                "type": "https://trusttasks.org/spec/trust-task-error/0.5",
+                "payload": {
+                    "code": "taskFailed",
+                    "message": action["ext"]["org.openvtc"]["closedMessage"],
+                    "details": { "action": action },
+                },
+            }),
+        ),
     }
 }
 
@@ -204,32 +330,6 @@ pub fn step_up_request(reply: &Value) -> Option<&Value> {
     reply["payload"]["details"]
         .get("stepUpRequest")
         .filter(|r| r.is_object())
-}
-
-/// The `auth:consent_required` refusal's details, if this is one.
-pub fn consent_details(reply: &Value) -> Option<Value> {
-    let details = &reply["payload"]["details"];
-    (details["reason"] == "auth:consent_required").then(|| details.clone())
-}
-
-/// `approver`'s `task-consent/decision/0.1` on the request `details` names.
-pub async fn decide(
-    vtc: &TestVtc,
-    approver: &Party,
-    details: &Value,
-    decision: &str,
-) -> (StatusCode, Value) {
-    let doc = signed(
-        approver,
-        DECISION,
-        json!({
-            "challenge": details["challenge"],
-            "payloadDigest": details["payloadDigest"],
-            "decision": decision,
-        }),
-    )
-    .await;
-    post(vtc, &doc).await
 }
 
 fn options(request: &Value) -> RequestChallengeResponse {
