@@ -16,7 +16,7 @@
 import { Link } from "react-router-dom";
 import { ShieldAlert, Siren } from "lucide-react";
 
-import type { CoolingOffAgainstMe } from "@/lib/actions-api";
+import { landsIn, type CoolingOffAgainstMe } from "@/lib/actions-api";
 import { actionPath } from "@/lib/parked-action";
 import { formatIso, shortenDid } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
@@ -62,7 +62,7 @@ export function CoolingOffBanner({ items }: { items: readonly CoolingOffAgainstM
             </strong>
             <span>
               {who} has asked to reduce your authority. It takes effect at{" "}
-              {formatIso(c.landsAt)} unless they cancel it.
+              {formatIso(c.landsAt)} ({landsIn(c.landsAt)}) unless they cancel it.
             </span>
             <Link to={actionPath(c.actionId)}>View the action</Link>
           </div>

@@ -21,8 +21,22 @@
 /** The `type` of the VTC's reply to a parked act. */
 export const NEXT_STEP_TYPE = "https://trusttasks.org/spec/trust-task-next-step/0.1";
 
-/** The task the next-step reply names as what to do next. */
-export const ACTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/admin/actions/show/0.1";
+/** The task the next-step reply names as what to do next — and the one this
+ *  console reads an action with. */
+export const ACTIONS_SHOW_TASK = "https://trusttasks.org/spec/vtc/admin/actions/show/0.2";
+
+/**
+ * Whether `typeUri` is `vtc/admin/actions/show` at a version whose next-step
+ * hint names an action the same way: 0.2, or the 0.1 an older VTC still names.
+ * Only *recognised* here — the console never sends 0.1 — so the older URI is
+ * matched by shape rather than kept as a bound literal.
+ */
+export function isActionsShowTask(typeUri: unknown): boolean {
+  return (
+    typeof typeUri === "string" &&
+    (typeUri === ACTIONS_SHOW_TASK || typeUri === ACTIONS_SHOW_TASK.replace(/\/0\.2$/, "/0.1"))
+  );
+}
 
 /** Where the console shows one action. */
 export function actionPath(actionId: string): string {
@@ -135,7 +149,7 @@ export function parkedActionFromDocument(doc: unknown): ParkedAction | null {
   const p = (d.payload ?? {}) as NextStepPayload;
   const ext = p.ext?.["org.openvtc"] ?? {};
   const expected = Array.isArray(p.expects)
-    ? p.expects.find((e) => e?.typeUri === ACTIONS_SHOW_TASK)
+    ? p.expects.find((e) => isActionsShowTask(e?.typeUri))
     : undefined;
   const actionId = str(ext.actionId) ?? str(expected?.hint?.actionId);
   if (!actionId) return null;

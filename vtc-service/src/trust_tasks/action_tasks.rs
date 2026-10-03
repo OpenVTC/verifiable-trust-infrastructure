@@ -1,5 +1,5 @@
 //! The administrator action list on the signed-document spine —
-//! `vtc/admin/actions/{list,show,cancel,acknowledge}/0.1` — and the
+//! `vtc/admin/actions/{list,show,cancel,acknowledge}` at 0.1 and 0.2 — and the
 //! `task-consent/decision` (0.1, 0.2) that completes a parked operation on its
 //! N-th approval (`docs/05-design-notes/vtc-action-list.md`, VTI-APV-017).
 //!
@@ -8,13 +8,21 @@
 //! acting for its administrator. A decision may not: it is the approver's own
 //! attestation, and the spine refuses one signed by a delegated key before it
 //! reaches [`handle_decision`].
+//!
+//! **Both versions are served.** Their request payloads and error codes are
+//! the same; they differ in the `_shared` Action they answer with
+//! ([`admin_actions::WireVersion`]). 0.2 represents a cooling-off in the
+//! schema's own terms (category `coolingOff`, `landsAt`, `cancellableBy`,
+//! `landedAfterCoolingOff`, `callerRole: subject`); 0.1 keeps answering as it
+//! always did, with the cooling-off in `ext["org.openvtc"].coolingOff`.
 
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::task_consent::decision::v0_2 as decision;
 use trust_tasks_rs::specs::trust_task_next_step::v0_1 as next_step;
 use trust_tasks_rs::specs::vtc::admin::actions::{
-    acknowledge::v0_1 as acknowledge, cancel::v0_1 as cancel, list::v0_1 as list,
-    show::v0_1 as show,
+    acknowledge::v0_1 as acknowledge, acknowledge::v0_2 as acknowledge_v0_2,
+    cancel::v0_1 as cancel, cancel::v0_2 as cancel_v0_2, list::v0_1 as list,
+    list::v0_2 as list_v0_2, show::v0_1 as show, show::v0_2 as show_v0_2,
 };
 use trust_tasks_rs::{Payload, StandardCode, TrustTask, TrustTaskCode};
 use vti_common::auth::extractor::AuthClaims;
@@ -22,7 +30,7 @@ use vti_common::auth::extractor::AuthClaims;
 use super::helpers::{app_error_to_reject, extended_code, reject_with_code, success_response};
 use super::{JoinAuthCtx, TrustTaskOutcome, admin_signer, parse_spec_payload};
 use crate::admin_actions::{
-    self, AcknowledgeError, CancelError, Decided, DecisionError, DecisionInput, View,
+    self, AcknowledgeError, CancelError, Decided, DecisionError, DecisionInput, View, WireVersion,
 };
 use crate::server::AppState;
 
@@ -30,12 +38,25 @@ pub(crate) const LIST_TYPE: &str = <list::Payload as Payload>::TYPE_URI;
 pub(crate) const SHOW_TYPE: &str = <show::Payload as Payload>::TYPE_URI;
 pub(crate) const CANCEL_TYPE: &str = <cancel::Payload as Payload>::TYPE_URI;
 pub(crate) const ACKNOWLEDGE_TYPE: &str = <acknowledge::Payload as Payload>::TYPE_URI;
+pub(crate) const LIST_V0_2_TYPE: &str = <list_v0_2::Payload as Payload>::TYPE_URI;
+pub(crate) const SHOW_V0_2_TYPE: &str = <show_v0_2::Payload as Payload>::TYPE_URI;
+pub(crate) const CANCEL_V0_2_TYPE: &str = <cancel_v0_2::Payload as Payload>::TYPE_URI;
+pub(crate) const ACKNOWLEDGE_V0_2_TYPE: &str = <acknowledge_v0_2::Payload as Payload>::TYPE_URI;
 /// `trust-task-next-step/0.1` — the answer to a parked operation.
 pub(crate) const NEXT_STEP_TYPE: &str = <next_step::Payload as Payload>::TYPE_URI;
 
 /// Every URI this module routes (the decision versions are routed by the
 /// dispatcher itself, beside them).
-pub(crate) const URIS: &[&str] = &[LIST_TYPE, SHOW_TYPE, CANCEL_TYPE, ACKNOWLEDGE_TYPE];
+pub(crate) const URIS: &[&str] = &[
+    LIST_TYPE,
+    SHOW_TYPE,
+    CANCEL_TYPE,
+    ACKNOWLEDGE_TYPE,
+    LIST_V0_2_TYPE,
+    SHOW_V0_2_TYPE,
+    CANCEL_V0_2_TYPE,
+    ACKNOWLEDGE_V0_2_TYPE,
+];
 
 pub(super) async fn dispatch(
     state: &AppState,
@@ -44,10 +65,14 @@ pub(super) async fn dispatch(
     type_uri: &str,
 ) -> Option<TrustTaskOutcome> {
     Some(match type_uri {
-        LIST_TYPE => handle_list(state, ctx, doc).await,
-        SHOW_TYPE => handle_show(state, ctx, doc).await,
-        CANCEL_TYPE => handle_cancel(state, ctx, doc).await,
-        ACKNOWLEDGE_TYPE => handle_acknowledge(state, ctx, doc).await,
+        LIST_TYPE => handle_list(state, ctx, doc, WireVersion::V0_1).await,
+        SHOW_TYPE => handle_show(state, ctx, doc, WireVersion::V0_1).await,
+        CANCEL_TYPE => handle_cancel(state, ctx, doc, WireVersion::V0_1).await,
+        ACKNOWLEDGE_TYPE => handle_acknowledge(state, ctx, doc, WireVersion::V0_1).await,
+        LIST_V0_2_TYPE => handle_list(state, ctx, doc, WireVersion::V0_2).await,
+        SHOW_V0_2_TYPE => handle_show(state, ctx, doc, WireVersion::V0_2).await,
+        CANCEL_V0_2_TYPE => handle_cancel(state, ctx, doc, WireVersion::V0_2).await,
+        ACKNOWLEDGE_V0_2_TYPE => handle_acknowledge(state, ctx, doc, WireVersion::V0_2).await,
         _ => return None,
     })
 }
@@ -85,11 +110,13 @@ async fn administrator(
     Ok((claims, observer))
 }
 
-/// `vtc/admin/actions/list/0.1`.
+/// `vtc/admin/actions/list/0.1` and `/0.2` — one request payload, two
+/// Action shapes. The 0.1 payload type parses both: the request is unchanged.
 async fn handle_list(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    version: WireVersion,
 ) -> TrustTaskOutcome {
     use list::error_codes as codes;
     let (caller, unrestricted) =
@@ -141,13 +168,21 @@ async fn handle_list(
         }
     };
     let limit = usize::try_from(payload.limit.get()).unwrap_or(100).min(100);
-    let page =
-        match admin_actions::list(state, &caller.did, unrestricted, view, since, offset, limit)
-            .await
-        {
-            Ok(p) => p,
-            Err(e) => return app_error_to_reject(&doc, &e),
-        };
+    let page = match admin_actions::list(
+        state,
+        &caller.did,
+        unrestricted,
+        view,
+        since,
+        offset,
+        limit,
+        version,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => return app_error_to_reject(&doc, &e),
+    };
     let mut response = json!({
         "actions": page.actions,
         "counts": {
@@ -175,6 +210,7 @@ async fn handle_show(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    version: WireVersion,
 ) -> TrustTaskOutcome {
     use show::error_codes as codes;
     let (caller, unrestricted) =
@@ -186,7 +222,15 @@ async fn handle_show(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    match admin_actions::show(state, &caller.did, unrestricted, payload.action_id.as_str()).await {
+    match admin_actions::show(
+        state,
+        &caller.did,
+        unrestricted,
+        payload.action_id.as_str(),
+        version,
+    )
+    .await
+    {
         Ok(Some(action)) => success_response(&doc, json!({ "action": action })),
         // Absent and not the caller's to see answer alike.
         Ok(None) => refuse(&doc, codes::NOT_FOUND.code, "no such action"),
@@ -200,6 +244,7 @@ async fn handle_cancel(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    version: WireVersion,
 ) -> TrustTaskOutcome {
     use cancel::error_codes as codes;
     let (caller, unrestricted) = match administrator(
@@ -229,7 +274,7 @@ async fn handle_cancel(
     )
     .await
     {
-        Ok(rec) => match admin_actions::view_one(state, &caller.did, &rec).await {
+        Ok(rec) => match admin_actions::view_one(state, &caller.did, &rec, version).await {
             Ok(action) => success_response(&doc, json!({ "action": action })),
             Err(e) => app_error_to_reject(&doc, &e),
         },
@@ -254,6 +299,7 @@ async fn handle_acknowledge(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
+    version: WireVersion,
 ) -> TrustTaskOutcome {
     use acknowledge::error_codes as codes;
     let (caller, unrestricted) = match administrator(state, ctx, &doc, codes::NOT_FOUND.code).await
@@ -268,7 +314,7 @@ async fn handle_acknowledge(
     match admin_actions::acknowledge(state, &caller.did, unrestricted, payload.action_id.as_str())
         .await
     {
-        Ok(rec) => match admin_actions::view_one(state, &caller.did, &rec).await {
+        Ok(rec) => match admin_actions::view_one(state, &caller.did, &rec, version).await {
             Ok(action) => success_response(&doc, json!({ "action": action })),
             Err(e) => app_error_to_reject(&doc, &e),
         },

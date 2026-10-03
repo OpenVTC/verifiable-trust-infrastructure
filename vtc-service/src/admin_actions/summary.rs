@@ -53,7 +53,7 @@ pub const KIND_INVITE_CREATE: &str = "admin.invite.create";
 /// An operator's offline write, raised for acknowledgement (VTI-VTC-023).
 pub const KIND_OPERATOR_WRITE: &str = "operator.offlineWrite";
 
-pub(crate) const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 const ACL_UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
 const ACL_CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 pub(crate) const ACL_REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
@@ -61,9 +61,10 @@ const ACL_GRANT_V0_2: &str = "https://trusttasks.org/spec/acl/grant/0.2";
 const ACL_UPDATE_V0_2: &str = "https://trusttasks.org/spec/acl/update/0.2";
 const ACL_CHANGE_ROLE_V0_2: &str = "https://trusttasks.org/spec/acl/change-role/0.2";
 const ACL_REVOKE_V0_2: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
-pub(crate) const APPROVER_INVITE: &str =
-    "https://trusttasks.org/spec/auth/step-up/approver/invite/0.1";
-const EMERGENCY_BOOTSTRAP: &str = super::OPERATOR_EMERGENCY_BOOTSTRAP_URI;
+/// `vtc/operator/offline-write/0.1` — the record type an operator's offline
+/// write is named by (VTI-VTC-023). Never sent; see
+/// [`super::OPERATOR_OFFLINE_WRITE_URI`].
+const OFFLINE_WRITE: &str = super::OPERATOR_OFFLINE_WRITE_URI;
 const ACL_MIGRATION: &str = super::OPERATOR_ACL_MIGRATION_URI;
 const INVITES_CREATE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
@@ -99,9 +100,9 @@ const ACL_MIGRATION_EFFECT: &str = "This VTC ran {command} when it started on {h
                                     is already in effect: acknowledging records that you have \
                                     seen it, and changes nothing. Re-grant anyone who should keep \
                                     authority with acl/update.";
-const OPERATOR_EFFECT: &str = "Written with {command} on {host} at {at}, while the service was \
-                               stopped. It is already in effect: acknowledging records that you \
-                               have seen it, and changes nothing.";
+const OPERATOR_EFFECT: &str = "Written at {at}, while the service was stopped. It is already in \
+                               effect: acknowledging records that you have seen it, and changes \
+                               nothing.";
 
 /// Every template this build renders.
 pub const TEMPLATES: &[Template] = &[
@@ -309,51 +310,14 @@ pub const TEMPLATES: &[Template] = &[
     },
     Template {
         kind: KIND_OPERATOR_WRITE,
-        type_uri: ACL_GRANT,
-        title: "The operator gave {subject} the {role} role offline",
-        effect: OPERATOR_EFFECT,
-        fields: &[
-            f("subject", "/entry/subject", "did"),
-            f("role", "/entry/role", "text"),
-            f("scopes", "/entry/scopes", "capabilityList"),
-            f("command", "/command", "text"),
-            f("host", "/operatorHost", "text"),
-            f("at", "/invokedAt", "datetime"),
-        ],
-    },
-    Template {
-        kind: KIND_OPERATOR_WRITE,
-        type_uri: ACL_REVOKE,
-        title: "The operator removed {subject}'s access offline",
-        effect: OPERATOR_EFFECT,
-        fields: &[
-            f("subject", "/entry/subject", "did"),
-            f("command", "/command", "text"),
-            f("host", "/operatorHost", "text"),
-            f("at", "/invokedAt", "datetime"),
-        ],
-    },
-    Template {
-        kind: KIND_OPERATOR_WRITE,
-        type_uri: APPROVER_INVITE,
-        title: "The operator issued a step-up approver invite for {subject} offline",
-        effect: OPERATOR_EFFECT,
-        fields: &[
-            f("subject", "/entry/subject", "did"),
-            f("command", "/command", "text"),
-            f("host", "/operatorHost", "text"),
-            f("at", "/invokedAt", "datetime"),
-        ],
-    },
-    Template {
-        kind: KIND_OPERATOR_WRITE,
-        type_uri: EMERGENCY_BOOTSTRAP,
-        title: "The operator ran an emergency bootstrap and replaced every administrator",
+        type_uri: OFFLINE_WRITE,
+        title: "The operator ran {command} on {host}, changing access for {dids}",
         effect: OPERATOR_EFFECT,
         fields: &[
             f("command", "/command", "text"),
-            f("host", "/operatorHost", "text"),
-            f("at", "/invokedAt", "datetime"),
+            f("dids", "/dids", "capabilityList"),
+            f("host", "/host", "text"),
+            f("at", "/at", "datetime"),
         ],
     },
     Template {
@@ -473,23 +437,8 @@ pub const PINNED: &[(&str, &str, &str)] = &[
     ),
     (
         KIND_OPERATOR_WRITE,
-        ACL_GRANT,
-        "zQmPBTVVVBZgfZafx5347YBELteEgvumprYp1wVEFQ8GJmJ",
-    ),
-    (
-        KIND_OPERATOR_WRITE,
-        ACL_REVOKE,
-        "zQmSTfE5673DiE2CNEnkmq5StjrQcQHMEm3JVEvc3rfqNAs",
-    ),
-    (
-        KIND_OPERATOR_WRITE,
-        APPROVER_INVITE,
-        "zQmaRsraYXDuqh9P397D4F9dAHQAwsdwKmM9A6Kh4yVEAVx",
-    ),
-    (
-        KIND_OPERATOR_WRITE,
-        EMERGENCY_BOOTSTRAP,
-        "zQmW9QyZwNvMYHenHrcAeaRB5ZRcz2Nz2A2w5JqrWb7qFEp",
+        OFFLINE_WRITE,
+        "zQmQZTPg2MeWt1C8oAvoLMGJNY9DpxvB6bRjvQwJT7ns9Ah",
     ),
     (
         KIND_OPERATOR_WRITE,

@@ -23,6 +23,7 @@ use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use vtc_service::admin_actions::ActionRecord;
 use vtc_service::admin_actions::codes::*;
 use vtc_service::ceremony::authority_reduced_notice::sent_for_test as notices;
+use vtc_service::ceremony::authority_reduction_pending_notice::sent_for_test as pending_notices;
 use vtc_service::members::{Member, store_member};
 use vtc_service::test_support::TestVtc;
 
@@ -49,7 +50,13 @@ const CANCEL: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1";
 const ACKNOWLEDGE: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.1";
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 const ATTEST: &str = "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1";
-const APPROVER_INVITE: &str = "https://trusttasks.org/spec/auth/step-up/approver/invite/0.1";
+const LIST_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
+const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.2";
+const CANCEL_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2";
+const ACKNOWLEDGE_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2";
+/// The record type an operator's offline write is named by (VTI-VTC-023).
+const OFFLINE_WRITE: &str = "https://trusttasks.org/spec/vtc/operator/offline-write/0.1";
+const UPSERT: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const COOLING_OFF_KEY: &str = "acl.removal_cooling_off";
 
 struct Fixture {
@@ -159,6 +166,29 @@ async fn list(fix: &Fixture, who: &Party, view: &str) -> Value {
     let (status, reply) = post(&fix.vtc, &signed(who, LIST, json!({ "view": view })).await).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_conforms(LIST, &reply);
+    reply["payload"].clone()
+}
+
+/// `vtc/admin/actions/show/0.2` as `who`: the action, held to the 0.2 schema.
+async fn action_v0_2(fix: &Fixture, who: &Party, id: &str) -> Value {
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(who, SHOW_V0_2, json!({ "actionId": id })).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_conforms(SHOW_V0_2, &reply);
+    reply["payload"]["action"].clone()
+}
+
+async fn list_v0_2(fix: &Fixture, who: &Party, view: &str) -> Value {
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(who, LIST_V0_2, json!({ "view": view })).await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_conforms(LIST_V0_2, &reply);
     reply["payload"].clone()
 }
 
@@ -337,25 +367,43 @@ async fn vti_vtc_023_every_offline_writer_raises_an_acknowledge_item() {
             item["summary"]["fields"]["command"]["value"],
             item["payload"]["command"]
         );
+        // Named by the record type, with the record as its payload — never a
+        // Trust Task it did not run (trust-tasks-tf #719).
+        assert_eq!(item["typeUri"], OFFLINE_WRITE, "{item}");
+        {
+            use trust_tasks_rs::validate::ValidatedPayload as _;
+            trust_tasks_rs::specs::vtc::operator::offline_write::v0_1::Payload::validate_value(
+                &item["payload"],
+            )
+            .unwrap_or_else(|e| panic!("not an offline-write record: {e}\n{item}"));
+        }
+        assert_eq!(
+            item["payload"]["host"].as_str().map(str::is_empty),
+            Some(false)
+        );
         commands.push(item["payload"]["command"].as_str().unwrap());
-        let expected_type = match item["payload"]["command"].as_str().unwrap() {
-            "vtc acl remove" => REVOKE,
-            "vtc admin enrol-approver" => APPROVER_INVITE,
-            _ => GRANT,
-        };
-        assert_eq!(item["typeUri"], expected_type);
     }
     commands.sort_unstable();
     assert_eq!(
         commands,
         [
-            "vtc acl add",
-            "vtc acl remove",
-            "vtc admin enrol-approver",
-            "vtc admin invite",
-            "vtc create-did-key --admin",
+            "aclAdd",
+            "aclRemove",
+            "adminInvite",
+            "createDidKeyAdmin",
+            "enrolApprover",
         ]
     );
+    // Each names the DID it changed.
+    let removed = items
+        .iter()
+        .find(|i| i["payload"]["command"] == "aclRemove")
+        .unwrap();
+    assert_eq!(removed["payload"]["dids"], json!([x4.did]));
+    // 0.2 renders the same item; acknowledging there answers a 0.2 Action.
+    let shown = action_v0_2(&fix, &a, removed["actionId"].as_str().unwrap()).await;
+    assert_eq!(shown["category"], "acknowledge");
+    assert_eq!(shown["typeUri"], OFFLINE_WRITE);
 
     // `a` acknowledges one: recorded, still open for the scoped admin.
     let id = items[0]["actionId"].as_str().unwrap().to_string();
@@ -373,8 +421,13 @@ async fn vti_vtc_023_every_offline_writer_raises_an_acknowledge_item() {
         Some(ACKNOWLEDGE_ALREADY_ACKNOWLEDGED),
         "{again}"
     );
-    // The scoped admin completes it.
-    let (_, reply) = acknowledge(&fix, &scoped, &id).await;
+    // The scoped admin completes it, at 0.2.
+    let (_, reply) = post(
+        &fix.vtc,
+        &signed(&scoped, ACKNOWLEDGE_V0_2, json!({ "actionId": id })).await,
+    )
+    .await;
+    assert_conforms(ACKNOWLEDGE_V0_2, &reply);
     let done = &reply["payload"]["action"];
     assert_eq!(done["status"], "completed", "{reply}");
     assert_eq!(done["closedReason"], "acknowledged");
@@ -427,6 +480,10 @@ async fn vti_vtc_023_an_emergency_bootstrap_is_acknowledged_by_the_new_administr
         .mark_emergency_pending(vtc_service::install::PendingEmergencyBootstrap {
             operator_hostname: "ops-host-1".into(),
             invoked_at: chrono::Utc::now(),
+            dids: vec![
+                "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".into(),
+                "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into(),
+            ],
         })
         .await
         .unwrap();
@@ -451,11 +508,16 @@ async fn vti_vtc_023_an_emergency_bootstrap_is_acknowledged_by_the_new_administr
     assert_eq!(items.len(), 1, "{page}");
     let item = &items[0];
     assert_eq!(item["category"], "acknowledge");
+    assert_eq!(item["typeUri"], OFFLINE_WRITE);
+    assert_eq!(item["payload"]["command"], "emergencyBootstrap");
+    assert_eq!(item["payload"]["host"], "ops-host-1");
     assert_eq!(
-        item["typeUri"],
-        "urn:openvtc:vtc:operator:emergency-bootstrap"
+        item["payload"]["dids"],
+        json!([
+            "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+        ])
     );
-    assert_eq!(item["payload"]["operatorHost"], "ops-host-1");
     assert_eq!(item["callerRole"], "acknowledger");
     let (_, reply) = acknowledge(&fix, &founder, item["actionId"].as_str().unwrap()).await;
     assert_eq!(reply["payload"]["action"]["status"], "completed", "{reply}");
@@ -463,6 +525,33 @@ async fn vti_vtc_023_an_emergency_bootstrap_is_acknowledged_by_the_new_administr
     // It stays in History.
     let history = list(&fix, &founder, "history").await;
     assert_eq!(history["actions"].as_array().unwrap().len(), 1);
+}
+
+/// `vtc/operator/offline-write/0.1` is a record type: an acknowledge item
+/// names it, nobody sends it. A document of that type, even from an
+/// administrator, is not dispatched — it answers `unsupportedType`, like every
+/// other embedded-only type.
+#[tokio::test]
+async fn an_offline_write_record_sent_on_its_own_is_unsupported() {
+    let fix = fixture().await;
+    let a = admin(&fix).await;
+    let (status, reply) = post(
+        &fix.vtc,
+        &signed(
+            &a,
+            OFFLINE_WRITE,
+            json!({
+                "command": "aclAdd",
+                "dids": [Party::new().did],
+                "host": "vtc-host-1",
+                "at": "2026-10-03T09:00:00Z",
+            }),
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK, "{reply}");
+    assert_eq!(error_code(&reply), Some("unsupportedType"), "{reply}");
 }
 
 // ─── VTI-APV-019: the authority-reduced notice ─────────────────────────────
@@ -624,6 +713,18 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
         "{reply}"
     );
     assert!(entry(&fix, &b.did).await.is_some(), "nothing removed yet");
+    // The subject is told now, before it lands — and nothing is reduced yet.
+    let pending = pending_notices(&b.did);
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0]["actionId"], id.as_str());
+    assert_eq!(pending[0]["code"], "revoked");
+    assert_eq!(pending[0]["previousRole"], "admin");
+    assert_eq!(pending[0]["decidedBy"], a.did.as_str());
+    assert!(pending[0]["landsAt"].is_string());
+    assert!(
+        notices(&b.did).is_empty(),
+        "the reduced notice waits for the landing"
+    );
 
     let mine = action(&fix, &a, &id).await;
     assert_eq!(mine["category"], "approval");
@@ -658,11 +759,61 @@ async fn vti_apv_019_a_two_admin_removal_cools_off_then_lands() {
         .unwrap();
     assert!(entry(&fix, &b.did).await.is_some());
 
+    // 0.2 says it in the schema's own terms (trust-tasks-tf #719): category
+    // `coolingOff`, `landsAt`, cancellable by the requester, no ext workaround.
+    let mine = action_v0_2(&fix, &a, &id).await;
+    assert_eq!(mine["category"], "coolingOff", "{mine}");
+    assert_eq!(mine["callerRole"], "requester");
+    assert_eq!(mine["cancellableBy"], "requester");
+    assert!(mine["landsAt"].is_string());
+    for absent in ["threshold", "expiresAt", "approversRemaining", "challenge"] {
+        assert!(mine.get(absent).is_none(), "{absent}: {mine}");
+    }
+    assert!(
+        mine["ext"]["org.openvtc"].get("coolingOff").is_none(),
+        "{mine}"
+    );
+    // The subject: `callerRole: subject`, in `all`, never in `waitingForMe`.
+    let seen = action_v0_2(&fix, &b, &id).await;
+    assert_eq!(seen["callerRole"], "subject", "{seen}");
+    assert!(seen.get("challenge").is_none());
+    let waiting = list_v0_2(&fix, &b, "waitingForMe").await;
+    assert_eq!(waiting["counts"]["waitingForMe"], 0);
+    assert!(
+        waiting["actions"].as_array().unwrap().is_empty(),
+        "{waiting}"
+    );
+    let all = list_v0_2(&fix, &b, "all").await;
+    assert!(
+        all["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["actionId"] == id.as_str() && x["callerRole"] == "subject"),
+        "{all}"
+    );
+
     land_now(&fix, &id).await;
     assert!(entry(&fix, &b.did).await.is_none(), "landed");
     let done = action(&fix, &a, &id).await;
     assert_eq!(done["status"], "completed", "{done}");
+    // 0.1 can only say `thresholdMet`; 0.2 says what happened.
     assert_eq!(done["closedReason"], "thresholdMet");
+    let landed = action_v0_2(&fix, &a, &id).await;
+    assert_eq!(landed["closedReason"], "landedAfterCoolingOff", "{landed}");
+    assert_eq!(landed["category"], "coolingOff");
+    assert!(landed.get("cancellableBy").is_none(), "closed: {landed}");
+    // The subject, removed, is no administrator any more; the requester's
+    // History keeps it.
+    let history = list_v0_2(&fix, &a, "history").await;
+    assert!(
+        history["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["actionId"] == id.as_str() && x["closedReason"] == "landedAfterCoolingOff"),
+        "{history}"
+    );
     assert!(
         done["ext"]["org.openvtc"]["closedMessage"]
             .as_str()
@@ -707,13 +858,20 @@ async fn vti_apv_019_the_requester_cancels_a_cooling_off() {
     );
     let (status, reply) = post(
         &fix.vtc,
-        &signed(&a, CANCEL, json!({ "actionId": id })).await,
+        &signed(&a, CANCEL_V0_2, json!({ "actionId": id })).await,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_conforms(CANCEL_V0_2, &reply);
+    assert_eq!(
+        reply["payload"]["action"]["closedReason"],
+        "cancelledByRequester"
+    );
     land_now(&fix, &id).await;
     assert!(entry(&fix, &b.did).await.is_some(), "nothing removed");
     assert_eq!(action(&fix, &a, &id).await["status"], "cancelled");
+    // Told it was coming; never told it landed, because it did not.
+    assert_eq!(pending_notices(&b.did).len(), 1);
     assert!(notices(&b.did).is_empty());
 }
 
@@ -963,6 +1121,116 @@ async fn an_interrupted_execution_is_reconciled_from_its_effect() {
     assert!(entry(&fix, &s1.did).await.is_none());
     assert_eq!(action(&fix, &a, &id2).await["status"], "completed");
     assert_eq!(action(&fix, &a, &id3).await["status"], "completed");
+}
+
+/// `policy/upsert` adds a revision and moves no state pin (only `activate`
+/// moves the active pointer the pin reads), so a crash between its write and
+/// its effect marker used to be reconciled `failed` although the revision was
+/// stored. The revision an execution writes is keyed by the action and the
+/// execution, so it is its own evidence: found, the action is `completed`;
+/// absent, `failed` (CLAUDE.md R2.1).
+#[tokio::test]
+async fn an_interrupted_policy_upsert_is_reconciled_from_its_revision() {
+    use vtc_service::policy::{Policy, PolicyPurpose, store_policy};
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let _b = admin(&fix).await;
+    let module = |name: &str| {
+        json!({
+            "name": name,
+            "module": "package vtc.removal\nimport rego.v1\n\
+                       default decision := {\"effect\": \"deny\", \"with\": {\"code\": \"frozen\"}}\n",
+            "ext": { "org.openvtc.purpose": "removal" },
+        })
+    };
+    // Its revision landed; the marker did not.
+    let written = park(&mut fix, &a, &signed(&a, UPSERT, module("written")).await).await;
+    // Interrupted before it wrote anything.
+    let unwritten = park(&mut fix, &a, &signed(&a, UPSERT, module("unwritten")).await).await;
+
+    let now = chrono::Utc::now().timestamp() as u64;
+    for id in [&written, &unwritten] {
+        let mut rec = record(&fix, id).await;
+        rec.status = vtc_service::admin_actions::Status::Executing;
+        rec.executing_since = Some(now);
+        rec.execution_id = Some(format!("exe-crashed-{id}"));
+        put_record(&fix, &rec).await;
+    }
+    let revision =
+        vtc_service::admin_actions::policy_revision_id(&written, &format!("exe-crashed-{written}"));
+    store_policy(
+        &fix.vtc.state.policies_ks,
+        &Policy {
+            id: revision,
+            purpose: PolicyPurpose::Removal,
+            rego_source: "package vtc.removal\n".into(),
+            sha256: [0; 32],
+            activated_at: None,
+            author_did: a.did.clone(),
+            created_at: chrono::Utc::now(),
+            version: 7,
+            name: Some("written".into()),
+            description: None,
+        },
+    )
+    .await
+    .unwrap();
+    // No marker for either, and the pin has not moved.
+    assert!(
+        fix.vtc
+            .state
+            .admin_actions_ks
+            .get_raw(format!("effect:{written}"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    vtc_service::admin_actions::sweep_once(&fix.vtc.state)
+        .await
+        .unwrap();
+    let done = action(&fix, &a, &written).await;
+    assert_eq!(done["status"], "completed", "{done}");
+    assert!(
+        done["ext"]["org.openvtc"]["closedMessage"]
+            .as_str()
+            .unwrap()
+            .contains("took effect"),
+        "{done}"
+    );
+    let failed = action(&fix, &a, &unwritten).await;
+    assert_eq!(failed["status"], "failed", "{failed}");
+}
+
+/// An executed `policy/upsert` stores its revision under the id derived from
+/// its action and execution — the evidence reconciliation reads.
+#[tokio::test]
+async fn an_executed_policy_upsert_stores_its_revision_under_the_execution() {
+    let mut fix = fixture().await;
+    let a = requester(&mut fix).await;
+    let b = admin(&fix).await;
+    let doc = signed(
+        &a,
+        UPSERT,
+        json!({
+            "name": "removal",
+            "module": "package vtc.removal\nimport rego.v1\n\
+                       default decision := {\"effect\": \"deny\", \"with\": {\"code\": \"frozen\"}}\n",
+            "ext": { "org.openvtc.purpose": "removal" },
+        }),
+    )
+    .await;
+    let id = park(&mut fix, &a, &doc).await;
+    let (_, ack) = decide(&fix.vtc, &b, &id, "approve").await;
+    assert_eq!(ack["payload"]["status"], "granted", "{ack}");
+    let rec = record(&fix, &id).await;
+    let execution = rec.execution_id.expect("persisted with its execution");
+    let revision = vtc_service::admin_actions::policy_revision_id(&id, &execution);
+    let stored = vtc_service::policy::get_policy(&fix.vtc.state.policies_ks, revision)
+        .await
+        .unwrap()
+        .expect("the revision is keyed by the execution");
+    assert_eq!(stored.name.as_deref(), Some("removal"));
 }
 
 /// The operation an action executes records its effect, naming the action and

@@ -329,8 +329,10 @@ A decision may carry extra evidence beside its signature
 (`task-consent/decision/0.2`): `webauthn`, a passkey assertion, which the
 console adds, or `approverSigned`, a statement from a step-up approver bound to
 the signer (§3.1a), made for that decision's challenge and payload digest. The
-console approves with a passkey only; `cnm` and other clients can send
-`approverSigned`.
+console sends `approverSigned` when the administrator has an approver device
+and the browser plugin can sign a decision (`approveDecision`); otherwise a
+passkey assertion; otherwise the wallet signature alone. `cnm` and other
+clients can send `approverSigned` too.
 
 ### 3.3 Separation of duties
 
@@ -363,13 +365,23 @@ lands it at once, as before):
 
 - The requester sees it under **Requested by me** and can **Cancel** it until
   it lands.
-- The subject sees it in their list and a `Critical` console banner — "*X has
-  asked to reduce your authority; it takes effect at T unless they cancel*" —
-  but cannot block it. If the subject is the attacker, a veto would protect
-  them.
+- The subject is sent `vtc/members/authority-reduction-pending-notice/0.1`
+  when it is parked (a durable push, like the other notices): what will happen
+  (`revoked`, `demoted` or `narrowed`), who asked, and when it lands. They also
+  see it in their list (`callerRole: subject`, in **All** and **History**,
+  never **Waiting for me**) and a `Critical` console banner — "*X has asked to
+  reduce your authority; it takes effect at T unless they cancel*" — but cannot
+  block it. If the subject is the attacker, a veto would protect them.
+- On the wire (`vtc/admin/actions/*/0.2`) it is category `coolingOff`, with
+  `landsAt` and `cancellableBy: requester`, and no threshold or expiry. The
+  console and `cnm` count down to `landsAt`. (A 0.1 caller still reads it as
+  an `approval` with `ext["org.openvtc"].coolingOff`.)
 - When the window ends the VTC lands it by itself (the sweeper runs every
-  minute), audits it at `Critical` as `AuthorityReducedUnopposed`, and closes
-  the action `completed`, saying it landed unopposed.
+  minute), audits it at `Critical` as `AuthorityReducedUnopposed`, sends the
+  authority-reduced notice (`unopposed`), and closes the action `completed`
+  (`landedAfterCoolingOff` at 0.2). Landing never waits on a notice being
+  delivered. If the requester cancels, nothing is reduced and no further
+  notice is sent.
 - If a third community administrator appears meanwhile, the action is
   cancelled: there is now someone to approve, so send it again.
 - **First to act wins.** If the subject asks to reduce the requester while the
@@ -377,9 +389,8 @@ lands it at once, as before):
   is refused with a message saying so, and the subject's own open actions are
   cancelled as they lose authority.
 
-The subject learns of a pending cooling-off only from the console and the
-action list; nothing is pushed to them until it lands. Run with three or more
-community administrators to close the window altogether.
+Run with three or more community administrators to close the window
+altogether.
 
 When an administrator loses privilege, their sessions are revoked and they are
 told with a VTC-signed notice:
@@ -410,15 +421,24 @@ marker. At its next start the daemon audits each one (`AclBreakGlassWritten`,
 or `EmergencyBootstrapInvoked`) and also raises it in the action list as an
 **acknowledge** item (VTI-VTC-023):
 
-- Its summary names the command, the DID or DIDs, the operator's host and the
-  time. It has no Approve or Decline, no expiry and no threshold.
+- Its `typeUri` is the record type
+  `https://trusttasks.org/spec/vtc/operator/offline-write/0.1`, and its payload
+  is that record: `command` (`aclAdd`, `aclRemove`, `adminInvite`,
+  `createDidKeyAdmin`, `enrolApprover` or `emergencyBootstrap`), the `dids`
+  whose access changed, the operator's `host` and the time `at`. The record is
+  never sent on its own; a document of that type answers `unsupportedType`.
+  (The boot ACL migration's item is no offline command and keeps
+  `urn:openvtc:vtc:operator:acl-migration`: no record type is specified for
+  it.)
+  The summary names the same four things. It has no Approve or Decline, no
+  expiry and no threshold.
 - It is for the administrators who held an administrative role (of any kind)
   when the write was made, less anyone who has since lost every admin role. If
   none of them remain — and always after an emergency bootstrap, which removed
   them — it is for every administrator there is now.
 - Until you acknowledge it, the console shows a `Critical` banner that cannot
   be dismissed, linking to **Actions**. **Acknowledge** signs
-  `vtc/admin/actions/acknowledge/0.1`; acknowledging is audited. When everyone
+  `vtc/admin/actions/acknowledge/0.2`; acknowledging is audited. When everyone
   it is for has acknowledged, it closes `completed` (`acknowledged`) and stays
   in **History** for 30 days. Acknowledging twice answers
   `alreadyAcknowledged`; anyone it is not for gets `notAcknowledgeable`.
@@ -590,10 +610,14 @@ DID**, never by a console key. There are two ways to sign one:
 - **The console, with the browser wallet.** **Approve** and **Decline** on the
   Actions page sign the decision through the wallet, as the admin DID itself.
   The VTA holds that key, whether it is the admin `did:key` the VTA minted or
-  the wallet persona. If the session also has a passkey, the console adds a
-  passkey assertion as an extra factor; it never replaces the signature. The
-  console cannot yet add an approver device's statement instead: the plugin
-  signs approver statements for enrolment only.
+  the wallet persona. The console adds one extra factor, in this order: the
+  admin's **approver device**, when they have one enrolled and the plugin
+  offers `approveDecision` (the device signs a `decision`-purpose statement
+  over the per-approver salted digest, and the wallet then signs the decision
+  carrying it as `approverSigned` evidence, without a second prompt); else a
+  **passkey** assertion, when the session has one; else none. The extra factor
+  never replaces the signature. If the device is dismissed, the console asks
+  before sending without it.
 - **`cnm`**, for an administrator without a wallet. It signs with the
   `did:key` of its profile. The console shows the command to run instead of
   the buttons. A client may attach `approverSigned` evidence (§3.2).
@@ -640,14 +664,6 @@ Promotions that Alice starts need an approver other than Alice: here, Bob.
   `approveStepUp` is a separate release. Until it ships, step 5's passkey is
   the route. Mobile approvers are phase 2 of
   [`../05-design-notes/vtc-approver-step-up.md`](../05-design-notes/vtc-approver-step-up.md).
-- **The console approves with a passkey only.** The VTC accepts
-  `approverSigned` decision evidence (§3.2), but the plugin signs approver
-  statements for enrolment only, so the console has no way to make one for a
-  decision. `cnm` and other clients can.
-- **A cooling-off is not pushed to its subject.** The subject of a two-admin
-  reduction (§3.4) learns of it from the console banner and the action list;
-  the notice comes only when it lands. A "pending" notice needs a
-  specification first.
 - **The requester can't be required at completion.** An action completes on
   the N-th approval; a policy that makes the requester finish it with a fresh
   step-up (`requireRequesterAtCompletion`) is designed, not built

@@ -8,7 +8,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   KIND_OPERATOR_WRITE,
-  OPERATOR_EMERGENCY_BOOTSTRAP_URI,
+  OPERATOR_ACL_MIGRATION_URI,
+  OPERATOR_OFFLINE_WRITE_URI,
   PINNED_TEMPLATE_DIGESTS,
   SummaryRefusal,
   VerifiedSummary,
@@ -163,82 +164,65 @@ describe("refusal", () => {
     expect((out as SummaryRefusal).reason).toBe("badFormat");
   });
 
-  it("pins exactly twenty-four (kind, typeUri) pairs", () => {
-    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(24);
+  it("pins exactly twenty-one (kind, typeUri) pairs", () => {
+    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(21);
   });
 });
 
-// The operator's offline writes (VTI-VTC-023): the four templates exactly as
-// `vtc-service/src/admin_actions/summary.rs` declares them. Their digests are
+// The operator's offline writes (VTI-VTC-023): one template over the
+// `vtc/operator/offline-write/0.1` record, exactly as
+// `vtc-service/src/admin_actions/summary.rs` declares it. Its digest is
 // recomputed here, so a pin that drifted from the template text fails.
-describe("operator offline-write templates", () => {
-  const SPEC = "https://trusttasks.org/spec";
-  const EFFECT =
-    "Written with {command} on {host} at {at}, while the service was stopped. It is already in effect: acknowledging records that you have seen it, and changes nothing.";
+describe("operator offline-write template", () => {
   const f = (pointer: string, format: string) => ({ pointer, format });
-  const tail = {
-    command: f("/command", "text"),
-    host: f("/operatorHost", "text"),
-    at: f("/invokedAt", "datetime"),
+  const TEMPLATE = {
+    kind: KIND_OPERATOR_WRITE,
+    typeUri: OPERATOR_OFFLINE_WRITE_URI,
+    title: "The operator ran {command} on {host}, changing access for {dids}",
+    effect:
+      "Written at {at}, while the service was stopped. It is already in effect: acknowledging records that you have seen it, and changes nothing.",
+    fields: {
+      command: f("/command", "text"),
+      dids: f("/dids", "capabilityList"),
+      host: f("/host", "text"),
+      at: f("/at", "datetime"),
+    },
   };
-  const TEMPLATES: { typeUri: string; title: string; fields: Record<string, unknown> }[] = [
-    {
-      typeUri: `${SPEC}/acl/grant/0.1`,
-      title: "The operator gave {subject} the {role} role offline",
-      fields: {
-        subject: f("/entry/subject", "did"),
-        role: f("/entry/role", "text"),
-        scopes: f("/entry/scopes", "capabilityList"),
-        ...tail,
-      },
-    },
-    {
-      typeUri: `${SPEC}/acl/revoke/0.1`,
-      title: "The operator removed {subject}'s access offline",
-      fields: { subject: f("/entry/subject", "did"), ...tail },
-    },
-    {
-      typeUri: `${SPEC}/auth/step-up/approver/invite/0.1`,
-      title: "The operator issued a step-up approver invite for {subject} offline",
-      fields: { subject: f("/entry/subject", "did"), ...tail },
-    },
-    {
-      typeUri: OPERATOR_EMERGENCY_BOOTSTRAP_URI,
-      title: "The operator ran an emergency bootstrap and replaced every administrator",
-      fields: { ...tail },
-    },
-  ];
 
-  for (const t of TEMPLATES) {
-    it(`pins the template for ${t.typeUri}`, () => {
-      const canonical = jcsCanonicalize({
-        kind: KIND_OPERATOR_WRITE,
-        typeUri: t.typeUri,
-        title: t.title,
-        effect: EFFECT,
-        fields: t.fields,
-      });
-      expect(PINNED_TEMPLATE_DIGESTS[`${KIND_OPERATOR_WRITE}\n${t.typeUri}`]).toBe(
-        nodeMultihash(Buffer.from(canonical, "utf8")),
-      );
-    });
-  }
-
-  it("has a shared vector for every operator template", () => {
-    for (const t of TEMPLATES) {
-      expect(
-        VECTORS.some((v) => v.kind === KIND_OPERATOR_WRITE && v.typeUri === t.typeUri),
-      ).toBe(true);
-    }
+  it("pins the one template, under the offline-write record type", () => {
+    const canonical = jcsCanonicalize(TEMPLATE);
+    expect(PINNED_TEMPLATE_DIGESTS[`${KIND_OPERATOR_WRITE}\n${OPERATOR_OFFLINE_WRITE_URI}`]).toBe(
+      nodeMultihash(Buffer.from(canonical, "utf8")),
+    );
+    const operatorPins = Object.keys(PINNED_TEMPLATE_DIGESTS).filter((k) =>
+      k.startsWith(`${KIND_OPERATOR_WRITE}\n`),
+    );
+    // Beside it, only the boot ACL migration, which is no offline command and
+    // keeps its own URN.
+    expect(operatorPins.sort()).toEqual(
+      [
+        `${KIND_OPERATOR_WRITE}\n${OPERATOR_OFFLINE_WRITE_URI}`,
+        `${KIND_OPERATOR_WRITE}\n${OPERATOR_ACL_MIGRATION_URI}`,
+      ].sort(),
+    );
   });
 
-  it("renders the offline grant as the sentence an acknowledger reads", async () => {
+  it("has shared vectors for it, and only under the offline-write record type", () => {
+    const ops = VECTORS.filter((v) => v.kind === KIND_OPERATOR_WRITE);
+    expect(ops.length).toBeGreaterThan(0);
+    expect(ops.every((v) => v.typeUri === OPERATOR_OFFLINE_WRITE_URI)).toBe(true);
+  });
+
+  it("renders an offline ACL add as the sentence an acknowledger reads", async () => {
     const v = VECTORS.find(
-      (x) => x.kind === KIND_OPERATOR_WRITE && x.typeUri === `${SPEC}/acl/grant/0.1`,
+      (x) =>
+        x.kind === KIND_OPERATOR_WRITE && (x.payload as { command: string }).command === "aclAdd",
     )!;
     const s = await verified({ ...v, payloadDigest: await payloadDigestOf(v.payload) });
-    expect(s.title).toBe("The operator gave did:key:z6MkhaXg…pbnnEGta2doK the admin role offline");
-    expect(s.effect).toContain("Written with vtc acl grant on vtc-host-1 at ");
+    expect(s.title).toBe(
+      "The operator ran aclAdd on vtc-host-1, changing access for did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    );
+    expect(s.effect).toContain("Written at ");
     expect(s.effect).toContain("acknowledging records that you have seen it, and changes nothing.");
   });
 });

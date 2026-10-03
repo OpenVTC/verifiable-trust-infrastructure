@@ -15,7 +15,7 @@ const WHOAMI: WhoamiResponse = {
   roles: ["admin"],
   scopes: [],
 };
-const LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
+const LIST = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
 
 const reads = vi.hoisted(() => ({
   waiting: 2,
@@ -172,8 +172,10 @@ describe("the Critical action banners", () => {
     shell();
     const text = await screen.findByText(/has asked to reduce your authority/);
     expect(text.textContent).toContain(
-      `It takes effect at ${new Date(LANDS_AT).toLocaleString()} unless they cancel it.`,
+      `It takes effect at ${new Date(LANDS_AT).toLocaleString()} (`,
     );
+    // With a countdown to it, as the action card shows.
+    expect(text.textContent).toMatch(/\((lands in \d+ [dhm]( \d+ [hm])?|landing now)\) unless they cancel it\.$/);
     const banner = text.closest('[role="alert"]') as HTMLElement;
     expect(within(banner).queryByRole("button")).toBeNull();
     expect(

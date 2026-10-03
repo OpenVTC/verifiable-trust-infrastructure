@@ -340,7 +340,12 @@ pub(crate) async fn upload_inner(
     // Allocate id first so the compile error can name it. The
     // `new_policy` helper also allocates one — we override via
     // `Policy { id, .. }` after compile rather than mint twice.
-    let id = Uuid::new_v4();
+    //
+    // An approved action's execution stores its revision under an id derived
+    // from the action and execution, so the row is its own evidence of the
+    // write: a crash before `record_effect` below is still reconciled
+    // `completed` (R2.1, `admin_actions::policy_revision_id`).
+    let id = crate::admin_actions::executing_revision_id().unwrap_or_else(Uuid::new_v4);
     let compiled = compile(&body.module, id)?;
     // Reject a module compiled into the wrong package for its declared
     // purpose — it would compile + activate cleanly, then evaluate to

@@ -35,8 +35,12 @@ const SPEC = "https://trusttasks.org/spec";
 /** An operator's offline write, raised for acknowledgement (VTI-VTC-023). */
 export const KIND_OPERATOR_WRITE = "operator.offlineWrite";
 
-/** The `typeUri` an operator's offline emergency bootstrap is recorded under. */
-export const OPERATOR_EMERGENCY_BOOTSTRAP_URI = "urn:openvtc:vtc:operator:emergency-bootstrap";
+/**
+ * The `typeUri` every operator offline write is recorded under: an embedded
+ * document type (payload `{command, dids, host, at}`), never a task anybody
+ * sends.
+ */
+export const OPERATOR_OFFLINE_WRITE_URI = "https://trusttasks.org/spec/vtc/operator/offline-write/0.1";
 
 /** The `typeUri` the boot-time ACL migration's acknowledge item is recorded under. */
 export const OPERATOR_ACL_MIGRATION_URI = "urn:openvtc:vtc:operator:acl-migration";
@@ -88,14 +92,8 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
   [pinKey("policy.authority.change", `${SPEC}/policy/activate/0.1`)]:
     "zQmTqKd5UoQZfTy7giJU9KFWFyhUbqxAtr5XWoUB9BLncBL",
   // An operator's offline write, raised for acknowledgement (VTI-VTC-023).
-  [pinKey(KIND_OPERATOR_WRITE, `${SPEC}/acl/grant/0.1`)]:
-    "zQmPBTVVVBZgfZafx5347YBELteEgvumprYp1wVEFQ8GJmJ",
-  [pinKey(KIND_OPERATOR_WRITE, `${SPEC}/acl/revoke/0.1`)]:
-    "zQmSTfE5673DiE2CNEnkmq5StjrQcQHMEm3JVEvc3rfqNAs",
-  [pinKey(KIND_OPERATOR_WRITE, `${SPEC}/auth/step-up/approver/invite/0.1`)]:
-    "zQmaRsraYXDuqh9P397D4F9dAHQAwsdwKmM9A6Kh4yVEAVx",
-  [pinKey(KIND_OPERATOR_WRITE, OPERATOR_EMERGENCY_BOOTSTRAP_URI)]:
-    "zQmW9QyZwNvMYHenHrcAeaRB5ZRcz2Nz2A2w5JqrWb7qFEp",
+  [pinKey(KIND_OPERATOR_WRITE, OPERATOR_OFFLINE_WRITE_URI)]:
+    "zQmQZTPg2MeWt1C8oAvoLMGJNY9DpxvB6bRjvQwJT7ns9Ah",
   [pinKey(KIND_OPERATOR_WRITE, OPERATOR_ACL_MIGRATION_URI)]:
     "zQmcx336K693LHuAKosCP9avuLZWauw1vome6VBxWBFDiqK",
 });

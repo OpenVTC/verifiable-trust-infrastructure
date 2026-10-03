@@ -2,11 +2,14 @@
 // acknowledge}` and the approver's `task-consent/decision/0.2`
 // (docs/05-design-notes/vtc-action-list.md §6, §7).
 //
-// Two categories share the list. An `approval` waits for other administrators'
-// decisions (or, under VTI-APV-019's two-administrator rule, waits out a
-// cooling-off and lands unopposed). An `acknowledge` item is an operator's
-// offline write (VTI-VTC-023): already in effect, it needs each administrator
-// to record that they have seen it, and acknowledging changes nothing.
+// The console speaks the 0.2 wire. Three categories share the list. An
+// `approval` waits for other administrators' decisions. A `coolingOff`
+// (VTI-APV-019's two-administrator rule) has nobody to consent to it: it lands
+// by itself at `landsAt` unless its requester cancels it, and its subject sees
+// it (`callerRole: subject`) but can neither decide nor cancel. An
+// `acknowledge` item is an operator's offline write (VTI-VTC-023): already in
+// effect, it needs each administrator to record that they have seen it, and
+// acknowledging changes nothing.
 //
 // Reads, cancel and acknowledge are signed with this browser's console key, like every
 // other administrator read. A **decision** is not: an approval's proof is the
@@ -15,26 +18,39 @@
 // `auth/signing-key/enroll/0.2`'s authorization is (`console-keys-api.ts`).
 // The VTC refuses a decision signed by a delegated console key, so this module
 // never offers one: with no wallet, the console shows the `cnm` command.
+//
+// A decision may carry `evidence`, an additional factor beside that proof: the
+// administrator's step-up **approver device** (`approverSigned`, the VTA
+// browser plugin's `approveDecision`) or a console passkey (`webauthn`).
 
 import {
   addressedDocument,
   postSignedDocument,
   postSignedRead,
   postSignedTrustTask,
+  vtcDid,
   type ApiError,
 } from "./api";
 import { wireDigest } from "./action-summary";
 import type { ActionSummaryWire } from "./action-summary";
 import type { SignedTrustTaskDocument } from "./console-key";
 import { ACTIONS_SHOW_TASK } from "./parked-action";
-import { isWalletSigningAvailable, signWithWallet } from "./wallet";
+import { fetchApprovers } from "./step-up-approvers";
+import {
+  approveDecisionWithWallet,
+  isWalletDecisionApproverAvailable,
+  isWalletSigningAvailable,
+  signWithWallet,
+  walletApproverIdentity,
+  type ApproverSignedEvidence,
+} from "./wallet";
 import { serializeAssertion } from "./webauthn";
 
-export const ACTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/admin/actions/list/0.1";
+export const ACTIONS_LIST_TASK = "https://trusttasks.org/spec/vtc/admin/actions/list/0.2";
 export { ACTIONS_SHOW_TASK };
-export const ACTIONS_CANCEL_TASK = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1";
+export const ACTIONS_CANCEL_TASK = "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2";
 export const ACTIONS_ACKNOWLEDGE_TASK =
-  "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.1";
+  "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2";
 export const DECISION_TASK = "https://trusttasks.org/spec/task-consent/decision/0.2";
 
 /** The longest `reason` a decision or cancel carries. */
@@ -52,13 +68,18 @@ export type ClosedReason =
   | "invalidated"
   | "failedRecheck"
   /** An operator's offline write every expected administrator acknowledged. */
-  | "acknowledged";
+  | "acknowledged"
+  /** A cooling-off reached `landsAt` uncancelled and its operation ran. */
+  | "landedAfterCoolingOff";
 
 /** `acknowledger`: an operator's offline write waits for this caller's
- *  acknowledgement (VTI-VTC-023). */
-export type CallerRole = "approver" | "requester" | "observer" | "acknowledger";
+ *  acknowledgement (VTI-VTC-023). `subject`: the administrator a cooling-off
+ *  acts on — shown it so they see it coming, but can neither decide nor
+ *  cancel it (VTI-APV-019). */
+export type CallerRole = "approver" | "requester" | "observer" | "acknowledger" | "subject";
 
-export type ActionCategory = "approval" | "acknowledge";
+/** `queue` is in the 0.2 wire but the VTC raises none yet. */
+export type ActionCategory = "approval" | "acknowledge" | "queue" | "coolingOff";
 
 export type ActionsView = "waitingForMe" | "requestedByMe" | "history" | "all";
 
@@ -69,14 +90,18 @@ export interface ActionApproval {
 
 /** A reduction of an unrestricted administrator that nobody but the requester
  *  and the subject could consent to (VTI-APV-019): it lands by itself at
- *  `landsAt` unless the requester cancels it. */
+ *  `landsAt` unless the requester cancels it. Read off the 0.2 action's own
+ *  fields by [`coolingOffOf`]. */
 export interface CoolingOff {
   landsAt: string;
-  subject: string;
-  agreement: "unopposed";
-  /** The caller is the administrator it reduces — who sees it coming but
-   *  cannot block it. */
+  /** The administrator it acts on, when the verified summary's `subject`
+   *  field names one (the action has no top-level subject). */
+  subject?: string;
+  /** The caller is the administrator it reduces (`callerRole: subject`) —
+   *  who sees it coming but cannot block it. */
   againstYou: boolean;
+  /** The caller may withdraw it now: its requester, while it is open. */
+  cancellableByMe: boolean;
 }
 
 /** A step-up approver enrolment invite for the new administrator a completed
@@ -101,7 +126,6 @@ export interface ActionExt {
   severity?: "critical";
   /** `acknowledge` items: whether this caller has acknowledged it. */
   acknowledgedByMe?: boolean;
-  coolingOff?: CoolingOff;
   approverInvite?: ApproverInviteResult;
 }
 
@@ -115,6 +139,10 @@ export interface Action {
   createdAt: string;
   /** Absent on an `acknowledge` item and on a cooling-off: neither lapses. */
   expiresAt?: string;
+  /** `coolingOff` only — and always there: when it lands unless cancelled. */
+  landsAt?: string;
+  /** Who may cancel it while open; on every open `coolingOff`, `requester`. */
+  cancellableBy?: "requester";
   closedAt?: string;
   closedReason?: ClosedReason;
   approvals: ActionApproval[];
@@ -173,10 +201,38 @@ export function isAcknowledgeItem(action: Action): boolean {
   return action.category === "acknowledge";
 }
 
-/** The cooling-off `action` waits out, if it is one (VTI-APV-019). */
+/** The cooling-off `action` waits out, if it is one (VTI-APV-019): a 0.2
+ *  `coolingOff` action and its top-level `landsAt`. */
 export function coolingOffOf(action: Action): CoolingOff | null {
-  const c = actionExt(action).coolingOff;
-  return c && typeof c.landsAt === "string" ? c : null;
+  if (action.category !== "coolingOff" || typeof action.landsAt !== "string") return null;
+  const subject = action.summary?.fields?.subject?.value;
+  return {
+    landsAt: action.landsAt,
+    ...(typeof subject === "string" ? { subject } : {}),
+    againstYou: action.callerRole === "subject",
+    cancellableByMe:
+      action.status === "open" &&
+      action.callerRole === "requester" &&
+      action.cancellableBy === "requester",
+  };
+}
+
+/** The readable command an operator's offline write ran, by its
+ *  `vtc/operator/offline-write/0.1` `command`. */
+export const OPERATOR_COMMAND_TEXT: Readonly<Record<string, string>> = Object.freeze({
+  aclAdd: "vtc acl add",
+  aclRemove: "vtc acl remove",
+  adminInvite: "vtc admin invite",
+  createDidKeyAdmin: "vtc create-did-key --admin",
+  enrolApprover: "vtc admin enrol-approver",
+  emergencyBootstrap: "vtc admin emergency-bootstrap",
+});
+
+/** The command an operator's offline write ran, readable, or `null`. */
+export function operatorCommandOf(action: Action): string | null {
+  const command = (action.payload as { command?: unknown }).command;
+  if (typeof command !== "string") return null;
+  return OPERATOR_COMMAND_TEXT[command] ?? command;
 }
 
 export interface ActionsListQuery {
@@ -206,6 +262,11 @@ export interface WebauthnEvidence {
   kind: "webauthn";
   assertion: unknown;
 }
+
+export type { ApproverSignedEvidence };
+
+/** Either kind of decision evidence. */
+export type DecisionEvidence = WebauthnEvidence | ApproverSignedEvidence;
 
 /** The action's own `ext["org.openvtc"]`, or `{}`. */
 export function actionExt(action: Action): ActionExt {
@@ -314,7 +375,7 @@ export interface DecideArgs {
   /** The signed-in administrator's DID — the proof must name it. */
   approverDid: string;
   reason?: string;
-  evidence?: WebauthnEvidence;
+  evidence?: DecisionEvidence;
 }
 
 /** Build the `decision/0.2` payload for `args` (exported for its test). */
@@ -341,10 +402,97 @@ export async function decisionPayload(args: DecideArgs): Promise<Record<string, 
  */
 export async function decideAction(args: DecideArgs): Promise<DecisionResponse> {
   if (!canDecideHere()) throw new Error(NO_WALLET_MESSAGE.replace("<actionId>", args.action.actionId));
-  const payload = await decisionPayload(args);
-  const unsigned = await addressedDocument(DECISION_TASK, payload, args.approverDid);
-  const signed = await signWithWallet({ ...unsigned }, args.approverDid);
+  return sendDecision(await decisionPayload(args), args.approverDid);
+}
+
+/** Sign `payload` as `approverDid` through the wallet and send it. */
+async function sendDecision(
+  payload: Record<string, unknown>,
+  approverDid: string,
+): Promise<DecisionResponse> {
+  const unsigned = await addressedDocument(DECISION_TASK, payload, approverDid);
+  const signed = await signWithWallet({ ...unsigned }, approverDid);
   return postSignedDocument<DecisionResponse>(signed as unknown as SignedTrustTaskDocument);
+}
+
+// ── Deciding with the approver device ───────────────────────────────
+
+/**
+ * Whether the signed-in administrator can answer a decision here with their
+ * step-up **approver device**: the wallet plugin exposes `approveDecision`,
+ * and `auth/step-up/approver/list/0.1` (the caller's own, console-key read)
+ * lists at least one live approver. When the plugin also says which approver
+ * it holds for this VTC (`approverIdentity`), that one must be among them —
+ * an approver bound from another browser cannot answer from this one.
+ */
+export async function approverDeviceHere(): Promise<boolean> {
+  if (!isWalletDecisionApproverAvailable()) return false;
+  const { approvers } = await fetchApprovers();
+  if (!Array.isArray(approvers) || approvers.length === 0) return false;
+  let held: string | null = null;
+  try {
+    held = await walletApproverIdentity(await vtcDid());
+  } catch {
+    held = null;
+  }
+  return held === null || approvers.some((a) => a.approverDid === held);
+}
+
+/**
+ * The decision payload with the approver device's `approverSigned` evidence.
+ *
+ * The payload is built once ([`decisionPayload`]) and the very same values —
+ * challenge, the salted wire `payloadDigest`, decision, trimmed reason,
+ * actionId — are what `approveDecision` is shown, so the wallet recognises the
+ * `signTrustTask` that follows as the decision it approved and does not prompt
+ * again. Throws when the plugin declined, was dismissed or answered with
+ * something else; nothing has been sent then.
+ */
+export async function approverDecisionPayload(
+  args: Omit<DecideArgs, "evidence">,
+): Promise<Record<string, unknown>> {
+  const payload = await decisionPayload(args);
+  const { action } = args;
+  const decision: {
+    challenge: string;
+    payloadDigest: string;
+    decision: "approve" | "deny";
+    reason?: string;
+  } = {
+    challenge: payload.challenge as string,
+    payloadDigest: payload.payloadDigest as string,
+    decision: args.decision,
+  };
+  if (typeof payload.reason === "string") decision.reason = payload.reason;
+  const { statement } = await approveDecisionWithWallet({
+    audience: await vtcDid(),
+    subject: args.approverDid,
+    action: {
+      type: action.typeUri,
+      payload: action.payload,
+      actionId: action.actionId,
+      summary: action.summary,
+    },
+    decision,
+  });
+  const evidence: ApproverSignedEvidence = { kind: "approverSigned", statement };
+  return { ...payload, evidence };
+}
+
+/** Approve or decline `action` with the approver device's evidence, signed as
+ *  `approverDid` through the wallet. */
+export async function decideWithApproverDevice(
+  args: Omit<DecideArgs, "evidence">,
+): Promise<DecisionResponse> {
+  return sendDecision(await approverDecisionPayload(args), args.approverDid);
+}
+
+/** Send a payload [`approverDecisionPayload`] prepared, unchanged. */
+export function sendPreparedDecision(
+  payload: Record<string, unknown>,
+  approverDid: string,
+): Promise<DecisionResponse> {
+  return sendDecision(payload, approverDid);
 }
 
 /** The sentence a decision's answer is reported with. */
@@ -389,7 +537,7 @@ export function explainDecisionError(e: unknown): string {
     case "actionMismatch":
       return "The decision did not match this action. Refresh and try again.";
     case "evidenceInvalid":
-      return "The VTC did not accept the passkey confirmation. Try again, or send the decision without it.";
+      return "The VTC did not accept the confirmation (passkey or approver device). Try again, or send the decision without it.";
     case "unavailable":
     case "rateLimited":
       return "Too many decisions in a short time (at most 10 a minute). Wait a moment and try again.";
@@ -446,4 +594,34 @@ export function explainReadError(e: unknown): string {
     default:
       return (e as Error | null)?.message ?? String(e);
   }
+}
+
+// ── Countdowns ──────────────────────────────────────────────────────
+
+/** "2 d 4 h", "3 h 10 m" or "12 m" for a positive span of `ms`. */
+function span(ms: number): string {
+  const minutes = Math.floor(ms / 60_000);
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const mins = minutes % 60;
+  if (days > 0) return `${days} d${hours ? ` ${hours} h` : ""}`;
+  if (hours > 0) return `${hours} h${mins ? ` ${mins} m` : ""}`;
+  return `${Math.max(mins, 1)} m`;
+}
+
+/** "expires in 2 d 4 h", from now until `expiresAt`. */
+export function timeLeft(expiresAt: string, now: number = Date.now()): string {
+  const ms = Date.parse(expiresAt) - now;
+  if (Number.isNaN(ms)) return expiresAt;
+  if (ms <= 0) return "expired";
+  return `expires in ${span(ms)}`;
+}
+
+/** "lands in 2 d 4 h", from now until a cooling-off's `landsAt`; "landing
+ *  now" once it is due (the VTC runs it on its next sweep). */
+export function landsIn(landsAt: string, now: number = Date.now()): string {
+  const ms = Date.parse(landsAt) - now;
+  if (Number.isNaN(ms)) return landsAt;
+  if (ms <= 0) return "landing now";
+  return `lands in ${span(ms)}`;
 }

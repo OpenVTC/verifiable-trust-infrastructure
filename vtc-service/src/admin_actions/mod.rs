@@ -55,7 +55,9 @@
 //! administrator who held a role when the write was made (minus any who has
 //! since lost every admin role) acknowledges it, and acknowledging is audited.
 //! An emergency bootstrap wiped the administrators it would have told, so its
-//! item is for whoever administers the community now.
+//! item is for whoever administers the community now. Every such item names the
+//! record type `vtc/operator/offline-write/0.1` as its `typeUri`, with the
+//! record as its payload ([`OPERATOR_OFFLINE_WRITE_URI`]).
 //!
 //! ## The two-administrator cooling-off (VTI-APV-019, §8.2)
 //!
@@ -63,7 +65,9 @@
 //! and the subject could consent to is parked with no approvers and a
 //! cooling-off ([`ActionRecord::cooling_off_until`]). It lands by itself when
 //! the window ends ([`sweep_once`]) unless the requester cancels it; the subject
-//! sees it coming. If the subject meanwhile asks to reduce the requester, the
+//! sees it coming — sent `vtc/members/authority-reduction-pending-notice/0.1`
+//! when it is parked, and shown it as `callerRole: subject` at `_shared/0.2`
+//! ([`WireVersion`]), where it is category `coolingOff` with `landsAt`. If the subject meanwhile asks to reduce the requester, the
 //! earlier request lands first ([`refuse_if_reduced_first`]) and the subject's
 //! own actions are then invalidated: first to act wins.
 //!
@@ -232,12 +236,17 @@ pub enum ClosedReason {
     Invalidated,
     FailedRecheck,
     Acknowledged,
+    /// A cooling-off reached its landing time uncancelled and its operation
+    /// executed (`_shared/0.2`). A 0.1 caller reads it as `thresholdMet`, which
+    /// is all 0.1 can say.
+    LandedAfterCoolingOff,
 }
 
 impl ClosedReason {
-    fn wire(self) -> &'static str {
+    fn wire(self, version: WireVersion) -> &'static str {
         match self {
-            Self::ThresholdMet => "thresholdMet",
+            Self::LandedAfterCoolingOff if version == WireVersion::V0_2 => "landedAfterCoolingOff",
+            Self::ThresholdMet | Self::LandedAfterCoolingOff => "thresholdMet",
             Self::Declined => "declined",
             Self::Expired => "expired",
             Self::CancelledByRequester => "cancelledByRequester",
@@ -269,6 +278,19 @@ impl Category {
             Self::Acknowledge => "acknowledge",
         }
     }
+}
+
+/// Which `vtc/admin/actions/_shared` an action is rendered for. Both are
+/// served (`trust_tasks::action_tasks`): 0.1 keeps answering as it did, and a
+/// cooling-off reads there as an `approval` with no threshold and no expiry and
+/// `ext["org.openvtc"].coolingOff`. 0.2 says it in the schema's own terms —
+/// category `coolingOff`, `landsAt`, `cancellableBy: requester`, closed
+/// `landedAfterCoolingOff`, and `callerRole: subject` for the administrator it
+/// reduces (trust-tasks-tf #719).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WireVersion {
+    V0_1,
+    V0_2,
 }
 
 /// One eligible approver's slot: the challenge that approver alone is shown,
@@ -813,7 +835,38 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
         "operation parked for approval"
     );
     push_requests(state, &rec).await;
+    notify_cooling_off_subject(state, &rec).await;
     Ok(rec)
+}
+
+/// For a reduction parked on a cooling-off: tell the subject now, before it
+/// lands (`vtc/members/authority-reduction-pending-notice/0.1`, VTI-APV-019).
+/// Durable and best-effort — the action is already parked and lands on time
+/// whether or not this is delivered. The landing sends the
+/// authority-reduced notice; a cancellation reduces nothing and sends nothing.
+async fn notify_cooling_off_subject(state: &AppState, rec: &ActionRecord) {
+    let Some(until) = rec.cooling_off_until else {
+        return;
+    };
+    let prior = match crate::acl::get_acl_entry(&state.acl_ks, &rec.subject).await {
+        Ok(Some(entry)) => entry,
+        Ok(None) => return,
+        Err(e) => {
+            warn!(action = %rec.id, error = %e, "no pending notice: the subject's entry could not be read");
+            return;
+        }
+    };
+    crate::ceremony::authority_reduction_pending_notice::send(
+        state,
+        &rec.id,
+        &prior,
+        &rec.type_uri,
+        &rec.payload,
+        &rec.requester,
+        epoch_utc(rec.created_at),
+        epoch_utc(until),
+    )
+    .await;
 }
 
 /// The parked answer, as the error every gate's caller already propagates.
@@ -872,7 +925,7 @@ pub(crate) fn next_step_payload(doc_id: &str, doc_type: &str, details: &Value) -
     let mut payload = json!({
         "continuation": "proceed",
         "expects": [{
-            "typeUri": crate::trust_tasks::action_tasks::SHOW_TYPE,
+            "typeUri": crate::trust_tasks::action_tasks::SHOW_V0_2_TYPE,
             "hint": { "actionId": details["actionId"] },
             "reason": reason,
         }],
@@ -1225,14 +1278,20 @@ pub(crate) async fn reconcile(
         .get_raw(effect_key(&rec.id))
         .await?
         .is_some_and(|v| exec_id.is_empty() || v == exec_id.as_bytes());
-    let recorded = marked || effect_audited(state, &rec.id, &exec_id).await?;
+    let recorded = marked
+        || revision_written(state, rec, &exec_id).await?
+        || effect_audited(state, &rec.id, &exec_id).await?;
     let pin_moved = !recorded
         && rec.category == Category::Approval
         && admin_consent::pin_for(state, rec.act, &rec.subject).await? != rec.state_pin;
     if recorded || pin_moved {
         rec.close(
             Status::Completed,
-            ClosedReason::ThresholdMet,
+            if rec.cooling_off_until.is_some() {
+                ClosedReason::LandedAfterCoolingOff
+            } else {
+                ClosedReason::ThresholdMet
+            },
             Some(
                 "the operation took effect; the record of its completion was interrupted and has \
                  been reconciled from the effect it wrote"
@@ -1253,6 +1312,54 @@ pub(crate) async fn reconcile(
         );
     }
     Ok(())
+}
+
+/// The id a `policy/upsert` revision is stored under when an action's execution
+/// writes it — a function of the action and the execution, so the revision
+/// row **is** the evidence of its own write ([`revision_written`]).
+///
+/// The upsert moves no state pin (it adds a revision; only `policy/activate`
+/// moves the active pointer the pin reads), and its effect marker is a second
+/// write in another keyspace. A crash between the two used to leave a revision
+/// stored and the action reconciled `failed`. Keyed this way, the revision and
+/// its evidence land in one write: if it exists, the effect landed.
+pub fn policy_revision_id(action_id: &str, execution_id: &str) -> uuid::Uuid {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"vtc-action-policy-revision\0");
+    h.update(action_id.as_bytes());
+    h.update(b"\0");
+    h.update(execution_id.as_bytes());
+    let digest = h.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    uuid::Builder::from_random_bytes(bytes).into_uuid()
+}
+
+/// The id the executing action's `policy/upsert` revision must be stored
+/// under ([`policy_revision_id`]), or `None` outside an execution — where a fresh
+/// random id is right.
+pub(crate) fn executing_revision_id() -> Option<uuid::Uuid> {
+    EXECUTING
+        .try_with(|e| policy_revision_id(&e.action_id, &e.execution_id))
+        .ok()
+}
+
+/// Whether the executing `policy/upsert` this action ran stored its revision
+/// ([`policy_revision_id`]). `false` for every other operation.
+async fn revision_written(
+    state: &AppState,
+    rec: &ActionRecord,
+    exec_id: &str,
+) -> Result<bool, AppError> {
+    if rec.type_uri != crate::trust_tasks::policy_tasks::POLICY_UPSERT_TYPE || exec_id.is_empty() {
+        return Ok(false);
+    }
+    Ok(
+        crate::policy::get_policy(&state.policies_ks, policy_revision_id(&rec.id, exec_id))
+            .await?
+            .is_some(),
+    )
 }
 
 /// Whether an `AdminActionEffect` row names this action and execution.
@@ -1609,6 +1716,7 @@ async fn run_and_close(
                 at,
             );
             if rec.cooling_off_until.is_some() {
+                rec.closed_reason = Some(ClosedReason::LandedAfterCoolingOff);
                 rec.closed_message = Some(
                     "the cooling-off ended with nobody but the requester and the subject able \
                      to consent, so it landed unopposed (VTI-APV-019)"
@@ -1978,11 +2086,12 @@ pub(crate) async fn list(
     since: Option<u64>,
     offset: usize,
     limit: usize,
+    version: WireVersion,
 ) -> Result<Page, AppError> {
     refresh_all(state).await?;
     let now = now_epoch();
     let records = all(state).await?;
-    let mut ctx = ViewCtx::new(state, &records, now).await?;
+    let mut ctx = ViewCtx::new(state, &records, now, version).await?;
 
     let mut waiting_for_me = 0;
     let mut requested_by_me = 0;
@@ -2070,6 +2179,7 @@ pub(crate) async fn show(
     caller: &str,
     caller_unrestricted: bool,
     action_id: &str,
+    version: WireVersion,
 ) -> Result<Option<Value>, AppError> {
     refresh_all(state).await?;
     let Some(rec) = load(state, action_id).await? else {
@@ -2079,7 +2189,7 @@ pub(crate) async fn show(
         return Ok(None);
     }
     let records = all(state).await?;
-    let mut ctx = ViewCtx::new(state, &records, now_epoch()).await?;
+    let mut ctx = ViewCtx::new(state, &records, now_epoch(), version).await?;
     let mut view = ctx.render(&rec, caller, true);
     // An approver who may decide now also gets the VTC-signed
     // `task-consent/request/0.1` for their slot — the same document the push
@@ -2114,9 +2224,10 @@ pub(crate) async fn view_one(
     state: &AppState,
     caller: &str,
     rec: &ActionRecord,
+    version: WireVersion,
 ) -> Result<Value, AppError> {
     let records = all(state).await?;
-    let mut ctx = ViewCtx::new(state, &records, now_epoch()).await?;
+    let mut ctx = ViewCtx::new(state, &records, now_epoch(), version).await?;
     Ok(ctx.render(rec, caller, false))
 }
 
@@ -2129,6 +2240,8 @@ struct ViewCtx<'a> {
     entries: Vec<crate::acl::VtcAclEntry>,
     /// Every live administrator, of any role — who acknowledges (VTI-VTC-023).
     admins: Vec<String>,
+    /// The `_shared` version the caller asked in.
+    version: WireVersion,
 }
 
 impl<'a> ViewCtx<'a> {
@@ -2136,10 +2249,12 @@ impl<'a> ViewCtx<'a> {
         state: &'a AppState,
         records: &'a [ActionRecord],
         now: u64,
+        version: WireVersion,
     ) -> Result<Self, AppError> {
         Ok(Self {
             records,
             now,
+            version,
             threshold: admin_consent::threshold(state).await?,
             entries: crate::acl::list_acl_entries(&state.acl_ks).await?,
             admins: live_admins(state, now).await?,
@@ -2197,10 +2312,16 @@ impl<'a> ViewCtx<'a> {
             .filter(|a| !rec.status.is_open() || eligible.contains(&a.did))
             .map(|a| json!({ "subject": a.did, "at": rfc3339(a.at) }))
             .collect();
+        let v0_2 = self.version == WireVersion::V0_2;
+        let cooling_off = rec.cooling_off_until;
         let caller_role = if rec.requester == caller {
             "requester"
         } else if rec.slot(caller).is_some() {
             "approver"
+        } else if v0_2 && cooling_off.is_some() && rec.subject == caller {
+            // VTI-APV-019: shown it so they learn of it before it lands; they
+            // can neither decide nor cancel it.
+            "subject"
         } else {
             "observer"
         };
@@ -2240,10 +2361,12 @@ impl<'a> ViewCtx<'a> {
         {
             ext.insert("approverInvite".into(), invite.clone());
         }
-        if let Some(until) = rec.cooling_off_until {
-            // VTI-APV-019 / §8.2: nobody else can consent, so there is no
-            // threshold and no expiry — it lands by itself at `landsAt`
+        if let Some(until) = cooling_off.filter(|_| !v0_2) {
+            // 0.1 only. VTI-APV-019 / §8.2: nobody else can consent, so there
+            // is no threshold and no expiry — it lands by itself at `landsAt`
             // unless the requester cancels it. The subject sees it coming.
+            // 0.1's schema has no way to say so; 0.2 does, in `category`,
+            // `landsAt` and `cancellableBy`, and carries none of this.
             ext.insert(
                 "coolingOff".into(),
                 json!({
@@ -2255,9 +2378,14 @@ impl<'a> ViewCtx<'a> {
             );
         }
 
+        let category = if v0_2 && cooling_off.is_some() {
+            "coolingOff"
+        } else {
+            rec.category.wire()
+        };
         let mut action = json!({
             "actionId": rec.id,
-            "category": rec.category.wire(),
+            "category": category,
             "kind": rec.kind,
             "typeUri": rec.type_uri,
             "requester": rec.requester,
@@ -2271,7 +2399,14 @@ impl<'a> ViewCtx<'a> {
             "requesterOpenActions": requester_open,
             "ext": { "org.openvtc": Value::Object(ext) },
         });
-        if rec.cooling_off_until.is_none() {
+        if v0_2 && let Some(until) = cooling_off {
+            // `landsAt` exactly for `coolingOff`; neither threshold nor expiry.
+            action["landsAt"] = json!(rfc3339(until));
+            if rec.status.is_open() {
+                action["cancellableBy"] = json!("requester");
+            }
+        }
+        if cooling_off.is_none() {
             // A cooling-off has neither: no approval is needed, and it does
             // not lapse — the published `threshold` cannot say zero, so it is
             // absent rather than a number that is not true.
@@ -2279,13 +2414,16 @@ impl<'a> ViewCtx<'a> {
             action["threshold"] = json!(rec.threshold.max(1));
         }
         if rec.status.is_open() {
-            let needed = if rec.cooling_off_until.is_some() {
+            let needed = if cooling_off.is_some() {
                 0
             } else {
                 rec.threshold.max(self.threshold)
             };
             let valid = approvals.len() as u64;
-            action["approversRemaining"] = json!(needed.saturating_sub(valid));
+            // 0.2: absent for `coolingOff`, which waits on time, not decisions.
+            if !(v0_2 && cooling_off.is_some()) {
+                action["approversRemaining"] = json!(needed.saturating_sub(valid));
+            }
             if rec.status == Status::Open
                 && let Some(slot) = rec.slot(caller)
                 && !rec.approved_by(caller)
@@ -2296,7 +2434,7 @@ impl<'a> ViewCtx<'a> {
         } else {
             action["closedAt"] = json!(rfc3339(rec.closed_at.unwrap_or(rec.created_at)));
             if let Some(r) = rec.closed_reason {
-                action["closedReason"] = json!(r.wire());
+                action["closedReason"] = json!(r.wire(self.version));
             }
         }
         action
@@ -2343,7 +2481,7 @@ impl<'a> ViewCtx<'a> {
         } else {
             action["closedAt"] = json!(rfc3339(rec.closed_at.unwrap_or(rec.created_at)));
             if let Some(r) = rec.closed_reason {
-                action["closedReason"] = json!(r.wire());
+                action["closedReason"] = json!(r.wire(self.version));
             }
         }
         action
@@ -2438,14 +2576,16 @@ pub struct OperatorWrite {
     /// Stable for the queued marker, so raising it twice — a crash between
     /// raising and clearing the marker — finds the item already there.
     pub marker: String,
+    /// The command line that wrote it, e.g. `vtc acl add`.
     pub command: String,
     /// `grant`, `remove`, `approverInvite`, `emergencyBootstrap` or
     /// `aclMigration`.
     pub action: String,
-    /// The DID written, when the write names one.
-    pub did: Option<String>,
-    pub role: Option<String>,
-    pub scopes: Vec<String>,
+    /// The DIDs whose access the write changed, in the order the command
+    /// reports them. Never empty on the record (`offline-write/0.1` `dids`):
+    /// an emergency bootstrap recorded before its marker carried any is named
+    /// by the community's own DID.
+    pub dids: Vec<String>,
     pub operator_host: String,
     pub invoked_at: chrono::DateTime<chrono::Utc>,
     /// The administrators holding a role when the write was made. `None` for
@@ -2468,10 +2608,70 @@ pub async fn operator_item_raised(state: &AppState, marker: &str) -> Result<bool
     Ok(load(state, &operator_item_id(marker)).await?.is_some())
 }
 
-/// The Trust Task an operator's write did, as the acknowledge item's
-/// `typeUri`. An emergency bootstrap is no Trust Task at all; it is named by a
-/// URN of this implementation's.
-pub const OPERATOR_EMERGENCY_BOOTSTRAP_URI: &str = "urn:openvtc:vtc:operator:emergency-bootstrap";
+/// `vtc/operator/offline-write/0.1` — the **record type** an acknowledge item's
+/// `typeUri` names for an operator's offline write (VTI-VTC-023). Those
+/// commands run on the host, against the store, and are no Trust Task of their
+/// own; the record gives the action a Type URI to name and its payload a
+/// published shape. Never sent and never dispatched: a document of this type
+/// arriving at the spine answers `unsupportedType`, like every embedded-only
+/// type (`trust_task_manifest::EMBEDDED_ONLY`).
+pub const OPERATOR_OFFLINE_WRITE_URI: &str =
+    <trust_tasks_rs::specs::vtc::operator::offline_write::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The record's `command`, from the command line the marker carries — or,
+/// failing a known one, from the kind of write.
+fn offline_write_command(write: &OperatorWrite) -> &'static str {
+    match write.command.as_str() {
+        "vtc acl add" => "aclAdd",
+        "vtc acl remove" => "aclRemove",
+        "vtc admin invite" => "adminInvite",
+        "vtc create-did-key --admin" => "createDidKeyAdmin",
+        "vtc admin enrol-approver" => "enrolApprover",
+        "vtc admin emergency-bootstrap" => "emergencyBootstrap",
+        _ => match write.action.as_str() {
+            "grant" => "aclAdd",
+            "remove" => "aclRemove",
+            "approverInvite" => "enrolApprover",
+            _ => "emergencyBootstrap",
+        },
+    }
+}
+
+/// The `offline-write/0.1` record for `write`, held to its published schema.
+pub(crate) fn offline_write_record(
+    write: &OperatorWrite,
+    fallback_did: &str,
+) -> Result<Value, AppError> {
+    use trust_tasks_rs::validate::ValidatedPayload as _;
+    let mut dids: Vec<String> = Vec::with_capacity(write.dids.len());
+    for d in &write.dids {
+        if !d.is_empty() && !dids.contains(d) {
+            dids.push(d.clone());
+        }
+    }
+    dids.truncate(64);
+    if dids.is_empty() {
+        dids.push(fallback_did.to_string());
+    }
+    let host = if write.operator_host.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        write.operator_host.chars().take(253).collect()
+    };
+    let record = json!({
+        "command": offline_write_command(write),
+        "dids": dids,
+        "host": host,
+        "at": write.invoked_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    });
+    trust_tasks_rs::specs::vtc::operator::offline_write::v0_1::Payload::validate_value(&record)
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "offline-write record rejected by its own schema: {e}"
+            ))
+        })?;
+    Ok(record)
+}
 
 /// The `typeUri` the boot-time ACL migration's acknowledge item is recorded
 /// under (`vtc-admin-roles.md` §9) — no Trust Task either.
@@ -2480,31 +2680,26 @@ pub const OPERATOR_ACL_MIGRATION_URI: &str = "urn:openvtc:vtc:operator:acl-migra
 /// Raise `write` as an acknowledge item, unless it already was. `Ok(true)` when
 /// raised now. Never subject to the requester limits: an operator's write is
 /// surfaced whatever else is open (VTI-VTC-023).
+///
+/// The item's `typeUri` is the record type `vtc/operator/offline-write/0.1`
+/// and its payload that record (`{command, dids, host, at}`), for every
+/// offline command — the emergency bootstrap included. The boot ACL migration
+/// is not an offline command and keeps [`OPERATOR_ACL_MIGRATION_URI`].
 pub async fn raise_operator_item(
     state: &AppState,
     write: &OperatorWrite,
 ) -> Result<bool, AppError> {
     let id = operator_item_id(&write.marker);
-    let type_uri = match write.action.as_str() {
-        "grant" => summary::ACL_GRANT,
-        "remove" => summary::ACL_REVOKE,
-        "approverInvite" => summary::APPROVER_INVITE,
-        "aclMigration" => OPERATOR_ACL_MIGRATION_URI,
-        _ => OPERATOR_EMERGENCY_BOOTSTRAP_URI,
+    // The boot migration to role-based administration is no operator command:
+    // `offline-write/0.1`'s `command` is a closed set of offline commands with
+    // no value for it, and no record type is specified for a migration. It
+    // keeps its own URN and payload until one is (`vtc-admin-roles.md` §9).
+    let migration = write.action == "aclMigration";
+    let type_uri = if migration {
+        OPERATOR_ACL_MIGRATION_URI
+    } else {
+        OPERATOR_OFFLINE_WRITE_URI
     };
-    let mut payload = json!({
-        "command": write.command,
-        "operatorHost": write.operator_host,
-        "invokedAt": write.invoked_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-    });
-    if let Some(did) = &write.did {
-        let mut entry = json!({ "subject": did });
-        if let Some(role) = write.role.as_ref().filter(|r| !r.is_empty()) {
-            entry["role"] = json!(role);
-            entry["scopes"] = json!(write.scopes);
-        }
-        payload["entry"] = entry;
-    }
     let vtc_did = state
         .config
         .read()
@@ -2513,9 +2708,19 @@ pub async fn raise_operator_item(
         .clone()
         .filter(|d| !d.is_empty())
         .unwrap_or_else(|| "did:key:vtc-break-glass".into());
+    let payload = if migration {
+        json!({
+            "command": write.command,
+            "operatorHost": write.operator_host,
+            "invokedAt": write.invoked_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        })
+    } else {
+        offline_write_record(write, &vtc_did)?
+    };
     let now = now_epoch();
     let digest = task_consent::payload_digest(type_uri, &payload)?;
-    let subject = write.did.clone().unwrap_or_default();
+    // The first DID the write changed — the one named in the audit row.
+    let subject = write.dids.first().cloned().unwrap_or_default();
     let rec = ActionRecord {
         id: id.clone(),
         kind: KIND_OPERATOR_WRITE.to_string(),

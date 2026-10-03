@@ -549,6 +549,12 @@ impl InstallTokenStore {
 pub struct PendingEmergencyBootstrap {
     pub operator_hostname: String,
     pub invoked_at: DateTime<Utc>,
+    /// The DIDs whose access it changed: the recovery DID it installs as the
+    /// new administrator, then every administrator it wiped — what the
+    /// acknowledge item's `vtc/operator/offline-write/0.1` record names.
+    /// Empty in a marker written before it was recorded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dids: Vec<String>,
 }
 
 /// An ACL write an offline command made with the daemon stopped — the
