@@ -441,6 +441,30 @@ fn write_stall() -> Duration {
 
 // ─── who may read what ───────────────────────────────────────────────────
 
+/// What each topic's read demands **beyond being an administrator** — one
+/// source of truth for the read handlers and for the topic's entitlement.
+///
+/// | Topic | Read it prompts | Gate |
+/// |---|---|---|
+/// | `actions`, `acknowledgements` | `vtc/admin/actions/list` | any administrator |
+/// | `singleAdminMode` | the action list's `ext` | any administrator |
+/// | `members` | `vtc/members/list` | any administrator |
+/// | `joinRequests` | `vtc/join-requests/list` | any administrator |
+/// | `config` | `vtc/config/export` | `vtc.config.admin` |
+///
+/// The handlers of `vtc/members/list`, `vtc/join-requests/list` and
+/// `vtc/config/export` (`trust_tasks`) read their capability from here.
+pub(crate) fn read_capability(topic: Topic) -> Option<crate::acl::Capability> {
+    match topic {
+        Topic::Config => Some(crate::acl::Capability::ConfigAdmin),
+        Topic::Actions
+        | Topic::Acknowledgements
+        | Topic::SingleAdminMode
+        | Topic::Members
+        | Topic::JoinRequests => None,
+    }
+}
+
 /// A caller's standing, read now from the community's own records.
 #[derive(Debug, Clone)]
 pub(crate) struct Standing {
@@ -460,19 +484,10 @@ pub(crate) struct Standing {
 /// (`trust_tasks::admin_signer`): the signer's own row; failing that, the
 /// row of the administrator an active console-key delegation names.
 ///
-/// | Topic | Read it prompts | Entitled |
-/// |---|---|---|
-/// | `actions`, `acknowledgements` | `vtc/admin/actions/list` | every administrator |
-/// | `singleAdminMode` | the action list's `ext` | every administrator |
-/// | `members` | `vtc/members/list` | every administrator (the read answers all) |
-/// | `joinRequests` | `vtc/join-requests/list` | holders of `vtc.join.decide` (any criterion) |
-/// | `config` | `vtc/config/export` | holders of `vtc.config.admin` |
-///
-/// `joinRequests` is narrower than its read, which answers every
-/// administrator: its count is "join requests awaiting a decision", and only
-/// a decider has any awaiting them — the same rule the console's Join
-/// requests entry already applies. A narrower set only ever withholds hints;
-/// the console polls what the response omits.
+/// A topic is readable exactly when the community would answer its read
+/// (subscribe 0.1 §Authorization): every administrator, plus whatever
+/// [`read_capability`] says that read demands — the same function the read
+/// handlers gate on, so the two cannot drift.
 pub(crate) async fn standing(state: &AppState, signer: &str) -> Result<Option<Standing>, AppError> {
     let own = crate::acl::get_acl_entry(&state.acl_ks, signer).await?;
     let (principal, entry, delegated_until) = match own {
@@ -493,20 +508,10 @@ pub(crate) async fn standing(state: &AppState, signer: &str) -> Result<Option<St
     if !entry.is_administrator() {
         return Ok(None);
     }
-    let mut topics: BTreeSet<Topic> = [
-        Topic::Actions,
-        Topic::Acknowledgements,
-        Topic::SingleAdminMode,
-        Topic::Members,
-    ]
-    .into_iter()
-    .collect();
-    if entry.can_any(crate::acl::Capability::JoinDecide) {
-        topics.insert(Topic::JoinRequests);
-    }
-    if entry.can(crate::acl::Capability::ConfigAdmin, None) {
-        topics.insert(Topic::Config);
-    }
+    let topics: BTreeSet<Topic> = Topic::ALL
+        .into_iter()
+        .filter(|t| read_capability(*t).is_none_or(|cap| entry.can(cap, None)))
+        .collect();
     let entry_until = entry
         .expires_at
         .and_then(|e| DateTime::<Utc>::from_timestamp(e as i64, 0));

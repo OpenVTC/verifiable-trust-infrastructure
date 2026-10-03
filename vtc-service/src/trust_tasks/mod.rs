@@ -4553,9 +4553,10 @@ async fn handle_config_export(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) =
-        capable_signer(state, ctx, &doc, crate::acl::Capability::ConfigAdmin, None).await
-    {
+    // The gate the console's live `config` topic shares (`admin_events`).
+    let cap = crate::admin_events::read_capability(crate::admin_events::Topic::Config)
+        .unwrap_or(crate::acl::Capability::ConfigAdmin);
+    if let Err(reject) = capable_signer(state, ctx, &doc, cap, None).await {
         return reject;
     }
     let _checked: config_export::Payload = match parse_spec_payload(&doc) {

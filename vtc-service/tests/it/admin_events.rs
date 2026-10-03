@@ -397,8 +397,9 @@ async fn a_member_written_is_a_countless_members_hint() {
 #[tokio::test]
 async fn a_topic_the_caller_cannot_read_is_never_effective() {
     let vtc = vtc().await;
-    // An auditor administers, but decides no join request and exports no
-    // configuration.
+    // An auditor administers, so it reads the join-request list — and hears
+    // its topic — but cannot export the configuration, so `config` is never
+    // effective: topic readability is the read's own check.
     let auditor = with_role(&vtc, Some(AdminRole::Auditor), None).await;
     let (_, _sse, _, first) = open_stream(
         &vtc,
@@ -406,13 +407,26 @@ async fn a_topic_the_caller_cannot_read_is_never_effective() {
         json!({ "topics": ["joinRequests", "actions", "config"] }),
     )
     .await;
-    assert_eq!(first["payload"]["topics"], json!(["actions"]));
+    assert_eq!(
+        first["payload"]["topics"],
+        json!(["actions", "joinRequests"])
+    );
+
+    // The read agrees: the export is refused to the same caller.
+    let (_, refused) = crate::common::signed::call(
+        &vtc,
+        &auditor,
+        "https://trusttasks.org/spec/vtc/config/export/0.1",
+        json!({}),
+    )
+    .await;
+    assert_eq!(tt_error_code(&refused), Some("permissionDenied"));
 
     // Asking only for what it cannot read opens nothing.
     let (_, res) = subscribe(
         &vtc,
         &auditor,
-        json!({ "topics": ["joinRequests"] }),
+        json!({ "topics": ["config"] }),
         Some(STREAM_ACCEPT),
         None,
     )

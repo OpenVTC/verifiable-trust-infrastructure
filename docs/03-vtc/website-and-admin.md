@@ -372,7 +372,7 @@ badge topics the viewer's count:
 |---|---|---|---|
 | `actions` | the Actions page and its badge | `waitingForMe` | every administrator |
 | `acknowledgements` | the operator-write banner (the badge read) | open acknowledge items owed | every administrator |
-| `joinRequests` | the Join requests page, badge and tile | pending requests | holders of `vtc.join.decide` |
+| `joinRequests` | the Join requests page, badge and tile | pending requests | every administrator |
 | `members` | the Members page and tile | — | every administrator |
 | `singleAdminMode` | the single-administrator banner | — | every administrator |
 | `config` | the configuration and profile screens | — | holders of `vtc.config.admin` |
@@ -383,9 +383,10 @@ neither leak a record nor grant one, and a forged hint costs one unnecessary
 request. A hint never carries a record, a record id or a DID — the community's
 integration tests assert the shape of every one it sends. Within a count topic,
 a change the viewer's read would not show them sends no hint (the VTC compares
-a digest of what that read shows). `joinRequests` is narrower than its read,
-which answers every administrator: only a decider has requests awaiting them,
-and the Join requests entry is already gated on `vtc.join.decide`.
+a digest of what that read shows). Who hears a topic is decided by exactly the
+check its read makes — one table in the VTC (`admin_events::read_capability`)
+that the read handlers gate on too — so whoever the community would answer on
+the read gets its hints, and nobody else.
 
 **Live or offline.** The nav shows **Live** only while bytes are arriving —
 an event, or the heartbeat comment the VTC sends at least every
