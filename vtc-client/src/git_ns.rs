@@ -616,6 +616,35 @@ impl VtcClient {
 pub const GIT_NS_BREAK_GLASS_TYPE: &str =
     <break_glass::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
+/// The type URI of `git-ns/right/grant/0.3`. Signed with
+/// [`VtcClient::git_ns_sign`] and sent with [`VtcClient::git_ns_send_signed`]
+/// when the caller must be able to answer an operation-bound step-up and
+/// re-send the identical document — a self-grant under single-administrator
+/// mode, which carries `ext.org.openvtc.selfGrantWaived` in its answer.
+pub const GIT_NS_GRANT_TYPE: &str = <grant::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The type URI of `git-ns/repo/create/0.3` (see [`GIT_NS_GRANT_TYPE`]).
+pub const GIT_NS_REPO_CREATE_TYPE: &str = <create::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The type URI of `git-ns/repo/adopt/0.1` (see [`GIT_NS_GRANT_TYPE`]).
+pub const GIT_NS_REPO_ADOPT_TYPE: &str = <adopt::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The type URI of `git-ns/drift/resolve/0.3` (see [`GIT_NS_GRANT_TYPE`]).
+pub const GIT_NS_DRIFT_RESOLVE_V3_TYPE: &str =
+    <drift_resolve3::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// The `ext.org.openvtc.selfGrantWaived` member of a `git-ns/*` answer: present
+/// exactly when the VTC, in single-administrator mode, recorded an elevated
+/// right for the signer themselves because nobody else could grant it
+/// (VTI-APV-022).
+pub fn self_grant_waived(answer: &Value) -> Option<&Value> {
+    answer
+        .get("ext")?
+        .get("org.openvtc")?
+        .get("selfGrantWaived")
+        .filter(|v| v.is_object())
+}
+
 /// The type URI of `auth/step-up/approve-response/0.4`: the answer, signed by
 /// the actor with its `assertionMethod` key, to the operation-bound step-up a
 /// signed change can be refused for. The passkey assertion it carries is in

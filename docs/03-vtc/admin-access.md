@@ -277,14 +277,30 @@ waits in Actions.
   none exists, with or without the mode — and keeps its cooling-off. That
   subject is another administrator, and taking them out at once would let one
   credential remove the only other eligible party and then act on the waiver.
+- **It covers git separation of duties the same way.** Nobody records an
+  elevated git right (`git.ns.admin`, `git.repo.create`, `git.repo.own`) for
+  themselves (git-namespaces *Separation of duties*), and break-glass needs
+  another administrator to ratify — so in this mode, where nobody else could
+  make the grant or decide the break-glass, such a self-grant (`cnm git grant`,
+  `create`, `adopt --owner <you>`, `reseat` to yourself, a drift adoption for
+  your own account) runs on your step-up bound to that operation instead. The
+  record is marked, counts toward the last-owner and last-admin invariants, and
+  needs no ratification; a second administrator, or an owner who could make the
+  grant, and the refusal applies again ([git-namespaces](git-namespaces.md#single-administrator-mode-waives-it-where-nobody-else-could-grant)).
 - **It is never quiet.** Every administrator sees a permanent *SINGLE ADMIN
   MODE* banner on every console page and a dashboard tile; `cnm actions list`
   prints the same notice. Each waived operation is entered in the Actions
   history marked **Consent waived**. And it is audited at `Critical`: a
   `SingleAdminMode` row at every start with the mode in effect (`inEffect`),
   another when the host configuration turned it on or off since the last start
-  (`enabled` / `disabled`), and one for every operation whose consent it waived
-  (`consentWaived`, naming the task, the requirement and the payload digest).
+  (`enabled` / `disabled`), one for every operation whose consent it waived
+  (`consentWaived`, naming the task, the requirement and the payload digest),
+  and one for every git self-grant it waived (`selfGrantWaived`, naming the
+  task, its digest, the git-ns action, the right and the resource — written
+  before the record, and refusing the operation if it cannot be). A waived git
+  self-grant is answered with `ext.org.openvtc.selfGrantWaived`, which `cnm`
+  reports as *Single-administrator waiver applied*, and shows in the git
+  activity list as `gitNs.right.selfGrantWaived`.
 
 ### 2.2 Several administrators
 
@@ -525,6 +541,10 @@ place to decide it at the next sweep.
 - No one can write an entry that outlives their own.
 - Every promotion goes through the role-change policy and its host checks; no
   path skips them.
+- No one records an elevated git right for themselves; break-glass is the
+  explicit way, ratified by another administrator. In single-administrator
+  mode, where nobody else could grant it, the requester's operation-bound
+  step-up stands in, audited at `Critical` (§2.1a).
 
 ### 3.4 Admins cannot remove each other down to nothing
 

@@ -831,7 +831,13 @@ new flow, update both this section and the relevant `docs/*.md`.
   host-only (setup writes it; `config/patch`/import refuse it), waives a VTC
   consent only when the approver set is empty, on the requester's
   operation-bound step-up, always `Critical`-audited and bannered — never widen
-  it to a non-empty set or make it patchable (`vtc-action-list.md` §8.5).
+  it to a non-empty set or make it patchable (`vtc-action-list.md` §8.5). It
+  also waives git separation of duties (rule 7) on the same terms
+  (`git_ns::single_admin`): only when nobody else is eligible
+  (`others_eligible` reuses `approvers_for`), step-up bound to the signed
+  document, `SingleAdminMode{selfGrantWaived}` written before the record or the
+  operation is refused; the record is marked `singleAdmin` and counts for the
+  invariants.
 - **VTC differs: it parks, the VTA re-sends.** A consent-gated VTC operation
   (APV-014/-019/-020, VTC-022) is stored as an action (202 + `actionId`) and
   runs itself, re-checked, on the N-th approval. Code: `vtc-service/src/admin_actions/`,
@@ -1074,6 +1080,10 @@ new flow, update both this section and the relevant `docs/*.md`.
   `AuditSeverity::Critical`, and is announced to every other administrator —
   policy may disable, delay or tighten it, never quieten it. An unratified
   break-glass record never counts toward the last-owner/last-admin invariants.
+  In single-administrator mode, where nobody else could make the grant, rule 7
+  is instead waived for that one operation (`git_ns::single_admin`, a
+  `Waivable` token the rules accept for exactly that self-grant), and that
+  record does count.
   Each unratified one is also an action-list `queue` item for the namespace's
   other administrators (`admin_actions::queues`): Ratify/Revoke call
   `right_ratify`/`right_revoke` as the decider, it never expires into

@@ -96,10 +96,7 @@ async fn write(state: &AppState, event: &str) -> Result<(), AppError> {
             None,
             AuditEvent::SingleAdminMode(SingleAdminModeData {
                 event: event.into(),
-                requirement: None,
-                task: None,
-                digest: None,
-                kind: None,
+                ..Default::default()
             }),
         )
         .await?;

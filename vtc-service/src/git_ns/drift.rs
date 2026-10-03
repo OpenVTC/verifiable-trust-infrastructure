@@ -167,6 +167,9 @@ pub async fn drift_resolve(
     p: resolve::Payload,
 ) -> OpResult<resolve::Response> {
     let actor = standing(state, actor_did).await?;
+    // The document as signed: what a single-administrator waiver's step-up on
+    // an adoption is bound to (`super::single_admin`).
+    let doc_payload = serde_json::to_value(&p).map_err(AppError::from)?;
     let action = serde_json::to_value(p.action)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
@@ -276,11 +279,18 @@ pub async fn drift_resolve(
         }
     };
 
-    let right = if action == "adopt" {
-        Some(adopt(state, &actor, &d, reason.clone()).await?)
+    let (right, waived_ext) = if action == "adopt" {
+        let granted = adopt(state, &actor, &d, reason.clone(), &doc_payload).await?;
+        let ext = granted
+            .ext
+            .map(|e| serde_json::to_value(e).map_err(AppError::from));
+        (
+            Some(serde_json::to_value(granted.right).map_err(AppError::from)?),
+            ext.transpose()?,
+        )
     } else {
         revert(state, &actor, &d).await?;
-        None
+        (None, None)
     };
 
     // Step 8 — record it, and take the item off the outstanding drift.
@@ -338,6 +348,11 @@ pub async fn drift_resolve(
     if let Some(r) = right {
         body["right"] = r;
     }
+    // `ext.org.openvtc.selfGrantWaived`, when single-administrator mode
+    // waived separation of duties for the adopted right.
+    if let Some(ext) = waived_ext {
+        body["ext"] = ext;
+    }
     Ok(wire::into(body)?)
 }
 
@@ -347,7 +362,8 @@ async fn adopt(
     actor: &ops::Standing,
     d: &Decided,
     reason: Option<String>,
-) -> OpResult<Value> {
+    doc_payload: &Value,
+) -> OpResult<grant::Response> {
     let item = &d.items[0];
     // Step 1.
     if d.selector.kind != "roleAdded" && d.selector.kind != "roleChanged" {
@@ -427,11 +443,23 @@ async fn adopt(
     // is the DID the signer was resolved to, after any console-key delegation
     // (`tasks::acting_as`), so a console key cannot adopt for its admin what
     // the admin could not adopt themselves.
-    let elevated = {
+    //
+    // Single-administrator mode lifts it where nobody else could adopt it
+    // (VTI-APV-022, `super::single_admin`); the grant in step 7 decides that
+    // again under its lock, and spends the step-up bound to this document.
+    let refused = {
         let snap = Snapshot::load(&state.git_ns).await?;
-        rules::elevated_on(&snap, right, &d.resource)
+        let elevated = rules::elevated_on(&snap, right, &d.resource);
+        if rules::separation_of_duties(&actor.did, &member, right, elevated, &d.resource).is_ok() {
+            false
+        } else {
+            let st = super::policy::active_settings(state).await;
+            super::single_admin::waivable(state, &snap, &d.ns, actor, right, &d.resource, st.rules)
+                .await?
+                .is_none()
+        }
     };
-    if rules::separation_of_duties(&actor.did, &member, right, elevated, &d.resource).is_err() {
+    if refused {
         // Break-glass carries only ns.admin, repo.create and own, so a right
         // elevated only by the map is pointed at another owner.
         let way = if right.is_elevated() {
@@ -494,12 +522,17 @@ async fn adopt(
             via: "drift.adopt",
             still_holds: &still_holds,
             linked_to: Some(&link),
+            op: super::single_admin::WaivedOp {
+                type_uri: <resolve::Payload as trust_tasks_rs::Payload>::TYPE_URI,
+                payload: doc_payload,
+                kind: "drift.adopt",
+            },
         }),
     )
     .await?;
     // Step 8 — the complete desired roles, now with the member at the right.
     force_role_projection(state, &d.repo.id).await?;
-    Ok(serde_json::to_value(granted.right).map_err(vti_common::error::AppError::from)?)
+    Ok(granted)
 }
 
 /// The account's link no longer resolves to the member the adoption names.

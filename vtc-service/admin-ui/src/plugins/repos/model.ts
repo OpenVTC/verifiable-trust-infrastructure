@@ -920,6 +920,7 @@ const ACTIVITY: Record<string, string> = {
   "gitNs.right.breakGlass": "broke the glass — self-granted",
   "gitNs.right.breakGlassRatified": "break-glass ratified",
   "gitNs.right.breakGlassRevoked": "break-glass revoked",
+  "gitNs.right.selfGrantWaived": "self-granted — single-administrator mode",
 };
 
 /** An activity item's action in words. Unknown actions are shown verbatim

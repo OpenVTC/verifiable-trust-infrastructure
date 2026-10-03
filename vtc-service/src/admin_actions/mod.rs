@@ -577,6 +577,7 @@ pub(crate) async fn spend_waiver(state: &AppState, waiver: Waiver) -> Result<(),
                     task: Some(waiver.type_uri.clone()),
                     digest: Some(waiver.digest.clone()),
                     kind: Some(kind),
+                    ..Default::default()
                 }),
             )
             .await?;

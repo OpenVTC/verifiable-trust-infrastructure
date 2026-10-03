@@ -52,7 +52,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::capability::{CapRef, Capability, ResourceQualifier};
-use crate::git_ns::model::{BreakGlassMark, Right};
+use crate::git_ns::model::{BreakGlassMark, Right, SingleAdminMark};
 
 /// How much of `git.repo.manage` a grant confers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -111,6 +111,10 @@ pub struct ResourceGrant {
     /// Open while the granter has departed and nobody has re-affirmed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<GrantReview>,
+    /// Present exactly when the subject recorded this for itself under
+    /// single-administrator mode (VTI-APV-022, `git_ns::single_admin`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub single_admin: Option<SingleAdminMark>,
 }
 
 impl ResourceGrant {
@@ -400,6 +404,7 @@ mod tests {
             granter_was_member: true,
             break_glass: None,
             review: None,
+            single_admin: None,
         }
     }
 

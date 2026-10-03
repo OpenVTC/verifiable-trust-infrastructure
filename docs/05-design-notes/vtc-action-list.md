@@ -626,6 +626,23 @@ not backed up), then `inEffect` if it is on. Written before the recorded value
 is updated, so a crash re-audits rather than loses the change; a start that
 cannot write them does not proceed.
 
+**Git separation of duties.** Fixed rule 7 of `git-ns/right/grant/0.3` (nobody
+records an elevated git right for themselves) is a second-party control of the
+same kind, and its escape hatch — break-glass — needs another administrator to
+ratify. So the mode reaches it too (`git_ns::single_admin`), on the same terms:
+the eligible set is `approvers_for` over the namespace's `git.ns.admin` (the
+`BreakGlassReview` deciders and the approve scope that reaches it) together with
+any other member whose git rights carry the authority to make the grant; empty
+and the mode on, the self-grant runs on the requester's step-up bound to the
+document they signed, with a `Critical` `SingleAdminMode { event:
+selfGrantWaived }` row (rule, task, digest, git-ns action, right, resource)
+written before the record and refusing on failure. Nothing parks and nothing
+enters the action list — it is not a consent — but the record carries
+`singleAdmin`, the answer carries `ext.org.openvtc.selfGrantWaived`, and the
+record counts toward the last-owner and last-admin invariants (there is no one
+to ratify it). One eligible party and rule 7 applies exactly as without the
+mode.
+
 ## 8a. Rollout
 
 Decided 2026-10-02: net-new. Existing VTCs are reinstalled and restored from
