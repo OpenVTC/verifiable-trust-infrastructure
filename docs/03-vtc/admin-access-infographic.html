@@ -115,7 +115,7 @@
   .acl-row div { padding: 10px 12px; border-right: 1px solid var(--line); overflow-wrap: anywhere; }
   .acl-row div:last-child { border-right: 0; }
   .acl-row .h { background: var(--panel-2); color: var(--dim); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 11px; }
-  .acl-row .v { background: #0d1322; }
+  .acl-row .v { background: #0d1322; border-top: 1px solid var(--line); }
   .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
   .pill.all { background: rgba(88,230,168,.14); color: var(--good); border: 1px solid rgba(88,230,168,.4); }
   .pill.sc { background: rgba(255,180,84,.12); color: var(--warn); border: 1px solid rgba(255,180,84,.4); }
@@ -204,6 +204,7 @@
   }
 </style>
 </head>
+
 <body>
 
 <nav class="toc"><div class="wrap">
@@ -211,81 +212,91 @@
   <a href="#signin">Signing in</a>
   <a href="#one-or-many">One admin or many</a>
   <a href="#defences">Protections</a>
-  <a href="#consent">Consent flow</a>
+  <a href="#consent">Action list</a>
   <a href="#walkthrough">Walkthrough</a>
-  <a href="#gaps">Known gaps</a>
-  <a href="#coming">What's coming</a>
+  <a href="#delivered">Delivered</a>
+  <a href="#open">Still open</a>
   <a href="#ref">Quick reference</a>
 </div></nav>
 
 <header class="hero"><div class="wrap">
   <span class="eyebrow">Verifiable Trust Community · Administration</span>
   <h1>Who runs a community, and who stops them</h1>
-  <p class="lede">How administrator access works in a VTC: a single owner or a team, how each one proves who they are, and the controls that keep a single stolen credential, or a single rogue administrator, from taking the community over.</p>
+  <p class="lede">How administrator access works in a VTC: roles and capabilities, a single owner or a team, how each administrator proves who they are, and the controls that keep a single stolen credential, or a single rogue administrator, from taking the community over.</p>
   <div class="hero-tags">
-    <span class="tag"><b>Authority</b> = an ACL row, read at every act</span>
+    <span class="tag"><b>Authority</b> = capabilities on an ACL entry, read at every act</span>
     <span class="tag"><b>Step-up</b> bound to one operation</span>
-    <span class="tag"><b>VTI-APV-014</b> second-admin consent</span>
-    <span class="tag"><b>Break-glass</b> offline &amp; audited</span>
+    <span class="tag"><b>VTI-APV-018</b> N-of-M approvals that run themselves</span>
+    <span class="tag"><b>Break-glass</b> offline, audited &amp; acknowledged</span>
   </div>
 </div></header>
 
 <!-- ── 1. Model ─────────────────────────────────────────── -->
 <section id="model"><div class="wrap">
   <p class="kicker">01 · The model</p>
-  <h2>An administrator is an ACL row</h2>
-  <p class="sub">A DID is an administrator because the community's access-control list says so. Every act is authorized by reading that row at the moment it runs. Sessions, console keys and credentials carry no authority of their own, and only administrators can sign in to the console.</p>
+  <h2>An administrator is an ACL entry with a role</h2>
+  <p class="sub">A DID is an administrator because the community's access-control list gives it an <b>administrative role</b>. Every act asks one question of that entry at the moment it runs: does it hold the capability this act needs, at this resource? Sessions, console keys and credentials carry no authority of their own.</p>
 
   <div class="grid-2">
     <div class="card top good">
-      <span class="lbl">Unrestricted admin</span>
-      <h3>Acts everywhere</h3>
+      <span class="lbl">Built-in roles</span>
+      <h3>A role is a ceiling, never a grant</h3>
       <div class="acl-row">
-        <div class="h">DID</div><div class="h">Role</div><div class="h">Allowed contexts</div>
-        <div class="v mono">did:key:z6Mk…alice</div><div class="v">admin</div><div class="v"><span class="pill all">blank = all</span></div>
+        <div class="h">DID</div><div class="h">Admin role</div><div class="h">Administers</div>
+        <div class="v mono">did:key:z6Mk…alice</div><div class="v">community-admin</div><div class="v"><span class="pill all">everything</span></div>
+        <div class="v mono">did:webvh:…:dana</div><div class="v">repo-manager</div><div class="v"><span class="pill sc">git.repo.manage @ git-ns:github.com/acme</span></div>
+        <div class="v mono">did:key:z6Mk…erin</div><div class="v">approver</div><div class="v"><span class="pill sc">nothing · approves only</span></div>
       </div>
       <ul>
-        <li>Admin invites and step-up passkey invites</li>
-        <li>Audit trail, configuration, backup and restore, purging members</li>
-        <li>Approves other admins' promotions to unrestricted</li>
-        <li>Revokes anyone's console signing keys</li>
+        <li><code>community-admin</code>, <code>moderator</code>, <code>vetting-lead</code>, <code>repo-manager</code>, <code>credential-officer</code>, <code>auditor</code>, <code>approver</code></li>
+        <li>An entry holds the full ceiling, or a narrower set of its capabilities</li>
+        <li>Act and approve authority are separate: the least-privilege <code>approver</code> acts nowhere</li>
       </ul>
     </div>
-    <div class="card top warn">
-      <span class="lbl">Scoped admin</span>
-      <h3>An admin, minus the super-admin powers</h3>
-      <div class="acl-row">
-        <div class="h">DID</div><div class="h">Role</div><div class="h">Allowed contexts</div>
-        <div class="v mono">did:webvh:…:bob</div><div class="v">admin</div><div class="v"><span class="pill sc">events, events/2026</span></div>
-      </div>
+    <div class="card top acc">
+      <span class="lbl">Capabilities</span>
+      <h3>Twenty powers, some qualified by a resource</h3>
+      <p>One registry, fixed in code. A qualifier narrows a capability to a git namespace or repository, a policy purpose or a join criterion. Those marked <b>authority-conferring</b> let their holder create authority, so granting one always takes another holder's approval.</p>
       <ul>
-        <li>Runs vetting, members, joins and credentials community-wide, like any admin</li>
-        <li>Sees ACL entries sharing a context; changes only those wholly inside its contexts, never an unrestricted one</li>
-        <li>Granting one needs only the granter's step-up, not another admin's consent</li>
+        <li><b>Confer authority:</b> <code>vtc.roles.assign</code>, <code>vtc.approvals.admin</code>, <code>vtc.config.admin</code>, <code>vtc.backup.restore</code>, <code>vtc.did.admin</code>, <code>git.ns.admin</code>, <code>vtc.policy.admin</code> for authority purposes</li>
+        <li><b>Day to day:</b> members, joins, invitations, credentials, vetting, the website, registry, audit, sessions, repositories</li>
       </ul>
     </div>
   </div>
 
-  <div class="card top acc" style="margin-top:18px">
-    <span class="lbl">What is a context?</span>
-    <h3>A label on an ACL entry, nothing more</h3>
-    <p>Contexts are path-like labels (<code>events</code> covers <code>events/2026</code>). The community keeps no list of them, and no community resource belongs to one: members, joins, vetting, credentials and rooms are all community-wide. They decide only whether an admin is scoped or unrestricted, which ACL entries a scoped admin can see and change, and whose step-up passkeys it can list. In the VTA a context is a key hierarchy; the VTC borrows the ACL model, not that meaning.</p>
-    <p style="margin-top:10px">See them in <span class="ui">Access control</span>: the <b>Contexts</b> column and <b>Filter by context</b>, or <code>vtc acl list</code> offline. "all" in that column is true only for admins; a member with no contexts has none.</p>
+  <div class="grid-3" style="margin-top:18px">
+    <div class="card top acc">
+      <span class="lbl">Custom roles</span>
+      <h3>When the built-ins don't fit</h3>
+      <p><code>vtc/roles/define</code> and <code>delete</code>, through the action list: take <code>vtc.roles.assign</code> + <code>vtc.approvals.admin</code>, and a ceiling no wider than the definers hold. A role in use can't be deleted; an entry naming an undefined role confers nothing. See them on the <span class="ui">Roles</span> page.</p>
+    </div>
+    <div class="card top acc">
+      <span class="lbl">Git rights</span>
+      <h3>Capabilities beside the role</h3>
+      <p>Namespace admin, repo create / own / maintain and commit signing are <b>resource grants</b> on the holder's entry, granted only by <code>git-ns/right/grant</code> and bounded by the granter's own entry. A member with no admin role can own a repository; the bridge holds an <code>application</code> entry that never signs in.</p>
+    </div>
+    <div class="card top warn">
+      <span class="lbl">Grants are delegations</span>
+      <h3>A departed granter's grants go to review</h3>
+      <p>Granter removed, narrowed or expired: its grants become one <code>acl.grants.review</code> item — <b>Re-affirm</b> or <b>Withdraw</b>, withdrawn at the deadline. Git grants go to review only when their granter leaves the community.</p>
+    </div>
   </div>
+
+  <p class="note">No contexts at a VTC (VTI-VTC-010). Authority is narrowed with resource qualifiers, never a context list; <code>vtc acl add</code> refuses <code>--contexts</code>.</p>
 </div></section>
 
 <!-- ── 2. Sign-in ───────────────────────────────────────── -->
 <section id="signin"><div class="wrap">
   <p class="kicker">02 · Proving who you are</p>
   <h2>Three ways in, one signing key per browser</h2>
-  <p class="sub">After sign-in the console signs every act as a Trust Task document with a <b>console signing key</b>. It is generated in the browser, can't be exported, and is enrolled as a delegation from your admin DID. It lasts at most 30 days, you can hold at most five, and it only works in the console. It proves you have the browser, never that you are present.</p>
+  <p class="sub">After sign-in the console signs every act as a Trust Task document with a <b>console signing key</b>. It is generated in the browser, can't be exported, and is enrolled as a delegation from your admin DID, approved in your wallet or with your passkey. It lasts at most 30 days, you can hold at most five, and it only works in the console. It proves you have the browser, never that you are present.</p>
   <div class="tbl">
     <table>
-      <thead><tr><th>Sign-in</th><th>What it is</th><th>Can step up?</th></tr></thead>
+      <thead><tr><th>Sign-in</th><th>What it is</th><th>Step-up</th></tr></thead>
       <tbody>
         <tr><td>Passkey</td><td>A WebAuthn passkey registered to the admin DID at this VTC. <span class="ui">Sign in with passkey</span></td><td class="yes">Yes</td></tr>
-        <tr><td>VTA wallet</td><td>The browser plugin signs in as one of your VTA personas. <span class="ui">Sign in as a VTA identity</span></td><td class="partial">Only if that DID also has a passkey here</td></tr>
-        <tr><td>cnm / API</td><td>A DI-signed <code>auth/authenticate</code> from a <code>did:key</code></td><td>Signs approvals (§5)</td></tr>
+        <tr><td>VTA wallet</td><td>The browser plugin signs in as one of your VTA personas. <span class="ui">Sign in as a VTA identity</span></td><td class="yes">Yes, with an approver device (or a passkey here)</td></tr>
+        <tr><td>cnm / API</td><td>A DI-signed <code>auth/authenticate</code> from a <code>did:key</code> — one per community, rotated with <code>acl/swap-key</code></td><td class="partial">Answer it in the console; signs approvals</td></tr>
       </tbody>
     </table>
   </div>
@@ -294,35 +305,35 @@
 <!-- ── 3. One or many ───────────────────────────────────── -->
 <section id="one-or-many"><div class="wrap">
   <p class="kicker">03 · One administrator or several</p>
-  <h2>Run with at least two unrestricted admins</h2>
-  <p class="sub">Day-to-day administration works with one administrator. Making someone else <em>unrestricted</em> needs another unrestricted administrator to agree, and a single administrator has nobody to ask.</p>
+  <h2>Run with at least two community admins</h2>
+  <p class="sub">Day-to-day administration works with one administrator. Granting an authority-conferring capability needs another holder of it to agree, and a single administrator has nobody to ask — unless the community is installed for exactly that.</p>
   <div class="grid-2">
     <div class="card top hard">
-      <span class="lbl">One unrestricted admin</span>
-      <h3>Works, but can't grow online</h3>
-      <p>Granting unrestricted admin is refused: <i>"needs consent from 1 other unrestricted admin(s), and this community has 0 (VTI-APV-014)"</i>. The ways forward:</p>
+      <span class="lbl">One community admin</span>
+      <h3>Can't confer authority alone</h3>
+      <p>Making someone a <code>community-admin</code> online is refused: <i>"needs consent from 1 other holder(s) of vtc.roles.assign, … (VTI-APV-018)"</i>. The ways forward:</p>
       <ul>
-        <li><b>Grant scoped admin</b> (set contexts), which needs only your step-up</li>
-        <li><b>Offline, once:</b> <code>vtc acl add --did … --role admin</code> with the daemon stopped (audited)</li>
+        <li><b>Single-administrator mode</b>, set at install (right)</li>
+        <li><b>A narrower role</b> — moderator, auditor, vetting lead, credential officer — on your step-up alone</li>
         <li><b>At install:</b> name <code>co_admin_did</code> in <code>vtc setup</code></li>
+        <li><b>Offline, once:</b> <code>vtc acl add --did … --role admin</code> with the daemon stopped (audited, acknowledged)</li>
       </ul>
-      <p style="margin-top:12px">It is also a single point of failure: lose the passkey and the only way back is offline.</p>
     </div>
-    <div class="card top good">
-      <span class="lbl">Two or more</span>
-      <h3>Everything online</h3>
-      <p>One administrator proposes, another approves, and break-glass isn't needed again unless you drop back to one.</p>
+    <div class="card top warn">
+      <span class="lbl">Run by one person</span>
+      <h3>Single-administrator mode</h3>
+      <p>Set on the host (<code>vtc setup --single-admin</code>; <code>[acl] single_admin_mode</code>, never online). Where nobody but you could consent, your step-up bound to the operation authorizes it (VTI-APV-022).</p>
       <ul>
-        <li>With three or more, raise <code>acl.unrestricted_admin_consent_threshold</code> (1–16, changeable at runtime) to require several approvals</li>
-        <li>A threshold the community can't meet is refused when you set it</li>
-        <li>So is a removal that would leave the threshold unmeetable</li>
+        <li>A second eligible admin makes consent apply again, automatically</li>
+        <li>Removals and narrowings keep their cooling-off</li>
+        <li>A <b>SINGLE ADMIN MODE</b> banner on every page; every waived consent audited <b>Critical</b></li>
       </ul>
     </div>
   </div>
-  <div class="card top warn" style="margin-top:18px">
-    <span class="lbl">Run by one person</span>
-    <h3>Single-administrator mode</h3>
-    <p>Set on the host at install (<code>vtc setup --single-admin</code>; <code>[acl] single_admin_mode</code>, never online). Where nobody but you could consent, your step-up bound to the operation authorizes it. A second eligible admin makes consent apply again. A banner on every page, and every waived consent audited <b>Critical</b> (VTI-APV-022).</p>
+  <div class="card top good" style="margin-top:18px">
+    <span class="lbl">Two or more</span>
+    <h3>Everything online</h3>
+    <p>One administrator proposes, another approves, and break-glass isn't needed again unless you drop back to one. With three or more, raise <code>acl.unrestricted_admin_consent_threshold</code> (1–16, changeable at runtime) to require several approvals. A threshold the community can't meet is refused when you set it, and so is a removal that would leave it unmeetable.</p>
   </div>
 </div></section>
 
@@ -335,215 +346,53 @@
     <div class="layer">
       <div class="ic">👆</div>
       <div><h4>Step-up bound to one operation</h4>
-        <p>Granting or promoting admin, minting an admin invite, inviting a step-up passkey, and git break-glass all need a live, user-verified gesture from the actor's own passkey. The gesture is made for a digest of that exact operation, can be used once within 300 s, and raises no session. A console key can redeem a gesture but never make one.</p></div>
+        <p>Granting or widening authority, admin invites, removing or narrowing an admin, lowering the threshold, authority policy, custom roles, a restore's commit, enrolling factors for others, and git break-glass all need a live step-up from the actor's <b>own</b> factor: a user-verified passkey, or their approver device. It is made for a digest of that exact operation, can be used once within 300 s, and raises no session. A console key can redeem a step-up but never make one.</p></div>
       <span class="stops">stops: a script holding your console key</span>
     </div>
     <div class="layer">
       <div class="ic">🤝</div>
-      <div><h4>Second-party consent (VTI-APV-014)</h4>
-        <p>Making or widening anyone to unrestricted needs another unrestricted admin's approval. The requester is never an approver. The approval is bound to that payload, re-checked when used, and spent once.</p></div>
+      <div><h4>Second-party consent (VTI-APV-018)</h4>
+        <p>Granting any authority-conferring capability needs the approval of another holder of it, at a covering resource. The requester is never an approver. The operation waits in the action list and runs itself on the N-th approval, after everything is checked again.</p></div>
       <span class="stops">stops: one admin minting a co-conspirator</span>
     </div>
     <div class="layer">
       <div class="ic">⚖️</div>
       <div><h4>Separation of duties</h4>
-        <p>No self-grant, self-promotion, self-rewrite or self-revoke. No entry can outlive the one who wrote it. Every promotion runs the role-change policy and its host checks.</p></div>
+        <p>No self-grant, self-promotion, self-rewrite or self-revoke; rolling your own entry to a new key is the one exception, and changes nothing it holds. No entry can outlive the one who wrote it, and a grant can't exceed its granter. Every promotion runs the role-change policy and its host checks.</p></div>
       <span class="stops">stops: self-elevation</span>
     </div>
     <div class="layer">
       <div class="ic">🛡️</div>
-      <div><h4>Attrition guards</h4>
-        <p>Removals and demotions run one at a time under a lock. The last admin, or the last unrestricted admin, can't be removed, and nor can anyone whose removal would leave the threshold unmeetable. A removed admin loses their sessions and gets a signed notice. Removing, demoting or narrowing an unrestricted admin needs the other unrestricted admins' approval (VTI-APV-019). With only two, nobody is left to approve, so it lands after a <b>24 h cooling-off</b> (<code>acl.removal_cooling_off</code>) that the requester can cancel and the subject sees coming but can't block. First to act wins.</p></div>
+      <div><h4>Attrition guards and the cooling-off</h4>
+        <p>Removals and demotions run one at a time under a lock. The last holder of <code>vtc.roles.assign</code> can't be removed, nor anyone whose removal would leave the threshold unmeetable. Removing or narrowing an admin needs the other holders' approval (VTI-APV-019). With nobody else to approve, it lands after a <b>24 h cooling-off</b> (<code>acl.removal_cooling_off</code>): the requester can cancel, the subject is sent a reduction-pending notice and sees it coming but can't block it. First to act wins.</p></div>
       <span class="stops">stops: stripping the other admins</span>
     </div>
     <div class="layer">
       <div class="ic">📜</div>
       <div><h4>Everything audited, break-glass included</h4>
-        <p>Every grant, revocation, promotion, invite, passkey and consent step has an audit row. Offline writers, emergency bootstrap included, leave a marker, and the daemon records it as <code>AclBreakGlassWritten</code> at its next start, naming the command, the DID and the host. It also raises it in <span class="ui">Actions</span> as an item the administrators must <b>acknowledge</b>, with a <code>Critical</code> banner that can't be dismissed until they do (VTI-VTC-023). The operator can't be constrained, only made visible.</p></div>
+        <p>Every grant, revocation, promotion, key rotation, invite, factor and action step has an audit row. Offline writers, emergency bootstrap included, leave a marker; at the next start the daemon audits it and raises it in <span class="ui">Actions</span> as an item the administrators must <b>acknowledge</b>, with a <code>Critical</code> banner that can't be dismissed until they do (VTI-VTC-023). The operator can't be constrained, only made visible.</p></div>
       <span class="stops">stops: silent changes</span>
     </div>
     <div class="layer">
       <div class="ic">🎟️</div>
       <div><h4>Bounded invites and notices</h4>
-        <p>Invites are single use, last at most 24 h, and come with a claim code sent separately. Five wrong codes void a step-up passkey invite, or an install token at claim 0.3. Members are told when a step-up passkey is enrolled or revoked for them, and by whom. An admin whose authority is reduced gets a signed <b>authority-reduced notice</b>: what changed, who decided, and whether anyone else agreed.</p></div>
+        <p>Invites are single use, last at most 24 h, and come with a claim code sent separately. Five wrong codes void a step-up invite, or an install token at claim 0.3. Members are told when a step-up factor is enrolled or revoked for them, and by whom. An admin whose authority is reduced gets a signed <b>authority-reduced notice</b>: what changed, who decided, and whether anyone else agreed.</p></div>
       <span class="stops">stops: hijacked invites</span>
     </div>
   </div>
-  <p class="note">The offline break-glass bypasses every control above and needs the host itself. Protect the host the way you protect the community.</p>
-</div></section>
 
-<!-- ── 5. Consent sequence ──────────────────────────────── -->
-<section id="consent"><div class="wrap">
-  <p class="kicker">05 · How a second admin agrees</p>
-  <h2>Propose, approve, complete</h2>
-  <p class="sub">The requester's own gesture comes first, so a thief holding only their signing key can't make the other administrators' devices ring. The operation is parked as an action; the approval that reaches the threshold runs it, after the VTC checks everything again.</p>
-  <div class="diagram">
-  <svg viewBox="0 0 980 470" role="img" aria-label="Consent sequence between administrator A, the VTC and administrator B">
-    <defs>
-      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3c4"/></marker>
-      <marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#58e6a8"/></marker>
-      <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ffb454"/></marker>
-    </defs>
-    <g font-family="-apple-system, Segoe UI, Roboto, sans-serif" font-size="14">
-      <rect x="40" y="16" width="200" height="46" rx="10" fill="#1c2540" stroke="#6ea8ff"/>
-      <text x="140" y="44" text-anchor="middle" fill="#e8edf7" font-weight="700">Admin A (requester)</text>
-      <rect x="390" y="16" width="200" height="46" rx="10" fill="#1c2540" stroke="#58e6c9"/>
-      <text x="490" y="44" text-anchor="middle" fill="#e8edf7" font-weight="700">VTC</text>
-      <rect x="740" y="16" width="200" height="46" rx="10" fill="#1c2540" stroke="#c79bff"/>
-      <text x="840" y="44" text-anchor="middle" fill="#e8edf7" font-weight="700">Admin B (approver)</text>
-      <line x1="140" y1="62" x2="140" y2="456" stroke="#2a3450" stroke-dasharray="5 5"/>
-      <line x1="490" y1="62" x2="490" y2="456" stroke="#2a3450" stroke-dasharray="5 5"/>
-      <line x1="840" y1="62" x2="840" y2="456" stroke="#2a3450" stroke-dasharray="5 5"/>
-
-      <line x1="140" y1="100" x2="486" y2="100" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
-      <text x="152" y="92" fill="#e8edf7">① acl/grant · unrestricted admin</text>
-      <line x1="490" y1="140" x2="144" y2="140" stroke="#ffb454" stroke-width="1.6" marker-end="url(#arw)"/>
-      <text x="152" y="132" fill="#ffb454">② step-up required (challenge for this op)</text>
-      <line x1="140" y1="180" x2="486" y2="180" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
-      <text x="152" y="172" fill="#e8edf7">③ A's passkey gesture, bound to the digest</text>
-      <line x1="490" y1="220" x2="144" y2="220" stroke="#ffb454" stroke-width="1.6" marker-end="url(#arw)"/>
-      <text x="152" y="212" fill="#ffb454">④ 202 · parked as an action</text>
-      <line x1="490" y1="220" x2="836" y2="220" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
-      <text x="502" y="212" fill="#e8edf7">④ on B's Actions list (device push off by default)</text>
-      <rect x="700" y="244" width="280" height="44" rx="8" fill="#0d1322" stroke="#2a3450"/>
-      <text x="840" y="264" text-anchor="middle" fill="#94a3c4" font-size="12.5">B checks the request and match code</text>
-      <text x="840" y="280" text-anchor="middle" fill="#94a3c4" font-size="12.5">console Actions (wallet) or cnm</text>
-      <line x1="840" y1="310" x2="494" y2="310" stroke="#58e6a8" stroke-width="1.6" marker-end="url(#arg)"/>
-      <text x="502" y="302" fill="#58e6a8">⑤ task-consent/decision · approved (B's own key)</text>
-      <line x1="140" y1="360" x2="486" y2="360" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
-      <text x="152" y="352" fill="#e8edf7">⑥ VTC runs the stored acl/grant</text>
-      <rect x="360" y="376" width="260" height="58" rx="8" fill="#0d1322" stroke="#58e6a8"/>
-      <text x="490" y="396" text-anchor="middle" fill="#58e6a8" font-size="12.5">B still unrestricted? threshold met?</text>
-      <text x="490" y="412" text-anchor="middle" fill="#58e6a8" font-size="12.5">entry unchanged? → write, spend once</text>
-      <text x="490" y="428" text-anchor="middle" fill="#647196" font-size="11.5">action lifetime 72 h by default · runs at most once</text>
-    </g>
-  </svg>
-  </div>
-</div></section>
-
-<!-- ── 6. Walkthrough ───────────────────────────────────── -->
-<section id="walkthrough"><div class="wrap">
-  <p class="kicker">06 · Walkthrough</p>
-  <h2>First admin, then a second on the browser plugin</h2>
-  <p class="sub"><b>Alice</b> runs the install and signs in with a passkey. <b>Bob</b> uses the VTA browser plugin and administers as his wallet persona <code>did:webvh:…:bob</code>.</p>
-  <div class="legend"><span class="la">Alice</span><span class="lb">Bob</span><span class="lc">Both / VTC</span></div>
-
-  <div class="flow">
-    <div class="step bob">
-      <div class="num">1</div>
-      <div><span class="who">Bob · before setup</span>
-        <h4>Bob sends Alice his DID</h4>
-        <p>He installs the browser plugin, onboards it to his VTA, picks the persona he will administer as, and sends Alice its DID. If the persona's DID is published, Alice resolves it to check she has the right one.</p>
-      </div>
-    </div>
-
-    <div class="step alice">
-      <div class="num">2</div>
-      <div><span class="who">Alice · install</span>
-        <h4>Install the community with Bob as co-admin</h4>
-        <pre>vtc setup                      # or: vtc setup --from setup.toml
-# in the TOML:
-co_admin_did = "did:webvh:…:bob"</pre>
-        <ol>
-          <li>Setup mints Alice's admin <code>did:key</code> and prints a one-time <b>install URL</b> and a separate <b>claim code</b>, both valid for 15 minutes.</li>
-          <li>She opens <span class="ui">Claim Admin Passkey</span>, enters the code and registers a passkey. The VTC writes <b>two</b> unrestricted admin rows, hers and Bob's ("co-admin (install bootstrap)").</li>
-          <li><span class="ui">Sign in with passkey</span>, then <span class="ui">Set up signing</span> with her passkey.</li>
-        </ol>
-        <p class="note">The claim code is what protects this step, not the URL. Send them separately.</p>
-        <p style="margin-top:10px">A founder who uses only a wallet picks the other option on the same install page (claim 0.3): the wallet signs as their own DID and the plugin's approver device becomes their step-up factor.</p>
-      </div>
-    </div>
-
-    <div class="step alice">
-      <div class="num">3</div>
-      <div><span class="who">Alice · only if Bob wasn't named at install</span>
-        <h4>Give Bob an admin row</h4>
-        <div class="fork">
-          <div><b>Scoped, online</b><br><span class="ui">Access control</span> → <span class="ui">Add entry</span> → DID, role <code>admin</code>, contexts → <span class="ui">Create entry</span> → Alice's passkey.</div>
-          <div><b>Unrestricted, offline once</b><pre>vtc acl add --did did:webvh:…:bob \
-  --role admin --label "Bob"
-# daemon stopped; audited at next start</pre></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="step bob">
-      <div class="num">4</div>
-      <div><span class="who">Bob · browser plugin</span>
-        <h4>Sign in with the wallet and set up signing</h4>
-        <ol>
-          <li><span class="ui">Sign in as a VTA identity</span> → his persona. His VTA signs the sign-in.</li>
-          <li><span class="ui">Set up signing with your wallet</span>: the VTA authorizes a new console key in this browser.</li>
-        </ol>
-        <p>Bob can now do every administrative act that doesn't need a step-up.</p>
-      </div>
-    </div>
-
-    <div class="step alice">
-      <div class="num">5</div>
-      <div><span class="who">Alice → Bob</span>
-        <h4>Invite Bob to register a passkey</h4>
-        <p>Without a passkey at this VTC, every step-up act is refused for Bob, and he can't add the first one himself. Alice:</p>
-        <ol>
-          <li><span class="ui">Access control</span> → <span class="ui">Admin invites</span> → <span class="ui">Invite admin</span> → Bob's DID → <span class="ui">Mint invite</span>. Bob is already an admin, so this grants nothing and needs no consent.</li>
-          <li>Sends the URL and the claim code by <b>different channels</b>.</li>
-          <li>Bob opens it, enters the code and registers a passkey (<code>AdminPasskeyRegistered</code>).</li>
-        </ol>
-        <p>Bob's step-up now works whichever way he signs in.</p>
-      </div>
-    </div>
-
-    <div class="step both">
-      <div class="num">6</div>
-      <div><span class="who">Alice · cnm</span>
-        <h4>Make sure an approver can sign</h4>
-        <p>Approvals are signed by the admin DID's own key, never a console key. In the console the browser wallet signs them; an admin without a wallet uses <code>cnm consent approve --action</code>, which needs the <code>cnm</code> Client DID to have its own unrestricted admin row (see the bootstrap runbook). A passkey can be added as an extra factor, never instead of the signature.</p>
-      </div>
-    </div>
-
-    <div class="step both">
-      <div class="num">7</div>
-      <div><span class="who">Bob proposes · Alice approves</span>
-        <h4>A third admin, entirely online</h4>
-        <ol>
-          <li>Bob makes Carol unrestricted in the console and confirms with his passkey. The console shows <i>"Sent for approval — 1 of 1 must approve within 72 hours"</i>.</li>
-          <li>Alice sees it under <b>Actions → Waiting for me</b> and approves with her wallet, or from <code>cnm</code>:</li>
-        </ol>
-        <pre>cnm actions list --view waiting
-cnm consent approve --action &lt;actionId&gt;</pre>
-        <ol start="3"><li>Alice's approval runs Bob's stored operation. Carol has her row, and Bob's completed action shows him, once, an <b>approver enrolment invite</b> for Carol. He sends her the URL and, separately, the claim code. Carol repeats step 4 and enrols her approver device from the invite.</li></ol>
-      </div>
-    </div>
-  </div>
-</div></section>
-
-<!-- ── 7. Gaps ──────────────────────────────────────────── -->
-<section id="gaps"><div class="wrap">
-  <p class="kicker">07 · Known gaps</p>
-  <h2>What isn't built yet</h2>
+  <h3 style="margin-top:40px">Three holes, closed</h3>
+  <p style="color:var(--muted);max-width:74ch;margin:6px 0 18px">Found by a survey of every VTC operation on 2 October 2026: together they let one compromised administrator get round the second-admin rule — remove the others, lower the threshold, then promote at will. Each is now a second-party action of its own.</p>
   <div class="grid-3">
-    <div class="card top warn"><span class="lbl">Step-up</span><h3>Approver step-up needs the plugin</h3><p>The VTC accepts a step-up approver's statement; driving it from the console waits on the plugin's <code>approveStepUp</code>. Workaround: step 5's passkey.</p></div>
-    <div class="card top warn"><span class="lbl">Approving</span><h3>Console approves with a passkey</h3><p>The VTC accepts <code>approverSigned</code> decisions, but the plugin signs approver statements for enrolment only. <code>cnm</code> and other clients can send them.</p></div>
-    <div class="card top warn"><span class="lbl">Cooling-off</span><h3>Not pushed to the subject</h3><p>The subject of a two-admin removal learns of it from the console banner and the action list; a "pending" notice needs a specification first. <code>requireRequesterAtCompletion</code> is not built either.</p></div>
+    <div class="card top good"><span class="lbl">Hole 1 · closed</span><h3>Stripping the other admins</h3><p><code>acl/revoke</code>, demotion, narrowing and <code>members/admin-remove</code> take a step-up, and another holder's approval or a cooling-off (VTI-APV-019).</p></div>
+    <div class="card top good"><span class="lbl">Hole 2 · closed</span><h3>Lowering the threshold</h3><p>Lowering it by <code>config/patch</code> or import needs the current threshold's approvals (VTI-APV-020). Raising it stays immediate.</p></div>
+    <div class="card top good"><span class="lbl">Hole 3 · closed</span><h3>Rewriting authority policy</h3><p>Policy takes <code>vtc.policy.admin</code>, and the purposes that decide authority — role change, removal, join, cross-community roles, git-ns — need another holder's approval (VTI-VTC-022).</p></div>
   </div>
 
-  <h3 style="margin-top:40px">Three holes, now closed</h3>
-  <p style="color:var(--muted);max-width:74ch;margin:6px 0 18px">Found by a survey of every VTC operation on 2 October 2026. Together they let one compromised unrestricted admin get round the second-admin rule: remove the others, lower the threshold, then promote at will.</p>
-  <div class="grid-3">
-    <div class="card top hard"><span class="lbl">Hole 1</span><h3>Stripping the other admins</h3><p><code>acl/revoke</code>, demoting with <code>acl/change-role</code>, and <code>members/admin-remove</code> need no second admin. One admin can remove every other admin except the last.</p></div>
-    <div class="card top hard"><span class="lbl">Hole 2</span><h3>Lowering the threshold</h3><p><code>config/patch</code> or <code>config/import</code> can set <code>unrestricted_admin_consent_threshold</code> back to 1 with no consent. Only a value the community can't meet is refused.</p></div>
-    <div class="card top hard"><span class="lbl">Hole 3</span><h3>Policy is open to scoped admins</h3><p><code>policy/upsert</code> and <code>activate</code> accept any admin, and replace the rules for role changes, removal, joins and more. The default ban on removing admins is one of those rules.</p></div>
-  </div>
-</div></section>
-
-<!-- ── 8. Coming ────────────────────────────────────────── -->
-<section id="coming"><div class="wrap">
-  <p class="kicker">08 · What's coming</p>
-  <h2>Wallet administrators as first-class</h2>
-  <p class="sub">The design note <code>docs/05-design-notes/vtc-approver-step-up.md</code> (VTC side built; the plugin's step-up signing and phone approvers to come) lets the browser plugin's <b>approver identity</b> be an administrator's step-up factor. That identity is a separate <code>did:key</code> whose key is unlocked only by a biometric or hardware gesture. Once the plugin signs step-ups, Bob needs no passkey at the VTC.</p>
-
+  <h3 style="margin-top:48px">How a wallet administrator steps up</h3>
+  <p style="color:var(--muted);max-width:76ch;margin:6px 0 18px">The browser plugin's <b>approver identity</b> — a separate <code>did:key</code> per community, unlocked only by a biometric or hardware gesture — is the administrator's step-up factor (VTI-APV-015). It is a re-authentication, not a consent: the device is your second factor, not another party. The VTC checks the device's signature itself.</p>
   <div class="diagram">
-  <svg viewBox="0 0 980 300" role="img" aria-label="Planned step-up with the approver device">
+  <svg viewBox="0 0 980 300" role="img" aria-label="Step-up with the approver device">
     <defs>
       <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3c4"/></marker>
       <marker id="arg2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#58e6a8"/></marker>
@@ -577,35 +426,80 @@ cnm consent approve --action &lt;actionId&gt;</pre>
     </g>
   </svg>
   </div>
-
-  <div class="grid-3" style="margin-top:18px">
-    <div class="card top acc">
-      <span class="lbl">The factor</span>
-      <h3>Your own approver device</h3>
-      <p>A new step-up evidence kind, <code>approverSigned</code>. It is a re-authentication, not a consent: the device is your second factor, not another party (VTI-APV-003). The VTC checks the device's signature itself and never relies on the VTA's word.</p>
-    </div>
+  <div class="grid-2" style="margin-top:18px">
     <div class="card top acc">
       <span class="lbl">The first-factor problem</span>
-      <h3>Four anchors to enrol</h3>
+      <h3>Four anchors to enrol (VTI-APV-016)</h3>
       <ul>
         <li><b>Install:</b> claim 0.3 under your existing DID, for a wallet-only founder</li>
-        <li><b>Invite:</b> another admin, behind their own step-up</li>
-        <li><b>Self-service:</b> from a factor you already hold</li>
-        <li><b>Offline:</b> <code>vtc admin enrol-approver</code>, audited</li>
+        <li><b>Invite:</b> another admin, behind their own step-up (Members → <span class="ui">Invite to enrol an approver</span>)</li>
+        <li><b>Self-service:</b> from a factor you already hold (<span class="ui">My passkeys → Approver devices</span>)</li>
+        <li><b>Offline:</b> <code>vtc admin enrol-approver</code>, audited and acknowledged</li>
       </ul>
     </div>
     <div class="card top acc">
-      <span class="lbl">Beyond the browser</span>
-      <h3>Phone approvers (phase 2)</h3>
-      <p>The VTC pushes the request over TSP or DIDComm to the phone, which signs the same statement. This needs the VTC registered as a trusted issuer on the device at enrolment.</p>
+      <span class="lbl">Rules of the factor</span>
+      <h3>Bound once, to one subject</h3>
+      <ul>
+        <li>Nobody invites themselves; a revoked approver DID is never bound again; at most five per subject</li>
+        <li>Once you hold a dedicated factor, your session passkeys stop counting</li>
+        <li>Every admin made by a completed action is issued an enrolment invite automatically</li>
+      </ul>
     </div>
   </div>
 
-  <!-- action list -->
-  <h3 style="margin-top:48px">The action list: N-of-M approvals that complete themselves</h3>
-  <p style="color:var(--muted);max-width:76ch;margin:6px 0 18px">Built (<code>docs/05-design-notes/vtc-action-list.md</code>, phases A1 and A2). An operation that needs other admins' agreement is <b>parked</b> as an action instead of refused. Approvers find it in the console whenever they next sign in. When N of them have approved, the VTC re-checks everything and runs it, and it disappears from everyone else's list.</p>
+  <p class="note">The offline break-glass bypasses every control above and needs the host itself. Protect the host the way you protect the community.</p>
+</div></section>
 
+<!-- ── 5. Action list ───────────────────────────────────── -->
+<section id="consent"><div class="wrap">
+  <p class="kicker">05 · The action list</p>
+  <h2>Propose, approve, complete</h2>
+  <p class="sub">The requester's own step-up comes first, so a thief holding only their signing key can't make the other administrators' devices ring. The operation is <b>parked</b> as an action; the approval that reaches the threshold runs it, after the VTC checks everything again (VTI-APV-017).</p>
   <div class="diagram">
+  <svg viewBox="0 0 980 470" role="img" aria-label="Consent sequence between administrator A, the VTC and administrator B">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3c4"/></marker>
+      <marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#58e6a8"/></marker>
+      <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ffb454"/></marker>
+    </defs>
+    <g font-family="-apple-system, Segoe UI, Roboto, sans-serif" font-size="14">
+      <rect x="40" y="16" width="200" height="46" rx="10" fill="#1c2540" stroke="#6ea8ff"/>
+      <text x="140" y="44" text-anchor="middle" fill="#e8edf7" font-weight="700">Admin A (requester)</text>
+      <rect x="390" y="16" width="200" height="46" rx="10" fill="#1c2540" stroke="#58e6c9"/>
+      <text x="490" y="44" text-anchor="middle" fill="#e8edf7" font-weight="700">VTC</text>
+      <rect x="740" y="16" width="200" height="46" rx="10" fill="#1c2540" stroke="#c79bff"/>
+      <text x="840" y="44" text-anchor="middle" fill="#e8edf7" font-weight="700">Admin B (approver)</text>
+      <line x1="140" y1="62" x2="140" y2="456" stroke="#2a3450" stroke-dasharray="5 5"/>
+      <line x1="490" y1="62" x2="490" y2="456" stroke="#2a3450" stroke-dasharray="5 5"/>
+      <line x1="840" y1="62" x2="840" y2="456" stroke="#2a3450" stroke-dasharray="5 5"/>
+
+      <line x1="140" y1="100" x2="486" y2="100" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="152" y="92" fill="#e8edf7">① acl/grant · community-admin</text>
+      <line x1="490" y1="140" x2="144" y2="140" stroke="#ffb454" stroke-width="1.6" marker-end="url(#arw)"/>
+      <text x="152" y="132" fill="#ffb454">② step-up required (challenge for this op)</text>
+      <line x1="140" y1="180" x2="486" y2="180" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="152" y="172" fill="#e8edf7">③ A's passkey or approver device, bound to the digest</text>
+      <line x1="490" y1="220" x2="144" y2="220" stroke="#ffb454" stroke-width="1.6" marker-end="url(#arw)"/>
+      <text x="152" y="212" fill="#ffb454">④ 202 · parked as an action</text>
+      <line x1="490" y1="220" x2="836" y2="220" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="502" y="212" fill="#e8edf7">④ on B's Actions list (device push off by default)</text>
+      <rect x="700" y="244" width="280" height="44" rx="8" fill="#0d1322" stroke="#2a3450"/>
+      <text x="840" y="264" text-anchor="middle" fill="#94a3c4" font-size="12.5">B checks the request and match code</text>
+      <text x="840" y="280" text-anchor="middle" fill="#94a3c4" font-size="12.5">console Actions (wallet) or cnm</text>
+      <line x1="840" y1="310" x2="494" y2="310" stroke="#58e6a8" stroke-width="1.6" marker-end="url(#arg)"/>
+      <text x="502" y="302" fill="#58e6a8">⑤ task-consent/decision · approved (B's own DID)</text>
+      <line x1="140" y1="360" x2="486" y2="360" stroke="#94a3c4" stroke-width="1.6" marker-end="url(#ar)"/>
+      <text x="152" y="352" fill="#e8edf7">⑥ VTC runs the stored acl/grant</text>
+      <rect x="350" y="376" width="280" height="58" rx="8" fill="#0d1322" stroke="#58e6a8"/>
+      <text x="490" y="396" text-anchor="middle" fill="#58e6a8" font-size="12.5">B still holds and may approve the stake?</text>
+      <text x="490" y="412" text-anchor="middle" fill="#58e6a8" font-size="12.5">threshold met? entry unchanged? → write once</text>
+      <text x="490" y="428" text-anchor="middle" fill="#647196" font-size="11.5">action lifetime 72 h by default · runs at most once</text>
+    </g>
+  </svg>
+  </div>
+
+  <div class="diagram" style="margin-top:18px">
   <svg viewBox="0 0 980 250" role="img" aria-label="Action lifecycle">
     <defs>
       <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3c4"/></marker>
@@ -650,59 +544,41 @@ cnm consent approve --action &lt;actionId&gt;</pre>
       <div style="margin:12px 0 4px;display:flex;align-items:center;gap:10px;font-size:14px">
         <span class="ui">Actions</span><span style="background:var(--hard);color:#0a0e1a;font-weight:800;border-radius:999px;padding:0 8px;font-size:12px">2</span>
       </div>
-      <p>A badge with your count, a banner after sign-in, and <span class="mono">(2)</span> in the tab title. The page has tabs <b>Waiting for me</b>, <b>Requested by me</b> and <b>History</b>. Offline writes appear as items to <b>Acknowledge</b>, each named by the record type <code>vtc/operator/offline-write/0.1</code>. Pushes to devices are off by default (<code>acl.consent_request_push</code>); the list is the source of truth.</p>
+      <p>A badge with your count, a banner after sign-in, and <span class="mono">(2)</span> in the tab title. Tabs <b>Waiting for me</b>, <b>Requested by me</b> and <b>History</b>; <code>cnm actions list</code> shows the same. Pushes to devices are off by default (<code>acl.consent_request_push</code>); the list is the source of truth.</p>
     </div>
     <div class="card top acc">
       <span class="lbl">Approving</span>
-      <h3>Your own factor, never a console key</h3>
+      <h3>Your own DID, never a console key</h3>
       <ul>
-        <li><b>Wallet</b> (console) or <b>cnm</b>: the decision is signed by the admin DID's own key</li>
-        <li><b>Passkey</b>: the console adds an assertion over the decision's challenge</li>
-        <li><b>Approver device</b> (built): the plugin's <code>approveDecision</code> signs an <code>approverSigned</code> statement over your salted digest, and the console sends it ahead of a passkey; <code>cnm</code> and other clients can too</li>
+        <li><b>Wallet</b> (console) or <b>cnm</b>: the decision is signed by the admin DID itself</li>
+        <li><b>Approver device</b>: the plugin's <code>approveDecision</code> adds an <code>approverSigned</code> statement over your salted digest</li>
+        <li>Else a <b>passkey</b> assertion; an extra factor never replaces the signature</li>
       </ul>
     </div>
     <div class="card top acc">
-      <span class="lbl">Rules</span>
-      <h3>One rule list, keyed on task</h3>
-      <p>Same model as the VTA: each rule names a Trust Task URI, its approvers, N, whether the requester is excluded, and a lifetime. Built-in rules can be tightened, never loosened. Changing the rules is itself an N-of-M action.</p>
+      <span class="lbl">Four kinds of item</span>
+      <h3>One list</h3>
+      <ul>
+        <li><b>Approval</b> — N of M, then it runs</li>
+        <li><b>Queue</b> — one decision on a break-glass, a referred join or a withdrawn vetting statement; never expires</li>
+        <li><b>Cooling-off</b> — a reduction nobody else could approve; lands at <code>landsAt</code> unless its requester cancels</li>
+        <li><b>Acknowledge</b> — an operator's offline write (<code>vtc/operator/offline-write/0.1</code>), with a <code>Critical</code> banner</li>
+      </ul>
     </div>
   </div>
 
-  <h3 style="margin-top:40px">Everything that could use it</h3>
+  <h3 style="margin-top:40px">What waits in the list</h3>
   <div class="grid-2" style="margin-top:14px">
     <div class="card top hard">
-      <span class="lbl">Built in · protects the admin set</span>
-      <h3>N-of-M from day one</h3>
+      <span class="lbl">Approvals · built in</span>
+      <h3>Protecting the admin set</h3>
       <ul>
-        <li>Making or widening an unrestricted admin (APV-014)</li>
-        <li>Removing, demoting or narrowing an unrestricted admin (closes hole 1)</li>
-        <li>Lowering the consent threshold (closes hole 2)</li>
-        <li>Policy changes for role change, removal, join, recognition and git-ns (closes hole 3)</li>
-        <li>Restoring a backup, which replaces the ACL</li>
-      </ul>
-      <p style="margin-top:10px">With only two admins, a removal has nobody else to approve it. It goes ahead after a 24 h cooling-off (built): the subject is sent a reduction-pending notice when it is parked and sees it as a <code>coolingOff</code> action counting down to <code>landsAt</code>; when it lands they get the authority-reduced notice, and it is audited <code>Critical</code>.</p>
-    </div>
-    <div class="card top warn">
-      <span class="lbl">Optional · by rule</span>
-      <h3>High-impact or irreversible</h3>
-      <ul>
-        <li>Backup export; purging members</li>
-        <li>Extending the VTC's DID log</li>
-        <li>Join criteria changes (review → automatic)</li>
-        <li>Granting vetters; auto-grant settings</li>
-        <li>Endorsement and personhood revocation</li>
-        <li>Discarding trust-registry sync jobs</li>
-        <li>Other policy; restart</li>
-        <li>git-ns unbind, reseat, repo transfer, granting <code>ns.admin</code> or <code>own</code></li>
-      </ul>
-    </div>
-    <div class="card top good">
-      <span class="lbl">Existing queues · move in</span>
-      <h3>Already waiting on a person</h3>
-      <ul>
-        <li><b>git-ns break-glass</b>: Ratify or Revoke; never expires into acceptance</li>
-        <li><b>Join review</b> (<code>admission: review</code>): N = 1 by default</li>
-        <li><b>Vetting withdrawal review</b>: Keep member, or Start removal</li>
+        <li>Granting or widening an authority-conferring capability; inviting an admin (VTI-APV-018)</li>
+        <li>Removing, demoting or narrowing an admin (VTI-APV-019)</li>
+        <li>Lowering the consent threshold (VTI-APV-020)</li>
+        <li>Policy for role change, removal, join, cross-community roles and git-ns (VTI-VTC-022)</li>
+        <li>Defining or deleting a custom role; committing a backup restore</li>
+        <li>A departed granter's grants: Re-affirm or Withdraw</li>
       </ul>
     </div>
     <div class="card top">
@@ -712,46 +588,139 @@ cnm consent approve --action &lt;actionId&gt;</pre>
         <li>Incident response: revoking console keys or sessions, revoking invites. These remove access, never grant it</li>
         <li>Rooms: authority is the owner chain, not the ACL</li>
         <li>Forge or member link waits: a machine, not a person</li>
-        <li>Profile, website, schemas, invitations: optional at most</li>
+        <li>Day-to-day roles (moderator, auditor, …): your step-up alone, since they confer nothing</li>
       </ul>
     </div>
   </div>
+</div></section>
 
-  <h3 style="margin-top:40px">The plan</h3>
-  <div class="layers" style="margin-top:14px">
-    <div class="layer"><div class="ic">1</div><div><h4>Specifications first</h4><p>trust-tasks: approve-response 0.6, approve-request 0.4, an approver enrolment family, install claim 0.3. VTI spec: clarify VTI-APV-015 and add a requirement on how a factor may be bound to an admin.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">2</div><div><h4>VTC factor store and gate</h4><p>A <code>step_up_approvers</code> keyspace; the step-up gate accepts <code>approverSigned</code>.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">3</div><div><h4>Enrolment and revocation</h4><p>Invite, self-service and offline routes; revoking a factor and recovering after losing every one. Every admin made by a completed action gets an enrolment invite automatically.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">4</div><div><h4>Wallet founder install</h4><p>Install claim under an existing DID (claim 0.3), offered on the console's install page beside the passkey claim.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">5</div><div><h4>Console and browser plugin</h4><p>The approver path in the console, <code>approveStepUp</code> in the plugin, enrolment screens, and an error that names the routes that actually work. The console side is built, and so is approving a decision with the approver device (the plugin's <code>approveDecision</code>); the plugin's <code>approveStepUp</code> is not.</p></div><span class="stops" style="color:var(--warn);border-color:rgba(255,180,84,.4)">next</span></div>
-    <div class="layer"><div class="ic">6</div><div><h4>Action list for APV-014</h4><p>Park instead of refuse, complete on the N-th approval, the Actions page and badge, approving from the console. Specs first: <code>vtc/admin/actions/{list,cancel}</code>, <code>task-consent/decision/0.2</code>.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">7</div><div><h4>Close holes 1–3</h4><p>Built-in rules for removal, threshold lowering and authority policy; policy changes become unrestricted-admin only. Closed by stop-gaps, then as actions.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">7b</div><div><h4>Action list phase A2</h4><p>Offline writes raised as items to acknowledge, with a <code>Critical</code> banner (VTI-VTC-023); the authority-reduced notice and the two-admin 24 h cooling-off (VTI-APV-019); <code>approverSigned</code> decisions; device pushes off by default; crash-safe execution. Not built: <code>requireRequesterAtCompletion</code>.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">7c</div><div><h4>Cooling-off on the wire, and the follow-ups</h4><p><code>vtc/admin/actions/*/0.2</code>: a cooling-off is category <code>coolingOff</code> with <code>landsAt</code>, cancellable by its requester and shown to its subject (0.1 still answers). The subject is sent <code>authority-reduction-pending-notice</code> when it is parked. Offline writes are named by the record type <code>vtc/operator/offline-write/0.1</code>. The console approves with the approver device. An interrupted <code>policy/upsert</code> is reconciled from its revision.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">7d</div><div><h4>Role-based administration (C1, C2)</h4><p>Capabilities, built-in roles and explicit act scope (C1); then <b>custom roles</b> (<code>vtc/roles/{define,list,show,delete}</code>, defined only through the action list and bounded by the definers' own authority), approvers read off approve scope so the least-privilege <code>approver</code> counts, a departed granter's grants reviewed as an action (<code>acl.grants.review</code>: Re-affirm or Withdraw), a restore's commit parked for approval, <code>acl/swap-key</code> to roll your own entry to a new key (<code>cnm community rotate</code>), and a console that navigates by the capabilities <code>whoami</code> reports.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">7e</div><div><h4>git-ns rights as capabilities (C3)</h4><p>Fold the git-ns rights model into qualified capabilities, closing the last parallel authority model (VTI-VTC-020).</p></div><span class="stops" style="color:var(--warn);border-color:rgba(255,180,84,.4)">next</span></div>
-    <div class="layer"><div class="ic">8</div><div><h4>Existing queues, then optional rules</h4><p>Break-glass ratification, join review and vetting withdrawal review move in; then the rule list surface and optional rules.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">later</span></div>
-    <div class="layer"><div class="ic">9</div><div><h4>Phone approvers</h4><p>Phase 2 of the approver device.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">later</span></div>
+<!-- ── 6. Walkthrough ───────────────────────────────────── -->
+<section id="walkthrough"><div class="wrap">
+  <p class="kicker">06 · Walkthrough</p>
+  <h2>First admin, then a second on the browser plugin</h2>
+  <p class="sub"><b>Alice</b> runs the install and signs in with a passkey. <b>Bob</b> uses the VTA browser plugin, administers as his wallet persona <code>did:webvh:…:bob</code>, and steps up with the plugin's approver device.</p>
+  <div class="legend"><span class="la">Alice</span><span class="lb">Bob</span><span class="lc">Both / VTC</span></div>
+
+  <div class="flow">
+    <div class="step bob">
+      <div class="num">1</div>
+      <div><span class="who">Bob · before setup</span>
+        <h4>Bob sends Alice his DID</h4>
+        <p>He installs the browser plugin, onboards it to his VTA, picks the persona he will administer as, and sends Alice its DID. If the persona's DID is published, Alice resolves it to check she has the right one. (From <code>cnm</code> instead: <code>cnm community add</code> mints a DID for this community alone.)</p>
+      </div>
+    </div>
+
+    <div class="step alice">
+      <div class="num">2</div>
+      <div><span class="who">Alice · install</span>
+        <h4>Install the community with Bob as co-admin</h4>
+        <pre>vtc setup                      # or: vtc setup --from setup.toml
+# in the TOML:
+co_admin_did = "did:webvh:…:bob"</pre>
+        <ol>
+          <li>Setup mints Alice's admin <code>did:key</code> and prints a one-time <b>install URL</b> and a separate <b>claim code</b>, both valid for 15 minutes.</li>
+          <li>She opens <span class="ui">Claim Admin Passkey</span>, enters the code and registers a passkey. The VTC writes <b>two</b> <code>community-admin</code> entries, hers and Bob's ("co-admin (install bootstrap)").</li>
+          <li><span class="ui">Sign in with passkey</span>, then <span class="ui">Set up signing</span> with her passkey.</li>
+        </ol>
+        <p class="note">The claim code is what protects this step, not the URL. Send them separately.</p>
+        <p style="margin-top:10px">A founder who uses only a wallet picks the other option on the same install page (claim 0.3): the wallet signs as their own DID and the plugin's approver device becomes their step-up factor.</p>
+      </div>
+    </div>
+
+    <div class="step alice">
+      <div class="num">3</div>
+      <div><span class="who">Alice · only if Bob wasn't named at install</span>
+        <h4>Give Bob an entry</h4>
+        <div class="fork">
+          <div><b>A narrower role, online</b><br><span class="ui">Access control</span> → <span class="ui">Add entry</span> → DID, role such as <code>moderator</code> → <span class="ui">Create entry</span> → Alice's step-up. In single-administrator mode, <code>community-admin</code> works this way too.</div>
+          <div><b>Community admin, offline once</b><pre>vtc acl add --did did:webvh:…:bob \
+  --role admin --label "Bob"
+# daemon stopped; audited and
+# acknowledged at next start</pre></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step bob">
+      <div class="num">4</div>
+      <div><span class="who">Bob · browser plugin</span>
+        <h4>Sign in with the wallet and set up signing</h4>
+        <ol>
+          <li><span class="ui">Sign in as a VTA identity</span> → his persona. His VTA signs the sign-in.</li>
+          <li><span class="ui">Set up signing with your wallet</span>: the VTA authorizes a new console key in this browser.</li>
+        </ol>
+        <p>Bob can now do every administrative act that doesn't need a step-up. One that does tells him he holds no step-up factor, and names the invite and the offline command.</p>
+      </div>
+    </div>
+
+    <div class="step alice">
+      <div class="num">5</div>
+      <div><span class="who">Alice → Bob</span>
+        <h4>Invite Bob to enrol an approver device</h4>
+        <ol>
+          <li>Members → Bob → <span class="ui">Invite to enrol an approver</span> → Alice's own step-up.</li>
+          <li>She sends the URL and the claim code by <b>different channels</b>.</li>
+          <li>Bob opens <code>/admin/enrol-approver</code>, types the code, and approves twice in the plugin: his wallet signs as his DID, the approver signs the enrolment.</li>
+        </ol>
+        <p>Bob now steps up with the plugin. Prefer a passkey? <span class="ui">Access control → Admin invites → Invite admin</span> lets him register one; no consent needed, since he is already an admin.</p>
+      </div>
+    </div>
+
+    <div class="step both">
+      <div class="num">6</div>
+      <div><span class="who">Alice · cnm</span>
+        <h4>Make sure an approver can sign</h4>
+        <p>Approvals are signed by the admin DID's own key, never a console key. In the console the browser wallet signs them; an admin without a wallet uses <code>cnm consent approve --action</code>, which needs the <code>cnm</code> identity to have its own administrator entry (see the bootstrap runbook). An approver device or passkey can be added as an extra factor, never instead of the signature.</p>
+      </div>
+    </div>
+
+    <div class="step both">
+      <div class="num">7</div>
+      <div><span class="who">Bob proposes · Alice approves</span>
+        <h4>A third admin, entirely online</h4>
+        <ol>
+          <li>Bob makes Carol a <code>community-admin</code> in the console and confirms with his approver device. The console shows <i>"Sent for approval — 1 of 1 must approve within 72 hours"</i>.</li>
+          <li>Alice sees it under <b>Actions → Waiting for me</b> and approves with her wallet, or from <code>cnm</code>:</li>
+        </ol>
+        <pre>cnm actions list --view waiting
+cnm consent approve --action &lt;actionId&gt;</pre>
+        <ol start="3"><li>Alice's approval runs Bob's stored operation. Carol has her entry, and Bob's completed action shows him, once, an <b>approver enrolment invite</b> for Carol. He sends her the URL and, separately, the claim code. Carol repeats step 4 and enrols her approver device from the invite.</li></ol>
+      </div>
+    </div>
   </div>
+</div></section>
 
-  <div class="grid-2" style="margin-top:24px">
-    <div class="card top warn">
-      <span class="lbl">Open questions</span>
-      <h3>Still to decide</h3>
-      <ul>
-        <li>One approver DID per community, so communities can't correlate you?</li>
-        <li>How far to trust that the device checked the user: a passkey proves it, a signature can't</li>
-        <li>Should approver devices be included in backups?</li>
-      </ul>
-    </div>
-    <div class="card top hard">
-      <span class="lbl">Found, not yet designed</span>
-      <h3>Also on the list</h3>
-      <ul>
-        <li>The wallet sign-in hint mentions only the offline invite; the CLI names "Access → Invite"</li>
-        <li>Error toasts overflowing on long DIDs (fix ready)</li>
-      </ul>
-    </div>
+<!-- ── 7. Delivered ─────────────────────────────────────── -->
+<section id="delivered"><div class="wrap">
+  <p class="kicker">07 · Delivered</p>
+  <h2>What is built</h2>
+  <p class="sub">The VTC administration programme, from the design notes (<code>vtc-admin-roles.md</code>, <code>vtc-action-list.md</code>, <code>vtc-approver-step-up.md</code>) to the console, landed between 2 and 3 October 2026.</p>
+  <div class="layers">
+    <div class="layer"><div class="ic">1</div><div><h4>Three holes closed</h4><p>Removals and narrowings, threshold lowering and authority policy each take a second party (VTI-APV-019, -020, VTI-VTC-022). #1917</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">2</div><div><h4>The action list</h4><p>Park instead of refuse, complete on the N-th approval with every check re-run, the Actions page, badge and banner, <code>cnm actions</code> and <code>cnm consent --action</code>. #1918</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">3</div><div><h4>Approver device as step-up</h4><p>The <code>step_up_approvers</code> store, the gate accepting <code>approverSigned</code>, enrolment by install claim 0.3, invite, self-service and offline, and the console path; the plugin's <code>approveStepUp</code>. #1919, plugin #291</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">4</div><div><h4>Operator writes, notices, cooling-off</h4><p>Offline writes raised to acknowledge (VTI-VTC-023), the authority-reduced notice, the two-admin cooling-off, <code>approverSigned</code> decisions, crash-safe execution, pushes off by default, automatic approver invites. #1920</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">5</div><div><h4>Actions 0.2 and approving with the device</h4><p><code>vtc/admin/actions/*/0.2</code> with <code>coolingOff</code> and <code>landsAt</code>, the reduction-pending notice, the <code>offline-write/0.1</code> record, the plugin's <code>approveDecision</code>. #1922, plugin #293</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">6</div><div><h4>Role-based administration</h4><p>Capabilities, qualifiers, built-in roles, explicit act scope, granting bounds, <code>acl/*/0.2</code> and the boot migration (#1924); custom roles, approve-scope approver sets, the departed-granter review, restore consent, <code>acl/swap-key</code> and a capability-driven console (#1927).</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">7</div><div><h4>Single-administrator mode</h4><p><code>vtc setup --single-admin</code>, the waiver on an empty approver set, the banner, and <code>Critical</code> audit (VTI-APV-022). #1925</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">8</div><div><h4>git-ns rights as capabilities</h4><p>One authority model: git rights are resource grants on the entry, the bridge holds an <code>application</code> entry, the old rights store migrated and removed (VTI-VTC-020). #1930</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">9</div><div><h4>cnm per-community identities</h4><p><code>cnm community add</code> / <code>continue</code> / <code>rotate</code>: a key per community, rotated over <code>acl/swap-key</code>. #1923, #1927</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">10</div><div><h4>Console at a glance</h4><p>The join-request badge, Members and Join requests tiles, and the list-limit guard. #1929</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">11</div><div><h4>Existing queues in the action list</h4><p>Break-glass ratification (Ratify / Revoke), join review (Approve / Reject) and vetting withdrawal review (Keep member / Start removal) are <code>queue</code> items: one decision, no expiry, closed however the record is decided. Listings filter before paging and count exactly. #1931</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+  </div>
+</div></section>
+
+<!-- ── 8. Still open ────────────────────────────────────── -->
+<section id="open"><div class="wrap">
+  <p class="kicker">08 · Still open</p>
+  <h2>What isn't built yet</h2>
+  <div class="grid-3">
+    <div class="card top warn"><span class="lbl">Wire</span><h3>Record types for review items</h3><p>The departed-granter review, the boot migration's acknowledge item and the three queues name their payload with placeholder <code>urn:openvtc:</code> URIs; no record type is specified for them yet.</p></div>
+    <div class="card top warn"><span class="lbl">Keys</span><h3>Combined VTC + VTA rotation</h3><p>A <code>cnm</code> identity bound to a community VTA (<code>--vta-did</code>) isn't rotated: its VTC and VTA entries would have to move together.</p></div>
+    <div class="card top warn"><span class="lbl">Approvals</span><h3><code>requireRequesterAtCompletion</code></h3><p>Actions complete on the N-th approval; making the requester finish with a fresh step-up is designed, not built.</p></div>
+    <div class="card top warn"><span class="lbl">Rollover</span><h3>Hand-off markers</h3><p>VTI-ACL-054 – 058. <code>acl/swap-key</code> is self-rotation (VTI-CLT-025 – 032); hand-off markers aren't implemented.</p></div>
+    <div class="card top warn"><span class="lbl">Queues</span><h3>Join review with several deciders</h3><p>Every queue item is decided by one holder of the capability; asking for more than one decision for some join criteria isn't built.</p></div>
+    <div class="card top warn"><span class="lbl">Rules</span><h3>The approvals rule list</h3><p>Approval rules are fixed in code; the rule list and the optional rules a community could add are designed, not built. Phone approvers are phase 2.</p></div>
   </div>
 </div></section>
 
@@ -762,15 +731,17 @@ cnm consent approve --action &lt;actionId&gt;</pre>
   <div class="tbl">
     <table>
       <tbody>
-        <tr><td>add a scoped admin</td><td>Access control → Add entry → contexts set → your passkey</td></tr>
-        <tr><td>add an unrestricted admin (2+ admins)</td><td>Same, contexts blank → it waits in Actions → another admin approves and it runs</td></tr>
-        <tr><td>add an unrestricted admin (the only admin)</td><td><code>vtc acl add --did … --role admin</code>, daemon stopped</td></tr>
+        <tr><td>add a moderator, auditor, vetting lead, …</td><td>Access control → Add entry → role (tick capabilities to narrow) → your step-up; or <code>cnm access grant &lt;did&gt; --admin-role moderator</code></td></tr>
+        <tr><td>add a community admin (2+ admins)</td><td>Add entry → <code>community-admin</code> → it waits in Actions → another admin approves and it runs</td></tr>
+        <tr><td>add a community admin (the only admin)</td><td>Single-administrator mode: on your step-up. Otherwise <code>vtc acl add --did … --role admin</code>, daemon stopped</td></tr>
+        <tr><td>define a role of our own</td><td>Roles → Define role → waits in Actions</td></tr>
+        <tr><td>give a wallet admin an approver device</td><td>Members → member → Invite to enrol an approver; or offline <code>vtc admin enrol-approver --did …</code></td></tr>
         <tr><td>give an existing admin a passkey</td><td>Access control → Admin invites → Invite admin</td></tr>
-        <tr><td>give a member a step-up passkey</td><td>Members → member → Step-up passkeys → Invite…</td></tr>
-        <tr><td>approve a promotion</td><td>Actions → Waiting for me → Approve, or <code>cnm consent approve --action &lt;actionId&gt;</code></td></tr>
-        <tr><td>require two approvers</td><td><code>acl.unrestricted_admin_consent_threshold = 2</code> (needs 3+ unrestricted admins)</td></tr>
+        <tr><td>approve an action</td><td>Actions → Waiting for me → Approve, or <code>cnm consent approve --action &lt;actionId&gt;</code></td></tr>
+        <tr><td>move my entry to a new key</td><td><code>cnm community rotate &lt;slug&gt;</code>, or <code>acl/swap-key/0.1</code></td></tr>
+        <tr><td>require two approvers</td><td><code>acl.unrestricted_admin_consent_threshold = 2</code> (needs 3+ community admins)</td></tr>
         <tr><td>acknowledge an offline write</td><td>The banner, or Actions → Acknowledge</td></tr>
-        <tr><td>change the two-admin cooling-off</td><td><code>acl.removal_cooling_off</code> (seconds, default 86400, 0 – 604800)</td></tr>
+        <tr><td>change the cooling-off</td><td><code>acl.removal_cooling_off</code> (seconds, default 86400, 0 – 604800)</td></tr>
         <tr><td>push requests to approvers' devices</td><td><code>acl.consent_request_push = true</code> (default off)</td></tr>
         <tr><td>see offline writes</td><td>Audit trail → <code>AclBreakGlassWritten</code>, <code>EmergencyBootstrapInvoked</code></td></tr>
       </tbody>
@@ -779,7 +750,7 @@ cnm consent approve --action &lt;actionId&gt;</pre>
 </div></section>
 
 <footer><div class="wrap">
-  Companion to <code>docs/03-vtc/admin-access.md</code>. Requirements: VTI-APV-003, -014, -015, -019; VTI-VTC-023; VTI-OPS-050; VTI-ACL-052, -053.
+  Companion to <code>docs/03-vtc/admin-access.md</code>. Requirements: VTI-ACL-030 – 037, -040 – 042, -052, -071; VTI-APV-003, -015 – -020, -022; VTI-VTC-010, -020, -022, -023; VTI-CLT-025 – 032; VTI-OPS-050.
 </div></footer>
 
 </body>

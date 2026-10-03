@@ -1,7 +1,9 @@
 # Role-based administration at the VTC
 
-Status: **accepted direction** (2026-10-02, §1 decided with the maintainer). Companion to
-`vtc-action-list.md` (approvals) and `vtc-approver-step-up.md` (factors).
+Status: **implemented** (accepted 2026-10-02, §1 decided with the maintainer;
+phases C1–C3 built by 2026-10-03 — see *As built* below). Companion to
+`vtc-action-list.md` (approvals) and `vtc-approver-step-up.md` (factors). The
+operator guide is `docs/03-vtc/admin-access.md`.
 
 **Phase C1 is implemented**: the capability registry (§4), resource qualifiers
 (§5), the built-in roles and the granting bounds (§6.1, §6.3), the generalised
@@ -57,6 +59,54 @@ separate rights store is gone, migrated at boot and on backup import
   right. A departed granter's git grants go to review grant by grant
   (`acl.grants.review` with `gitGrants`), and are withdrawn at the deadline —
   the default that kept them in force is gone.
+
+### As built
+
+| PR | What it built |
+|---|---|
+| #1914 | this note, with `vtc-action-list.md` and `vtc-approver-step-up.md` |
+| #1917 | the three stop-gaps of §1 item 3 (removals take a step-up and a third party, threshold lowering is consented, policy is role-gated) |
+| #1924 | C1: capabilities, qualifiers, built-in roles, explicit act scope, granting bounds, `acl/*/0.2`, the §9 migration at boot and on import |
+| #1925 | single-administrator mode (VTI-APV-022), the §7 exception |
+| #1927 | C2: custom roles, approver sets read off approve scope, the departed-granter review as an action, restore consent, `acl/swap-key/0.1`, a capability-driven console |
+| #1923 | `cnm`'s per-community identity, rotated with `acl/swap-key` by `cnm community continue` / `rotate` |
+| #1929 | console tiles and badges gated per capability |
+| #1930 | C3: git-ns rights as resource grants on the entry, the `application` role, the rights-store migration |
+
+Deviations recorded during implementation, beside the three C3 decisions
+above:
+
+- **Repository rights sit beside the administrative role.** §9's mapping of
+  git rights onto `repo-manager` was not built; every git right is a resource
+  grant on its holder's entry, bounded by the granter (VTI-ACL-037, -071) and
+  the git rights model's fixed rules, whatever the entry's role (C3, above).
+- **Departed-granter review, by kind.** An ACL entry's grants go to review
+  when their granter is removed, narrowed so that it no longer covers them, or
+  expires (`acl/delegation.rs`). Git grants go to review on the granter's
+  **departure only** — when it is no longer a member — never on a narrowing
+  (`git_ns/lifecycle.rs::sweep_departures`); `cascade_on_departure` revokes
+  them instead. The review item is for the holders who may approve
+  `vtc.roles.assign` (not "every `community-admin`", §6.3), and the sweeper
+  stays the backstop that withdraws at the deadline.
+- **Consent is a SHOULD, waived only by single-administrator mode.**
+  VTI-APV-014 and -018 – -020 are SHOULD; the one way this VTC does not apply
+  them is VTI-APV-022's host-configured single-administrator mode, judged per
+  act from the same approver set (§7). Without the mode, an empty approver set
+  refuses before any gesture, as §7 says.
+- **Removals keep their cooling-off in single-administrator mode**
+  (`vtc-action-list.md` §8.5): the mode waives a consent nobody could give; it
+  never lands a reduction of another administrator at once.
+- **`vtc.approvals.admin` gates custom roles only.** The approvals rule list
+  it is named for (`vtc-action-list.md` §8.3) is not built, and with it none of
+  §7's rule-driven rows (vetter grants, repo transfer, `ns.admin` grants as
+  N-of-M); those keep the gates they had.
+- **Approvals are signed in the console with the wallet** — by the approver's
+  own DID, never a console key — with an approver device or passkey as extra
+  evidence (`vtc-action-list.md` §6).
+
+Not built: hand-off marker rollover (VTI-ACL-054 – 058; `acl/swap-key` is
+VTI-CLT-025 – 032 self-rotation), and a key rotation that moves a VTA-bound
+`cnm` identity's VTC and VTA entries together.
 
 ---
 

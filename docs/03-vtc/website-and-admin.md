@@ -571,6 +571,27 @@ returns to that page when the key has stopped being accepted.
 
 Design note: `docs/05-design-notes/vtc-console-signing.md`.
 
+### Banners that cannot be dismissed
+
+Three conditions put a banner on every console page that has no dismiss
+button and goes away only when the condition does. All three are read from
+the same signed `vtc/admin/actions/list` the Actions badge makes
+(`ext["org.openvtc"]`), so they cost no request of their own:
+
+- **An offline change waits for your acknowledgement** (`Critical`) — the
+  operator wrote the ACL with the daemon stopped; it clears when you
+  acknowledge the item in **Actions** (VTI-VTC-023).
+- **A reduction of your authority is cooling off** (`Critical`) — another
+  administrator asked to remove or narrow you with nobody else to approve; it
+  names who and when it lands, and clears when it lands or is cancelled
+  (VTI-APV-019).
+- **SINGLE ADMIN MODE** — the host runs the community in
+  single-administrator mode; shown to every administrator for as long as it is
+  on, with a dashboard tile (VTI-APV-022).
+
+What each means, and what to do, is in
+[`admin-access.md`](admin-access.md) §2.1a, §3.4 and §3.5.
+
 ## Routing modes
 
 ```mermaid

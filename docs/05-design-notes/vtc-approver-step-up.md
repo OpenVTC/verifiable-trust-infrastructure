@@ -1,16 +1,43 @@
 # Step-up for wallet administrators — an approver device as the step-up factor
 
-Status: **accepted** (2026-10-02; open questions settled in §11). The wire
-changes in §9 landed in dtgwg-trust-tasks-tf (trust-tasks-rs 0.26.3) and
-dtgwg-vti-spec (VTI-APV-015 as amended, VTI-APV-016). The VTC side — §10 steps
-2–5 and step 7 (factor store, gate, enrolment R1–R4, revocation, install claim
-0.3, console) — is implemented: `vtc-service/src/acl/approver.rs`,
+Status: **implemented** (accepted 2026-10-02; open questions settled in §11).
+The wire changes in §9 landed in dtgwg-trust-tasks-tf (trust-tasks-rs 0.26.3)
+and dtgwg-vti-spec (VTI-APV-015 as amended, VTI-APV-016). The VTC side — §10
+steps 2–5 and step 7 (factor store, gate, enrolment R1–R4, revocation, install
+claim 0.3, console) — is implemented: `vtc-service/src/acl/approver.rs`,
 `acl/bound_step_up.rs`, `step_up_approver.rs`,
 `trust_tasks/step_up_approver_tasks.rs`. The console's 0.3 install page
 (offered beside the 0.2 passkey claim) and the automatic approver enrolment
 invite for every administrator made by a completed action (§6c, §11.4) are
 implemented too, with action-list phase A2. The browser plugin's step-up
-signing (step 6) and mobile approvers (phase 2) are not.
+signing (step 6) shipped in the plugin. Mobile approvers (phase 2) are not
+built.
+
+### As built
+
+| PR | What it built |
+|---|---|
+| #1914 | this note |
+| #1919 | §10 steps 2–5: the `step_up_approvers` keyspace, the gate accepting `approverSigned` (approve-request 0.4, approve-response 0.6), enrolment R1–R4 and revocation, install claim 0.3, the console's approver path |
+| #1920 | five wrong claim codes void an install token at claim 0.3; every administrator made by a completed action gets an approver enrolment invite; a console-key-signed approve-response is refused `subjectMismatch`; the console's claim 0.3 page |
+| #1922 | approving an action with the approver device (`approveDecision`, `approverSigned` decision evidence) |
+| vta-browser-plugin #291 | step 6: `approveStepUp`, answering a VTC step-up with a per-community approver identity |
+| vta-browser-plugin #293 | `approveDecision`, the decision-purpose statement the console sends as evidence |
+
+Deviations recorded during implementation:
+
+- **One approver identity per community**, derived by the plugin per
+  audience (§11.1), rather than one per onboarded VTA (§7) — so communities
+  cannot correlate a user by it.
+- **Console approvals are signed with the wallet.** The approver device is also
+  used to approve actions, not only to step up: the console has the device sign
+  a `decision`-purpose statement and the wallet sign the decision carrying it
+  (`vtc-action-list.md` §6). The decision itself is always the approver's own
+  DID's signature; the device's statement, or a passkey assertion, is extra
+  evidence.
+- **The no-factor refusal names the routes that work** (§7): another
+  administrator's invite (Members → the member → *Invite to enrol an
+  approver*) and `vtc admin enrol-approver` on the host.
 
 Builds on `vtc-operation-bound-step-up.md` (the bound step-up this extends),
 `vtc-console-signing.md` (§6f, two factors), and the step-up passkey invite
