@@ -395,6 +395,41 @@ async fn a_member_written_is_a_countless_members_hint() {
 }
 
 #[tokio::test]
+async fn a_pending_join_request_is_hinted_with_the_lists_own_count() {
+    let vtc = vtc().await;
+    let admin = community_admin(&vtc).await;
+    let (request, mut sse, _, _) =
+        open_stream(&vtc, &admin, json!({ "topics": ["joinRequests"] })).await;
+    let applicant = Party::new();
+    let mut req = vtc_service::join::JoinRequest::new(applicant.did.clone(), json!({ "vp": "x" }));
+    req.status = vtc_service::join::JoinStatus::Pending;
+    vtc_service::join::store_join_request(&vtc.state.join_requests_ks, &req)
+        .await
+        .unwrap();
+    let (id, hint) = sse
+        .next_event(Duration::from_secs(5))
+        .await
+        .expect("a joinRequests hint follows the request");
+    assert_hint_shape(&hint, id.as_deref(), &request, &admin.did);
+    assert_eq!(hint["payload"]["topic"], "joinRequests");
+
+    // The count is the one `vtc/join-requests/list` reports as `totalEstimate`.
+    let (_, page) = crate::common::signed::call(
+        &vtc,
+        &admin,
+        "https://trusttasks.org/spec/vtc/join-requests/list/0.1",
+        json!({ "status": "pending", "limit": 1 }),
+    )
+    .await;
+    assert_eq!(hint["payload"]["count"], page["payload"]["totalEstimate"]);
+    assert_eq!(hint["payload"]["count"], 1);
+    assert!(
+        !hint.to_string().contains(&applicant.did),
+        "the applicant is never named"
+    );
+}
+
+#[tokio::test]
 async fn a_topic_the_caller_cannot_read_is_never_effective() {
     let vtc = vtc().await;
     // An auditor administers, so it reads the join-request list — and hears

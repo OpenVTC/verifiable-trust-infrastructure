@@ -372,7 +372,7 @@ badge topics the viewer's count:
 |---|---|---|---|
 | `actions` | the Actions page and its badge | `waitingForMe` | every administrator |
 | `acknowledgements` | the operator-write banner (the badge read) | open acknowledge items owed | every administrator |
-| `joinRequests` | the Join requests page, badge and tile | pending requests | every administrator |
+| `joinRequests` | the Join requests page, badge and tile | pending requests — the list's own `totalEstimate` | every administrator |
 | `members` | the Members page and tile | — | every administrator |
 | `singleAdminMode` | the single-administrator banner | — | every administrator |
 | `config` | the configuration and profile screens | — | holders of `vtc.config.admin` |

@@ -592,11 +592,22 @@ async fn observe(
         }
     }
     if topics.contains(&Topic::JoinRequests) {
+        // The count is the read's own: `vtc/join-requests/list`'s default
+        // (pending) filter, its exact `totalEstimate`, from a one-row page —
+        // the same `limit: 1` read the console's badge and tile make.
+        let pending = crate::routes::join_requests::read::list_join_requests_inner(
+            state,
+            crate::routes::join_requests::read::ListJoinRequestsQuery {
+                status: Some(crate::join::JoinStatus::Pending),
+                cursor: None,
+                limit: Some(1),
+            },
+        )
+        .await?
+        .total_estimate
+        .unwrap_or(0);
+        // The digest spans every status the page can be filtered to.
         let requests = crate::join::list_join_requests(&state.join_requests_ks).await?;
-        let pending = requests
-            .iter()
-            .filter(|r| r.status == crate::join::JoinStatus::Pending)
-            .count() as u64;
         let mut shape: Vec<Value> = requests
             .iter()
             .filter_map(|r| serde_json::to_value(r).ok())
