@@ -318,11 +318,16 @@ placeholder":
 Navigation follows the viewer's capabilities, and two nav entries carry a
 count bubble while something waits:
 
-- **Actions** — actions waiting for your approval (`vtc/admin/actions/list`
+- **Actions** — actions waiting for your decision (`vtc/admin/actions/list`
   `counts.waitingForMe`), with a banner after sign-in and the count in the tab
-  title.
+  title. This includes the **queues** (`admin-access.md` §3.2a): break-glass
+  ratifications (Ratify / Revoke), join requests referred for review (Approve
+  / Reject) and withdrawn vetting statements a membership rests on (Keep
+  member / Start removal). A queue item has no threshold and no expiry, and
+  closes however its record is decided.
 - **Join requests** — join requests awaiting an administrator's decision,
-  for a viewer holding `vtc.join.decide`. Hidden at zero.
+  for a viewer holding `vtc.join.decide`. Hidden at zero. Each is also a queue
+  item in **Actions**; deciding it in either place closes it in both.
 
 Both are fetched at sign-in, whenever the tab regains focus or becomes
 visible, and every 60 s. The dashboard opens with a **Members** tile (current
@@ -330,11 +335,15 @@ members, for `vtc.members.manage`) and a **Join requests** tile (the badge's
 pending count, for `vtc.join.decide`), each linking to its screen and hidden
 from a viewer without the capability.
 
-Neither listing carries a total — `totalEstimate` is left unset, and the
-join-request status filter is applied to each page after it is read — so the
-console walks `vtc/members/list/0.1` and `vtc/join-requests/list/0.1` page by
-page at the schema maximum (200) until the cursor runs out, and reports a
-floor (`10000+`) past 50 pages.
+Each count is **one read**. `vtc/members/list/0.1` and
+`vtc/join-requests/list/0.1` apply their filter (role, status) before paging,
+so the cursor walks only matching rows and a page is never empty while a match
+lies further on, and they fill `totalEstimate` with the exact number of
+matches. Exact is cheap at a community's size: the page is already cut from
+the whole keyspace held in memory. So the console asks for `limit: 1` and reads
+the total. The **Join requests** page shows the same total for its status
+filter, and the dashboard's **Awaiting a vetting decision** tile reads the
+total pending from it and checks the first 50.
 
 Every page size the console sends a signed listing is held to that listing's
 specification maximum: `admin-ui/src/lib/list-limits.json` pins the maxima,

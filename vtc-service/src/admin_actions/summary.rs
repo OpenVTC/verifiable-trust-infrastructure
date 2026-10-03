@@ -67,6 +67,28 @@ pub const KIND_GRANTS_REVIEW: &str = "acl.grants.review";
 /// never sent or dispatched.
 pub const GRANTS_REVIEW_URI: &str = "urn:openvtc:vtc:acl:grants-review";
 
+// ── Queue items (`vtc-action-list.md` §8.2, *Existing queues*) ──────────
+//
+// Each is an existing human decision surfaced in the action list as category
+// `queue`. Like a grants review, the community raises it about a record, so its
+// `typeUri` names a record type — never sent, never dispatched — and its
+// payload is that record: what the decider is shown, and what the decision is
+// executed against through the operation that always decided it.
+
+/// An unratified git-ns break-glass, to ratify or revoke.
+pub const KIND_BREAK_GLASS_REVIEW: &str = "gitNs.breakGlass.review";
+/// A join request referred for review (`admission: review`).
+pub const KIND_JOIN_REVIEW: &str = "member.join.review";
+/// A withdrawn vetting statement a current membership rests on.
+pub const KIND_VETTING_REVIEW: &str = "vetting.withdrawal.review";
+
+/// The record type a break-glass review is raised under.
+pub const BREAK_GLASS_REVIEW_URI: &str = "urn:openvtc:vtc:git-ns:break-glass-review";
+/// The record type a join review is raised under.
+pub const JOIN_REVIEW_URI: &str = "urn:openvtc:vtc:join:review";
+/// The record type a vetting withdrawal review is raised under.
+pub const VETTING_REVIEW_URI: &str = "urn:openvtc:vtc:vetting:withdrawal-review";
+
 const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 const ACL_UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
 const ACL_CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
@@ -131,6 +153,18 @@ const BACKUP_RESTORE_EFFECT: &str = "Every record in the backup replaces this co
 const GRANTS_REVIEW_EFFECT: &str = "{granter} granted authority to {subjects} and no longer holds \
                                     it. Approving re-affirms those grants under your own \
                                     authority; declining, or letting this lapse, withdraws them.";
+const BREAK_GLASS_REVIEW_EFFECT: &str = "{subject} gave themselves {right} on {resource} with no \
+                                         one else, at {breakGlassAt}, saying: {justification}. It \
+                                         is already in effect. Ratifying confirms it; revoking \
+                                         takes it away. It never lapses into acceptance: it waits \
+                                         until another administrator decides.";
+const JOIN_REVIEW_EFFECT: &str = "{applicant} applied at {submittedAt} and was referred for a \
+                                  decision. Approving admits them as a member and issues their \
+                                  membership credentials; rejecting refuses the application.";
+const VETTING_REVIEW_EFFECT: &str = "{issuer} withdrew the vetting statement {statementId}, which \
+                                     {member}'s admission counted. Keeping the member records that \
+                                     the admission stands; starting removal sends it through \
+                                     vtc/members/admin-remove, which applies its own rules.";
 
 /// Every template this build renders.
 pub const TEMPLATES: &[Template] = &[
@@ -398,6 +432,43 @@ pub const TEMPLATES: &[Template] = &[
             f("deadline", "/deadline", "datetime"),
         ],
     },
+    Template {
+        kind: KIND_BREAK_GLASS_REVIEW,
+        type_uri: BREAK_GLASS_REVIEW_URI,
+        title: "Ratify or revoke the break-glass that gave {subject} {right} on {resource}",
+        effect: BREAK_GLASS_REVIEW_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("right", "/right", "text"),
+            f("resource", "/resource", "text"),
+            f("justification", "/justification", "text"),
+            f("breakGlassAt", "/breakGlassAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_JOIN_REVIEW,
+        type_uri: JOIN_REVIEW_URI,
+        title: "Admit or reject {applicant}",
+        effect: JOIN_REVIEW_EFFECT,
+        fields: &[
+            f("applicant", "/applicant", "did"),
+            f("requestId", "/requestId", "text"),
+            f("submittedAt", "/submittedAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_VETTING_REVIEW,
+        type_uri: VETTING_REVIEW_URI,
+        title: "Keep {member} or start their removal",
+        effect: VETTING_REVIEW_EFFECT,
+        fields: &[
+            f("member", "/member", "did"),
+            f("issuer", "/issuer", "did"),
+            f("statementId", "/statementId", "text"),
+            f("reason", "/reason", "text"),
+            f("recordedAt", "/recordedAt", "datetime"),
+        ],
+    },
 ];
 
 /// The digest of every template, pinned. A change to a template's prose,
@@ -530,6 +601,21 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_GRANTS_REVIEW,
         GRANTS_REVIEW_URI,
         "zQmes3QBrvXfxcwu7tyU7gk58b8RrLfrQiteFRJGCwDYS4S",
+    ),
+    (
+        KIND_BREAK_GLASS_REVIEW,
+        BREAK_GLASS_REVIEW_URI,
+        "zQmc83acTt15e5rhcZi7TKnXt2NNBPB3zZ7cShQhbjvCkcP",
+    ),
+    (
+        KIND_JOIN_REVIEW,
+        JOIN_REVIEW_URI,
+        "zQmaxhUVhRYpEsMxfAzJWuoHvzVKmcbKSmZ2JjG8kQaHzW1",
+    ),
+    (
+        KIND_VETTING_REVIEW,
+        VETTING_REVIEW_URI,
+        "zQmcUNShH782uKh8YFnXsQ322vCS2Hs6U9tJv8SLABeKmBV",
     ),
 ];
 

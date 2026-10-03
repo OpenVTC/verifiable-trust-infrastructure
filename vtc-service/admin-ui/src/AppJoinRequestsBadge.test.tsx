@@ -35,9 +35,15 @@ vi.mock("@/lib/api", async (original) => ({
   postSignedRead: vi.fn(async (type: string, payload: Record<string, unknown>) => {
     reads.calls.push([type, payload]);
     if (type === JOINS) {
-      const index = payload.cursor ? Number(payload.cursor) : 0;
-      const last = index === reads.pages.length - 1;
-      return { items: reads.pages[index] ?? [], nextCursor: last ? null : String(index + 1) };
+      // As the VTC answers: filtered before paging, so the page holds only
+      // pending rows, and `totalEstimate` counts every one of them.
+      const all = reads.pages.flat();
+      const limit = Number(payload.limit ?? 50);
+      return {
+        items: all.slice(0, limit),
+        nextCursor: all.length > limit ? "1" : null,
+        totalEstimate: all.length,
+      };
     }
     return {
       actions: [],
@@ -119,17 +125,18 @@ describe("the Join requests badge", () => {
     const nav = await screen.findByRole("link", { name: /Join requests/ });
     await waitFor(() => expect(within(nav).getByLabelText("3 pending")).toBeTruthy());
     expect(within(nav).getByText("3")).toBeTruthy();
-    expect(joinCalls()[0]).toEqual([JOINS, { status: "pending", limit: 200 }]);
+    expect(joinCalls()[0]).toEqual([JOINS, { status: "pending", limit: 1 }]);
   });
 
-  it("counts every page, not just the first", async () => {
-    // The VTC filters each page by status after reading it, so an early page
-    // can come back with nothing pending and still carry a cursor.
-    reads.pages = [pending(2), [], pending(4, 2)];
+  it("counts with one read, however many are pending", async () => {
+    // The VTC filters before paging and fills `totalEstimate`, so one
+    // `limit: 1` page carries the whole count — no walk of every page.
+    reads.pages = [pending(2), [], pending(437, 2)];
     shell();
     const nav = await screen.findByRole("link", { name: /Join requests/ });
-    await waitFor(() => expect(within(nav).getByLabelText("6 pending")).toBeTruthy());
-    expect(joinCalls().map(([, p]) => p.cursor)).toEqual([undefined, "1", "2"]);
+    await waitFor(() => expect(within(nav).getByLabelText("439 pending")).toBeTruthy());
+    expect(joinCalls()).toHaveLength(1);
+    expect(joinCalls()[0]![1].cursor).toBeUndefined();
   });
 
   it("is hidden when nothing awaits a decision", async () => {

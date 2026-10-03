@@ -8,7 +8,7 @@ use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, MAX_LIMIT, Paginated};
 
 use crate::error::TaskError;
-use crate::join::{JoinRequest, JoinStatus, get_join_request, list_join_requests_paginated};
+use crate::join::{JoinRequest, JoinStatus, get_join_request, list_join_requests_filtered};
 use crate::server::AppState;
 
 /// `vtc/join-requests/show:notFound` — no join request with the supplied id.
@@ -44,19 +44,20 @@ pub(crate) async fn list_join_requests_inner(
         None => None,
     };
 
-    let mut page = list_join_requests_paginated(
+    // The status filter (default Pending) is applied before paging, so the
+    // cursor walks only matching requests — a page is never empty while a
+    // match lies further on — and `totalEstimate` is their exact count. It
+    // used to be applied to each page after it was cut, which left pages
+    // empty with a `nextCursor` and made a count a walk of every page.
+    let filter_status = query.status.unwrap_or(JoinStatus::Pending);
+    list_join_requests_filtered(
         &state.join_requests_ks,
         &audit_key,
         decoded_cursor.as_ref(),
         limit,
+        |r| r.status == filter_status,
     )
-    .await?;
-
-    // Filter to the requested status (default Pending).
-    let filter_status = query.status.unwrap_or(JoinStatus::Pending);
-    page.items.retain(|r| r.status == filter_status);
-
-    Ok(page)
+    .await
 }
 
 /// GET /join-requests/{id} — show a single join request. Auth: Admin.

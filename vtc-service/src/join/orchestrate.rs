@@ -715,6 +715,9 @@ pub async fn realize_join_verdict(
     )
     .await?;
     store_join_request(&state.join_requests_ks, &request).await?;
+    // Referred for review: a queue item for the holders of `vtc.join.decide`
+    // (`vtc-action-list.md` §8.2). The sweeper raises it if this is lost.
+    crate::admin_actions::queues::join_changed(state, &request).await;
 
     // Audit — Rejected for a policy deny; Submitted otherwise.
     if rejected {
@@ -1313,6 +1316,7 @@ pub async fn supplement_inner(
     )
     .await?;
     store_join_request(ks, &request).await?;
+    crate::admin_actions::queues::join_changed(state, &request).await;
 
     // Not `JoinRequestSubmitted`: nothing was submitted. Conflating them would
     // make a community's audit trail report more applications than it
@@ -1418,6 +1422,7 @@ pub async fn withdraw_inner(
     let previous_status = request.status.to_string();
     request.status = JoinStatus::Withdrawn;
     crate::join::storage::store_join_request(ks, &request).await?;
+    crate::admin_actions::queues::join_changed(state, &request).await;
 
     // The applicant's words go to the audit log, not onto the row. `decision`
     // means *refusal* — `decision_for_applicant` reconstructs one — so writing

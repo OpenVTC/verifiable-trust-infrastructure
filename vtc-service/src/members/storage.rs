@@ -120,10 +120,39 @@ pub async fn list_members_paginated(
     cursor: Option<&Cursor>,
     limit: usize,
 ) -> Result<Paginated<Member>, AppError> {
+    list_members_filtered(ks, audit_key, cursor, limit, |_| true).await
+}
+
+/// One page of the members `keep` admits, the filter applied **before**
+/// paging: the cursor walks the filtered set, so a page is never empty while
+/// a matching row lies further on, and `totalEstimate` is the exact number of
+/// members the filter admits (`vtc/members/list/0.1`).
+///
+/// Exact rather than estimated because it is free here: the page is already
+/// cut from the whole keyspace held in memory (see `vti_common::pagination`,
+/// *Storage iteration model*), which is the right trade at a community's
+/// size. A row that does not decode is skipped and logged, never fatal.
+pub async fn list_members_filtered(
+    ks: &KeyspaceHandle,
+    audit_key: &AuditKey,
+    cursor: Option<&Cursor>,
+    limit: usize,
+    keep: impl Fn(&Member) -> bool,
+) -> Result<Paginated<Member>, AppError> {
     let mut pairs = ks.prefix_iter_raw(PREFIX.to_vec()).await?;
     pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
     let snapshot_id: u64 = pairs.len() as u64;
-    paginate(pairs, cursor, limit, &audit_key.key, snapshot_id, decode)
+    pairs.retain(|(_, v)| match decode(v) {
+        Ok(m) => keep(&m),
+        Err(err) => {
+            tracing::warn!(error = %err, "skipping unparseable member row");
+            false
+        }
+    });
+    let total = pairs.len() as u64;
+    let mut page = paginate(pairs, cursor, limit, &audit_key.key, snapshot_id, decode)?;
+    page.total_estimate = Some(total);
+    Ok(page)
 }
 
 // ---------------------------------------------------------------------------

@@ -260,5 +260,130 @@
       "title": "The operator ran {command} on {host}, changing access for {dids}"
     },
     "typeUri": "https://trusttasks.org/spec/vtc/operator/offline-write/0.1"
+  },
+  {
+    "kind": "gitNs.breakGlass.review",
+    "name": "break-glass ratification",
+    "payload": {
+      "breakGlassAt": "2026-10-03T08:00:00Z",
+      "justification": "<b>the only owner left</b> and the release is blocked",
+      "namespace": "ns-1",
+      "resource": "git-ns:github.com/acme",
+      "right": "git.ns.admin",
+      "subject": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+    },
+    "summary": {
+      "effect": "{subject} gave themselves {right} on {resource} with no one else, at {breakGlassAt}, saying: {justification}. It is already in effect. Ratifying confirms it; revoking takes it away. It never lapses into acceptance: it waits until another administrator decides.",
+      "fields": {
+        "subject": {
+          "format": "did",
+          "pointer": "/subject",
+          "value": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        },
+        "right": {
+          "format": "text",
+          "pointer": "/right",
+          "value": "git.ns.admin"
+        },
+        "resource": {
+          "format": "text",
+          "pointer": "/resource",
+          "value": "git-ns:github.com/acme"
+        },
+        "justification": {
+          "format": "text",
+          "pointer": "/justification",
+          "value": "<b>the only owner left</b> and the release is blocked"
+        },
+        "breakGlassAt": {
+          "format": "datetime",
+          "pointer": "/breakGlassAt",
+          "value": "2026-10-03T08:00:00Z"
+        }
+      },
+      "templateDigest": "zQmc83acTt15e5rhcZi7TKnXt2NNBPB3zZ7cShQhbjvCkcP",
+      "title": "Ratify or revoke the break-glass that gave {subject} {right} on {resource}"
+    },
+    "typeUri": "urn:openvtc:vtc:git-ns:break-glass-review"
+  },
+  {
+    "kind": "member.join.review",
+    "name": "join review",
+    "payload": {
+      "applicant": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+      "requestId": "6f1c2c8e-1b0e-4f3e-9d7a-2b9b5d6c7e8f",
+      "submittedAt": "2026-10-03T07:30:00Z"
+    },
+    "summary": {
+      "effect": "{applicant} applied at {submittedAt} and was referred for a decision. Approving admits them as a member and issues their membership credentials; rejecting refuses the application.",
+      "fields": {
+        "applicant": {
+          "format": "did",
+          "pointer": "/applicant",
+          "value": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+        },
+        "requestId": {
+          "format": "text",
+          "pointer": "/requestId",
+          "value": "6f1c2c8e-1b0e-4f3e-9d7a-2b9b5d6c7e8f"
+        },
+        "submittedAt": {
+          "format": "datetime",
+          "pointer": "/submittedAt",
+          "value": "2026-10-03T07:30:00Z"
+        }
+      },
+      "templateDigest": "zQmaxhUVhRYpEsMxfAzJWuoHvzVKmcbKSmZ2JjG8kQaHzW1",
+      "title": "Admit or reject {applicant}"
+    },
+    "typeUri": "urn:openvtc:vtc:join:review"
+  },
+  {
+    "kind": "vetting.withdrawal.review",
+    "name": "vetting withdrawal review",
+    "payload": {
+      "issuer": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+      "joinRequests": [
+        "6f1c2c8e-1b0e-4f3e-9d7a-2b9b5d6c7e8f"
+      ],
+      "member": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+      "reason": "mistake",
+      "recordedAt": "2026-10-03T09:00:00Z",
+      "statementDigestMultibase": "uEiB0aGlzIGlzIGEgZGlnZXN0",
+      "statementId": "urn:uuid:9a7b6c5d-4e3f-4a2b-8c1d-0e9f8a7b6c5d"
+    },
+    "summary": {
+      "effect": "{issuer} withdrew the vetting statement {statementId}, which {member}'s admission counted. Keeping the member records that the admission stands; starting removal sends it through vtc/members/admin-remove, which applies its own rules.",
+      "fields": {
+        "member": {
+          "format": "did",
+          "pointer": "/member",
+          "value": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+        },
+        "issuer": {
+          "format": "did",
+          "pointer": "/issuer",
+          "value": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+        },
+        "statementId": {
+          "format": "text",
+          "pointer": "/statementId",
+          "value": "urn:uuid:9a7b6c5d-4e3f-4a2b-8c1d-0e9f8a7b6c5d"
+        },
+        "reason": {
+          "format": "text",
+          "pointer": "/reason",
+          "value": "mistake"
+        },
+        "recordedAt": {
+          "format": "datetime",
+          "pointer": "/recordedAt",
+          "value": "2026-10-03T09:00:00Z"
+        }
+      },
+      "templateDigest": "zQmcUNShH782uKh8YFnXsQ322vCS2Hs6U9tJv8SLABeKmBV",
+      "title": "Keep {member} or start their removal"
+    },
+    "typeUri": "urn:openvtc:vtc:vetting:withdrawal-review"
   }
 ]

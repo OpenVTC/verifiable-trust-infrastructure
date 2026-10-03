@@ -291,8 +291,12 @@ export function Dashboard() {
               ? "Could not check pending join requests"
               : pendingVetting.data
                 ? pendingVetting.data.count
-                  ? "pending join requests with vetting facts"
-                  : "no join request is waiting"
+                  ? pendingVetting.data.more && pendingVetting.data.pending !== undefined
+                    ? `with vetting facts, of the first 50 of ${pendingVetting.data.pending} pending`
+                    : "pending join requests with vetting facts"
+                  : pendingVetting.data.pending
+                    ? `none of the first ${Math.min(50, pendingVetting.data.pending)} pending carry vetting facts`
+                    : "no join request is waiting"
                 : undefined
           }
           tone={

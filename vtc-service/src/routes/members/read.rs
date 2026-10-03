@@ -15,7 +15,7 @@ use vti_common::pagination::{Cursor, MAX_LIMIT, Paginated};
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, list_acl_entries};
 use crate::error::{AppError, TaskError};
-use crate::members::{Disposition, Member, get_member, list_members_paginated};
+use crate::members::{Disposition, Member, get_member, list_members_filtered};
 use crate::server::AppState;
 
 /// Wire shape returned by both endpoints. Joins `members:<did>`
@@ -121,9 +121,8 @@ impl MemberResponse {
 pub struct ListMembersQuery {
     /// Filter by role, expressed in the same wire form
     /// [`VtcRole`] uses (`"admin"`, `"moderator"`,
-    /// `"custom:editor"`, …). Server-side filter applied after
-    /// pagination — sibling pages skip rows that don't match.
-    /// Future improvement: index by role.
+    /// `"custom:editor"`, …). Applied before paging: the cursor walks only
+    /// matching members, and `totalEstimate` counts them.
     pub role: Option<String>,
     /// Pagination cursor (returned by a previous call).
     pub cursor: Option<String>,
@@ -154,52 +153,68 @@ pub(crate) async fn list_members_inner(
         None => None,
     };
 
-    let mut page = list_members_paginated(
+    // Every ACL entry, read once: the join with the member rows and the role
+    // filter are both decided **before** paging, so the cursor walks only the
+    // members listed — a page is never empty while one lies further on — and
+    // `totalEstimate` is their exact count. Both used to be applied to each
+    // page after it was cut.
+    let acl: std::collections::HashMap<String, VtcAclEntry> = list_acl_entries(&state.acl_ks)
+        .await?
+        .into_iter()
+        .map(|e| (e.did.clone(), e))
+        .collect();
+    let listed = |member: &Member| match acl.get(&member.did) {
+        Some(entry) => query
+            .role
+            .as_ref()
+            .is_none_or(|filter| entry.role.to_string() == *filter),
+        None if member.removed_at.is_some() => {
+            // Expected: a Tombstone / Historical departure deletes the ACL
+            // row but retains the Member row (PII cleared, `removed_at` set)
+            // as a "who was a member" record. It legitimately has no ACL —
+            // left out of the active-member list without alarming.
+            tracing::debug!(
+                did = %member.did,
+                "skipping tombstoned/historical member (no ACL) in list response"
+            );
+            false
+        }
+        None => {
+            // A *live* member row with no ACL row is genuine out-of-band
+            // corruption (e.g. an interrupted purge). Log + skip rather than
+            // 500 — the page should still be returnable.
+            tracing::warn!(
+                did = %member.did,
+                "member row has no matching ACL entry; skipping in list response"
+            );
+            false
+        }
+    };
+    let page = list_members_filtered(
         &state.members_ks,
         &audit_key,
         decoded_cursor.as_ref(),
         limit,
+        listed,
     )
     .await?;
-
-    // Join with ACL entries.
-    let mut items = Vec::with_capacity(page.items.len());
-    for member in page.items.drain(..) {
-        match get_acl_entry(&state.acl_ks, &member.did).await? {
-            Some(acl) => {
-                if let Some(filter) = &query.role
-                    && acl.role.to_string() != *filter
-                {
-                    continue;
-                }
-                items.push(MemberResponse::from_pair(acl, member));
-            }
-            None if member.removed_at.is_some() => {
-                // Expected: a Tombstone / Historical departure deletes the ACL
-                // row but retains the Member row (PII cleared, `removed_at`
-                // set) as a "who was a member" record. It legitimately has no
-                // ACL — skip it from the active-member list without alarming.
-                tracing::debug!(
-                    did = %member.did,
-                    "skipping tombstoned/historical member (no ACL) in list response"
-                );
-            }
-            None => {
-                // A *live* member row with no ACL row is genuine out-of-band
-                // corruption (e.g. an interrupted purge). Log + skip rather
-                // than 500 — the page should still be returnable.
-                tracing::warn!(
-                    did = %member.did,
-                    "member row has no matching ACL entry; skipping in list response"
-                );
-            }
-        }
-    }
-
+    let Paginated {
+        items: members,
+        next_cursor,
+        total_estimate,
+    } = page;
+    let items = members
+        .into_iter()
+        .filter_map(|m| {
+            acl.get(&m.did)
+                .cloned()
+                .map(|entry| MemberResponse::from_pair(entry, m))
+        })
+        .collect();
     Ok(Paginated {
         items,
-        next_cursor: page.next_cursor,
-        total_estimate: page.total_estimate,
+        next_cursor,
+        total_estimate,
     })
 }
 

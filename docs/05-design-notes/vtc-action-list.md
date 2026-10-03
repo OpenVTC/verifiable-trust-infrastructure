@@ -9,7 +9,9 @@ two-admin cooling-off (§8.2, VTI-APV-019), `approverSigned` decision evidence
 (§6), crash-safe execution, and device pushes off by default. **The A2
 follow-ups are implemented** (§10): `vtc/admin/actions/*/0.2` with cooling-off
 actions, the reduction-pending notice, offline-write records, and approving
-from the console with an approver device. What is still deferred is listed at
+from the console with an approver device. **The existing queues are built**
+(§8.2): break-glass ratification, join review and vetting withdrawal review
+are `queue` items. What is still deferred is listed at
 the end of §10. It changes how consent is collected and
 finished at the VTC, adds wire tasks that need a specification first (§9), and
 depends on `vtc-approver-step-up.md` for the approver-signed evidence (§6).
@@ -454,6 +456,39 @@ admins.
 | **Join review** (`admission: review` → `vtc/join-requests/decide`) | any one admin, from the join queue, with no step-up | Queue item, N = 1 by default. A community can ask for N > 1 for some criteria |
 | **Vetting withdrawal review** (`vtc/vetting/revocations/list`, `NeedsReview`) | an informational list with no decide verb; follow-up is a manual removal | Queue item with **Keep member** or **Start removal** (removal then follows its own rule) |
 
+**Status: built** (§8.4 step 3; `vtc-service/src/admin_actions/queues.rs`).
+All three are category `queue`, with no wire change: each item's `typeUri`
+names a record type (`urn:openvtc:vtc:git-ns:break-glass-review`,
+`urn:openvtc:vtc:join:review`, `urn:openvtc:vtc:vetting:withdrawal-review`),
+never sent or dispatched, as a grants review's is, and its payload is that
+record. A decision is `task-consent/decision` signed by the decider's own DID;
+approving and declining each run the operation that always decided the record
+— `git-ns/right/ratify` / `git-ns/right/revoke`,
+`vtc/join-requests/decide` `approved` / `rejected`, keep (recorded) /
+`vtc/members/admin-remove` — as the decider, with that operation's checks,
+audit and notices. As built:
+
+- **Deciders hold the capability** (`admin_consent::may_decide`):
+  `git.ns.admin` at the namespace, `vtc.join.decide`, `vtc.vetting.manage`;
+  never the party the record is about. N = 1; a community-set N > 1 for some
+  join criteria is not built.
+- **No expiry, no cancel, no action limits.** A break-glass never lapses into
+  acceptance. Queue items do not count toward `acl.action_max_open` or the
+  per-requester limit.
+- **Closed by the record.** Decided by any route, the item closes: at once
+  through hooks in `decide_inner`, `right_ratify` and `right_revoke` (naming
+  the decider), otherwise at the next read (`queues::settle`). A refused
+  decision reopens the item; an interrupted one is settled from the record.
+- **Raised crash-safely.** Raised when the record is written, and by the
+  minute sweeper for any record lacking one (`queues::reconcile`); new holders
+  of the capability get a slot at the next sweep (`queues::refresh_slots`).
+- **Single-administrator mode** changes nothing: a queue item is a decision,
+  not a consent (§8.5).
+
+The same change made `vtc/join-requests/list/0.1` and `vtc/members/list/0.1`
+filter before paging and fill `totalEstimate` (exact), so the console's badge
+and tiles are one `limit: 1` read each.
+
 #### Not candidates
 
 - **Waits on a machine, not a person:** git-ns `namespace/bind` and
@@ -747,9 +782,15 @@ The console's Actions page, badge, banner and submit notice, and `cnm actions
    from the action and execution (`admin_actions::policy_revision_id`), so the
    revision row is its own evidence and the action reconciles `completed`.
 
+**Landed after the A2 follow-ups: the existing queues** (§8.2, §8.4 step 3).
+Break-glass ratification, join review and vetting withdrawal review are
+category `queue` items; see the status under §8.2's *Existing queues* table.
+
 **Still deferred.**
 
 - `requireRequesterAtCompletion` (§4.3, §7.2's **Complete**): not built.
+- A join review needing N > 1 decisions for some criteria (§8.2): not built;
+  every queue item is decided by one.
 
 The plan as written:
 

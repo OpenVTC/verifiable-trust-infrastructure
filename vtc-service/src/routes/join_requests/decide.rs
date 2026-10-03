@@ -143,6 +143,16 @@ pub(crate) async fn decide_inner(
         Decision::Approved => approve_pending(state, actor_did, transport, id, req).await?,
         Decision::Rejected => reject_pending(state, actor_did, id, req, reason).await?,
     };
+    // The join review in the action list shows the same state as this page:
+    // its item closes now, naming who decided, whichever door they used
+    // (`vtc-action-list.md` §8.2).
+    crate::admin_actions::queues::join_decided(
+        state,
+        id,
+        body.decision == Decision::Approved,
+        actor_did,
+    )
+    .await;
     Ok(response)
 }
 

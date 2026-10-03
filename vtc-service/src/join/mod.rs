@@ -37,8 +37,8 @@ pub use storage::{
     CredentialResends, JOIN_REQUEST_EXTENSIONS_MAX_BYTES, JOIN_REQUEST_VP_MAX_BYTES,
     StoredCriterion, StoredVettingFacts, delete_join_request, get_credential_resends,
     get_criterion, get_join_request, get_vetting_facts, list_join_requests,
-    list_join_requests_paginated, store_credential_resends, store_criterion, store_join_request,
-    store_vetting_facts,
+    list_join_requests_filtered, list_join_requests_paginated, store_credential_resends,
+    store_criterion, store_join_request, store_vetting_facts,
 };
 
 /// State of a join request through its lifecycle.

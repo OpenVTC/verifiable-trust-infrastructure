@@ -272,10 +272,37 @@ pub async fn list_join_requests_paginated(
     cursor: Option<&Cursor>,
     limit: usize,
 ) -> Result<Paginated<JoinRequest>, AppError> {
+    list_join_requests_filtered(ks, audit_key, cursor, limit, |_| true).await
+}
+
+/// One page of the join requests `keep` admits, the filter applied **before**
+/// paging: the cursor walks the filtered set, so a page of pending requests
+/// is never empty while a pending request lies further on, and
+/// `totalEstimate` is the exact number the filter admits
+/// (`vtc/join-requests/list/0.1`). Exact because it is free here — the page
+/// is cut from the keyspace already held in memory. A row that does not
+/// decode is skipped and logged, never fatal.
+pub async fn list_join_requests_filtered(
+    ks: &KeyspaceHandle,
+    audit_key: &AuditKey,
+    cursor: Option<&Cursor>,
+    limit: usize,
+    keep: impl Fn(&JoinRequest) -> bool,
+) -> Result<Paginated<JoinRequest>, AppError> {
     let mut pairs = ks.prefix_iter_raw(PREFIX.to_vec()).await?;
     pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
     let snapshot_id: u64 = pairs.len() as u64;
-    paginate(pairs, cursor, limit, &audit_key.key, snapshot_id, decode)
+    pairs.retain(|(_, v)| match decode(v) {
+        Ok(r) => keep(&r),
+        Err(err) => {
+            tracing::warn!(error = %err, "skipping unparseable join_request row");
+            false
+        }
+    });
+    let total = pairs.len() as u64;
+    let mut page = paginate(pairs, cursor, limit, &audit_key.key, snapshot_id, decode)?;
+    page.total_estimate = Some(total);
+    Ok(page)
 }
 
 // ---------------------------------------------------------------------------

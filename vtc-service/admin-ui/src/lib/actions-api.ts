@@ -31,7 +31,13 @@ import {
   vtcDid,
   type ApiError,
 } from "./api";
-import { wireDigest } from "./action-summary";
+import {
+  KIND_BREAK_GLASS_REVIEW,
+  KIND_GRANTS_REVIEW,
+  KIND_JOIN_REVIEW,
+  KIND_VETTING_REVIEW,
+  wireDigest,
+} from "./action-summary";
 import type { ActionSummaryWire } from "./action-summary";
 import type { SignedTrustTaskDocument } from "./console-key";
 import { ACTIONS_SHOW_TASK } from "./parked-action";
@@ -520,6 +526,65 @@ export function sendPreparedDecision(
 }
 
 /** The sentence a decision's answer is reported with. */
+/** What the decide buttons say for an action. A queue item
+ *  (`vtc-action-list.md` §8.2) is one decision either way, and each answer
+ *  runs the operation that always decided it — so its buttons name that
+ *  operation, and declining is not an abort. */
+export interface DecisionLabels {
+  approve: string;
+  decline: string;
+  /** The prompt for the decline's reason. */
+  declineReason: string;
+  /** Whether the decline needs a reason before it is sent. */
+  declineReasonRequired: boolean;
+}
+
+export function decisionLabels(action: Pick<Action, "kind">): DecisionLabels {
+  switch (action.kind) {
+    case KIND_GRANTS_REVIEW:
+      return {
+        approve: "Re-affirm",
+        decline: "Withdraw",
+        declineReason: "Why are you declining? (the requester sees this)",
+        declineReasonRequired: true,
+      };
+    case KIND_BREAK_GLASS_REVIEW:
+      return {
+        approve: "Ratify",
+        decline: "Revoke",
+        declineReason: "Why are you revoking it? (kept in the audit record and the notice)",
+        declineReasonRequired: true,
+      };
+    case KIND_JOIN_REVIEW:
+      return {
+        approve: "Approve",
+        decline: "Reject",
+        declineReason: "Reason for rejecting (optional; the applicant sees this)",
+        declineReasonRequired: false,
+      };
+    case KIND_VETTING_REVIEW:
+      return {
+        approve: "Keep member",
+        decline: "Start removal",
+        declineReason: "Why remove them? (optional; recorded with the removal)",
+        declineReasonRequired: false,
+      };
+    default:
+      return {
+        approve: "Approve",
+        decline: "Decline",
+        declineReason: "Why are you declining? (the requester sees this)",
+        declineReasonRequired: true,
+      };
+  }
+}
+
+/** Whether `action` is a queue item — an existing decision surfaced in the
+ *  list: no threshold, no expiry, never cancelled. */
+export function isQueueItem(action: Pick<Action, "category">): boolean {
+  return action.category === "queue";
+}
+
 export function describeDecision(resp: DecisionResponse): string {
   const ext = resp.ext?.["org.openvtc"];
   if (ext?.closedMessage) return ext.closedMessage;

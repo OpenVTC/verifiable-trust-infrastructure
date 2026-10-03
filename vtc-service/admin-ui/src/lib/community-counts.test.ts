@@ -1,4 +1,5 @@
-// The member and pending-join-request counts: a walk of every page, bounded.
+// The member and pending-join-request counts: one `limit: 1` read each, the
+// count being the page's `totalEstimate`.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -14,8 +15,8 @@ import {
   countPendingJoinRequests,
   formatTally,
   JOIN_REQUESTS_LIST_TASK,
-  MAX_COUNT_PAGES,
   MEMBERS_LIST_TASK,
+  tallyOf,
 } from "./community-counts";
 import { LIST_LIMIT_MAX } from "./list-limits";
 
@@ -24,28 +25,36 @@ beforeEach(() => {
 });
 
 describe("the counts", () => {
-  it("page at each listing's maximum", () => {
+  it("ask each listing for one row, within its maximum", () => {
+    expect(COUNT_PAGE_SIZE).toBe(1);
     expect(COUNT_PAGE_SIZE).toBeLessThanOrEqual(LIST_LIMIT_MAX[JOIN_REQUESTS_LIST_TASK]!);
     expect(COUNT_PAGE_SIZE).toBeLessThanOrEqual(LIST_LIMIT_MAX[MEMBERS_LIST_TASK]!);
   });
 
-  it("count only pending requests, across every page", async () => {
-    vi.mocked(postSignedRead)
-      .mockResolvedValueOnce({ items: [{ status: "pending" }], nextCursor: "a" })
-      .mockResolvedValueOnce({ items: [{ status: "approved" }, { status: "pending" }], nextCursor: null });
-    expect(await countPendingJoinRequests()).toEqual({ count: 2, more: false });
+  it("count pending requests in one read, from totalEstimate", async () => {
+    vi.mocked(postSignedRead).mockResolvedValueOnce({
+      items: [{ status: "pending" }],
+      nextCursor: "a",
+      totalEstimate: 312,
+    });
+    expect(await countPendingJoinRequests()).toEqual({ count: 312, more: false });
     expect(vi.mocked(postSignedRead).mock.calls).toEqual([
-      [JOIN_REQUESTS_LIST_TASK, { status: "pending", limit: 200 }],
-      [JOIN_REQUESTS_LIST_TASK, { status: "pending", limit: 200, cursor: "a" }],
+      [JOIN_REQUESTS_LIST_TASK, { status: "pending", limit: 1 }],
     ]);
   });
 
-  it("stop at the bound and report a floor", async () => {
-    vi.mocked(postSignedRead).mockResolvedValue({ items: [{ did: "d" }], nextCursor: "more" });
-    const t = await countMembers();
-    expect(t).toEqual({ count: MAX_COUNT_PAGES, more: true });
-    expect(vi.mocked(postSignedRead)).toHaveBeenCalledTimes(MAX_COUNT_PAGES);
-    expect(formatTally(t)).toBe(`${MAX_COUNT_PAGES}+`);
+  it("count members in one read, from totalEstimate", async () => {
+    vi.mocked(postSignedRead).mockResolvedValueOnce({ items: [], nextCursor: null, totalEstimate: 0 });
+    expect(await countMembers()).toEqual({ count: 0, more: false });
+    expect(vi.mocked(postSignedRead)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(postSignedRead).mock.calls[0]).toEqual([MEMBERS_LIST_TASK, { limit: 1 }]);
+  });
+
+  it("report a floor when a VTC gives no total", () => {
+    const t = tallyOf({ items: [{}], nextCursor: "more" });
+    expect(t).toEqual({ count: 1, more: true });
+    expect(formatTally(t)).toBe("1+");
+    expect(tallyOf({ items: [], nextCursor: null })).toEqual({ count: 0, more: false });
     expect(formatTally({ count: 4, more: false })).toBe("4");
   });
 });

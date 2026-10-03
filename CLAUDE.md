@@ -1074,6 +1074,10 @@ new flow, update both this section and the relevant `docs/*.md`.
   `AuditSeverity::Critical`, and is announced to every other administrator —
   policy may disable, delay or tighten it, never quieten it. An unratified
   break-glass record never counts toward the last-owner/last-admin invariants.
+  Each unratified one is also an action-list `queue` item for the namespace's
+  other administrators (`admin_actions::queues`): Ratify/Revoke call
+  `right_ratify`/`right_revoke` as the decider, it never expires into
+  acceptance, nobody cancels it, and it closes however the record ends.
   A member who is no console user answers that step-up with a **step-up
   passkey** (`step_up_passkey`, `auth/passkey/enroll/invite/0.2` `purpose:
   stepUp`), served only as Trust Tasks on the spine
