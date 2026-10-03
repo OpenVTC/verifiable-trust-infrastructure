@@ -265,8 +265,8 @@ reach the copy the VTC serves, so you carry the log across.
    ```
 
    `cnm` authenticates to the VTC as the community profile's DID, which
-   needs a super-admin row in the VTC's ACL
-   ([bootstrap runbook](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row)).
+   needs an administrator entry in the VTC's ACL
+   ([bootstrap runbook](bootstrap-runbook.md#cnm-needs-its-own-administrator-entry)).
    It reads the VTC's URL from the DID (`https://<host>/v1`); pass
    `cnm --url <base> did-log install …` to override it, and `-c <slug>`
    to pick a community profile other than the active one.
@@ -319,8 +319,8 @@ route needs a `Trust-Task` header and an admin bearer token
 
 `cnm` covers the rest of community administration. It needs the community
 profile to name the VTC (`cnm community set-vtc <vtc-did>`) and the profile's
-DID to hold a super-admin row in the VTC's ACL
-([bootstrap runbook](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row)):
+DID to hold an administrator entry in the VTC's ACL
+([bootstrap runbook](bootstrap-runbook.md#cnm-needs-its-own-administrator-entry)):
 
 ```sh
 cnm vetting vetters {list,grant,revoke,resend}   # vetter grants

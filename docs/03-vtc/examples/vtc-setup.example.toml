@@ -50,22 +50,26 @@ context = "default"   # the VTA context this community provisions under
 # registry_did = "did:webvh:abc:registry.example.com"
 
 # ── Second administrator (optional, recommended) ────────────────────────
-# Making anyone an unrestricted administrator needs the consent of another
-# unrestricted administrator (VTI-APV-014). A community installed with one
-# has nobody to give it, so a second could then only be added offline, with
-# the daemon stopped (`vtc acl add`). Name a second administrator's DID here
-# and the install bootstrap writes both. They need no passkey to approve — an
-# approval is a document their DID signs — and can enrol one later through an
-# admin invite. Omit to install a single administrator.
+# Making anyone a community administrator (or granting any
+# authority-conferring capability) needs the consent of another holder of it
+# (VTI-APV-018). A community installed with one has nobody to give it, so a
+# second could then only be added offline, with the daemon stopped (`vtc acl
+# add`), unless it runs in single-administrator mode (below). Name a second
+# administrator's DID here and the install bootstrap writes both as
+# community-admin. They need no passkey to approve — an approval is a document
+# their DID signs — and enrol a step-up factor later: an approver device
+# through an invite, or a passkey through an admin invite. Omit to install a
+# single administrator.
 # co_admin_did = "did:key:z6Mk…"
 
 # ── Single-administrator mode (optional) ────────────────────────────────
 # For a community run by one person (VTI-APV-022). Wherever nobody but the
 # requester could consent to an operation that ordinarily needs another
-# administrator's approval, the requester's passkey step-up bound to that
-# operation authorizes it instead — audited at the highest severity and shown
-# to every administrator in every session. The moment a second eligible
-# administrator exists, their consent is required again. Writes
+# administrator's approval, the requester's step-up bound to that operation
+# (passkey or approver device) authorizes it instead — audited at the highest
+# severity and shown to every administrator in every session. The moment a
+# second eligible administrator exists, their consent is required again.
+# Removing or narrowing another administrator keeps its cooling-off. Writes
 # `[acl] single_admin_mode = true` to config.toml; it can be changed afterwards
 # only there, on the host, and by a restart — never online. `vtc setup
 # --single-admin` sets it too. Has no effect beside co_admin_did (setup warns).

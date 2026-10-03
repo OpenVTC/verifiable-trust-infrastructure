@@ -139,7 +139,8 @@ adopt as **elevated** (step-up), and bind, unbind and grants of `ns.admin` as
 can perform on a signed Trust Task — its step-up is a passkey elevation on an
 administrator's session, and a signed document has no session. Until a member
 step-up exists, `elevated_requires_admin = true` accepts an elevated or
-destructive git-namespace action only from a community administrator, *in
+destructive git-namespace action only from a community administrator (an
+entry holding `git.ns.admin` community-wide, as a `community-admin` does), *in
 addition to* the rights model's own entitlement. It narrows; it never lets an
 administrator do something their git rights do not allow.
 
@@ -230,6 +231,10 @@ a creator's own ownership, a break-glass (each granted by its own subject) and
 the bridge's service grant (granted by the community). A policy setting
 `cascade_on_departure` still revokes them at once instead. They are also listed
 under *issued by departed members* (`git-ns/right/issued-by-departed/0.1`).
+Only the granter's **departure** raises a review: narrowing a granter's entry
+leaves the git grants they issued in force (an ACL entry's own grants, by
+contrast, also go to review when their granter is narrowed or expires —
+[`admin-access.md`](admin-access.md) §1.2).
 
 ## The bridge
 
@@ -620,9 +625,9 @@ The rules:
   members enrol again through a fresh invite.
 - **Listing.** An administrator lists a member's step-up passkeys with
   `auth/passkey/admin-list/0.1` (`purpose: stepUp`), signed, over any
-  transport; the console sends it from the member's page. A community-wide
-  administrator may list any member's, a context-scoped one only those of a
-  member whose entry names one of their contexts. A non-administrator is
+  transport; the console sends it from the member's page. It takes
+  `vtc.members.manage`, and for a member who is an administrator an entry that
+  covers theirs (VTI-ACL-050). A non-administrator is
   refused `notAdministrator`, a subject outside the administrator's authority
   `subjectUnknown` (as one that does not exist), and a former member
   `subjectNotMember`. The answer is metadata only — id, label, when enrolled,
@@ -734,8 +739,9 @@ command that signs it, with the document itself.
 The **Members** page shows each member's git rights and linked forge accounts
 (from `rights` and `accounts`) in its list, and a member's page lists them in
 a *Git rights* card — recorded rights with their resource, granter and expiry,
-and role-derived ones marked as such. Both need a community administrator; a
-scoped administrator sees that said instead of the column.
+and role-derived ones marked as such. Both reads need the
+community-administrator capability (`git.ns.admin` held community-wide); an
+administrator without it sees that said instead of the column.
 
 ## Limits
 
