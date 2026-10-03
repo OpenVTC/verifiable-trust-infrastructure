@@ -118,6 +118,11 @@ pub(crate) mod backup_tasks;
 // The operations are `crate::step_up_passkey`'s; this is their only door.
 pub(crate) mod step_up_passkey_tasks;
 
+// Step-up approvers: `auth/step-up/approver/{invite,redeem/start,redeem/finish,
+// enroll,list,revoke}/0.1`. The operations are `crate::step_up_approver`'s;
+// this is their only door.
+pub(crate) mod step_up_approver_tasks;
+
 // The integration tests' soft WebAuthn authenticator, for the spine tests that
 // drive a real passkey ceremony.
 #[cfg(test)]
@@ -180,6 +185,9 @@ use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as step_up_appr
 // console still answers an unsigned session-passkey gesture on 0.4 — see
 // `handle_step_up_approve_response_v0_5`.
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_5 as step_up_approve_response_v0_5;
+// 0.6 adds `approverSigned` evidence — a step-up approver's statement — beside
+// the passkey (design note `vtc-approver-step-up.md`).
+use trust_tasks_rs::specs::auth::step_up::approve_response::v0_6 as step_up_approve_response_v0_6;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::trust_task_reject_reasons as reasons;
@@ -508,6 +516,14 @@ async fn dispatch_trust_task_validated(
     //
     //    "As received" literally: over `received`, the JSON the bytes parsed
     //    to, not over `doc` re-serialised (VTI-45).
+    // An install claim under an existing DID is verified against that DID's
+    // *live* document (`vtc/install/claim/finish/0.3` item 3), so its cached
+    // copy is dropped and the DID resolved afresh first.
+    if type_uri == install_tasks::CLAIM_FINISH_V0_3_TYPE
+        && let Some(refused) = install_tasks::refresh_founder_did(state, &doc).await
+    {
+        return refused;
+    }
     let ctx = if doc.proof.is_some() {
         let verified = if helpers::is_approval_type(&type_uri) {
             verify_received_approval_proof(state, &received, &type_uri).await
@@ -759,6 +775,7 @@ async fn dispatch_trust_task_validated(
     // for the acceptance window; a redelivery is then answered `204`.
     if outcome.status.is_success() {
         let recorded = if step_up_passkey_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
+            || step_up_approver_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
             || admin_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
             || community_tasks::SECRET_RESPONSES.contains(&type_uri.as_str())
         {
@@ -1160,6 +1177,17 @@ async fn dispatch_typed(
                 }
             }
         }
+        uri if step_up_approver_tasks::URIS.contains(&uri) => {
+            match step_up_approver_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => {
+                    unreachable!(
+                        "step_up_approver_tasks::URIS names {uri}, which it does not route"
+                    )
+                }
+            }
+        }
         uri if member_tasks::URIS.contains(&uri) => {
             match member_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
@@ -1201,6 +1229,9 @@ async fn dispatch_typed(
         STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, ctx, doc).await,
         STEP_UP_APPROVE_RESPONSE_V0_5_TYPE => {
             handle_step_up_approve_response_v0_5(state, ctx, doc).await
+        }
+        STEP_UP_APPROVE_RESPONSE_V0_6_TYPE => {
+            handle_step_up_approve_response_v0_6(state, ctx, doc).await
         }
         // Boxed: a decision that completes an action re-enters this dispatcher
         // with the parked document.
@@ -1747,6 +1778,10 @@ mod spine_proof_tests {
         (
             install_tasks::CLAIM_FINISH_TYPE,
             "first-admin onboarding, before any ACL entry exists to sign with; the one-time install token the handler requires is the credential",
+        ),
+        (
+            install_tasks::CLAIM_START_V0_3_TYPE,
+            "opens a claim and changes nothing; the install token and its claim code are the gate, and control of the founder's DID is proven by the finish, whose proof the specification requires",
         ),
         (
             install_tasks::BOOTSTRAP_TYPE,
@@ -2566,6 +2601,9 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // approver's own proof — the spine's `is_proof_required` enforces that
     // before this ever dispatches.
     STEP_UP_APPROVE_RESPONSE_V0_5_TYPE,
+    // 0.6: a step-up approver's signed statement as the factor
+    // (`approverSigned`), for an administrator who signs in with a wallet.
+    STEP_UP_APPROVE_RESPONSE_V0_6_TYPE,
     // Another admin's decision on a parked action (VTI-APV-014, -017). The
     // request it answers is pushed by this service, never dispatched here.
     // 0.2 adds the optional extra factor and the `actionId` locator.
@@ -2586,6 +2624,15 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     step_up_passkey_tasks::REVOKE_START_TYPE,
     step_up_passkey_tasks::REVOKE_FINISH_TYPE,
     step_up_passkey_tasks::ADMIN_LIST_TYPE,
+    // Step-up approvers (VTI-APV-015, VTI-APV-016): an administrator's invite,
+    // its redemption by the invited subject, self-service enrolment behind a
+    // factor already held, listing and revocation. No REST route serves them.
+    step_up_approver_tasks::INVITE_TYPE,
+    step_up_approver_tasks::REDEEM_START_TYPE,
+    step_up_approver_tasks::REDEEM_FINISH_TYPE,
+    step_up_approver_tasks::ENROLL_TYPE,
+    step_up_approver_tasks::LIST_TYPE,
+    step_up_approver_tasks::REVOKE_TYPE,
     // backup/* — the chunked transfer `vtc/backup/import` could never be,
     // because its envelope does not fit one document.
     backup_tasks::INITIATE_EXPORT_TYPE,
@@ -2644,6 +2691,10 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     // `POST /v1/install/claim/{start,finish}` and `POST /v1/admin/bootstrap`.
     install_tasks::CLAIM_START_TYPE,
     install_tasks::CLAIM_FINISH_TYPE,
+    // 0.3: claim under a DID the founder already controls, with a step-up
+    // approver as their factor (approver design note §6b).
+    install_tasks::CLAIM_START_V0_3_TYPE,
+    install_tasks::CLAIM_FINISH_V0_3_TYPE,
     install_tasks::BOOTSTRAP_TYPE,
     // Cross-community recognition — replaced the bearer REST routes at
     // `POST /v1/auth/recognise/challenge` and `POST /v1/auth/recognise`.
@@ -2824,6 +2875,11 @@ pub(crate) const STEP_UP_APPROVE_RESPONSE_TYPE: &str =
 /// [`handle_step_up_approve_response_v0_5`].
 pub(crate) const STEP_UP_APPROVE_RESPONSE_V0_5_TYPE: &str =
     <step_up_approve_response_v0_5::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
+/// `auth/step-up/approve-response/0.6` — adds a step-up approver's statement
+/// (`evidence.kind = approverSigned`) as the factor (VTI-APV-015).
+pub(crate) const STEP_UP_APPROVE_RESPONSE_V0_6_TYPE: &str =
+    <step_up_approve_response_v0_6::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// `vtc/join-requests/submit:presentationInvalid` — the presentation is not
 /// the applicant's own.
@@ -4810,6 +4866,156 @@ async fn handle_step_up_approve_response(
             Some(hint),
         ),
         Err(ApproveError::ProofRequired) => reject_with(&doc, RejectReason::ProofRequired),
+        // 0.4 carries no `approverSigned`, so neither arises on this door; a
+        // gate it did not offer is `noGate`.
+        Err(ApproveError::StatementInvalid | ApproveError::ApproverNotBound) => refuse(
+            codes::NO_GATE,
+            "this version carries no step-up approver statement",
+            None,
+        ),
+        Err(ApproveError::Internal(e)) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `auth/step-up/approve-response/0.6`, served alongside 0.4 and 0.5. It adds
+/// `evidence.kind = approverSigned` — a step-up approver's statement as the
+/// factor (VTI-APV-015 as amended; design note `vtc-approver-step-up.md` §5).
+///
+/// Its proof is REQUIRED by the specification, so the spine has already
+/// refused an unsigned document and verified this one's proof — made for
+/// `assertionMethod`, by a key the signer lists under `assertionMethod`, and
+/// never by a console key's delegation (the spine refuses a delegated signing
+/// key on every approval type before dispatch). Here, before the pending
+/// step-up is looked up (0.6 consumer item 1a):
+///
+/// - the signer must be `payload.subject` itself — `subjectMismatch` otherwise;
+///   for `approverSigned` that is the subject's **own** DID, the one key that
+///   says the subject answered, never a delegation;
+/// - an approval carrying `approverSigned` goes to
+///   [`crate::acl::bound_step_up::approve_with_statement`]; everything else
+///   (`webauthn`, a refusal) is the 0.5 path, reached through the 0.4 type the
+///   one verifier takes — the wire shapes of those members are the same.
+async fn handle_step_up_approve_response_v0_6(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    use crate::acl::bound_step_up::{self, ApproveError, Approved};
+    use step_up_approve_response_v0_6::error_codes as codes;
+
+    let payload: step_up_approve_response_v0_6::Payload = match parse_spec_payload(&doc) {
+        Ok(p) => p,
+        Err(reject) => return reject,
+    };
+    let refuse = |code: trust_tasks_rs::DeclaredErrorCode, message: &str, hint: Option<&str>| {
+        reject_with_code(
+            &doc,
+            extended_code(code.code),
+            message,
+            hint.map(|h| serde_json::json!({ "reason": h })),
+        )
+    };
+    match ctx.verified_signer.as_deref() {
+        Some(signer) if signer == payload.subject.as_str() => {}
+        Some(_) => {
+            return refuse(
+                codes::SUBJECT_MISMATCH,
+                "an approve-response must be signed by the subject's own DID",
+                None,
+            );
+        }
+        None => return reject_with(&doc, RejectReason::ProofRequired),
+    }
+
+    let approver_signed = matches!(
+        payload.evidence,
+        Some(step_up_approve_response_v0_6::Evidence::ApproverSigned { .. })
+    );
+    let outcome = if approver_signed {
+        if payload.decision != step_up_approve_response_v0_6::PayloadDecision::Approved {
+            // A refusal is the subject's signed statement (0.6 producer item
+            // 6); it carries no factor.
+            return refuse(
+                codes::NO_GATE,
+                "a refusal is signed by the subject and carries no approver statement \
+                 (evidence.kind = didSigned)",
+                None,
+            );
+        }
+        // The statement exactly as received: `doc.payload` is the JSON the
+        // bytes parsed to, so the approver's proof is checked over the members
+        // it signed (VTI-45), never over a re-serialisation of the typed
+        // `AttestStatement`.
+        let Some(statement) = doc.payload.pointer("/evidence/statement") else {
+            return refuse(codes::STATEMENT_INVALID, "no statement", None);
+        };
+        bound_step_up::approve_with_statement(
+            state,
+            payload.subject.as_str(),
+            payload.challenge.as_str(),
+            payload.session_id.is_some(),
+            statement,
+        )
+        .await
+    } else {
+        match serde_json::from_value::<step_up_approve_response::Payload>(doc.payload.clone()) {
+            Ok(v0_4) => bound_step_up::approve(state, &v0_4, true).await,
+            Err(e) => {
+                return app_error_to_reject(
+                    &doc,
+                    &AppError::Internal(format!(
+                        "approve-response 0.6 payload does not convert to 0.4's shape: {e}"
+                    )),
+                );
+            }
+        }
+    };
+    match outcome {
+        Ok(Approved::Recorded { bound_to }) => success_response(
+            &doc,
+            serde_json::json!({ "status": "recorded", "boundTo": bound_to }),
+        ),
+        Ok(Approved::Declined { reason }) => success_response(
+            &doc,
+            serde_json::json!({ "status": "rejected", "reason": reason }),
+        ),
+        Err(ApproveError::ChallengeUnknown) => refuse(
+            codes::CHALLENGE_UNKNOWN,
+            "no pending step-up matches this challenge",
+            None,
+        ),
+        Err(ApproveError::ChallengeExpired) => refuse(
+            codes::CHALLENGE_EXPIRED,
+            "the step-up this challenge belonged to has expired; send the operation again",
+            None,
+        ),
+        Err(ApproveError::SubjectMismatch) => refuse(
+            codes::SUBJECT_MISMATCH,
+            "the subject or session does not match the pending step-up",
+            None,
+        ),
+        Err(ApproveError::NoGate) => refuse(
+            codes::NO_GATE,
+            "this step-up did not accept that kind of evidence; answer with one the request's \
+             `accepts` lists",
+            None,
+        ),
+        Err(ApproveError::AssertionInvalid(hint)) => refuse(
+            codes::ASSERTION_INVALID,
+            "the passkey assertion did not verify",
+            Some(hint),
+        ),
+        Err(ApproveError::StatementInvalid) => refuse(
+            codes::STATEMENT_INVALID,
+            "the step-up approver's statement is not valid for this step-up",
+            None,
+        ),
+        Err(ApproveError::ApproverNotBound) => refuse(
+            codes::APPROVER_NOT_BOUND,
+            "the statement is not signed by a step-up approver bound to the subject",
+            None,
+        ),
+        Err(ApproveError::ProofRequired) => reject_with(&doc, RejectReason::ProofRequired),
         Err(ApproveError::Internal(e)) => app_error_to_reject(&doc, &e),
     }
 }
@@ -4942,6 +5148,12 @@ async fn handle_step_up_approve_response_v0_5(
             Some(hint),
         ),
         Err(ApproveError::ProofRequired) => reject_with(&doc, RejectReason::ProofRequired),
+        // 0.5 carries no `approverSigned`; answer with 0.6 for that.
+        Err(ApproveError::StatementInvalid | ApproveError::ApproverNotBound) => refuse(
+            codes::NO_GATE,
+            "this version carries no step-up approver statement; use approve-response 0.6",
+            None,
+        ),
         Err(ApproveError::Internal(e)) => app_error_to_reject(&doc, &e),
     }
 }

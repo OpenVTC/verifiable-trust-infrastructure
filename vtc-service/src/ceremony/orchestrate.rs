@@ -127,7 +127,7 @@ pub enum RoleChangeOutcome {
     /// A promotion the pipeline would allow, with no gesture recorded for it
     /// yet. Nothing was written; a ceremony is parked, and this is the
     /// approve-request to refuse with.
-    StepUpRequired(Box<trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload>),
+    StepUpRequired(Box<crate::acl::bound_step_up::ApproveRequest>),
 }
 
 /// [`role_change_via_pipeline`] for the signed-document door: the promotion's

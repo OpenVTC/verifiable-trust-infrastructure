@@ -22,17 +22,16 @@
 //! 1. A signed document arrives for a gated verb. The handler has run every
 //!    check that decides *whether* the act is allowed, then asks
 //!    [`redeem_or_request`]. No mark exists for `(acting admin, digest)`, so a
-//!    WebAuthn ceremony is started over the acting admin's own passkeys and
-//!    parked as a **pending mark**; the handler refuses `permissionDenied` with
-//!    the ceremony inline as `details.stepUpRequest` — an
-//!    `auth/step-up/approve-request/0.3` payload with `boundTo` and no
-//!    `sessionId` ([`refusal`]). The spine releases the refused document's `id`,
-//!    so the identical document can be sent again.
-//! 2. The admin answers with `auth/step-up/approve-response/0.4` carrying
-//!    `evidence.kind = webauthn` ([`approve`]). The assertion is verified against
-//!    the parked ceremony, must assert user verification, and must come from a
-//!    passkey registered to the acting admin. The pending mark becomes a
-//!    **redeemable mark**; the answer is `recorded`, and nothing is elevated.
+//!    ceremony is parked as a **pending mark** and the handler refuses
+//!    `permissionDenied` with it inline as `details.stepUpRequest` — an
+//!    `auth/step-up/approve-request/0.4` payload with `boundTo` and no
+//!    `sessionId` ([`refusal_details`]). The spine releases the refused
+//!    document's `id`, so the identical document can be sent again.
+//! 2. The admin answers with `auth/step-up/approve-response` — `0.4`/`0.5`
+//!    with `evidence.kind = webauthn` ([`approve`]), or `0.6` with
+//!    `evidence.kind = approverSigned` ([`approve_with_statement`]). The
+//!    pending mark becomes a **redeemable mark**; the answer is `recorded`,
+//!    and nothing is elevated.
 //! 3. The same document is re-sent. [`redeem_or_request`] finds the mark,
 //!    **removes it before the operation runs**, and the handler commits. A
 //!    different payload has a different digest and finds nothing; the same
@@ -40,10 +39,31 @@
 //!
 //! ## Who can create a mark
 //!
-//! Only the passkey. A console key can sign the document and can redeem a mark,
-//! but a mark exists only after a user-verified assertion from a passkey
-//! registered to the admin the key acts for — possession of a signing key is
-//! one factor, and it is never allowed to stand in for the second.
+//! Only the admin's own **additional factor**: a user-verified passkey
+//! assertion, or a statement by a step-up approver bound to them. A console key
+//! can sign the document and can redeem a mark, but possession of a signing key
+//! is one factor, and it is never allowed to stand in for the second.
+//!
+//! ## A step-up approver's statement (approve-request 0.4, approve-response 0.6)
+//!
+//! A wallet administrator acts as a DID this community knows no passkey for.
+//! Their factor is a **step-up approver** ([`super::approver`]): a `did:key`
+//! bound to them as their step-up factor, whose signed statement over the
+//! challenge and `boundTo` is the gesture. VTI-APV-015 as amended: a
+//! signature counts only from a key bound as a factor under VTI-APV-016,
+//! distinct from the caller's signing keys, held behind user verification. The
+//! request lists what it accepts (`accepts`: `approverSigned` when the subject
+//! holds a live approver, `webauthn` when a passkey of theirs counts) and names
+//! the approvers it will take. The answer is still signed by the subject's
+//! **own** DID — never a console key — so the proof and the factor are two
+//! different keys (approve-response 0.6, *Why the subject's own DID*).
+//!
+//! ## Which factors count (approver design note §4, *Supersedes*)
+//!
+//! Once a subject holds a **dedicated** step-up factor — a step-up approver or a
+//! step-up passkey — only those count; their ordinary session passkeys stop
+//! answering the bound step-up ([`factors_of`]). A subject with neither keeps
+//! their session passkeys, so enrolling no dedicated factor is never a lockout.
 //!
 //! Both marks live [`MARK_TTL_SECS`]: a mark authorizes one known act, so there
 //! is no reason for it to outlast the moment it was made for.
@@ -52,15 +72,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tracing::{info, warn};
-use trust_tasks_rs::specs::auth::step_up::approve_request::v0_3 as approve_request;
+use trust_tasks_rs::specs::auth::step_up::approve_request::v0_4 as approve_request;
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_4 as approve_response;
-use vti_common::audit::{AuditEvent, OperationStepUpData};
+use trust_tasks_rs::specs::auth::step_up::approver::attest::v0_1 as attest;
+use vti_common::audit::{AuditEvent, OperationStepUpApprovedData, OperationStepUpData};
 use vti_common::auth::passkey::store::{
     get_passkey_user_by_cred, get_passkey_user_by_did, store_passkey_user,
 };
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
-use webauthn_rs::prelude::{PasskeyAuthentication, PublicKeyCredential};
+use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PublicKeyCredential};
 
 use crate::auth::session::now_epoch;
 use crate::server::AppState;
@@ -69,6 +90,11 @@ use crate::server::AppState;
 /// waits to be spent. Shorter than a session elevation's 900 s on purpose: a
 /// mark authorizes one known act (design note §7).
 pub const MARK_TTL_SECS: u64 = 300;
+
+/// Evidence kind of a passkey assertion.
+pub const EVIDENCE_WEBAUTHN: &str = "webauthn";
+/// Evidence kind of a step-up approver's statement (approve-response 0.6).
+pub const EVIDENCE_APPROVER_SIGNED: &str = "approverSigned";
 
 /// Domain separation for [`operation_digest`], so this digest cannot collide
 /// with any other SHA-256 over a canonical payload in the system — the VTA's
@@ -111,16 +137,15 @@ fn digest_with(
     vti_common::task_consent::domain_digest(DIGEST_DOMAIN, type_uri, payload, challenge)
 }
 
-/// The inline `auth/step-up/approve-request/0.3` payload a gated operation
+/// The inline `auth/step-up/approve-request/0.4` payload a gated operation
 /// refuses with.
 pub type ApproveRequest = approve_request::Payload;
 
-/// A parked WebAuthn ceremony for one refused operation, keyed by its
-/// challenge.
+/// A parked ceremony for one refused operation, keyed by its challenge.
 #[derive(Serialize, Deserialize)]
 struct PendingMark {
     /// The admin the operation acts as — the signer, or the admin a console
-    /// key's delegation names. Only their passkeys were offered.
+    /// key's delegation names. Only their factors were offered.
     admin_did: String,
     /// [`operation_digest`] of the refused operation.
     digest: String,
@@ -129,13 +154,37 @@ struct PendingMark {
     type_uri: String,
     /// webauthn-rs's own ceremony state. Its challenge *is* the step-up
     /// challenge, so the assertion binds the nonce this record is keyed by.
-    auth_state: PasskeyAuthentication,
+    /// Absent when the request did not accept `webauthn` — the subject holds
+    /// only step-up approvers, or this community has no relying party.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth_state: Option<PasskeyAuthentication>,
+    /// The step-up approvers the request offered (`approvers`), when it
+    /// accepted `approverSigned`. A statement is accepted only from one of
+    /// these, and only while it is still a live, distinct approver of the
+    /// subject (approve-response 0.6, step 4.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    approvers: Vec<String>,
+    /// When the ceremony was minted — the start of the lifetime a statement's
+    /// `issuedAt` must fall in. `0` on a mark written before this was kept,
+    /// read as `expires_at - MARK_TTL_SECS`.
+    #[serde(default)]
+    created_at: u64,
     expires_at: u64,
     /// The key that asked, for a gesture requested before the actor's standing
     /// is known — a signing-key enrolment ([`request_for_enrolment`]). Absent
     /// for every other gate, whose document is signed by the actor itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     requester: Option<String>,
+}
+
+impl PendingMark {
+    fn created_at(&self) -> u64 {
+        if self.created_at == 0 {
+            self.expires_at.saturating_sub(MARK_TTL_SECS)
+        } else {
+            self.created_at
+        }
+    }
 }
 
 // Hand-written so a stray `?pending` in a log line prints the binding and not
@@ -146,6 +195,7 @@ impl std::fmt::Debug for PendingMark {
             .field("admin_did", &self.admin_did)
             .field("bound_to", &self.bound_to)
             .field("type_uri", &self.type_uri)
+            .field("approvers", &self.approvers)
             .field("expires_at", &self.expires_at)
             .field("requester", &self.requester)
             .finish_non_exhaustive()
@@ -156,7 +206,7 @@ impl std::fmt::Debug for PendingMark {
 #[derive(Debug, Serialize, Deserialize)]
 struct RedeemableMark {
     expires_at: u64,
-    /// Which passkey answered, and what it was shown — carried so an act that
+    /// Which factor answered, and what it was shown — carried so an act that
     /// must record its step-up evidence (a git break-glass,
     /// `git-ns/right/break-glass/0.1` step 9) can. Absent on a mark written
     /// before this was recorded; such a mark still authorizes.
@@ -164,12 +214,27 @@ struct RedeemableMark {
     credential_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bound_to: Option<String>,
+    /// [`EVIDENCE_WEBAUTHN`] or [`EVIDENCE_APPROVER_SIGNED`]; absent on a mark
+    /// written before this was recorded, which was always a passkey.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    /// The challenge the gesture answered and when its ceremony began — what a
+    /// self-service approver enrolment binds its new approver's statement to
+    /// (`auth/step-up/approver/enroll/0.1`, *Authorization*).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    challenge: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created_at: Option<u64>,
 }
 
 /// What a spent mark shows about the gesture behind it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepUpEvidence {
-    /// Credential id (hex) of the passkey that asserted user verification.
+    /// [`EVIDENCE_WEBAUTHN`] or [`EVIDENCE_APPROVER_SIGNED`].
+    pub kind: String,
+    /// Credential id (hex) of the passkey that asserted user verification —
+    /// or, for `approverSigned`, the approver `did:key` whose statement
+    /// answered.
     pub credential_id: String,
     /// The salted digest the approver was shown.
     pub bound_to: String,
@@ -178,11 +243,22 @@ pub struct StepUpEvidence {
 impl From<StepUpEvidence> for vti_common::audit::StepUpEvidence {
     fn from(e: StepUpEvidence) -> Self {
         Self {
-            kind: "webauthn".into(),
+            kind: e.kind,
             credential_id: e.credential_id,
             bound_to: e.bound_to,
         }
     }
+}
+
+/// A recorded gesture, read without spending it ([`peek_mark`]).
+#[derive(Debug, Clone)]
+pub struct MarkInfo {
+    /// The challenge the gesture answered.
+    pub challenge: String,
+    /// The lifetime of the ceremony it answered, as epoch seconds.
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub evidence: StepUpEvidence,
 }
 
 /// [`Gate`], with the spent gesture's evidence.
@@ -270,36 +346,51 @@ pub async fn redeem_or_request_with_evidence(
     {
         info!(admin = %admin_did, task = %type_uri, "operation-bound step-up spent");
         return Ok(EvidencedGate::Satisfied(StepUpEvidence {
+            kind: mark.kind.unwrap_or_else(|| EVIDENCE_WEBAUTHN.into()),
             credential_id: mark.credential_id.unwrap_or_default(),
             bound_to: mark.bound_to.unwrap_or_default(),
         }));
     }
 
-    let webauthn = state.webauthn.as_ref().ok_or_else(|| {
-        AppError::StepUpRequired(
-            "this operation needs a passkey gesture, and this community has no WebAuthn \
-             relying party configured"
-                .into(),
-        )
-    })?;
-    // Only the actor's own credentials. A signed document names one actor;
-    // any other principal's passkey answering for them would be exactly the
-    // substitution the gate exists to stop. Either way the answer must also
-    // carry the actor's own signature
-    // (`trust_tasks::handle_step_up_approve_response`): the passkey is beside
-    // the proof, never instead of it.
-    //
-    // Once `admin_did` holds a dedicated step-up passkey
-    // (`crate::step_up_passkey`), it is the **only** passkey this gesture may
-    // come from — their ordinary session/console passkey stops counting for
-    // them (security decision 2026-09-30): a step-up passkey exists precisely
-    // so a subject's second factor cannot be satisfied by whatever else they
-    // happen to hold. A subject with no step-up passkey keeps today's route —
-    // any of their registered (session) passkeys — so enrolling nobody else's
-    // is never a lockout. A member who is no console user holds only a
-    // step-up passkey, and this is the one place it counts at all.
+    let request = request_step_up(state, admin_did, type_uri, payload, reason).await?;
+    Ok(EvidencedGate::Required(Box::new(request)))
+}
+
+/// The factors a bound step-up asked of one subject may be answered with.
+pub(crate) struct Factors {
+    /// Their live, distinct step-up approvers.
+    pub approvers: Vec<String>,
+    /// The passkeys a gesture may come from.
+    pub passkeys: Vec<Passkey>,
+}
+
+impl Factors {
+    /// Whether the subject holds no factor this gate would accept.
+    pub fn is_empty(&self) -> bool {
+        self.approvers.is_empty() && self.passkeys.is_empty()
+    }
+}
+
+/// The factors that count for `admin_did`'s bound step-up — the factor-union
+/// rule (approver design note §4, *Supersedes*).
+///
+/// Once `admin_did` holds a **dedicated** step-up factor — a step-up approver
+/// ([`super::approver`]) or a step-up passkey (`crate::step_up_passkey`) — only
+/// those count, and their ordinary session passkeys stop answering (security
+/// decision 2026-09-30, widened to the union): a dedicated factor exists
+/// precisely so a subject's second factor cannot be satisfied by whatever else
+/// they happen to hold. A subject with no dedicated factor keeps today's route
+/// — any of their registered session passkeys — so enrolling nothing is never
+/// a lockout. A member who is no console user holds only dedicated factors,
+/// and this is the one place they count at all.
+pub(crate) async fn factors_of(state: &AppState, admin_did: &str) -> Result<Factors, AppError> {
+    let approvers: Vec<String> = super::approver::live_approvers(state, admin_did)
+        .await?
+        .into_iter()
+        .map(|r| r.approver_did)
+        .collect();
     let step_up_passkeys = crate::step_up_passkey::credentials_of(state, admin_did).await?;
-    let passkeys = if step_up_passkeys.is_empty() {
+    let passkeys = if approvers.is_empty() && step_up_passkeys.is_empty() {
         get_passkey_user_by_did(&state.passkey_ks, admin_did)
             .await?
             .map(|u| u.credentials)
@@ -307,39 +398,128 @@ pub async fn redeem_or_request_with_evidence(
     } else {
         step_up_passkeys
     };
-    if passkeys.is_empty() {
-        return Err(AppError::StepUpRequired(format!(
-            "this operation needs a passkey gesture from {admin_did}, who has no passkey \
-             registered with this community — a community administrator can invite them to \
-             enrol a step-up passkey (Members → the member → Step-up passkeys), then retry"
-        )));
+    Ok(Factors {
+        approvers,
+        passkeys,
+    })
+}
+
+/// Whether `admin_did` holds a dedicated step-up factor (approver or step-up
+/// passkey), in which case their session passkeys no longer count.
+async fn holds_dedicated_factor(state: &AppState, admin_did: &str) -> Result<bool, AppError> {
+    Ok(!super::approver::live_approvers(state, admin_did)
+        .await?
+        .is_empty()
+        || !crate::step_up_passkey::credentials_of(state, admin_did)
+            .await?
+            .is_empty())
+}
+
+/// A fresh step-up challenge when no WebAuthn ceremony mints one: 256 bits
+/// from the CSPRNG, base64url (VTI-SES-001).
+fn fresh_challenge() -> String {
+    use base64::Engine as _;
+    use rand::Rng as _;
+    let mut raw = [0u8; 32];
+    rand::rng().fill_bytes(&mut raw);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
+}
+
+/// Park a ceremony for `(admin_did, this operation)` and return the
+/// approve-request 0.4 that asks for it, without looking for a recorded
+/// gesture first. [`redeem_or_request_with_evidence`] is the usual door; a
+/// gate that reads the mark itself ([`peek_mark`]) asks here.
+///
+/// The challenge is bound to `(subject, operation, expiry)` server-side and is
+/// single use (VTI-SES-001–004): [`approve`] and [`approve_with_statement`]
+/// take the pending mark atomically.
+pub(crate) async fn request_step_up(
+    state: &AppState,
+    admin_did: &str,
+    type_uri: &str,
+    payload: &Value,
+    reason: &str,
+) -> Result<approve_request::Payload, AppError> {
+    // Only the actor's own factors. A signed document names one actor; any
+    // other principal's factor answering for them would be exactly the
+    // substitution the gate exists to stop. Either way the answer must also
+    // carry the actor's own signature
+    // (`trust_tasks::handle_step_up_approve_response`): the factor is beside
+    // the proof, never instead of it.
+    let factors = factors_of(state, admin_did).await?;
+    let webauthn = state
+        .webauthn
+        .as_ref()
+        .filter(|_| !factors.passkeys.is_empty());
+    if factors.approvers.is_empty() && webauthn.is_none() {
+        return Err(AppError::StepUpRequired(if factors.passkeys.is_empty() {
+            format!(
+                "this operation needs a step-up from {admin_did}, who holds no step-up factor at \
+                 this community (no step-up approver and no passkey). Another community \
+                 administrator can invite them to enrol an approver (Members → the member → \
+                 Invite to enrol an approver), or the operator can mint that invite on the host \
+                 with `vtc admin enrol-approver --did {admin_did}` while the daemon is stopped; \
+                 then retry"
+            )
+        } else {
+            "this operation needs a passkey gesture, and this community has no WebAuthn \
+             relying party configured"
+                .into()
+        }));
     }
 
-    let (rcr, auth_state) = webauthn
-        .start_passkey_authentication(&passkeys)
-        .map_err(|e| AppError::Internal(format!("webauthn authentication start failed: {e}")))?;
-    let options = serde_json::to_value(&rcr.public_key)
-        .map_err(|e| AppError::Internal(format!("webauthn options serialise: {e}")))?;
-    let challenge = options["challenge"]
-        .as_str()
-        .ok_or_else(|| AppError::Internal("webauthn options carry no challenge".into()))?
-        .to_string();
+    let (challenge, auth_state, options) = match webauthn {
+        Some(webauthn) => {
+            let (rcr, auth_state) = webauthn
+                .start_passkey_authentication(&factors.passkeys)
+                .map_err(|e| {
+                    AppError::Internal(format!("webauthn authentication start failed: {e}"))
+                })?;
+            let options = serde_json::to_value(&rcr.public_key)
+                .map_err(|e| AppError::Internal(format!("webauthn options serialise: {e}")))?;
+            let challenge = options["challenge"]
+                .as_str()
+                .ok_or_else(|| AppError::Internal("webauthn options carry no challenge".into()))?
+                .to_string();
+            (challenge, Some(auth_state), Some(options))
+        }
+        None => (fresh_challenge(), None, None),
+    };
     let bound_to = wire_digest(type_uri, payload, &challenge)?;
-
+    let now = now_epoch();
     let pending = PendingMark {
         admin_did: admin_did.to_string(),
-        digest,
+        digest: operation_digest(type_uri, payload)?,
         bound_to: bound_to.clone(),
         type_uri: type_uri.to_string(),
         auth_state,
-        expires_at: now_epoch().saturating_add(MARK_TTL_SECS),
+        approvers: factors.approvers.clone(),
+        created_at: now,
+        expires_at: now.saturating_add(MARK_TTL_SECS),
         requester: None,
     };
-    ks.insert(pending_key(&challenge), &pending).await?;
+    state
+        .step_up_marks_ks
+        .insert(pending_key(&challenge), &pending)
+        .await?;
 
-    let request = approve_request_payload(admin_did, &challenge, &bound_to, reason, &options)?;
-    info!(admin = %admin_did, task = %type_uri, %bound_to, "operation-bound step-up requested");
-    Ok(EvidencedGate::Required(Box::new(request)))
+    let request = approve_request_payload(
+        admin_did,
+        &challenge,
+        &bound_to,
+        reason,
+        options.as_ref(),
+        &factors.approvers,
+    )?;
+    info!(
+        admin = %admin_did,
+        task = %type_uri,
+        %bound_to,
+        approvers = factors.approvers.len(),
+        webauthn = options.is_some(),
+        "operation-bound step-up requested"
+    );
+    Ok(request)
 }
 
 /// Park a ceremony for a signing-key enrolment (`auth/signing-key/enroll/0.1`)
@@ -352,7 +532,9 @@ pub async fn redeem_or_request_with_evidence(
 /// any DID gets the same kind of answer (enroll, *The refusal is not an
 /// oracle*). It is delivered only inline, to the requester, and reaches none
 /// of the identity's devices (enroll item 5). Only a passkey registered to
-/// `identity_did` can then answer it ([`approve`]).
+/// `identity_did` can then answer it ([`approve`]). It accepts `webauthn`
+/// only: listing the identity's step-up approvers would be exactly the oracle
+/// this request is built not to be.
 pub async fn request_for_enrolment(
     state: &AppState,
     identity_did: &str,
@@ -386,13 +568,16 @@ pub async fn request_for_enrolment(
         .ok_or_else(|| AppError::Internal("webauthn options carry no challenge".into()))?
         .to_string();
     let bound_to = wire_digest(type_uri, payload, &challenge)?;
+    let now = now_epoch();
     let pending = PendingMark {
         admin_did: identity_did.to_string(),
         digest: operation_digest(type_uri, payload)?,
         bound_to: bound_to.clone(),
         type_uri: type_uri.to_string(),
-        auth_state,
-        expires_at: now_epoch().saturating_add(MARK_TTL_SECS),
+        auth_state: Some(auth_state),
+        approvers: Vec::new(),
+        created_at: now,
+        expires_at: now.saturating_add(MARK_TTL_SECS),
         requester: Some(requester.to_string()),
     };
     state
@@ -400,7 +585,14 @@ pub async fn request_for_enrolment(
         .insert(pending_key(&challenge), &pending)
         .await?;
     info!(identity = %identity_did, %requester, %bound_to, "signing-key enrolment step-up requested");
-    approve_request_payload(identity_did, &challenge, &bound_to, reason, &options)
+    approve_request_payload(
+        identity_did,
+        &challenge,
+        &bound_to,
+        reason,
+        Some(&options),
+        &[],
+    )
 }
 
 /// Spend the recorded gesture for `(admin_did, this operation)`: `true` when a
@@ -434,16 +626,55 @@ pub async fn has_mark(
     type_uri: &str,
     payload: &Value,
 ) -> Result<bool, AppError> {
+    Ok(peek_mark(state, admin_did, type_uri, payload)
+        .await?
+        .is_some())
+}
+
+/// The recorded gesture for `(admin_did, this operation)`, **without spending
+/// it** — what it answered and with which factor. `None` when there is none,
+/// or it has lapsed.
+///
+/// For a gate whose act also needs something bound to the gesture's own
+/// challenge — a self-service approver enrolment, whose new approver signs
+/// over that challenge (`auth/step-up/approver/enroll/0.1`) — and which must
+/// leave the gesture in place when that something is refused. [`spend_mark`]
+/// is still the spend.
+pub async fn peek_mark(
+    state: &AppState,
+    admin_did: &str,
+    type_uri: &str,
+    payload: &Value,
+) -> Result<Option<MarkInfo>, AppError> {
     let digest = operation_digest(type_uri, payload)?;
-    Ok(state
+    let Some(mark) = state
         .step_up_marks_ks
         .get::<RedeemableMark>(mark_key(admin_did, &digest))
         .await?
-        .is_some_and(|mark| now_epoch() < mark.expires_at))
+        .filter(|mark| now_epoch() < mark.expires_at)
+    else {
+        return Ok(None);
+    };
+    let created_at = mark
+        .created_at
+        .unwrap_or_else(|| mark.expires_at.saturating_sub(2 * MARK_TTL_SECS));
+    Ok(Some(MarkInfo {
+        challenge: mark.challenge.unwrap_or_default(),
+        created_at,
+        expires_at: mark.expires_at,
+        evidence: StepUpEvidence {
+            kind: mark.kind.unwrap_or_else(|| EVIDENCE_WEBAUTHN.into()),
+            credential_id: mark.credential_id.unwrap_or_default(),
+            bound_to: mark.bound_to.unwrap_or_default(),
+        },
+    }))
 }
 
-/// The inline `auth/step-up/approve-request/0.3` payload: `boundTo` present,
-/// `sessionId` absent, webauthn the only acceptable evidence.
+/// The inline `auth/step-up/approve-request/0.4` payload: `boundTo` present,
+/// `sessionId` absent, `accepts` exactly the kinds this gate will take for this
+/// subject — `approverSigned` with its `approvers` when they hold any,
+/// `webauthn` with its options when a passkey of theirs counts — and no other
+/// (approve-request 0.4, producer item 8).
 ///
 /// Built as JSON and read back through the generated type's schema check, so a
 /// request this service emits is one the specification admits.
@@ -452,44 +683,53 @@ fn approve_request_payload(
     challenge: &str,
     bound_to: &str,
     reason: &str,
-    options: &Value,
+    options: Option<&Value>,
+    approvers: &[String],
 ) -> Result<approve_request::Payload, AppError> {
-    // The WebAuthn options narrowed to the members the published
-    // `CredentialRequestOptions` carries. webauthn-rs adds members of its own
-    // (`hints`, an empty `extensions`) that the component does not define.
-    let allow_credentials: Vec<Value> = options["allowCredentials"]
-        .as_array()
-        .map(|creds| {
-            creds
-                .iter()
-                .map(|c| json!({ "type": "public-key", "id": c["id"] }))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut webauthn = json!({
-        "challenge": challenge,
-        "allowCredentials": allow_credentials,
-        // The gate refuses a silent assertion, so ask for UV rather than let a
-        // platform decide it was not needed.
-        "userVerification": "required",
-    });
-    if let Some(rp_id) = options.get("rpId").filter(|v| v.is_string()) {
-        webauthn["rpId"] = rp_id.clone();
-    }
-    if let Some(timeout) = options.get("timeout").filter(|v| v.is_u64()) {
-        webauthn["timeout"] = timeout.clone();
-    }
-
-    let value = json!({
+    let mut accepts = Vec::new();
+    let mut value = json!({
         "subject": admin_did,
         "challenge": challenge,
         "boundTo": bound_to,
         "reason": reason,
         "targetAcr": "aal2",
-        "acceptableEvidence": ["webauthn"],
-        "webauthn": webauthn,
         "ttl": MARK_TTL_SECS,
     });
+    if !approvers.is_empty() {
+        accepts.push(EVIDENCE_APPROVER_SIGNED);
+        value["approvers"] = json!(approvers);
+    }
+    if let Some(options) = options {
+        // The WebAuthn options narrowed to the members the published
+        // `CredentialRequestOptions` carries. webauthn-rs adds members of its
+        // own (`hints`, an empty `extensions`) that the component does not
+        // define.
+        let allow_credentials: Vec<Value> = options["allowCredentials"]
+            .as_array()
+            .map(|creds| {
+                creds
+                    .iter()
+                    .map(|c| json!({ "type": "public-key", "id": c["id"] }))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut webauthn = json!({
+            "challenge": challenge,
+            "allowCredentials": allow_credentials,
+            // The gate refuses a silent assertion, so ask for UV rather than
+            // let a platform decide it was not needed.
+            "userVerification": "required",
+        });
+        if let Some(rp_id) = options.get("rpId").filter(|v| v.is_string()) {
+            webauthn["rpId"] = rp_id.clone();
+        }
+        if let Some(timeout) = options.get("timeout").filter(|v| v.is_u64()) {
+            webauthn["timeout"] = timeout.clone();
+        }
+        accepts.push(EVIDENCE_WEBAUTHN);
+        value["webauthn"] = webauthn;
+    }
+    value["accepts"] = json!(accepts);
     use trust_tasks_rs::validate::ValidatedPayload as _;
     approve_request::Payload::validate_value(&value)
         .map_err(|e| AppError::Internal(format!("approve-request does not conform: {e}")))?;
@@ -498,7 +738,7 @@ fn approve_request_payload(
 }
 
 /// The refusal a gated operation answers with while no gesture is recorded:
-/// `permissionDenied`, with the ceremony inline (approve-request 0.3, *Inline
+/// `permissionDenied`, with the ceremony inline (approve-request 0.4, *Inline
 /// delivery*).
 pub fn refusal_details(request: &approve_request::Payload) -> Value {
     json!({ "stepUpRequest": request })
@@ -511,9 +751,10 @@ pub enum ApproveError {
     ChallengeUnknown,
     ChallengeExpired,
     SubjectMismatch,
-    /// The approver answered with a factor this gate does not accept. A
+    /// The approver answered with a factor this step-up did not accept. A
     /// `didSigned` approval proves possession of a signing key — which is the
-    /// one thing a console key already has — so only a passkey counts.
+    /// one thing a console key already has — so it never counts; `webauthn`
+    /// and `approverSigned` count only where the request listed them.
     NoGate,
     /// The assertion failed. The hint is the machine-readable
     /// `details.reason` the code declares; the cause is logged, not sent.
@@ -522,6 +763,12 @@ pub enum ApproveError {
     /// refusal is an approver-signed statement, and a member's step-up passkey
     /// is only ever beside the member's proof, never instead of it.
     ProofRequired,
+    /// The `approverSigned` statement is not a valid attest/0.1 document for
+    /// this step-up (approve-response 0.6 `statementInvalid`).
+    StatementInvalid,
+    /// Its signer is not a live, distinct approver of the subject that was
+    /// offered (approve-response 0.6 `approverNotBound`).
+    ApproverNotBound,
     Internal(AppError),
 }
 
@@ -540,7 +787,8 @@ pub enum Approved {
     Declined { reason: String },
 }
 
-/// Process an `auth/step-up/approve-response/0.4` for a pending mark.
+/// Process an `auth/step-up/approve-response/0.4` (or the 0.5/0.6 equivalent,
+/// for a passkey or a refusal) for a pending mark.
 ///
 /// The pending mark is removed first, whatever follows, so a challenge is
 /// answerable once. The operation the gesture authorizes is read from **this
@@ -594,13 +842,19 @@ pub async fn approve(
         // approver did not present.
         _ => return Err(ApproveError::NoGate),
     };
+    // `webauthn` was not among what this step-up accepted (the subject holds
+    // only approvers, or the community no relying party): approve-response 0.6
+    // consumer item 1, a kind not listed in `accepts` is `noGate`.
+    let Some(auth_state) = pending.auth_state.as_ref() else {
+        return Err(ApproveError::NoGate);
+    };
     let credential = public_key_credential(assertion)?;
 
     let webauthn = state.webauthn.as_ref().ok_or_else(|| {
         ApproveError::Internal(AppError::Internal("WebAuthn not configured".into()))
     })?;
     let result = webauthn
-        .finish_passkey_authentication(&credential, &pending.auth_state)
+        .finish_passkey_authentication(&credential, auth_state)
         .map_err(|e| {
             warn!(admin = %pending.admin_did, error = %e, "operation-bound step-up assertion did not verify");
             ApproveError::AssertionInvalid("verificationFailed")
@@ -645,21 +899,17 @@ pub async fn approve(
         );
         return Err(ApproveError::AssertionInvalid("notSubjectPasskey"));
     }
-    // Belt and suspenders on the priority `redeem_or_request_with_evidence`
-    // already enforces by never offering a session passkey once a step-up
-    // passkey exists (so webauthn-rs itself would refuse an assertion over
-    // one): if the subject now holds a step-up passkey, only one may have
-    // answered. Unreachable through this door alone, but the record is this
-    // service's own and worth trusting rather than assuming.
-    if !step_up
-        && !crate::step_up_passkey::credentials_of(state, &pending.admin_did)
-            .await?
-            .is_empty()
-    {
+    // Belt and suspenders on the factor-union rule `factors_of` already
+    // enforces by never offering a session passkey once a dedicated factor
+    // exists (so webauthn-rs itself would refuse an assertion over one): if the
+    // subject now holds a step-up passkey or a step-up approver, a session
+    // passkey may not have answered. Unreachable through this door alone, but
+    // the record is this service's own and worth trusting rather than assuming.
+    if !step_up && holds_dedicated_factor(state, &pending.admin_did).await? {
         warn!(
             admin = %pending.admin_did,
             "operation-bound step-up refused: a session passkey answered for a subject who \
-             holds a step-up passkey"
+             holds a dedicated step-up factor"
         );
         return Err(ApproveError::AssertionInvalid("notSubjectPasskey"));
     }
@@ -680,6 +930,9 @@ pub async fn approve(
             expires_at,
             credential_id: Some(cred_id_hex.clone()),
             bound_to: Some(pending.bound_to.clone()),
+            kind: Some(EVIDENCE_WEBAUTHN.into()),
+            challenge: Some(challenge),
+            created_at: Some(pending.created_at()),
         },
     )
     .await?;
@@ -700,6 +953,113 @@ pub async fn approve(
             .await?;
     }
     info!(admin = %pending.admin_did, task = %pending.type_uri, bound_to = %pending.bound_to, "operation-bound step-up recorded");
+    Ok(Approved::Recorded {
+        bound_to: pending.bound_to,
+    })
+}
+
+/// Process an `auth/step-up/approve-response/0.6` approval carrying
+/// `evidence.kind = approverSigned` — a step-up approver's statement.
+///
+/// The caller has already verified the document's own proof and held its
+/// signer to `subject` **by the subject's own DID**, never a console key's
+/// delegation (approve-response 0.6, consumer item 1a: before the pending
+/// step-up is looked up, so nobody else can spend it). Then, in the order 0.6
+/// gives:
+///
+/// - step 2: the pending step-up, by challenge, taken atomically (single
+///   use, VTI-SES-004) and unexpired;
+/// - step 4: the echoes — `subject` the pending mark's, no `sessionId`;
+/// - step 4.1: the statement, as attest/0.1 requires, over the object as
+///   received, against **this service's own** record of the challenge and
+///   `boundTo` ([`super::approver::verify_statement`]) → `statementInvalid`;
+/// - step 4.2: its signer a live, distinct approver of the subject that the
+///   request offered → `approverNotBound`.
+///
+/// Then the mark is recorded as for a passkey, with the approver DID as its
+/// evidence, the approver's `lastUsedAt` is stamped, and the audit row names
+/// the evidence kind and the approver (item 7). VTI-APV-015: the statement
+/// counts because its key was bound under VTI-APV-016, is distinct from the
+/// subject's signing keys, and is held behind a gesture.
+pub async fn approve_with_statement(
+    state: &AppState,
+    subject: &str,
+    challenge: &str,
+    session_id_present: bool,
+    statement: &Value,
+) -> Result<Approved, ApproveError> {
+    let ks = &state.step_up_marks_ks;
+    let Some(pending) = take::<PendingMark>(ks, pending_key(challenge)).await? else {
+        return Err(ApproveError::ChallengeUnknown);
+    };
+    if now_epoch() >= pending.expires_at {
+        return Err(ApproveError::ChallengeExpired);
+    }
+    if subject != pending.admin_did || session_id_present {
+        return Err(ApproveError::SubjectMismatch);
+    }
+    // `approverSigned` was not offered for this step-up (the subject held no
+    // approver when it was asked, or it is a signing-key enrolment, which only
+    // ever accepts a passkey).
+    if pending.approvers.is_empty() || pending.requester.is_some() {
+        return Err(ApproveError::NoGate);
+    }
+    let ts = |t: u64| DateTime::<Utc>::from_timestamp(t as i64, 0).unwrap_or_default();
+    let expected = super::approver::ExpectedStatement {
+        purpose: attest::PayloadPurpose::StepUp,
+        subject: &pending.admin_did,
+        challenge,
+        bound_to: &pending.bound_to,
+        not_before: ts(pending.created_at()),
+        not_after: ts(pending.expires_at),
+        approver: super::approver::ExpectedApprover::BoundAmong(&pending.approvers),
+    };
+    let verified = super::approver::verify_statement(state, statement, &expected)
+        .await
+        .map_err(|e| match e {
+            super::approver::StatementError::Invalid(_) => ApproveError::StatementInvalid,
+            super::approver::StatementError::NotBound => ApproveError::ApproverNotBound,
+            super::approver::StatementError::Internal(e) => ApproveError::Internal(e),
+        })?;
+    let approver_did = verified.approver_did().to_string();
+
+    let expires_at = now_epoch().saturating_add(MARK_TTL_SECS);
+    ks.insert(
+        mark_key(&pending.admin_did, &pending.digest),
+        &RedeemableMark {
+            expires_at,
+            credential_id: Some(approver_did.clone()),
+            bound_to: Some(pending.bound_to.clone()),
+            kind: Some(EVIDENCE_APPROVER_SIGNED.into()),
+            challenge: Some(challenge.to_string()),
+            created_at: Some(pending.created_at()),
+        },
+    )
+    .await?;
+    super::approver::record_use(&state.step_up_approvers_ks, &approver_did).await?;
+
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &pending.admin_did,
+                None,
+                AuditEvent::OperationStepUpApproved(OperationStepUpApprovedData {
+                    task: pending.type_uri.clone(),
+                    bound_to: pending.bound_to.clone(),
+                    evidence_kind: EVIDENCE_APPROVER_SIGNED.into(),
+                    approver_did: approver_did.clone(),
+                    expires_at: ts(expires_at),
+                }),
+            )
+            .await?;
+    }
+    info!(
+        admin = %pending.admin_did,
+        task = %pending.type_uri,
+        bound_to = %pending.bound_to,
+        approver = %approver_did,
+        "operation-bound step-up recorded from a step-up approver's statement"
+    );
     Ok(Approved::Recorded {
         bound_to: pending.bound_to,
     })
@@ -888,14 +1248,18 @@ pub async fn record_mark_for_test(
     payload: &Value,
 ) -> Result<(), AppError> {
     let digest = operation_digest(type_uri, payload)?;
+    let now = now_epoch();
     state
         .step_up_marks_ks
         .insert(
             mark_key(admin_did, &digest),
             &RedeemableMark {
-                expires_at: now_epoch().saturating_add(MARK_TTL_SECS),
+                expires_at: now.saturating_add(MARK_TTL_SECS),
                 credential_id: Some("c0ffee".into()),
                 bound_to: Some("zTestBound".into()),
+                kind: Some(EVIDENCE_WEBAUTHN.into()),
+                challenge: Some("dGVzdC1jaGFsbGVuZ2UtMDEyMzQ1Njc4OQ".into()),
+                created_at: Some(now),
             },
         )
         .await
@@ -956,22 +1320,26 @@ mod tests {
         assert_eq!(bytes.len(), 34);
     }
 
-    #[test]
-    fn the_inline_request_conforms_and_carries_no_session() {
-        let options = json!({
+    fn options() -> Value {
+        json!({
             "challenge": "Y2hhbGxlbmdlLWNoYWxsZW5nZS1jaGFsbGVuZ2U",
             "rpId": "vtc.example.com",
             "timeout": 60000,
             "allowCredentials": [{ "type": "public-key", "id": "Y3JlZA", "transports": ["usb"] }],
             "userVerification": "preferred",
             "hints": [],
-        });
+        })
+    }
+
+    #[test]
+    fn the_inline_request_conforms_and_carries_no_session() {
         let req = approve_request_payload(
             "did:key:zAdmin",
             "Y2hhbGxlbmdlLWNoYWxsZW5nZS1jaGFsbGVuZ2U",
             "zBound",
             "Grant the administrator role to did:key:zOther",
-            &options,
+            Some(&options()),
+            &[],
         )
         .expect("a conforming approve-request");
         let v = serde_json::to_value(&req).unwrap();
@@ -979,7 +1347,42 @@ mod tests {
         assert_eq!(v["boundTo"], "zBound");
         assert_eq!(v["webauthn"]["challenge"], v["challenge"]);
         assert_eq!(v["webauthn"]["userVerification"], "required");
-        assert_eq!(v["acceptableEvidence"], json!(["webauthn"]));
+        assert_eq!(v["accepts"], json!(["webauthn"]));
+        assert!(v.get("approvers").is_none(), "{v}");
+    }
+
+    /// approve-request 0.4, producer item 8: `approvers` exactly when
+    /// `approverSigned` is accepted, WebAuthn options exactly when `webauthn`
+    /// is.
+    #[test]
+    fn vti_apv_015_the_inline_request_offers_exactly_the_factors_held() {
+        let approver = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".to_string();
+        let only = approve_request_payload(
+            "did:webvh:QmScid:wallet.example:alice",
+            "Y2hhbGxlbmdlLWNoYWxsZW5nZS1jaGFsbGVuZ2U",
+            "zBound",
+            "Grant the administrator role",
+            None,
+            std::slice::from_ref(&approver),
+        )
+        .expect("conforms");
+        let v = serde_json::to_value(&only).unwrap();
+        assert_eq!(v["accepts"], json!(["approverSigned"]));
+        assert_eq!(v["approvers"], json!([approver]));
+        assert!(v.get("webauthn").is_none(), "{v}");
+
+        let both = approve_request_payload(
+            "did:key:zAdmin",
+            "Y2hhbGxlbmdlLWNoYWxsZW5nZS1jaGFsbGVuZ2U",
+            "zBound",
+            "Grant the administrator role",
+            Some(&options()),
+            std::slice::from_ref(&approver),
+        )
+        .expect("conforms");
+        let v = serde_json::to_value(&both).unwrap();
+        assert_eq!(v["accepts"], json!(["approverSigned", "webauthn"]));
+        assert!(v.get("webauthn").is_some());
     }
 
     /// A recorded gesture is spent once, however many copies of the act race

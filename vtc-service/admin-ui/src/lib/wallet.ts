@@ -103,6 +103,57 @@ interface VtaWalletProvider {
     envelope: Record<string, unknown>;
     asDid?: string;
   }): Promise<{ signedEnvelope: Record<string, unknown>; holderDid: string }>;
+  /** Answer an operation-bound step-up with this browser's **step-up
+   *  approver** — the plugin's approver `did:key` for `audience`, whose seed is
+   *  unlocked only by a user gesture (VTI-APV-015 as amended).
+   *
+   *  The plugin recomputes the request's `boundTo` from `operation` (the VTC
+   *  step-up digest, salted with `request.challenge`) and refuses when it
+   *  differs, renders the operation, takes the gesture, and returns a complete
+   *  signed `auth/step-up/approver/attest/0.1` statement with `purpose:
+   *  stepUp`. It signs nothing else: the console has the wallet sign the
+   *  approve-response around it as the subject's own DID.
+   *
+   *  Absent from wallet builds without approver support. */
+  approveStepUp?(params: {
+    request: ApproverStepUpRequest;
+    operation: { type: string; payload: unknown };
+    audience: string;
+  }): Promise<ApproverStatementResult>;
+  /** The approver `did:key` the plugin holds for `audience` — one per relying
+   *  party, so communities cannot correlate the user by it. Mints nothing the
+   *  VTC can use: binding it still needs an enrolment statement. */
+  approverIdentity?(params: { audience: string }): Promise<{ approverDid: string }>;
+  /** Have the approver for `audience` sign an enrolment statement
+   *  (`auth/step-up/approver/attest/0.1`, `purpose: enrol`) — proof of
+   *  possession over the VTC's enrolment `challenge`, bound to `boundTo`
+   *  (an `enrollmentId`, a `claimId`, or a self-service terms digest). */
+  attestApprover?(params: {
+    purpose: "enrol";
+    subject: string;
+    audience: string;
+    challenge: string;
+    boundTo: string;
+  }): Promise<ApproverStatementResult>;
+}
+
+/** The step-up request handed to the plugin's `approveStepUp` — the VTC's
+ *  inline `auth/step-up/approve-request/0.4` payload, as received. */
+export interface ApproverStepUpRequest {
+  subject: string;
+  challenge: string;
+  boundTo?: string;
+  reason: string;
+  accepts?: string[];
+  approvers?: string[];
+  [k: string]: unknown;
+}
+
+/** What the plugin's approver methods return: the complete signed
+ *  `auth/step-up/approver/attest/0.1` document, carried unchanged. */
+export interface ApproverStatementResult {
+  statement: Record<string, unknown>;
+  approverDid: string;
 }
 
 interface WalletProfileWireResult {
@@ -153,6 +204,93 @@ export function isWalletProxyAvailable(): boolean {
 /** True iff the wallet can sign a Trust Task document as a persona. */
 export function isWalletSigningAvailable(): boolean {
   return isWalletAvailable() && typeof window.vtaWallet?.signTrustTask === "function";
+}
+
+/** True iff the wallet can answer a step-up with its approver **and** sign the
+ *  approve-response as the subject — both halves of an `approverSigned`
+ *  answer (`auth/step-up/approve-response/0.6`). */
+export function isWalletApproverAvailable(): boolean {
+  return isWalletSigningAvailable() && typeof window.vtaWallet?.approveStepUp === "function";
+}
+
+/** True iff the wallet can enrol its approver here: name it, prove possession
+ *  of it, and sign the enrolment as the subject. */
+export function isWalletApproverEnrolmentAvailable(): boolean {
+  return (
+    isWalletSigningAvailable() &&
+    typeof window.vtaWallet?.approverIdentity === "function" &&
+    typeof window.vtaWallet?.attestApprover === "function"
+  );
+}
+
+/** The statement must be an `attest/0.1` document issued by a `did:key` —
+ *  checked so a wallet that answered with something else is named here rather
+ *  than refused as `statementInvalid` by the VTC. */
+function checkStatement(result: ApproverStatementResult): ApproverStatementResult {
+  const s = result?.statement;
+  if (
+    !s ||
+    typeof s !== "object" ||
+    s.type !== ATTEST_TYPE ||
+    typeof s.issuer !== "string" ||
+    !s.issuer.startsWith("did:key:") ||
+    !s.proof
+  ) {
+    throw new Error("The wallet returned no signed approver statement.");
+  }
+  return { statement: s, approverDid: s.issuer };
+}
+
+const ATTEST_TYPE = "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1";
+
+/** [`VtaWalletProvider.approveStepUp`], feature-detected. */
+export async function approveStepUpWithWallet(params: {
+  request: ApproverStepUpRequest;
+  operation: { type: string; payload: unknown };
+  audience: string;
+}): Promise<ApproverStatementResult> {
+  if (!isWalletApproverAvailable()) {
+    throw new Error("The VTA wallet extension cannot answer a step-up with an approver.");
+  }
+  return checkStatement(await window.vtaWallet!.approveStepUp!(params));
+}
+
+/** [`VtaWalletProvider.approverIdentity`], feature-detected. */
+export async function walletApproverDid(audience: string): Promise<string> {
+  if (!isWalletApproverEnrolmentAvailable()) {
+    throw new Error("The VTA wallet extension has no approver to enrol.");
+  }
+  const { approverDid } = await window.vtaWallet!.approverIdentity!({ audience });
+  if (typeof approverDid !== "string" || !approverDid.startsWith("did:key:z6Mk")) {
+    throw new Error("The wallet's approver is not an Ed25519 did:key.");
+  }
+  return approverDid;
+}
+
+/** [`VtaWalletProvider.attestApprover`], feature-detected. */
+export async function attestApproverWithWallet(params: {
+  purpose: "enrol";
+  subject: string;
+  audience: string;
+  challenge: string;
+  boundTo: string;
+}): Promise<ApproverStatementResult> {
+  if (!isWalletApproverEnrolmentAvailable()) {
+    throw new Error("The VTA wallet extension has no approver to enrol.");
+  }
+  return checkStatement(await window.vtaWallet!.attestApprover!(params));
+}
+
+/** The persona DID this VTC knows the user as, from the wallet — or `null`
+ *  when the wallet cannot say (no `walletProfile`). */
+export async function walletPersonaDid(): Promise<string | null> {
+  if (typeof window === "undefined" || typeof window.vtaWallet?.walletProfile !== "function") {
+    return null;
+  }
+  const profile = await window.vtaWallet.walletProfile({
+    target: { kind: "did", did: await rpDid() },
+  });
+  return profile?.did || null;
 }
 
 /**

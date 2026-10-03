@@ -105,7 +105,11 @@ describe("acl/revoke", () => {
     await revokeAcl(ALICE, confirm);
 
     expect(confirm).toHaveBeenCalledWith(STEP_UP);
-    expect(vi.mocked(answerStepUp)).toHaveBeenCalledWith(STEP_UP);
+    expect(vi.mocked(answerStepUp)).toHaveBeenCalledWith(
+    STEP_UP,
+    undefined,
+    expect.objectContaining({ type: expect.any(String) }),
+  );
     expect(vi.mocked(postSignedDocument)).toHaveBeenCalledWith(SIGNED);
   });
 
@@ -185,7 +189,11 @@ describe("an act that needs a passkey gesture", () => {
       toRole: "admin",
     });
     expect(confirm).toHaveBeenCalledWith(STEP_UP);
-    expect(vi.mocked(answerStepUp)).toHaveBeenCalledWith(STEP_UP);
+    expect(vi.mocked(answerStepUp)).toHaveBeenCalledWith(
+    STEP_UP,
+    undefined,
+    expect.objectContaining({ type: expect.any(String) }),
+  );
     // The identical document, not a freshly signed one.
     expect(vi.mocked(postSignedDocument)).toHaveBeenCalledWith(SIGNED);
   });

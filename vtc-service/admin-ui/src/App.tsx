@@ -27,6 +27,7 @@ import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { useToast } from "@/lib/toast";
 import { Install } from "@/pages/Install";
+import { EnrolApproverPage } from "@/pages/EnrolApprover";
 import { EnrolStepUpPage } from "@/pages/EnrolStepUp";
 import { Login } from "@/pages/Login";
 import {
@@ -236,6 +237,11 @@ export default function App() {
   // a member who is no console user at all.
   if (pathname.startsWith("/enrol-step-up")) {
     return <EnrolStepUpPage />;
+  }
+  // Nor does redeeming a step-up approver invite: the invitee may be a wallet
+  // administrator with no step-up factor here at all.
+  if (pathname.startsWith("/enrol-approver")) {
+    return <EnrolApproverPage />;
   }
   if (probe.isPending) {
     return <SignInLoading />;

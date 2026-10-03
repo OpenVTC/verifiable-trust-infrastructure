@@ -436,6 +436,15 @@ async function communityDid(): Promise<string> {
   return vtcDidPromise;
 }
 
+/**
+ * This community's DID — the `recipient` of every signed document and the
+ * `audience` a step-up approver's statement names
+ * (`auth/step-up/approver/attest/0.1`). Read from `/health`, cached per load.
+ */
+export function vtcDid(): Promise<string> {
+  return communityDid();
+}
+
 /** Can this browser sign right now? Drives which door a screen offers. */
 export async function signingAvailable(): Promise<boolean> {
   if (!(await ed25519Available())) return false;

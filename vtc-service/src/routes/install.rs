@@ -173,6 +173,31 @@ pub const FINISH_ERR_REGISTRATION_MISMATCH: &str =
 pub const FINISH_ERR_BINDING_INVALID: &str =
     claim_spec::finish::v0_2::error_codes::BINDING_INVALID.code;
 
+// 0.3's declared codes, named for the error-code census's witnesses (the
+// operation is `crate::step_up_approver::claim_{start,finish}_v0_3`, which
+// refuses with the generated constants directly). Its `invalidToken` and
+// `registrationMismatch` are 0.2's codes, witnessed under 0.2's names.
+/// `vtc/install/claim/start:tokenNamesNoDid` (0.3).
+#[cfg(test)]
+pub const START_V0_3_ERR_TOKEN_NAMES_NO_DID: &str =
+    claim_spec::start::v0_3::error_codes::TOKEN_NAMES_NO_DID.code;
+/// `vtc/install/claim/finish:subjectMismatch` (0.3).
+#[cfg(test)]
+pub const FINISH_V0_3_ERR_SUBJECT_MISMATCH: &str =
+    claim_spec::finish::v0_3::error_codes::SUBJECT_MISMATCH.code;
+/// `vtc/install/claim/finish:didUnresolvable` (0.3).
+#[cfg(test)]
+pub const FINISH_V0_3_ERR_DID_UNRESOLVABLE: &str =
+    claim_spec::finish::v0_3::error_codes::DID_UNRESOLVABLE.code;
+/// `vtc/install/claim/finish:statementInvalid` (0.3).
+#[cfg(test)]
+pub const FINISH_V0_3_ERR_STATEMENT_INVALID: &str =
+    claim_spec::finish::v0_3::error_codes::STATEMENT_INVALID.code;
+/// `vtc/install/claim/finish:approverNotDistinct` (0.3).
+#[cfg(test)]
+pub const FINISH_V0_3_ERR_APPROVER_NOT_DISTINCT: &str =
+    claim_spec::finish::v0_3::error_codes::APPROVER_NOT_DISTINCT.code;
+
 /// Declare `code` on the token-state refusals: every `Unauthorized` the token
 /// parser and the install state machine answer is the token being missing,
 /// malformed, expired or consumed. A `Conflict` (a concurrent ceremony's
@@ -456,7 +481,7 @@ pub(crate) async fn claim_finish(
 /// Mint the `setup_session_token` for `admin_did` + build the
 /// `claim/finish` response. Shared by the first-completion path and the
 /// idempotent-replay path so a retry returns a usable token too.
-async fn issue_setup_session(
+pub(crate) async fn issue_setup_session(
     state: &AppState,
     signer: &InstallTokenSigner,
     admin_did: String,

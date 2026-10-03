@@ -17,6 +17,8 @@ import { getJson, postJson } from "@/lib/api";
 import type { PasskeyListResponse } from "@/lib/wire-types";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate } from "@/lib/format";
+import { useViewerDid } from "@/lib/viewer";
+import { ApproverDevicesCard } from "@/plugins/members/StepUpApprovers";
 import {
   decodePublicKeyOptions,
   serializeAssertion,
@@ -153,6 +155,7 @@ export function MyPasskeys() {
   const confirm = useConfirm();
   const [showRegister, setShowRegister] = useState(false);
   const [label, setLabel] = useState("");
+  const viewer = useViewerDid();
 
   const query = useQuery({
     queryKey: ["my-passkeys"],
@@ -374,6 +377,10 @@ export function MyPasskeys() {
           </p>
         )}
       </section>
+
+      {/* A wallet administrator's step-up factor is an approver device, not a
+          passkey — their own, listed and managed here. */}
+      {viewer && <ApproverDevicesCard did={viewer} self />}
     </section>
   );
 }

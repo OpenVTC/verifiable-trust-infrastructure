@@ -108,6 +108,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         step_up_marks_ks: store.keyspace("step_up_marks").unwrap(),
         step_up_passkeys_ks: store.keyspace("step_up_passkeys").unwrap(),
         admin_actions_ks: store.keyspace("admin_actions").unwrap(),
+        step_up_approvers_ks: store.keyspace("step_up_approvers").unwrap(),
         member_pushes_ks: store.keyspace("member_pushes").unwrap(),
         tsp_reach: std::sync::Arc::new(vti_common::tsp_reach::TspReachability::new()),
         backup_bundles_ks: store.keyspace("backup_bundles").unwrap(),

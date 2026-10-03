@@ -26,7 +26,9 @@ import { Fingerprint } from "lucide-react";
 
 import { postSignedTrustTask, signingAvailable } from "@/lib/api";
 import {
+  acceptedKinds,
   answerableHere,
+  noFactorGuidance,
   answerCodeOf,
   answerStepUp,
   APPROVE_RESPONSE_URI,
@@ -131,7 +133,12 @@ export function StepUpPage() {
         {!answerableHere(request) && (
           <div className="finding error" role="alert">
             <strong>This console cannot answer it</strong>
-            <span>The VTC did not ask for a passkey.</span>
+            <span>
+              {acceptedKinds(request).includes("approverSigned")
+                ? "The VTC asked for your step-up approver, which answers in the console where the act was signed, not here. " +
+                  noFactorGuidance(request)
+                : "The VTC did not ask for a passkey."}
+            </span>
           </div>
         )}
         {approve.isSuccess && (

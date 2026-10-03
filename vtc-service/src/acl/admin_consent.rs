@@ -342,7 +342,7 @@ pub enum SignedGate {
     Ready(ReadyGrant),
     /// No gesture yet. A ceremony is parked; refuse with it inline. Nothing
     /// was asked of any other admin.
-    StepUpRequired(Box<trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload>),
+    StepUpRequired(Box<crate::acl::bound_step_up::ApproveRequest>),
 }
 
 /// The signed door's gate for an unrestricted grant: the requester's
@@ -485,7 +485,7 @@ pub enum ReductionGate {
     /// The gesture is spent and the reduction may proceed as described.
     Cleared(Reduction),
     /// No gesture yet. A ceremony is parked; refuse with it inline.
-    StepUpRequired(Box<trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload>),
+    StepUpRequired(Box<crate::acl::bound_step_up::ApproveRequest>),
 }
 
 /// The gate on removing, demoting or narrowing an **administrator**'s entry —

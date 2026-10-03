@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ANSWER_CODE_PREFIX,
   answerCodeOf,
+  answerableHere,
   answerStepUp,
   APPROVE_RESPONSE_URI,
+  APPROVE_RESPONSE_V0_6_URI,
   runStepUpCeremony,
   decodeStepUpRequest,
   encodeStepUpRequest,
@@ -157,5 +159,153 @@ describe("answering a step-up", () => {
       },
     ]);
     await expect(answerStepUp(REQUEST, fakeCredentials())).rejects.toThrow(/challenge expired/);
+  });
+});
+
+describe("answering with a step-up approver (approve-response 0.6)", () => {
+  const APPROVER = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH";
+  const OPERATION = {
+    type: "https://trusttasks.org/spec/acl/grant/0.1",
+    payload: { entry: { subject: "did:key:z6MkBob", role: "admin", scopes: [] } },
+  };
+  const APPROVER_REQUEST: StepUpRequest = {
+    subject: ADMIN,
+    challenge: CHALLENGE,
+    boundTo: "zBoundDigest",
+    reason: "Grant the administrator role to did:key:z6MkBob",
+    accepts: ["approverSigned", "webauthn"],
+    approvers: [APPROVER],
+    webauthn: REQUEST.webauthn,
+    ttl: 300,
+  };
+  const STATEMENT = {
+    id: "urn:uuid:statement-1",
+    type: "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1",
+    issuer: APPROVER,
+    recipient: VTC_DID,
+    issuedAt: "2026-10-02T09:00:00Z",
+    payload: {
+      purpose: "stepUp",
+      subject: ADMIN,
+      audience: VTC_DID,
+      challenge: CHALLENGE,
+      boundTo: "zBoundDigest",
+    },
+    proof: { type: "DataIntegrityProof", verificationMethod: `${APPROVER}#${APPROVER.slice(8)}` },
+  };
+
+  function installWallet(withApprover: boolean) {
+    const approveStepUp = vi.fn(async () => ({ statement: STATEMENT, approverDid: APPROVER }));
+    const signTrustTask = vi.fn(
+      async ({ envelope, asDid }: { envelope: Record<string, unknown>; asDid?: string }) => ({
+        signedEnvelope: {
+          ...envelope,
+          proof: {
+            type: "DataIntegrityProof",
+            proofPurpose: "assertionMethod",
+            verificationMethod: `${asDid}#key-1`,
+          },
+        },
+        holderDid: asDid!,
+      }),
+    );
+    (window as unknown as { vtaWallet: unknown }).vtaWallet = {
+      login: vi.fn(),
+      signTrustTask,
+      ...(withApprover ? { approveStepUp } : {}),
+    };
+    return { approveStepUp, signTrustTask };
+  }
+
+  afterEach(() => {
+    delete (window as unknown as { vtaWallet?: unknown }).vtaWallet;
+  });
+
+  it("has the plugin's approver sign, and the wallet sign the answer as the subject", async () => {
+    const { approveStepUp, signTrustTask } = installWallet(true);
+    const requests = mockFetch([
+      { path: "/health", body: { status: "ok", version: "t", vtc_did: VTC_DID } },
+      {
+        method: "POST",
+        path: "/v1/trust-tasks",
+        body: { payload: { status: "recorded", boundTo: "zBoundDigest" } },
+      },
+    ]);
+    const creds = fakeCredentials();
+    const ack = await answerStepUp(APPROVER_REQUEST, creds, OPERATION);
+    expect(ack.status).toBe("recorded");
+    // No passkey ceremony: the approver is the factor.
+    expect(creds.get).not.toHaveBeenCalled();
+    // The plugin is handed the operation, so it can recompute `boundTo`.
+    expect(approveStepUp).toHaveBeenCalledWith({
+      request: APPROVER_REQUEST,
+      operation: OPERATION,
+      audience: VTC_DID,
+    });
+    // Signed by the wallet as the subject's own DID — never a console key.
+    expect(signTrustTask.mock.calls[0]?.[0].asDid).toBe(ADMIN);
+
+    const doc = requests.find((r) => r.url === "/v1/trust-tasks")!.body as SignedTrustTaskDocument;
+    expect(doc.type).toBe(APPROVE_RESPONSE_V0_6_URI);
+    expect(doc.issuer).toBe(ADMIN);
+    expect(doc.recipient).toBe(VTC_DID);
+    expect(doc.proof.verificationMethod).toBe(`${ADMIN}#key-1`);
+    expect(doc.payload).toEqual({
+      subject: ADMIN,
+      challenge: CHALLENGE,
+      decision: "approved",
+      evidence: { kind: "approverSigned", statement: STATEMENT },
+    });
+  });
+
+  it("refuses an approver the request did not name", async () => {
+    installWallet(true);
+    mockFetch([{ path: "/health", body: { status: "ok", version: "t", vtc_did: VTC_DID } }]);
+    await expect(
+      answerStepUp(
+        { ...APPROVER_REQUEST, approvers: ["did:key:z6MkOther"] },
+        fakeCredentials(),
+        OPERATION,
+      ),
+    ).rejects.toThrow(/not one this community/);
+  });
+
+  it("falls back to the passkey when the plugin cannot answer", async () => {
+    await generateConsoleKey();
+    installWallet(false);
+    const requests = mockFetch([
+      { path: "/health", body: { status: "ok", version: "t", vtc_did: VTC_DID } },
+      {
+        method: "POST",
+        path: "/v1/trust-tasks",
+        body: { payload: { status: "recorded", boundTo: "zBoundDigest" } },
+      },
+    ]);
+    const creds = fakeCredentials();
+    await answerStepUp(APPROVER_REQUEST, creds, OPERATION);
+    expect(creds.get).toHaveBeenCalledTimes(1);
+    const doc = requests.find((r) => r.url === "/v1/trust-tasks")!.body as SignedTrustTaskDocument;
+    expect(doc.type).toBe(APPROVE_RESPONSE_URI);
+    expect((doc.payload as { evidence: { kind: string } }).evidence.kind).toBe("webauthn");
+  });
+
+  it("says which routes exist when nothing here can answer", async () => {
+    const creds = fakeCredentials();
+    const onlyApprover: StepUpRequest = {
+      ...APPROVER_REQUEST,
+      accepts: ["approverSigned"],
+      webauthn: undefined,
+    };
+    await expect(answerStepUp(onlyApprover, creds, OPERATION)).rejects.toThrow(
+      /Invite to enrol an approver[\s\S]*vtc admin enrol-approver --did/,
+    );
+    expect(creds.get).not.toHaveBeenCalled();
+  });
+
+  it("reads 0.4's accepts and 0.3's acceptableEvidence alike", () => {
+    const bare = { ...REQUEST, acceptableEvidence: undefined };
+    expect(answerableHere({ ...bare, accepts: ["webauthn"] })).toBe(true);
+    expect(answerableHere({ ...bare, accepts: ["approverSigned"] })).toBe(false);
+    expect(answerableHere(REQUEST)).toBe(true);
   });
 });

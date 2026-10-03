@@ -65,7 +65,11 @@ function gestureThen(outcome: "ok" | "parked", value: unknown = {}) {
 
 function expectGestureMade(confirm: ReturnType<typeof vi.fn>) {
   expect(confirm).toHaveBeenCalledWith(STEP_UP);
-  expect(vi.mocked(answerStepUp)).toHaveBeenCalledWith(STEP_UP);
+  expect(vi.mocked(answerStepUp)).toHaveBeenCalledWith(
+    STEP_UP,
+    undefined,
+    expect.objectContaining({ type: expect.any(String) }),
+  );
   expect(vi.mocked(postSignedDocument)).toHaveBeenCalledWith(SIGNED);
 }
 

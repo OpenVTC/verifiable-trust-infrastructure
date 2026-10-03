@@ -106,21 +106,51 @@ pub(crate) async fn bootstrap(
         }
     }
 
-    // M0.5.2 wrote the PasskeyUser at claim/finish; look it up so
+    // M0.5.2 wrote the PasskeyUser at claim/finish 0.2; look it up so
     // the first RegisteredPasskey carries the same credential id
-    // the passkey-login flow will eventually match against.
-    let passkey_user = get_passkey_user_by_did(&state.passkey_ks, &admin_did)
-        .await?
-        .ok_or_else(|| {
-            AppError::Unauthorized(
-                "no passkey registered for the candidate admin DID — run the install claim first"
-                    .into(),
-            )
+    // the passkey-login flow will eventually match against. A claim/finish
+    // 0.3 instead parked a step-up approver for this token, which is written
+    // only now, beside the administrator it belongs to (claim/finish 0.3
+    // item 6) — so an abandoned claim leaves no factor behind.
+    let passkey_user = get_passkey_user_by_did(&state.passkey_ks, &admin_did).await?;
+    let pending_approver = if passkey_user.is_none() {
+        crate::step_up_approver::take_pending_install(state, &install_jti, &admin_did).await?
+    } else {
+        None
+    };
+    if passkey_user.is_none() && pending_approver.is_none() {
+        return Err(AppError::Unauthorized(
+            "no passkey or step-up approver registered for the candidate admin DID — run the \
+             install claim first"
+                .into(),
+        )
+        .into());
+    }
+    let first_cred_hex = match passkey_user.as_ref() {
+        Some(user) => {
+            let first_cred = user.credentials.first().ok_or_else(|| {
+                AppError::Internal("admin passkey user has no credentials persisted".into())
+            })?;
+            Some(hex::encode(<_ as AsRef<[u8]>>::as_ref(
+                first_cred.cred_id(),
+            )))
+        }
+        None => None,
+    };
+    if let Some(p) = pending_approver.as_ref() {
+        crate::acl::approver::check_bindable(
+            &state.step_up_approvers_ks,
+            &p.approver_did,
+            &admin_did,
+            None,
+        )
+        .await
+        .map_err(|e| {
+            AppError::Conflict(format!(
+                "the claimed step-up approver cannot be bound: {e:?}"
+            ))
         })?;
-    let first_cred = passkey_user.credentials.first().ok_or_else(|| {
-        AppError::Internal("admin passkey user has no credentials persisted".into())
-    })?;
-    let cred_id_hex = hex::encode(<_ as AsRef<[u8]>>::as_ref(first_cred.cred_id()));
+    }
 
     // claim_finish already wrote the AdminEntry for the install
     // credential. Only fall back to building one here if it's
@@ -131,21 +161,24 @@ pub(crate) async fn bootstrap(
         .await?
         .is_none()
     {
-        let registered = RegisteredPasskey {
-            credential_id: cred_id_hex,
-            // The install ceremony has no operator label channel;
-            // the operator relabels their device later via
-            // `PATCH /v1/admin/passkeys/{id}` (M0.6.3). Until then
-            // we ship a placeholder rather than an empty string so
-            // admin UIs don't render blank.
-            label: "install".into(),
-            transports: Vec::new(),
-            registered_at: now,
-            last_used_at: None,
-        };
+        // The install ceremony has no operator label channel; the operator
+        // relabels their device later via `PATCH /v1/admin/passkeys/{id}`
+        // (M0.6.3). Until then we ship a placeholder rather than an empty
+        // string so admin UIs don't render blank. A wallet founder (claim 0.3)
+        // has no passkey here at all: their factor is the step-up approver.
+        let passkeys = first_cred_hex
+            .map(|credential_id| RegisteredPasskey {
+                credential_id,
+                label: "install".into(),
+                transports: Vec::new(),
+                registered_at: now,
+                last_used_at: None,
+            })
+            .into_iter()
+            .collect();
         let admin_entry = AdminEntry {
             did: admin_did.clone(),
-            passkeys: vec![registered],
+            passkeys,
             extensions: serde_json::Value::Null,
             created_at: now,
         };
@@ -164,6 +197,12 @@ pub(crate) async fn bootstrap(
         expires_at: None,
     };
     store_acl_entry(&state.acl_ks, &acl_entry).await?;
+
+    // The founder's step-up approver, claimed with the install token (R1,
+    // `enrolledVia: install`) — bound now that its subject is an administrator.
+    if let Some(p) = pending_approver.as_ref() {
+        crate::step_up_approver::bind_installed(state, &install_jti, p).await?;
+    }
 
     // The second unrestricted admin `vtc setup` was given, installed in the same
     // step as the first (VTI-APV-014): making anyone an unrestricted admin needs

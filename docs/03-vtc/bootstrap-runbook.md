@@ -183,6 +183,44 @@ add the row.
 
 Nothing below depends on `cnm`.
 
+### Path C: a founder who signs in only with a wallet
+
+A founder whose identity is a VTA wallet persona claims the community under
+that DID instead of registering a passkey (`vtc/install/claim/{start,finish}/0.3`):
+
+1. Mint the install token for the persona's DID (`vtc setup`, or `vtc admin
+   invite --did <persona DID>` with the daemon stopped). Deliver the URL and
+   the claim code separately.
+2. A client that speaks claim 0.3 sends the token and claim code; the
+   founder's wallet signs the finish **as the persona** — checked against the
+   persona's live DID document — and the browser plugin's approver identity
+   signs an enrolment statement over the claim's challenge. (The console's
+   install page still drives the passkey claim, 0.2; a 0.3 page waits on the
+   plugin release that signs approver statements.)
+3. The bootstrap writes the founder's admin row and binds the approver as their
+   step-up factor (`enrolledVia: install`). They step up with it from then on;
+   no passkey is ever registered.
+
+### Recovering a wallet administrator who has no step-up factor
+
+An administrator who signs in with a wallet and holds neither a passkey nor a
+step-up approver can't do anything that needs a step-up, and can't enrol a
+factor themselves (that would rest the second factor on the first). Another
+community administrator invites them from Members → the member → **Invite to
+enrol an approver**. If there is no such administrator — every administrator is
+wallet-only — the operator mints the same invite on the host:
+
+```sh
+# daemon stopped
+vtc admin enrol-approver --did did:webvh:…:alice --ttl 900
+# prints the enrolment URL and, separately, the claim code
+# start the daemon; it audits the invite as AclBreakGlassWritten
+```
+
+The subject opens the URL, types the code, and signs the redemption with their
+own DID; their approver device proves possession. Five wrong codes void the
+invite. The binding is recorded with `enrolledVia: offline`.
+
 ### Adding a second admin later
 
 Two paths, and both ask the *granting* operator for their passkey first
