@@ -27,6 +27,13 @@ import {
   OperatorWriteBanner,
   SingleAdminModeBanner,
 } from "@/components/ActionsAlertBanners";
+import {
+  formatTally,
+  JOIN_DECIDE_CAP,
+  JOIN_REQUESTS_PLUGIN_ID,
+  mayCount,
+  usePendingJoinRequests,
+} from "@/lib/community-counts";
 import { pluginVisible } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
@@ -186,6 +193,15 @@ export default function App() {
     needsSigning && signing.data?.state === "ready" && !pathname.startsWith("/install"),
   );
   const waiting = attention.waiting;
+  // Join requests awaiting a decision (lib/community-counts.ts): the Join
+  // requests nav badge, refreshed the same way, and only for a viewer who may
+  // decide them — the entry it sits on is gated on the same capability.
+  const pendingJoins = usePendingJoinRequests(
+    needsSigning &&
+      signing.data?.state === "ready" &&
+      !pathname.startsWith("/install") &&
+      mayCount(probe.data?.capabilities, JOIN_DECIDE_CAP),
+  );
   const [bannerHidden, setBannerHidden] = useState(bannerDismissed);
 
   // Re-arm the session-expiry guard whenever a fresh session lands.
@@ -350,6 +366,16 @@ export default function App() {
                     {waiting}
                   </span>
                 )}
+                {p.id === JOIN_REQUESTS_PLUGIN_ID &&
+                  pendingJoins &&
+                  pendingJoins.count > 0 && (
+                    <span
+                      className="nav-badge"
+                      aria-label={`${formatTally(pendingJoins)} pending`}
+                    >
+                      {formatTally(pendingJoins)}
+                    </span>
+                  )}
               </NavLink>
             </li>
           ))}

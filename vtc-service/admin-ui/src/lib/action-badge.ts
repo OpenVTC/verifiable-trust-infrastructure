@@ -67,6 +67,28 @@ const NOTHING: ActionsAttention = Object.freeze({
 }) as ActionsAttention;
 
 /**
+ * Call `refetch` whenever the tab regains focus or becomes visible, while
+ * `enabled` — the "on focus" leg of every nav count (this badge and the
+ * join-request one, `lib/community-counts.ts`). The 60 s poll is the query's
+ * own `refetchInterval`.
+ */
+export function useRefetchWhenSeen(enabled: boolean, refetch: () => unknown): void {
+  useEffect(() => {
+    if (!enabled) return;
+    const onFocus = () => void refetch();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refetch();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [enabled, refetch]);
+}
+
+/**
  * The number of actions waiting for the signed-in administrator, kept fresh
  * while `enabled`, with the tab title following it. `0` while unknown or on
  * any failure — the badge is decoration and must never take the shell down.
@@ -92,21 +114,7 @@ export function useActionsAttention(enabled: boolean): ActionsAttention {
     staleTime: 0,
     retry: false,
   });
-  const { refetch } = query;
-
-  useEffect(() => {
-    if (!enabled) return;
-    const onFocus = () => void refetch();
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void refetch();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [enabled, refetch]);
+  useRefetchWhenSeen(enabled, query.refetch);
 
   const attention = enabled && query.data ? query.data : NOTHING;
   const count = attention.waiting;

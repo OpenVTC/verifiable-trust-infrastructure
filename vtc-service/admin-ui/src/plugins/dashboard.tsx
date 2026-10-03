@@ -6,7 +6,17 @@ import { CopyButton } from "@/components/CopyButton";
 import { fetchHealth, fetchBuildInfo, fetchDiagnostics } from "@/lib/api";
 import { WAITING_COUNT_KEY } from "@/lib/action-badge";
 import { fetchActionsAttention } from "@/lib/actions-api";
+import {
+  countPendingJoinRequests,
+  formatTally,
+  JOIN_DECIDE_CAP,
+  MEMBERS_MANAGE_CAP,
+  mayCount,
+  PENDING_JOIN_REQUESTS_KEY,
+  useMemberCount,
+} from "@/lib/community-counts";
 import { formatDuration } from "@/lib/format";
+import { useCapabilities } from "@/lib/viewer";
 import {
   fetchPendingWithVetting,
   fetchRevocations,
@@ -44,6 +54,19 @@ export function Dashboard() {
     retry: false,
   });
   const singleAdminMode = attention.data?.singleAdminMode === true;
+  // Members and pending join requests (lib/community-counts.ts): each tile only
+  // for a viewer holding what its screen needs. The join-request count is the
+  // shell's nav-badge read, shared through its cache key.
+  const caps = useCapabilities();
+  const showMembers = mayCount(caps, MEMBERS_MANAGE_CAP);
+  const showJoins = mayCount(caps, JOIN_DECIDE_CAP);
+  const members = useMemberCount(showMembers);
+  const pendingJoins = useQuery({
+    queryKey: PENDING_JOIN_REQUESTS_KEY,
+    queryFn: countPendingJoinRequests,
+    enabled: showJoins,
+    retry: false,
+  });
   const needsReview = withdrawals.data?.filter(
     (r) => r.reviewState === "needsReview",
   ).length;
@@ -130,6 +153,50 @@ export function Dashboard() {
             foot="Your step-up stands in for a second administrator's consent (VTI-APV-022)"
             tone="warn"
             to="/actions"
+          />
+        )}
+        {showMembers && (
+          <StatTile
+            label="Members"
+            value={
+              members.data
+                ? formatTally(members.data)
+                : members.error
+                  ? "—"
+                  : "…"
+            }
+            foot={members.error ? "Could not count members" : "current members"}
+            tone={members.error ? "warn" : "neutral"}
+            to="/members"
+          />
+        )}
+        {showJoins && (
+          <StatTile
+            label="Join requests"
+            value={
+              pendingJoins.data
+                ? formatTally(pendingJoins.data)
+                : pendingJoins.error
+                  ? "—"
+                  : "…"
+            }
+            foot={
+              pendingJoins.error
+                ? "Could not count join requests"
+                : pendingJoins.data
+                  ? pendingJoins.data.count
+                    ? "awaiting a decision"
+                    : "none awaiting a decision"
+                  : undefined
+            }
+            tone={
+              pendingJoins.error || pendingJoins.data?.count
+                ? "warn"
+                : pendingJoins.data
+                  ? "ok"
+                  : "neutral"
+            }
+            to="/join-requests"
           />
         )}
         <StatTile

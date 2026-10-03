@@ -46,6 +46,7 @@ mod cnm_vtc_admin_live;
 mod community_profile;
 mod community_verbs_spine;
 mod config_identity;
+mod console_list_limits;
 mod console_signed_document;
 mod cookie_session;
 mod diagnostics;

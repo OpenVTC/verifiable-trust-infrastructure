@@ -744,7 +744,10 @@ Say Bob makes Carol a community administrator:
    The console shows *Sent for approval — 1 of 1 must approve within 72
    hours*, with a link to the action. Bob is done; he sends nothing again.
 2. Alice sees **Actions (1)** in the console's navigation, a banner after she
-   signs in, and `(1)` in the tab title. Under **Waiting for me** the card says
+   signs in, and `(1)` in the tab title. (The **Join requests** entry carries
+   the same kind of bubble for join requests awaiting a decision, and the
+   dashboard's **Members** and **Join requests** tiles show both counts — see
+   `website-and-admin.md`, "What the console shows at a glance".) Under **Waiting for me** the card says
    what the action does, who asked, and when it expires. She checks it and
    chooses **Approve**. From `cnm` instead:
 

@@ -386,6 +386,7 @@ import {
   type SignedTrustTaskDocument,
   type UnsignedTrustTaskDocument,
 } from "./console-key";
+import { assertWithinListLimit } from "./list-limits";
 import { parkedActionFromDocument } from "./parked-action";
 
 /**
@@ -512,6 +513,9 @@ async function signTrustTask(
   payload: unknown,
   withKey?: ConsoleSigningKey,
 ): Promise<SignedTrustTaskDocument> {
+  // A page over the listing's specification maximum is the console's own
+  // defect (#1921): name it before anything is signed (`lib/list-limits.ts`).
+  assertWithinListLimit(typeUri, payload);
   if (!(await ed25519Available())) {
     throw new SigningUnavailableError("no-ed25519");
   }
