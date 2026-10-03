@@ -15,6 +15,8 @@ pub(crate) mod encryption;
 
 #[cfg(feature = "vsock-store")]
 pub mod vsock;
+#[cfg(any(feature = "vsock-store", test))]
+mod vsock_pool;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixture;
