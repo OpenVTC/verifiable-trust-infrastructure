@@ -394,8 +394,9 @@ pub fn community_grant_commands(slug: &str, admin_did: &str) -> String {
          \x20 b. On the VTC host, with the daemon stopped:\n\
          \x20      vtc --config <config.toml> acl add --did {admin_did} --role admin --label cnm\n\
          \x20 c. Online, by an existing community administrator:\n\
-         \x20      cnm --community <their-profile> access grant {admin_did} --role admin --label cnm\n\
-         \x20    or in the admin console: Access control → Add entry (that DID, role admin).\n\
+         \x20      cnm --community <their-profile> access grant {admin_did} --admin-role community-admin --label cnm\n\
+         \x20    or in the admin console: Access control → Add entry (that DID, admin role\n\
+         \x20    community-admin).\n\
          \x20    A community-wide admin grant made online waits in the action list for a\n\
          \x20    second administrator's approval (`cnm actions list`).\n\n\
          Then: cnm community continue {slug} --vtc-did <vtc-did>"
