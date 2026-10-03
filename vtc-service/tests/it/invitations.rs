@@ -105,9 +105,10 @@ async fn build() -> Fixture {
             &vtc.state.acl_ks,
             &VtcAclEntry {
                 did: did.into(),
+                admin: role.implied_authority(),
+                delegated_by: None,
                 role,
                 label: None,
-                allowed_contexts: vec![],
                 created_at: now,
                 created_by: "did:key:vtc-install".into(),
                 updated_at: None,

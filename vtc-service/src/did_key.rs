@@ -27,7 +27,10 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
             did: did.clone(),
             role: VtcRole::Admin,
             label: args.label.clone(),
-            allowed_contexts: vec![],
+            // A community administrator with the full ceiling
+            // (`vtc-admin-roles.md` §9: the offline admin is community-admin).
+            admin: crate::acl::AdminAuthority::community_admin(),
+            delegated_by: None,
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -46,7 +49,7 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
             "grant",
             &entry.did,
             Some(&entry.role),
-            &entry.allowed_contexts,
+            &entry.capability_list(),
         )
         .await?;
         eprintln!("ACL entry created: {} (admin)", did);

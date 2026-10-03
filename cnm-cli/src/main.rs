@@ -2547,8 +2547,12 @@ mod tests {
                 "cnm",
                 "access",
                 "list",
-                "--scope",
-                "ctx-a",
+                "--admin-role",
+                "repo-manager",
+                "--capability",
+                "git.repo.manage",
+                "--resource",
+                "git-ns:github.com/acme",
                 "--direction",
                 "subtree",
             ],
@@ -2558,10 +2562,11 @@ mod tests {
                 "access",
                 "grant",
                 "did:key:z6Mk",
-                "--role",
-                "member",
-                "--scopes",
-                "a,b",
+                "--admin-role",
+                "repo-manager",
+                "--capability",
+                "git.repo.manage@git-ns:github.com/acme",
+                "--approve",
                 "--expires",
                 "7d",
             ],
@@ -2570,9 +2575,10 @@ mod tests {
                 "access",
                 "update",
                 "did:key:z6Mk",
-                "--scopes",
-                "a,b,c",
+                "--capability",
+                "vtc.audit.read",
             ],
+            vec!["cnm", "access", "update", "did:key:z6Mk", "--full-ceiling"],
             vec!["cnm", "access", "update", "did:key:z6Mk", "--permanent"],
             vec![
                 "cnm",
@@ -2584,13 +2590,15 @@ mod tests {
                 "--to",
                 "moderator",
             ],
-            vec!["cnm", "access", "revoke", "did:key:z6Mk", "--scopes", "a"],
+            vec!["cnm", "access", "revoke", "did:key:z6Mk"],
         ] {
             let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
             assert!(!requires_auth(&cli.command), "{argv:?}");
         }
-        // `--direction` means nothing without a scope to read it against.
+        // `--direction` means nothing without a resource to read it against,
+        // and a community holds no contexts to scope by (VTI-VTC-010).
         assert!(Cli::try_parse_from(["cnm", "access", "list", "--direction", "any"]).is_err());
+        assert!(Cli::try_parse_from(["cnm", "access", "list", "--scope", "ctx-a"]).is_err());
         // An expiry and a permanent entry cannot both be asked for.
         assert!(
             Cli::try_parse_from([

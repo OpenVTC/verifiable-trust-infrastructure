@@ -148,9 +148,10 @@ async fn seed_acl(state: &AppState, did: &str, role: VtcRole) {
         &state.acl_ks,
         &VtcAclEntry {
             did: did.into(),
+            admin: role.implied_authority(),
+            delegated_by: None,
             role,
             label: None,
-            allowed_contexts: vec![],
             created_at: 0,
             created_by: "test".into(),
             updated_at: None,
@@ -2484,9 +2485,10 @@ async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
         &f.vtc.state.acl_ks,
         &VtcAclEntry {
             did: scoped.did.clone(),
+            admin: crate::acl::legacy_seed_authority(&VtcRole::Admin, &["ops"]),
+            delegated_by: None,
             role: VtcRole::Admin,
             label: None,
-            allowed_contexts: vec!["ops".into()],
             created_at: 0,
             created_by: "test".into(),
             updated_at: None,

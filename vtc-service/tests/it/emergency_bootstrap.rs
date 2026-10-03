@@ -32,7 +32,7 @@ use tokio::sync::RwLock;
 use tower::ServiceExt;
 use vta_sdk::provision_client::EphemeralSetupKey;
 
-use vti_common::acl::{AclEntry, Role, list_acl_entries, store_acl_entry};
+use vtc_service::acl::{AdminAuthority, VtcAclEntry, VtcRole, list_acl_entries, store_acl_entry};
 use vti_common::audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::passkey::build_webauthn;
@@ -281,9 +281,16 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
 
     store_acl_entry(
         &acl_ks,
-        &AclEntry::new(admin_did.clone(), Role::Admin, "did:key:vtc-install")
-            .with_label(Some("old admin".into()))
-            .with_created_at(0),
+        &VtcAclEntry {
+            label: Some("old admin".into()),
+            created_at: 0,
+            ..VtcAclEntry::new(
+                &admin_did,
+                VtcRole::Admin,
+                AdminAuthority::community_admin(),
+                "did:key:vtc-install",
+            )
+        },
     )
     .await
     .unwrap();
@@ -487,7 +494,7 @@ async fn happy_path_clears_admin_via_vta_and_audits_on_restart() {
         .await
         .unwrap()
         .into_iter()
-        .filter(|e| e.role == Role::Admin)
+        .filter(|e| e.is_administrator())
         .collect();
     assert!(remaining_admins.is_empty(), "expected no admin entries");
 
@@ -541,7 +548,7 @@ async fn vta_rejects_unauthorized_recovery_did_and_state_unchanged() {
         .await
         .unwrap()
         .into_iter()
-        .filter(|e| e.role == Role::Admin)
+        .filter(|e| e.is_administrator())
         .collect();
     assert_eq!(admins.len(), 1);
     assert_eq!(admins[0].did, fix.admin_did);

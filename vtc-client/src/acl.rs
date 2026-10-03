@@ -1,5 +1,14 @@
 //! The community's ACL: the canonical `acl/{list,show,grant,update,change-role,
-//! revoke}/0.1` tasks.
+//! revoke}` tasks, at **0.2** for the reads and the writes that state
+//! administrative authority (role-based administration:
+//! `docs/05-design-notes/vtc-admin-roles.md`) and at 0.1 for the community-role
+//! change and the removal.
+//!
+//! At 0.2 an entry's `role` is its **administrative role** (`community-admin`,
+//! `moderator`, `vetting-lead`, `repo-manager`, `credential-officer`,
+//! `auditor`, `approver`, or `member` for none), and every axis — `act`,
+//! `capabilities`, `approve`, `approveCapabilities`, `keys` — is stated. The
+//! community role travels in `ext["org.openvtc"].communityRole`.
 //!
 //! Every one of them is a signed Trust Task, sent the way every `cnm access`
 //! call goes — over the DIDComm or TSP session when the client holds one
@@ -29,8 +38,9 @@ use crate::{HolderKey, MAX_DOCUMENT_RESPONSE_BYTES, VtcClient, VtcError, decode_
 /// The generated wire types for the family, re-exported so a caller names the
 /// reply types without depending on `trust-tasks-rs` itself.
 pub use trust_tasks_rs::specs::acl::{
-    change_role::v0_1 as change_role, grant::v0_1 as grant, list::v0_1 as list,
-    revoke::v0_1 as revoke, show::v0_1 as show, update::v0_1 as update,
+    change_role::v0_1 as change_role, grant::v0_1 as grant, grant::v0_2 as grant_v0_2,
+    list::v0_1 as list, list::v0_2 as list_v0_2, revoke::v0_1 as revoke, show::v0_1 as show,
+    show::v0_2 as show_v0_2, update::v0_1 as update, update::v0_2 as update_v0_2,
 };
 
 /// The Type URI of each task in the family, read off the generated payloads.
@@ -43,6 +53,96 @@ pub mod task {
     pub const UPDATE: &str = <super::update::Payload as Payload>::TYPE_URI;
     pub const CHANGE_ROLE: &str = <super::change_role::Payload as Payload>::TYPE_URI;
     pub const REVOKE: &str = <super::revoke::Payload as Payload>::TYPE_URI;
+    pub const LIST_V0_2: &str = <super::list_v0_2::Payload as Payload>::TYPE_URI;
+    pub const SHOW_V0_2: &str = <super::show_v0_2::Payload as Payload>::TYPE_URI;
+    pub const GRANT_V0_2: &str = <super::grant_v0_2::Payload as Payload>::TYPE_URI;
+    pub const UPDATE_V0_2: &str = <super::update_v0_2::Payload as Payload>::TYPE_URI;
+}
+
+/// `acl/list/0.2` filters. Every member is optional. `resource` (and the
+/// unused-at-a-community `context`) need a `direction`: `actingIn`, `subtree`
+/// or `any`.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AclListFilterV02 {
+    /// An administrative role, or `member` for entries holding none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Only entries whose effective capability set includes this capability.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
+    /// A resource qualifier (`git-ns:github.com/acme`), read in `direction`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject_prefix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<u32>,
+    /// The previous page's `cursor`, verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// An `acl/grant/0.2` entry: the administrative authority the subject should
+/// hold, every axis stated.
+#[derive(Debug, Clone, Default)]
+pub struct AclGrantV02 {
+    pub subject: String,
+    /// The administrative role, or `member` for none.
+    pub admin_role: String,
+    /// `cap` or `cap@resource` — narrows the role's ceiling to these. `None`
+    /// holds the full ceiling (`{"scope": "ceiling"}`); an empty list holds
+    /// none (`{"scope": "none"}`).
+    pub capabilities: Option<Vec<String>>,
+    /// Whether the subject may approve, within its role's approve ceiling.
+    /// `false` states `{"scope": "none"}` rather than omitting it.
+    pub approve: bool,
+    /// Whether the subject acts at all. `false` is the least-privilege
+    /// approver's `{"scope": "none"}`.
+    pub act: bool,
+    /// The community role (`member`, `moderator`, …), when it should differ
+    /// from the one the administrative role implies.
+    pub community_role: Option<String>,
+    pub label: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub reason: Option<String>,
+}
+
+/// An `acl/update/0.2` amendment. `None` leaves a member unchanged.
+#[derive(Debug, Clone, Default)]
+pub struct AclUpdateV02 {
+    pub subject: String,
+    /// Replace the capability set: `Some(None)` returns it to the role's full
+    /// ceiling, `Some(Some(list))` lists it (empty: none).
+    pub capabilities: Option<Option<Vec<String>>>,
+    pub approve: Option<bool>,
+    pub label: Option<Option<String>>,
+    pub expires_at: Option<Option<DateTime<Utc>>>,
+    pub reason: Option<String>,
+}
+
+/// `cap` / `cap@resource` strings as a 0.2 capability scope.
+pub fn capability_scope(caps: Option<&[String]>) -> serde_json::Value {
+    match caps {
+        None => serde_json::json!({ "scope": "ceiling" }),
+        Some([]) => serde_json::json!({ "scope": "none" }),
+        Some(list) => serde_json::json!({
+            "scope": "listed",
+            "grants": list
+                .iter()
+                .map(|c| match c.split_once('@') {
+                    Some((cap, res)) => serde_json::json!({ "capability": cap, "resource": res }),
+                    None => serde_json::json!({ "capability": c }),
+                })
+                .collect::<Vec<_>>(),
+        }),
+    }
+}
+
+fn explicit_scope(on: bool) -> serde_json::Value {
+    serde_json::json!({ "scope": if on { "all" } else { "none" } })
 }
 
 /// `acl/list/0.1` filters. Every member is optional; an empty filter lists the
@@ -235,6 +335,123 @@ impl VtcClient {
             .await
     }
 
+    /// One page of the ACL at 0.2 — every entry with every axis stated. Any
+    /// administrative role may read it.
+    pub async fn acl_list_v0_2(
+        &self,
+        filter: &AclListFilterV02,
+        key: &HolderKey,
+    ) -> Result<list_v0_2::Response, VtcError> {
+        let payload = checked::<list_v0_2::Payload>(serde_json::to_value(filter).map_err(bad)?)?;
+        self.acl_task(task::LIST_V0_2, payload, key, list_v0_2::ERROR_CODES)
+            .await
+    }
+
+    /// Every ACL entry at 0.2, following the cursor to the end.
+    pub async fn acl_list_all_v0_2(
+        &self,
+        filter: &AclListFilterV02,
+        key: &HolderKey,
+    ) -> Result<Vec<list_v0_2::AclEntry>, VtcError> {
+        let mut filter = filter.clone();
+        let mut out = Vec::new();
+        loop {
+            let page = self.acl_list_v0_2(&filter, key).await?;
+            out.extend(page.entries);
+            match (page.truncated, page.cursor) {
+                (true, Some(cursor)) => filter.cursor = Some(cursor.to_string()),
+                (true, None) => {
+                    return Err(VtcError::Http {
+                        status: 200,
+                        body: "acl/list answered a truncated page with no cursor".into(),
+                    });
+                }
+                (false, _) => return Ok(out),
+            }
+        }
+    }
+
+    /// One entry at 0.2; `entry` is `None` when the subject holds none.
+    pub async fn acl_show_v0_2(
+        &self,
+        subject: &str,
+        key: &HolderKey,
+    ) -> Result<show_v0_2::Response, VtcError> {
+        let payload = checked::<show_v0_2::Payload>(serde_json::json!({ "subject": subject }))?;
+        self.acl_task(task::SHOW_V0_2, payload, key, &[]).await
+    }
+
+    /// Write the entry `grant.subject` should hold, at 0.2. A grant is bounded
+    /// by the caller's own entry; widening administrative authority needs a
+    /// passkey gesture bound to it, and an authority-conferring capability its
+    /// other holders' consent (the refusal or the parked action says so).
+    pub async fn acl_grant_v0_2(
+        &self,
+        grant: &AclGrantV02,
+        key: &HolderKey,
+    ) -> Result<grant_v0_2::Response, VtcError> {
+        let mut entry = serde_json::json!({
+            "subject": grant.subject,
+            "role": grant.admin_role,
+            "act": explicit_scope(grant.act),
+            "keys": { "scope": "none" },
+            "capabilities": capability_scope(grant.capabilities.as_deref()),
+            "approve": explicit_scope(grant.approve),
+        });
+        if grant.approve {
+            entry["approveCapabilities"] = serde_json::json!({ "scope": "ceiling" });
+        }
+        if let Some(label) = &grant.label {
+            entry["label"] = serde_json::json!(label);
+        }
+        if let Some(at) = grant.expires_at {
+            entry["expiresAt"] = serde_json::json!(at.to_rfc3339());
+        }
+        if let Some(role) = &grant.community_role {
+            entry["ext"] = serde_json::json!({ "org.openvtc": { "communityRole": role } });
+        }
+        let mut body = serde_json::json!({ "entry": entry });
+        if let Some(reason) = &grant.reason {
+            body["reason"] = serde_json::json!(reason);
+        }
+        let payload = checked::<grant_v0_2::Payload>(body)?;
+        self.acl_task(task::GRANT_V0_2, payload, key, grant_v0_2::ERROR_CODES)
+            .await
+    }
+
+    /// Amend an existing entry at 0.2: its capabilities, approve scope, label
+    /// or expiry. Narrowing is a privilege reduction applied at once.
+    pub async fn acl_update_v0_2(
+        &self,
+        update: &AclUpdateV02,
+        key: &HolderKey,
+    ) -> Result<update_v0_2::Response, VtcError> {
+        let mut body = serde_json::json!({ "subject": update.subject });
+        if let Some(caps) = &update.capabilities {
+            body["capabilities"] = capability_scope(caps.as_deref());
+        }
+        if let Some(approve) = update.approve {
+            body["approve"] = explicit_scope(approve);
+            body["approveCapabilities"] = if approve {
+                serde_json::json!({ "scope": "ceiling" })
+            } else {
+                serde_json::json!({ "scope": "none" })
+            };
+        }
+        if let Some(label) = &update.label {
+            body["label"] = serde_json::json!(label);
+        }
+        if let Some(at) = &update.expires_at {
+            body["expiresAt"] = serde_json::json!(at.map(|t| t.to_rfc3339()));
+        }
+        if let Some(reason) = &update.reason {
+            body["reason"] = serde_json::json!(reason);
+        }
+        let payload = checked::<update_v0_2::Payload>(body)?;
+        self.acl_task(task::UPDATE_V0_2, payload, key, update_v0_2::ERROR_CODES)
+            .await
+    }
+
     /// Sign one `acl/*` document as `key` and send it, over the client's
     /// session when it holds one — `key` must then be the session's identity
     /// — otherwise signed with `key` and posted to the document endpoint.
@@ -366,6 +583,36 @@ mod tests {
         assert!(checked::<revoke::Payload>(body).is_err());
     }
 
+    /// A 0.2 grant states every axis, and the capability strings become
+    /// qualified grants.
+    #[test]
+    fn a_0_2_grant_states_every_axis() {
+        let caps = vec![
+            "git.repo.manage@git-ns:github.com/acme".to_string(),
+            "git.ns.admin@git-ns:github.com/acme".to_string(),
+        ];
+        let scope = capability_scope(Some(&caps));
+        assert_eq!(scope["scope"], "listed");
+        assert_eq!(scope["grants"][0]["resource"], "git-ns:github.com/acme");
+        assert_eq!(
+            capability_scope(None),
+            serde_json::json!({"scope": "ceiling"})
+        );
+        assert_eq!(
+            capability_scope(Some(&[])),
+            serde_json::json!({"scope": "none"})
+        );
+        let body = serde_json::json!({ "entry": {
+            "subject": "did:key:z6MkA",
+            "role": "repo-manager",
+            "act": explicit_scope(true),
+            "keys": { "scope": "none" },
+            "capabilities": scope,
+            "approve": explicit_scope(false),
+        }});
+        assert!(checked::<grant_v0_2::Payload>(body).is_ok());
+    }
+
     #[test]
     fn the_task_uris_are_the_canonical_family() {
         for uri in [
@@ -375,6 +622,10 @@ mod tests {
             task::UPDATE,
             task::CHANGE_ROLE,
             task::REVOKE,
+            task::LIST_V0_2,
+            task::SHOW_V0_2,
+            task::GRANT_V0_2,
+            task::UPDATE_V0_2,
         ] {
             assert!(uri.starts_with("https://trusttasks.org/spec/acl/"), "{uri}");
         }

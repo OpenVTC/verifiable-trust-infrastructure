@@ -42,7 +42,13 @@ pub const NOTICE_TYPE: &str = <notice::Payload as trust_tasks_rs::Payload>::TYPE
 pub fn code_for(prior: &VtcAclEntry, after: Option<&VtcAclEntry>) -> &'static str {
     match after {
         None => "revoked",
-        Some(a) if a.role != prior.role => "demoted",
+        // Its administrative role (or its community role) moved.
+        Some(a)
+            if crate::routes::acl::role_string(a) != crate::routes::acl::role_string(prior)
+                || a.role != prior.role =>
+        {
+            "demoted"
+        }
         Some(_) => "narrowed",
     }
 }
@@ -158,14 +164,16 @@ pub(crate) fn notice_payload(
     let mut v = json!({
         "did": prior.did,
         "code": code_for(prior, after),
-        "previousRole": prior.role.to_string(),
+        // The administrative role (`member` for none): what the reduction
+        // was of (vtc-admin-roles.md §6).
+        "previousRole": crate::routes::acl::role_string(prior),
         "agreement": agreement.wire(),
         "decidedAt": decided_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "decidedBy": decided_by,
     });
     // Absent exactly when revoked.
     if let Some(a) = after {
-        v["resultingRole"] = json!(a.role.to_string());
+        v["resultingRole"] = json!(crate::routes::acl::role_string(a));
     }
     // Absent and empty are different claims; only a given reason is carried.
     if let Some(r) = reason.filter(|r| !r.trim().is_empty()) {
@@ -187,9 +195,10 @@ mod tests {
     fn entry(role: VtcRole, scopes: &[&str]) -> VtcAclEntry {
         VtcAclEntry {
             did: "did:key:zCarol".into(),
-            role,
+            role: role.clone(),
             label: None,
-            allowed_contexts: scopes.iter().map(|s| s.to_string()).collect(),
+            admin: crate::acl::legacy_seed_authority(&role, scopes),
+            delegated_by: None,
             created_at: 0,
             created_by: "did:key:zDana".into(),
             updated_at: None,
@@ -212,10 +221,16 @@ mod tests {
             code_for(&admin, Some(&entry(VtcRole::Member, &[]))),
             "demoted"
         );
-        assert_eq!(
-            code_for(&admin, Some(&entry(VtcRole::Admin, &["ctx-a"]))),
-            "narrowed"
-        );
+        // The same administrative role, fewer capabilities under it.
+        let mut narrower = entry(VtcRole::Admin, &[]);
+        narrower.admin.capabilities = crate::acl::CapabilityScope::Listed {
+            grants: vec![crate::acl::CapabilityGrant {
+                capability: crate::acl::Capability::AuditRead,
+                resource: None,
+                additive: false,
+            }],
+        };
+        assert_eq!(code_for(&admin, Some(&narrower)), "narrowed");
     }
 
     /// VTI-APV-019: a revoked subject carries no `resultingRole`; a step-up

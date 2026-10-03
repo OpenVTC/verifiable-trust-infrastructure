@@ -304,14 +304,22 @@ pub async fn import_backup(
         .map(|d| (d.name.clone(), d.rows.len()))
         .collect();
 
+    // ACL rows written before role-based administration are mapped onto it
+    // here (`vtc-admin-roles.md` §9) — decided before anything is written, so
+    // a row that cannot be mapped refuses the import rather than half-applying
+    // it, and the preview reports the same re-grants the import will.
+    let acl_rows = migrate_acl_rows(&payload)?;
+    let regrant = regrant_note(&acl_rows);
+
     if !confirm {
         return Ok(ImportResult {
             status: "preview".into(),
             source_did: payload.config.vtc_did.clone(),
             counts,
-            message: "Preview only — pass confirm=true to apply. This will overwrite \
-                      all community state."
-                .into(),
+            message: format!(
+                "Preview only — pass confirm=true to apply. This will overwrite all community \
+                 state.{regrant}"
+            ),
         });
     }
 
@@ -349,6 +357,12 @@ pub async fn import_backup(
             let val = BASE64
                 .decode(v_b64)
                 .map_err(|e| AppError::Validation(format!("backup: bad row value b64: {e}")))?;
+            // An ACL row is written as migrated, never as it arrived.
+            let val = match acl_rows.iter().find(|(k, _, _)| *k == key) {
+                Some((_, entry, _)) => serde_json::to_vec(entry)
+                    .map_err(|e| AppError::Internal(format!("backup: encode ACL row: {e}")))?,
+                None => val,
+            };
             ks.insert_raw(key, val).await?;
         }
         ks.persist().await?;
@@ -374,8 +388,72 @@ pub async fn import_backup(
         status: "imported".into(),
         source_did: payload.config.vtc_did.clone(),
         counts,
-        message: "Import complete. Restart the daemon to serve the restored identity.".into(),
+        message: format!(
+            "Import complete. Restart the daemon to serve the restored identity.{regrant}"
+        ),
     })
+}
+
+/// Every `acl:` row of the backup's ACL keyspace, mapped onto the role-based
+/// shape: `(raw key, entry, what it became)`.
+fn migrate_acl_rows(
+    payload: &BackupPayload,
+) -> Result<
+    Vec<(
+        Vec<u8>,
+        crate::acl::VtcAclEntry,
+        crate::acl::migrate::Migrated,
+    )>,
+    AppError,
+> {
+    let mut out = Vec::new();
+    for dump in payload
+        .keyspaces
+        .iter()
+        .filter(|d| d.name == keyspaces::ACL)
+    {
+        for (k_b64, v_b64) in &dump.rows {
+            let key = BASE64
+                .decode(k_b64)
+                .map_err(|e| AppError::Validation(format!("backup: bad row key b64: {e}")))?;
+            if !key.starts_with(b"acl:") {
+                continue;
+            }
+            let val = BASE64
+                .decode(v_b64)
+                .map_err(|e| AppError::Validation(format!("backup: bad row value b64: {e}")))?;
+            let (entry, how) = crate::acl::migrate::migrate_row(&val)?;
+            out.push((key, entry, how));
+        }
+    }
+    Ok(out)
+}
+
+/// The import report's re-grant list: context-scoped admins that came across
+/// with no administrative role (`vtc-admin-roles.md` §9).
+fn regrant_note(
+    rows: &[(
+        Vec<u8>,
+        crate::acl::VtcAclEntry,
+        crate::acl::migrate::Migrated,
+    )],
+) -> String {
+    let dids: Vec<&str> = rows
+        .iter()
+        .filter(|(_, _, how)| matches!(how, crate::acl::migrate::Migrated::NeedsRegrant { .. }))
+        .map(|(_, e, _)| e.did.as_str())
+        .collect();
+    if dids.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " {} context-scoped administrator entr{} came across with no administrative role \
+             and need re-granting with acl/update: {}",
+            dids.len(),
+            if dids.len() == 1 { "y" } else { "ies" },
+            dids.join(", ")
+        )
+    }
 }
 
 /// True if a previous import was interrupted before it finished. Boot

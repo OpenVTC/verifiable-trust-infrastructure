@@ -23,7 +23,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
-use vti_common::acl::{AclEntry, Role, store_acl_entry};
+use vtc_service::acl::{AdminAuthority, VtcAclEntry, VtcRole, store_acl_entry};
 use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::passkey::{
     build_webauthn,
@@ -132,8 +132,15 @@ async fn build_fixture() -> (Fixture, String) {
             .unwrap();
         store_acl_entry(
             &vtc.state.acl_ks,
-            &AclEntry::new(did, Role::Admin, "did:key:vtc-install")
-                .with_label(Some("install bootstrap".into())),
+            &VtcAclEntry {
+                label: Some("install bootstrap".into()),
+                ..VtcAclEntry::new(
+                    &did,
+                    VtcRole::Admin,
+                    AdminAuthority::community_admin(),
+                    "did:key:vtc-install",
+                )
+            },
         )
         .await
         .unwrap();

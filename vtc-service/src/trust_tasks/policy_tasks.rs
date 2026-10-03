@@ -41,6 +41,7 @@ use super::helpers::{
     success_response, task_error_to_reject,
 };
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
+use crate::acl::Capability;
 use crate::error::AppError;
 use crate::policy::PolicyPurpose;
 use crate::routes::policies::{admin as policy_admin, read as policy_read};
@@ -200,11 +201,16 @@ async fn handle_upsert(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
+    // Any `vtc.policy.admin` first, so a stranger learns nothing about the
+    // payload; then the one for this revision's purpose (`policy:<purpose>`,
+    // vtc-admin-roles.md §4–§5), once the payload says which it is.
     let (actor, _) = match admin_with::<policy_upsert::Payload>(state, ctx, &doc).await {
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    if let Err(e) = actor.require_super_admin() {
+    if let Err(e) =
+        crate::acl::require_any_capability(&state.acl_ks, &actor.did, Capability::PolicyAdmin).await
+    {
         return app_error_to_reject(&doc, &e);
     }
     // The route's own body: its purpose binding through `ext`, and its refusal
@@ -217,6 +223,9 @@ async fn handle_upsert(
         Ok(p) => p,
         Err(e) => return app_error_to_reject(&doc, &e),
     };
+    if let Err(e) = require_policy_admin(state, &actor.did, purpose).await {
+        return app_error_to_reject(&doc, &e);
+    }
     // Refused for its own faults before anyone is asked to approve it
     // (`vtc-action-list.md` §4.2); `upload_inner` checks again when it runs.
     if purpose.decides_authority() {
@@ -246,6 +255,22 @@ async fn handle_upsert(
         ),
         Err(e) => app_error_to_reject(&doc, &e),
     }
+}
+
+/// `vtc.policy.admin @ policy:<purpose>` (vtc-admin-roles.md §4–§5).
+async fn require_policy_admin(
+    state: &AppState,
+    did: &str,
+    purpose: PolicyPurpose,
+) -> Result<(), AppError> {
+    crate::acl::require_capability(
+        &state.acl_ks,
+        did,
+        Capability::PolicyAdmin,
+        Some(&crate::acl::ResourceQualifier::Policy(purpose)),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// The second party a change to an authority-deciding policy takes
@@ -290,7 +315,9 @@ async fn handle_activate(
         Ok(p) => p,
         Err(reject) => return reject,
     };
-    if let Err(e) = actor.require_super_admin() {
+    if let Err(e) =
+        crate::acl::require_any_capability(&state.acl_ks, &actor.did, Capability::PolicyAdmin).await
+    {
         return app_error_to_reject(&doc, &e);
     }
     if payload.context_id.is_some() {
@@ -340,6 +367,9 @@ async fn handle_activate(
         Ok(p) => p,
         Err(e) => return refuse(&doc, e),
     };
+    if let Err(e) = require_policy_admin(state, &actor.did, decides).await {
+        return app_error_to_reject(&doc, &e);
+    }
     if let Err(refusal) = gate_authority_policy(state, &actor, &doc, decides, "Activate").await {
         return refusal;
     }
@@ -358,6 +388,11 @@ async fn handle_test(
         Ok(p) => p,
         Err(reject) => return reject,
     };
+    if let Err(e) =
+        crate::acl::require_any_capability(&state.acl_ks, &actor.did, Capability::PolicyAdmin).await
+    {
+        return app_error_to_reject(&doc, &e);
+    }
     let id = match revision_id(&doc, payload.id.as_str()) {
         Ok(id) => id,
         Err(reject) => return reject,
@@ -380,13 +415,10 @@ async fn handle_did_register(
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
     // Authority before the payload, as the route's extractor ran first.
-    let actor = match admin_signer(state, ctx, &doc).await {
+    let actor = match super::capable_signer(state, ctx, &doc, Capability::DidAdmin, None).await {
         Ok(a) => a,
         Err(reject) => return reject,
     };
-    if let Err(e) = actor.require_super_admin() {
-        return app_error_to_reject(&doc, &e);
-    }
     let payload = match parse_spec_payload::<did_register::Payload>(&doc) {
         Ok(p) => p,
         Err(reject) => return reject,

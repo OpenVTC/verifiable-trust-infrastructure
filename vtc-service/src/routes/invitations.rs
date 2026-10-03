@@ -76,20 +76,15 @@ pub(crate) async fn issue(
         .as_ref()
         .ok_or_else(|| AppError::Internal("credential signer not configured".into()))?;
 
-    // Auth: Admin / Moderator / Issuer can invite (read the ACL row — the JWT
-    // degrades non-Admin VTC roles to Reader, so it can't distinguish them).
-    let acl = get_acl_entry(&state.acl_ks, actor)
-        .await?
-        .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
-    if !matches!(
-        acl.role,
-        VtcRole::Admin | VtcRole::Moderator | VtcRole::Issuer
-    ) {
-        return Err(AppError::Forbidden(
-            "only Admin, Moderator, or Issuer members can issue invitations".into(),
-        )
-        .into());
-    }
+    // Auth: `vtc.invitations.manage`, read from the inviter's live entry
+    // (vtc-admin-roles.md §4).
+    let acl = crate::acl::require_capability(
+        &state.acl_ks,
+        actor,
+        crate::acl::Capability::InvitationsManage,
+        None,
+    )
+    .await?;
 
     // An invite is for a *prospective* member.
     if !body.subject_did.starts_with("did:") {
@@ -146,14 +141,32 @@ pub(crate) async fn issue(
             )
             .into());
         }
-        // Conferring a role is an administrator's authority. A `Moderator` or
-        // `Issuer` invites members; it cannot mint an invitation that seats
-        // someone as a moderator or issuer, or as any custom role.
-        if !matches!(parsed, VtcRole::Member) && !matches!(acl.role, VtcRole::Admin) {
-            return Err(AppError::Forbidden(format!(
-                "only an administrator can invite with the role `{role}`"
-            ))
-            .into());
+        // Conferring a role is assigning one (`vtc.roles.assign`), and a role
+        // that implies administrative authority is a grant of it, bounded by
+        // the inviter's own entry like any grant (VTI-ACL-071). An inviter
+        // without it invites members only.
+        if !matches!(parsed, VtcRole::Member) {
+            if !acl.can_any(crate::acl::Capability::RolesAssign) {
+                return Err(AppError::Forbidden(format!(
+                    "inviting with the role `{role}` assigns a role, which takes \
+                     vtc.roles.assign"
+                ))
+                .into());
+            }
+            let seated = crate::acl::VtcAclEntry::new(
+                body.subject_did.clone(),
+                parsed.clone(),
+                parsed.implied_authority(),
+                actor,
+            );
+            if let Err(refusal) =
+                crate::acl::granting::check_write(&acl, &seated, crate::auth::session::now_epoch())
+            {
+                return Err(AppError::Forbidden(format!(
+                    "an invitation with the role `{role}` grants what it implies: {refusal}"
+                ))
+                .into());
+            }
         }
     }
 
@@ -289,25 +302,27 @@ impl InviterScope {
     }
 }
 
-/// Auth gate shared by the invitation ops: Admin / Moderator / Issuer, and
-/// how far the caller's authority over issued invitations reaches.
+/// Auth gate shared by the invitation ops: `vtc.invitations.manage`, and how
+/// far the caller's authority over issued invitations reaches.
 ///
-/// A `Moderator` or `Issuer` grows the community by inviting; it does not
-/// manage the invitations other inviters (an administrator included) issued.
-/// Their invitees, revocations and offers are not its to see or act on, so
-/// an invitation outside its scope answers exactly as one that does not
-/// exist.
+/// An inviter grows the community; it does not manage the invitations other
+/// inviters issued unless it also assigns roles (`vtc.roles.assign`, a
+/// community administrator) — their invitees, revocations and offers are not
+/// its to see or act on, so an invitation outside its scope answers exactly as
+/// one that does not exist.
 async fn require_inviter(state: &AppState, did: &str) -> Result<InviterScope, AppError> {
-    let acl = get_acl_entry(&state.acl_ks, did)
-        .await?
-        .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
-    match acl.role {
-        VtcRole::Admin => Ok(InviterScope::All),
-        VtcRole::Moderator | VtcRole::Issuer => Ok(InviterScope::OwnOnly),
-        _ => Err(AppError::Forbidden(
-            "only Admin, Moderator, or Issuer members can manage invitations".into(),
-        )),
-    }
+    let acl = crate::acl::require_capability(
+        &state.acl_ks,
+        did,
+        crate::acl::Capability::InvitationsManage,
+        None,
+    )
+    .await?;
+    Ok(if acl.can(crate::acl::Capability::RolesAssign, None) {
+        InviterScope::All
+    } else {
+        InviterScope::OwnOnly
+    })
 }
 
 pub(crate) async fn list(

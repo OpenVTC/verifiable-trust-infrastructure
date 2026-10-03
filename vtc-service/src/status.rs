@@ -225,9 +225,11 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
 
     // --- ACL ---
     let acl_entries = acl::list_acl_entries(&acl_ks).await?;
+    // Administrators of any role — the community role `admin` alone confers
+    // nothing (vtc-admin-roles.md §6).
     let admin_count = acl_entries
         .iter()
-        .filter(|e| e.role == VtcRole::Admin)
+        .filter(|e| e.admin.is_administrator())
         .count();
     let moderator_count = acl_entries
         .iter()
@@ -247,7 +249,7 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
         .count();
 
     section(&format!("ACL ({})", acl_entries.len()));
-    eprintln!("  {CYAN}{:<13}{RESET} {admin_count}", "Admin");
+    eprintln!("  {CYAN}{:<13}{RESET} {admin_count}", "Administrators");
     eprintln!("  {CYAN}{:<13}{RESET} {moderator_count}", "Moderator");
     eprintln!("  {CYAN}{:<13}{RESET} {issuer_count}", "Issuer");
     eprintln!("  {CYAN}{:<13}{RESET} {member_count}", "Member");

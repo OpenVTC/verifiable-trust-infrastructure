@@ -91,12 +91,12 @@ pub(crate) async fn bootstrap(
     let admin_did = claims.sub;
     let install_jti = claims.install_jti;
 
-    // Defence-in-depth: refuse if any Admin ACL entry already exists.
+    // Defence-in-depth: refuse if any administrator already exists.
     // The install carve-out should make this impossible (the second
     // install-token claim would fail), but a misconfigured backup
     // restore could still land us here.
     for entry in list_acl_entries(&state.acl_ks).await? {
-        if entry.role == VtcRole::Admin {
+        if entry.admin.is_administrator() {
             return Err(TaskError::declared(
                 BOOTSTRAP_ERR_ALREADY_BOOTSTRAPPED,
                 AppError::Conflict(
@@ -189,7 +189,10 @@ pub(crate) async fn bootstrap(
         did: admin_did.clone(),
         role: VtcRole::Admin,
         label: Some("first admin (install bootstrap)".into()),
-        allowed_contexts: vec![],
+        // `vtc-admin-roles.md` §9: the founder is a community administrator
+        // with the full ceiling, derived from no granter.
+        admin: crate::acl::AdminAuthority::community_admin(),
+        delegated_by: None,
         created_at: now_unix(),
         created_by: "did:key:vtc-install".into(),
         updated_at: None,
@@ -214,7 +217,8 @@ pub(crate) async fn bootstrap(
                 did: did.clone(),
                 role: VtcRole::Admin,
                 label: Some("co-admin (install bootstrap)".into()),
-                allowed_contexts: vec![],
+                admin: crate::acl::AdminAuthority::community_admin(),
+                delegated_by: None,
                 created_at: now_unix(),
                 created_by: "did:key:vtc-install".into(),
                 updated_at: None,
@@ -279,8 +283,8 @@ pub(crate) async fn bootstrap(
                 Some(&entry.did),
                 AuditEvent::AclGranted(vti_common::audit::AclChangeData {
                     did: entry.did.clone(),
-                    role: entry.role.to_string(),
-                    contexts: entry.allowed_contexts.clone(),
+                    role: "community-admin".into(),
+                    contexts: entry.capability_list(),
                     expires_at: None,
                 }),
             )

@@ -162,18 +162,6 @@ async fn run_role_change(
 ) -> Result<RoleChangeOutcome, AppError> {
     let actor_did = actor.did.as_str();
     let promoting = target_role == super::invariant::ADMIN_ROLE;
-    // A move *out of* admin ends administrator authority, and takes the
-    // requester's gesture — and for another unrestricted admin a third party's
-    // consent (VTI-APV-019). Read before the decision so a demotion another
-    // rule refuses is refused for its own reason first.
-    let demoting = current_role == super::invariant::ADMIN_ROLE && !promoting;
-    let demoted = if demoting {
-        get_acl_entry(&state.acl_ks, subject_did)
-            .await?
-            .filter(|e| e.role == crate::acl::VtcRole::Admin)
-    } else {
-        None
-    };
 
     // Held across the decision *and* the effect, because the effect is what
     // performs the write. Only promotions contend: every other transition is
@@ -188,11 +176,7 @@ async fn run_role_change(
     // taken before it, so an interleaved role write could have landed since —
     // which is exactly the compare-and-swap `acl/change-role` promises and the
     // already-an-admin re-check `members/update` used to do by hand.
-    let live = if promoting {
-        get_acl_entry(&state.acl_ks, subject_did).await?
-    } else {
-        None
-    };
+    let live = get_acl_entry(&state.acl_ks, subject_did).await?;
     if let Some(live) = live.as_ref()
         && live.role.to_string() != current_role
     {
@@ -201,20 +185,75 @@ async fn run_role_change(
             live.role
         )));
     }
-    // A promotion keeps the entry's scopes, so it lands an unrestricted admin
-    // exactly when those scopes read as unrestricted under the admin role —
-    // which a scopeless member's do (VTI-APV-014). Decided from the row read
-    // under the lock, the one the write will replace.
-    let unrestricted = promoting
-        && crate::acl::admin_consent::confers_unrestricted(
-            live.as_ref(),
-            &crate::acl::VtcRole::Admin,
-            live.as_ref()
-                .map(|e| e.allowed_contexts.as_slice())
-                .unwrap_or_default(),
-            crate::auth::session::now_epoch(),
-        );
 
+    // The administrative authority the move carries. An entry whose authority
+    // is what its community role implies follows the role (the `acl/*/0.1`
+    // convention, `routes::acl` module docs); one with authority stated on its
+    // own (0.2) keeps it, and only its community role moves.
+    let now = crate::auth::session::now_epoch();
+    let target: VtcRole = target_role
+        .parse()
+        .map_err(|_| AppError::Validation(format!("unknown role {target_role}")))?;
+    let next = live.as_ref().map(|prior| {
+        let mut next = prior.clone();
+        next.role = target.clone();
+        if crate::routes::acl::expressible_in_v0_1(prior) {
+            next.admin = target.implied_authority();
+        }
+        next
+    });
+    let authority_moves =
+        matches!((live.as_ref(), next.as_ref()), (Some(p), Some(n)) if p.admin != n.admin);
+    // A move that changes administrative authority is a grant (or a
+    // withdrawal) of it, and is bounded by the actor's own entry like one
+    // (`vtc-admin-roles.md` §6.3, VTI-ACL-071): the actor must cover the
+    // entry as it is and could have granted it as it will be.
+    // Nobody moves their own administrative authority (VTI-OPS-050,
+    // VTI-ACL-052) — said in the host invariant's own words, before the
+    // granting bounds would refuse it less helpfully.
+    if authority_moves && actor_did == subject_did {
+        return Err(AppError::Forbidden(
+            "you cannot promote yourself; admin elevation requires a separate admin caller to \
+             run acl/change-role for you"
+                .into(),
+        ));
+    }
+    if authority_moves && let (Some(prior), Some(next)) = (live.as_ref(), next.as_ref()) {
+        let actor_entry = get_acl_entry(&state.acl_ks, actor_did)
+            .await?
+            .ok_or_else(|| AppError::Forbidden(format!("{actor_did} has no ACL entry")))?;
+        if !crate::acl::granting::covers_entry(&actor_entry, prior, now) {
+            return Err(AppError::Forbidden(format!(
+                "{subject_did} holds authority outside yours — only an administrator holding \
+                 vtc.roles.assign over everything it holds can move its role (VTI-ACL-050)"
+            )));
+        }
+        if let Err(refusal) = crate::acl::granting::check_write(&actor_entry, next, now) {
+            return Err(AppError::Forbidden(refusal.to_string()));
+        }
+    }
+    // A move *down* — authority taken from a live administrator — takes the
+    // requester's gesture, and for authority-conferring capabilities their
+    // other holders' consent (VTI-APV-019). Read before the decision so a
+    // demotion another rule refuses is refused for its own reason first.
+    let demoted = match (live.as_ref(), next.as_ref()) {
+        (Some(p), Some(n)) if p.is_administrator() && n.admin.narrows_from(&p.admin) => {
+            Some(p.clone())
+        }
+        _ => None,
+    };
+    // The authority-conferring capabilities the move confers — the consent
+    // trigger (VTI-APV-018). Decided from the row read under the lock, the one
+    // the write will replace.
+    let conferred = match next.as_ref() {
+        Some(n) => crate::acl::admin_consent::newly_conferred(live.as_ref(), n, now),
+        None => vec![],
+    };
+    let unrestricted = !conferred.is_empty();
+    let widens = matches!(
+        (live.as_ref(), next.as_ref()),
+        (Some(p), Some(n)) if n.admin.widens_from(&p.admin)
+    );
     // The fact the host invariant reads, resolved from host state rather than
     // taken on trust. Only promotions need it, and reading it only for them
     // keeps a plain demotion off the session keyspace.
@@ -297,18 +336,24 @@ async fn run_role_change(
     // park the ceremony that asks for one. Still under `PROMOTE_LOCK`, so the
     // re-read above is what the gesture is spent against.
     //
-    // A promotion to *unrestricted* admin also needs another admin's consent
-    // (VTI-APV-014), and on the signed door the two are one gate: gesture
-    // first, then consent, and neither spent while the other is missing.
+    // A move that confers an authority-conferring capability also needs the
+    // consent of its other holders (VTI-APV-018), and on the signed door the
+    // two are one gate: gesture first, then consent, and neither spent while
+    // the other is missing.
     if unrestricted {
         use crate::acl::admin_consent::{self, Operation, SignedGate};
         let summary = format!(
-            "Promote {subject_did} from {current_role} to unrestricted administrator of this \
-             community"
+            "Move {subject_did} from {current_role} to {target_role}, giving it {}",
+            conferred
+                .iter()
+                .map(crate::acl::CapRef::display)
+                .collect::<Vec<_>>()
+                .join(", ")
         );
         let ready = match source {
             StepUpSource::Session { op: Some(op) } => {
-                admin_consent::require(state, actor_did, subject_did, op, &summary).await?
+                admin_consent::require(state, actor_did, subject_did, &conferred, op, &summary)
+                    .await?
             }
             StepUpSource::Session { op: None } => {
                 return Err(AppError::Forbidden(format!(
@@ -321,8 +366,9 @@ async fn run_role_change(
                     state,
                     actor_did,
                     subject_did,
+                    &conferred,
                     Operation { type_uri, payload },
-                    &format!("Promote {subject_did} from {current_role} to administrator"),
+                    &format!("Promote {subject_did} from {current_role} to {target_role}"),
                     &summary,
                 )
                 .await?
@@ -335,16 +381,33 @@ async fn run_role_change(
             }
         };
         ready.spend(state).await?;
-    } else if promoting && let StepUpSource::BoundTo { type_uri, payload } = source {
-        let reason = format!("Promote {subject_did} from {current_role} to administrator");
-        match crate::acl::bound_step_up::redeem_or_request(
-            state, actor_did, type_uri, payload, &reason,
-        )
-        .await?
-        {
-            crate::acl::bound_step_up::Gate::Satisfied => {}
-            crate::acl::bound_step_up::Gate::Required(request) => {
-                return Ok(RoleChangeOutcome::StepUpRequired(request));
+    } else if widens {
+        // Any other widening of administrative authority takes the actor's
+        // gesture (VTI-OPS-050/051), as `acl/grant` does: bound to the
+        // operation on the signed door, the session's live elevation on the
+        // bearer door. A promotion to `admin` already has the host invariant
+        // (`StepUpForAdmin`) reading the session; anything wider than a member
+        // is held to the same bar.
+        match source {
+            StepUpSource::BoundTo { type_uri, payload } => {
+                let reason = format!("Move {subject_did} from {current_role} to {target_role}");
+                match crate::acl::bound_step_up::redeem_or_request(
+                    state, actor_did, type_uri, payload, &reason,
+                )
+                .await?
+                {
+                    crate::acl::bound_step_up::Gate::Satisfied => {}
+                    crate::acl::bound_step_up::Gate::Required(request) => {
+                        return Ok(RoleChangeOutcome::StepUpRequired(request));
+                    }
+                }
+            }
+            StepUpSource::Session { .. } => {
+                if !promoting && !crate::acl::elevation::verified(actor, &state.sessions_ks).await {
+                    return Err(crate::acl::elevation::required(&format!(
+                        "moving {subject_did} to {target_role}"
+                    )));
+                }
             }
         }
     }
@@ -360,7 +423,7 @@ async fn run_role_change(
             return Err(AppError::Forbidden(format!(
                 "demoting administrator {subject_did} needs a passkey gesture bound to the \
                  operation (VTI-APV-019), which only acl/change-role can carry — send \
-                 acl/change-role {{\"subject\": \"{subject_did}\", \"fromRole\": \"admin\", \
+                 acl/change-role {{\"subject\": \"{subject_did}\", \"fromRole\": \"{current_role}\", \
                  \"toRole\": \"{target_role}\"}}"
             )));
         };
@@ -368,9 +431,10 @@ async fn run_role_change(
             state,
             actor_did,
             prior,
+            next.as_ref(),
             crate::acl::admin_consent::Operation { type_uri, payload },
             &format!("Demote administrator {subject_did} to {target_role}"),
-            &format!("Demote unrestricted administrator {subject_did} to {target_role}"),
+            &format!("Demote administrator {subject_did} to {target_role}"),
         )
         .await
         {
@@ -745,8 +809,7 @@ pub async fn remove_inner(
     let mut reduction = None;
     if actor_did != target_did
         && let Some(prior) = target_acl.as_ref()
-        && prior.role == VtcRole::Admin
-        && !prior.is_expired(crate::auth::session::now_epoch())
+        && prior.is_administrator()
     {
         let Some(op) = op else {
             return Err(AppError::Forbidden(format!(
@@ -759,9 +822,10 @@ pub async fn remove_inner(
             state,
             actor_did,
             prior,
+            None,
             op,
             &format!("Remove administrator {target_did} from this community"),
-            &format!("Remove unrestricted administrator {target_did} from this community"),
+            &format!("Remove administrator {target_did} from this community"),
         )
         .await?
         {
@@ -1042,38 +1106,15 @@ mod p0_14_role_change_policy_tests {
         .await
     }
 
-    /// A member whose entry is scoped, so promoting it lands a *scoped* admin —
-    /// which needs the step-up and no second party.
-    async fn seed_scoped(vtc: &TestVtc, did: &str) {
-        store_acl_entry(
-            &vtc.state.acl_ks,
-            &VtcAclEntry {
-                did: did.into(),
-                role: VtcRole::Member,
-                label: None,
-                allowed_contexts: vec!["ctx-a".into()],
-                created_at: crate::auth::session::now_epoch(),
-                created_by: "did:key:vtc-install".into(),
-                updated_at: None,
-                updated_by: None,
-                expires_at: None,
-            },
-        )
-        .await
-        .unwrap();
-        store_member(&vtc.state.members_ks, &Member::fresh(did))
-            .await
-            .unwrap();
-    }
-
     async fn seed(vtc: &TestVtc, did: &str, role: VtcRole) {
         store_acl_entry(
             &vtc.state.acl_ks,
             &VtcAclEntry {
                 did: did.into(),
+                admin: role.implied_authority(),
+                delegated_by: None,
                 role,
                 label: None,
-                allowed_contexts: vec![],
                 created_at: crate::auth::session::now_epoch(),
                 created_by: "did:key:vtc-install".into(),
                 updated_at: None,
@@ -1155,25 +1196,43 @@ mod p0_14_role_change_policy_tests {
         );
     }
 
+    /// A promotion that confers administrative authority but nothing
+    /// authority-conferring — member to moderator, which implies the
+    /// `moderator` administrative role — takes the step-up and no second
+    /// party (VTI-APV-018 needs one only for an authority-conferring
+    /// capability).
     #[tokio::test]
-    async fn admin_promotion_with_step_up_is_allowed_by_default_policy() {
+    async fn a_promotion_conferring_nothing_authority_conferring_needs_only_the_step_up() {
         let vtc = build().await;
-        // Scoped, so the promotion lands a scoped admin: the step-up is the
-        // whole gate. An unrestricted one also needs consent (below).
-        seed_scoped(&vtc, "did:key:zScoped").await;
+        seed(&vtc, "did:key:zMod", VtcRole::Member).await;
         let actor = caller(&vtc, ADMIN, true).await;
-        let granted = promote(&vtc, &actor, "did:key:zScoped")
-            .await
-            .expect("default policy allows admin promotion with a verified step-up");
-        assert_eq!(granted.new_role, "admin");
-        assert_eq!(granted.previous_role, "member");
-        // The Remint executor wrote the new role.
-        let acl = get_acl_entry(&vtc.state.acl_ks, "did:key:zScoped")
+        let payload = serde_json::json!({
+            "subject": "did:key:zMod", "fromRole": "member", "toRole": "moderator"
+        });
+        let granted = role_change_via_pipeline(
+            &vtc.state,
+            &actor,
+            "did:key:zMod",
+            "member",
+            "moderator",
+            Some(crate::acl::admin_consent::Operation {
+                type_uri: crate::trust_tasks::ACL_CHANGE_ROLE_TYPE,
+                payload: &payload,
+            }),
+        )
+        .await
+        .expect("the default policy allows it with a verified step-up");
+        assert_eq!(granted.new_role, "moderator");
+        let acl = get_acl_entry(&vtc.state.acl_ks, "did:key:zMod")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(acl.role, VtcRole::Admin);
-        assert!(!acl.is_super_admin());
+        assert_eq!(acl.role, VtcRole::Moderator);
+        assert_eq!(
+            acl.admin.admin_role,
+            Some(crate::acl::AdminRole::Moderator),
+            "the role carries the administrative role it implies"
+        );
     }
 
     /// VTI-APV-014: promoting a scopeless member lands an unrestricted admin,

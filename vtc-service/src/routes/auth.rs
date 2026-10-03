@@ -17,7 +17,7 @@ use vta_sdk::protocols::auth::{
     epoch_to_rfc3339,
 };
 
-use crate::acl::{Role, get_acl_entry, resolve_auth_role};
+use crate::acl::{get_acl_entry, resolve_auth_role};
 use crate::auth::AuthClaims;
 use crate::auth::session::{
     Session, SessionState, delete_session, get_session, list_sessions, now_epoch,
@@ -1836,28 +1836,34 @@ pub(crate) async fn revoke_sessions_task(
     }
 }
 
-/// Whether `actor` may end `subject`'s sessions: exactly when it could
-/// withdraw `subject`'s access (`auth/revoke-session/0.2` Authorization,
-/// VTI-SES-043 / VTI-ACL-050) — the check `acl/revoke` makes. Its own
-/// sessions always; an unrestricted admin's, anyone's; a context admin's, only
-/// a subject whose every context it administers. Holding the admin role is not
-/// enough: a context admin cannot sign out an unrestricted admin, nor one whose
-/// scope reaches past its own, and a subject with no ACL entry belongs to no
-/// scope, so only an unrestricted admin reaches it.
+/// Whether `actor` may end `subject`'s sessions (`auth/revoke-session/0.2`
+/// Authorization, VTI-SES-043). Its own sessions always. Anyone else's takes
+/// `vtc.sessions.revoke` (incident response, `vtc-admin-roles.md` §4), read
+/// from the actor's live entry — and an administrator's also takes an entry
+/// that covers theirs (VTI-ACL-050), so a holder of the capability cannot sign
+/// out an administrator wider than itself.
 async fn may_end_sessions_of(
     state: &AppState,
     actor: &AuthClaims,
     subject: &str,
 ) -> Result<bool, AppError> {
-    if actor.did == subject || actor.is_super_admin() {
+    if actor.did == subject {
         return Ok(true);
     }
-    if actor.role != Role::Admin {
+    let Some(actor_entry) = get_acl_entry(&state.acl_ks, &actor.did).await? else {
+        return Ok(false);
+    };
+    if !actor_entry.can(crate::acl::Capability::SessionsRevoke, None) {
         return Ok(false);
     }
-    Ok(get_acl_entry(&state.acl_ks, subject)
-        .await?
-        .is_some_and(|entry| crate::routes::acl::caller_covers_target(actor, &entry)))
+    Ok(match get_acl_entry(&state.acl_ks, subject).await? {
+        Some(entry) if entry.is_administrator() => crate::acl::granting::covers_entry(
+            &actor_entry,
+            &entry,
+            crate::auth::session::now_epoch(),
+        ),
+        _ => true,
+    })
 }
 
 /// `auth/revoke-session/0.2#response` — how many sessions the call ended.

@@ -863,6 +863,12 @@ pub async fn run(
         large_document_budget: Arc::new(crate::trust_tasks::size::LargeDocumentBudget::new()),
     };
 
+    // Rewrite every ACL row from before role-based administration, before
+    // anything is authorized (`vtc-admin-roles.md` §9): an upgrade in place
+    // must not lock an administrator out. A row that cannot be mapped refuses
+    // the boot, naming the DID and the fix — never dropped.
+    crate::acl::migrate::migrate_on_boot(&state).await?;
+
     // Heal missing AdminEntries: any DID with an Admin ACL grant +
     // a PasskeyUser but no AdminEntry gets the AdminEntry synthesised
     // from the PasskeyUser's credentials. Covers daemons where
@@ -1549,12 +1555,13 @@ async fn heal_missing_admin_entries(state: &AppState) -> Result<(), AppError> {
     // VTC stores `VtcAclEntry`, whose role set includes `Member` (written by a
     // join admit); deserializing those rows via `vti_common::acl` fails with
     // "unknown variant `member`" once any member exists.
-    use crate::acl::{VtcRole, list_acl_entries};
+    use crate::acl::list_acl_entries;
 
     let admins = list_acl_entries(&state.acl_ks).await?;
     let mut healed = 0usize;
     for acl_entry in admins {
-        if acl_entry.role != VtcRole::Admin {
+        // Any administrative role signs in to the console.
+        if !acl_entry.admin.is_administrator() {
             continue;
         }
         if get_admin_entry(&state.passkey_ks, &acl_entry.did)

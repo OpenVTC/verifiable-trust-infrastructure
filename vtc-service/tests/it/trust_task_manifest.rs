@@ -803,9 +803,10 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.2",
     "https://trusttasks.org/spec/auth/passkey/admin-list/0.1",
     // Verbs with no REST route: the console signs them.
-    "https://trusttasks.org/spec/acl/list/0.1",
-    "https://trusttasks.org/spec/acl/show/0.1",
-    "https://trusttasks.org/spec/acl/grant/0.1",
+    "https://trusttasks.org/spec/acl/list/0.2",
+    "https://trusttasks.org/spec/acl/show/0.2",
+    "https://trusttasks.org/spec/acl/grant/0.2",
+    "https://trusttasks.org/spec/acl/update/0.2",
     "https://trusttasks.org/spec/acl/change-role/0.1",
     "https://trusttasks.org/spec/acl/revoke/0.1",
     "https://trusttasks.org/spec/vtc/community/profile/update/0.1",

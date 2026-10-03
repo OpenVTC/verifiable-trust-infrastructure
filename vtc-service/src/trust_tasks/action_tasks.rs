@@ -56,9 +56,9 @@ fn refuse(doc: &TrustTask<Value>, code: &str, message: impl Into<String>) -> Tru
     reject_with_code(doc, extended_code(code), message, None)
 }
 
-/// The signer, held to being an administrator, and whether their authority
-/// is unrestricted (the audit-read capability that lets them observe every
-/// action).
+/// The signer, held to being an administrator (any administrative role), and
+/// whether they hold `vtc.audit.read` — the capability that lets them observe
+/// every action, not only their own and those they may decide.
 async fn administrator(
     state: &AppState,
     ctx: &JoinAuthCtx,
@@ -69,7 +69,7 @@ async fn administrator(
     // own code, rather than the generic refusal a stranger gets.
     if let Some(signer) = ctx.verified_signer.as_deref()
         && let Ok(Some(entry)) = crate::acl::get_acl_entry(&state.acl_ks, signer).await
-        && entry.role != crate::acl::VtcRole::Admin
+        && !entry.is_administrator()
     {
         return Err(refuse(
             doc,
@@ -78,15 +78,11 @@ async fn administrator(
         ));
     }
     let claims = admin_signer(state, ctx, doc).await?;
-    if claims.require_admin().is_err() {
-        return Err(refuse(
-            doc,
-            not_administrator,
-            "only an administrator of this community has an action list",
-        ));
-    }
-    let unrestricted = claims.require_super_admin().is_ok();
-    Ok((claims, unrestricted))
+    let observer = crate::acl::get_acl_entry(&state.acl_ks, &claims.did)
+        .await
+        .map_err(|e| app_error_to_reject(doc, &e))?
+        .is_some_and(|e| e.can(crate::acl::Capability::AuditRead, None));
+    Ok((claims, observer))
 }
 
 /// `vtc/admin/actions/list/0.1`.
@@ -403,8 +399,8 @@ pub(super) async fn handle_decision(
         Err(DecisionError::NotAnApprover) => refuse(
             &doc,
             codes::NOT_AN_APPROVER.code,
-            "only an unrestricted administrator this action was raised for can decide it, with \
-             the challenge they were shown",
+            "only an administrator this action was raised for, still holding what it is about, \
+             can decide it, with the challenge they were shown",
         ),
         Err(DecisionError::RequesterExcluded) => refuse(
             &doc,

@@ -33,7 +33,6 @@ use trust_tasks_rs::specs::git_ns::right::{
 use vti_common::audit::{AuditEvent, GitNsOperationData};
 use vti_common::error::AppError;
 
-use crate::acl::VtcRole;
 use crate::server::AppState;
 
 use super::bridge::{self, JobKind, NewJob};
@@ -167,8 +166,9 @@ pub struct Standing {
     /// that kept the row.
     pub member: bool,
     pub role: Option<String>,
-    /// Holds the community-administrator capability: an unexpired `admin`
-    /// entry whose act scope is the whole community.
+    /// Holds `git.ns.admin` **unqualified** — every namespace this community
+    /// governs (`vtc-admin-roles.md` §4; phase C3 folds the rest of the git
+    /// rights model into capabilities).
     pub community_admin: bool,
 }
 
@@ -179,9 +179,9 @@ pub async fn standing(state: &AppState, did: &str) -> Result<Standing, AppError>
     let departed = row.as_ref().is_some_and(|m| m.removed_at.is_some());
     let member = entry.is_some() && !departed;
     let community_admin = member
-        && entry.as_ref().is_some_and(|e| {
-            e.role == VtcRole::Admin && matches!(e.act_scope(), vti_common::acl::ActScope::All)
-        });
+        && entry
+            .as_ref()
+            .is_some_and(|e| e.can(crate::acl::Capability::GitNsAdmin, None));
     Ok(Standing {
         did: did.to_string(),
         member,

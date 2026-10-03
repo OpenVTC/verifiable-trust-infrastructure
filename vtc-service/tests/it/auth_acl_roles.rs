@@ -40,9 +40,10 @@ use vtc_service::test_support::MockVtc;
 fn entry(did: &str, role: VtcRole) -> VtcAclEntry {
     VtcAclEntry {
         did: did.into(),
+        admin: role.implied_authority(),
+        delegated_by: None,
         role,
         label: None,
-        allowed_contexts: vec![],
         created_at: 1,
         created_by: "did:key:vtc-install".into(),
         updated_at: None,

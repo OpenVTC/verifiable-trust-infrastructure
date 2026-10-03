@@ -15,57 +15,91 @@ Related: [`bootstrap-runbook.md`](bootstrap-runbook.md) (bring-up order),
 
 ## 1. The model
 
-### 1.1 An administrator is an ACL row
+### 1.1 An administrator is an ACL row with an administrative role
 
-A DID is an administrator because the VTC's access-control list (ACL) says so:
-an entry with role `admin`. Every administrative act is authorized by reading
+A DID is an administrator because the VTC's access-control list (ACL) gives it
+an **administrative role**. Every administrative act is authorized by reading
 that row **at the moment the act runs**. A credential, a session or a console
 key never carries authority of its own.
 
-Only administrators can sign in to the console. A sign-in from any other role
-is refused at the challenge.
+An entry holds two roles, and they are independent
+([`../05-design-notes/vtc-admin-roles.md`](../05-design-notes/vtc-admin-roles.md) §6):
 
-### 1.2 Unrestricted and scoped administrators
+- the **community role** — `member`, `moderator`, `issuer`, `admin` or
+  `custom:<name>` — what the member's credentials name. On its own it confers
+  no administrative power;
+- the **administrative role** — what the member may administer.
 
-An admin row carries `allowed_contexts`:
+Any administrative role can sign in to the console. A sign-in from an entry
+with no administrative role is refused at the challenge.
 
-| Entry | Means |
-|---|---|
-| `admin`, no contexts | **Unrestricted** (a super-admin) |
-| `admin`, contexts `a`, `b/c` | **Scoped** |
+### 1.2 Roles and capabilities
 
-The console's "Allowed contexts" field says "blank = all": leaving it blank on an
-admin entry makes that admin unrestricted.
+Administration is role-based. A **capability** is one administrative power; an
+**administrative role** is a ceiling of capabilities an entry may hold. An
+entry holds its role's full ceiling, or a narrower set of capabilities from it,
+each optionally narrowed to one **resource** — a git namespace or repository,
+a policy purpose, a join criterion. There are no contexts at a VTC
+(VTI-VTC-010): resource qualifiers are how authority is narrowed.
 
-**What a context is here.** In the VTC a context is only a label on an ACL
-entry. Labels are path-like and nest, so `b` covers `b/c`. The community keeps
-no list of contexts, nothing creates one, and no community resource belongs to
-one. Members, join requests, vetting, credentials, rooms and the website are
-community-wide, and any administrator, scoped or not, works on all of them. (In
-the VTA a context is a key hierarchy; the VTC shares the ACL model, not that
-meaning.) Contexts decide three things:
+| Capability | Gates | Confers authority? |
+|---|---|---|
+| `vtc.roles.assign` | granting, changing and removing roles and capabilities; admin invites | **yes** |
+| `vtc.approvals.admin` | the approvals rule list | **yes** |
+| `vtc.policy.admin` | `policy/upsert`, `policy/activate` (qualified by purpose: `policy:join`) | **yes** for role change, removal, join, cross-community roles, git namespaces |
+| `vtc.config.admin` | `config/patch`, `vtc/config/import`, `config/reload`, `config/restart` | **yes** |
+| `vtc.backup.export` | backup export | no |
+| `vtc.backup.restore` | backup import | **yes** |
+| `vtc.audit.read` | audit list and verify; observing every action | no |
+| `vtc.did.admin` | `did-management/did/register` | **yes** |
+| `vtc.members.manage` | `vtc/members/{update,admin-remove,purge}`, member credentials, relationship suspend/restore, members' step-up factors | no |
+| `vtc.join.decide` | `vtc/join-requests/decide` | no |
+| `vtc.invitations.manage` | `vtc/invitations/*` | no |
+| `vtc.credentials.issue` / `.revoke` | endorsements, personhood | no |
+| `vtc.vetting.manage` | vetters, auto-grant, hidden vetting | no |
+| `vtc.surface.admin` | profile, branding, website, schemas, endorsement types, join criteria | no |
+| `vtc.registry.admin` | registry diagnostics and sync | no |
+| `vtc.sessions.revoke` | ending others' sessions and console keys | no |
+| `git.ns.admin` | a git namespace (unqualified: every namespace) | **yes** |
+| `git.repo.manage` | repositories (by namespace or repository) | no |
 
-1. whether an admin is scoped or unrestricted, and so the list below;
-2. which ACL entries a scoped admin can see (an overlapping context) and change
-   or revoke (wholly inside its contexts, never an unrestricted admin);
-3. whose step-up passkeys a scoped admin can list.
+The built-in administrative roles:
 
-In the console, **Access control** shows each entry's contexts in the
-**Contexts** column and has a **Filter by context** box. Offline, run
-`vtc acl list`. The column shows "all" for any entry with no contexts, but that
-reading is true only for an admin; a member with no contexts has none.
+| Role | Ceiling | Approves by default |
+|---|---|---|
+| `community-admin` | every `vtc.*` capability, `git.ns.admin` and `git.repo.manage` | everything |
+| `moderator` | `vtc.members.manage`, `vtc.join.decide`, `vtc.invitations.manage` | the same |
+| `vetting-lead` | `vtc.vetting.manage` (optionally at a criterion) | the same |
+| `repo-manager` | `git.repo.manage`, `git.ns.admin`, **qualified** to a namespace or repository | the same, at the same qualifier |
+| `credential-officer` | `vtc.credentials.issue`, `vtc.credentials.revoke` | the same |
+| `auditor` | `vtc.audit.read` | nothing |
+| `approver` | nothing — acts nowhere | as granted (the least-privilege approver) |
 
-Only an unrestricted administrator can:
+A `community-admin` holding its full ceiling is what earlier releases called an
+"unrestricted administrator". Reading the ACL takes any administrative role.
 
-- mint admin invites, and invite members to enrol step-up passkeys;
-- read and verify the audit trail;
-- change, reload or restart the configuration, and import one;
-- export or restore a backup, or purge members;
-- approve actions waiting on a second administrator (§3.2);
-- revoke other people's console signing keys.
+In the console, **Access control** shows each entry's administrative role, what
+it **administers** (its capabilities, with their resources), and its community
+role. "everything" appears only for a community administrator holding its full
+ceiling, and "nothing" for an entry with no administrative role. Offline, run
+`vtc acl list`.
 
-Everything else, including vetting, members, joins and credentials, a scoped
-administrator does exactly as an unrestricted one does.
+**Granting is bounded by the granter** (§6.3 of the design, VTI-ACL-071):
+
+- you can grant a capability only if you hold it **and** `vtc.roles.assign`,
+  at a resource at least as wide;
+- you can grant approve authority only within your own;
+- no grant outlives your own entry, and nobody grants themselves anything;
+- an additive capability (one the role's ceiling does not include) takes a
+  `community-admin` holding its full ceiling.
+
+Each refusal names its code (`acl/grant:delegationExceedsGranter`,
+`capabilityOutsideCeiling`, `approveWiderThanGranter`, …). The VTC records the
+granter as the entry's `delegatedBy`. When a granter leaves or is narrowed, the
+entries they granted that they no longer cover go **to review** (the console
+marks them *under review*), and are withdrawn — the administrative role
+removed, the membership kept — unless an administrator re-affirms them by
+editing and saving them within the action lifetime (`acl.action_lifetime`).
 
 ### 1.3 How an administrator proves who they are
 
@@ -83,7 +117,8 @@ after sign-in):
 - it lasts at most 30 days;
 - you can hold at most five at once;
 - it can be used only in the console;
-- it is revoked by you, or by any unrestricted administrator.
+- it is revoked by you, or by a holder of `vtc.sessions.revoke` whose entry
+  covers yours.
 
 A console key proves only that you have the browser. The protections in §3
 never accept it as a second factor or as an approval.
@@ -92,37 +127,39 @@ never accept it as a second factor or as an approval.
 
 ### 2.1 A single administrator
 
-A community with one unrestricted administrator works for day-to-day
+A community with one community administrator works for day-to-day
 administration: vetting, members, invitations, policy, credentials, the website.
-The single administrator **cannot** make anyone else an unrestricted
-administrator online, because that needs a second administrator's consent
-(§3.2) and there is nobody to give it:
+The single administrator **cannot** grant anyone an authority-conferring
+capability online — `vtc.roles.assign`, `vtc.config.admin`, … — because that
+needs the consent of another holder of it (§3.2) and there is nobody to give
+it:
 
-> Make did:example:geoff an unrestricted administrator of this community needs
-> consent from 1 other unrestricted admin(s), and this community has 0
-> (VTI-APV-014).
+> Give did:example:geoff vtc.roles.assign, … needs consent from 1 other
+> holder(s) of vtc.roles.assign, … (VTI-APV-018).
 
 A single administrator has three ways forward:
 
-1. **Grant scoped admin instead.** Give the entry one or more contexts. A scoped
-   administrator needs only your step-up, not another administrator's consent.
+1. **Grant a narrower role instead.** A `moderator`, `auditor`,
+   `credential-officer` or `vetting-lead` holds nothing authority-conferring,
+   so it needs only your step-up, not another administrator's consent.
 2. **Add the second administrator offline**, once. Stop the daemon, then run
-   `vtc acl add --did <did> --role admin --label "<name>"` or
-   `vtc admin invite --did <did>`, and start it again. Each offline write is
-   recorded as an `AclBreakGlassWritten` audit row at the next start, and
-   raised in Actions for the administrators to acknowledge (§3.5).
+   `vtc acl add --did <did> --role admin --label "<name>"` (a
+   `community-admin`; `--admin-role` and `--capability` choose another role or
+   narrow it) or `vtc admin invite --did <did>`, and start it again. Each
+   offline write is recorded as an `AclBreakGlassWritten` audit row at the next
+   start, and raised in Actions for the administrators to acknowledge (§3.5).
 3. **Name the second administrator at install** (`co_admin_did`, §4 step 1),
    which avoids the problem altogether.
 
 A single administrator is also a single point of failure: lose that passkey and
-the only way back is the offline route. **Run with at least two unrestricted
+the only way back is the offline route. **Run with at least two community
 administrators.**
 
 ### 2.2 Several administrators
 
-Once there are two unrestricted administrators, everything works online. A new
-unrestricted administrator is created by one administrator and approved by
-another (§3.2), and break-glass is not needed again unless you are back to one.
+Once there are two community administrators, everything works online. A new
+one is created by one administrator and approved by another (§3.2), and
+break-glass is not needed again unless you are back to one.
 
 With three or more you can raise the consent threshold so a promotion takes
 several approvals (`acl.unrestricted_admin_consent_threshold`, default and
@@ -141,7 +178,7 @@ one administrator can go rogue. These are the controls that bound the damage.
 Acts that confer authority need a live step-up from the administrator
 performing them, made for **that one operation**:
 
-- granting or promoting anyone to admin (scoped or unrestricted);
+- granting or widening anyone's administrative authority (any administrative role or capability);
 - minting an admin invite that creates a new administrator;
 - inviting a member to enrol a step-up passkey or a step-up approver, or
   revoking one on their behalf;
@@ -191,26 +228,42 @@ the last one is allowed — it costs the ability to step up with it, not the
 subject's authority — and is recovered through another invite.
 
 Every administrator made by a completed action (§3.2: an `acl/grant`,
-`acl/update` or `acl/change-role` to unrestricted admin) is issued an approver
+`acl/update` or `acl/change-role` to community-admin) is issued an approver
 enrolment invite automatically. The requester sees it once, on the completed
 action (the URL and a claim code), and delivers the claim code to the new
 administrator by a separate channel.
 
 ### 3.2 Second-party consent: the action list
 
-These operations need the consent of **other** unrestricted administrators:
+These operations need the consent of **other** administrators:
 
-| Operation | Requirement |
-|---|---|
-| making someone an unrestricted administrator, or widening an entry to unrestricted: `acl/grant`, `acl/update`, `acl/change-role`, `vtc/admin/invites/create` | VTI-APV-014 |
-| removing, demoting or narrowing **another** unrestricted administrator: `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update` or `acl/grant`, `vtc/members/admin-remove` | VTI-APV-019 |
-| lowering `acl.unrestricted_admin_consent_threshold`, by `config/patch` or `vtc/config/import` (raising it stays immediate) | VTI-APV-020 |
-| `policy/upsert` and `policy/activate` for the purposes that decide authority | VTI-VTC-022 |
+| Operation | Approvers | Requirement |
+|---|---|---|
+| granting or widening an entry to an **authority-conferring capability** it did not hold: `acl/grant`, `acl/update`, `acl/change-role`, `vtc/admin/invites/create` | holders of the same capabilities at a covering resource | VTI-APV-018 (the generalised VTI-APV-014) |
+| taking authority-conferring capabilities away from **another** entry: `acl/revoke`, a downward `acl/change-role`, a narrowing `acl/update`, `vtc/members/admin-remove` | the same, the subject excluded | VTI-APV-019 |
+| lowering `acl.unrestricted_admin_consent_threshold`, by `config/patch` or `vtc/config/import` (raising it stays immediate) | holders of `vtc.roles.assign` | VTI-APV-020 |
+| `policy/upsert` and `policy/activate` for the purposes that decide authority | holders of `vtc.policy.admin` at that purpose | VTI-VTC-022 |
 
-The approvers are every other live unrestricted administrator. A is never an
-approver of their own request, and for a reduction the subject is not one
-either. The number needed is the consent threshold (§2.2). A reduction with
-nobody left to approve it waits out a cooling-off instead (§3.4).
+An approver must hold **and** be able to approve (its approve scope) every
+capability at stake, at a covering resource: a repo manager for `acme` approves
+inside `acme` only. A is never an approver of their own request, and for a
+reduction the subject is not one either. The number needed is the consent
+threshold (§2.2). A reduction with nobody left to approve it waits out a
+cooling-off instead (§3.4).
+
+Upgrading a VTC in place over a store written before role-based
+administration migrates its ACL at boot (`vtc-admin-roles.md` §9): each old row
+maps to the administrative role its community role implied, a context-scoped
+admin comes across with **no** administrative role and is raised here as an
+acknowledge item, and a row that cannot be mapped stops the daemon with the
+DID and the offline fix.
+
+An expiry put on a permanent entry, or brought forward, is a reduction of
+everything the entry holds: it takes every capability away sooner. A move of a
+community role that implies an administrative role (`moderator`, `issuer`, or
+`admin`) is made with `acl/change-role` only; `vtc/members/update` refuses it
+with `adminRoleForbidden`, because only `acl/change-role` carries the passkey
+gesture bound to the move.
 
 1. Administrator A sends the operation. Every check runs, and A's step-up is
    asked for **first**, so a thief holding only A's signing key cannot make the
@@ -227,8 +280,8 @@ nobody left to approve it waits out a cooling-off instead (§3.4).
    (VTI-APV-017):
    - A still has the authority, and separation of duties, the role-change policy
      and attrition still allow it;
-   - the approvers are still unrestricted administrators, and the threshold is
-     still met;
+   - the approvers still hold what is at stake, and the threshold is still
+     met;
    - the subject's entry hasn't changed since the approvers saw it.
 
    It runs at most once. If a check fails, the action closes `failed` and
@@ -246,7 +299,7 @@ answers their own challenge. It ends in one of these ways:
 | `completed` | the threshold was reached and the operation ran |
 | `failed` | a re-check at completion refused it |
 | `declined` | any approver declined |
-| `cancelled` | A withdrew it (`vtc/admin/actions/cancel`), or it was invalidated: A stopped being a live unrestricted administrator, the subject's entry changed, or too few approvers remain to reach the threshold |
+| `cancelled` | A withdrew it (`vtc/admin/actions/cancel`), or it was invalidated: A no longer holds the authority it needs, the subject's entry changed, or too few approvers remain to reach the threshold |
 | `expired` | nobody completed it within its lifetime |
 
 An approver who loses standing simply stops counting. Closed actions stay in
@@ -290,18 +343,17 @@ console approves with a passkey only; `cnm` and other clients can send
 ### 3.4 Admins cannot remove each other down to nothing
 
 Removals and demotions of administrators are serialized under a lock. The VTC
-refuses to remove the last administrator or the last unrestricted
-administrator, or to leave fewer unrestricted administrators than the consent
-threshold needs. Once that threshold is above 1, it has to be lowered before
-the last spare approver can be removed. Narrowing an unrestricted administrator
-to scoped counts as a removal for this check.
+refuses to remove the **last holder of `vtc.roles.assign`**, or to leave fewer
+holders than the consent threshold needs. Once that threshold is above 1, it
+has to be lowered before the last spare approver can be removed. Narrowing an
+entry so it loses `vtc.roles.assign` counts as a removal for this check.
 
 Every removal, demotion or narrowing of an administrator takes the requester's
-step-up. For a scoped administrator that is all it takes. When the subject is
-another unrestricted administrator it is also an action for the other
-unrestricted administrators to approve (§3.2, VTI-APV-019).
+step-up. When it takes nothing authority-conferring away, that is all it
+takes. When it takes authority-conferring capabilities away from another entry
+it is also an action for their other holders to approve (§3.2, VTI-APV-019).
 
-**Two unrestricted administrators: the cooling-off.** With only the requester
+**Two community administrators: the cooling-off.** With only the requester
 and the subject, nobody is left to approve. The VTC cannot tell a removal of a
 compromised co-admin from a compromised admin removing the other, and must not
 make the first impossible. So, after the requester's step-up, the operation is
@@ -318,7 +370,7 @@ lands it at once, as before):
 - When the window ends the VTC lands it by itself (the sweeper runs every
   minute), audits it at `Critical` as `AuthorityReducedUnopposed`, and closes
   the action `completed`, saying it landed unopposed.
-- If a third unrestricted administrator appears meanwhile, the action is
+- If a third community administrator appears meanwhile, the action is
   cancelled: there is now someone to approve, so send it again.
 - **First to act wins.** If the subject asks to reduce the requester while the
   first request is open, the first request lands at once, the subject's request
@@ -327,7 +379,7 @@ lands it at once, as before):
 
 The subject learns of a pending cooling-off only from the console and the
 action list; nothing is pushed to them until it lands. Run with three or more
-unrestricted administrators to close the window altogether.
+community administrators to close the window altogether.
 
 When an administrator loses privilege, their sessions are revoked and they are
 told with a VTC-signed notice:
@@ -360,7 +412,7 @@ or `EmergencyBootstrapInvoked`) and also raises it in the action list as an
 
 - Its summary names the command, the DID or DIDs, the operator's host and the
   time. It has no Approve or Decline, no expiry and no threshold.
-- It is for the administrators who held an admin role (scoped or unrestricted)
+- It is for the administrators who held an administrative role (of any kind)
   when the write was made, less anyone who has since lost every admin role. If
   none of them remain — and always after an emergency bootstrap, which removed
   them — it is for every administrator there is now.
@@ -384,7 +436,7 @@ the way you protect the community.
 | Control | Limit |
 |---|---|
 | Admin and install invites | single use, at most 24 hours, plus a claim code delivered separately (Argon2id-hashed); at install claim 0.3, five wrong claim codes void the token, and each is answered `invalidToken`, so the count is no oracle |
-| Step-up passkey invites | issued by a different unrestricted administrator behind their own step-up, redeemed by the member's own signature; five wrong claim codes void the invite |
+| Step-up passkey invites | issued by a different community administrator behind their own step-up, redeemed by the member's own signature; five wrong claim codes void the invite |
 | Step-up approver invites | the same, at most 24 hours (15 minutes by default); the redemption is signed by the invited subject's own DID and carries the approver's proof of possession |
 | Member notices | members get a signed notice when a step-up passkey is enrolled or revoked for them, naming who did it; an administrator whose authority is reduced gets an authority-reduced notice (§3.4) |
 | Git-namespace break-glass | always a step-up, audited at `Critical`, announced to every other namespace administrator |
@@ -406,7 +458,7 @@ sequenceDiagram
     A->>V: vtc setup (co_admin_did = Bob's DID)
     V-->>A: install URL + claim code
     A->>V: claim: register passkey → bootstrap
-    Note over V: Alice and Bob are both<br/>unrestricted admins
+    Note over V: Alice and Bob are both<br/>community admins
     B->>V: Sign in as a VTA identity
     B->>V: Set up signing with your wallet
     A->>V: Invite admin (Bob's DID) — no consent needed
@@ -422,7 +474,7 @@ Bob installs the VTA browser plugin, onboards it to his VTA, and chooses the
 persona he will administer as. He sends its DID to Alice. If that persona's DID
 document is published, Alice resolves it to check she has the right one.
 
-Naming Bob at install is what lets the community start with two unrestricted
+Naming Bob at install is what lets the community start with two community
 administrators. If the community is already running with Alice alone, skip to
 step 3b.
 
@@ -447,7 +499,7 @@ continue <slug> --vtc-did <VTC DID>` confirms it. See
    (`<base>/admin/install?token=…`) and a separate **claim code**. Both are
    valid for 15 minutes.
 2. Alice opens the URL ("Claim Admin Passkey"), enters the claim code and
-   registers a passkey. The VTC writes **two** unrestricted admin rows: Alice's,
+   registers a passkey. The VTC writes **two** community-admin rows: Alice's,
    and Bob's labelled "co-admin (install bootstrap)". It audits
    `CommunityInstalled`.
 3. Alice signs in with **Sign in with passkey**, then completes **Set up
@@ -462,11 +514,13 @@ DID it names.
 **3a. Bob was named at install:** there is nothing to do. His row exists.
 
 **3b. The community is already running with Alice alone.** Alice's online
-grant of unrestricted admin is refused (§2.1), so she either:
+grant of `community-admin` is refused (§2.1), so she either:
 
-- grants Bob **scoped** admin online: Access control → **Add entry** → DID,
-  Role `admin`, the contexts → **Create entry**, then her passkey gesture; or
-- adds him **unrestricted**, offline, once:
+- grants Bob a **narrower role** online: Access control → **Add entry** → DID,
+  an administrative role such as `moderator` (optionally ticking the
+  capabilities to narrow it to) → **Create entry**, then her passkey gesture;
+  or
+- makes him a **community administrator**, offline, once:
 
   ```sh
   # daemon stopped
@@ -546,12 +600,12 @@ DID**, never by a console key. There are two ways to sign one:
 
 Bob signs from the console. Alice signs from the console if she uses the
 wallet, or from `cnm` if she doesn't; for that, the `cnm` Client DID needs its
-own unrestricted admin row, as `bootstrap-runbook.md` describes ("`cnm` needs
+own community-admin row, as `bootstrap-runbook.md` describes ("`cnm` needs
 its own super-admin row").
 
 ### Step 7 — A third administrator, entirely online
 
-Say Bob makes Carol an unrestricted administrator:
+Say Bob makes Carol a community administrator:
 
 1. Bob creates or promotes Carol in the console and confirms with his passkey.
    The console shows *Sent for approval — 1 of 1 must approve within 72
@@ -606,9 +660,11 @@ Promotions that Alice starts need an approver other than Alice: here, Bob.
 
 | I want to… | Do this |
 |---|---|
-| add a scoped admin | Access control → Add entry → contexts set → your passkey |
-| add an unrestricted admin, with 2+ unrestricted admins | the same with contexts blank → it waits in Actions → another admin approves and it runs |
-| add an unrestricted admin, as the only admin | offline `vtc acl add … --role admin`, daemon stopped |
+| add a moderator, auditor, vetting lead, … | Access control → Add entry → administrative role (tick capabilities to narrow it) → your passkey; or `cnm access grant <did> --admin-role moderator` |
+| add a repository manager for one namespace | Add entry → `repo-manager` → tick `git.repo.manage`, resource `git-ns:<forge>/<ns>`; or `cnm access grant <did> --admin-role repo-manager --capability git.repo.manage@git-ns:<forge>/<ns>` |
+| add a community administrator, with 2+ of them | Add entry → `community-admin` → it waits in Actions → another admin approves and it runs |
+| add a community administrator, as the only one | offline `vtc acl add … --role admin`, daemon stopped |
+| narrow an administrator | Access control → Edit → untick capabilities; or `cnm access update <did> --capability …` |
 | give an existing admin a console passkey | Access control → Admin invites → Invite admin |
 | give a member a step-up passkey | Members → member → Step-up passkeys → Invite… |
 | give a wallet admin an approver device | Members → member → Invite to enrol an approver; or offline `vtc admin enrol-approver --did …` |
@@ -620,5 +676,5 @@ Promotions that Alice starts need an approver other than Alice: here, Bob.
 | give approvers longer | `acl.action_lifetime` (seconds, default 72 h, at most 14 days) |
 | change the two-admin cooling-off | `acl.removal_cooling_off` (seconds, default 86400, at most 604800; `0` lands at once) |
 | push requests to approvers' devices | `acl.consent_request_push = true` (default `false`) |
-| require two approvers | set `acl.unrestricted_admin_consent_threshold = 2` (needs 3+ unrestricted admins) |
-| see who did what | Audit trail (unrestricted admins only); filter for `AclBreakGlassWritten` or `EmergencyBootstrapInvoked` to see offline writes |
+| require two approvers | set `acl.unrestricted_admin_consent_threshold = 2` (needs 3+ community admins) |
+| see who did what | Audit trail (`vtc.audit.read`); filter for `AclBreakGlassWritten` or `EmergencyBootstrapInvoked` to see offline writes |

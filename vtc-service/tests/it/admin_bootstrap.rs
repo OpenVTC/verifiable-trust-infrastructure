@@ -32,7 +32,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
-use vti_common::acl::{Role, list_acl_entries};
+use vtc_service::acl::{VtcRole, list_acl_entries};
 use vti_common::audit::AuditEvent;
 
 use vtc_service::acl::admin::get_admin_entry;
@@ -219,11 +219,12 @@ async fn full_install_to_bootstrap_succeeds() {
     let event_id = payload["eventId"].as_str().unwrap();
     let _: Uuid = event_id.parse().expect("eventId is a UUID");
 
-    // ACL: one Admin entry for our DID.
+    // ACL: one community-administrator entry for our DID.
     let acl = list_acl_entries(&fix.state.acl_ks).await.unwrap();
     assert_eq!(acl.len(), 1);
     assert_eq!(acl[0].did, admin_did);
-    assert_eq!(acl[0].role, Role::Admin);
+    assert_eq!(acl[0].role, VtcRole::Admin);
+    assert!(acl[0].is_community_admin(), "{:?}", acl[0]);
 
     // AdminEntry written with one passkey.
     let admin_entry = get_admin_entry(&fix.state.passkey_ks, &admin_did)
@@ -302,8 +303,11 @@ async fn vti_apv_014_the_bootstrap_installs_the_co_admin_beside_the_first() {
             .iter()
             .find(|e| e.did == did)
             .unwrap_or_else(|| panic!("{did} installed: {acl:?}"));
-        assert_eq!(entry.role, Role::Admin);
-        assert!(entry.is_super_admin(), "{did} is unrestricted");
+        assert_eq!(entry.role, VtcRole::Admin);
+        assert!(
+            entry.is_community_admin(),
+            "{did} is a community administrator"
+        );
     }
     // The co-admin can enrol a passkey later; it needs none to consent.
     let co_entry = get_admin_entry(&fix.state.passkey_ks, CO_ADMIN)

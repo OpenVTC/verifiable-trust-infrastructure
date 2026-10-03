@@ -39,6 +39,7 @@ fn tt_error_code(doc: &Value) -> Option<&str> {
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 const REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+const UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
 const CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
@@ -93,9 +94,10 @@ async fn fixture() -> Fixture {
 fn row(did: &str, role: VtcRole, scopes: &[&str]) -> VtcAclEntry {
     VtcAclEntry {
         did: did.to_string(),
+        admin: vtc_service::acl::legacy_seed_authority(&role, scopes),
+        delegated_by: None,
         role,
         label: None,
-        allowed_contexts: scopes.iter().map(|s| s.to_string()).collect(),
         created_at: 0,
         created_by: "did:key:vtc-install".into(),
         updated_at: None,
@@ -492,22 +494,24 @@ async fn vti_apv_019_a_consented_revocation_sends_the_notice() {
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert_eq!(sent[0]["code"], "revoked");
     assert_eq!(sent[0]["agreement"], "consented");
-    assert_eq!(sent[0]["previousRole"], "admin");
+    // The administrative role it held (`acl/_shared/0.2` names it).
+    assert_eq!(sent[0]["previousRole"], "community-admin");
     assert!(sent[0].get("resultingRole").is_none());
     assert_eq!(sent[0]["decidedBy"], a.did.as_str());
     assert_eq!(sent[0]["reason"], "rotation");
     assert_eq!(audit_count(&fix, "AuthorityReducedUnopposed").await, 0);
 }
 
-/// The stop-gap paths where no consent was needed — a scoped administrator
-/// revoked, demoted, narrowed — each send the notice with its own code, and
-/// `unopposed`: nobody but the decider reviewed it.
+/// The paths where no consent was needed — an administrator holding nothing
+/// authority-conferring (a moderator) revoked, demoted, narrowed — each send
+/// the notice with its own code, and `unopposed`: nobody but the decider
+/// reviewed it.
 #[tokio::test]
 async fn vti_apv_019_each_direct_reduction_sends_the_notice_with_its_code() {
     let mut fix = fixture().await;
     let a = requester(&mut fix).await;
 
-    let revoked = seed(&fix, VtcRole::Admin, &["ctx-a"]).await;
+    let revoked = seed(&fix, VtcRole::Moderator, &[]).await;
     let (status, reply) = submit(
         &mut fix,
         &a,
@@ -520,14 +524,14 @@ async fn vti_apv_019_each_direct_reduction_sends_the_notice_with_its_code() {
     assert_eq!(sent[0]["code"], "revoked");
     assert_eq!(sent[0]["agreement"], "unopposed");
 
-    let demoted = seed(&fix, VtcRole::Admin, &["ctx-a"]).await;
+    let demoted = seed(&fix, VtcRole::Moderator, &[]).await;
     let (status, reply) = submit(
         &mut fix,
         &a,
         &signed(
             &a,
             CHANGE_ROLE,
-            json!({ "subject": demoted.did, "fromRole": "admin", "toRole": "member" }),
+            json!({ "subject": demoted.did, "fromRole": "moderator", "toRole": "member" }),
         )
         .await,
     )
@@ -538,14 +542,15 @@ async fn vti_apv_019_each_direct_reduction_sends_the_notice_with_its_code() {
     assert_eq!(sent[0]["code"], "demoted");
     assert_eq!(sent[0]["resultingRole"], "member");
 
-    let narrowed = seed(&fix, VtcRole::Admin, &["ctx-a", "ctx-b"]).await;
+    // Narrowed: an expiry put on a permanent entry.
+    let narrowed = seed(&fix, VtcRole::Moderator, &[]).await;
     let (status, reply) = submit(
         &mut fix,
         &a,
         &signed(
             &a,
-            REVOKE,
-            json!({ "subject": narrowed.did, "scopes": ["ctx-b"] }),
+            UPDATE,
+            json!({ "subject": narrowed.did, "expiresAt": "2099-01-01T00:00:00Z" }),
         )
         .await,
     )
@@ -554,10 +559,10 @@ async fn vti_apv_019_each_direct_reduction_sends_the_notice_with_its_code() {
     let sent = notices(&narrowed.did);
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert_eq!(sent[0]["code"], "narrowed");
-    assert_eq!(sent[0]["resultingRole"], "admin");
+    assert_eq!(sent[0]["resultingRole"], "moderator");
 
     // A non-administrator's reduction is not an authority reduction.
-    let moderator = seed(&fix, VtcRole::Moderator, &["ctx-a"]).await;
+    let moderator = seed(&fix, VtcRole::Member, &[]).await;
     let (status, _) = post(
         &fix.vtc,
         &signed(&a, REVOKE, json!({ "subject": moderator.did })).await,
@@ -888,7 +893,12 @@ async fn vti_apv_017_approver_signed_decision_evidence_is_verified() {
     .await;
     assert_eq!(status, StatusCode::OK, "{ack}");
     assert_eq!(ack["payload"]["status"], "granted", "{ack}");
-    assert!(entry(&fix, &subject.did).await.unwrap().is_super_admin());
+    assert!(
+        entry(&fix, &subject.did)
+            .await
+            .unwrap()
+            .is_community_admin()
+    );
     let rec = record(&fix, &id).await;
     assert_eq!(
         rec.approvals[0].evidence.as_deref(),

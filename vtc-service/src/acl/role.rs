@@ -115,6 +115,44 @@ impl VtcRole {
     pub fn is_standard(&self) -> bool {
         !matches!(self, VtcRole::Custom(_))
     }
+
+    /// The administrative role this community role implies under the
+    /// `acl/*/0.1` convention, and in a backup brought across from before
+    /// role-based administration (`vtc-admin-roles.md` §9).
+    ///
+    /// 0.1 has no member for administrative authority, so a VTC serving it
+    /// reads the role alone (`acl/_shared/0.2` CONVENTIONS §8, "the role set it
+    /// applies rule 2 to"): `admin` is a `community-admin` with the full
+    /// ceiling, and `moderator` and `issuer` hold the matching administrative
+    /// role, because the permission matrix before roles gave them exactly those
+    /// powers. `member` and `custom:*` imply none.
+    pub fn implied_admin_role(&self) -> Option<super::AdminRole> {
+        match self {
+            VtcRole::Admin => Some(super::AdminRole::CommunityAdmin),
+            VtcRole::Moderator => Some(super::AdminRole::Moderator),
+            VtcRole::Issuer => Some(super::AdminRole::CredentialOfficer),
+            VtcRole::Member | VtcRole::Custom(_) => None,
+        }
+    }
+
+    /// [`Self::implied_admin_role`] at its full ceiling, or no authority.
+    pub fn implied_authority(&self) -> super::AdminAuthority {
+        self.implied_admin_role()
+            .map(super::AdminAuthority::for_role)
+            .unwrap_or_else(super::AdminAuthority::none)
+    }
+
+    /// The community role an administrative role implies when a 0.2 grant
+    /// names none (`ext["org.openvtc"].communityRole` absent): the inverse of
+    /// [`Self::implied_admin_role`], `member` for everything else.
+    pub fn implied_by(admin: Option<&super::AdminRole>) -> VtcRole {
+        match admin {
+            Some(super::AdminRole::CommunityAdmin) => VtcRole::Admin,
+            Some(super::AdminRole::Moderator) => VtcRole::Moderator,
+            Some(super::AdminRole::CredentialOfficer) => VtcRole::Issuer,
+            _ => VtcRole::Member,
+        }
+    }
 }
 
 impl fmt::Display for VtcRole {

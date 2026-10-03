@@ -105,9 +105,10 @@ async fn build_fixture() -> Fixture {
             &vtc.state.acl_ks,
             &VtcAclEntry {
                 did: did.into(),
+                admin: role.implied_authority(),
+                delegated_by: None,
                 role,
                 label: None,
-                allowed_contexts: vec![],
                 created_at: now,
                 created_by: "did:key:vtc-install".into(),
                 updated_at: None,
@@ -575,7 +576,8 @@ async fn list_returns_issued_and_received_edges() {
             did: STRANGER_DID.into(),
             role: VtcRole::Member,
             label: None,
-            allowed_contexts: vec![],
+            admin: VtcRole::Member.implied_authority(),
+            delegated_by: None,
             created_at: now_epoch(),
             created_by: "did:key:vtc-install".into(),
             updated_at: None,
@@ -721,8 +723,9 @@ async fn graph_separates_complete_edges_from_half_edges() {
 #[tokio::test]
 async fn graph_is_admin_only() {
     let fix = build_fixture().await;
-    // The route refused an `Issuer`'s session; a plain member is refused too.
-    for role in [VtcRole::Issuer, VtcRole::Member] {
+    // The graph is an administrator's read: a party holding no administrative
+    // role — a plain member, a custom community role — is refused.
+    for role in [VtcRole::Member, VtcRole::Custom("editor".into())] {
         let party = crate::common::signed::party_with_role(&fix._vtc, role.clone(), &[]).await;
         let (_, doc) = crate::common::signed::call(&fix._vtc, &party, GRAPH_TASK, json!({})).await;
         assert_eq!(
@@ -838,7 +841,8 @@ mod pairwise {
                 did: member.clone(),
                 role: VtcRole::Member,
                 label: None,
-                allowed_contexts: vec![],
+                admin: VtcRole::Member.implied_authority(),
+                delegated_by: None,
                 created_at: now,
                 created_by: "did:key:vtc-install".into(),
                 updated_at: None,

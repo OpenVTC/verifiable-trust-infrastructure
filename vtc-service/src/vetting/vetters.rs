@@ -57,7 +57,6 @@ use vti_common::audit::{
 use vti_common::error::AppError;
 
 use super::profiles;
-use crate::acl::{VtcRole, get_acl_entry};
 use crate::credentials::CredentialStatusRef;
 use crate::credentials::delivery::deliver_credentials;
 use crate::credentials::dtg::{into_typed, issue_role_action};
@@ -240,18 +239,21 @@ pub async fn grant_rows(state: &AppState) -> Result<Vec<VetterGrantRow>, AppErro
     Ok(rows)
 }
 
-/// Refuse anyone but a community `Admin` — read from the ACL row, since a
-/// session token degrades custom roles.
+/// Refuse anyone without `vtc.vetting.manage` (vtc-admin-roles.md §4) — read
+/// from the live ACL row, never a session.
+///
+/// Unqualified: a vetter grant is not yet tied to a criterion here, so a
+/// vetting lead qualified to one criterion manages none of them until the
+/// grant carries one (phase C2).
 async fn require_admin(state: &AppState, actor_did: &str) -> Result<(), AppError> {
-    let acl = get_acl_entry(&state.acl_ks, actor_did)
-        .await?
-        .ok_or_else(|| AppError::Forbidden("caller has no ACL row".into()))?;
-    if !matches!(acl.role, VtcRole::Admin) {
-        return Err(AppError::Forbidden(
-            "only a community admin can manage vetters".into(),
-        ));
-    }
-    Ok(())
+    crate::acl::require_capability(
+        &state.acl_ks,
+        actor_did,
+        crate::acl::Capability::VettingManage,
+        None,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Name `body.member_did` a vetter on behalf of `actor_did`, an admin.

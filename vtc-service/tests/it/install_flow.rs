@@ -24,7 +24,6 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
-use vti_common::acl::Role;
 use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::jwt::JwtKeys;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
@@ -397,12 +396,12 @@ async fn end_to_end_install_flow_phase_0_gate() {
     assert_eq!(profile.name, "Example Community");
 
     // Verify ACL admin record matches the bootstrapped DID
-    let acl = vti_common::acl::list_acl_entries(&fix.state.acl_ks)
+    let acl = vtc_service::acl::list_acl_entries(&fix.state.acl_ks)
         .await
         .unwrap();
     assert_eq!(acl.len(), 1);
     assert_eq!(acl[0].did, admin_did);
-    assert_eq!(acl[0].role, Role::Admin);
+    assert!(acl[0].is_community_admin(), "{:?}", acl[0]);
 
     // The runtime configuration (`config/patch`, `config/restart`) is a
     // signed document only, driven through the signed door in

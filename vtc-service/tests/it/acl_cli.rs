@@ -54,6 +54,8 @@ async fn vti_apv_014_every_offline_write_is_queued_for_audit() {
         role: "admin".into(),
         label: None,
         contexts: vec![],
+        admin_role: None,
+        capabilities: vec![],
         expires: None,
     })
     .await
@@ -94,7 +96,9 @@ async fn add_list_remove_round_trip() {
         did: DID.into(),
         role: "admin".into(),
         label: Some("ops".into()),
-        contexts: vec!["ctx-1".into(), "ctx-2".into()],
+        contexts: vec![],
+        admin_role: None,
+        capabilities: vec![],
         expires: Some(3600),
     })
     .await
@@ -103,7 +107,9 @@ async fn add_list_remove_round_trip() {
     let e = read_entry(&data_dir, DID).await.expect("entry stored");
     assert_eq!(e.role, VtcRole::Admin);
     assert_eq!(e.label.as_deref(), Some("ops"));
-    assert_eq!(e.allowed_contexts, vec!["ctx-1", "ctx-2"]);
+    // `vtc-admin-roles.md` §9: the offline `--role admin` is a community
+    // administrator with the full ceiling.
+    assert_eq!(e.admin, vtc_service::acl::AdminAuthority::community_admin());
     assert!(e.expires_at.is_some(), "expiry should be set");
 
     // `list` runs cleanly against a populated store.
@@ -125,6 +131,8 @@ async fn add_is_upsert_and_preserves_created_at() {
         role: "member".into(),
         label: None,
         contexts: vec![],
+        admin_role: None,
+        capabilities: vec![],
         expires: None,
     })
     .await
@@ -139,6 +147,8 @@ async fn add_is_upsert_and_preserves_created_at() {
         role: "moderator".into(),
         label: Some("mod".into()),
         contexts: vec![],
+        admin_role: None,
+        capabilities: vec![],
         expires: None,
     })
     .await
@@ -161,6 +171,8 @@ async fn add_rejects_unknown_role() {
         role: "wizard".into(),
         label: None,
         contexts: vec![],
+        admin_role: None,
+        capabilities: vec![],
         expires: None,
     })
     .await;
@@ -177,4 +189,65 @@ async fn remove_missing_did_is_ok() {
     run_acl_remove(Some(cfg), "did:key:zNeverAdded".into())
         .await
         .expect("remove missing is ok");
+}
+
+/// VTI-VTC-010: a community holds no contexts, so `--contexts` is refused
+/// rather than read as anything.
+#[tokio::test]
+async fn vti_vtc_010_add_refuses_contexts() {
+    let (_dir, cfg, data_dir) = fixture();
+    let result = run_acl_add(AclAddArgs {
+        config_path: Some(cfg),
+        did: DID.into(),
+        role: "admin".into(),
+        label: None,
+        contexts: vec!["ctx-1".into()],
+        admin_role: None,
+        capabilities: vec![],
+        expires: None,
+    })
+    .await;
+    assert!(result.is_err(), "contexts must be refused");
+    assert!(read_entry(&data_dir, DID).await.is_none());
+}
+
+/// `--admin-role` and `--capability` write a narrowed, qualified authority,
+/// checked against the role's ceiling (VTI-ACL-030, VTI-ACL-031).
+#[tokio::test]
+async fn add_takes_an_admin_role_and_qualified_capabilities() {
+    use vtc_service::acl::{AdminRole, Capability, ResourceQualifier};
+    let (_dir, cfg, data_dir) = fixture();
+    run_acl_add(AclAddArgs {
+        config_path: Some(cfg.clone()),
+        did: DID.into(),
+        role: "member".into(),
+        label: None,
+        contexts: vec![],
+        admin_role: Some("repo-manager".into()),
+        capabilities: vec!["git.repo.manage@git-ns:github.com/acme".into()],
+        expires: None,
+    })
+    .await
+    .expect("add a repo manager");
+    let e = read_entry(&data_dir, DID).await.expect("stored");
+    assert_eq!(e.admin.admin_role, Some(AdminRole::RepoManager));
+    let acme: ResourceQualifier = "git-repo:github.com/acme/r#1".parse().unwrap();
+    assert!(e.can(Capability::GitRepoManage, Some(&acme)));
+    assert!(!e.can(Capability::GitRepoManage, None));
+
+    // Outside the role's ceiling: refused, nothing written over the entry.
+    let result = run_acl_add(AclAddArgs {
+        config_path: Some(cfg),
+        did: DID.into(),
+        role: "member".into(),
+        label: None,
+        contexts: vec![],
+        admin_role: Some("auditor".into()),
+        capabilities: vec!["vtc.config.admin".into()],
+        expires: None,
+    })
+    .await;
+    assert!(result.is_err(), "outside the ceiling must be refused");
+    let unchanged = read_entry(&data_dir, DID).await.expect("still stored");
+    assert_eq!(unchanged.admin.admin_role, Some(AdminRole::RepoManager));
 }

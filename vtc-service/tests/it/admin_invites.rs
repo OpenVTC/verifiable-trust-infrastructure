@@ -28,12 +28,13 @@ async fn build() -> (TestVtc, Party) {
         .build()
         .await;
     let admin = crate::common::signed::admin(&vtc).await;
-    // The invitee already holds a (scoped) admin entry, so these mints take the
-    // path that writes no ACL entry. A mint that *creates* one confers
-    // unrestricted admin and needs a passkey gesture and another admin's
-    // consent (VTI-APV-014) — `unrestricted_admin_consent.rs` covers that.
-    // These tests are about the error codes.
-    crate::common::signed::seed_role(&vtc, "did:key:z6MkInvitee", VtcRole::Admin, &["ctx-a"]).await;
+    // The invitee already holds a community-administrator entry, so these
+    // mints take the path that writes no ACL entry. A mint that *creates* one
+    // confers authority-conferring capabilities and needs a passkey gesture
+    // and another holder's consent (VTI-APV-018) —
+    // `unrestricted_admin_consent.rs` covers that. These tests are about the
+    // error codes.
+    crate::common::signed::seed_role(&vtc, "did:key:z6MkInvitee", VtcRole::Admin, &[]).await;
     (vtc, admin)
 }
 

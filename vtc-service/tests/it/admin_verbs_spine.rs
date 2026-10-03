@@ -311,12 +311,49 @@ mod sessions {
         member: Party,
     }
 
+    /// A party holding `admin`.
+    async fn party_with(vtc: &TestVtc, admin: vtc_service::acl::AdminAuthority) -> Party {
+        let p = Party::new();
+        vtc_service::acl::store_acl_entry(
+            &vtc.state.acl_ks,
+            &vtc_service::acl::VtcAclEntry::new(&p.did, VtcRole::Member, admin, "test"),
+        )
+        .await
+        .unwrap();
+        p
+    }
+
+    /// A community administrator narrowed to `caps`.
+    fn narrowed(caps: &[&str]) -> vtc_service::acl::AdminAuthority {
+        let mut a = vtc_service::acl::AdminAuthority::community_admin();
+        a.capabilities = vtc_service::acl::CapabilityScope::listed(
+            caps.iter()
+                .map(|c| {
+                    vtc_service::acl::CapabilityGrant::from(
+                        c.parse::<vtc_service::acl::CapRef>().unwrap(),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap();
+        a
+    }
+
+    /// `root` is a full community administrator. `scoped` holds
+    /// `vtc.sessions.revoke` and `vtc.roles.assign` over a narrow set, so it
+    /// covers (VTI-ACL-050) `in_a` — an auditor, whose one capability it
+    /// holds — and not `in_ab`, a moderator holding what it does not.
     async fn fixture() -> Fixture {
+        use vtc_service::acl::{AdminAuthority, AdminRole};
         let vtc = TestVtc::builder().with_audit(true).build().await;
         let root = party_with_role(&vtc, VtcRole::Admin, &[]).await;
-        let scoped = party_with_role(&vtc, VtcRole::Admin, &["ctx-a"]).await;
-        let in_a = party_with_role(&vtc, VtcRole::Admin, &["ctx-a"]).await;
-        let in_ab = party_with_role(&vtc, VtcRole::Admin, &["ctx-a", "ctx-b"]).await;
+        let scoped = party_with(
+            &vtc,
+            narrowed(&["vtc.roles.assign", "vtc.sessions.revoke", "vtc.audit.read"]),
+        )
+        .await;
+        let in_a = party_with(&vtc, AdminAuthority::for_role(AdminRole::Auditor)).await;
+        let in_ab = party_with(&vtc, AdminAuthority::for_role(AdminRole::Moderator)).await;
         let member = party_with_role(&vtc, VtcRole::Member, &[]).await;
         Fixture {
             vtc,
@@ -356,11 +393,11 @@ mod sessions {
         assert_eq!(session["amr"], json!(["did"]));
     }
 
-    /// A context admin sees the sessions of subjects whose access it could
-    /// withdraw, and no others: not an unrestricted admin's, not a wider
-    /// admin's.
+    /// A narrowed administrator sees the sessions of subjects whose access it
+    /// could withdraw, and no others: not a community administrator's, not
+    /// those of an administrator holding what it does not (VTI-ACL-050).
     #[tokio::test]
-    async fn a_context_admin_sees_only_the_sessions_it_could_end() {
+    async fn a_narrowed_admin_sees_only_the_sessions_it_could_end() {
         let f = fixture().await;
         let covered = seed_session(&f.vtc, &f.in_a.did).await;
         let root = seed_session(&f.vtc, &f.root.did).await;
@@ -443,7 +480,8 @@ mod sessions {
     async fn a_refused_revocation_by_subject_is_audited() {
         let f = fixture().await;
         let root = seed_session(&f.vtc, &f.root.did).await;
-        for subject in [f.root.did.as_str(), "did:key:z6MkNobody"] {
+        // `root` has a session, `in_ab` none; neither is covered.
+        for subject in [f.root.did.as_str(), f.in_ab.did.as_str()] {
             let (_, doc) = call(
                 &f.vtc,
                 &f.scoped,
@@ -478,7 +516,7 @@ mod sessions {
             .iter()
             .filter_map(|e| e["target"].as_str())
             .collect();
-        assert!(targets.contains(&f.root.did.as_str()) && targets.contains(&"did:key:z6MkNobody"));
+        assert!(targets.contains(&f.root.did.as_str()) && targets.contains(&f.in_ab.did.as_str()));
     }
 
     /// Within the caller's authority, the `subject` form ends every session.

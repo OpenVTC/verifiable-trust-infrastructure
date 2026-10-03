@@ -75,9 +75,10 @@ async fn admin_with_passkey(fix: &mut Fixture) -> Party {
 fn row(did: &str, role: VtcRole) -> VtcAclEntry {
     VtcAclEntry {
         did: did.to_string(),
+        admin: role.implied_authority(),
+        delegated_by: None,
         role,
         label: None,
-        allowed_contexts: vec![],
         created_at: 0,
         created_by: "did:key:vtc-install".into(),
         updated_at: None,
@@ -141,11 +142,13 @@ async fn post(fix: &Fixture, doc: &Value) -> (StatusCode, Value) {
     (status, body["payload"].clone())
 }
 
-/// A grant of *scoped* admin authority. These tests are about the gesture; a
-/// grant of unrestricted admin also needs another admin's consent
-/// (VTI-APV-014), which `unrestricted_admin_consent.rs` drives.
+/// A grant of administrative authority that confers nothing
+/// authority-conferring: a moderator (the 0.1 role implies the `moderator`
+/// administrative role). These tests are about the gesture; a grant of an
+/// authority-conferring capability also needs another holder's consent
+/// (VTI-APV-018), which `unrestricted_admin_consent.rs` drives.
 fn grant_admin(subject: &str) -> Value {
-    json!({ "entry": { "subject": subject, "role": "admin", "scopes": ["ctx-a"] } })
+    json!({ "entry": { "subject": subject, "role": "moderator" } })
 }
 
 /// The inline approve-request a refusal carries, checked for the shape
@@ -274,7 +277,7 @@ async fn vti_apv_015_a_gesture_bound_to_the_grant_lets_the_same_document_through
         .await
         .unwrap()
         .expect("the grant was written");
-    assert_eq!(written.role, VtcRole::Admin);
+    assert_eq!(written.role, VtcRole::Moderator);
     assert_eq!(written.created_by, admin.did);
 }
 
@@ -589,7 +592,12 @@ async fn a_refused_grant_never_asks_for_a_gesture() {
     // what the caller needs to hear, not as a missing gesture.
     let (status, reply) = post(
         &fix,
-        &signed(&admin, GRANT, grant_admin(&moderator.did)).await,
+        &signed(
+            &admin,
+            GRANT,
+            json!({ "entry": { "subject": moderator.did, "role": "issuer" } }),
+        )
+        .await,
     )
     .await;
     assert_ne!(status, StatusCode::OK, "{reply}");
@@ -602,13 +610,13 @@ async fn a_refused_grant_never_asks_for_a_gesture() {
 
 // ─── acl/change-role ─────────────────────────────────────────────────────
 
-/// A plain member, ready to promote — scoped, so the promotion lands a scoped
-/// admin and the gesture is the whole gate. A scopeless member would become an
-/// unrestricted admin, which also needs another admin's consent (VTI-APV-014).
+/// A plain member, ready to promote — to `moderator`, so the promotion confers
+/// administrative authority but nothing authority-conferring, and the gesture
+/// is the whole gate. A promotion to `admin` confers `vtc.roles.assign`, which
+/// also needs another holder's consent (VTI-APV-018).
 async fn member(fix: &Fixture) -> Party {
     let party = Party::new();
-    let mut entry = row(&party.did, VtcRole::Member);
-    entry.allowed_contexts = vec!["ctx-a".into()];
+    let entry = row(&party.did, VtcRole::Member);
     store_acl_entry(&fix.vtc.state.acl_ks, &entry)
         .await
         .unwrap();
@@ -622,7 +630,7 @@ async fn member(fix: &Fixture) -> Party {
 }
 
 fn promote(subject: &str) -> Value {
-    json!({ "subject": subject, "fromRole": "member", "toRole": "admin" })
+    json!({ "subject": subject, "fromRole": "member", "toRole": "moderator" })
 }
 
 /// The promotion loop on the signed door: refused with the ceremony inline,
@@ -657,12 +665,13 @@ async fn vti_apv_015_a_gesture_bound_to_the_promotion_lets_the_same_document_thr
 
     let (status, reply) = post(&fix, &doc).await;
     assert_eq!(status, StatusCode::OK, "{reply}");
-    assert_eq!(reply["entry"]["role"], "admin", "{reply}");
+    assert_eq!(reply["entry"]["role"], "moderator", "{reply}");
     let entry = get_acl_entry(&fix.vtc.state.acl_ks, &subject.did)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(entry.role, VtcRole::Admin);
+    assert_eq!(entry.role, VtcRole::Moderator);
+    assert!(entry.is_administrator(), "the role carries what it implies");
     assert_eq!(entry.updated_by.as_deref(), Some(admin.did.as_str()));
 }
 
@@ -697,10 +706,11 @@ async fn a_stale_from_role_is_a_conflict_not_a_gesture() {
     let admin = admin_with_passkey(&mut fix).await;
     let subject = member(&fix).await;
 
-    let stale = json!({ "subject": subject.did, "fromRole": "moderator", "toRole": "admin" });
+    let stale = json!({ "subject": subject.did, "fromRole": "issuer", "toRole": "moderator" });
     let (status, reply) = post(&fix, &signed(&admin, CHANGE_ROLE, stale).await).await;
     assert_ne!(status, StatusCode::OK, "{reply}");
-    assert_eq!(reply["details"]["reason"], "conflict", "{reply}");
+    // The task's own declared code for a compare-and-swap miss.
+    assert_eq!(reply["code"], "acl/change-role:stateMismatch", "{reply}");
 }
 
 /// A demotion confers nothing, but it ends an administrator's authority — the
@@ -1265,7 +1275,7 @@ async fn a_key_is_revoked_by_itself_its_identity_or_an_unrestricted_admin() {
     store_acl_entry(
         &fix.vtc.state.acl_ks,
         &VtcAclEntry {
-            allowed_contexts: vec!["ctx-a".into()],
+            admin: vtc_service::acl::legacy_seed_authority(&VtcRole::Admin, &["ctx-a"]),
             ..row(&scoped.did, VtcRole::Admin)
         },
     )

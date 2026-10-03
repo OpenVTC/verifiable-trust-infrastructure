@@ -39,7 +39,8 @@ fn admin_entry(did: &str) -> VtcAclEntry {
         did: did.into(),
         role: VtcRole::Admin,
         label: None,
-        allowed_contexts: vec![],
+        admin: VtcRole::Admin.implied_authority(),
+        delegated_by: None,
         created_at: 1,
         created_by: "did:key:vtc-install".into(),
         updated_at: None,
@@ -107,6 +108,7 @@ async fn vetting_admin_verbs_round_trip() {
         &state.acl_ks,
         &VtcAclEntry {
             role: VtcRole::Member,
+            admin: VtcRole::Member.implied_authority(),
             ..admin_entry(&vetter)
         },
     )
@@ -526,6 +528,7 @@ async fn member_credentials_round_trips_and_types_not_found() {
         &state.acl_ks,
         &VtcAclEntry {
             role: VtcRole::Member,
+            admin: VtcRole::Member.implied_authority(),
             ..admin_entry(&member_did)
         },
     )
@@ -602,6 +605,7 @@ async fn signed_admin_verbs_do_not_ride_the_bearer_session() {
         &state.acl_ks,
         &VtcAclEntry {
             role: VtcRole::Member,
+            admin: VtcRole::Member.implied_authority(),
             ..admin_entry(&member_did)
         },
     )

@@ -45,9 +45,7 @@ use uuid::Uuid;
 use vti_common::error::AppError;
 
 use super::effects::EffectPlan;
-use crate::acl::{
-    VtcAclEntry, VtcRole, delete_acl_entry, get_acl_entry, list_acl_entries, store_acl_entry,
-};
+use crate::acl::{VtcAclEntry, VtcRole, delete_acl_entry, get_acl_entry, store_acl_entry};
 use crate::auth::session::now_epoch;
 use crate::credentials::{
     CredentialStatusRef, RoleVacParams, VmcParams, build_role_vac, build_vmc,
@@ -231,7 +229,11 @@ async fn admit(
         did: subject_did.to_string(),
         role: role.clone(),
         label: None,
-        allowed_contexts: vec![],
+        // The authority an invitation's role implies; an invitation naming a
+        // role that implies any was bounded by its inviter's own when it was
+        // issued (`routes::invitations`, vtc-admin-roles.md §6.3).
+        admin: role.implied_authority(),
+        delegated_by: None,
         created_at: now_epoch(),
         created_by: actor_did.to_string(),
         updated_at: None,
@@ -353,12 +355,13 @@ async fn issue_member_credentials(
 /// Change a member's role in place: update the ACL row and re-mint the
 /// role VAC at the new role. The DID + VMC are unchanged.
 ///
-/// Enforces the no-last-admin invariant on **demotion** (an admin
-/// being changed to a non-admin role) — host-enforced under
-/// [`LAST_ADMIN_LOCK`], so a demotion that would leave zero admins is
-/// refused (`Conflict` → 409) before any write. The privilege ceiling
-/// / step-up-for-admin invariant is enforced earlier, in
-/// [`super::invariant::enforce`], before the plan is built.
+/// An entry whose administrative authority is what its community role implies
+/// follows the role (the `acl/*/0.1` convention); one whose authority is stated
+/// on its own keeps it. The move is bounded and gated before the plan is built
+/// ([`super::orchestrate`]); here the attrition invariant runs under
+/// [`LAST_ADMIN_LOCK`]: a move that would leave nobody holding
+/// `vtc.roles.assign` is refused (`Conflict` → 409) before any write
+/// (VTI-APV-009).
 async fn remint(
     state: &AppState,
     subject_did: &str,
@@ -370,33 +373,20 @@ async fn remint(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("member not found: {subject_did}")))?;
     let previous_role = acl.role.clone();
-
-    // No-last-admin on demotion: refuse to demote the community's only
-    // admin (the inverse of the leave guard).
-    if matches!(previous_role, VtcRole::Admin) && !matches!(new_role, VtcRole::Admin) {
-        let other_admins = list_acl_entries(&state.acl_ks)
-            .await?
-            .iter()
-            .filter(|e| e.did != subject_did && matches!(e.role, VtcRole::Admin))
-            .count();
-        if other_admins == 0 {
-            return Err(AppError::Conflict(format!(
-                "refusing to demote the last admin ({subject_did}) — promote another \
-                 member to admin first"
-            )));
-        }
+    let now = crate::auth::session::now_epoch();
+    let mut next = acl.clone();
+    next.role = new_role.clone();
+    if crate::routes::acl::expressible_in_v0_1(&acl) {
+        next.admin = new_role.implied_authority();
     }
 
-    // A demotion ends an unrestricted admin, and must not leave nobody able to
-    // consent to another (VTI-APV-014, VTI-APV-009). After the broader guard
-    // above, so the community's very last admin is refused in those terms.
-    if !matches!(new_role, VtcRole::Admin)
-        && crate::acl::admin_consent::is_live_unrestricted(&acl, crate::auth::session::now_epoch())
+    if crate::acl::admin_consent::is_live_role_assigner(&acl, now)
+        && !crate::acl::admin_consent::is_live_role_assigner(&next, now)
     {
         crate::acl::admin_consent::check_attrition(state, subject_did).await?;
     }
 
-    acl.role = new_role.clone();
+    acl = next;
     store_acl_entry(&state.acl_ks, &acl).await?;
 
     // Re-mint the role VAC at the new role + repoint the member — only where
@@ -478,29 +468,12 @@ async fn depart(
 ) -> Result<DepartOutcome, AppError> {
     let _guard = LAST_ADMIN_LOCK.lock().await;
 
-    // No-last-admin invariant — checked before any write so a refusal
-    // leaves the community untouched.
+    // Attrition — checked before any write so a refusal leaves the community
+    // untouched: removing a holder of `vtc.roles.assign` must not leave nobody
+    // able to grant or consent to authority (VTI-APV-009).
     let acl = get_acl_entry(&state.acl_ks, subject_did).await?;
     if let Some(acl) = acl.as_ref()
-        && matches!(acl.role, VtcRole::Admin)
-    {
-        let other_admins = list_acl_entries(&state.acl_ks)
-            .await?
-            .iter()
-            .filter(|e| e.did != subject_did && matches!(e.role, VtcRole::Admin))
-            .count();
-        if other_admins == 0 {
-            return Err(AppError::Conflict(format!(
-                "refusing to remove the last admin ({subject_did}) — promote another \
-                 member to admin first"
-            )));
-        }
-    }
-    // Removing an unrestricted admin also must not leave nobody able to consent
-    // to another (VTI-APV-014, VTI-APV-009). After the broader guard, so the
-    // community's very last admin is refused in those terms.
-    if let Some(acl) = acl.as_ref()
-        && crate::acl::admin_consent::is_live_unrestricted(acl, crate::auth::session::now_epoch())
+        && crate::acl::admin_consent::is_live_role_assigner(acl, crate::auth::session::now_epoch())
     {
         crate::acl::admin_consent::check_attrition(state, subject_did).await?;
     }
@@ -511,6 +484,9 @@ async fn depart(
     let slot = member.as_ref().and_then(|m| m.status_list_index);
 
     delete_acl_entry(&state.acl_ks, subject_did).await?;
+    // The departed member's own grants go to review (vtc-admin-roles.md §6.3).
+    crate::acl::delegation::clear(state, subject_did).await?;
+    crate::acl::delegation::on_granter_changed(state, subject_did, None).await?;
 
     match (disposition, member) {
         (Disposition::Purge, existed) => {

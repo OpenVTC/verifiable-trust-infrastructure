@@ -78,6 +78,7 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   WebsiteBundleDeployed: "Public website bundle deployed",
   WebsiteGenerationRolledBack: "Public website rolled back",
   AuthorityReducedUnopposed: "Unrestricted admin's authority reduced unopposed (VTI-APV-019)",
+  AclMigrated: "ACL rows migrated to role-based administration at boot",
   AdminActionBurst: "Admin raised a burst of actions for approval",
   AdminActionEffect: "An approved action's operation took effect",
 };

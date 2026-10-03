@@ -57,9 +57,14 @@ pub(crate) const ACL_GRANT: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 const ACL_UPDATE: &str = "https://trusttasks.org/spec/acl/update/0.1";
 const ACL_CHANGE_ROLE: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 pub(crate) const ACL_REVOKE: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+const ACL_GRANT_V0_2: &str = "https://trusttasks.org/spec/acl/grant/0.2";
+const ACL_UPDATE_V0_2: &str = "https://trusttasks.org/spec/acl/update/0.2";
+const ACL_CHANGE_ROLE_V0_2: &str = "https://trusttasks.org/spec/acl/change-role/0.2";
+const ACL_REVOKE_V0_2: &str = "https://trusttasks.org/spec/acl/revoke/0.2";
 pub(crate) const APPROVER_INVITE: &str =
     "https://trusttasks.org/spec/auth/step-up/approver/invite/0.1";
 const EMERGENCY_BOOTSTRAP: &str = super::OPERATOR_EMERGENCY_BOOTSTRAP_URI;
+const ACL_MIGRATION: &str = super::OPERATOR_ACL_MIGRATION_URI;
 const INVITES_CREATE: &str = "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
 const ADMIN_REMOVE: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const CONFIG_PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
@@ -79,15 +84,94 @@ const GRANT_EFFECT: &str = "{subject} will be able to grant and remove any autho
                             community, including yours.";
 const REDUCE_EFFECT: &str = "{subject} loses unrestricted authority in this community. They are \
                              not asked: a party to a removal never decides it.";
+// Role-based administration (`vtc-admin-roles.md` §7): what the capabilities
+// at stake let their holder do.
+const GRANT_CAPABILITY_EFFECT: &str = "{subject} will hold capabilities that create authority in \
+                                       this community: they can grant, change or approve what \
+                                       others hold.";
+const REDUCE_CAPABILITY_EFFECT: &str = "{subject} loses capabilities that create authority in this \
+                                        community. They are not asked: a party to a removal never \
+                                        decides it.";
 const THRESHOLD_EFFECT: &str = "Fewer administrators will be needed to make an unrestricted \
                                 administrator — including the next one this requester asks for.";
 const POLICY_EFFECT: &str = "The rules that decide who holds authority in this community change.";
+const ACL_MIGRATION_EFFECT: &str = "This VTC ran {command} when it started on {host} at {at}. It \
+                                    is already in effect: acknowledging records that you have \
+                                    seen it, and changes nothing. Re-grant anyone who should keep \
+                                    authority with acl/update.";
 const OPERATOR_EFFECT: &str = "Written with {command} on {host} at {at}, while the service was \
                                stopped. It is already in effect: acknowledging records that you \
                                have seen it, and changes nothing.";
 
 /// Every template this build renders.
 pub const TEMPLATES: &[Template] = &[
+    Template {
+        kind: KIND_GRANT_AUTHORITY,
+        type_uri: ACL_GRANT_V0_2,
+        title: "Make {subject} a {role}",
+        effect: GRANT_CAPABILITY_EFFECT,
+        fields: &[
+            f("subject", "/entry/subject", "did"),
+            f("role", "/entry/role", "text"),
+            f("capabilities", "/entry/capabilities", "text"),
+            f("expiresAt", "/entry/expiresAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_GRANT_AUTHORITY,
+        type_uri: ACL_UPDATE_V0_2,
+        title: "Widen what {subject} holds",
+        effect: GRANT_CAPABILITY_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("capabilities", "/capabilities", "text"),
+            f("expiresAt", "/expiresAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_GRANT_AUTHORITY,
+        type_uri: ACL_CHANGE_ROLE_V0_2,
+        title: "Move {subject} from {fromRole} to {toRole}",
+        effect: GRANT_CAPABILITY_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("fromRole", "/fromRole", "text"),
+            f("toRole", "/toRole", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_REDUCE_AUTHORITY,
+        type_uri: ACL_REVOKE_V0_2,
+        title: "Revoke {subject}",
+        effect: REDUCE_CAPABILITY_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("revocation", "/revocation", "text"),
+            f("reason", "/reason", "text"),
+        ],
+    },
+    Template {
+        kind: KIND_REDUCE_AUTHORITY,
+        type_uri: ACL_UPDATE_V0_2,
+        title: "Narrow what {subject} holds",
+        effect: REDUCE_CAPABILITY_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("capabilities", "/capabilities", "text"),
+            f("expiresAt", "/expiresAt", "datetime"),
+        ],
+    },
+    Template {
+        kind: KIND_REDUCE_AUTHORITY,
+        type_uri: ACL_CHANGE_ROLE_V0_2,
+        title: "Move {subject} from {fromRole} to {toRole}",
+        effect: REDUCE_CAPABILITY_EFFECT,
+        fields: &[
+            f("subject", "/subject", "did"),
+            f("fromRole", "/fromRole", "text"),
+            f("toRole", "/toRole", "text"),
+        ],
+    },
     Template {
         kind: KIND_GRANT_AUTHORITY,
         type_uri: ACL_GRANT,
@@ -272,6 +356,18 @@ pub const TEMPLATES: &[Template] = &[
             f("at", "/invokedAt", "datetime"),
         ],
     },
+    Template {
+        kind: KIND_OPERATOR_WRITE,
+        type_uri: ACL_MIGRATION,
+        title: "Context-scoped administrators lost administrative authority when this VTC moved \
+                to role-based administration",
+        effect: ACL_MIGRATION_EFFECT,
+        fields: &[
+            f("command", "/command", "text"),
+            f("host", "/operatorHost", "text"),
+            f("at", "/invokedAt", "datetime"),
+        ],
+    },
 ];
 
 /// The digest of every template, pinned. A change to a template's prose,
@@ -280,6 +376,36 @@ pub const TEMPLATES: &[Template] = &[
 /// (`admin-ui/src/lib/action-summary.ts`) — is updated with it: what approvers
 /// are shown cannot move silently.
 pub const PINNED: &[(&str, &str, &str)] = &[
+    (
+        KIND_GRANT_AUTHORITY,
+        ACL_GRANT_V0_2,
+        "zQmNiciJtH7xnKdQUxEwp44mpbCrVt8tfBrt1XKg7VfAc71",
+    ),
+    (
+        KIND_GRANT_AUTHORITY,
+        ACL_UPDATE_V0_2,
+        "zQmQBA6WoTVVo2wBJrmkJwTnefj6q1Hgwc2BWFTCCPpWnQT",
+    ),
+    (
+        KIND_GRANT_AUTHORITY,
+        ACL_CHANGE_ROLE_V0_2,
+        "zQmVAPMeYXgX9bUi5HruaPFxBLsW1ZJNkbRss6VixMz48vt",
+    ),
+    (
+        KIND_REDUCE_AUTHORITY,
+        ACL_REVOKE_V0_2,
+        "zQmfJss7J6uNUdyZPUC64BoJ971CdnTfgd6BVEQd7aFjYwD",
+    ),
+    (
+        KIND_REDUCE_AUTHORITY,
+        ACL_UPDATE_V0_2,
+        "zQmNWjHGRwDCfUsvVFxx6o6eXczqjQTepMEKwkS3qqNo1N6",
+    ),
+    (
+        KIND_REDUCE_AUTHORITY,
+        ACL_CHANGE_ROLE_V0_2,
+        "zQmaAjJC1L9w3pbUTEbWfhzfBdUpv8pofDZvL6mWSpU2eWk",
+    ),
     (
         KIND_GRANT_AUTHORITY,
         ACL_GRANT,
@@ -364,6 +490,11 @@ pub const PINNED: &[(&str, &str, &str)] = &[
         KIND_OPERATOR_WRITE,
         EMERGENCY_BOOTSTRAP,
         "zQmW9QyZwNvMYHenHrcAeaRB5ZRcz2Nz2A2w5JqrWb7qFEp",
+    ),
+    (
+        KIND_OPERATOR_WRITE,
+        ACL_MIGRATION,
+        "zQmcx336K693LHuAKosCP9avuLZWauw1vome6VBxWBFDiqK",
     ),
 ];
 

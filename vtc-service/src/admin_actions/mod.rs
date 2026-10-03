@@ -310,6 +310,11 @@ pub struct ActionRecord {
     pub id: String,
     pub kind: String,
     pub act: Act,
+    /// The capabilities at stake: what the approvers must hold and be able to
+    /// approve, at a covering qualifier (`vtc-admin-roles.md` §7,
+    /// VTI-APV-018). Empty reads as the act's default stake.
+    #[serde(default)]
+    pub stake: Vec<crate::acl::CapRef>,
     pub type_uri: String,
     /// The payload the digest is taken over and the one that executes.
     pub payload: Value,
@@ -578,7 +583,7 @@ fn transport_from(name: &str) -> JoinTransport {
 
 // ─── settings ────────────────────────────────────────────────────────────
 
-async fn setting(state: &AppState, key: &str) -> Result<u64, AppError> {
+pub(crate) async fn setting(state: &AppState, key: &str) -> Result<u64, AppError> {
     let cfg = state.config.read().await.clone();
     crate::config_store::live_action_setting(key, &cfg, &ConfigStore::new(state.config_ks.clone()))
         .await
@@ -657,6 +662,8 @@ pub(crate) async fn check_limits(
 /// What [`park`] needs.
 pub(crate) struct Parking<'a> {
     pub act: Act,
+    /// What the approvers must hold (`vtc-admin-roles.md` §7).
+    pub stake: Vec<crate::acl::CapRef>,
     pub requester: &'a str,
     pub subject: &'a str,
     pub op: Operation<'a>,
@@ -711,6 +718,7 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
         id: format!("act-{}", uuid::Uuid::new_v4().simple()),
         kind: p.act.kind(p.op.type_uri).to_string(),
         act: p.act,
+        stake: p.stake.clone(),
         type_uri: p.op.type_uri.to_string(),
         payload: p.op.payload.clone(),
         digest,
@@ -843,7 +851,7 @@ fn parked_message(rec: &ActionRecord, eligible: u64) -> String {
     }
     let left = rec.expires_at.saturating_sub(now_epoch());
     format!(
-        "Sent for approval — {} of {} unrestricted administrator(s) must approve within {}.",
+        "Sent for approval — {} of {} administrator(s) holding what is at stake must approve within {}.",
         rec.threshold,
         eligible,
         human_duration(left)
@@ -899,9 +907,15 @@ pub(crate) struct Tally {
 }
 
 pub(crate) async fn tally(state: &AppState, rec: &ActionRecord) -> Result<Tally, AppError> {
-    let now_eligible =
-        admin_consent::approvers_for(state, rec.act, &rec.requester, &rec.subject, now_epoch())
-            .await?;
+    let now_eligible = admin_consent::approvers_for(
+        state,
+        rec.act,
+        &rec.stake,
+        &rec.requester,
+        &rec.subject,
+        now_epoch(),
+    )
+    .await?;
     let eligible_dids: Vec<String> = rec
         .approvers
         .iter()
@@ -1006,12 +1020,12 @@ pub(crate) async fn recheck_cooling_off(
         )));
     }
     let now = now_epoch();
-    if !admin_consent::approvers_for(state, rec.act, requester, subject, now)
+    if !admin_consent::approvers_for(state, rec.act, &rec.stake, requester, subject, now)
         .await?
         .is_empty()
     {
         return Err(AppError::Conflict(
-            "another unrestricted administrator can now consent to this, so it no longer lands \
+            "another holder of what is at stake can now consent to this, so it no longer lands \
              on a cooling-off; send it again for them to decide"
                 .into(),
         ));
@@ -1044,7 +1058,7 @@ async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bo
     }
     let requester_ok = crate::acl::get_acl_entry(&state.acl_ks, &rec.requester)
         .await?
-        .is_some_and(|e| admin_consent::is_live_unrestricted(&e, now));
+        .is_some_and(|e| admin_consent::requester_still_authorized(&e, rec.act, &rec.stake, now));
     if !requester_ok {
         rec.close(
             Status::Cancelled,
@@ -1069,14 +1083,21 @@ async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bo
     }
     if rec.cooling_off_until.is_some() {
         // VTI-APV-019: it lands unopposed only while nobody else could consent.
-        let others =
-            admin_consent::approvers_for(state, rec.act, &rec.requester, &rec.subject, now).await?;
+        let others = admin_consent::approvers_for(
+            state,
+            rec.act,
+            &rec.stake,
+            &rec.requester,
+            &rec.subject,
+            now,
+        )
+        .await?;
         if !others.is_empty() {
             rec.close(
                 Status::Cancelled,
                 ClosedReason::Invalidated,
                 Some(
-                    "another unrestricted administrator can now consent to this, so it no \
+                    "another holder of what is at stake can now consent to this, so it no \
                      longer lands on a cooling-off; send it again for them to decide"
                         .into(),
                 ),
@@ -1108,7 +1129,7 @@ async fn live_admins(state: &AppState, now: u64) -> Result<Vec<String>, AppError
     Ok(crate::acl::list_acl_entries(&state.acl_ks)
         .await?
         .into_iter()
-        .filter(|e| e.role == crate::acl::VtcRole::Admin && !e.is_expired(now))
+        .filter(|e| e.admin.is_administrator() && !e.is_expired(now))
         .map(|e| e.did)
         .collect())
 }
@@ -1287,6 +1308,11 @@ pub fn spawn_sweeper(
             if let Err(e) = sweep_once(&state).await {
                 warn!(error = %e, "action-list sweep failed");
             }
+            // A departed granter's grants, withdrawn when their review lapses
+            // (`vtc-admin-roles.md` §6.3, VTI-ACL-071).
+            if let Err(e) = crate::acl::delegation::sweep(&state).await {
+                warn!(error = %e, "delegation-review sweep failed");
+            }
             tokio::select! {
                 _ = shutdown_rx.changed() => return,
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {}
@@ -1415,8 +1441,15 @@ pub(crate) async fn decide(
         if slot.did != approver {
             return Err(DecisionError::NotAnApprover);
         }
-        let eligible =
-            admin_consent::approvers_for(state, rec.act, &rec.requester, &rec.subject, now).await?;
+        let eligible = admin_consent::approvers_for(
+            state,
+            rec.act,
+            &rec.stake,
+            &rec.requester,
+            &rec.subject,
+            now,
+        )
+        .await?;
         if !eligible.iter().any(|d| d == approver) {
             return Err(DecisionError::NotAnApprover);
         }
@@ -2092,8 +2125,9 @@ struct ViewCtx<'a> {
     records: &'a [ActionRecord],
     now: u64,
     threshold: u64,
-    unrestricted: Vec<String>,
-    /// Every live administrator, scoped or not — who acknowledges (VTI-VTC-023).
+    /// Every ACL entry, read once: eligibility is per action, by its stake.
+    entries: Vec<crate::acl::VtcAclEntry>,
+    /// Every live administrator, of any role — who acknowledges (VTI-VTC-023).
     admins: Vec<String>,
 }
 
@@ -2107,7 +2141,7 @@ impl<'a> ViewCtx<'a> {
             records,
             now,
             threshold: admin_consent::threshold(state).await?,
-            unrestricted: admin_consent::unrestricted_admins(state, now).await?,
+            entries: crate::acl::list_acl_entries(&state.acl_ks).await?,
             admins: live_admins(state, now).await?,
         })
     }
@@ -2117,8 +2151,14 @@ impl<'a> ViewCtx<'a> {
         rec.approvers
             .iter()
             .filter(|s| {
-                self.unrestricted.contains(&s.did)
-                    && s.did != rec.requester
+                self.entries.iter().any(|e| {
+                    e.did == s.did
+                        && admin_consent::may_approve(
+                            e,
+                            &rec.act.stake_or_default(&rec.stake),
+                            self.now,
+                        )
+                }) && s.did != rec.requester
                     && !(rec.act.excludes_subject() && s.did == rec.subject)
             })
             .map(|s| s.did.clone())
@@ -2399,7 +2439,8 @@ pub struct OperatorWrite {
     /// raising and clearing the marker — finds the item already there.
     pub marker: String,
     pub command: String,
-    /// `grant`, `remove`, `approverInvite` or `emergencyBootstrap`.
+    /// `grant`, `remove`, `approverInvite`, `emergencyBootstrap` or
+    /// `aclMigration`.
     pub action: String,
     /// The DID written, when the write names one.
     pub did: Option<String>,
@@ -2432,6 +2473,10 @@ pub async fn operator_item_raised(state: &AppState, marker: &str) -> Result<bool
 /// URN of this implementation's.
 pub const OPERATOR_EMERGENCY_BOOTSTRAP_URI: &str = "urn:openvtc:vtc:operator:emergency-bootstrap";
 
+/// The `typeUri` the boot-time ACL migration's acknowledge item is recorded
+/// under (`vtc-admin-roles.md` §9) — no Trust Task either.
+pub const OPERATOR_ACL_MIGRATION_URI: &str = "urn:openvtc:vtc:operator:acl-migration";
+
 /// Raise `write` as an acknowledge item, unless it already was. `Ok(true)` when
 /// raised now. Never subject to the requester limits: an operator's write is
 /// surfaced whatever else is open (VTI-VTC-023).
@@ -2444,6 +2489,7 @@ pub async fn raise_operator_item(
         "grant" => summary::ACL_GRANT,
         "remove" => summary::ACL_REVOKE,
         "approverInvite" => summary::APPROVER_INVITE,
+        "aclMigration" => OPERATOR_ACL_MIGRATION_URI,
         _ => OPERATOR_EMERGENCY_BOOTSTRAP_URI,
     };
     let mut payload = json!({
@@ -2474,6 +2520,7 @@ pub async fn raise_operator_item(
         id: id.clone(),
         kind: KIND_OPERATOR_WRITE.to_string(),
         act: Act::OperatorWrite,
+        stake: Vec::new(),
         type_uri: type_uri.to_string(),
         payload,
         digest,

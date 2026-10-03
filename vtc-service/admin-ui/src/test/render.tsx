@@ -122,7 +122,7 @@ export const MEMBERS_LIST_TASK = "https://trusttasks.org/spec/vtc/members/list/0
 /** Members and ACL answers for `useNameBook`, which most panels call. */
 export const NAME_BOOK_ROUTES: MockRoute[] = [
   taskRoute(MEMBERS_LIST_TASK, { items: [] }),
-  taskRoute("https://trusttasks.org/spec/acl/list/0.1", { entries: [], truncated: false }),
+  taskRoute("https://trusttasks.org/spec/acl/list/0.2", { entries: [], truncated: false }),
 ];
 
 /**

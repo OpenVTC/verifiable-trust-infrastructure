@@ -80,9 +80,10 @@ async fn fixture() -> Fixture {
 fn row(did: &str, role: VtcRole, scopes: &[&str]) -> VtcAclEntry {
     VtcAclEntry {
         did: did.to_string(),
+        admin: vtc_service::acl::legacy_seed_authority(&role, scopes),
+        delegated_by: None,
         role,
         label: None,
-        allowed_contexts: scopes.iter().map(|s| s.to_string()).collect(),
         created_at: 0,
         created_by: "did:key:vtc-install".into(),
         updated_at: None,
@@ -428,13 +429,15 @@ async fn allow_every_removal(fix: &Fixture) {
 
 // ─── 4. admin-remove checks cover (VTI-ACL-050) ────────────────────────────
 
-/// A `ctx-a` admin cannot remove a member who also acts in `ctx-b` — the check
-/// `acl/revoke` has always made, now on this verb too.
+/// A moderator — `vtc.members.manage`, no `vtc.roles.assign` — cannot remove
+/// a member who holds administrative authority, which only a holder of
+/// `vtc.roles.assign` covering it may touch: the check `acl/revoke` has always
+/// made, now on this verb too.
 #[tokio::test]
 async fn vti_acl_050_admin_remove_refuses_a_subject_the_actor_does_not_cover() {
     let fix = fixture().await;
-    let scoped = seed(&fix, VtcRole::Admin, &["ctx-a"]).await;
-    let straddler = seed(&fix, VtcRole::Member, &["ctx-a", "ctx-b"]).await;
+    let scoped = seed(&fix, VtcRole::Moderator, &[]).await;
+    let straddler = seed(&fix, VtcRole::Moderator, &[]).await;
     store_member(&fix.vtc.state.members_ks, &Member::fresh(&straddler.did))
         .await
         .unwrap();
@@ -455,9 +458,9 @@ async fn vti_acl_050_admin_remove_refuses_a_subject_the_actor_does_not_cover() {
             .is_removed()
     );
 
-    // A subject wholly inside the actor's contexts is still the actor's to
+    // A member holding no administrative authority is still the actor's to
     // remove, policy permitting.
-    let inside = seed(&fix, VtcRole::Member, &["ctx-a"]).await;
+    let inside = seed(&fix, VtcRole::Member, &[]).await;
     store_member(&fix.vtc.state.members_ks, &Member::fresh(&inside.did))
         .await
         .unwrap();

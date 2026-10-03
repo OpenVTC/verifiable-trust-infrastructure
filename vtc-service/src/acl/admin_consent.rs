@@ -1,29 +1,34 @@
-//! Second-party consent for unrestricted admin authority — **VTI-APV-014**.
+//! Second-party consent for authority-conferring grants — **VTI-APV-018**, the
+//! generalisation of **VTI-APV-014**.
 //!
 //! > Creating an entry with unrestricted act scope, or widening an entry to
 //! > unrestricted act scope, MUST require consent from a party other than the
-//! > requester.
+//! > requester. (VTI-APV-014)
 //!
-//! Unrestricted authority is the grant every other grant is made from, including
-//! the removal of the controls that govern it, so one stolen credential must not
-//! be enough to make one. The requester's own passkey gesture proves the
-//! requester is present; it says nothing about whether anyone else agrees. This
-//! module is the anyone-else.
+//! At a VTC, administration is role-based (`vtc-admin-roles.md`), so the trigger
+//! is no longer "unrestricted act scope" but **an authority-conferring
+//! capability** (§4): one whose holder can create authority — its own or someone
+//! else's. Granting or widening one is an N-of-M action in every case. One stolen
+//! credential must not be enough to make one. The requester's own passkey
+//! gesture proves the requester is present; it says nothing about whether anyone
+//! else agrees. This module is the anyone-else.
 //!
 //! Design: `docs/05-design-notes/vtc-action-list.md` §4 (the action list) over
-//! `docs/05-design-notes/vtc-operation-bound-step-up.md` §4.
+//! `docs/05-design-notes/vtc-operation-bound-step-up.md` §4, with the approver
+//! sets of `vtc-admin-roles.md` §7.
 //!
 //! ## One model, not a parallel one (VTI-VTC-020)
 //!
 //! It is the VTA's DTTE ceremony — `task-consent/{request,decision}` — with the
 //! approver set fixed by the requirement rather than by a configured rule:
 //!
-//! - **Trigger** ([`confers_unrestricted`]): an `acl/grant` or `acl/change-role`
-//!   whose resulting entry is an admin with `ActScope::All`, where the entry
-//!   before it was not a live unrestricted admin.
-//! - **Approvers**: every other live unrestricted admin — `excludeRequester` is
-//!   always on (VTI-APV-007), and approving an unrestricted entry takes
-//!   unrestricted approve authority, which only they hold (VTI-APV-006).
+//! - **Trigger** ([`newly_conferred`]): an `acl/grant`, `acl/update` or
+//!   `acl/change-role` whose resulting entry holds an authority-conferring
+//!   capability, at a covering qualifier, that the entry before it did not.
+//! - **Stake**: the capabilities conferred. **Approvers**: every other live
+//!   entry that holds *and may approve* each of them at a covering qualifier
+//!   ([`approvers_for`]) — `excludeRequester` is always on (VTI-APV-007), and a
+//!   qualifier-bound approver approves only inside its qualifier.
 //! - **Threshold**: [`crate::config_store::UNRESTRICTED_ADMIN_CONSENT_THRESHOLD`],
 //!   default and minimum 1. A value the community cannot meet is refused when it
 //!   is written ([`check_threshold_meetable`], VTI-APV-009).
@@ -56,22 +61,24 @@
 //!
 //! ## The other acts it gates
 //!
-//! The same machinery also gates the acts that could otherwise undo APV-014
+//! The same machinery also gates the acts that could otherwise undo APV-018
 //! one step at a time (`vtc-action-list.md` §7b, §8.1). Each is an [`Act`];
 //! what differs between them is only who may consent and what they are shown:
 //!
 //! - [`Act::ReduceUnrestricted`] — **VTI-APV-019**: removing, demoting or
-//!   narrowing *another* subject's unrestricted authority. The approvers exclude
-//!   the subject as well as the requester, so neither party to the dispute can
-//!   decide it. Where nobody is left, [`gate_reduction`] lets the requester's
-//!   step-up suffice and the caller records it at `Critical`
-//!   ([`record_unopposed_reduction`]).
+//!   narrowing *another* subject's authority-conferring capabilities. The
+//!   approvers hold what is being taken away, and exclude the subject as well as
+//!   the requester, so neither party to the dispute can decide it. Where nobody
+//!   is left, [`gate_reduction`] lets the requester's step-up suffice and the
+//!   caller records it at `Critical` ([`record_unopposed_reduction`]).
 //! - [`Act::LowerThreshold`] — **VTI-APV-020**: lowering
 //!   `acl.unrestricted_admin_consent_threshold` needs consent at the threshold as
-//!   it stands, which is what [`threshold`] reads.
+//!   it stands, which is what [`threshold`] reads, from the holders of
+//!   `vtc.roles.assign`.
 //! - [`Act::ChangeAuthorityPolicy`] — **VTI-VTC-022**: replacing or activating
 //!   the policy that decides authority (role change, removal, join,
-//!   cross-community roles, git namespaces).
+//!   cross-community roles, git namespaces), approved by the holders of
+//!   `vtc.policy.admin @ policy:<purpose>`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -83,14 +90,15 @@ use vti_common::audit::AuditEvent;
 use vti_common::error::AppError;
 use vti_common::task_consent::{self, effects::StatePin};
 
-use super::{VtcAclEntry, VtcRole, as_vti_role, get_acl_entry, list_acl_entries};
+use super::{CapRef, Capability, ResourceQualifier, VtcAclEntry, get_acl_entry, list_acl_entries};
 use crate::auth::session::now_epoch;
 use crate::config_store::{ConfigStore, UNRESTRICTED_ADMIN_CONSENT_THRESHOLD};
 use crate::server::AppState;
 
-/// The approver set a request names. Not configurable: VTI-APV-014 fixes who
-/// may consent, so there is no rule to look it up in.
-pub const APPROVER_SET: &str = "unrestricted-admins";
+/// The approver set a request names: the holders of what is conferred. Not
+/// configurable: VTI-APV-018 fixes who may consent, so there is no rule to look
+/// it up in.
+pub const APPROVER_SET: &str = "capability-holders";
 
 /// `task-consent/request/0.1` — what this service signs and pushes to each
 /// approver, best-effort, when an action is raised.
@@ -104,10 +112,10 @@ pub(crate) const DECISION_TYPE: &str = <decision::Payload as trust_tasks_rs::Pay
 pub(crate) const DECISION_V0_2_TYPE: &str =
     <decision_v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// The approver set a request to end another subject's unrestricted authority
-/// names (VTI-APV-019): the unrestricted admins other than the requester **and
-/// the subject**.
-pub const APPROVER_SET_EXCEPT_SUBJECT: &str = "unrestricted-admins-except-subject";
+/// The approver set a request to take authority-conferring capabilities away
+/// from another subject names (VTI-APV-019): their holders other than the
+/// requester **and the subject**.
+pub const APPROVER_SET_EXCEPT_SUBJECT: &str = "capability-holders-except-subject";
 
 /// Domain tag for the [`StatePin`] version over a subject's ACL entry.
 const STATE_DOMAIN: &[u8] = b"vtc/acl-entry-state/v1\0";
@@ -118,15 +126,19 @@ const SETTING_STATE_DOMAIN: &[u8] = b"vtc/consent-setting-state/v1\0";
 
 /// Which act a consent is asked for. The machinery is one; what differs is who
 /// may consent, what they are shown, and what state the consent is pinned to.
+///
+/// The variant names predate role-based administration and are kept for the
+/// stored action records: "unrestricted" now reads "authority-conferring".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Act {
-    /// **VTI-APV-014** — creating or widening to unrestricted admin authority.
-    /// The subject is the DID that would hold it.
+    /// **VTI-APV-018** (generalising **VTI-APV-014**) — creating or widening an
+    /// entry to hold an authority-conferring capability it did not hold. The
+    /// subject is the DID that would hold it; the stake is what is conferred.
     GrantUnrestricted,
     /// **VTI-APV-019** — removing, demoting or narrowing another subject's
-    /// unrestricted authority. The subject is the DID that holds it, and never
-    /// counts as an approver.
+    /// authority-conferring capabilities. The subject is the DID that holds
+    /// them, and never counts as an approver; the stake is what it loses.
     ReduceUnrestricted,
     /// **VTI-APV-020** — lowering the consent threshold. The subject is the
     /// threshold's config key; the consent is pinned to its current value.
@@ -145,7 +157,7 @@ impl Act {
     /// The requirement this act's consent implements, for refusals.
     pub(crate) fn requirement(self) -> &'static str {
         match self {
-            Self::GrantUnrestricted => "VTI-APV-014",
+            Self::GrantUnrestricted => "VTI-APV-018",
             Self::ReduceUnrestricted => "VTI-APV-019",
             Self::LowerThreshold => "VTI-APV-020",
             Self::ChangeAuthorityPolicy(_) => "VTI-VTC-022",
@@ -165,6 +177,31 @@ impl Act {
     /// requester. Only for a reduction, where the subject is a party to it.
     pub(crate) fn excludes_subject(self) -> bool {
         matches!(self, Self::ReduceUnrestricted)
+    }
+
+    /// The stake an act carries when the caller names none: what its approvers
+    /// must hold (`vtc-admin-roles.md` §7). A grant and a reduction always name
+    /// theirs — the capabilities conferred or taken away.
+    pub(crate) fn default_stake(self) -> Vec<CapRef> {
+        match self {
+            Self::GrantUnrestricted
+            | Self::ReduceUnrestricted
+            | Self::LowerThreshold
+            | Self::OperatorWrite => vec![CapRef::all(Capability::RolesAssign)],
+            Self::ChangeAuthorityPolicy(purpose) => vec![CapRef::new(
+                Capability::PolicyAdmin,
+                Some(ResourceQualifier::Policy(purpose)),
+            )],
+        }
+    }
+
+    /// `stake`, or [`Self::default_stake`] when it names nothing.
+    pub(crate) fn stake_or_default(self, stake: &[CapRef]) -> Vec<CapRef> {
+        if stake.is_empty() {
+            self.default_stake()
+        } else {
+            stake.to_vec()
+        }
     }
 
     /// The action-list `kind` this act is raised as, for the task carrying it
@@ -197,32 +234,70 @@ pub struct Operation<'a> {
     pub payload: &'a Value,
 }
 
-/// Whether writing an entry of `role` over `scopes` makes its subject an
-/// unrestricted admin who was not one — the case VTI-APV-014 gates.
+/// The authority-conferring capabilities `next` holds that `prev` did not hold
+/// at a covering qualifier — **the VTI-APV-018 trigger**. Empty: no consent is
+/// needed.
 ///
-/// Decided through `ActScope` rather than by testing `scopes.is_empty()`: an
-/// empty list means *unrestricted* for an admin and *nowhere* for every other
-/// role, and a check that forgets the role gets one of them backwards.
-///
-/// An expired unrestricted entry is not unrestricted any more, so granting it
-/// again is a new conferral.
+/// An expired `prev` holds nothing, so granting it again is a new conferral.
 #[must_use]
-pub fn confers_unrestricted(
-    prev: Option<&VtcAclEntry>,
-    role: &VtcRole,
-    scopes: &[String],
-    now: u64,
-) -> bool {
-    let next = vti_common::acl::act_scope_for(&as_vti_role(role), scopes);
-    next.is_unrestricted() && !prev.is_some_and(|p| p.is_super_admin() && !p.is_expired(now))
+pub fn newly_conferred(prev: Option<&VtcAclEntry>, next: &VtcAclEntry, now: u64) -> Vec<CapRef> {
+    let held: Vec<CapRef> = prev
+        .filter(|p| !p.is_expired(now))
+        .map(|p| p.admin.conferring())
+        .unwrap_or_default();
+    next.admin
+        .conferring()
+        .into_iter()
+        .filter(|c| !held.iter().any(|h| h.covers(c)))
+        .collect()
 }
 
-/// The DIDs of every live unrestricted admin.
-pub async fn unrestricted_admins(state: &AppState, now: u64) -> Result<Vec<String>, AppError> {
+/// The authority-conferring capabilities `prev` holds that `next` (`None`: the
+/// entry is removed) no longer does — what a reduction takes away
+/// (**VTI-APV-019**).
+#[must_use]
+pub fn lost_conferring(prev: &VtcAclEntry, next: Option<&VtcAclEntry>, now: u64) -> Vec<CapRef> {
+    if prev.is_expired(now) {
+        return vec![];
+    }
+    // A shorter life takes every capability away sooner: an expiry put on a
+    // permanent entry, or brought forward, reduces all of them.
+    let shortened = next.is_some_and(|n| match (prev.expires_at, n.expires_at) {
+        (None, Some(_)) => true,
+        (Some(was), Some(now)) => now < was,
+        _ => false,
+    });
+    let kept: Vec<CapRef> = next
+        .filter(|_| !shortened)
+        .map(|n| n.admin.conferring())
+        .unwrap_or_default();
+    prev.admin
+        .conferring()
+        .into_iter()
+        .filter(|c| !kept.iter().any(|k| k.covers(c)))
+        .collect()
+}
+
+/// Whether `entry` may approve an action with this stake: live, holding **and**
+/// able to approve every capability in it at a covering qualifier
+/// (`vtc-admin-roles.md` §7; **VTI-ACL-040**: approve authority is its own
+/// axis).
+#[must_use]
+pub fn may_approve(entry: &VtcAclEntry, stake: &[CapRef], now: u64) -> bool {
+    !entry.is_expired(now)
+        && stake
+            .iter()
+            .all(|c| entry.admin.holds(c) && entry.admin.can_approve(c))
+}
+
+/// The DIDs of every live holder of `vtc.roles.assign`, unqualified — the
+/// community's role assigners. The consent threshold is counted against them,
+/// and the last of them is never removed.
+pub async fn role_assigners(state: &AppState, now: u64) -> Result<Vec<String>, AppError> {
     Ok(list_acl_entries(&state.acl_ks)
         .await?
         .into_iter()
-        .filter(|e| e.is_super_admin() && !e.is_expired(now))
+        .filter(|e| is_live_role_assigner(e, now))
         .map(|e| e.did)
         .collect())
 }
@@ -250,64 +325,67 @@ pub async fn threshold(state: &AppState) -> Result<u64, AppError> {
 /// Refuse a threshold the community cannot meet (VTI-APV-009) — checked where
 /// the value is written, not discovered when a grant is blocked by it.
 ///
-/// A requester is always an unrestricted admin (only one can confer unrestricted
-/// authority), and never counts, so at most `admins - 1` can approve. The
-/// minimum, 1, is always accepted: refusing it would not make the community able
-/// to meet it, and there is no lower value to choose instead.
+/// Counted against the role assigners, who are the approvers of the widest
+/// grant: a requester is one of them and never counts, so at most
+/// `assigners - 1` can approve. The minimum, 1, is always accepted: refusing it
+/// would not make the community able to meet it, and there is no lower value to
+/// choose instead.
 pub async fn check_threshold_meetable(state: &AppState, threshold: u64) -> Result<(), AppError> {
     if threshold <= 1 {
         return Ok(());
     }
-    let admins = unrestricted_admins(state, now_epoch()).await?.len() as u64;
+    let admins = role_assigners(state, now_epoch()).await?.len() as u64;
     if threshold > admins.saturating_sub(1) {
         return Err(AppError::Validation(format!(
             "{UNRESTRICTED_ADMIN_CONSENT_THRESHOLD} = {threshold} could never be met: a grant of \
-             unrestricted admin would need {threshold} unrestricted admins besides the one asking, \
-             and this community has {admins} in total. Grant more unrestricted admins first, or \
-             set it to at most {}",
+             an authority-conferring capability would need {threshold} holders of \
+             vtc.roles.assign besides the one asking, and this community has {admins} in total. \
+             Grant more community administrators first, or set it to at most {}",
             admins.saturating_sub(1).max(1)
         )));
     }
     Ok(())
 }
 
-/// Whether `entry` is a live unrestricted admin — one of the approvers.
+/// Whether `entry` is a live holder of `vtc.roles.assign`, unqualified.
 #[must_use]
-pub fn is_live_unrestricted(entry: &VtcAclEntry, now: u64) -> bool {
-    entry.is_super_admin() && !entry.is_expired(now)
+pub fn is_live_role_assigner(entry: &VtcAclEntry, now: u64) -> bool {
+    !entry.is_expired(now) && entry.admin.can(Capability::RolesAssign, None)
 }
 
-/// Refuse a change that takes `subject` — a live unrestricted admin — out of the
-/// approvers, when what is left could never consent to anything: no other
-/// unrestricted admin at all, or fewer than the threshold needs.
+/// Refuse a change that takes `subject` — a live holder of `vtc.roles.assign`
+/// — out of the role assigners, when what is left could never consent to
+/// anything: nobody else holding it at all, or fewer than the threshold needs.
 ///
 /// The attrition half of VTI-APV-009: a rule must not become unsatisfiable by
-/// removal any more than by being written that way. Callers are every door that
-/// can end an unrestricted admin — a revocation, a removal from the community, a
-/// demotion, a grant rewrite that narrows the entry — and each must hold the
-/// admin-set lock ([`crate::ceremony::lock_admin_set`]) from this check through
-/// its write, or two such changes could each pass it and together strand the
+/// removal any more than by being written that way, and the community must never
+/// lose its last holder of `vtc.roles.assign` (`vtc-admin-roles.md` C1 §3).
+/// Callers are every door that can end one — a revocation, a removal from the
+/// community, a demotion, a narrowing update — and each must hold the admin-set
+/// lock ([`crate::ceremony::lock_admin_set`]) from this check through its
+/// write, or two such changes could each pass it and together strand the
 /// community.
 ///
-/// A threshold of 1 needs only one other unrestricted admin, the same bound the
+/// A threshold of 1 needs only one other assigner, the same bound the
 /// write-time check accepts, so a two-admin community can still remove a
 /// compromised one. Above 1 the threshold has to come down first.
 pub async fn check_attrition(state: &AppState, subject: &str) -> Result<(), AppError> {
-    let remaining = unrestricted_admins(state, now_epoch())
+    let remaining = role_assigners(state, now_epoch())
         .await?
         .into_iter()
         .filter(|d| d != subject)
         .count() as u64;
     if remaining == 0 {
         return Err(AppError::Conflict(format!(
-            "refusing to end the last unrestricted admin ({subject}): nobody would be left who \
-             could consent to another (VTI-APV-014). Make another unrestricted admin first"
+            "refusing to end the last administrator holding vtc.roles.assign ({subject}): nobody would be \
+             left who could grant or consent to authority (VTI-APV-009). Make another community \
+             administrator first"
         )));
     }
     let threshold = threshold(state).await?;
     if threshold > 1 && threshold > remaining.saturating_sub(1) {
         return Err(AppError::Conflict(format!(
-            "refusing to end unrestricted admin {subject}: {remaining} would remain, so \
+            "refusing to end {subject}'s vtc.roles.assign: {remaining} holder(s) would remain, so \
              {UNRESTRICTED_ADMIN_CONSENT_THRESHOLD} = {threshold} could never be met again \
              (VTI-APV-009). Lower it first — config/patch \
              {{\"{UNRESTRICTED_ADMIN_CONSENT_THRESHOLD}\": {}}} — then retry",
@@ -316,7 +394,6 @@ pub async fn check_attrition(state: &AppState, subject: &str) -> Result<(), AppE
     }
     Ok(())
 }
-
 /// Other administrators' consent, found sufficient for the operation now being
 /// executed. Only an approved action's execution produces one
 /// ([`crate::admin_actions`], VTI-APV-017): a submission parks instead.
@@ -352,8 +429,9 @@ pub enum SignedGate {
     StepUpRequired(Box<crate::acl::bound_step_up::ApproveRequest>),
 }
 
-/// The signed door's gate for an unrestricted grant: the requester's
-/// operation-bound gesture, then the action other admins approve.
+/// The signed door's gate for a grant of authority-conferring capabilities:
+/// the requester's operation-bound gesture, then the action their other
+/// holders approve. `stake` is what is conferred ([`newly_conferred`]).
 ///
 /// Parked comes back as [`AppError::ApprovalRequired`] carrying
 /// [`crate::admin_actions::ACTION_PARKED`], which the dispatcher answers with a
@@ -362,6 +440,7 @@ pub async fn gesture_then_consent(
     state: &AppState,
     requester: &str,
     subject: &str,
+    stake: &[CapRef],
     op: Operation<'_>,
     gesture_reason: &str,
     consent_summary: &str,
@@ -369,6 +448,7 @@ pub async fn gesture_then_consent(
     gesture_then_consent_for(
         state,
         Act::GrantUnrestricted,
+        stake,
         requester,
         subject,
         op,
@@ -378,7 +458,8 @@ pub async fn gesture_then_consent(
     .await
 }
 
-/// [`gesture_then_consent`] for any [`Act`].
+/// [`gesture_then_consent`] for any [`Act`]. An empty `stake` takes the act's
+/// [`Act::default_stake`].
 ///
 /// On **submission**: the community must be able to consent at all, the
 /// requester must be within the action-list limits, and the requester's
@@ -390,9 +471,11 @@ pub async fn gesture_then_consent(
 /// On **execution** of an approved action (VTI-APV-017): the approvals are
 /// re-checked against the community as it is now, and [`SignedGate::Ready`]
 /// comes back only if they still suffice.
+#[allow(clippy::too_many_arguments)]
 pub async fn gesture_then_consent_for(
     state: &AppState,
     act: Act,
+    stake: &[CapRef],
     requester: &str,
     subject: &str,
     op: Operation<'_>,
@@ -400,6 +483,8 @@ pub async fn gesture_then_consent_for(
     consent_summary: &str,
 ) -> Result<SignedGate, AppError> {
     use super::bound_step_up::{self, EvidencedGate};
+
+    let stake = act.stake_or_default(stake);
 
     if let Some(exec) = crate::admin_actions::executing() {
         let action_id =
@@ -415,9 +500,15 @@ pub async fn gesture_then_consent_for(
     let now = now_epoch();
     // A consent nobody can give makes the gesture pointless, so say so before
     // asking the requester for one.
-    let approvers = approvers_for(state, act, requester, subject, now).await?;
+    let approvers = approvers_for(state, act, &stake, requester, subject, now).await?;
     let threshold = threshold(state).await?;
-    refuse_if_unmeetable(act, approvers.len() as u64, threshold, consent_summary)?;
+    refuse_if_unmeetable(
+        act,
+        &stake,
+        approvers.len() as u64,
+        threshold,
+        consent_summary,
+    )?;
     // §7a.1: the action-list limits, before the gesture too.
     crate::admin_actions::check_limits(state, act, requester, subject).await?;
 
@@ -439,6 +530,7 @@ pub async fn gesture_then_consent_for(
         state,
         crate::admin_actions::Parking {
             act,
+            stake,
             requester,
             subject,
             op,
@@ -459,17 +551,17 @@ pub async fn gesture_then_consent_for(
 #[derive(Debug)]
 #[must_use = "a consented reduction must spend its grant, and an unopposed one must be recorded"]
 pub enum Reduction {
-    /// The subject was not a live unrestricted admin (or is the requester): the
-    /// gesture is the whole gate.
+    /// The subject loses no authority-conferring capability (or is the
+    /// requester): the gesture is the whole gate.
     StepUpOnly,
-    /// Another unrestricted admin, neither the requester nor the subject,
-    /// consented. Spend it with the write.
+    /// Another holder of what the subject loses, neither the requester nor the
+    /// subject, consented. Spend it with the write.
     Consented(ReadyGrant),
-    /// The subject is a live unrestricted admin and nobody else is left who
-    /// could consent. The gesture sufficed — after the cooling-off, when one is
-    /// configured (`acl.removal_cooling_off`, §8.2), in which case this is the
-    /// parked action landing and carries its grant. Once the write lands the
-    /// caller records it at `Critical` and notifies the subject
+    /// The subject loses authority-conferring capabilities and nobody else is
+    /// left who could consent. The gesture sufficed — after the cooling-off,
+    /// when one is configured (`acl.removal_cooling_off`, §8.2), in which case
+    /// this is the parked action landing and carries its grant. Once the write
+    /// lands the caller records it at `Critical` and notifies the subject
     /// ([`after_reduction`]).
     Unopposed(Option<ReadyGrant>),
 }
@@ -479,13 +571,13 @@ pub enum Reduction {
 /// (VTI-APV-019).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agreement {
-    /// Another unrestricted administrator consented.
+    /// Another holder of what the subject lost consented.
     Consented,
-    /// The subject was a scoped administrator: the requester's gesture is the
-    /// whole gate, and no third party reviewed it.
+    /// The subject lost nothing authority-conferring: the requester's gesture
+    /// is the whole gate, and no third party reviewed it.
     StepUpOnly,
-    /// The subject was an unrestricted administrator and nobody else could
-    /// consent: audited at `Critical`.
+    /// The subject lost authority-conferring capabilities and nobody else
+    /// could consent: audited at `Critical`.
     Unopposed,
 }
 
@@ -533,25 +625,28 @@ pub enum ReductionGate {
 /// `acl/grant` rewrite, `vtc/members/admin-remove` (`vtc-action-list.md` §7b).
 ///
 /// Every such act takes the requester's operation-bound gesture. When the
-/// subject is **another** live unrestricted admin, it is also parked for the
-/// consent of an unrestricted admin who is neither the requester nor the
-/// subject (**VTI-APV-019**), through the same machinery as APV-014
-/// ([`Act::ReduceUnrestricted`]).
+/// subject is **another** live entry that loses an authority-conferring
+/// capability (`after`: the entry as it will be, `None` for a removal), it is
+/// also parked for the consent of a holder of what is lost who is neither the
+/// requester nor the subject (**VTI-APV-019**), through the same machinery as
+/// APV-018 ([`Act::ReduceUnrestricted`]).
 ///
-/// Where no such admin exists — two unrestricted admins in all — the VTC cannot
-/// tell a removal of a compromised co-admin from a compromised admin's removal
-/// of the other, and must not make the first impossible. So the gesture alone
-/// suffices, but not at once: the reduction is parked for a **cooling-off**
-/// (`acl.removal_cooling_off`, default 24 h, §8.2) that both can see, and lands
-/// by itself when it ends unless the requester cancels it. The subject cannot
-/// block it; if the subject answers by asking to reduce the requester, the
-/// earlier request lands first ([`crate::admin_actions::refuse_if_reduced_first`]).
-/// A cooling-off of zero lands it at once ([`Reduction::Unopposed`]).
+/// Where no such holder exists — two community administrators in all — the VTC
+/// cannot tell a removal of a compromised co-admin from a compromised admin's
+/// removal of the other, and must not make the first impossible. So the gesture
+/// alone suffices, but not at once: the reduction is parked for a
+/// **cooling-off** (`acl.removal_cooling_off`, default 24 h, §8.2) that both
+/// can see, and lands by itself when it ends unless the requester cancels it.
+/// The subject cannot block it; if the subject answers by asking to reduce the
+/// requester, the earlier request lands first
+/// ([`crate::admin_actions::refuse_if_reduced_first`]). A cooling-off of zero
+/// lands it at once ([`Reduction::Unopposed`]).
 ///
-/// The attrition guard ([`check_attrition`]) is asked first as well, so a
-/// reduction that would strand the community is refused before anybody is asked
-/// for a gesture. It is not a substitute for the caller's own check under the
-/// admin-set lock, which still runs.
+/// The attrition guard ([`check_attrition`]) is asked first as well when the
+/// subject loses `vtc.roles.assign`, so a reduction that would strand the
+/// community is refused before anybody is asked for a gesture. It is not a
+/// substitute for the caller's own check under the admin-set lock, which still
+/// runs.
 ///
 /// Call it after every check that decides whether the act may happen, and
 /// before anything is written.
@@ -559,6 +654,7 @@ pub async fn gate_reduction(
     state: &AppState,
     requester: &str,
     subject: &VtcAclEntry,
+    after: Option<&VtcAclEntry>,
     op: Operation<'_>,
     gesture_reason: &str,
     consent_summary: &str,
@@ -566,10 +662,18 @@ pub async fn gate_reduction(
     use super::bound_step_up::{self, EvidencedGate, Gate};
 
     let now = now_epoch();
-    let unrestricted = is_live_unrestricted(subject, now) && subject.did != requester;
-    if unrestricted {
-        check_attrition(state, &subject.did).await?;
-        let executing = crate::admin_actions::executing();
+    let lost = if subject.did == requester {
+        vec![]
+    } else {
+        lost_conferring(subject, after, now)
+    };
+    let executing = crate::admin_actions::executing();
+    if !lost.is_empty() {
+        if is_live_role_assigner(subject, now)
+            && !after.is_some_and(|a| is_live_role_assigner(a, now))
+        {
+            check_attrition(state, &subject.did).await?;
+        }
         // A cooling-off landing: the reduction it parked, unopposed, now.
         if let Some(exec) = executing.as_ref().filter(|e| e.cooling_off) {
             let action_id =
@@ -579,9 +683,16 @@ pub async fn gate_reduction(
                 ReadyGrant { action_id },
             ))));
         }
-        let third = approvers_for(state, Act::ReduceUnrestricted, requester, &subject.did, now)
-            .await?
-            .len();
+        let third = approvers_for(
+            state,
+            Act::ReduceUnrestricted,
+            &lost,
+            requester,
+            &subject.did,
+            now,
+        )
+        .await?
+        .len();
         // First to act wins (§8.2): with nobody else to decide, a
         // counter-request lands the earlier one.
         if executing.is_none() && third == 0 {
@@ -596,6 +707,7 @@ pub async fn gate_reduction(
                 match gesture_then_consent_for(
                     state,
                     Act::ReduceUnrestricted,
+                    &lost,
                     requester,
                     &subject.did,
                     op,
@@ -654,6 +766,7 @@ pub async fn gate_reduction(
                 state,
                 crate::admin_actions::Parking {
                     act: Act::ReduceUnrestricted,
+                    stake: lost.clone(),
                     requester,
                     subject: &subject.did,
                     op,
@@ -679,14 +792,14 @@ pub async fn gate_reduction(
         )
         .await?
         {
-            Gate::Satisfied if unrestricted => {
+            Gate::Satisfied if !lost.is_empty() => {
                 warn!(
                     requester,
                     subject = %subject.did,
                     task = op.type_uri,
-                    "ending an unrestricted admin's authority with nobody else left to consent \
-                     (VTI-APV-019), with no cooling-off configured: the requester's step-up is \
-                     the only gate"
+                    "taking authority-conferring capabilities away with nobody else left to \
+                     consent (VTI-APV-019), with no cooling-off configured: the requester's \
+                     step-up is the only gate"
                 );
                 ReductionGate::Cleared(Reduction::Unopposed(None))
             }
@@ -696,29 +809,42 @@ pub async fn gate_reduction(
     )
 }
 
-/// [`gate_reduction`] for a door about to end or reduce `prior`, settled to one
-/// answer: `Ok(None)` when nothing gated it (not a live administrator's
-/// entry), `Ok(Some(agreement))` to go ahead and then [`after_reduction`], or
-/// the refusal — [`TaskError::StepUp`] with the ceremony inline when no gesture
-/// is recorded yet, or the parked action (an approval, or a cooling-off).
+/// [`gate_reduction`] for a door about to end or reduce `prior` (to `after`,
+/// `None` for a removal), settled to one answer: `Ok(None)` when nothing gated
+/// it (not a live administrator's entry), `Ok(Some(agreement))` to go ahead and
+/// then [`after_reduction`], or the refusal — [`TaskError::StepUp`] with the
+/// ceremony inline when no gesture is recorded yet, or the parked action (an
+/// approval, or a cooling-off).
 ///
 /// Only an **administrator**'s live entry is gated (`vtc-action-list.md` §7b
-/// item 1); ending an expired or non-admin entry is unchanged, and answers
-/// `Ok(None)` without asking anything. Call it last before the write.
+/// item 1); ending an expired entry, or one with no administrative role, is
+/// unchanged, and answers `Ok(None)` without asking anything. Call it last
+/// before the write.
 ///
 /// [`TaskError::StepUp`]: crate::error::TaskError::StepUp
 pub async fn settle_reduction(
     state: &AppState,
     requester: &str,
     prior: &VtcAclEntry,
+    after: Option<&VtcAclEntry>,
     op: Operation<'_>,
     gesture_reason: &str,
     consent_summary: &str,
 ) -> Result<Option<Agreement>, crate::error::TaskError> {
-    if prior.role != VtcRole::Admin || prior.is_expired(now_epoch()) {
+    if !prior.is_administrator() {
         return Ok(None);
     }
-    match gate_reduction(state, requester, prior, op, gesture_reason, consent_summary).await? {
+    match gate_reduction(
+        state,
+        requester,
+        prior,
+        after,
+        op,
+        gesture_reason,
+        consent_summary,
+    )
+    .await?
+    {
         ReductionGate::Cleared(reduction) => Ok(Some(reduction.spend(state).await?)),
         ReductionGate::StepUpRequired(request) => Err(crate::error::TaskError::step_up(request)),
     }
@@ -784,8 +910,20 @@ pub async fn record_unopposed_reduction(
             AuditEvent::AuthorityReducedUnopposed(
                 vti_common::audit::AuthorityReducedUnopposedData {
                     task: task.to_string(),
-                    prior_role: prior.role.to_string(),
-                    prior_scopes: prior.allowed_contexts.clone(),
+                    prior_role: prior
+                        .admin
+                        .admin_role
+                        .as_ref()
+                        .map(|r| r.to_string())
+                        .unwrap_or_else(|| prior.role.to_string()),
+                    // A VTC entry has no context scopes; what it held is its
+                    // capabilities, recorded in the same slot.
+                    prior_scopes: prior
+                        .admin
+                        .effective()
+                        .iter()
+                        .map(CapRef::display)
+                        .collect(),
                 },
             ),
         )
@@ -804,6 +942,7 @@ pub async fn require(
     state: &AppState,
     requester: &str,
     subject: &str,
+    stake: &[CapRef],
     op: Operation<'_>,
     summary: &str,
 ) -> Result<ReadyGrant, AppError> {
@@ -819,10 +958,12 @@ pub async fn require(
         .await?;
         return Ok(ReadyGrant { action_id });
     }
+    let stake = Act::GrantUnrestricted.stake_or_default(stake);
     // A consent nobody could give is the more useful thing to say first.
     let approvers = approvers_for(
         state,
         Act::GrantUnrestricted,
+        &stake,
         requester,
         subject,
         now_epoch(),
@@ -831,15 +972,25 @@ pub async fn require(
     .len() as u64;
     refuse_if_unmeetable(
         Act::GrantUnrestricted,
+        &stake,
         approvers,
         threshold(state).await?,
         summary,
     )?;
     Err(AppError::Forbidden(format!(
-        "{summary} needs the approval of another unrestricted administrator (VTI-APV-014), \
-         which only a signed {} document can wait for",
+        "{summary} needs the approval of another holder of {} (VTI-APV-018), which only a \
+         signed {} document can wait for",
+        stake_list(&stake),
         op.type_uri
     )))
+}
+
+fn stake_list(stake: &[CapRef]) -> String {
+    stake
+        .iter()
+        .map(CapRef::display)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Refuse, naming the fix, when there are fewer possible approvers than the
@@ -847,42 +998,81 @@ pub async fn require(
 /// not reachable by a stolen session or key.
 pub(crate) fn refuse_if_unmeetable(
     act: Act,
+    stake: &[CapRef],
     approvers: u64,
     threshold: u64,
     summary: &str,
 ) -> Result<(), AppError> {
     if approvers < threshold {
         let others = if act.excludes_subject() {
-            "unrestricted admin(s) other than you and the subject"
+            "holder(s) other than you and the subject"
         } else {
-            "other unrestricted admin(s)"
+            "other holder(s)"
         };
         return Err(AppError::Forbidden(format!(
-            "{summary} needs consent from {threshold} {others}, and this \
-             community has {approvers} ({}). Add another unrestricted admin with the \
-             offline break-glass while the daemon is stopped — `vtc acl add --did <did> --role \
-             admin` — and send this again",
+            "{summary} needs consent from {threshold} {others} of {}, and this community has \
+             {approvers} ({}). Add another community administrator with the offline \
+             break-glass while the daemon is stopped — `vtc acl add --did <did> --admin-role \
+             community-admin` — and send this again",
+            stake_list(stake),
             act.requirement()
         )));
     }
     Ok(())
 }
 
-/// Who may consent to `act` on `subject` now: every live unrestricted admin
-/// but the requester (VTI-APV-007) — and, for a reduction, but the subject
-/// (VTI-APV-019).
+/// Who may consent to `act` on `subject` now: every live entry that holds and
+/// may approve all of `stake` ([`may_approve`]), but the requester
+/// (VTI-APV-007) — and, for a reduction, but the subject (VTI-APV-019).
 pub(crate) async fn approvers_for(
     state: &AppState,
     act: Act,
+    stake: &[CapRef],
     requester: &str,
     subject: &str,
     now: u64,
 ) -> Result<Vec<String>, AppError> {
-    Ok(unrestricted_admins(state, now)
+    let stake = act.stake_or_default(stake);
+    Ok(list_acl_entries(&state.acl_ks)
         .await?
         .into_iter()
+        .filter(|e| may_approve(e, &stake, now))
+        .map(|e| e.did)
         .filter(|d| d != requester && !(act.excludes_subject() && d == subject))
         .collect())
+}
+
+/// Whether the requester of a parked `act` still holds the authority it needs:
+/// live, and — for a grant — still holding what it would confer, since a
+/// granter may grant only what it holds (VTI-ACL-071). The handler re-checks
+/// everything when the action executes; this closes an action that can no
+/// longer succeed (`vtc-action-list.md` §4.4).
+pub(crate) fn requester_still_authorized(
+    entry: &VtcAclEntry,
+    act: Act,
+    stake: &[CapRef],
+    now: u64,
+) -> bool {
+    if entry.is_expired(now) || !entry.admin.is_administrator() {
+        return false;
+    }
+    match act {
+        Act::GrantUnrestricted => {
+            entry.admin.can_any(Capability::RolesAssign)
+                && act
+                    .stake_or_default(stake)
+                    .iter()
+                    .all(|c| entry.admin.holds(c))
+        }
+        Act::ReduceUnrestricted => entry.admin.can_any(Capability::RolesAssign),
+        Act::LowerThreshold => entry.admin.can(Capability::ConfigAdmin, None),
+        Act::ChangeAuthorityPolicy(p) => entry
+            .admin
+            .can(Capability::PolicyAdmin, Some(&ResourceQualifier::Policy(p))),
+        // An operator write has no requester authority to lose: it is an item
+        // to acknowledge (VTI-VTC-023).
+        Act::OperatorWrite => true,
+    }
 }
 
 /// The state a consent to `act` is pinned to: what the approvers saw, so a
@@ -928,13 +1118,15 @@ async fn state_pin(state: &AppState, subject: &str) -> Result<StatePin, AppError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acl::{AdminAuthority, AdminRole, CapabilityScope, VtcRole};
 
-    fn entry(role: VtcRole, scopes: &[&str], expires_at: Option<u64>) -> VtcAclEntry {
+    fn entry(admin: AdminAuthority, expires_at: Option<u64>) -> VtcAclEntry {
         VtcAclEntry {
             did: "did:key:zSubject".into(),
-            role,
+            role: VtcRole::Member,
             label: None,
-            allowed_contexts: scopes.iter().map(|s| s.to_string()).collect(),
+            admin,
+            delegated_by: None,
             created_at: 0,
             created_by: "did:key:zAdmin".into(),
             updated_at: None,
@@ -943,56 +1135,103 @@ mod tests {
         }
     }
 
-    /// The four ways an entry can come to be unrestricted, and the ones that
-    /// only look like it.
-    #[test]
-    fn confers_unrestricted_only_where_act_scope_becomes_all() {
-        let now = 1_000;
-        // A new entry, unrestricted admin.
-        assert!(confers_unrestricted(None, &VtcRole::Admin, &[], now));
-        // A scoped admin widened to community-wide.
-        let scoped = entry(VtcRole::Admin, &["ctx-a"], None);
-        assert!(confers_unrestricted(
-            Some(&scoped),
-            &VtcRole::Admin,
-            &[],
-            now
-        ));
-        // A scopeless member promoted — the `is_empty()` trap: empty means
-        // "nowhere" for the member and "everywhere" for the admin it becomes.
-        let member = entry(VtcRole::Member, &[], None);
-        assert!(confers_unrestricted(
-            Some(&member),
-            &VtcRole::Admin,
-            &[],
-            now
-        ));
-        // An expired unrestricted admin, granted again.
-        let lapsed = entry(VtcRole::Admin, &[], Some(now));
-        assert!(confers_unrestricted(
-            Some(&lapsed),
-            &VtcRole::Admin,
-            &[],
-            now
-        ));
+    fn listed(caps: &[&str]) -> CapabilityScope {
+        CapabilityScope::listed(
+            caps.iter()
+                .map(|c| c.parse::<CapRef>().unwrap().into())
+                .collect(),
+        )
+        .unwrap()
+    }
 
-        // Already unrestricted and live: a label edit confers nothing.
-        let live = entry(VtcRole::Admin, &[], None);
-        assert!(!confers_unrestricted(
-            Some(&live),
-            &VtcRole::Admin,
-            &[],
+    /// VTI-APV-018: the trigger is an authority-conferring capability the entry
+    /// did not hold before — and only that.
+    #[test]
+    fn vti_apv_018_newly_conferred_is_the_new_authority_conferring_capabilities() {
+        let now = 1_000;
+        let admin = entry(AdminAuthority::community_admin(), None);
+        // A new community administrator confers every authority-conferring cap.
+        let fresh = newly_conferred(None, &admin, now);
+        assert!(fresh.contains(&CapRef::all(Capability::RolesAssign)));
+        assert!(fresh.contains(&CapRef::all(Capability::ConfigAdmin)));
+        assert!(!fresh.contains(&CapRef::all(Capability::AuditRead)));
+
+        // Already held and live: a label edit confers nothing.
+        assert!(newly_conferred(Some(&admin), &admin, now).is_empty());
+
+        // An expired holder, granted again, is a new conferral.
+        let lapsed = entry(AdminAuthority::community_admin(), Some(now));
+        assert!(!newly_conferred(Some(&lapsed), &admin, now).is_empty());
+
+        // A moderator holds nothing authority-conferring.
+        let moderator = entry(AdminAuthority::for_role(AdminRole::Moderator), None);
+        assert!(newly_conferred(None, &moderator, now).is_empty());
+
+        // A narrowed community-admin widened to include vtc.roles.assign.
+        let mut narrow = AdminAuthority::community_admin();
+        narrow.capabilities = listed(&["vtc.audit.read"]);
+        let narrow = entry(narrow, None);
+        let mut wider = AdminAuthority::community_admin();
+        wider.capabilities = listed(&["vtc.audit.read", "vtc.roles.assign"]);
+        let wider = entry(wider, None);
+        assert_eq!(
+            newly_conferred(Some(&narrow), &wider, now),
+            vec![CapRef::all(Capability::RolesAssign)]
+        );
+
+        // A qualified repo manager confers git.ns.admin within its namespace.
+        let mut rm = AdminAuthority::for_role(AdminRole::RepoManager);
+        rm.capabilities = listed(&["git.ns.admin@git-ns:github.com/acme"]);
+        assert_eq!(
+            newly_conferred(None, &entry(rm, None), now),
+            vec!["git.ns.admin@git-ns:github.com/acme".parse().unwrap()]
+        );
+    }
+
+    /// VTI-APV-019: what a reduction takes away.
+    #[test]
+    fn vti_apv_019_lost_conferring_is_what_the_reduction_takes_away() {
+        let now = 1_000;
+        let admin = entry(AdminAuthority::community_admin(), None);
+        assert!(lost_conferring(&admin, None, now).contains(&CapRef::all(Capability::RolesAssign)));
+        let mut narrow = AdminAuthority::community_admin();
+        narrow.capabilities = listed(&["vtc.audit.read"]);
+        assert!(!lost_conferring(&admin, Some(&entry(narrow, None)), now).is_empty());
+        assert!(lost_conferring(&admin, Some(&admin), now).is_empty());
+        let moderator = entry(AdminAuthority::for_role(AdminRole::Moderator), None);
+        assert!(lost_conferring(&moderator, None, now).is_empty());
+    }
+
+    /// Approvers hold and may approve what is at stake, at a covering
+    /// qualifier (`vtc-admin-roles.md` §7).
+    #[test]
+    fn may_approve_needs_the_capability_and_approve_authority() {
+        let now = 1_000;
+        let stake = vec![CapRef::all(Capability::RolesAssign)];
+        assert!(may_approve(
+            &entry(AdminAuthority::community_admin(), None),
+            &stake,
             now
         ));
-        // A scoped admin grant is not unrestricted.
-        assert!(!confers_unrestricted(
-            None,
-            &VtcRole::Admin,
-            &["ctx-a".into()],
+        assert!(!may_approve(
+            &entry(AdminAuthority::for_role(AdminRole::Moderator), None),
+            &stake,
             now
         ));
-        // A scopeless non-admin acts nowhere.
-        assert!(!confers_unrestricted(None, &VtcRole::Member, &[], now));
+        // Holds it, but approves nothing (VTI-ACL-040).
+        let mut no_approve = AdminAuthority::community_admin();
+        no_approve.approve = crate::acl::VtcActScope::None;
+        assert!(!may_approve(&entry(no_approve, None), &stake, now));
+
+        // A qualifier-bound approver approves only inside its qualifier.
+        let mut rm = AdminAuthority::for_role(AdminRole::RepoManager);
+        rm.capabilities = listed(&["git.ns.admin@git-ns:github.com/acme"]);
+        rm.approve_capabilities = listed(&["git.ns.admin@git-ns:github.com/acme"]);
+        let rm = entry(rm, None);
+        let inside: Vec<CapRef> = vec!["git.ns.admin@git-ns:github.com/acme".parse().unwrap()];
+        let outside: Vec<CapRef> = vec!["git.ns.admin@git-ns:github.com/other".parse().unwrap()];
+        assert!(may_approve(&rm, &inside, now));
+        assert!(!may_approve(&rm, &outside, now));
     }
 
     /// Each act is raised as its own kind, and every (kind, task) a gate can
@@ -1006,10 +1245,16 @@ mod tests {
             (Act::GrantUnrestricted, tt::ACL_GRANT_TYPE),
             (Act::GrantUnrestricted, tt::ACL_CHANGE_ROLE_TYPE),
             (Act::GrantUnrestricted, tt::ACL_UPDATE_TYPE),
+            (Act::GrantUnrestricted, tt::ACL_GRANT_V0_2_TYPE),
+            (Act::GrantUnrestricted, tt::ACL_CHANGE_ROLE_V0_2_TYPE),
+            (Act::GrantUnrestricted, tt::ACL_UPDATE_V0_2_TYPE),
             (Act::GrantUnrestricted, tt::admin_tasks::INVITES_CREATE_TYPE),
             (Act::ReduceUnrestricted, tt::ACL_REVOKE_TYPE),
+            (Act::ReduceUnrestricted, tt::ACL_REVOKE_V0_2_TYPE),
             (Act::ReduceUnrestricted, tt::ACL_CHANGE_ROLE_TYPE),
+            (Act::ReduceUnrestricted, tt::ACL_CHANGE_ROLE_V0_2_TYPE),
             (Act::ReduceUnrestricted, tt::ACL_UPDATE_TYPE),
+            (Act::ReduceUnrestricted, tt::ACL_UPDATE_V0_2_TYPE),
             (Act::ReduceUnrestricted, tt::ACL_GRANT_TYPE),
             (Act::ReduceUnrestricted, tt::MEMBER_ADMIN_REMOVE_TYPE),
             (Act::LowerThreshold, tt::admin_tasks::CONFIG_PATCH_TYPE),

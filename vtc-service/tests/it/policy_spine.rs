@@ -231,19 +231,27 @@ async fn the_codes_the_specifications_declare_are_answered() {
     );
 }
 
-/// The bearer routes took `AdminAuth`; a moderator and an unsigned document
-/// are refused, and the community's DID log is for an unrestricted
-/// administrator only (`SuperAdminAuth`).
+/// Reading policies is an administrator's read; writing one takes
+/// `vtc.policy.admin` (`vtc-admin-roles.md` §4), which a moderator does not
+/// hold. A party holding no administrative role and an unsigned document are
+/// refused all of it, and the community's DID log takes `vtc.did.admin`.
 #[tokio::test]
 async fn below_an_administrator_and_unsigned_are_refused() {
     let vtc = vtc().await;
     let moderator = party_with_role(&vtc, VtcRole::Moderator, &[]).await;
+    let member = party_with_role(&vtc, VtcRole::Member, &[]).await;
+    for task in [LIST, ACTIVE] {
+        let (status, doc) = call(&vtc, &moderator, task, json!({})).await;
+        assert_eq!(status, StatusCode::OK, "a moderator reads {task}: {doc}");
+    }
+    let (status, doc) = call(&vtc, &moderator, UPSERT, upsert("join", JOIN_POLICY)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{doc}");
     for (task, body) in [
         (LIST, json!({})),
         (ACTIVE, json!({})),
         (UPSERT, upsert("join", JOIN_POLICY)),
     ] {
-        let (status, doc) = call(&vtc, &moderator, task, body.clone()).await;
+        let (status, doc) = call(&vtc, &member, task, body.clone()).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{task}: {doc}");
         let (status, doc) = post(&vtc, &unsigned(&moderator, task, body)).await;
         assert!(

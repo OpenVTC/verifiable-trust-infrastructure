@@ -1,8 +1,18 @@
 # Role-based administration at the VTC
 
-Status: **accepted direction** (2026-10-02, §1 decided with the maintainer); the details below are proposed. Companion to
+Status: **accepted direction** (2026-10-02, §1 decided with the maintainer). Companion to
 `vtc-action-list.md` (approvals) and `vtc-approver-step-up.md` (factors).
-Nothing here is implemented. The wire shapes it needs go upstream first (§10).
+
+**Phase C1 is implemented**: the capability registry (§4), resource qualifiers
+(§5), the built-in roles and the granting bounds (§6.1, §6.3), the generalised
+APV-014 trigger (§7, VTI-APV-018), explicit act scope (§8), the §9 migration
+(on backup import, and in place at boot for a VTC upgraded over its own
+store), and `acl/*/0.2` beside 0.1 (`vtc-service/src/acl/capability.rs`,
+`acl/granting.rs`, `acl/delegation.rs`, `acl/migrate.rs`). Deferred: custom
+roles (§6.2, phase C2), folding git-ns rights into capabilities (phase C3), the
+operator-write acknowledge items (§2) and the departed-granter review as an
+action-list item (§6.3: C1 lists the review on the entry and withdraws by a
+sweeper).
 
 ---
 
@@ -230,7 +240,16 @@ The VTA keeps contexts. They are the right tool there.
 ## 9. Rollout
 
 Net-new; existing VTCs are reinstalled. Basic migration is limited to what a
-backup brings across:
+backup brings across. The same mapping also runs **in place at boot**, so a VTC
+upgraded over its own store locks nobody out: before anything is authorized,
+every ACL row in the old shape is mapped (all of them before any is written,
+each written as one put), the migration is audited once (`AclMigrated`,
+Critical, naming the counts and the context-scoped administrators it left
+with no administrative role), and those losses are raised as an `acknowledge`
+item for the remaining community administrators (VTI-VTC-023). A second boot
+is a no-op. A row that cannot be mapped refuses the boot, naming the DID and
+the fix (`vtc acl remove` then `vtc acl add` with the daemon stopped); it is
+never dropped. The mapping:
 
 - An unrestricted admin entry becomes `community-admin` with the full ceiling.
 - A context-scoped admin entry becomes **no administrative role**. The import

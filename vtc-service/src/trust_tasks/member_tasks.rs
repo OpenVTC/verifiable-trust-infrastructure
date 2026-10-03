@@ -82,7 +82,7 @@ use super::helpers::{
     success_response, task_error_to_reject,
 };
 use super::{JoinAuthCtx, admin_signer, parse_spec_payload};
-use crate::acl::{VtcRole, get_acl_entry};
+use crate::acl::get_acl_entry;
 use crate::error::{AppError, TaskError};
 use crate::server::AppState;
 
@@ -208,7 +208,17 @@ async fn self_signer(
 /// ([`admin_signer`]). Refused when neither applies, or when the row expired.
 struct Actor {
     did: String,
-    role: VtcRole,
+    /// The live entry the actor acts under — its own, or the delegating
+    /// administrator's for a console key.
+    entry: crate::acl::VtcAclEntry,
+}
+
+impl Actor {
+    /// The one authorization question, asked of the actor's live entry
+    /// (VTI-ACL-030).
+    fn can(&self, cap: crate::acl::Capability) -> bool {
+        self.entry.can(cap, None)
+    }
 }
 
 async fn acting_party(
@@ -224,36 +234,46 @@ async fn acting_party(
                 reason: format!("ACL entry expired: {signer}"),
             },
         )),
-        Ok(Some(entry)) => Ok(Actor {
-            did: signer,
-            role: entry.role,
-        }),
+        Ok(Some(entry)) => Ok(Actor { did: signer, entry }),
         // No row of its own: a console key acting for its admin, or nobody.
         // `admin_signer` answers both, refusing the second with the same
         // `permissionDenied` an unknown signer always gets.
-        Ok(None) => admin_signer(state, ctx, doc).await.map(|claims| Actor {
-            did: claims.did,
-            role: VtcRole::Admin,
-        }),
+        Ok(None) => {
+            let claims = admin_signer(state, ctx, doc).await?;
+            match get_acl_entry(&state.acl_ks, &claims.did).await {
+                Ok(Some(entry)) => Ok(Actor {
+                    did: claims.did,
+                    entry,
+                }),
+                Ok(None) => Err(reject_with(
+                    doc,
+                    RejectReason::PermissionDenied {
+                        reason: "the delegating administrator holds no entry".into(),
+                    },
+                )),
+                Err(e) => Err(app_error_to_reject(doc, &e)),
+            }
+        }
         Err(e) => Err(app_error_to_reject(doc, &e)),
     }
 }
 
-/// [`acting_party`], held to the `Admin`-or-`Issuer` capability every
-/// endorsement verb rests on. `verb` completes the refusal message the bearer
-/// route gives for the same caller.
+/// [`acting_party`], held to the credential capability an endorsement verb
+/// rests on — `vtc.credentials.issue` to mint and read, `vtc.credentials.revoke`
+/// to revoke (vtc-admin-roles.md §4). `verb` completes the refusal message.
 async fn endorsement_actor(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
+    cap: crate::acl::Capability,
     verb: &str,
 ) -> Result<String, TrustTaskOutcome> {
     let actor = acting_party(state, ctx, doc).await?;
-    if !matches!(actor.role, VtcRole::Admin | VtcRole::Issuer) {
+    if !actor.can(cap) {
         return Err(reject_with(
             doc,
             RejectReason::PermissionDenied {
-                reason: format!("only Admin or Issuer-role members can {verb}"),
+                reason: format!("only a holder of {cap} can {verb}"),
             },
         ));
     }
@@ -430,7 +450,9 @@ async fn handle_personhood_revoke(
         }
     } else {
         match acting_party(state, ctx, &doc).await {
-            Ok(actor) if actor.role == VtcRole::Admin => (actor.did, RevokeCapacity::Admin),
+            Ok(actor) if actor.can(crate::acl::Capability::CredentialsRevoke) => {
+                (actor.did, RevokeCapacity::Admin)
+            }
             _ => return not_permitted(&doc),
         }
     };
@@ -598,7 +620,7 @@ async fn handle_relationships_revoke(
     };
     let revoked_by = if actor.did == rel.issuer_did {
         "issuer"
-    } else if actor.role == VtcRole::Admin {
+    } else if actor.can(crate::acl::Capability::MembersManage) {
         "admin"
     } else {
         return not_found(&doc);
@@ -657,7 +679,7 @@ async fn handle_relationships_revoke_v0_2(
 
     let revoked_by = if actor.did == rel.issuer_did {
         "issuer"
-    } else if actor.role == VtcRole::Admin {
+    } else if actor.can(crate::acl::Capability::MembersManage) {
         "admin"
     } else if let Some(pop) = doc.payload.get("pop") {
         // `pop`'s own shape (its `type`, `documentId`, `relationship` and
@@ -703,7 +725,15 @@ async fn handle_endorsements_issue(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let actor = match endorsement_actor(state, ctx, &doc, "mint custom endorsements").await {
+    let actor = match endorsement_actor(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::CredentialsIssue,
+        "mint custom endorsements",
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -741,7 +771,15 @@ async fn handle_endorsements_list(
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    if let Err(reject) = endorsement_actor(state, ctx, &doc, "list custom endorsements").await {
+    if let Err(reject) = endorsement_actor(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::CredentialsIssue,
+        "list custom endorsements",
+    )
+    .await
+    {
         return reject;
     }
     let body: end_list::Payload = match parse_spec_payload(&doc) {
@@ -774,7 +812,15 @@ async fn handle_endorsements_show(
 ) -> TrustTaskOutcome {
     use crate::routes::endorsements::{SHOW_ERR_NOT_FOUND, show_inner};
 
-    if let Err(reject) = endorsement_actor(state, ctx, &doc, "read custom endorsements").await {
+    if let Err(reject) = endorsement_actor(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::CredentialsIssue,
+        "read custom endorsements",
+    )
+    .await
+    {
         return reject;
     }
     let body: end_show::Payload = match parse_spec_payload(&doc) {
@@ -806,7 +852,15 @@ async fn handle_endorsements_revoke(
 ) -> TrustTaskOutcome {
     use crate::routes::endorsements::{REVOKE_ERR_NOT_FOUND, revoke_inner};
 
-    let actor = match endorsement_actor(state, ctx, &doc, "revoke endorsements").await {
+    let actor = match endorsement_actor(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::CredentialsRevoke,
+        "revoke endorsements",
+    )
+    .await
+    {
         Ok(a) => a,
         Err(reject) => return reject,
     };
@@ -831,6 +885,7 @@ async fn handle_endorsements_revoke(
 /// published `#response` schema.
 #[cfg(test)]
 mod tests {
+    use crate::acl::VtcRole;
     use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
     use affinidi_status_list::StatusPurpose;
     use ed25519_dalek::{Signer, SigningKey};
@@ -1229,13 +1284,14 @@ mod tests {
         assert!(!has_personhood(&f.vtc, &f.member.did).await);
     }
 
-    /// Neither the subject nor an admin — an issuer, another member, a
-    /// stranger — is refused, and the flag stands.
+    /// Neither the subject nor a holder of `vtc.credentials.revoke` — another
+    /// member, a stranger — is refused, and the flag stands. (An issuer is a
+    /// credential officer and holds it.)
     #[tokio::test]
     async fn members_personhood_revoke_refuses_a_party_who_is_neither_subject_nor_admin() {
         let f = fixture().await;
         assert_personhood(&f.vtc, &f.member.did).await;
-        for from in [&f.issuer, &f.peer, &f.stranger] {
+        for from in [&f.peer, &f.stranger] {
             let out = send(
                 &f.vtc,
                 JoinTransport::DIDComm,
