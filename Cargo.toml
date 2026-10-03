@@ -723,8 +723,18 @@ debug = "line-tables-only"
 split-debuginfo = "packed"
 
 # Dependencies are not stepped through; their debug symbols were most of the bulk.
+#
+# They are also optimised. At opt-level 0 the test suites spent their CPU in
+# other people's code: vtc-service re-parses the default Rego policy bundle
+# (regorus) for every test's AppState, and vta-backup's tests derive Argon2id
+# keys at 64 MiB — 89s of one CI run for that crate alone. `"*"` matches only
+# non-workspace packages, so every workspace crate stays at opt-level 0 and an
+# edit-compile-test loop recompiles exactly what it did before; the optimised
+# dependencies are built once. Build scripts and proc macros keep the default
+# `build-override` (opt-level 0), which is right for code run once per build.
 [profile.dev.package."*"]
 debug = false
+opt-level = 2
 
 [profile.release]
 lto = "thin"
