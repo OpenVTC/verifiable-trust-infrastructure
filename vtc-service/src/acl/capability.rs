@@ -27,6 +27,7 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use vti_common::error::AppError;
@@ -158,6 +159,19 @@ impl Capability {
             },
             _ => false,
         }
+    }
+
+    /// Whether the registry classes this capability as **additive**: one no
+    /// role implies, so it never appears in a role's ceiling — not a built-in
+    /// one, and not a custom one (`vtc/roles/define/0.1`
+    /// `additiveCapability`). Held only as an additive grant beside a role,
+    /// which only an unrestricted granter makes (**VTI-ACL-033**).
+    ///
+    /// `git.commit.sign` is the one: the CI-accepted commit right a bridge or
+    /// a contributor holds, not administration, and no built-in role's ceiling
+    /// names it.
+    pub fn is_registry_additive(self) -> bool {
+        matches!(self, Capability::GitCommitSign)
     }
 
     /// Whether `resource` is a qualifier this capability can carry — a policy
@@ -524,8 +538,11 @@ pub enum AdminRole {
     /// The least-privilege approver (**VTI-ACL-041**): no act authority, an
     /// approve scope as granted.
     Approver,
-    /// A community-defined role (§6.2). Phase C2 gives it a stored definition;
-    /// until then it has an empty ceiling and cannot be granted.
+    /// A community-defined role (§6.2): a record in the ACL model
+    /// ([`super::roles`]) naming a ceiling and an approve ceiling. The name
+    /// alone confers nothing: an entry holding it is resolved against the
+    /// stored definition when it is read ([`AdminAuthority::custom`]), and one
+    /// naming a role with no definition confers nothing (**VTI-ACL-011**).
     Custom(String),
 }
 
@@ -554,9 +571,9 @@ impl AdminRole {
         }
     }
 
-    /// Whether this role may be granted by this build. Custom roles need a
-    /// definition (phase C2), so none can be granted yet.
-    pub fn is_grantable(&self) -> bool {
+    /// Whether this is a built-in role (§6.1) — fixed by this build, never
+    /// defined, replaced or deleted through `vtc/roles/*`.
+    pub fn is_built_in(&self) -> bool {
         !matches!(self, AdminRole::Custom(_))
     }
 
@@ -611,13 +628,33 @@ impl AdminRole {
         }
     }
 
-    /// Whether `r` lies inside this role's ceiling.
+    /// Whether `r` lies inside this built-in role's ceiling. A custom role
+    /// admits nothing here: ask [`AdminAuthority::ceiling_admits`], which reads
+    /// its stored definition.
     pub fn ceiling_admits(&self, r: &CapRef) -> bool {
         self.ceiling().iter().any(|i| i.admits(r))
     }
 
     fn approve_ceiling_admits(&self, r: &CapRef) -> bool {
         self.approve_ceiling().iter().any(|i| i.admits(r))
+    }
+
+    /// The ceiling as capability references, the shape `vtc/roles/_shared`
+    /// `RoleDefinition` states it in: each capability once, unqualified — an
+    /// item held only at a qualifier is admitted at any qualifier inside it.
+    pub fn ceiling_refs(&self) -> Vec<CapRef> {
+        self.ceiling()
+            .into_iter()
+            .map(|i| CapRef::all(i.capability))
+            .collect()
+    }
+
+    /// [`Self::ceiling_refs`] for the approve ceiling.
+    pub fn approve_ceiling_refs(&self) -> Vec<CapRef> {
+        self.approve_ceiling()
+            .into_iter()
+            .map(|i| CapRef::all(i.capability))
+            .collect()
     }
 
     /// The default act scope a role is granted with when none is stated by a
@@ -699,6 +736,22 @@ pub struct AdminAuthority {
     pub capabilities: CapabilityScope,
     pub approve: VtcActScope,
     pub approve_capabilities: CapabilityScope,
+    /// A custom role's stored definition, resolved when the entry is read
+    /// ([`super::roles::resolve`]). Never stored on the entry and never taken
+    /// from a caller: the definition is the record in the ACL model, read now.
+    /// `None` for a built-in role, and for a custom role with no definition —
+    /// which then confers nothing (**VTI-ACL-011**).
+    #[serde(skip)]
+    pub custom: Option<Arc<RoleCeilings>>,
+}
+
+/// A custom role's two ceilings, as its stored definition states them
+/// (`vtc/roles/_shared/0.1` `RoleDefinition`). A ceiling reference admits an
+/// entry's grant at its own qualifier or one inside it (**VTI-ACL-035**).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleCeilings {
+    pub ceiling: Vec<CapRef>,
+    pub approve: Vec<CapRef>,
 }
 
 impl AdminAuthority {
@@ -710,6 +763,7 @@ impl AdminAuthority {
             capabilities: CapabilityScope::None,
             approve: VtcActScope::None,
             approve_capabilities: CapabilityScope::None,
+            custom: None,
         }
     }
 
@@ -727,6 +781,7 @@ impl AdminAuthority {
                 CapabilityScope::None
             },
             admin_role: Some(role),
+            custom: None,
         }
     }
 
@@ -739,7 +794,14 @@ impl AdminAuthority {
     /// Whether this entry holds any administrative role. What console sign-in
     /// admits (any role, not only `community-admin`).
     pub fn is_administrator(&self) -> bool {
-        self.admin_role.is_some()
+        match self.admin_role.as_ref() {
+            None => false,
+            // A custom role with no definition is not a role this community
+            // recognises: the entry confers nothing, sign-in included
+            // (VTI-ACL-011).
+            Some(AdminRole::Custom(_)) => self.custom.is_some(),
+            Some(_) => true,
+        }
     }
 
     /// The capabilities this entry holds **when its act scope is `all`** —
@@ -747,25 +809,67 @@ impl AdminAuthority {
     /// outside the ceiling is never effective, even if one was written around
     /// the write-time check.
     pub fn effective(&self) -> Vec<CapRef> {
-        let role = self.admin_role.as_ref();
-        let ceiling_admits = |r: &CapRef| role.is_some_and(|role| role.ceiling_admits(r));
         match &self.capabilities {
             CapabilityScope::None => vec![],
-            CapabilityScope::Ceiling => role
-                .map(|role| {
-                    role.ceiling()
-                        .into_iter()
-                        .filter(|i| i.qualification != Qualification::Required)
-                        .map(|i| CapRef::all(i.capability))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            CapabilityScope::Ceiling => match self.admin_role.as_ref() {
+                None => vec![],
+                Some(AdminRole::Custom(_)) => self
+                    .custom
+                    .as_ref()
+                    .map(|d| d.ceiling.clone())
+                    .unwrap_or_default(),
+                Some(role) => role
+                    .ceiling()
+                    .into_iter()
+                    .filter(|i| i.qualification != Qualification::Required)
+                    .map(|i| CapRef::all(i.capability))
+                    .collect(),
+            },
             CapabilityScope::Listed { grants } => grants
                 .iter()
                 .map(|g| (g.cap_ref(), g.additive))
-                .filter(|(r, additive)| *additive || ceiling_admits(r))
+                .filter(|(r, additive)| *additive || self.ceiling_admits(r))
                 .map(|(r, _)| r)
                 .collect(),
+        }
+    }
+
+    /// Whether `r` lies inside this entry's role ceiling — a built-in role's,
+    /// or a custom role's stored one. Nothing lies inside no role, or inside a
+    /// custom role with no definition (**VTI-ACL-011**).
+    pub fn ceiling_admits(&self, r: &CapRef) -> bool {
+        match self.admin_role.as_ref() {
+            None => false,
+            Some(AdminRole::Custom(_)) => self
+                .custom
+                .as_ref()
+                .is_some_and(|d| d.ceiling.iter().any(|c| c.covers(r))),
+            Some(role) => role.ceiling_admits(r),
+        }
+    }
+
+    /// [`Self::ceiling_admits`] for the approve ceiling.
+    fn approve_ceiling_admits(&self, r: &CapRef) -> bool {
+        match self.admin_role.as_ref() {
+            None => false,
+            Some(AdminRole::Custom(_)) => self
+                .custom
+                .as_ref()
+                .is_some_and(|d| d.approve.iter().any(|c| c.covers(r))),
+            Some(role) => role.approve_ceiling_admits(r),
+        }
+    }
+
+    /// Whether the role's ceiling names `cap` at all — what makes an additive
+    /// grant of it redundant (**VTI-ACL-033**).
+    fn ceiling_names(&self, cap: Capability) -> bool {
+        match self.admin_role.as_ref() {
+            None => false,
+            Some(AdminRole::Custom(_)) => self
+                .custom
+                .as_ref()
+                .is_some_and(|d| d.ceiling.iter().any(|c| c.capability == cap)),
+            Some(role) => role.ceiling().iter().any(|i| i.capability == cap),
         }
     }
 
@@ -778,16 +882,23 @@ impl AdminAuthority {
         };
         match &self.approve_capabilities {
             CapabilityScope::None => vec![],
-            CapabilityScope::Ceiling => role
-                .approve_ceiling()
-                .into_iter()
-                .filter(|i| i.qualification != Qualification::Required)
-                .map(|i| CapRef::all(i.capability))
-                .collect(),
+            CapabilityScope::Ceiling => match role {
+                AdminRole::Custom(_) => self
+                    .custom
+                    .as_ref()
+                    .map(|d| d.approve.clone())
+                    .unwrap_or_default(),
+                role => role
+                    .approve_ceiling()
+                    .into_iter()
+                    .filter(|i| i.qualification != Qualification::Required)
+                    .map(|i| CapRef::all(i.capability))
+                    .collect(),
+            },
             CapabilityScope::Listed { grants } => grants
                 .iter()
                 .map(CapabilityGrant::cap_ref)
-                .filter(|r| role.approve_ceiling_admits(r))
+                .filter(|r| self.approve_ceiling_admits(r))
                 .collect(),
         }
     }
@@ -884,7 +995,9 @@ impl AdminAuthority {
             }
             return Ok(());
         };
-        if !role.is_grantable() {
+        // A custom role with no stored definition is not one this community
+        // recognises (VTI-ACL-011): never written, whatever it lists.
+        if !role.is_built_in() && self.custom.is_none() {
             return Err(CeilingError::RoleNotRecognized(role.to_string()));
         }
         if let CapabilityScope::Listed { grants } = &self.capabilities {
@@ -897,7 +1010,7 @@ impl AdminAuthority {
             }
             let outside: Vec<String> = grants
                 .iter()
-                .filter(|g| !g.additive && !role.ceiling_admits(&g.cap_ref()))
+                .filter(|g| !g.additive && !self.ceiling_admits(&g.cap_ref()))
                 .map(|g| g.cap_ref().display())
                 .collect();
             if !outside.is_empty() {
@@ -905,9 +1018,7 @@ impl AdminAuthority {
             }
             let within: Vec<String> = grants
                 .iter()
-                .filter(|g| {
-                    g.additive && role.ceiling().iter().any(|i| i.capability == g.capability)
-                })
+                .filter(|g| g.additive && self.ceiling_names(g.capability))
                 .map(|g| g.cap_ref().display())
                 .collect();
             if !within.is_empty() {
@@ -915,6 +1026,7 @@ impl AdminAuthority {
             }
         }
         if matches!(self.capabilities, CapabilityScope::Ceiling)
+            && role.is_built_in()
             && role
                 .ceiling()
                 .iter()
@@ -926,7 +1038,7 @@ impl AdminAuthority {
         if let CapabilityScope::Listed { grants } = &self.approve_capabilities {
             let outside: Vec<String> = grants
                 .iter()
-                .filter(|g| !role.approve_ceiling_admits(&g.cap_ref()))
+                .filter(|g| !self.approve_ceiling_admits(&g.cap_ref()))
                 .map(|g| g.cap_ref().display())
                 .collect();
             if !outside.is_empty() {
@@ -957,7 +1069,8 @@ impl fmt::Display for CeilingError {
         match self {
             CeilingError::RoleNotRecognized(r) => write!(
                 f,
-                "'{r}' is not a role this community can grant — the built-in roles are {}",
+                "'{r}' is not a role this community can grant — the built-in roles are {}, and \
+                 vtc/roles/list names its custom roles (VTI-ACL-011)",
                 AdminRole::BUILT_IN
                     .map(|r| r.as_str().to_string())
                     .join(", ")
@@ -1200,15 +1313,47 @@ mod tests {
         assert!(!Capability::MembersManage.is_authority_conferring(None));
     }
 
+    /// VTI-ACL-011: a custom role confers nothing until its stored definition
+    /// is resolved onto the entry, and then exactly its ceiling.
     #[test]
-    fn custom_roles_parse_but_cannot_be_granted_yet() {
+    fn vti_acl_011_a_custom_role_confers_only_its_resolved_definition() {
         let r: AdminRole = "events-team".parse().unwrap();
         assert_eq!(r, AdminRole::Custom("events-team".into()));
-        let a = AdminAuthority::for_role(r);
+        let mut a = AdminAuthority::for_role(r);
         assert!(matches!(
             a.validate_against_ceiling(),
             Err(CeilingError::RoleNotRecognized(_))
         ));
+        assert!(Capability::ALL.into_iter().all(|c| !a.can(c, None)));
+
+        a.custom = Some(Arc::new(RoleCeilings {
+            ceiling: vec![
+                CapRef::all(Capability::SurfaceAdmin),
+                "git.repo.manage@git-ns:github.com/acme".parse().unwrap(),
+            ],
+            approve: vec![CapRef::all(Capability::SurfaceAdmin)],
+        }));
+        a.approve = VtcActScope::All;
+        a.approve_capabilities = CapabilityScope::Ceiling;
+        assert!(a.validate_against_ceiling().is_ok());
+        assert!(a.can(Capability::SurfaceAdmin, None));
+        assert!(a.can(
+            Capability::GitRepoManage,
+            Some(&q("git-repo:github.com/acme/r#1"))
+        ));
+        assert!(!a.can(Capability::GitRepoManage, None));
+        assert!(!a.can(Capability::InvitationsManage, None));
+        assert!(a.can_approve(&CapRef::all(Capability::SurfaceAdmin)));
+        assert!(!a.can_approve(&CapRef::all(Capability::RolesAssign)));
+
+        // A listed grant outside the stored ceiling is refused, and never
+        // effective.
+        a.capabilities = listed(&[("vtc.audit.read", false)]);
+        assert!(matches!(
+            a.validate_against_ceiling(),
+            Err(CeilingError::OutsideCeiling(_))
+        ));
+        assert!(!a.can(Capability::AuditRead, None));
         assert!("member".parse::<AdminRole>().is_err());
         assert!("Bad Name".parse::<AdminRole>().is_err());
     }

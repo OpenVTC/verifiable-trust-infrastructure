@@ -1154,7 +1154,14 @@ pub(crate) async fn tally(state: &AppState, rec: &ActionRecord) -> Result<Tally,
         .iter()
         .filter(|a| eligible_dids.contains(&a.did))
         .count() as u64;
-    let needed = rec.threshold.max(admin_consent::threshold(state).await?);
+    // A grants review is re-affirmed by one covering administrator, as an
+    // `acl/update` re-affirmation is; every other act needs the threshold as
+    // it stands now, if it has risen.
+    let needed = if rec.act == Act::GrantsReview {
+        rec.threshold
+    } else {
+        rec.threshold.max(admin_consent::threshold(state).await?)
+    };
     Ok(Tally {
         valid,
         needed,
@@ -1283,9 +1290,13 @@ async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bo
         rec.close(Status::Expired, ClosedReason::Expired, None, now);
         return Ok(true);
     }
-    let requester_ok = crate::acl::get_acl_entry(&state.acl_ks, &rec.requester)
-        .await?
-        .is_some_and(|e| admin_consent::requester_still_authorized(&e, rec.act, &rec.stake, now));
+    // A grants review is the community's own: it has no requester entry.
+    let requester_ok = rec.act == Act::GrantsReview
+        || crate::acl::get_acl_entry(&state.acl_ks, &rec.requester)
+            .await?
+            .is_some_and(|e| {
+                admin_consent::requester_still_authorized(&e, rec.act, &rec.stake, now)
+            });
     if !requester_ok {
         rec.close(
             Status::Cancelled,
@@ -1771,6 +1782,25 @@ pub(crate) async fn decide(
             )
             .await;
             info!(action = %rec.id, approver, "action declined");
+            // A declined review withdraws the grants now rather than at the
+            // deadline (`vtc-admin-roles.md` §6.3).
+            if rec.act == Act::GrantsReview
+                && let Err(e) = crate::acl::delegation::withdraw_reviewed(
+                    state,
+                    rec.payload["granter"].as_str().unwrap_or_default(),
+                    &rec.payload["subjects"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|s| s.as_str().map(str::to_string))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default(),
+                )
+                .await
+            {
+                warn!(action = %rec.id, error = %e, "a declined review's grants could not be withdrawn now; the sweeper will at the deadline");
+            }
             return Ok(Decided::Denied {
                 action_id: rec.id,
                 payload_digest: input.payload_digest,
@@ -2003,6 +2033,10 @@ fn is_secret_response(type_uri: &str) -> bool {
 /// Dispatch the action's stored document through the handler it was submitted
 /// to. `(completed, response payload, refusal message)`.
 async fn execute(state: &AppState, rec: &ActionRecord) -> (bool, Option<Value>, Option<String>) {
+    // Raised by the community, not from a document: nothing to dispatch.
+    if rec.act == Act::GrantsReview {
+        return execute_grants_review(state, rec).await;
+    }
     let doc: trust_tasks_rs::TrustTask<Value> =
         match serde_json::from_value(rec.submitted_doc.clone()) {
             Ok(d) => d,
@@ -2981,6 +3015,208 @@ pub async fn raise_operator_item(
     Ok(true)
 }
 
+// ─── a departed granter's grants (`vtc-admin-roles.md` §6.3) ──────────────
+
+/// Raise the review of the grants `granter` made that it no longer covers —
+/// one approval-category action listing every one (**VTI-ACL-071**).
+///
+/// Its approvers are the holders who may approve `vtc.roles.assign`, except
+/// the granter and the entries under review (none re-affirms itself:
+/// VTI-OPS-050). One approval re-affirms every listed grant the approver
+/// covers, under the approver's own authority ([`crate::acl::delegation`]);
+/// a decline withdraws them now; a lapse leaves them to the delegation
+/// sweeper, which withdraws them at the same deadline. Raised by the
+/// community, not by a requester's document: the requester is the community's
+/// own DID, and nobody can cancel it.
+///
+/// Nothing is raised when nobody could approve it — the sweeper still
+/// withdraws at the deadline, and the entries still show the review.
+pub(crate) async fn raise_grants_review(
+    state: &AppState,
+    granter: &str,
+    subjects: &[String],
+    deadline: u64,
+) -> Result<Option<String>, AppError> {
+    if subjects.is_empty() {
+        return Ok(None);
+    }
+    let act = Act::GrantsReview;
+    let now = now_epoch();
+    let vtc_did = state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| "did:key:vtc-community".into());
+    let stake = act.default_stake();
+    let approvers: Vec<String> =
+        admin_consent::approvers_for(state, act, &stake, &vtc_did, granter, now)
+            .await?
+            .into_iter()
+            .filter(|d| !subjects.contains(d))
+            .collect();
+    if approvers.is_empty() {
+        warn!(
+            granter,
+            subjects = subjects.len(),
+            "a departed granter's grants are under review, and nobody else may approve \
+             vtc.roles.assign to re-affirm them: they are withdrawn at the deadline"
+        );
+        return Ok(None);
+    }
+    let payload = json!({
+        "granter": granter,
+        "subjects": subjects,
+        "deadline": rfc3339(deadline),
+    });
+    let type_uri = summary::GRANTS_REVIEW_URI;
+    let digest = task_consent::payload_digest(type_uri, &payload)?;
+    let mut slots = Vec::with_capacity(approvers.len());
+    for did in &approvers {
+        let challenge = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        slots.push(ApproverSlot {
+            did: did.clone(),
+            wire_digest: task_consent::wire_digest(type_uri, &payload, &challenge)?,
+            challenge,
+        });
+    }
+    let rec = ActionRecord {
+        id: format!("act-{}", uuid::Uuid::new_v4().simple()),
+        kind: act.kind(type_uri).to_string(),
+        act,
+        stake,
+        type_uri: type_uri.to_string(),
+        payload,
+        digest,
+        submitted_doc: Value::Null,
+        submitted_signer: String::new(),
+        transport: "host".into(),
+        requester: vtc_did,
+        subject: granter.to_string(),
+        requester_step_up: RequesterStepUp {
+            kind: "community".into(),
+            credential_id: String::new(),
+            bound_to: String::new(),
+            at: now,
+        },
+        approver_set: act.approver_set().to_string(),
+        approvers: slots,
+        // One administrator who covers a grant re-affirms it, as writing it
+        // again with acl/update does (`vtc-admin-roles.md` §6.3).
+        threshold: 1,
+        approvals: Vec::new(),
+        state_pin: admin_consent::pin_for(state, act, granter).await?,
+        summary_text: format!("Re-affirm or withdraw the grants {granter} made"),
+        status: Status::Open,
+        created_at: now,
+        expires_at: deadline.max(now + 1),
+        executing_since: None,
+        closed_at: None,
+        closed_reason: None,
+        closed_message: None,
+        closed_by: None,
+        result: None,
+        result_secret: false,
+        category: Category::Approval,
+        cooling_off_until: None,
+        execution_id: None,
+        acknowledgers: None,
+        approver_invite: None,
+        consent_waived: false,
+    };
+    {
+        let _guard = ACTION_LOCK.lock().await;
+        for slot in &rec.approvers {
+            state
+                .admin_actions_ks
+                .insert_raw(wire_key(&slot.wire_digest), rec.id.as_bytes().to_vec())
+                .await?;
+        }
+        save(state, &rec).await?;
+    }
+    audit(state, &rec, &rec.requester.clone(), "raised", Vec::new()).await;
+    info!(
+        action = %rec.id,
+        granter,
+        subjects = subjects.len(),
+        approvers = rec.approvers.len(),
+        "a departed granter's grants are raised for review (VTI-ACL-071)"
+    );
+    push_requests(state, &rec).await;
+    Ok(Some(rec.id))
+}
+
+/// Execute an approved grants review: re-affirm each listed grant that is
+/// still under this granter's review and that one of the approvers covers.
+async fn execute_grants_review(
+    state: &AppState,
+    rec: &ActionRecord,
+) -> (bool, Option<Value>, Option<String>) {
+    let granter = rec.payload["granter"].as_str().unwrap_or_default();
+    let subjects: Vec<String> = rec.payload["subjects"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    // The approval that executes it, first: that administrator decided.
+    let mut approvers: Vec<String> = rec.approvals.iter().map(|a| a.did.clone()).collect();
+    approvers.reverse();
+    match crate::acl::delegation::reaffirm(state, granter, &subjects, &approvers).await {
+        Ok(outcome) => {
+            if let Err(e) = state
+                .admin_actions_ks
+                .insert_raw(
+                    effect_key(&rec.id),
+                    rec.execution_id.clone().unwrap_or_default().into_bytes(),
+                )
+                .await
+            {
+                warn!(action = %rec.id, error = %e, "could not mark a review's effect");
+            }
+            (true, Some(outcome), None)
+        }
+        Err(e) => (false, None, Some(e.to_string())),
+    }
+}
+
+// ─── role helpers ────────────────────────────────────────────────────────
+
+/// The approvers whose approvals the action executing on this task carries —
+/// the "defining administrators" `vtc/roles/define/0.1` item 4 bounds a role
+/// by, beside the requester. Empty outside an execution.
+pub(crate) async fn executing_approvers(state: &AppState) -> Vec<String> {
+    let Some(exec) = executing() else {
+        return Vec::new();
+    };
+    match load(state, &exec.action_id).await {
+        Ok(Some(rec)) => rec.approvals.into_iter().map(|a| a.did).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// How many open actions would grant custom role `name` when they execute —
+/// what `vtc/roles/delete/0.1` item 2 counts beside the entries holding it.
+pub(crate) async fn pending_role_grants(state: &AppState, name: &str) -> Result<u32, AppError> {
+    Ok(all(state)
+        .await?
+        .iter()
+        .filter(|r| r.status.is_open())
+        .filter(|r| {
+            r.payload.pointer("/entry/role").and_then(Value::as_str) == Some(name)
+                || r.payload.get("toRole").and_then(Value::as_str) == Some(name)
+        })
+        .count() as u32)
+}
+
 // ─── the two-administrator race (§8.2) ────────────────────────────────────
 
 /// First to act wins (VTI-APV-019, `vtc-action-list.md` §8.2): when
@@ -3125,6 +3361,21 @@ pub(crate) async fn sign_requests(
         // An operator's write is acknowledged, never consented to: nothing to
         // sign a request for.
         Act::OperatorWrite => return Ok(Vec::new()),
+        Act::ChangeRoles => (
+            "roleDefinitionChange",
+            json!({ "role": rec.subject }),
+            "The ceiling every holder of this role is bounded by changes, for all of them at once.",
+        ),
+        Act::RestoreBackup => (
+            "backupRestore",
+            json!({ "bundleId": rec.subject }),
+            "Every record in the backup replaces this community's, its access control included.",
+        ),
+        Act::GrantsReview => (
+            "authorityGrant",
+            json!({ "granter": rec.subject }),
+            "Approving re-affirms these grants under your own authority; declining withdraws them.",
+        ),
     };
     let effect = Effect::new(kind, rec.summary_text.clone())
         .detail(detail.as_object().cloned().unwrap_or_default());

@@ -632,6 +632,9 @@ pub(crate) async fn plan_write(
     {
         return Err(not_covered(&prev.did, "rewrite").into());
     }
+    // A custom role is bounded by its stored definition, read now — never by
+    // anything the caller sent (VTI-ACL-011, VTI-VTC-022).
+    crate::acl::roles::resolve(&state.acl_ks, &mut next).await?;
     granting::check_write(&actor, &next, now).map_err(WriteError::Refused)?;
 
     let (created_at, created_by, status) = match existing.as_ref() {
@@ -708,9 +711,26 @@ pub(crate) async fn commit_grant(
     } = plan;
     // Taking `vtc.roles.assign` away is attrition like any removal, checked and
     // written under the same admin-set lock (VTI-APV-009).
-    let _admin_set = if ends_assigner {
+    let custom_role = match entry.admin.admin_role.as_ref() {
+        Some(crate::acl::AdminRole::Custom(name)) => Some(name.clone()),
+        _ => None,
+    };
+    let _admin_set = if ends_assigner || custom_role.is_some() {
         let guard = crate::ceremony::lock_admin_set().await;
-        crate::acl::admin_consent::check_attrition(state, &entry.did).await?;
+        if ends_assigner {
+            crate::acl::admin_consent::check_attrition(state, &entry.did).await?;
+        }
+        // A grant racing `vtc/roles/delete` of its role: the deletion holds the
+        // same lock, so either it counted this holder and refused, or the role
+        // is gone now and the grant is refused (`vtc/roles/delete/0.1` item 3).
+        if let Some(name) = custom_role.as_deref()
+            && crate::acl::roles::get(&state.acl_ks, name).await?.is_none()
+        {
+            return Err(AppError::Validation(format!(
+                "'{name}' is not a role this community can grant — it was deleted \
+                 (VTI-ACL-011)"
+            )));
+        }
         Some(guard)
     } else {
         None
@@ -939,7 +959,7 @@ pub(crate) fn parse_admin_role(role: &str) -> Result<Option<AdminRole>, EntryPar
         return Ok(None);
     }
     match role.parse::<AdminRole>() {
-        Ok(r) if r.is_grantable() => Ok(Some(r)),
+        Ok(r) => Ok(Some(r)),
         _ => Err(EntryParseError::RoleNotRecognized(role.to_string())),
     }
 }
@@ -1053,6 +1073,9 @@ pub(crate) fn entry_from_v0_2(e: &Value) -> Result<VtcAclEntry, EntryParseError>
             capabilities,
             approve,
             approve_capabilities,
+            // Resolved against the stored definition by `plan_write`, never
+            // taken from the caller.
+            custom: None,
         },
         "",
     );
@@ -1666,6 +1689,293 @@ pub(crate) async fn caller_covers_target(
     })
 }
 
+// ---------- acl/swap-key ----------
+
+/// Why `acl/swap-key/0.1` refused — its declared codes, plus the generic ones.
+#[derive(Debug)]
+pub(crate) enum SwapError {
+    /// `notHolder`: the signer is not `currentSubject` (VTI-CLT-027, -030).
+    NotHolder(String),
+    /// `subjectNotFound`: no live entry for `currentSubject`.
+    SubjectNotFound(String),
+    /// `subjectAlreadyInUse`: `newSubject` already has an entry or a
+    /// membership.
+    SubjectAlreadyInUse(String),
+    /// `linkProofRequired`: this community requires the new key's consent.
+    LinkProofRequired,
+    /// `linkProofInvalid`, with the spec's `details.reason`.
+    LinkProofInvalid(&'static str, String),
+    App(AppError),
+}
+
+impl From<AppError> for SwapError {
+    fn from(e: AppError) -> Self {
+        SwapError::App(e)
+    }
+}
+
+/// The longest a link proof may live (VTI-CLT-026: short-lived).
+const LINK_PROOF_MAX_TTL_SECS: u64 = 900;
+
+/// Roll `current`'s ACL entry to `new` — the subject's own self-service
+/// rotation (**VTI-CLT-025 – 032**; the one exception **VTI-ACL-052** makes to
+/// "no subject modifies its own entry").
+///
+/// - Only the subject itself, signing as `current` (no delegated console key):
+///   a rotation is a change of name, and a name is changed only by its holder
+///   (VTI-CLT-027, -030).
+/// - `link_proof` — a VP-JWT signed by `new`, addressed to this community, and
+///   short-lived — proves the new key consents and is held (VTI-CLT-026,
+///   -028). It is **required**: without it a stolen `current` key could move
+///   the entry to a key the thief holds.
+/// - The successor carries **exactly** the predecessor's authority: role,
+///   capabilities, approve scope, label, expiry and provenance are copied, not
+///   re-derived, so a rotation can never be a grant (VTI-CLT-029). Delegations
+///   naming `current` as their granter are re-pointed to `new`, so a rotation
+///   is not a departure (§6.3).
+/// - The rotation is audited **before** it commits, and not committed if it
+///   cannot be (VTI-CLT-032), then committed as one move of the row that
+///   succeeds only while the entry is exactly as read (VTI-CLT-025; concurrent
+///   swaps serialise — one wins, the rest find `subjectNotFound`).
+/// - Afterwards `current` has no standing: its sessions are revoked
+///   (VTI-CLT-031).
+pub(crate) async fn swap_key(
+    state: &AppState,
+    signer: &str,
+    current: &str,
+    new: &str,
+    link_proof: Option<&Value>,
+    reason: Option<&str>,
+) -> Result<(VtcAclEntry, u32), SwapError> {
+    if signer != current {
+        return Err(SwapError::NotHolder(format!(
+            "the document is signed by {signer}, not by {current}: only an entry's own subject \
+             rolls it to a new key (VTI-CLT-027)"
+        )));
+    }
+    if current == new {
+        return Err(
+            AppError::Validation("newSubject must differ from currentSubject".into()).into(),
+        );
+    }
+    let now = now_epoch();
+    let Some(entry) = get_acl_entry(&state.acl_ks, current).await? else {
+        return Err(SwapError::SubjectNotFound(format!(
+            "{current} has no ACL entry"
+        )));
+    };
+    if entry.is_expired(now) {
+        return Err(SwapError::SubjectNotFound(format!(
+            "{current}'s ACL entry has expired; an expired entry confers nothing to roll \
+             (VTI-ACL-004)"
+        )));
+    }
+    if get_acl_entry(&state.acl_ks, new).await?.is_some()
+        || get_member(&state.members_ks, new).await?.is_some()
+    {
+        return Err(SwapError::SubjectAlreadyInUse(format!(
+            "{new} already has an ACL entry or a membership in this community"
+        )));
+    }
+
+    // The new key's consent (VTI-CLT-026, -028).
+    let proof = match link_proof {
+        None => return Err(SwapError::LinkProofRequired),
+        Some(Value::String(s)) => s.clone(),
+        Some(_) => {
+            return Err(SwapError::LinkProofInvalid(
+                "format_unsupported",
+                "this community accepts a link proof as a compact VP-JWT (an \
+                 AclSwapRequest presentation signed by newSubject)"
+                    .into(),
+            ));
+        }
+    };
+    verify_link_proof(state, &proof, new, now).await?;
+
+    // VTI-CLT-029: everything but the subject is the predecessor's, verbatim.
+    let mut successor = entry.clone();
+    successor.did = new.to_string();
+    successor.updated_at = Some(now);
+    successor.updated_by = Some(current.to_string());
+
+    let _admin_set = crate::ceremony::lock_admin_set().await;
+    let old_key = format!("acl:{current}");
+    let Some(expected) = state.acl_ks.get_raw(old_key.as_bytes()).await? else {
+        return Err(SwapError::SubjectNotFound(format!(
+            "{current} has no ACL entry"
+        )));
+    };
+    // VTI-CLT-032 (and VTI-ACL-057 for its hand-off sibling): durably audited
+    // before the commit, and not committed if it cannot be.
+    let writer = state.audit_writer.as_ref().ok_or_else(|| {
+        AppError::Internal("the audit log is not available, so nothing was rotated".into())
+    })?;
+    writer
+        .write(
+            current,
+            Some(new),
+            AuditEvent::AclKeyRotated(vti_common::audit::AclKeyRotatedData {
+                old_did: current.to_string(),
+                new_did: new.to_string(),
+                role: role_string(&entry),
+                reason: reason.map(str::to_string),
+            }),
+        )
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "the rotation could not be audited, so it was not made: {e}"
+            ))
+        })?;
+    match state
+        .acl_ks
+        .move_if_unchanged(old_key, expected, format!("acl:{new}"), &successor)
+        .await?
+    {
+        vti_common::store::MoveOutcome::Moved => {}
+        vti_common::store::MoveOutcome::SourceMissing => {
+            return Err(SwapError::SubjectNotFound(format!(
+                "{current}'s entry was moved or removed concurrently"
+            )));
+        }
+        vti_common::store::MoveOutcome::SourceChanged => {
+            return Err(AppError::Conflict(format!(
+                "{current}'s entry changed while it was being rotated; nothing was moved — send \
+                 it again"
+            ))
+            .into());
+        }
+        vti_common::store::MoveOutcome::TargetExists => {
+            return Err(SwapError::SubjectAlreadyInUse(format!(
+                "{new} gained an ACL entry concurrently"
+            )));
+        }
+    }
+    drop(_admin_set);
+
+    // The membership row follows the entry, as a member's own rotation moves it.
+    if let Some(mut m) = get_member(&state.members_ks, current).await? {
+        m.did = new.to_string();
+        if !state
+            .members_ks
+            .swap(
+                format!("members:{current}").into_bytes(),
+                format!("members:{new}").into_bytes(),
+                &m,
+            )
+            .await?
+        {
+            tracing::warn!(
+                current,
+                new,
+                "the member row could not follow the rotated entry"
+            );
+        }
+    }
+    let repointed = delegation::repoint(state, current, new).await?;
+    // VTI-CLT-031: the previous key has no standing.
+    let revoked = super::auth::revoke_sessions_for_did(&state.sessions_ks, current).await?;
+    info!(
+        old = %current,
+        new = %new,
+        repointed,
+        revoked,
+        "ACL entry rolled to a new key (acl/swap-key)"
+    );
+    let mut written = successor;
+    crate::acl::roles::resolve(&state.acl_ks, &mut written).await?;
+    Ok((written, repointed))
+}
+
+/// Verify an `acl/swap-key` link proof: a VP-JWT (`AclSwapRequest`) signed by
+/// `new`, addressed to this community, live and short-lived.
+async fn verify_link_proof(
+    state: &AppState,
+    jws: &str,
+    new: &str,
+    now: u64,
+) -> Result<(), SwapError> {
+    use vta_sdk::protocols::acl_management::swap::{AclSwapError, AclSwapPresentation};
+    let invalid = |reason: &'static str, m: String| SwapError::LinkProofInvalid(reason, m);
+    let presentation = AclSwapPresentation::new(jws);
+    let holder = presentation
+        .peek_holder()
+        .map_err(|e| invalid("format_unsupported", e.to_string()))?;
+    if holder != new {
+        return Err(invalid(
+            "subject_mismatch",
+            format!("the link proof is {holder}'s, not newSubject {new}'s"),
+        ));
+    }
+    if let Some(exp) = link_proof_exp(jws)
+        && exp > now.saturating_add(LINK_PROOF_MAX_TTL_SECS)
+    {
+        return Err(invalid(
+            "expired",
+            format!(
+                "the link proof is valid until {exp}, longer than the {LINK_PROOF_MAX_TTL_SECS} s \
+                 this community accepts (VTI-CLT-026: short-lived)"
+            ),
+        ));
+    }
+    let audience = state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| AppError::Internal("this community has no DID to be addressed by".into()))?;
+    let doc = new_subject_document(state, new).await?;
+    presentation
+        .verify(&doc, &audience, now)
+        .map(|_| ())
+        .map_err(|e| match e {
+            AclSwapError::Expired { .. } => invalid("expired", e.to_string()),
+            AclSwapError::WrongAudience { .. } => invalid("nonce_mismatch", e.to_string()),
+            AclSwapError::HolderMismatch => invalid("subject_mismatch", e.to_string()),
+            AclSwapError::Signature(_) => invalid("signature_invalid", e.to_string()),
+            other => invalid("format_unsupported", other.to_string()),
+        })
+}
+
+/// The `exp` a VP-JWT claims, unverified — only to bound its lifetime.
+fn link_proof_exp(jws: &str) -> Option<u64> {
+    use base64::Engine as _;
+    let payload = jws.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice::<Value>(&bytes).ok()?["exp"].as_u64()
+}
+
+/// `new`'s DID document — built locally for a `did:key`, resolved otherwise.
+async fn new_subject_document(state: &AppState, new: &str) -> Result<Value, SwapError> {
+    if let Some(mb) = new.strip_prefix("did:key:") {
+        return Ok(json!({
+            "id": new,
+            "verificationMethod": [{
+                "id": format!("{new}#{mb}"),
+                "type": "Multikey",
+                "controller": new,
+                "publicKeyMultibase": mb,
+            }],
+        }));
+    }
+    let resolver = state.did_resolver.as_ref().ok_or_else(|| {
+        SwapError::LinkProofInvalid(
+            "format_unsupported",
+            format!("{new} cannot be resolved here: this community has no DID resolver"),
+        )
+    })?;
+    let resolved = resolver.resolve(new).await.map_err(|e| {
+        SwapError::LinkProofInvalid("signature_invalid", format!("resolve {new}: {e}"))
+    })?;
+    serde_json::to_value(&resolved.doc)
+        .map_err(|e| AppError::Internal(format!("serialise {new}'s DID document: {e}")).into())
+}
+
 #[cfg(test)]
 mod tests {
     //! Wire-shape tests for the ACL bodies and renderings.
@@ -1834,9 +2144,27 @@ mod tests {
         assert_eq!(e.admin.approve, VtcActScope::None, "absent approve is none");
         assert_eq!(e.role, VtcRole::Member);
 
+        // A name that is no built-in reads as a custom role, and is
+        // recognised only once resolved against a stored definition
+        // (`plan_write`); unresolved, it is refused (VTI-ACL-011).
+        let custom = entry_from_v0_2(&json!({
+            "subject": "did:key:zS", "role": "godmode",
+            "act": {"scope": "all"}, "keys": {"scope": "none"},
+            "capabilities": {"scope": "ceiling"},
+        }))
+        .ok()
+        .unwrap();
+        assert_eq!(
+            custom.admin.admin_role,
+            Some(AdminRole::Custom("godmode".into()))
+        );
+        assert!(matches!(
+            custom.admin.validate_against_ceiling(),
+            Err(crate::acl::capability::CeilingError::RoleNotRecognized(_))
+        ));
         assert!(matches!(
             entry_from_v0_2(&json!({
-                "subject": "did:key:zS", "role": "godmode",
+                "subject": "did:key:zS", "role": "Not A Role",
                 "act": {"scope": "all"}, "keys": {"scope": "none"},
                 "capabilities": {"scope": "ceiling"},
             })),

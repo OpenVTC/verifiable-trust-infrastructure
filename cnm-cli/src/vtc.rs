@@ -139,6 +139,32 @@ pub async fn confirm_identity(
         .map(|_| ())
 }
 
+/// Roll `old_did`'s ACL entry at the VTC onto `new_did` (`acl/swap-key/0.1`,
+/// VTI-CLT-025 – 032), signed by the old key with a link proof from the new
+/// one. The entry keeps exactly its authority; `old_did` loses all standing
+/// the moment the VTC answers, so the caller must already hold `new_key`
+/// somewhere durable (VTI-CLT-033).
+///
+/// No separate reachability probe precedes the swap (VTI-CLT-023): the VTC is
+/// reached over the same HTTPS endpoint whichever key signs, and the swap's
+/// own answer is the confirmation that the new key is accepted.
+pub async fn swap_key(
+    target: &VtcTarget,
+    old_did: &str,
+    old_key: &str,
+    new_did: &str,
+    new_key: &str,
+) -> CliResult {
+    let holder = HolderKey::from_did_key(old_did, old_key)
+        .map_err(|e| format!("the stored identity {old_did} cannot sign: {e}"))?;
+    let client = VtcClient::with_key(&target.base, &target.did, holder.clone());
+    client
+        .acl_swap_key(&holder, new_did, new_key, Some("cnm key rotation"))
+        .await
+        .map_err(|e| format!("the VTC did not roll {old_did} onto a new key: {e}"))?;
+    Ok(())
+}
+
 /// [`connect`] for an identity in hand.
 async fn connect_as(
     target: &VtcTarget,

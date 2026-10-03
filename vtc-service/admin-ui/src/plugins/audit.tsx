@@ -82,6 +82,9 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   AdminActionBurst: "Admin raised a burst of actions for approval",
   AdminActionEffect: "An approved action's operation took effect",
   SingleAdminMode: "Single-administrator mode: in effect, changed, or a consent waived (VTI-APV-022)",
+  AdminRoleDefined: "Custom administrative role defined",
+  AdminRoleDeleted: "Custom administrative role deleted",
+  AclKeyRotated: "ACL entry rolled to a new key",
 };
 
 // Events that fire on a schedule or at daemon-internal lifecycle

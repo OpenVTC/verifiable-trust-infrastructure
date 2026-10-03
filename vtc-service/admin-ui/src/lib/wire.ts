@@ -4048,6 +4048,20 @@ export interface components {
          */
         WhoamiResponse: {
             /**
+             * @description What the caller's ACL entry lets it do **now**, as `cap[@resource]` —
+             *     the published member for exactly this (`auth/whoami/0.1`
+             *     `capabilities`: "resolved as they would be enforced"). Read from the
+             *     live entry on every call, never from the session, so a console renders
+             *     navigation and actions per capability rather than per role. A hint for
+             *     what to offer: every operation still asks the entry itself.
+             */
+            capabilities?: string[];
+            /**
+             * @description `org.openvtc`: the administrative role, and what the caller may
+             *     approve — which the published members have no place for.
+             */
+            ext?: Record<string, never> | null;
+            /**
              * @description The caller's roles. Plural because the component says so: a single
              *     role is one entry, and a deployment that grows to several does not
              *     need a new response shape.

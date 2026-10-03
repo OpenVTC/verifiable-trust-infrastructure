@@ -28,7 +28,7 @@ import { Siren } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { NamedDid } from "@/components/NamedDid";
 import { useNameBook } from "@/lib/names";
-import { useIsSuperAdmin, useViewerDid } from "@/lib/viewer";
+import { useIsCommunityAdmin, useViewerDid } from "@/lib/viewer";
 import type { GitNsRight } from "@/lib/wire-types";
 import type { GitNsBreakGlassItem } from "./model";
 
@@ -77,7 +77,7 @@ function HandOver({ why, command }: { why: string; command: string }) {
 export function BreakGlassList() {
   const book = useNameBook();
   const viewer = useViewerDid();
-  const superAdmin = useIsSuperAdmin();
+  const superAdmin = useIsCommunityAdmin();
   const q = useQuery({ queryKey: gitNsKeys.breakGlass, queryFn: fetchBreakGlass });
   // The viewer's own standing, to tell a namespace admin from one whose only
   // standing is an unconfirmed break-glass. A scoped administrator cannot

@@ -52,6 +52,10 @@ const signedInAs = (roles: string[], scopes: string[]): WhoamiResponse => ({
   },
   roles,
   scopes,
+  // A community administrator is read from the capabilities whoami reports.
+  ...(roles.includes("admin") && scopes.length === 0
+    ? { capabilities: ["vtc.roles.assign"], ext: { "org.openvtc": { adminRole: "community-admin" } } }
+    : {}),
 });
 /** The admin role with no context restriction: the community administrator
  *  that reseat is signed as. */

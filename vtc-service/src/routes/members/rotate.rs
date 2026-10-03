@@ -474,6 +474,10 @@ pub(crate) async fn rotate_inner(
         }
     }
 
+    // 8b. A rotated administrator is the same granter under a new name, not a
+    // departed one: the entries it delegated follow it (VTI-ACL-071).
+    crate::acl::delegation::repoint(state, &body.old_did, &body.new_did).await?;
+
     // 9. Revoke every session keyed on the old DID.
     let sessions = list_sessions(&state.sessions_ks).await?;
     for s in sessions.iter().filter(|s| s.did == body.old_did) {

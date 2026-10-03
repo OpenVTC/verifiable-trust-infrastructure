@@ -164,8 +164,8 @@ describe("refusal", () => {
     expect((out as SummaryRefusal).reason).toBe("badFormat");
   });
 
-  it("pins exactly twenty-one (kind, typeUri) pairs", () => {
-    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(21);
+  it("pins exactly twenty-five (kind, typeUri) pairs", () => {
+    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(25);
   });
 });
 
@@ -318,5 +318,63 @@ describe("digests", () => {
     expect(typeUri.length).toBe(41);
     const got = await wireDigest(typeUri, {}, "abc");
     expect(Array.from(digestBytesOf(got)!)).toEqual(Array.from(hex));
+  });
+});
+
+// The role-based-administration kinds (`vtc-admin-roles.md` §6.2, §6.3, §7):
+// each template exactly as `vtc-service/src/admin_actions/summary.rs`
+// declares it, its digest recomputed here so a pin that drifted fails.
+describe("role-based administration templates", () => {
+  const f = (pointer: string, format: string) => ({ pointer, format });
+  const S = "https://trusttasks.org/spec";
+  const TEMPLATES = [
+    {
+      kind: "acl.role.define",
+      typeUri: `${S}/vtc/roles/define/0.1`,
+      title: "Define the administrative role {name}",
+      effect:
+        "Anyone holding {name} may then hold at most {ceiling} and approve at most {approveScope}. Replacing a role changes what every holder may do at once.",
+      fields: {
+        name: f("/name", "text"),
+        ceiling: f("/ceiling", "text"),
+        approveScope: f("/approveScope", "text"),
+        replaces: f("/replaces", "text"),
+        reason: f("/reason", "text"),
+      },
+    },
+    {
+      kind: "acl.role.delete",
+      typeUri: `${S}/vtc/roles/delete/0.1`,
+      title: "Delete the administrative role {name}",
+      effect:
+        "The role {name} leaves this community's vocabulary. Nobody holds it, so nobody's authority changes.",
+      fields: { name: f("/name", "text"), reason: f("/reason", "text") },
+    },
+    {
+      kind: "backup.restore",
+      typeUri: `${S}/backup/finalize-import/0.1`,
+      title: "Restore this community from backup {bundleId}",
+      effect:
+        "Every record in the backup replaces this community's — its access control included, so who administers it afterwards is whoever the backup says.",
+      fields: { bundleId: f("/bundleId", "text") },
+    },
+    {
+      kind: "acl.grants.review",
+      typeUri: "urn:openvtc:vtc:acl:grants-review",
+      title: "Re-affirm or withdraw the grants {granter} made",
+      effect:
+        "{granter} granted authority to {subjects} and no longer holds it. Approving re-affirms those grants under your own authority; declining, or letting this lapse, withdraws them.",
+      fields: {
+        granter: f("/granter", "did"),
+        subjects: f("/subjects", "capabilityList"),
+        deadline: f("/deadline", "datetime"),
+      },
+    },
+  ];
+
+  it.each(TEMPLATES)("pins $kind under its type", (t) => {
+    expect(PINNED_TEMPLATE_DIGESTS[`${t.kind}\n${t.typeUri}`]).toBe(
+      nodeMultihash(Buffer.from(jcsCanonicalize(t), "utf8")),
+    );
   });
 });
