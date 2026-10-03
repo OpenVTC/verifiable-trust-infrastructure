@@ -70,13 +70,23 @@ const TASK_ACCEPTS_DELETE = "https://trusttasks.org/spec/vtc/schemas/accepts/del
 /** How many pages of a signed listing the console reads before it stops. */
 const MAX_LIST_PAGES = 20;
 
+/**
+ * Page size for the listings whose specifications cap `limit` at 100 (vetter
+ * grants, revocations). A request above a listing's own maximum is refused as
+ * malformed, so each caller passes the bound its specification declares.
+ */
+const PAGE_SIZE_100 = 100;
+
+/** `vtc/schemas/accepts/list` (0.1 and 0.2) caps `limit` at 50. */
+export const ACCEPTS_PAGE_SIZE = 50;
+
 /** Every item of a paged signed listing (`{ items, nextCursor? }`). */
-async function allItems<T>(task: string): Promise<T[]> {
+async function allItems<T>(task: string, pageSize: number = PAGE_SIZE_100): Promise<T[]> {
   const out: T[] = [];
   let cursor: string | null = null;
   for (let page = 0; page < MAX_LIST_PAGES; page++) {
     const body: { items: T[]; nextCursor?: string | null } = await postSignedRead(task, {
-      limit: 100,
+      limit: pageSize,
       ...(cursor ? { cursor } : {}),
     });
     out.push(...body.items);
@@ -224,7 +234,7 @@ export const fetchManifest = (): Promise<JoinManifest> =>
 // here rather than a shortcut.
 
 export const fetchCriteria = (): Promise<AcceptsCriterion[]> =>
-  allItems<AcceptsCriterion>(TASK_ACCEPTS_LIST);
+  allItems<AcceptsCriterion>(TASK_ACCEPTS_LIST, ACCEPTS_PAGE_SIZE);
 
 /**
  * Store a criterion. The task registers **or replaces** by id, so this is both

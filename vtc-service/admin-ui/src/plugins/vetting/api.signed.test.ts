@@ -12,7 +12,12 @@ import {
 } from "@/lib/console-key";
 import { mockFetch } from "@/test/render";
 
-import { deleteEndorsementType, registerEndorsementType } from "./api";
+import {
+  ACCEPTS_PAGE_SIZE,
+  deleteEndorsementType,
+  fetchCriteria,
+  registerEndorsementType,
+} from "./api";
 
 const VTC_DID = "did:webvh:QmScid:community.example:vtc";
 const REGISTER = "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
@@ -43,6 +48,42 @@ function response(type: string, payload: unknown) {
     payload,
   };
 }
+
+describe("admission criteria listing", () => {
+  const ACCEPTS_LIST = "https://trusttasks.org/spec/vtc/schemas/accepts/list/0.2";
+
+  // `vtc/schemas/accepts/list` caps `limit` at 50; asking for more is refused
+  // as malformed and the Requirements tab showed "could not load the
+  // admission criteria". Pin the bound, and that paging follows the cursor.
+  it("asks within the specification's limit and follows the cursor", async () => {
+    expect(ACCEPTS_PAGE_SIZE).toBeLessThanOrEqual(50);
+    await generateConsoleKey();
+    const requests = mockFetch([
+      health(),
+      {
+        method: "POST",
+        path: "/v1/trust-tasks",
+        body: ({ body }: { url: string; body: unknown }) =>
+          (body as SignedTrustTaskDocument).payload &&
+          ((body as SignedTrustTaskDocument).payload as { cursor?: string }).cursor === "page-2"
+            ? response(ACCEPTS_LIST, { items: [{ id: "b" }] })
+            : response(ACCEPTS_LIST, { items: [{ id: "a" }], nextCursor: "page-2" }),
+      },
+    ]);
+
+    const criteria = await fetchCriteria();
+    expect(criteria.map((c) => (c as unknown as { id: string }).id)).toEqual(["a", "b"]);
+
+    const docs = requests
+      .filter((r) => r.url === "/v1/trust-tasks")
+      .map((r) => r.body as SignedTrustTaskDocument);
+    const [first, second] = docs;
+    expect(docs).toHaveLength(2);
+    expect(first?.type).toBe(ACCEPTS_LIST);
+    expect(first?.payload).toEqual({ limit: ACCEPTS_PAGE_SIZE });
+    expect(second?.payload).toEqual({ limit: ACCEPTS_PAGE_SIZE, cursor: "page-2" });
+  });
+});
 
 describe("endorsement-type writes with a console key", () => {
   it("registers through the signed door, with the body as the payload", async () => {
