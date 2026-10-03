@@ -470,6 +470,11 @@ new flow, update both this section and the relevant `docs/*.md`.
   fail-closed); omit for legacy implicit resolution. All backends except
   TEE-KMS (a permanent VTC non-goal) are supported. Factory:
   `vtc-service/src/keys/seed_store/mod.rs::create_secret_store`.
+- **First administrators**: the install claim writes the first
+  `community-admin` (passkey claim 0.2, or wallet claim 0.3 binding the
+  plugin's approver as step-up factor); `co_admin_did` adds a second;
+  `--single-admin` writes `[acl] single_admin_mode` (see *VTC administrator
+  action list*).
 - **Code**: `vtc-service/src/setup/{wizard,from_toml,phase1}.rs` (both
   front-ends build one `WizardPlan` → shared `apply`),
   `vtc-service/src/main.rs` (`setup` subcommand),
@@ -491,8 +496,10 @@ new flow, update both this section and the relevant `docs/*.md`.
   (read-only on pnm's profile; pnm's key is used in memory once, never
   stored), or the sealed bundle (digest-pinned, unchanged). Communities get an
   identity **each** (`cnm community add` → grant at the VTC →
-  `cnm community continue`); the VTC has no rotation task, so that key is
-  kept. Sharing one across communities takes `--reuse-identity`.
+  `cnm community continue`, which then rotates the granted key over
+  `acl/swap-key/0.1`; `cnm community rotate` does it again later). An identity
+  bound to a community VTA (`--vta-did`) or shared across communities
+  (`--reuse-identity`, never implicit) is not rotated.
 - **Code**: `pnm-cli/src/setup.rs`, `vta-service/src/main.rs` (`import-did`),
   `cnm-cli/src/{onboard,setup,pnm_profile}.rs`.
 - **Docs**: `docs/02-vta/cold-start.md` §3–6, `docs/03-vtc/getting-started.md`
@@ -838,10 +845,10 @@ new flow, update both this section and the relevant `docs/*.md`.
   document, `SingleAdminMode{selfGrantWaived}` written before the record or the
   operation is refused; the record is marked `singleAdmin` and counts for the
   invariants.
-- **VTC differs: it parks, the VTA re-sends.** A consent-gated VTC operation
-  (APV-014/-019/-020, VTC-022) is stored as an action (202 + `actionId`) and
-  runs itself, re-checked, on the N-th approval. Code: `vtc-service/src/admin_actions/`,
-  `vtc-service/src/trust_tasks/action_tasks.rs`; docs: `docs/05-design-notes/vtc-action-list.md`.
+- **The VTC differs: it parks, the VTA re-sends.** A consent-gated VTC
+  operation is stored as an action and runs itself on the N-th approval — see
+  *VTC administrator action list* below. The VTC has no rule list yet; its
+  approval rules are fixed in code.
 
 ### Vault archival lifecycle (archive / soft-delete / restore / purge)
 - **What**: Full lifecycle for **both** VTA stores — the password
@@ -1009,6 +1016,56 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vta-service/src/routes/did_templates.rs`, `vta-service/src/operations/did_templates.rs`.
 - **Docs**: `docs/02-vta/did-templates.md`.
 
+### VTC administrator action list (`vtc/admin/actions/*`)
+- **What**: Second-party consent at the VTC. An operation that needs other
+  administrators' agreement — an authority-conferring grant or admin invite
+  (VTI-APV-018), a reduction of another administrator (APV-019), lowering the
+  consent threshold (APV-020), authority policy (VTI-VTC-022), a custom role
+  define/delete, a restore's commit — is **parked** after the requester's
+  operation-bound step-up (202 + `trust-task-next-step` naming the action) and
+  **runs itself on the N-th approval**, every check re-run against the
+  community as it is then (APV-017). The same list holds `coolingOff` items (a
+  reduction nobody but requester and subject could approve; lands after
+  `acl.removal_cooling_off`, cancellable by the requester only) and
+  `acknowledge` items (each offline ACL write, VTI-VTC-023, record type
+  `vtc/operator/offline-write/0.1`).
+- **Invariants to preserve**: an approval is a `task-consent/decision` signed
+  by the approver's **own DID** (wallet or `cnm`), never a console key;
+  `webauthn` / `approverSigned` evidence rides beside it, never instead. The
+  requester never approves, nor the subject of a reduction. One decline closes
+  an action. Execution is crash-safe (`executing` + effect record, reconciled
+  by the minute sweeper). **Single-administrator mode** (VTI-APV-022, `[acl]
+  single_admin_mode`) is host-only (setup writes it; `config/patch` / import
+  refuse it), waives a consent only when the approver set is **empty**, on the
+  requester's bound step-up, always `Critical`-audited and bannered; it never
+  skips a reduction's cooling-off. Never widen it to a non-empty set or make
+  it patchable.
+- **Code**: `vtc-service/src/admin_actions/`,
+  `vtc-service/src/acl/{admin_consent,single_admin}.rs`,
+  `vtc-service/src/trust_tasks/action_tasks.rs`, `cnm-cli/src/actions.rs`.
+- **Docs**: `docs/03-vtc/admin-access.md` §2–3,
+  `docs/05-design-notes/vtc-action-list.md`.
+
+### VTC step-up: passkeys and approver devices
+- **What**: Authority-changing VTC acts need a step-up bound to a digest of
+  that one operation (`acl::bound_step_up`, one use within 300 s). It is
+  answered by a passkey, or by a **step-up approver** — an Ed25519 `did:key`
+  bound to the subject, such as the browser plugin's per-community approver
+  identity (`approveStepUp`) — whose statement is carried in an
+  approve-response signed by the subject's own DID (VTI-APV-015).
+- **Invariants to preserve**: every enrolment rests on an anchor independent of
+  the subject's signing key — install claim 0.3, another administrator's
+  invite, a factor already held, or `vtc admin enrol-approver` offline — proves
+  possession, and is audited with `enrolledVia` (VTI-APV-016). Nobody invites
+  themselves; a revoked approver DID is never bound again. Once a subject holds
+  a dedicated factor, their session passkeys stop counting. A
+  console-key-signed answer is `subjectMismatch`.
+- **Code**: `vtc-service/src/acl/{bound_step_up,approver}.rs`,
+  `vtc-service/src/step_up_approver.rs`,
+  `vtc-service/src/trust_tasks/step_up_approver_tasks.rs`.
+- **Docs**: `docs/03-vtc/admin-access.md` §3.1,
+  `docs/05-design-notes/vtc-approver-step-up.md`.
+
 ### VTC role-based administration (`acl/*/0.2`, `vtc/roles/*`)
 - **What**: VTC authority is capabilities (optionally resource-qualified)
   bounded by an administrative role's ceiling; built-in roles plus **custom
@@ -1023,7 +1080,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   `approver` counts. A role's ceiling is bounded by its requester's **and
   approvers'** holdings. A departed (removed, narrowed or expired) granter's
   grants become one `acl.grants.review` action; the delegation sweeper is the
-  backstop. `acl/swap-key/0.1` is the only self-modification: same authority,
+  backstop. Git grants (resource grants beside the role) go to review only on
+  the granter's departure from the community, never on a narrowing. `acl/swap-key/0.1` is the only self-modification: same authority,
   link proof from the new key, audited before the atomic move, delegations
   re-pointed.
 - **Code**: `vtc-service/src/acl/{capability,roles,granting,delegation,admin_consent}.rs`,

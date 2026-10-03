@@ -1,6 +1,6 @@
 # The administrator action list — N-of-M approvals that complete themselves
 
-Status: **accepted** (2026-10-02; §7a, §7b, §8a decided with the maintainer).
+Status: **implemented** (accepted 2026-10-02, §7a, §7b, §8a decided with the maintainer; see *As built* below).
 **Phase A1 is implemented**: §4–§7 for every consent-gated VTC operation
 (VTI-APV-014, VTI-APV-019, VTI-APV-020, VTI-VTC-022), and `task-consent/decision/0.2`
 with `webauthn` evidence. **Phase A2 is implemented** (§10): acknowledge items
@@ -30,6 +30,43 @@ Two deviations from the text below, as built:
 Builds on `vtc-operation-bound-step-up.md` §4 (the APV-014 consent as built,
 `vtc-service/src/acl/admin_consent.rs`) and the shared consent store
 (`vti_common::task_consent`).
+
+### As built
+
+| PR | What it built |
+|---|---|
+| #1914 | this note |
+| #1917 | §7b: the stop-gaps for the three holes of §8.1 — removals and narrowings (VTI-APV-019), threshold lowering (VTI-APV-020) and authority policy (VTI-VTC-022) take a second party |
+| #1918 | A1: parking, completion on the N-th approval with every check re-run (VTI-APV-017), the Actions page, `cnm actions` / `cnm consent --action`, `task-consent/decision/0.2` |
+| #1919 | approver-signed step-up, which §6's `approverSigned` evidence rests on (`vtc-approver-step-up.md`) |
+| #1920 | A2: acknowledge items for offline writes (VTI-VTC-023), the authority-reduced notice, the two-admin cooling-off, `approverSigned` decisions, crash-safe execution, pushes off by default |
+| #1922 | the A2 follow-ups on trust-tasks-rs 0.27: `vtc/admin/actions/*/0.2` with `coolingOff`, the reduction-pending notice, the `offline-write/0.1` record, approving with an approver device |
+| #1925 | single-administrator mode (§8.5, VTI-APV-022) |
+| #1927 | the same machinery for custom roles, the departed-granter review (`acl.grants.review`) and a restore's commit (`vtc-admin-roles.md` §7) |
+| #1929 | the join-request badge and the dashboard's count tiles beside the Actions badge |
+| #1931 | the existing queues as `queue` items (§8.2): break-glass ratification, join review, vetting withdrawal review; listings that filter before paging and count exactly |
+
+Deviations recorded during implementation, beside the two above:
+
+- **Removals keep their cooling-off in single-administrator mode.** The mode
+  waives a consent nobody but the requester could give; it never lands a
+  reduction of another administrator at once, because the subject is an
+  eligible approver of every grant of the stake (§8.5).
+- **Consent is a SHOULD.** VTI-APV-014 and -018 – -020 are SHOULD, and
+  VTI-APV-022 is the one way this VTC does not apply them: single-administrator
+  mode, host-configured, judged per act from the same approver set. Without
+  the mode an empty approver set is refused before any gesture.
+- **Console approvals are signed with the wallet.** An approval is always a
+  `task-consent/decision` signed by the approver's own DID — through the
+  browser wallet in the console, or by `cnm` — never a console key. A passkey
+  assertion or an approver device's `approverSigned` statement rides beside
+  the signature as extra evidence, never in place of it (§6).
+- **Not built**: the rule list of §8.3 and the policy-optional rules of §8.2
+  (`vtc.approvals.admin` gates only custom roles); `requireRequesterAtCompletion`
+  (§4.3); a join review needing N > 1 decisions; a published record type for
+  the community's own review and queue items — the departed-granter review,
+  the boot migration's acknowledge item and the three queues still name their
+  payload with placeholder `urn:openvtc:` URIs.
 
 ---
 
