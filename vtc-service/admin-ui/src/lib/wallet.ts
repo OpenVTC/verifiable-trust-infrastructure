@@ -135,6 +135,53 @@ interface VtaWalletProvider {
     challenge: string;
     boundTo: string;
   }): Promise<ApproverStatementResult>;
+  /** Have the approver for `audience` sign a **decision** statement
+   *  (`auth/step-up/approver/attest/0.1`, `purpose: decision`) over an
+   *  administrator action (vta-browser-plugin #293).
+   *
+   *  `decision.payloadDigest` is the decision's per-approver **wire** digest —
+   *  `wireDigest(action.type, action.payload, decision.challenge)`, domain
+   *  `vta/task-consent/v1\0` — never the action's unsalted `payloadDigest`.
+   *  The plugin recomputes it from `action` and refuses when it differs,
+   *  renders the action (and its `summary`) to the user, takes the gesture,
+   *  and returns the signed statement. It then signs, without a second
+   *  prompt, a `task-consent/decision/0.2` from `subject` whose payload
+   *  carries exactly these `challenge`, `payloadDigest`, `decision`, `reason`
+   *  and `actionId` with the statement as `approverSigned` evidence — any
+   *  other payload prompts as an ordinary `signTrustTask`.
+   *
+   *  Absent from wallet builds without decision support. */
+  approveDecision?(params: ApproveDecisionParams): Promise<ApproverStatementResult>;
+}
+
+/** What [`VtaWalletProvider.approveDecision`] takes. */
+export interface ApproveDecisionParams {
+  /** The VTC's DID — whose approver answers. */
+  audience: string;
+  /** The signed-in administrator — the decision's signer. */
+  subject: string;
+  action: {
+    /** The action's `typeUri`. */
+    type: string;
+    payload: unknown;
+    actionId: string;
+    /** The action's summary, as received. */
+    summary: unknown;
+  };
+  decision: {
+    challenge: string;
+    /** The salted wire digest, as the decision carries it. */
+    payloadDigest: string;
+    decision: "approve" | "deny";
+    reason?: string;
+  };
+}
+
+/** `task-consent/decision/0.2`'s `approverSigned` evidence: the approver's
+ *  signed `attest/0.1` statement (`purpose: decision`), carried unchanged. */
+export interface ApproverSignedEvidence {
+  kind: "approverSigned";
+  statement: Record<string, unknown>;
 }
 
 /** The step-up request handed to the plugin's `approveStepUp` — the VTC's
@@ -221,6 +268,33 @@ export function isWalletApproverEnrolmentAvailable(): boolean {
     typeof window.vtaWallet?.approverIdentity === "function" &&
     typeof window.vtaWallet?.attestApprover === "function"
   );
+}
+
+/** True iff the wallet can answer an administrator action's decision with its
+ *  approver **and** sign the decision as the administrator — both halves of an
+ *  `approverSigned` decision (`task-consent/decision/0.2`). */
+export function isWalletDecisionApproverAvailable(): boolean {
+  return isWalletSigningAvailable() && typeof window.vtaWallet?.approveDecision === "function";
+}
+
+/** The approver `did:key` this browser's plugin holds for `audience`, or
+ *  `null` when the plugin does not say (no `approverIdentity`). */
+export async function walletApproverIdentity(audience: string): Promise<string | null> {
+  if (typeof window === "undefined" || typeof window.vtaWallet?.approverIdentity !== "function") {
+    return null;
+  }
+  const { approverDid } = await window.vtaWallet.approverIdentity({ audience });
+  return typeof approverDid === "string" && approverDid ? approverDid : null;
+}
+
+/** [`VtaWalletProvider.approveDecision`], feature-detected. */
+export async function approveDecisionWithWallet(
+  params: ApproveDecisionParams,
+): Promise<ApproverStatementResult> {
+  if (!isWalletDecisionApproverAvailable()) {
+    throw new Error("The VTA wallet extension cannot answer a decision with an approver.");
+  }
+  return checkStatement(await window.vtaWallet!.approveDecision!(params));
 }
 
 /** The statement must be an `attest/0.1` document issued by a `did:key` —

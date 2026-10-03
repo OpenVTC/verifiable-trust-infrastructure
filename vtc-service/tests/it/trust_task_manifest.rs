@@ -757,6 +757,11 @@ const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
     // redeem/finish, enroll or install claim/finish 0.3 — never acted on alone
     // (attest/0.1 consumer item 1).
     "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1",
+    // A record type, never sent and never dispatched: an acknowledge item's
+    // `typeUri` for an operator's offline write, whose `payload` is the record
+    // (VTI-VTC-023, trust-tasks-tf #719). The console only reads it, to pin
+    // the summary template; a document of this type answers `unsupportedType`.
+    "https://trusttasks.org/spec/vtc/operator/offline-write/0.1",
 ];
 
 /// Document types the console sends that the *spine* dispatches rather than
@@ -771,11 +776,13 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // The administrator action list (`trust_tasks::action_tasks`): its reads
     // and withdrawal, signed by the console key, and an approver's decision,
     // signed by the approver's own DID through the wallet.
-    "https://trusttasks.org/spec/vtc/admin/actions/list/0.1",
-    "https://trusttasks.org/spec/vtc/admin/actions/show/0.1",
-    "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.1",
+    // At 0.2 (`_shared/0.2`, a cooling-off in its own terms); the spine still
+    // answers 0.1, which the console no longer sends.
+    "https://trusttasks.org/spec/vtc/admin/actions/list/0.2",
+    "https://trusttasks.org/spec/vtc/admin/actions/show/0.2",
+    "https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2",
     // An operator's offline write, acknowledged (VTI-VTC-023).
-    "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.1",
+    "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2",
     "https://trusttasks.org/spec/task-consent/decision/0.2",
     // Their bearer routes stayed for `vtc-client`; the console already signed
     // them, and now nothing else binds them either.

@@ -381,6 +381,67 @@ fn sample_action(open: bool) -> serde_json::Value {
     action
 }
 
+/// A cooling-off as `_shared/0.2` renders one (VTI-APV-019): category
+/// `coolingOff`, `landsAt`, no threshold, expiry or approvals remaining; open
+/// and cancellable by its requester, or landed.
+fn sample_cooling_off(open: bool, caller_role: &str) -> serde_json::Value {
+    use crate::admin_actions::summary;
+    let type_uri = "https://trusttasks.org/spec/acl/revoke/0.1";
+    let payload = json!({ "subject": OTHER_DID });
+    let mut action = json!({
+        "actionId": ACTION_ID,
+        "category": "coolingOff",
+        "kind": summary::KIND_REDUCE_AUTHORITY,
+        "typeUri": type_uri,
+        "requester": DID,
+        "status": if open { "open" } else { "completed" },
+        "createdAt": TS,
+        "landsAt": "2026-08-24T00:00:00Z",
+        "approvals": [],
+        "summary": summary::render(summary::KIND_REDUCE_AUTHORITY, type_uri, &payload),
+        "payloadDigest": summary::payload_digest(&payload).unwrap(),
+        "payload": payload,
+        "callerRole": caller_role,
+        "requesterOpenActions": 1,
+        "ext": { "org.openvtc": { "approverCount": 0, "requesterRecentActions": 1, "burst": false } },
+    });
+    if open {
+        action["cancellableBy"] = json!("requester");
+    } else {
+        action["closedAt"] = json!(TS);
+        action["closedReason"] = json!("landedAfterCoolingOff");
+    }
+    action
+}
+
+/// An operator's offline write as an acknowledge item names it: the record
+/// type `vtc/operator/offline-write/0.1`, with the record as its payload.
+fn sample_offline_write() -> serde_json::Value {
+    use crate::admin_actions::{OPERATOR_OFFLINE_WRITE_URI, summary};
+    let payload = json!({
+        "command": "emergencyBootstrap",
+        "dids": [DID, OTHER_DID],
+        "host": "vtc-host-1",
+        "at": TS,
+    });
+    json!({
+        "actionId": ACTION_ID,
+        "category": "acknowledge",
+        "kind": summary::KIND_OPERATOR_WRITE,
+        "typeUri": OPERATOR_OFFLINE_WRITE_URI,
+        "requester": COMMUNITY_DID,
+        "status": "open",
+        "createdAt": TS,
+        "approvals": [{ "subject": DID, "at": TS }],
+        "approversRemaining": 1,
+        "summary": summary::render(summary::KIND_OPERATOR_WRITE, OPERATOR_OFFLINE_WRITE_URI, &payload),
+        "payloadDigest": summary::payload_digest(&payload).unwrap(),
+        "payload": payload,
+        "callerRole": "acknowledger",
+        "ext": { "org.openvtc": { "severity": "critical", "acknowledgedByMe": true } },
+    })
+}
+
 /// A signed VC as this service emits one. Opaque to every schema below
 /// (`vmc` / `roleVac` / `vec` / `vic` are all `type: object`), so one shape
 /// serves them all rather than eight near-copies.
@@ -792,6 +853,40 @@ fn table() -> Vec<Conformance> {
             s::admin::actions::acknowledge::v0_1::Response,
             json!({ "actionId": ACTION_ID }),
             json!({ "action": sample_action(false) })
+        ),
+        // 0.2: the same requests, answered with `_shared/0.2` Actions — an
+        // approval as before, and a cooling-off in the schema's own terms.
+        checked!(
+            s::admin::actions::list::v0_2::Payload,
+            s::admin::actions::list::v0_2::Response,
+            json!({ "view": "all", "limit": 25 }),
+            json!({
+                "actions": [sample_action(true), sample_cooling_off(true, "requester")],
+                "counts": { "waitingForMe": 1, "requestedByMe": 1 },
+                "nextCursor": "djF8YWxsfHwyNQ",
+                "ext": { "org.openvtc": {
+                    "operatorWritesUnacknowledged": [],
+                    "coolingOffAgainstMe": [],
+                }},
+            })
+        ),
+        checked!(
+            s::admin::actions::show::v0_2::Payload,
+            s::admin::actions::show::v0_2::Response,
+            json!({ "actionId": ACTION_ID }),
+            json!({ "action": sample_cooling_off(false, "subject") })
+        ),
+        checked!(
+            s::admin::actions::cancel::v0_2::Payload,
+            s::admin::actions::cancel::v0_2::Response,
+            json!({ "actionId": ACTION_ID }),
+            json!({ "action": sample_action(false) })
+        ),
+        checked!(
+            s::admin::actions::acknowledge::v0_2::Payload,
+            s::admin::actions::acknowledge::v0_2::Response,
+            json!({ "actionId": ACTION_ID }),
+            json!({ "action": sample_offline_write() })
         ),
         // ─── admin ───────────────────────────────────────────────────
         checked!(

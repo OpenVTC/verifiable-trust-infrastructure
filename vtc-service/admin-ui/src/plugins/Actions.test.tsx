@@ -14,10 +14,12 @@ import {
   ACTIONS_LIST_TASK,
   ACTIONS_SHOW_TASK,
   DECISION_TASK,
+  coolingOffOf,
   type Action,
 } from "@/lib/actions-api";
+import { APPROVER_LIST_TASK } from "@/lib/step-up-approvers";
 import vectors from "@/lib/action-summary.vectors.json";
-import { Actions, timeLeft } from "@/plugins/actions";
+import { Actions, landsIn, timeLeft } from "@/plugins/actions";
 import {
   NAME_BOOK_ROUTES,
   mockFetch,
@@ -360,7 +362,10 @@ describe("the Actions page", () => {
 // ── Operator offline writes (VTI-VTC-023) ───────────────────────────
 
 const OP_GRANT = (vectors as unknown as Vector[]).find(
-  (v) => v.kind === "operator.offlineWrite" && v.typeUri.endsWith("/acl/grant/0.1"),
+  (v) =>
+    v.kind === "operator.offlineWrite" &&
+    v.typeUri === "https://trusttasks.org/spec/vtc/operator/offline-write/0.1" &&
+    (v.payload as { command?: string }).command === "aclAdd",
 )!;
 
 async function operatorWrite(overrides: Partial<Action> = {}): Promise<Action> {
@@ -402,10 +407,12 @@ describe("an operator's offline write", () => {
     expect(card.className).toContain("action-critical");
     expect(
       await within(card).findByText(
-        "The operator gave did:key:z6MkhaXg…pbnnEGta2doK the admin role offline",
+        "The operator ran aclAdd on vtc-host-1, changing access for did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
       ),
     ).toBeTruthy();
-    expect(within(card).getByText(/Written with vtc acl grant on vtc-host-1 at/)).toBeTruthy();
+    expect(within(card).getByText(/^Written at .*while the service was stopped/)).toBeTruthy();
+    // The command, in words an administrator recognises.
+    expect(within(card).getByText("vtc acl add")).toBeTruthy();
     expect(within(card).getByText(/The operator, acting as the community/)).toBeTruthy();
     expect(within(card).getByText("2 administrators")).toBeTruthy();
     // No approval vocabulary: no threshold, no expiry, no Approve.
@@ -464,7 +471,7 @@ describe("an operator's offline write", () => {
     const mineDone = await screen.findByRole("article", { name: "Action ack-1" });
     expect(await within(mineDone).findByText("You have acknowledged this.")).toBeTruthy();
     const observed = screen.getByRole("article", { name: "Action ack-2" });
-    await within(observed).findByText(/The operator gave/);
+    await within(observed).findByText(/The operator ran aclAdd/);
     expect(within(observed).queryByRole("button", { name: "Acknowledge" })).toBeNull();
     expect(within(mineDone).queryByRole("button", { name: "Acknowledge" })).toBeNull();
   });
@@ -491,62 +498,130 @@ const REDUCE = {
   typeUri: "https://trusttasks.org/spec/acl/revoke/0.1",
 };
 
-async function coolingOff(overrides: Partial<Action> & { againstYou?: boolean } = {}) {
-  const { againstYou = false, ...rest } = overrides;
+/** A 0.2 `coolingOff` action: `landsAt` and `cancellableBy` on the action
+ *  itself; no threshold, no expiry, no approvals still needed. */
+async function coolingOff(overrides: Partial<Action> = {}) {
   const v = (vectors as unknown as Vector[]).find(
     (x) => x.kind === REDUCE.kind && x.typeUri === REDUCE.typeUri,
   )!;
-  const subject = (v.payload as { subject: string }).subject;
   const action: Action = {
     actionId: "cool-1",
-    category: "approval",
+    category: "coolingOff",
     kind: v.kind,
     typeUri: v.typeUri,
     requester: REQUESTER,
     status: "open",
     createdAt: "2026-10-02T09:00:00Z",
+    landsAt: LANDS_AT,
+    cancellableBy: "requester",
     approvals: [],
-    approversRemaining: 0,
     callerRole: "requester",
     payload: v.payload,
     payloadDigest: await payloadDigestOf(v.payload),
     summary: v.summary,
     requesterOpenActions: 1,
-    ext: {
-      "org.openvtc": {
-        coolingOff: { landsAt: LANDS_AT, subject, agreement: "unopposed", againstYou },
-      },
-    },
-    ...rest,
+    ...overrides,
   };
   return action;
 }
 
-const LANDS_AT = "2026-10-05T09:00:00Z";
+/** Two days, four hours and a minute from now. */
+const LANDS_AT = new Date(Date.now() + (2 * 24 + 4) * 3600_000 + 60_000).toISOString();
 
 describe("a cooling-off", () => {
-  it("shows its requester when it lands, and offers Cancel — no threshold, no expiry", async () => {
+  it("shows its requester when it lands, counts down to it, and offers Cancel — no threshold, no expiry", async () => {
     anyView([await coolingOff()]);
     render();
     const card = await screen.findByRole("article", { name: "Action cool-1" });
     const lands = within(card).getByText(/Lands by itself at/);
     expect(lands.textContent).toContain(new Date(LANDS_AT).toLocaleString());
     expect(lands.textContent).toMatch(/unless .* cancels it\./);
+    expect(within(card).getByText("lands in 2 d 4 h")).toBeTruthy();
     expect(within(card).getByText(/None needed/)).toBeTruthy();
     expect(within(card).queryByText(/expires in/)).toBeNull();
     expect(within(card).queryByText(/ of \d/)).toBeNull();
     expect(within(card).getByRole("button", { name: "Cancel request" })).toBeTruthy();
+    expect(within(card).queryByRole("button", { name: "Approve" })).toBeNull();
     expect(within(card).queryByText(/This is against you/)).toBeNull();
   });
 
+  it("cancels through actions/cancel/0.2", async () => {
+    const open = await coolingOff();
+    const requests = anyView(
+      [open],
+      [taskRoute(ACTIONS_CANCEL_TASK, { action: { ...open, status: "cancelled" } })],
+    );
+    render();
+    const card = await screen.findByRole("article", { name: "Action cool-1" });
+    fireEvent.click(within(card).getByRole("button", { name: "Cancel request" }));
+    fireEvent.click(within(card).getByRole("button", { name: "Cancel this action" }));
+    await waitFor(() =>
+      expect(sentPayloads(requests, ACTIONS_CANCEL_TASK)).toEqual([{ actionId: "cool-1" }]),
+    );
+  });
+
   it("tells its subject it is against them and cannot be blocked, with no buttons", async () => {
-    anyView([await coolingOff({ callerRole: "observer", againstYou: true })]);
+    anyView([await coolingOff({ callerRole: "subject" })]);
     render();
     const card = await screen.findByRole("article", { name: "Action cool-1" });
     expect(
       within(card).getByText(/This is against you: it reduces your own authority, and you cannot approve or block/),
     ).toBeTruthy();
+    expect(within(card).getByText("lands in 2 d 4 h")).toBeTruthy();
     expect(within(card).queryByRole("button")).toBeNull();
+  });
+
+  it("offers no Cancel on a cooling-off that does not name its requester as able to", async () => {
+    anyView([await coolingOff({ cancellableBy: undefined })]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action cool-1" });
+    await within(card).findByText(/Lands by itself at/);
+    expect(within(card).queryByRole("button", { name: "Cancel request" })).toBeNull();
+  });
+
+  it("says a landed cooling-off landed uncancelled", async () => {
+    anyView([
+      await coolingOff({
+        status: "completed",
+        closedReason: "landedAfterCoolingOff",
+        closedAt: "2026-10-05T09:00:05Z",
+        cancellableBy: undefined,
+      }),
+    ]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action cool-1" });
+    expect(
+      await within(card).findByText("It landed after its cooling-off, uncancelled"),
+    ).toBeTruthy();
+    expect(within(card).queryByText(/lands in/)).toBeNull();
+    expect(within(card).queryByRole("button")).toBeNull();
+  });
+});
+
+describe("coolingOffOf", () => {
+  it("reads the 0.2 action's own landsAt and callerRole, not an ext", async () => {
+    const mineOpen = await coolingOff();
+    const subjectField = mineOpen.summary.fields.subject?.value;
+    expect(coolingOffOf(mineOpen)).toEqual({
+      landsAt: LANDS_AT,
+      ...(typeof subjectField === "string" ? { subject: subjectField } : {}),
+      againstYou: false,
+      cancellableByMe: true,
+    });
+    const against = coolingOffOf(await coolingOff({ callerRole: "subject" }))!;
+    expect(against.againstYou).toBe(true);
+    expect(against.cancellableByMe).toBe(false);
+    // An approval is never one, whatever its ext says.
+    expect(
+      coolingOffOf({
+        ...mineOpen,
+        category: "approval",
+        landsAt: undefined,
+        ext: { "org.openvtc": { coolingOff: { landsAt: LANDS_AT } } as never },
+      }),
+    ).toBeNull();
+    // The 0.1 workaround is gone: a coolingOff with no top-level landsAt is not read.
+    expect(coolingOffOf({ ...mineOpen, landsAt: undefined })).toBeNull();
   });
 });
 
@@ -606,6 +681,263 @@ describe("the approver invite of a completed grant", () => {
     render(undefined, "/actions?action=act-1");
     await screen.findByRole("article", { name: "Action act-1" });
     expect(screen.queryByText("CODE")).toBeNull();
+  });
+});
+
+describe("landsIn", () => {
+  const now = Date.parse("2026-10-02T00:00:00Z");
+  it("counts down to landsAt, and says when it is due", () => {
+    expect(landsIn("2026-10-04T04:00:00Z", now)).toBe("lands in 2 d 4 h");
+    expect(landsIn("2026-10-02T03:10:00Z", now)).toBe("lands in 3 h 10 m");
+    expect(landsIn("2026-10-02T00:05:00Z", now)).toBe("lands in 5 m");
+    expect(landsIn("2026-10-02T00:00:00Z", now)).toBe("landing now");
+    expect(landsIn("2026-10-01T00:00:00Z", now)).toBe("landing now");
+  });
+});
+
+describe("the 0.2 wire", () => {
+  it("lists, shows, cancels and acknowledges at 0.2", () => {
+    expect(ACTIONS_LIST_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/list/0.2");
+    expect(ACTIONS_SHOW_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/show/0.2");
+    expect(ACTIONS_CANCEL_TASK).toBe("https://trusttasks.org/spec/vtc/admin/actions/cancel/0.2");
+    expect(ACTIONS_ACKNOWLEDGE_TASK).toBe(
+      "https://trusttasks.org/spec/vtc/admin/actions/acknowledge/0.2",
+    );
+  });
+
+  it("sends the list read as list/0.2", async () => {
+    const requests = routes([waiting]);
+    render();
+    await screen.findByRole("article", { name: "Action act-1" });
+    const types = requests
+      .filter((r) => r.url === "/v1/trust-tasks")
+      .map((r) => (r.body as { type?: string })?.type);
+    expect(types).toContain("https://trusttasks.org/spec/vtc/admin/actions/list/0.2");
+    expect(types.some((t) => t?.endsWith("/actions/list/0.1"))).toBe(false);
+  });
+});
+
+// ── Approving with the step-up approver device ──────────────────────
+
+const DEVICE = "did:key:z6MkApproverDeviceZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ";
+const ATTEST = "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1";
+const STATEMENT = {
+  type: ATTEST,
+  issuer: DEVICE,
+  payload: { purpose: "decision" },
+  proof: { verificationMethod: `${DEVICE}#k`, proofValue: "zDevice" },
+};
+
+/** A wallet whose plugin also answers decisions with its approver. */
+function installDeviceWallet(
+  opts: { approveDecision?: () => Promise<unknown>; identity?: string } = {},
+) {
+  const signTrustTask = installWallet();
+  const answer = opts.approveDecision ?? (async () => ({ statement: STATEMENT, approverDid: DEVICE }));
+  const approveDecision = vi.fn((_params: unknown) => answer());
+  const wallet = window.vtaWallet as unknown as Record<string, unknown>;
+  wallet.approveDecision = approveDecision;
+  if (opts.identity) wallet.approverIdentity = vi.fn(async () => ({ approverDid: opts.identity }));
+  return { signTrustTask, approveDecision };
+}
+
+const approverList = (approvers: string[]) =>
+  taskRoute(APPROVER_LIST_TASK, {
+    approvers: approvers.map((approverDid) => ({
+      approverDid,
+      subject: ME,
+      enrolledAt: "2026-10-01T00:00:00Z",
+      enrolledVia: "invite",
+    })),
+  });
+
+/** A passkey that answers, recorded. */
+function installPasskey() {
+  const bytes = (s: string) => new TextEncoder().encode(s).buffer;
+  const get = vi.fn(async () => ({
+    id: "cred",
+    rawId: bytes("cred"),
+    type: "public-key",
+    response: {
+      authenticatorData: bytes("ad"),
+      clientDataJSON: bytes("cd"),
+      signature: bytes("sig"),
+      userHandle: null,
+    },
+  }));
+  Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true });
+  return get;
+}
+
+const granted = () =>
+  taskRoute(DECISION_TASK, { status: "granted", payloadDigest: "z", actionId: "act-1" });
+
+describe("deciding with the approver device", () => {
+  it("has the device sign over the salted wire digest, then the wallet signs the identical decision", async () => {
+    const { signTrustTask, approveDecision } = installDeviceWallet();
+    const get = installPasskey();
+    const requests = routes([waiting], [approverList([DEVICE]), granted()]);
+    // A passkey session too: the device still comes first.
+    render(["passkey"]);
+    const card = await screen.findByRole("article", { name: "Action act-1" });
+    fireEvent.click(await within(card).findByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(decisions(requests)).toHaveLength(1));
+
+    const wire = await wireDigest(waiting.typeUri, waiting.payload, CHALLENGE);
+    expect(wire).not.toBe(waiting.payloadDigest);
+    expect(approveDecision).toHaveBeenCalledTimes(1);
+    expect(approveDecision.mock.calls[0]![0]).toEqual({
+      audience: VTC,
+      subject: ME,
+      action: {
+        type: waiting.typeUri,
+        payload: waiting.payload,
+        actionId: "act-1",
+        summary: waiting.summary,
+      },
+      decision: { challenge: CHALLENGE, payloadDigest: wire, decision: "approve" },
+    });
+
+    expect(signTrustTask).toHaveBeenCalledTimes(1);
+    const signed = signTrustTask.mock.calls[0]![0];
+    expect(signed.asDid).toBe(ME);
+    expect(signed.envelope.type).toBe("https://trusttasks.org/spec/task-consent/decision/0.2");
+    expect(signed.envelope.recipient).toBe(VTC);
+    expect(signed.envelope.payload).toEqual({
+      challenge: CHALLENGE,
+      payloadDigest: wire,
+      decision: "approve",
+      actionId: "act-1",
+      evidence: { kind: "approverSigned", statement: STATEMENT },
+    });
+    expect((decisions(requests)[0]!.body as { payload: unknown }).payload).toEqual(
+      signed.envelope.payload,
+    );
+    // No passkey ceremony: the device outranks it.
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("declines through the device too, with the very same trimmed reason", async () => {
+    const { signTrustTask, approveDecision } = installDeviceWallet();
+    const requests = routes(
+      [waiting],
+      [
+        approverList([DEVICE]),
+        taskRoute(DECISION_TASK, { status: "denied", payloadDigest: "z", actionId: "act-1" }),
+      ],
+    );
+    render();
+    fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "  not agreed  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Send decline" }));
+    await waitFor(() => expect(decisions(requests)).toHaveLength(1));
+
+    const asked = approveDecision.mock.calls[0]![0] as { decision: Record<string, unknown> };
+    expect(asked.decision).toEqual({
+      challenge: CHALLENGE,
+      payloadDigest: await wireDigest(waiting.typeUri, waiting.payload, CHALLENGE),
+      decision: "deny",
+      reason: "not agreed",
+    });
+    const payload = signTrustTask.mock.calls[0]![0].envelope.payload as Record<string, unknown>;
+    expect(payload).toEqual({
+      ...asked.decision,
+      actionId: "act-1",
+      evidence: { kind: "approverSigned", statement: STATEMENT },
+    });
+  });
+
+  it("asks before sending without the device when it does not confirm, then falls back", async () => {
+    const { signTrustTask } = installDeviceWallet({
+      approveDecision: async () => {
+        throw new Error("dismissed");
+      },
+    });
+    const get = installPasskey();
+    const requests = routes([waiting], [approverList([DEVICE]), granted()]);
+    render(["passkey"]);
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByText("Approver device not confirmed")).toBeTruthy();
+    expect(decisions(requests)).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Send without approver device" }));
+    await waitFor(() => expect(decisions(requests)).toHaveLength(1));
+    // Fell back to the next factor: the passkey.
+    expect(get).toHaveBeenCalledTimes(1);
+    const payload = signTrustTask.mock.calls[0]![0].envelope.payload as {
+      evidence?: { kind: string };
+    };
+    expect(payload.evidence?.kind).toBe("webauthn");
+  });
+
+  it("sends nothing when the administrator cancels after the device did not confirm", async () => {
+    installDeviceWallet({
+      approveDecision: async () => {
+        throw new Error("dismissed");
+      },
+    });
+    const requests = routes([waiting], [approverList([DEVICE]), granted()]);
+    render();
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await screen.findByText("Approver device not confirmed");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByText("Approver device not confirmed")).toBeNull());
+    expect(decisions(requests)).toHaveLength(0);
+  });
+});
+
+describe("decision evidence precedence", () => {
+  it("uses the passkey when the plugin can answer but no approver is enrolled", async () => {
+    const { approveDecision, signTrustTask } = installDeviceWallet();
+    const get = installPasskey();
+    const requests = routes([waiting], [approverList([]), granted()]);
+    render(["passkey"]);
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(decisions(requests)).toHaveLength(1));
+    expect(approveDecision).not.toHaveBeenCalled();
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(
+      (signTrustTask.mock.calls[0]![0].envelope.payload as { evidence?: { kind: string } })
+        .evidence?.kind,
+    ).toBe("webauthn");
+  });
+
+  it("does not use a device whose approver is bound from another browser", async () => {
+    const { approveDecision } = installDeviceWallet({
+      identity: "did:key:z6MkSomeOtherBrowsersApproverXXXXXXXXXXXXXXXXXX",
+    });
+    const requests = routes([waiting], [approverList([DEVICE]), granted()]);
+    render();
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(decisions(requests)).toHaveLength(1));
+    expect(approveDecision).not.toHaveBeenCalled();
+  });
+
+  it("uses this browser's device when the plugin names it among the enrolled", async () => {
+    const { approveDecision } = installDeviceWallet({ identity: DEVICE });
+    const requests = routes([waiting], [approverList([DEVICE]), granted()]);
+    render();
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(decisions(requests)).toHaveLength(1));
+    expect(approveDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it("signs with the wallet alone when there is neither device nor passkey", async () => {
+    const sign = installWallet();
+    const requests = routes([waiting], [granted()]);
+    render();
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(decisions(requests)).toHaveLength(1));
+    expect(
+      (sign.mock.calls[0]![0].envelope.payload as { evidence?: unknown }).evidence,
+    ).toBeUndefined();
+  });
+
+  it("shows the cnm command when there is no wallet, device or not", async () => {
+    routes([waiting], [approverList([DEVICE])]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action act-1" });
+    expect(await within(card).findByText("cnm consent approve --action act-1")).toBeTruthy();
+    expect(within(card).queryByRole("button", { name: "Approve" })).toBeNull();
   });
 });
 

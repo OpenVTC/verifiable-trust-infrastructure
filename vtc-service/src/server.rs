@@ -2349,9 +2349,9 @@ pub async fn audit_offline_break_glass(state: &AppState) {
                 ),
                 command: "vtc admin emergency-bootstrap".into(),
                 action: "emergencyBootstrap".into(),
-                did: None,
-                role: None,
-                scopes: Vec::new(),
+                // The recovery DID it installed, then the administrators it
+                // wiped (`vtc/operator/offline-write/0.1` `dids`).
+                dids: pending.dids.clone(),
                 operator_host: pending.operator_hostname.clone(),
                 invoked_at: pending.invoked_at,
                 acknowledgers: None,
@@ -2410,9 +2410,7 @@ pub async fn audit_offline_break_glass(state: &AppState) {
             marker: format!("break-glass:{}", String::from_utf8_lossy(&key)),
             command: w.command.clone(),
             action: w.action.clone(),
-            did: Some(w.did.clone()),
-            role: (!w.role.is_empty()).then(|| w.role.clone()),
-            scopes: w.contexts.clone(),
+            dids: vec![w.did.clone()],
             operator_host: w.operator_hostname.clone(),
             invoked_at: w.invoked_at,
             acknowledgers: (!w.admins.is_empty()).then(|| w.admins.clone()),

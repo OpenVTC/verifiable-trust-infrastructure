@@ -2656,6 +2656,12 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     action_tasks::SHOW_TYPE,
     action_tasks::CANCEL_TYPE,
     action_tasks::ACKNOWLEDGE_TYPE,
+    // 0.2: the same requests, answered with `_shared/0.2` Actions — a
+    // cooling-off as category `coolingOff` with `landsAt` (trust-tasks-tf #719).
+    action_tasks::LIST_V0_2_TYPE,
+    action_tasks::SHOW_V0_2_TYPE,
+    action_tasks::CANCEL_V0_2_TYPE,
+    action_tasks::ACKNOWLEDGE_V0_2_TYPE,
     // Members' step-up passkeys: the invite, its redemption, an
     // administrator's revocation for the member, and an administrator's
     // listing of them. No REST route serves them.

@@ -42,6 +42,9 @@ const DECISION_V0_1: &str = "https://trusttasks.org/spec/task-consent/decision/0
 const DECISION_V0_2: &str = "https://trusttasks.org/spec/task-consent/decision/0.2";
 const NEXT_STEP: &str = "https://trusttasks.org/spec/trust-task-next-step/0.1";
 const SHOW: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.1";
+/// What a parked operation's next step expects: the 0.2 read, which can say a
+/// cooling-off in its own terms.
+const SHOW_V0_2: &str = "https://trusttasks.org/spec/vtc/admin/actions/show/0.2";
 const THRESHOLD_KEY: &str = "acl.unrestricted_admin_consent_threshold";
 
 struct Fixture {
@@ -234,7 +237,7 @@ async fn vti_apv_017_a_gated_operation_is_parked_with_a_next_step() {
             .unwrap_or_else(|e| panic!("the next step conforms: {e}\n{p}"));
     }
     assert_eq!(p["continuation"], "proceed");
-    assert_eq!(p["expects"][0]["typeUri"], SHOW);
+    assert_eq!(p["expects"][0]["typeUri"], SHOW_V0_2);
     assert_eq!(p["inResponseTo"]["id"], grant["id"]);
     assert_eq!(p["inResponseTo"]["typeUri"], GRANT);
     assert!(

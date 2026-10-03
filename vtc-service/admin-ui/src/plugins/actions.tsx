@@ -8,6 +8,9 @@
 // Approving or declining signs a `task-consent/decision/0.2` as **your own
 // DID** through the wallet; the console key is never used for it, and with no
 // wallet the card shows the `cnm` command instead (`lib/actions-api.ts`).
+// Evidence beside that proof, in order of preference: your step-up approver
+// device (the VTA browser plugin's `approveDecision`), else a console passkey
+// on approve, else none.
 //
 // `?action=<id>` shows one action (`vtc/admin/actions/show`) — where a parked
 // act's success notice links, and where a completed invite's install URL and
@@ -16,9 +19,10 @@
 //
 // Two further shapes share the cards: an operator's offline write
 // (`category: acknowledge`, VTI-VTC-023), Critical, with an Acknowledge button
-// signed by the console key like cancel; and a cooling-off (VTI-APV-019) — no
-// threshold, no expiry — that lands by itself unless its requester cancels it,
-// and that its subject can see but not block.
+// signed by the console key like cancel; and a cooling-off (`category:
+// coolingOff`, VTI-APV-019) — no threshold, no expiry — that lands by itself
+// at `landsAt` unless its requester cancels it, and that its subject
+// (`callerRole: subject`) can see but not block.
 
 import { useEffect, useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -39,6 +43,8 @@ import {
   MAX_REASON_LEN,
   acknowledgeAction,
   actionExt,
+  approverDecisionPayload,
+  approverDeviceHere,
   canDecideHere,
   cancelAction,
   coolingOffOf,
@@ -54,8 +60,12 @@ import {
   explainDecisionError,
   explainReadError,
   listActions,
+  operatorCommandOf,
   passkeyEvidence,
+  landsIn,
+  sendPreparedDecision,
   showAction,
+  timeLeft,
   type Action,
   type ActionsView,
   type ClosedReason,
@@ -301,6 +311,14 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
             <dd>
               The operator, acting as the community (<NamedDid book={book} did={action.requester} />)
             </dd>
+            {operatorCommandOf(action) && (
+              <>
+                <dt>Command</dt>
+                <dd>
+                  <code>{operatorCommandOf(action)}</code>
+                </dd>
+              </>
+            )}
             <dt>Recorded</dt>
             <dd>{formatIso(action.createdAt)}</dd>
             <dt>Acknowledged by</dt>
@@ -351,6 +369,8 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
                   Lands by itself at <strong>{formatIso(cooling.landsAt)}</strong> unless{" "}
                   <NamedDid book={book} did={action.requester} /> cancels it.
                 </dd>
+                <dt>Lands</dt>
+                <dd className="action-countdown">{landsIn(cooling.landsAt)}</dd>
               </>
             )}
             {open && !cooling && action.expiresAt && (
@@ -443,6 +463,7 @@ const CLOSED_REASON_TEXT: Record<ClosedReason, string> = {
   invalidated: "Something it depended on changed",
   failedRecheck: "It no longer passed its checks when it ran",
   acknowledged: "Every administrator acknowledged it",
+  landedAfterCoolingOff: "It landed after its cooling-off, uncancelled",
 };
 
 function ApprovalList({ action, book }: { action: Action; book: NameBook }) {
@@ -639,16 +660,56 @@ function ActionButtons({ action, summaryOk }: { action: Action; summaryOk: boole
     void qc.invalidateQueries({ queryKey: WAITING_COUNT_KEY });
   };
 
+  // Whether this administrator holds a step-up approver device this browser's
+  // plugin can answer a decision with (`approverDeviceHere`). Asked only of an
+  // action waiting for this caller's decision, and only when the plugin has
+  // `approveDecision` at all; a failed read counts as "no device".
+  const decidable = !!action.challenge && canDecideHere();
+  const device = useQuery({
+    queryKey: [...ACTIONS_KEY, "approver-device", approverDid],
+    queryFn: async () => {
+      try {
+        return await approverDeviceHere();
+      } catch {
+        return false;
+      }
+    },
+    enabled: decidable,
+    staleTime: 60_000,
+  });
+
   const decide = useMutation({
     mutationFn: async (args: { decision: "approve" | "deny"; reason?: string }) => {
       if (!approverDid) throw new Error("No signed-in administrator to sign as.");
-      // Evidence is a passkey assertion only. The VTC also accepts
-      // `approverSigned` decision evidence — an `auth/step-up/approver/attest/0.1`
-      // statement with `purpose: "decision"`, subject = this signer, audience =
-      // the VTC, challenge = the decision's, boundTo = its payloadDigest — but
-      // the VTA browser plugin's `attestApprover` signs `purpose: "enrol"` only
-      // and has no decision method, so the console does not ask it for one.
-      // Add that path once the plugin can answer it.
+      const base = {
+        action,
+        decision: args.decision,
+        approverDid,
+        ...(args.reason ? { reason: args.reason } : {}),
+      };
+      // (a) The approver device: the plugin's approver signs an
+      // `approverSigned` statement over this decision (approve or decline),
+      // and the wallet then signs the identical payload without a second
+      // prompt. If it does not complete, say so and let the administrator
+      // choose to go on without it — never downgrade silently.
+      if (device.data) {
+        let prepared: Record<string, unknown> | null = null;
+        try {
+          prepared = await approverDecisionPayload(base);
+        } catch {
+          const without = await confirm({
+            title: "Approver device not confirmed",
+            message:
+              "Your step-up approver device did not confirm this decision. Send it without the approver device, or cancel and try again.",
+            confirmLabel: "Send without approver device",
+            cancelLabel: "Cancel",
+          });
+          if (!without) return null;
+        }
+        if (prepared) return sendPreparedDecision(prepared, approverDid);
+      }
+      // (b) A console passkey, on approve only: the assertion over the
+      // decision's challenge, as `webauthn` evidence.
       let evidence: WebauthnEvidence | undefined;
       if (args.decision === "approve" && amr?.includes("passkey")) {
         try {
@@ -666,13 +727,9 @@ function ActionButtons({ action, summaryOk }: { action: Action; summaryOk: boole
           if (!without) return null;
         }
       }
-      return decideAction({
-        action,
-        decision: args.decision,
-        approverDid,
-        ...(args.reason ? { reason: args.reason } : {}),
-        ...(evidence ? { evidence } : {}),
-      });
+      // (c) The wallet signature alone. (d) With no wallet there is no
+      // button at all: the card shows the `cnm` commands.
+      return decideAction({ ...base, ...(evidence ? { evidence } : {}) });
     },
     onSuccess: (resp) => {
       if (!resp) return;
@@ -695,10 +752,16 @@ function ActionButtons({ action, summaryOk }: { action: Action; summaryOk: boole
     onError: (err) => toast.push("error", explainCancelError(err)),
   });
 
-  const canCancel = action.callerRole === "requester" && action.status === "open";
+  // A cooling-off says outright who may cancel it (`cancellableBy`); any other
+  // open action of yours you may withdraw. A cooling-off's subject never can.
+  const cooling = coolingOffOf(action);
+  const canCancel =
+    action.callerRole === "requester" &&
+    action.status === "open" &&
+    (action.category !== "coolingOff" || !!cooling?.cancellableByMe);
   if (!action.challenge && !canCancel) return null;
 
-  const busy = decide.isPending || cancel.isPending;
+  const busy = decide.isPending || cancel.isPending || (decidable && device.isPending);
 
   return (
     <div className="action-buttons">
@@ -837,16 +900,5 @@ function ReasonForm(props: {
   );
 }
 
-/** "expires in 2 d 4 h", from now until `expiresAt`. */
-export function timeLeft(expiresAt: string, now: number = Date.now()): string {
-  const ms = Date.parse(expiresAt) - now;
-  if (Number.isNaN(ms)) return expiresAt;
-  if (ms <= 0) return "expired";
-  const minutes = Math.floor(ms / 60_000);
-  const days = Math.floor(minutes / 1440);
-  const hours = Math.floor((minutes % 1440) / 60);
-  const mins = minutes % 60;
-  if (days > 0) return `expires in ${days} d${hours ? ` ${hours} h` : ""}`;
-  if (hours > 0) return `expires in ${hours} h${mins ? ` ${mins} m` : ""}`;
-  return `expires in ${Math.max(mins, 1)} m`;
-}
+// The countdowns live with the wire shapes so the shell banners can use them.
+export { landsIn, timeLeft };

@@ -221,9 +221,7 @@ pub async fn migrate_on_boot(state: &AppState) -> Result<BootMigration, AppError
                 out.lost_admin_authority.join(", ")
             ),
             action: "aclMigration".into(),
-            did: None,
-            role: None,
-            scopes: Vec::new(),
+            dids: out.lost_admin_authority.clone(),
             operator_host: gethostname::gethostname().to_string_lossy().into_owned(),
             invoked_at: chrono::Utc::now(),
             acknowledgers: (!acknowledgers.is_empty()).then_some(acknowledgers),

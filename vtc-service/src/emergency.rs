@@ -261,10 +261,19 @@ pub async fn run_emergency_bootstrap_with_store(
     // stamped it after the deletes, a mid-loop crash would leave the
     // wipe unaudited.
     let operator_hostname = gethostname::gethostname().to_string_lossy().into_owned();
+    // Whose access this changes, for the acknowledge item the daemon raises
+    // (VTI-VTC-023): the recovery DID it installs, then the admins it wipes.
+    let mut dids = vec![setup_key.did.clone()];
+    for entry in list_acl_entries(&acl_ks).await? {
+        if entry.admin.is_administrator() && !dids.contains(&entry.did) {
+            dids.push(entry.did);
+        }
+    }
     install_store
         .mark_emergency_pending(PendingEmergencyBootstrap {
             operator_hostname: operator_hostname.clone(),
             invoked_at: Utc::now(),
+            dids,
         })
         .await?;
     store.persist().await?;

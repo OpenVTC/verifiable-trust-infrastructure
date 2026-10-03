@@ -392,9 +392,10 @@ pub enum VtcError {
 pub const NEXT_STEP_TYPE: &str =
     <trust_tasks_rs::specs::trust_task_next_step::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
-/// `vtc/admin/actions/show/0.1` — what a parked operation's next step expects.
+/// `vtc/admin/actions/show/0.2` — what a parked operation's next step expects
+/// (a VTC that predates it names `show/0.1`, which answers the same request).
 pub const ACTION_SHOW_TYPE: &str =
-    <trust_tasks_rs::specs::vtc::admin::actions::show::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+    <trust_tasks_rs::specs::vtc::admin::actions::show::v0_2::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// The parked action a `trust-task-next-step/0.1` document names, as
 /// [`VtcError::Parked`] — `None` for any other document.
@@ -1231,7 +1232,7 @@ impl VtcClient {
     }
 
     /// One page of the administrator action list
-    /// (`vtc/admin/actions/list/0.1`): `view` is `waitingForMe`,
+    /// (`vtc/admin/actions/list/0.2`): `view` is `waitingForMe`,
     /// `requestedByMe`, `history` or `all`. The whole response payload —
     /// `actions`, the badge `counts`, and `nextCursor` when more follow.
     pub async fn list_actions(
@@ -1239,7 +1240,7 @@ impl VtcClient {
         view: &str,
         cursor: Option<&str>,
     ) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::vtc::admin::actions::list::v0_1 as spec;
+        use trust_tasks_rs::specs::vtc::admin::actions::list::v0_2 as spec;
         let mut payload = serde_json::json!({ "view": view });
         if let Some(c) = cursor {
             payload["cursor"] = serde_json::json!(c);
@@ -1253,11 +1254,11 @@ impl VtcClient {
         .await
     }
 
-    /// One action as this caller may see it (`vtc/admin/actions/show/0.1`) —
+    /// One action as this caller may see it (`vtc/admin/actions/show/0.2`) —
     /// the `action` member, carrying this approver's own `challenge` when they
     /// may decide it now.
     pub async fn show_action(&self, action_id: &str) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::vtc::admin::actions::show::v0_1 as spec;
+        use trust_tasks_rs::specs::vtc::admin::actions::show::v0_2 as spec;
         let reply = self
             .document(
                 ACTION_SHOW_TYPE,
@@ -1269,13 +1270,13 @@ impl VtcClient {
         Ok(reply["action"].clone())
     }
 
-    /// Withdraw this caller's own open action (`vtc/admin/actions/cancel/0.1`).
+    /// Withdraw this caller's own open action (`vtc/admin/actions/cancel/0.2`).
     pub async fn cancel_action(
         &self,
         action_id: &str,
         reason: Option<&str>,
     ) -> Result<serde_json::Value, VtcError> {
-        use trust_tasks_rs::specs::vtc::admin::actions::cancel::v0_1 as spec;
+        use trust_tasks_rs::specs::vtc::admin::actions::cancel::v0_2 as spec;
         let mut payload = serde_json::json!({ "actionId": action_id });
         if let Some(r) = reason {
             payload["reason"] = serde_json::json!(r);

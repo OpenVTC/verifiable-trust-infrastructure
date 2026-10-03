@@ -120,15 +120,58 @@ fn print_line(action: &Value) {
         .map(|v| v.title)
         .unwrap_or_else(|e| format!("{RED}summary refused: {e}{RESET}"));
     let s = |k: &str| action[k].as_str().unwrap_or("?").to_string();
+    let progress = match (action["landsAt"].as_str(), action["category"].as_str()) {
+        // A cooling-off waits on time, not on decisions (VTI-APV-019).
+        (Some(lands), _) => format!("cooling off · {}", lands_in(lands, chrono::Utc::now())),
+        (None, Some("acknowledge")) => format!(
+            "{} acknowledged",
+            action["approvals"].as_array().map(Vec::len).unwrap_or(0)
+        ),
+        _ => format!(
+            "{} of {} · expires {}",
+            action["approvals"].as_array().map(Vec::len).unwrap_or(0),
+            action["threshold"],
+            s("expiresAt"),
+        ),
+    };
     println!(
-        "  {}  {}  {title}  {DIM}{} · {} of {} · expires {}{RESET}",
+        "  {}  {}  {title}  {DIM}{} · {progress}{RESET}",
         s("actionId"),
         s("status"),
         s("requester"),
-        action["approvals"].as_array().map(Vec::len).unwrap_or(0),
-        action["threshold"],
-        s("expiresAt"),
     );
+}
+
+/// "lands in 2 d 4 h", from `now` until a cooling-off's `landsAt` — or
+/// "landing now" once it is due (the VTC lands it on its next sweep).
+pub fn lands_in(lands_at: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Ok(at) = chrono::DateTime::parse_from_rfc3339(lands_at) else {
+        return format!("lands at {lands_at}");
+    };
+    let secs = at
+        .with_timezone(&chrono::Utc)
+        .signed_duration_since(now)
+        .num_seconds();
+    if secs <= 0 {
+        return "landing now".into();
+    }
+    let minutes = secs / 60;
+    let (days, hours, mins) = (minutes / 1440, (minutes % 1440) / 60, minutes % 60);
+    if days > 0 {
+        if hours > 0 {
+            format!("lands in {days} d {hours} h")
+        } else {
+            format!("lands in {days} d")
+        }
+    } else if hours > 0 {
+        if mins > 0 {
+            format!("lands in {hours} h {mins} m")
+        } else {
+            format!("lands in {hours} h")
+        }
+    } else {
+        format!("lands in {} m", mins.max(1))
+    }
 }
 
 /// `action`, its summary re-derived from its payload — or refused.
@@ -178,11 +221,26 @@ pub fn render(v: &VerifiedAction) {
             .map(|r| format!(" ({r})"))
             .unwrap_or_default()
     );
-    println!(
-        "  {DIM}approvals:{RESET} {} of {}",
-        a["approvals"].as_array().map(Vec::len).unwrap_or(0),
-        a["threshold"]
-    );
+    if let Some(lands) = a["landsAt"].as_str() {
+        // VTI-APV-019: nobody approves it; it lands by itself unless its
+        // requester cancels it first.
+        println!(
+            "  {DIM}cooling-off:{RESET} {} ({lands}) unless {} cancels it",
+            lands_in(lands, chrono::Utc::now()),
+            a["requester"].as_str().unwrap_or("its requester")
+        );
+        if a["callerRole"] == "subject" {
+            println!(
+                "  {RED}! this reduces your own authority; you cannot approve or block it{RESET}"
+            );
+        }
+    } else {
+        println!(
+            "  {DIM}approvals:{RESET} {} of {}",
+            a["approvals"].as_array().map(Vec::len).unwrap_or(0),
+            a["threshold"]
+        );
+    }
     if let Some(n) = a["requesterOpenActions"].as_u64() {
         println!("  {DIM}requester has {n} open action(s){RESET}");
     }
@@ -262,5 +320,27 @@ pub fn report_decision(r: &vtc_client::actions::decision_v0_2::Response) {
             println!("{YELLOW}✗ declined{RESET} — the action is closed for everyone.")
         }
         other => println!("the VTC answered `{other}`"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(s: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn a_cooling_off_counts_down_to_its_landing() {
+        let now = at("2026-10-03T09:00:00Z");
+        assert_eq!(lands_in("2026-10-05T13:00:00Z", now), "lands in 2 d 4 h");
+        assert_eq!(lands_in("2026-10-04T09:00:00Z", now), "lands in 1 d");
+        assert_eq!(lands_in("2026-10-03T11:30:00Z", now), "lands in 2 h 30 m");
+        assert_eq!(lands_in("2026-10-03T09:00:20Z", now), "lands in 1 m");
+        assert_eq!(lands_in("2026-10-03T08:00:00Z", now), "landing now");
+        assert_eq!(lands_in("soon", now), "lands at soon");
     }
 }

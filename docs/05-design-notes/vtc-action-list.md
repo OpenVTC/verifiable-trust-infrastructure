@@ -6,8 +6,11 @@ Status: **accepted** (2026-10-02; §7a, §7b, §8a decided with the maintainer).
 with `webauthn` evidence. **Phase A2 is implemented** (§10): acknowledge items
 for operator writes (§8.3b, VTI-VTC-023), the authority-reduced notice and the
 two-admin cooling-off (§8.2, VTI-APV-019), `approverSigned` decision evidence
-(§6), crash-safe execution, and device pushes off by default. What is still
-deferred is listed at the end of §10. It changes how consent is collected and
+(§6), crash-safe execution, and device pushes off by default. **The A2
+follow-ups are implemented** (§10): `vtc/admin/actions/*/0.2` with cooling-off
+actions, the reduction-pending notice, offline-write records, and approving
+from the console with an approver device. What is still deferred is listed at
+the end of §10. It changes how consent is collected and
 finished at the VTC, adds wire tasks that need a specification first (§9), and
 depends on `vtc-approver-step-up.md` for the approver-signed evidence (§6).
 
@@ -219,9 +222,9 @@ member, never a substitute for the proof:
   purpose `decision`, subject the decision's signer, audience the VTC,
   challenge the decision's challenge, `boundTo` its `payloadDigest`, by a
   step-up approver bound to the signer. (A1 refused it as
-  `approverSignedUnsupported`.) The console does not send it yet: the plugin's
-  `attestApprover` signs enrolment statements only (§10). `cnm` and other
-  clients can.
+  `approverSignedUnsupported`.) The console sends it through the plugin's
+  `approveDecision` when the administrator has an approver device (§10).
+  `cnm` and other clients can too.
 
 Without a wallet, the console shows the `cnm consent approve --action
 <actionId>` command instead of the buttons.
@@ -646,20 +649,47 @@ The console's Actions page, badge, banner and submit notice, and `cnm actions
    `auth/step-up/approve-response:subjectMismatch` (was `permissionDenied`).
    The console's install page offers claim 0.3 beside the 0.2 passkey claim.
 
+**Landed after A2** (trust-tasks-rs 0.27.1, trust-tasks-tf #719).
+
+1. **Cooling-off actions on the wire.** `vtc/admin/actions/{list,show,cancel,
+   acknowledge}/0.2` are served beside 0.1 (same requests and codes). At 0.2 a
+   cooling-off is category `coolingOff`, with `landsAt`, `cancellableBy:
+   requester` while open, no `threshold`, `expiresAt` or `approversRemaining`,
+   and closes `landedAfterCoolingOff`. Its subject sees it with `callerRole:
+   subject` in `all` and `history`, never in `waitingForMe`. 0.1 answers as
+   before (`ext["org.openvtc"].coolingOff`, closed `thresholdMet`). A parked
+   operation's next step now expects `show/0.2`. The console, `vtc-client` and
+   `cnm` use 0.2; the console and `cnm` count down to `landsAt`.
+2. **The reduction-pending notice.** When a reduction is parked for its
+   cooling-off, the subject is sent a VTC-signed
+   `vtc/members/authority-reduction-pending-notice/0.1` (durable push, TSP >
+   DIDComm > REST): `actionId`, `code`, `previousRole`, `resultingRole`
+   (absent for `revoked`), `decidedBy`, `requestedAt`, `landsAt`, `reason`
+   when given. When it lands, the authority-reduced notice follows
+   (`unopposed`); when cancelled, nothing is reduced and nothing more is sent.
+   Landing never waits on delivery.
+3. **Offline-write records.** An acknowledge item's `typeUri` is the record
+   type `vtc/operator/offline-write/0.1`, its payload the record `{command,
+   dids, host, at}`, for every offline command including the emergency
+   bootstrap (whose marker now records the recovery DID and the administrators
+   it wiped). The record is never dispatched: a document of that type answers
+   `unsupportedType`, like `auth/step-up/approver/attest/0.1`. The URN
+   placeholder and the four per-command templates are gone; one template is
+   pinned for `(operator.offlineWrite, offline-write/0.1)`.
+4. **Approving from the console with an approver device.** With the plugin's
+   `approveDecision`, the device signs a `decision`-purpose statement over the
+   approver's salted wire digest, and the wallet signs the decision carrying it
+   as `approverSigned` evidence. Precedence: approver device → passkey →
+   wallet signature alone → `cnm consent approve`.
+5. **`policy/upsert` reconciliation.** The upsert moves no state pin, so a
+   crash between its revision and its effect marker used to be reconciled
+   `failed`. An executing action's revision is now stored under an id derived
+   from the action and execution (`admin_actions::policy_revision_id`), so the
+   revision row is its own evidence and the action reconciles `completed`.
+
 **Still deferred.**
 
 - `requireRequesterAtCompletion` (§4.3, §7.2's **Complete**): not built.
-- A "pending" notice to the subject of a cooling-off, outside the console. No
-  such notice is specified; it needs an upstream task first. Until then the
-  console banner and the action list are how the subject learns.
-- Approving from the console with an approver device. The VTC accepts
-  `approverSigned`, but the browser plugin has no method that signs a
-  `decision`-purpose statement; the console approves with `webauthn` evidence
-  only.
-- **Upstream schema note.** The published Action schema cannot express a
-  threshold of zero. A cooling-off therefore omits `threshold` and `expiresAt`
-  and carries `ext["org.openvtc"].coolingOff`; the schema should say how an
-  action with no approvers is represented.
 
 The plan as written:
 

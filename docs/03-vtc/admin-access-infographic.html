@@ -645,7 +645,7 @@ cnm consent approve --action &lt;actionId&gt;</pre>
       <div style="margin:12px 0 4px;display:flex;align-items:center;gap:10px;font-size:14px">
         <span class="ui">Actions</span><span style="background:var(--hard);color:#0a0e1a;font-weight:800;border-radius:999px;padding:0 8px;font-size:12px">2</span>
       </div>
-      <p>A badge with your count, a banner after sign-in, and <span class="mono">(2)</span> in the tab title. The page has tabs <b>Waiting for me</b>, <b>Requested by me</b> and <b>History</b>. Offline writes appear as items to <b>Acknowledge</b>. Pushes to devices are off by default (<code>acl.consent_request_push</code>); the list is the source of truth.</p>
+      <p>A badge with your count, a banner after sign-in, and <span class="mono">(2)</span> in the tab title. The page has tabs <b>Waiting for me</b>, <b>Requested by me</b> and <b>History</b>. Offline writes appear as items to <b>Acknowledge</b>, each named by the record type <code>vtc/operator/offline-write/0.1</code>. Pushes to devices are off by default (<code>acl.consent_request_push</code>); the list is the source of truth.</p>
     </div>
     <div class="card top acc">
       <span class="lbl">Approving</span>
@@ -653,7 +653,7 @@ cnm consent approve --action &lt;actionId&gt;</pre>
       <ul>
         <li><b>Wallet</b> (console) or <b>cnm</b>: the decision is signed by the admin DID's own key</li>
         <li><b>Passkey</b>: the console adds an assertion over the decision's challenge</li>
-        <li><b>Approver device</b>: an <code>approverSigned</code> statement, accepted by the VTC; sent by <code>cnm</code> and other clients, not yet by the console</li>
+        <li><b>Approver device</b> (built): the plugin's <code>approveDecision</code> signs an <code>approverSigned</code> statement over your salted digest, and the console sends it ahead of a passkey; <code>cnm</code> and other clients can too</li>
       </ul>
     </div>
     <div class="card top acc">
@@ -675,7 +675,7 @@ cnm consent approve --action &lt;actionId&gt;</pre>
         <li>Policy changes for role change, removal, join, recognition and git-ns (closes hole 3)</li>
         <li>Restoring a backup, which replaces the ACL</li>
       </ul>
-      <p style="margin-top:10px">With only two admins, a removal has nobody else to approve it. It goes ahead after a 24 h cooling-off (built), with an authority-reduced notice to the subject and a <code>Critical</code> audit row.</p>
+      <p style="margin-top:10px">With only two admins, a removal has nobody else to approve it. It goes ahead after a 24 h cooling-off (built): the subject is sent a reduction-pending notice when it is parked and sees it as a <code>coolingOff</code> action counting down to <code>landsAt</code>; when it lands they get the authority-reduced notice, and it is audited <code>Critical</code>.</p>
     </div>
     <div class="card top warn">
       <span class="lbl">Optional · by rule</span>
@@ -718,10 +718,11 @@ cnm consent approve --action &lt;actionId&gt;</pre>
     <div class="layer"><div class="ic">2</div><div><h4>VTC factor store and gate</h4><p>A <code>step_up_approvers</code> keyspace; the step-up gate accepts <code>approverSigned</code>.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
     <div class="layer"><div class="ic">3</div><div><h4>Enrolment and revocation</h4><p>Invite, self-service and offline routes; revoking a factor and recovering after losing every one. Every admin made by a completed action gets an enrolment invite automatically.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
     <div class="layer"><div class="ic">4</div><div><h4>Wallet founder install</h4><p>Install claim under an existing DID (claim 0.3), offered on the console's install page beside the passkey claim.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">5</div><div><h4>Console and browser plugin</h4><p>The approver path in the console, <code>approveStepUp</code> in the plugin, enrolment screens, and an error that names the routes that actually work. The console side is built; the plugin's <code>approveStepUp</code>, and a decision-purpose statement for approving from the console, are not.</p></div><span class="stops" style="color:var(--warn);border-color:rgba(255,180,84,.4)">next</span></div>
+    <div class="layer"><div class="ic">5</div><div><h4>Console and browser plugin</h4><p>The approver path in the console, <code>approveStepUp</code> in the plugin, enrolment screens, and an error that names the routes that actually work. The console side is built, and so is approving a decision with the approver device (the plugin's <code>approveDecision</code>); the plugin's <code>approveStepUp</code> is not.</p></div><span class="stops" style="color:var(--warn);border-color:rgba(255,180,84,.4)">next</span></div>
     <div class="layer"><div class="ic">6</div><div><h4>Action list for APV-014</h4><p>Park instead of refuse, complete on the N-th approval, the Actions page and badge, approving from the console. Specs first: <code>vtc/admin/actions/{list,cancel}</code>, <code>task-consent/decision/0.2</code>.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
     <div class="layer"><div class="ic">7</div><div><h4>Close holes 1–3</h4><p>Built-in rules for removal, threshold lowering and authority policy; policy changes become unrestricted-admin only. Closed by stop-gaps, then as actions.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
-    <div class="layer"><div class="ic">7b</div><div><h4>Action list phase A2</h4><p>Offline writes raised as items to acknowledge, with a <code>Critical</code> banner (VTI-VTC-023); the authority-reduced notice and the two-admin 24 h cooling-off (VTI-APV-019); <code>approverSigned</code> decisions; device pushes off by default; crash-safe execution. Not built: <code>requireRequesterAtCompletion</code>, and a "pending" notice for the cooling-off subject (needs a spec).</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">7b</div><div><h4>Action list phase A2</h4><p>Offline writes raised as items to acknowledge, with a <code>Critical</code> banner (VTI-VTC-023); the authority-reduced notice and the two-admin 24 h cooling-off (VTI-APV-019); <code>approverSigned</code> decisions; device pushes off by default; crash-safe execution. Not built: <code>requireRequesterAtCompletion</code>.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
+    <div class="layer"><div class="ic">7c</div><div><h4>Cooling-off on the wire, and the follow-ups</h4><p><code>vtc/admin/actions/*/0.2</code>: a cooling-off is category <code>coolingOff</code> with <code>landsAt</code>, cancellable by its requester and shown to its subject (0.1 still answers). The subject is sent <code>authority-reduction-pending-notice</code> when it is parked. Offline writes are named by the record type <code>vtc/operator/offline-write/0.1</code>. The console approves with the approver device. An interrupted <code>policy/upsert</code> is reconciled from its revision.</p></div><span class="stops" style="color:var(--good);border-color:rgba(88,230,168,.4)">done</span></div>
     <div class="layer"><div class="ic">8</div><div><h4>Existing queues, then optional rules</h4><p>Break-glass ratification, join review and vetting withdrawal review move in; then the rule list surface and optional rules.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">later</span></div>
     <div class="layer"><div class="ic">9</div><div><h4>Phone approvers</h4><p>Phase 2 of the approver device.</p></div><span class="stops" style="color:var(--dim);border-color:var(--line)">later</span></div>
   </div>
