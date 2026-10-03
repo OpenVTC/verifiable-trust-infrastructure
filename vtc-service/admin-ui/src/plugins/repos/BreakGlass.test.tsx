@@ -4,6 +4,7 @@
 // step-up the VTC asks for before it records one.
 
 import { ACL_LIST_TASK } from "@/lib/acl";
+import { ACTIONS_LIST_TASK } from "@/lib/actions-api";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,9 +20,11 @@ import { unsignedRead } from "@/test/signed-read";
 import { answerStepUp } from "@/lib/bound-step-up";
 import { BreakGlassBanner } from "@/components/BreakGlassBanner";
 import { Repos } from "@/plugins/repos";
+import { ReseatDialog } from "./dialogs";
 import { MEMBERS_LIST_TASK, mockFetch, renderWithProviders } from "@/test/render";
 
 import {
+  ACME,
   ALICE,
   ALICE_BREAK_GLASS,
   BOB,
@@ -302,5 +305,173 @@ describe("the flag and the self-grant", () => {
     const alert = await within(sign).findByRole("alert");
     expect(alert.textContent).toMatch(/Separation of duties/);
     expect(alert.textContent).toMatch(/break the glass/);
+  });
+});
+
+describe("single-administrator mode (VTI-APV-022)", () => {
+  const mount = (resource: string, whoami: WhoamiResponse) =>
+    renderWithProviders(<Repos />, {
+      route: `/repos/repo/${encodeURIComponent(resource)}`,
+      path: "/repos/*",
+      whoami,
+    });
+  const NOTICE =
+    /Single-administrator mode: this self-grant will be waived, recorded as a critical audit event, and needs your passkey/;
+  const isActionsRead = (r: { body: unknown }) =>
+    (r.body as { type?: string } | undefined)?.type === ACTIONS_LIST_TASK;
+
+  /** Open "Add person" on docs and pick Alice, as Alice, for owner. */
+  async function selfGrantForm() {
+    fireEvent.click(await screen.findByRole("button", { name: "Add person" }));
+    const form = await screen.findByRole("dialog", { name: "Add a person to acme/docs" });
+    await within(form).findByRole("option", { name: /Alice Wong/ });
+    fireEvent.change(within(form).getByLabelText("Person"), { target: { value: ALICE } });
+    fireEvent.change(within(form).getByLabelText("Right"), { target: { value: "git.repo.own" } });
+    return form;
+  }
+
+  it("lets a lone administrator build a self-grant, says it will be waived, and follows the VTC's passkey step-up", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    const signed = { id: "urn:uuid:doc-2", type: "x", payload: {} };
+    const stepUpRequest = {
+      subject: ALICE,
+      challenge: "c2FtcGxlLWNoYWxsZW5nZS0xMjM0NQ",
+      boundTo: "zWaiverDigest",
+      reason: "Single-administrator mode: self-grant git.repo.own on github.com/acme/docs",
+      acceptableEvidence: ["webauthn"],
+      webauthn: { challenge: "c2FtcGxlLWNoYWxsZW5nZS0xMjM0NQ" },
+    };
+    vi.mocked(postSignedTrustTask).mockRejectedValue({
+      status: 403,
+      code: "permissionDenied",
+      message: "a passkey gesture bound to this operation is required",
+      details: { stepUpRequest },
+      document: signed,
+    });
+    vi.mocked(answerStepUp).mockResolvedValue({ status: "recorded", boundTo: "zWaiverDigest" });
+    vi.mocked(postSignedDocument).mockResolvedValue({
+      right: {},
+      ext: { "org.openvtc": { selfGrantWaived: { mode: "singleAdministrator" } } },
+    });
+    mockFetch(gitNsRoutes({ singleAdminMode: true }));
+    mount(DOCS.resource, signedInAs(ALICE));
+
+    const form = await selfGrantForm();
+    await waitFor(() => expect(form.textContent).toMatch(NOTICE));
+    expect(form.textContent).not.toMatch(/You cannot grant yourself/);
+    expect(within(form).queryByRole("button", { name: "Break glass…" })).toBeNull();
+    fireEvent.click(within(form).getByRole("button", { name: "Build the grant" }));
+
+    const sign = await screen.findByRole("dialog", { name: "Grant owner on acme/docs" });
+    expect(sign.textContent).toMatch(NOTICE);
+    expect(JSON.parse(within(sign).getByLabelText("Document").textContent ?? "{}")).toEqual({
+      type: "https://trusttasks.org/spec/git-ns/right/grant/0.3",
+      payload: { subject: ALICE, right: "git.repo.own", resource: DOCS.resource },
+    });
+    fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
+
+    const confirm = await within(sign).findByRole("button", { name: "Confirm with passkey and send" });
+    expect(sign.textContent).toMatch(/zWaiverDigest/);
+    expect(within(sign).queryByText("The VTC refused it")).toBeNull();
+    fireEvent.click(confirm);
+    await waitFor(() => expect(postSignedDocument).toHaveBeenCalledWith(signed));
+    expect(answerStepUp).toHaveBeenCalledWith(
+      stepUpRequest,
+      undefined,
+      expect.objectContaining({ type: expect.any(String) }),
+    );
+    expect(postSignedTrustTask).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/single-administrator waiver applied/)).toBeTruthy();
+  });
+
+  it("explains the refusal when somebody else could make the grant after all", async () => {
+    vi.mocked(signingAvailable).mockResolvedValue(true);
+    vi.mocked(postSignedTrustTask).mockRejectedValue({
+      status: 403,
+      code: "git-ns:selfGrantNotAllowed",
+      message: "git.repo.own is an elevated right, and you cannot grant it to yourself",
+    });
+    mockFetch(gitNsRoutes({ singleAdminMode: true }));
+    mount(DOCS.resource, signedInAs(ALICE));
+
+    const form = await selfGrantForm();
+    await waitFor(() => expect(form.textContent).toMatch(NOTICE));
+    fireEvent.click(within(form).getByRole("button", { name: "Build the grant" }));
+    const sign = await screen.findByRole("dialog", { name: "Grant owner on acme/docs" });
+    fireEvent.click(await within(sign).findByRole("button", { name: "Sign and send" }));
+    const alert = await within(sign).findByRole("alert");
+    expect(alert.textContent).toMatch(/The VTC refused it/);
+    expect(alert.textContent).toMatch(/only when nobody else could make this grant/);
+    expect(alert.textContent).toMatch(/somebody else can/);
+  });
+
+  it("keeps the client-side block, and offers break-glass, with the mode off", async () => {
+    const requests = mockFetch(gitNsRoutes({ singleAdminMode: false }));
+    mount(DOCS.resource, signedInAs(ALICE));
+
+    const form = await selfGrantForm();
+    await waitFor(() => expect(requests.some(isActionsRead)).toBe(true));
+    expect(form.textContent).toMatch(/You cannot grant yourself owner/);
+    expect(form.textContent).not.toMatch(NOTICE);
+    fireEvent.click(within(form).getByRole("button", { name: "Build the grant" }));
+    expect(screen.queryByRole("dialog", { name: /^Grant owner/ })).toBeNull();
+    expect(within(form).getByRole("button", { name: "Break glass…" })).toBeTruthy();
+  });
+
+  it("does not block a reseat to yourself, and marks the task for the notice", async () => {
+    mockFetch(gitNsRoutes({ singleAdminMode: true }));
+    const onBuilt = vi.fn();
+    renderWithProviders(
+      <ReseatDialog
+        namespaceId={ACME.id}
+        namespaceResource={ACME.resource}
+        onClose={() => {}}
+        onBuilt={onBuilt}
+      />,
+      { whoami: signedInAs(ALICE) },
+    );
+    const form = await screen.findByRole("dialog", { name: `Reseat ${ACME.resource}` });
+    await within(form).findByRole("option", { name: /Alice Wong/ });
+    fireEvent.change(within(form).getByLabelText("New namespace admin"), { target: { value: ALICE } });
+    fireEvent.change(within(form).getByLabelText("Statement"), {
+      target: { value: "The only administrator" },
+    });
+    await waitFor(() => expect(form.textContent).toMatch(NOTICE));
+    expect(form.textContent).not.toMatch(/You cannot grant yourself/);
+    fireEvent.click(within(form).getByRole("button", { name: "Build the reseat" }));
+    expect(onBuilt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "namespace.reseat",
+        payload: { namespace: ACME.id, subject: ALICE, statement: "The only administrator" },
+        singleAdminWaiver: true,
+      }),
+    );
+  });
+
+  it("flags a self-granted record made under the waiver, and no other", async () => {
+    mockFetch(
+      gitNsRoutes({
+        waived: [
+          {
+            subject: BOB,
+            right: "git.repo.own",
+            resource: DOCS.resource,
+            at: "2026-10-03T12:00:00Z",
+            task: "https://trusttasks.org/spec/git-ns/right/grant/0.3",
+          },
+        ],
+      }),
+    );
+    mount(DOCS.resource, signedInAs(HANA));
+    const people = await screen.findByRole("region", { name: "People and rights" });
+    const table = await within(people).findByRole("table");
+    const row = (name: string) =>
+      within(table)
+        .getAllByRole("row")
+        .find((r) => r.querySelector("td")?.textContent?.includes(name));
+    await waitFor(() => expect(row("Bob Mensah")?.textContent).toMatch(/self-granted \(single-admin\)/));
+    expect(table.querySelectorAll(".gitns-self-grant-waived")).toHaveLength(1);
+    // Not a break-glass: nothing awaits ratification.
+    expect(row("Bob Mensah")?.textContent).not.toMatch(/Break-glass/);
   });
 });

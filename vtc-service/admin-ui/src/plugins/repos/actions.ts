@@ -103,6 +103,11 @@ export interface SignedTask {
   parties: Party[];
   /** The `cnm git …` command that signs and sends it. */
   command: string;
+  /** Set where the form built an elevated self-grant on a community in
+   *  single-administrator mode (VTI-APV-022): the dialog says the VTC will
+   *  waive separation of duties — if nobody else could make it — on a
+   *  passkey, audited at Critical. */
+  singleAdminWaiver?: boolean;
 }
 
 /**
