@@ -355,6 +355,22 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
     },
 ];
 
+/// `acl.single_admin_mode` — single-administrator mode (VTI-APV-022). **Not**
+/// in [`REGISTRY`]: the mode must be set only by a party with host access and
+/// never through the operation surface (item 1), so `config/patch` and
+/// `vtc/config/import` refuse it by name ([`host_only_refusal`]).
+pub const SINGLE_ADMIN_MODE: &str = "acl.single_admin_mode";
+
+/// Why `key` is refused on the operation surface, when it is a host-only key —
+/// the refusal names how to set it instead. `None` for every other key.
+pub fn host_only_refusal(key: &str) -> Option<String> {
+    (key == SINGLE_ADMIN_MODE).then(|| {
+        format!(
+            "{SINGLE_ADMIN_MODE} is host configuration and cannot be set or cleared through              the operation surface (VTI-APV-022). With access to the host, set `[acl]              single_admin_mode = true` (or remove it) in config.toml and restart the daemon"
+        )
+    })
+}
+
 /// Look up a key's metadata. `None` means the key is not
 /// overlayable.
 pub fn lookup(key: &str) -> Option<&'static ConfigKeyDef> {

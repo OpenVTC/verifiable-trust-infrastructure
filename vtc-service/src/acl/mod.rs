@@ -10,6 +10,7 @@ pub mod entry;
 pub mod granting;
 pub mod migrate;
 pub mod role;
+pub mod single_admin;
 pub mod storage;
 
 pub use capability::{

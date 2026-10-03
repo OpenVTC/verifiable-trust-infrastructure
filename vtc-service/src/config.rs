@@ -146,6 +146,20 @@ pub struct AclConfig {
     /// and a push is best-effort at most.
     #[serde(default)]
     pub consent_request_push: bool,
+    /// **Single-administrator mode** (VTI-APV-022). When `true`, an operation
+    /// that would wait for another administrator's consent (VTI-APV-018, -020,
+    /// VTI-VTC-022) and for which **no** eligible party but the requester
+    /// exists runs on the requester's operation-bound passkey gesture
+    /// (VTI-APV-015) instead, audited at `Critical`. Wherever another eligible
+    /// administrator exists, consent applies exactly as without the mode.
+    ///
+    /// Host configuration only (VTI-APV-022 item 1): read once at start, and
+    /// deliberately absent from the runtime `config/patch` registry and from
+    /// `vtc/config/import`, which refuse it by name. Set by `vtc setup
+    /// --single-admin`, or by editing `config.toml` and restarting. Not
+    /// written to `config.toml` unless on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub single_admin_mode: bool,
 }
 
 impl Default for AclConfig {
@@ -158,6 +172,7 @@ impl Default for AclConfig {
             action_decline_cooldown: default_action_decline_cooldown(),
             removal_cooling_off: default_removal_cooling_off(),
             consent_request_push: false,
+            single_admin_mode: false,
         }
     }
 }

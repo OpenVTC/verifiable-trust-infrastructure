@@ -59,6 +59,13 @@ enum Commands {
         /// command. Must match `context` in the phase-2 setup TOML.
         #[arg(long, default_value = "default", requires = "setup_key_out")]
         context: String,
+        /// Run the community in single-administrator mode (VTI-APV-022):
+        /// where nobody but the requester could consent, the requester's
+        /// passkey gesture bound to the operation authorizes it instead.
+        /// Writes `[acl] single_admin_mode = true` to config.toml; with
+        /// `--from`, the same as `single_admin_mode = true` in the file.
+        #[arg(long, conflicts_with = "setup_key_out")]
+        single_admin: bool,
     },
     /// Show VTC status and statistics
     Status,
@@ -285,13 +292,14 @@ async fn main() {
             from,
             setup_key_out,
             context,
+            single_admin,
         }) => {
             #[cfg(feature = "setup")]
             {
                 let result = match (setup_key_out, from) {
                     (Some(out), _) => setup::run_setup_phase1(&out, &context).await,
-                    (None, Some(path)) => setup::run_setup_from_file(path).await,
-                    (None, None) => setup::run_setup_wizard(cli.config).await,
+                    (None, Some(path)) => setup::run_setup_from_file(path, single_admin).await,
+                    (None, None) => setup::run_setup_wizard(cli.config, single_admin).await,
                 };
                 if let Err(e) = result {
                     eprintln!("Setup failed: {e}");
@@ -300,7 +308,7 @@ async fn main() {
             }
             #[cfg(not(feature = "setup"))]
             {
-                let _ = (from, setup_key_out, context);
+                let _ = (from, setup_key_out, context, single_admin);
                 eprintln!("Setup wizard not available (compiled without 'setup' feature)");
                 std::process::exit(1);
             }

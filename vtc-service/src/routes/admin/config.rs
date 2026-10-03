@@ -107,10 +107,9 @@ pub(crate) async fn patch_config(
 
     for (key, value) in req.overrides {
         let Some(def) = lookup(&key) else {
-            rejected.push(RejectedKey {
-                key,
-                reason: "unknown config key (not in registry)".into(),
-            });
+            let reason = crate::config_store::host_only_refusal(&key)
+                .unwrap_or_else(|| "unknown config key (not in registry)".into());
+            rejected.push(RejectedKey { key, reason });
             continue;
         };
 
@@ -727,9 +726,11 @@ pub(crate) async fn import_inner(
 
     for (key, new_value) in &req.config_overrides {
         let Some(def) = lookup(key) else {
+            let reason = crate::config_store::host_only_refusal(key)
+                .unwrap_or_else(|| "unknown config key (not in registry)".into());
             rejected.push(RejectedKey {
                 key: key.clone(),
-                reason: "unknown config key (not in registry)".into(),
+                reason,
             });
             continue;
         };

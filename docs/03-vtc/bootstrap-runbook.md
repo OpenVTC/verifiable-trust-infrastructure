@@ -333,9 +333,17 @@ change that would run, so nothing is sent. The file-based `cnm consent approve
 <request-file>` still answers a pushed `task-consent/request` document.
 
 A community with a single unrestricted admin has
-nobody to ask, which is why `vtc setup` takes an optional `co_admin_did`. If
-you installed without one, add the second offline with `vtc acl add`, daemon
-stopped.
+nobody to ask, which is why `vtc setup` takes an optional `co_admin_did`. A
+community that really is run by one person is installed in
+**single-administrator mode** instead (`vtc setup --single-admin`, or
+`single_admin_mode = true` in the setup TOML; VTI-APV-022): wherever nobody
+but you could consent, your passkey step-up bound to the operation authorizes
+it, so you can add the second administrator online. It is host configuration
+(`[acl] single_admin_mode` in `config.toml`, changed only there and by a
+restart), every administrator sees a permanent banner while it is on, and each
+waived consent is audited at `Critical`
+([`admin-access.md`](admin-access.md) §2.1a). If you installed with neither, add
+the second offline with `vtc acl add`, daemon stopped.
 
 Every offline ACL change — `vtc acl add` and `remove`, `vtc create-did-key
 --admin`, `vtc admin invite`, `vtc admin enrol-approver`, `vtc admin

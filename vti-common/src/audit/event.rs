@@ -745,6 +745,18 @@ pub enum AuditEvent {
     /// that execution says the effect landed, and its absence that it did
     /// not (CLAUDE.md R2.1).
     AdminActionEffect(AdminActionEffectData),
+
+    /// **Single-administrator mode** (VTI-APV-022): a node that does not apply
+    /// second-party consent (VTI-APV-014, VTI-APV-018 – 020) where nobody but
+    /// the requester could give it, authorizing such an operation on the
+    /// requester's operation-bound re-authentication (VTI-APV-015) instead.
+    ///
+    /// [`AuditSeverity::Critical`] in every case, as the specification
+    /// requires: when the mode takes effect or is removed by host
+    /// configuration (`event`: `enabled` / `disabled`), each time the node
+    /// starts with it in effect (`inEffect`), and for every operation whose
+    /// consent it waived (`consentWaived`, naming the operation).
+    SingleAdminMode(SingleAdminModeData),
 }
 
 /// How much an audit event matters to someone reviewing the log. Ordered:
@@ -876,6 +888,7 @@ impl AuditEvent {
             Self::AclMigrated(..) => "AclMigrated",
             Self::AdminActionBurst(..) => "AdminActionBurst",
             Self::AdminActionEffect(..) => "AdminActionEffect",
+            Self::SingleAdminMode(..) => "SingleAdminMode",
         }
     }
 
@@ -890,7 +903,8 @@ impl AuditEvent {
             | Self::GitNsBreakGlass(..)
             | Self::AuthorityReducedUnopposed(..)
             | Self::AclMigrated(..)
-            | Self::AdminActionBurst(..) => AuditSeverity::Critical,
+            | Self::AdminActionBurst(..)
+            | Self::SingleAdminMode(..) => AuditSeverity::Critical,
             _ => AuditSeverity::Info,
         }
     }
@@ -1108,6 +1122,32 @@ pub struct AdminActionBurstData {
     pub raised: u32,
     /// The window, in seconds.
     pub window_secs: u64,
+}
+
+/// Payload for [`AuditEvent::SingleAdminMode`] (VTI-APV-022).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SingleAdminModeData {
+    /// `enabled` / `disabled` — the host configuration changed the mode since
+    /// the last start; `inEffect` — the node started with it on;
+    /// `consentWaived` — an operation ran on the requester's re-authentication
+    /// where another party's consent would otherwise be required.
+    pub event: String,
+    /// For `consentWaived`: the requirement whose consent was waived
+    /// (`VTI-APV-018`, `VTI-APV-020`, `VTI-VTC-022`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirement: Option<String>,
+    /// For `consentWaived`: the Trust Task type URI of the operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// For `consentWaived`: the operation's payload digest (VTI-APV-004) — the
+    /// one its re-authentication was bound to (VTI-APV-015).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    /// For `consentWaived`: the action-list kind of the operation
+    /// (`acl.grant.authority`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// Payload for [`AuditEvent::AdminActionEffect`].
@@ -2475,6 +2515,32 @@ mod tests {
         assert_eq!(wire_value(&e)["type"], "AuthorityReducedUnopposed");
         assert_eq!(wire_value(&e)["data"]["priorRole"], "admin");
         assert_eq!(e.severity(), AuditSeverity::Critical);
+    }
+
+    #[test]
+    fn vti_apv_022_single_admin_mode_rows_are_critical_and_round_trip() {
+        let e = AuditEvent::SingleAdminMode(SingleAdminModeData {
+            event: "consentWaived".into(),
+            requirement: Some("VTI-APV-018".into()),
+            task: Some("https://trusttasks.org/spec/acl/grant/0.2".into()),
+            digest: Some("zQm".into()),
+            kind: Some("acl.grant.authority".into()),
+        });
+        round_trip(&e);
+        assert_eq!(e.variant_name(), "SingleAdminMode");
+        assert_eq!(wire_value(&e)["type"], "SingleAdminMode");
+        assert_eq!(wire_value(&e)["data"]["event"], "consentWaived");
+        assert_eq!(e.severity(), AuditSeverity::Critical);
+        let boot = AuditEvent::SingleAdminMode(SingleAdminModeData {
+            event: "inEffect".into(),
+            requirement: None,
+            task: None,
+            digest: None,
+            kind: None,
+        });
+        round_trip(&boot);
+        assert!(wire_value(&boot)["data"].get("task").is_none());
+        assert_eq!(boot.severity(), AuditSeverity::Critical);
     }
 
     #[test]

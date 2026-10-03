@@ -769,6 +769,7 @@ async fn dispatch_trust_task_validated(
         received: std::sync::Arc::new(received),
         signer: ctx.verified_signer.clone(),
         transport: ctx.transport,
+        waiver: Default::default(),
     };
     let outcome = crate::admin_actions::with_submission(
         submission,

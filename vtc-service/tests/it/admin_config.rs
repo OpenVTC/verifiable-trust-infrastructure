@@ -995,3 +995,63 @@ async fn an_import_with_no_stored_profile_stores_it_and_reports_the_members() {
     assert_eq!(stored.language, "fr");
     assert_eq!(stored.created_at.to_rfc3339(), "2026-05-12T00:00:00+00:00");
 }
+
+// ──────────────── single-administrator mode is host-only (VTI-APV-022) ────
+
+/// VTI-APV-022 item 1: the mode cannot be set or cleared through the operation
+/// surface. `config/patch` refuses the key by name, saying how the host sets
+/// it, writes nothing, and leaves the running mode as it was.
+#[tokio::test]
+async fn vti_apv_022_config_patch_refuses_single_admin_mode() {
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    for value in [json!(true), json!(false)] {
+        let (status, body) = patch(
+            &fix,
+            &admin,
+            json!({"overrides":{"acl.single_admin_mode": value}}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["applied"], json!([]), "{body}");
+        let rejected = body["rejected"].as_array().unwrap();
+        assert_eq!(rejected.len(), 1, "{body}");
+        assert_eq!(rejected[0]["key"], "acl.single_admin_mode");
+        let reason = rejected[0]["reason"].as_str().unwrap();
+        assert!(reason.contains("VTI-APV-022"), "{reason}");
+        assert!(
+            reason.contains("config.toml"),
+            "names the host fix: {reason}"
+        );
+    }
+    assert!(
+        vtc_service::config_store::ConfigStore::new(fix.state.config_ks.clone())
+            .get("acl.single_admin_mode")
+            .await
+            .unwrap()
+            .is_none(),
+        "nothing written"
+    );
+    assert!(!fix.state.config.read().await.acl.single_admin_mode);
+}
+
+/// VTI-APV-022 item 1: nor through `vtc/config/import`.
+#[tokio::test]
+async fn vti_apv_022_config_import_refuses_single_admin_mode() {
+    let fix = build_signed(true).await;
+    let admin = admin(&fix).await;
+    let document = document_with_overrides(json!({ "acl.single_admin_mode": true }));
+    let (status, body) = import_signed(&fix, &admin, true, document).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rejected = body["rejected"].as_array().unwrap();
+    assert_eq!(rejected.len(), 1, "{body}");
+    assert_eq!(rejected[0]["key"], "acl.single_admin_mode");
+    assert!(
+        rejected[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("VTI-APV-022"),
+        "{body}"
+    );
+    assert!(!fix.state.config.read().await.acl.single_admin_mode);
+}

@@ -14,7 +14,7 @@
 // (`lib/action-badge.ts`), so they cost no request of their own.
 
 import { Link } from "react-router-dom";
-import { ShieldAlert, Siren } from "lucide-react";
+import { ShieldAlert, Siren, UserRound } from "lucide-react";
 
 import { landsIn, type CoolingOffAgainstMe } from "@/lib/actions-api";
 import { actionPath } from "@/lib/parked-action";
@@ -69,5 +69,42 @@ export function CoolingOffBanner({ items }: { items: readonly CoolingOffAgainstM
         );
       })}
     </>
+  );
+}
+
+/** The banner's headline and sentence (VTI-APV-022). */
+export const SINGLE_ADMIN_MODE_HEADLINE = "SINGLE ADMIN MODE";
+export const SINGLE_ADMIN_MODE_SENTENCE =
+  "Approvals are by your own step-up; another administrator's consent is not required.";
+
+/**
+ * Single-administrator mode (VTI-APV-022 item 3): reported to every
+ * administrator, in every session, for as long as it is in effect. So it sits
+ * on every page, has no dismiss button, and goes away only when the host turns
+ * the mode off. Read off the badge's signed `vtc/admin/actions/list`
+ * (`ext["org.openvtc"].singleAdminMode`), like the banners above.
+ *
+ * A standing condition rather than an event, so `role="status"`: announced
+ * politely, not as an interrupting alert on every navigation.
+ */
+export function SingleAdminModeBanner({ on }: { on: boolean }) {
+  if (!on) return null;
+  return (
+    <div
+      className="single-admin-banner"
+      role="status"
+      aria-live="polite"
+      aria-label="Single administrator mode is in effect"
+    >
+      <strong>
+        <UserRound aria-hidden="true" size={18} />
+        {SINGLE_ADMIN_MODE_HEADLINE}
+      </strong>
+      <span>
+        {"\u2014 "}
+        {SINGLE_ADMIN_MODE_SENTENCE} Set on this community&rsquo;s host; every waived
+        consent is audited at the highest severity.
+      </span>
+    </div>
   );
 }

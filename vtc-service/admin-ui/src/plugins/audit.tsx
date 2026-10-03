@@ -81,6 +81,7 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   AclMigrated: "ACL rows migrated to role-based administration at boot",
   AdminActionBurst: "Admin raised a burst of actions for approval",
   AdminActionEffect: "An approved action's operation took effect",
+  SingleAdminMode: "Single-administrator mode: in effect, changed, or a consent waived (VTI-APV-022)",
 };
 
 // Events that fire on a schedule or at daemon-internal lifecycle

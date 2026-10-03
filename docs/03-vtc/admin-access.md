@@ -137,23 +137,67 @@ it:
 > Give did:example:geoff vtc.roles.assign, … needs consent from 1 other
 > holder(s) of vtc.roles.assign, … (VTI-APV-018).
 
-A single administrator has three ways forward:
+That is the default. A community that really is run by one person — a
+household, a club with one organiser, a test deployment — runs in
+**single-administrator mode** instead (§2.1a), and its administrator does all
+of this online on their own step-up. Otherwise a single administrator has three
+ways forward:
 
 1. **Grant a narrower role instead.** A `moderator`, `auditor`,
    `credential-officer` or `vetting-lead` holds nothing authority-conferring,
    so it needs only your step-up, not another administrator's consent.
-2. **Add the second administrator offline**, once. Stop the daemon, then run
-   `vtc acl add --did <did> --role admin --label "<name>"` (a
+2. **Name the second administrator at install** (`co_admin_did`, §4 step 1),
+   which avoids the problem altogether.
+3. **Add the second administrator offline**, once — the break-glass. Stop the
+   daemon, then run `vtc acl add --did <did> --role admin --label "<name>"` (a
    `community-admin`; `--admin-role` and `--capability` choose another role or
    narrow it) or `vtc admin invite --did <did>`, and start it again. Each
    offline write is recorded as an `AclBreakGlassWritten` audit row at the next
    start, and raised in Actions for the administrators to acknowledge (§3.5).
-3. **Name the second administrator at install** (`co_admin_did`, §4 step 1),
-   which avoids the problem altogether.
 
 A single administrator is also a single point of failure: lose that passkey and
-the only way back is the offline route. **Run with at least two community
-administrators.**
+the only way back is the offline route. Where more than one person can
+administer the community, **run with at least two community administrators.**
+
+### 2.1a Single-administrator mode
+
+Second-party consent presupposes a second party (VTI-APV-022). In
+single-administrator mode, wherever **nobody but you** is eligible to consent
+to an operation that ordinarily needs another administrator's approval —
+granting an authority-conferring capability or inviting an administrator
+(VTI-APV-018), lowering the consent threshold (VTI-APV-020), replacing a policy
+that decides authority (VTI-VTC-022) — your passkey step-up **bound to that one
+operation** (§3.1) authorizes it instead. The operation runs at once; nothing
+waits in Actions.
+
+- **Set it on the host, at install.** `vtc setup --single-admin` (interactive
+  or `--from`), `single_admin_mode = true` in the setup TOML, or answer *Yes* to
+  "Run as a single-administrator community?". Setup writes `[acl]
+  single_admin_mode = true` to `config.toml`. Changing it later means editing
+  `config.toml` on the host and restarting. It is **not** a runtime setting:
+  `config/patch` and `vtc/config/import` refuse `acl.single_admin_mode` by
+  name, so nobody holding only an administrator's credentials can turn it on or
+  off.
+- **It never overrides an eligible administrator.** The moment a second
+  administrator who can approve the operation exists, consent applies again
+  exactly as in §3.2 — nothing about the mode needs changing. Grant a colleague
+  `community-admin` (on your step-up alone, since nobody else is eligible yet)
+  and every later grant waits for their approval. Setting it together with
+  `co_admin_did` is allowed, but setup warns that it has no effect while that
+  administrator is eligible.
+- **It does not change a reduction.** Removing or narrowing another
+  administrator (VTI-APV-019) proceeds without a third party's consent wherever
+  none exists, with or without the mode — and keeps its cooling-off. That
+  subject is another administrator, and taking them out at once would let one
+  credential remove the only other eligible party and then act on the waiver.
+- **It is never quiet.** Every administrator sees a permanent *SINGLE ADMIN
+  MODE* banner on every console page and a dashboard tile; `cnm actions list`
+  prints the same notice. Each waived operation is entered in the Actions
+  history marked **Consent waived**. And it is audited at `Critical`: a
+  `SingleAdminMode` row at every start with the mode in effect (`inEffect`),
+  another when the host configuration turned it on or off since the last start
+  (`enabled` / `disabled`), and one for every operation whose consent it waived
+  (`consentWaived`, naming the task, the requirement and the payload digest).
 
 ### 2.2 Several administrators
 
@@ -679,7 +723,8 @@ Promotions that Alice starts need an approver other than Alice: here, Bob.
 | add a moderator, auditor, vetting lead, … | Access control → Add entry → administrative role (tick capabilities to narrow it) → your passkey; or `cnm access grant <did> --admin-role moderator` |
 | add a repository manager for one namespace | Add entry → `repo-manager` → tick `git.repo.manage`, resource `git-ns:<forge>/<ns>`; or `cnm access grant <did> --admin-role repo-manager --capability git.repo.manage@git-ns:<forge>/<ns>` |
 | add a community administrator, with 2+ of them | Add entry → `community-admin` → it waits in Actions → another admin approves and it runs |
-| add a community administrator, as the only one | offline `vtc acl add … --role admin`, daemon stopped |
+| add a community administrator, as the only one | in single-administrator mode (§2.1a): Add entry → your passkey, and it runs; otherwise offline `vtc acl add … --role admin`, daemon stopped |
+| run a community with one administrator | `vtc setup --single-admin` (or `[acl] single_admin_mode = true` in `config.toml` on the host, then restart) — never online |
 | narrow an administrator | Access control → Edit → untick capabilities; or `cnm access update <did> --capability …` |
 | give an existing admin a console passkey | Access control → Admin invites → Invite admin |
 | give a member a step-up passkey | Members → member → Step-up passkeys → Invite… |

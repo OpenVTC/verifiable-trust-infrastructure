@@ -190,3 +190,43 @@ describe("the Critical action banners", () => {
     expect(screen.queryByText(/reduce your authority/)).toBeNull();
   });
 });
+
+// Single-administrator mode (VTI-APV-022 item 3): reported to every
+// administrator, on every page, for as long as it is in effect — and never
+// dismissable.
+describe("the single-administrator mode banner", () => {
+  it("is shown on every page while the mode is in effect, with no way to dismiss it", async () => {
+    reads.ext = { operatorWritesUnacknowledged: [], coolingOffAgainstMe: [], singleAdminMode: true };
+    shell();
+    const banner = await screen.findByRole("status", {
+      name: "Single administrator mode is in effect",
+    });
+    expect(within(banner).getByText("SINGLE ADMIN MODE")).toBeTruthy();
+    expect(banner.textContent).toContain(
+      "Approvals are by your own step-up; another administrator's consent is not required.",
+    );
+    expect(within(banner).queryByRole("button")).toBeNull();
+    // Dismissing the waiting-count banner leaves it in place.
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss for this session" }));
+    expect(screen.getByText("SINGLE ADMIN MODE")).toBeTruthy();
+  });
+
+  it("stays on the Actions page too", async () => {
+    reads.ext = { singleAdminMode: true };
+    shell("/actions");
+    expect(await screen.findByText("SINGLE ADMIN MODE")).toBeTruthy();
+  });
+
+  it("is not shown when the mode is off", async () => {
+    reads.ext = { operatorWritesUnacknowledged: [], coolingOffAgainstMe: [], singleAdminMode: false };
+    shell();
+    await screen.findByText("2 actions waiting for your approval.");
+    expect(screen.queryByText("SINGLE ADMIN MODE")).toBeNull();
+  });
+
+  it("is not shown when the daemon says nothing about it", async () => {
+    shell();
+    await screen.findByText("2 actions waiting for your approval.");
+    expect(screen.queryByText("SINGLE ADMIN MODE")).toBeNull();
+  });
+});

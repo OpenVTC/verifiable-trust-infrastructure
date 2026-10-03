@@ -400,6 +400,11 @@ pub struct ActionRecord {
     /// (the claim code) shown to the requester once, then dropped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approver_invite: Option<Value>,
+    /// An operation single-administrator mode let through on the requester's
+    /// own gesture, nobody else being eligible to consent (VTI-APV-022). Never
+    /// open: entered in the history, completed, once its write landed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub consent_waived: bool,
 }
 
 impl ActionRecord {
@@ -483,6 +488,171 @@ pub(crate) struct Submission {
     pub received: Arc<Value>,
     pub signer: Option<String>,
     pub transport: JoinTransport,
+    /// A consent single-administrator mode waived for this document, spent
+    /// and waiting for its write to land ([`spend_waiver`], [`record_effect`]).
+    pub waiver: Arc<std::sync::Mutex<Option<Waiver>>>,
+}
+
+/// An operation whose consent single-administrator mode waived
+/// (**VTI-APV-022**): nobody but the requester was eligible to give it, so the
+/// requester's operation-bound gesture (VTI-APV-015) stands in for it.
+#[derive(Debug, Clone)]
+pub struct Waiver {
+    act: Act,
+    stake: Vec<crate::acl::CapRef>,
+    requester: String,
+    subject: String,
+    type_uri: String,
+    payload: Value,
+    digest: String,
+    summary: String,
+    evidence: StepUpEvidence,
+}
+
+impl Waiver {
+    pub(crate) fn new(
+        act: Act,
+        stake: Vec<crate::acl::CapRef>,
+        requester: &str,
+        subject: &str,
+        op: Operation<'_>,
+        summary: &str,
+        evidence: StepUpEvidence,
+    ) -> Result<Self, AppError> {
+        Ok(Self {
+            act,
+            stake,
+            requester: requester.to_string(),
+            subject: subject.to_string(),
+            type_uri: op.type_uri.to_string(),
+            payload: op.payload.clone(),
+            digest: task_consent::payload_digest(op.type_uri, op.payload)?,
+            summary: summary.to_string(),
+            evidence,
+        })
+    }
+}
+
+/// Spend a waived consent (**VTI-APV-022** item 4): a `Critical` audit row
+/// naming the operation, its requirement and its digest, written before the
+/// write it authorizes — so no waived operation can land unrecorded — and the
+/// waiver held for [`record_effect`] to enter in the action list's history once
+/// the write has landed.
+///
+/// A failure to audit refuses the operation: an unrecorded waiver is exactly
+/// what the requirement forbids.
+pub(crate) async fn spend_waiver(state: &AppState, waiver: Waiver) -> Result<(), AppError> {
+    let kind = waiver.act.kind(&waiver.type_uri).to_string();
+    warn!(
+        requester = %waiver.requester,
+        subject = %waiver.subject,
+        task = %waiver.type_uri,
+        requirement = waiver.act.requirement(),
+        "consent waived — single-administrator mode (VTI-APV-022): nobody but the requester \
+         could consent, and the requester's operation-bound step-up stands in for it"
+    );
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &waiver.requester,
+                (!waiver.subject.is_empty()).then_some(waiver.subject.as_str()),
+                AuditEvent::SingleAdminMode(vti_common::audit::SingleAdminModeData {
+                    event: "consentWaived".into(),
+                    requirement: Some(waiver.act.requirement().into()),
+                    task: Some(waiver.type_uri.clone()),
+                    digest: Some(waiver.digest.clone()),
+                    kind: Some(kind),
+                }),
+            )
+            .await?;
+    }
+    let _ = SUBMISSION.try_with(|s| {
+        if let Ok(mut slot) = s.waiver.lock() {
+            *slot = Some(waiver);
+        }
+    });
+    Ok(())
+}
+
+/// Enter a waived operation whose write has landed in the action list's
+/// history: completed at once, with no approvers and no threshold, marked
+/// `consentWaived` (VTI-APV-022). Best-effort, as [`record_effect`] is: the
+/// write has happened and its `Critical` audit row is already written.
+async fn record_waived(state: &AppState) {
+    let Ok(Some((submission, waiver))) = SUBMISSION.try_with(|s| {
+        s.waiver
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+            .map(|w| (s.clone(), w))
+    }) else {
+        return;
+    };
+    let now = now_epoch();
+    let pin = match admin_consent::pin_for(state, waiver.act, &waiver.subject).await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "could not pin a waived operation's state for its history entry");
+            return;
+        }
+    };
+    let mut rec = ActionRecord {
+        id: format!("act-{}", uuid::Uuid::new_v4().simple()),
+        kind: waiver.act.kind(&waiver.type_uri).to_string(),
+        act: waiver.act,
+        stake: waiver.stake,
+        type_uri: waiver.type_uri,
+        payload: waiver.payload,
+        digest: waiver.digest,
+        submitted_doc: (*submission.received).clone(),
+        submitted_signer: submission.signer.clone().unwrap_or_default(),
+        transport: transport_name(submission.transport).to_string(),
+        requester: waiver.requester.clone(),
+        subject: waiver.subject,
+        requester_step_up: RequesterStepUp {
+            kind: waiver.evidence.kind,
+            credential_id: waiver.evidence.credential_id,
+            bound_to: waiver.evidence.bound_to,
+            at: now,
+        },
+        approver_set: waiver.act.approver_set().to_string(),
+        approvers: Vec::new(),
+        threshold: 0,
+        approvals: Vec::new(),
+        state_pin: pin,
+        summary_text: waiver.summary,
+        status: Status::Open,
+        created_at: now,
+        expires_at: now,
+        executing_since: None,
+        closed_at: None,
+        closed_reason: None,
+        closed_message: None,
+        closed_by: None,
+        result: None,
+        result_secret: false,
+        category: Category::Approval,
+        cooling_off_until: None,
+        execution_id: None,
+        acknowledgers: None,
+        approver_invite: None,
+        consent_waived: true,
+    };
+    rec.close(
+        Status::Completed,
+        ClosedReason::ThresholdMet,
+        Some(
+            "Consent waived — single-administrator mode (VTI-APV-022): nobody else could \
+             consent, so the requester's passkey gesture bound to this operation authorized it"
+                .into(),
+        ),
+        now,
+    );
+    rec.closed_by = Some(waiver.requester);
+    let _guard = ACTION_LOCK.lock().await;
+    if let Err(e) = save(state, &rec).await {
+        warn!(error = %e, "could not enter a waived operation in the action history");
+    }
 }
 
 /// The approved action whose stored document is executing.
@@ -551,6 +721,9 @@ pub(crate) fn note_gate_spent(action_id: &str) {
 /// operation reported as refused.
 pub(crate) async fn record_effect(state: &AppState) {
     let Ok(exec) = EXECUTING.try_with(Clone::clone) else {
+        // Not an approved action — but perhaps an operation whose consent
+        // single-administrator mode waived, now landed (VTI-APV-022).
+        record_waived(state).await;
         return;
     };
     if exec.effect_recorded.swap(true, Ordering::SeqCst) {
@@ -778,6 +951,7 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
         execution_id: None,
         acknowledgers: None,
         approver_invite: None,
+        consent_waived: false,
     };
 
     let recent = {
@@ -2071,8 +2245,9 @@ pub(crate) struct Page {
     pub next_offset: Option<usize>,
     /// What the console's banners need beyond the counts (`ext.org.openvtc`):
     /// the operator writes still waiting for the caller's acknowledgement
-    /// (VTI-VTC-023), and the cooling-offs that will reduce the caller
-    /// (VTI-APV-019).
+    /// (VTI-VTC-023), the cooling-offs that will reduce the caller
+    /// (VTI-APV-019), and whether single-administrator mode is in effect
+    /// (VTI-APV-022).
     pub ext: Value,
 }
 
@@ -2151,6 +2326,10 @@ pub(crate) async fn list(
         ext: json!({
             "operatorWritesUnacknowledged": unacknowledged,
             "coolingOffAgainstMe": against_me,
+            // VTI-APV-022 item 3: reported to every administrator, in every
+            // session, for as long as it is in effect — this is the signed
+            // read every console page makes.
+            "singleAdminMode": admin_consent::single_admin_mode(state).await,
         }),
     })
 }
@@ -2361,6 +2540,19 @@ impl<'a> ViewCtx<'a> {
         {
             ext.insert("approverInvite".into(), invite.clone());
         }
+        if rec.consent_waived {
+            // VTI-APV-022: nobody but the requester could consent, and
+            // single-administrator mode let the requester's own
+            // operation-bound gesture stand in for it. No threshold was met by
+            // anyone else — so, as for a cooling-off, none is shown.
+            ext.insert(
+                "consentWaived".into(),
+                json!({
+                    "mode": "singleAdministrator",
+                    "requirement": rec.act.requirement(),
+                }),
+            );
+        }
         if let Some(until) = cooling_off.filter(|_| !v0_2) {
             // 0.1 only. VTI-APV-019 / §8.2: nobody else can consent, so there
             // is no threshold and no expiry — it lands by itself at `landsAt`
@@ -2411,7 +2603,11 @@ impl<'a> ViewCtx<'a> {
             // not lapse — the published `threshold` cannot say zero, so it is
             // absent rather than a number that is not true.
             action["expiresAt"] = json!(rfc3339(rec.expires_at));
-            action["threshold"] = json!(rec.threshold.max(1));
+            // A waived consent (VTI-APV-022) needed nobody else's approval:
+            // no threshold, for the same reason.
+            if !rec.consent_waived {
+                action["threshold"] = json!(rec.threshold.max(1));
+            }
         }
         if rec.status.is_open() {
             let needed = if cooling_off.is_some() {
@@ -2765,6 +2961,7 @@ pub async fn raise_operator_item(
         execution_id: None,
         acknowledgers: write.acknowledgers.clone(),
         approver_invite: None,
+        consent_waived: false,
     };
     {
         let _guard = ACTION_LOCK.lock().await;

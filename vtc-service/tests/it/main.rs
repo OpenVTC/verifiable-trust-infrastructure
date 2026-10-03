@@ -88,6 +88,7 @@ mod routing_cors;
 mod routing_modes;
 mod session_idle_timeout;
 mod signed_step_up;
+mod single_admin_mode;
 mod status_lists;
 mod step_up_approvers;
 mod step_up_passkey_notice_didcomm;

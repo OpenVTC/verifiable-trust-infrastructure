@@ -76,6 +76,11 @@ pub async fn run(
                         .list_actions(view.wire(), cursor.as_deref())
                         .await?;
                     if first {
+                        // VTI-APV-022 item 3: the mode is reported wherever
+                        // an administrator reads the action list.
+                        if page["ext"]["org.openvtc"]["singleAdminMode"] == true {
+                            println!("{}", single_admin_notice());
+                        }
                         println!(
                             "{BOLD}{} waiting for you{RESET}, {} requested by you",
                             page["counts"]["waitingForMe"], page["counts"]["requestedByMe"]
@@ -115,11 +120,35 @@ pub async fn run(
     result
 }
 
+/// The one-line notice for a community in single-administrator mode
+/// (VTI-APV-022).
+pub fn single_admin_notice() -> String {
+    format!(
+        "{YELLOW}! SINGLE ADMIN MODE — approvals are by your own step-up; another \
+         administrator's consent is not required (VTI-APV-022){RESET}"
+    )
+}
+
+/// Whether `action` ran on single-administrator mode's waiver rather than other
+/// administrators' consent (VTI-APV-022).
+fn consent_waived(action: &Value) -> bool {
+    action["ext"]["org.openvtc"]["consentWaived"].is_object()
+}
+
 fn print_line(action: &Value) {
     let title = vtc_client::actions::verify_action(action)
         .map(|v| v.title)
         .unwrap_or_else(|e| format!("{RED}summary refused: {e}{RESET}"));
     let s = |k: &str| action[k].as_str().unwrap_or("?").to_string();
+    if consent_waived(action) {
+        println!(
+            "  {}  {}  {title}  {DIM}{} · {YELLOW}consent waived (single-administrator mode){RESET}",
+            s("actionId"),
+            s("status"),
+            s("requester"),
+        );
+        return;
+    }
     let progress = match (action["landsAt"].as_str(), action["category"].as_str()) {
         // A cooling-off waits on time, not on decisions (VTI-APV-019).
         (Some(lands), _) => format!("cooling off · {}", lands_in(lands, chrono::Utc::now())),
@@ -243,6 +272,12 @@ pub fn render(v: &VerifiedAction) {
     }
     if let Some(n) = a["requesterOpenActions"].as_u64() {
         println!("  {DIM}requester has {n} open action(s){RESET}");
+    }
+    if consent_waived(a) {
+        println!(
+            "  {YELLOW}! consent waived — single-administrator mode (VTI-APV-022): nobody but \
+             the requester could consent, so their passkey gesture authorized it{RESET}"
+        );
     }
     if a["ext"]["org.openvtc"]["burst"] == true {
         println!(

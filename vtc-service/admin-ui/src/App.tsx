@@ -22,7 +22,11 @@ import {
   useActionsAttention,
   waitingSentence,
 } from "@/lib/action-badge";
-import { CoolingOffBanner, OperatorWriteBanner } from "@/components/ActionsAlertBanners";
+import {
+  CoolingOffBanner,
+  OperatorWriteBanner,
+  SingleAdminModeBanner,
+} from "@/components/ActionsAlertBanners";
 import { isSuperAdmin } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
@@ -357,6 +361,9 @@ export default function App() {
         <ReloadPluginsButton />
       </aside>
       <main className="content">
+        {/* Permanent while in effect: single-administrator mode is reported to
+            every administrator on every page (VTI-APV-022). */}
+        <SingleAdminModeBanner on={attention.singleAdminMode} />
         {/* Not dismissible: it clears when every self-granted elevated right
             has been ratified or revoked (git-ns/right/break-glass). */}
         <BreakGlassBanner />
