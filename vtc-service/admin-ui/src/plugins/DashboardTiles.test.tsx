@@ -28,9 +28,10 @@ vi.mock("@/lib/api", async (original) => ({
       Array.from({ length: n }, (_, i) => ({ id: `x${i}`, did: `did:key:z${i}`, status }));
     if (type === MEMBERS) {
       if (reads.failMembers) throw { status: 403, message: "does not hold vtc.members.manage" };
-      return { items: rows(reads.members), nextCursor: null };
+      return { items: rows(reads.members), nextCursor: null, totalEstimate: reads.members };
     }
-    if (type === JOINS) return { items: rows(reads.pending, "pending"), nextCursor: null };
+    if (type === JOINS)
+      return { items: rows(reads.pending, "pending"), nextCursor: null, totalEstimate: reads.pending };
     if (type.includes("/vetting/show/")) return { requestId: "x", vetting: null };
     return {
       actions: [],
@@ -71,8 +72,8 @@ describe("the dashboard's community tiles", () => {
     await waitFor(() => expect(tile("Join requests")?.textContent).toContain("2"));
     expect(tile("Join requests")?.textContent).toContain("awaiting a decision");
     expect(tile("Join requests")?.getAttribute("href")).toBe("/join-requests");
-    expect(reads.calls).toContainEqual([MEMBERS, { limit: 200 }]);
-    expect(reads.calls).toContainEqual([JOINS, { status: "pending", limit: 200 }]);
+    expect(reads.calls).toContainEqual([MEMBERS, { limit: 1 }]);
+    expect(reads.calls).toContainEqual([JOINS, { status: "pending", limit: 1 }]);
   });
 
   it("says when none await a decision", async () => {

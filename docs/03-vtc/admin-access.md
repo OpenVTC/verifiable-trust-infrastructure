@@ -477,6 +477,47 @@ and the browser plugin can sign a decision (`approveDecision`); otherwise a
 passkey assertion; otherwise the wallet signature alone. `cnm` and other
 clients can send `approverSigned` too.
 
+### 3.2a Queues in the action list
+
+Three decisions the community already waited on a person for are raised in
+**Actions** too, as category `queue` (`vtc-action-list.md` §8.2). Their wire
+tasks are unchanged: each answer runs the operation that always decided the
+record, with all of that operation's own checks, audit and notices.
+
+| Item (`kind`) | Raised when | Decided by | Approve | Decline |
+|---|---|---|---|---|
+| Break-glass ratification (`gitNs.breakGlass.review`) | a git-ns break-glass is recorded, unratified | holders of `git.ns.admin` at its namespace: the namespace's administrators and community administrators, never the one who broke it | **Ratify** — `git-ns/right/ratify` | **Revoke** — `git-ns/right/revoke` |
+| Join review (`member.join.review`) | a join request is referred for review (`admission: review`) | holders of `vtc.join.decide`, never the applicant | **Approve** — `vtc/join-requests/decide`, `approved` | **Reject** — the same, `rejected` |
+| Vetting withdrawal review (`vetting.withdrawal.review`) | a vetter withdraws a statement a current member's admission counted (`needsReview`); one item per member | holders of `vtc.vetting.manage`, never the member | **Keep member** — recorded, nothing else changes | **Start removal** — `vtc/members/admin-remove` as the decider, which needs `vtc.members.manage` and applies the removal policy and any consent it takes |
+
+How a queue item differs from an approval:
+
+- **One decision, either way.** There is no threshold: one decider closes it.
+  Declining is not an abort; rejecting, revoking and starting a removal are
+  decisions in their own right.
+- **It never expires, and nobody cancels it.** A break-glass is never accepted
+  by lapse: its item waits until someone ratifies or revokes it. The one who
+  broke the glass sees the item but can neither decide nor withdraw it.
+- **The record decides when it closes.** Decided anywhere else (the **Join
+  requests** page, `git-ns/right/ratify` sent directly, a member removed from
+  **Members**), the item closes, naming who decided where the record says. The
+  page and the item always show the same state.
+- **A refused answer leaves it open.** If the operation refuses (the decider's
+  own authority is an unratified break-glass, or they lack
+  `vtc.members.manage` to start a removal), nothing is written and the item
+  still waits.
+- **It is a decision, not a consent.** Single-administrator mode changes
+  nothing: a sole administrator holding the capability decides it alone, as on
+  the **Join requests** page. A break-glass is still never ratified by the one
+  who broke it (`selfRatification`).
+- **It does not count against the action limits** (`acl.action_max_open`,
+  per-requester), so a long join queue never stops an administrator acting.
+
+The VTC raises each item when the record is written, and the minute sweeper
+raises any that is missing (a crash between the two, a restored backup). An
+administrator who gains the capability after an item was raised is given a
+place to decide it at the next sweep.
+
 ### 3.3 Separation of duties
 
 - No one can grant themselves admin, promote themselves, change their own entry
@@ -844,5 +885,8 @@ Promotions that Alice starts need an approver other than Alice: here, Bob.
 | define a role of our own | Roles → Define role → it waits in Actions → another holder of `vtc.roles.assign` + `vtc.approvals.admin` approves |
 | delete a custom role | move or revoke every holder first, then Roles → Delete (waits in Actions) |
 | keep or drop a departed granter's grants | Actions → the `acl.grants.review` item → Re-affirm or Withdraw |
+| ratify or revoke a break-glass | Actions → the break-glass item → Ratify or Revoke (§3.2a) |
+| decide a referred join request | Actions → the join review → Approve or Reject, or the **Join requests** page; either closes both |
+| act on a withdrawn vetting statement | Actions → the vetting review → Keep member or Start removal |
 | move my admin entry to a new key | `cnm community rotate <slug>`, or `acl/swap-key/0.1` with a link proof from the new key |
 | restore a backup | `backup/*` upload, preview, then commit — the commit waits in Actions for another holder of `vtc.backup.restore` |

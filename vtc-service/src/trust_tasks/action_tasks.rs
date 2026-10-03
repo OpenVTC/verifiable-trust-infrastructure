@@ -282,7 +282,8 @@ async fn handle_cancel(
         Err(CancelError::NotRequester) => refuse(
             &doc,
             codes::NOT_REQUESTER.code,
-            "only the administrator who asked for this can withdraw it",
+            "only the administrator who asked for this can withdraw it; a queue item (a \
+             break-glass, join or vetting review) is decided, never withdrawn",
         ),
         Err(CancelError::NotOpen) => {
             refuse(&doc, codes::NOT_OPEN.code, "this action is no longer open")
@@ -473,6 +474,11 @@ pub(super) async fn handle_decision(
             ),
             None,
         ),
+        // A queue item's own operation refused the decision: nothing was
+        // written and the item still waits (`vtc-action-list.md` §8.2).
+        Err(DecisionError::Refused(message)) => {
+            app_error_to_reject(&doc, &vti_common::error::AppError::Conflict(message))
+        }
         Err(DecisionError::Internal(e)) => app_error_to_reject(&doc, &e),
     }
 }

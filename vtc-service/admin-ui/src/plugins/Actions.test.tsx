@@ -275,7 +275,7 @@ describe("the Actions page", () => {
     );
     render();
     fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
-    const send = screen.getByRole("button", { name: "Send decline" }) as HTMLButtonElement;
+    const send = screen.getByRole("button", { name: "Send: Decline" }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "not agreed" } });
     fireEvent.click(send);
@@ -598,6 +598,111 @@ describe("a cooling-off", () => {
   });
 });
 
+/** A queue item (`vtc-action-list.md` §8.2), from its shared vector: one
+ *  decision, no threshold, no expiry. */
+async function queueItem(kind: string, overrides: Partial<Action> = {}) {
+  const v = (vectors as unknown as Vector[]).find((x) => x.kind === kind)!;
+  const action: Action = {
+    actionId: "q-1",
+    category: "queue",
+    kind: v.kind,
+    typeUri: v.typeUri,
+    requester: REQUESTER,
+    status: "open",
+    createdAt: "2026-10-03T09:00:00Z",
+    approvals: [],
+    approversRemaining: 1,
+    callerRole: "approver",
+    challenge: CHALLENGE,
+    payload: v.payload,
+    payloadDigest: await payloadDigestOf(v.payload),
+    summary: v.summary,
+    requesterOpenActions: 1,
+    ...overrides,
+  };
+  return action;
+}
+
+describe("a queue item", () => {
+  it("offers Ratify and Revoke on a break-glass, with no threshold and no expiry", async () => {
+    installWallet();
+    anyView([await queueItem("gitNs.breakGlass.review")]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action q-1" });
+    expect(await within(card).findByRole("button", { name: "Ratify" })).toBeTruthy();
+    expect(within(card).getByRole("button", { name: "Revoke" })).toBeTruthy();
+    expect(within(card).getByText(/It does not\s+expire/)).toBeTruthy();
+    expect(within(card).queryByText(/Time left/)).toBeNull();
+    expect(within(card).queryByText(/ of \d/)).toBeNull();
+  });
+
+  it("revokes with a reason, as a deny decision", async () => {
+    installWallet();
+    const requests = anyView(
+      [await queueItem("gitNs.breakGlass.review")],
+      [taskRoute(DECISION_TASK, { status: "denied", payloadDigest: "z", actionId: "q-1" })],
+    );
+    render();
+    fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "no outage" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send: Revoke" }));
+    await waitFor(() => expect(decisions(requests)).toHaveLength(1));
+    const payload = (decisions(requests)[0]!.body as { payload: Record<string, unknown> }).payload;
+    expect(payload.decision).toBe("deny");
+    expect(payload.reason).toBe("no outage");
+  });
+
+  it("rejects a join without requiring a reason", async () => {
+    installWallet();
+    const requests = anyView(
+      [await queueItem("member.join.review")],
+      [taskRoute(DECISION_TASK, { status: "denied", payloadDigest: "z", actionId: "q-1" })],
+    );
+    render();
+    expect(await screen.findByRole("button", { name: "Approve" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    const send = screen.getByRole("button", { name: "Send: Reject" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    fireEvent.click(send);
+    await waitFor(() => expect(decisions(requests)).toHaveLength(1));
+  });
+
+  it("names the vetting review's answers Keep member and Start removal", async () => {
+    installWallet();
+    anyView([await queueItem("vetting.withdrawal.review")]);
+    render();
+    expect(await screen.findByRole("button", { name: "Keep member" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Start removal" })).toBeTruthy();
+  });
+
+  it("is never cancellable, not even by the party it is about", async () => {
+    anyView([
+      await queueItem("gitNs.breakGlass.review", {
+        callerRole: "requester",
+        challenge: undefined,
+      }),
+    ]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action q-1" });
+    await within(card).findByText(/It does not\s+expire/);
+    expect(within(card).queryByRole("button", { name: "Cancel request" })).toBeNull();
+  });
+
+  it("says how a decided item was decided", async () => {
+    anyView([
+      await queueItem("gitNs.breakGlass.review", {
+        status: "completed",
+        closedReason: "thresholdMet",
+        closedAt: "2026-10-03T10:00:00Z",
+        challenge: undefined,
+      }),
+    ]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action q-1" });
+    expect(await within(card).findByText("Decided: Ratify")).toBeTruthy();
+  });
+});
+
 describe("coolingOffOf", () => {
   it("reads the 0.2 action's own landsAt and callerRole, not an ext", async () => {
     const mineOpen = await coolingOff();
@@ -874,7 +979,7 @@ describe("deciding with the approver device", () => {
     render();
     fireEvent.click(await screen.findByRole("button", { name: "Decline" }));
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "  not agreed  " } });
-    fireEvent.click(screen.getByRole("button", { name: "Send decline" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send: Decline" }));
     await waitFor(() => expect(decisions(requests)).toHaveLength(1));
 
     const asked = approveDecision.mock.calls[0]![0] as { decision: Record<string, unknown> };

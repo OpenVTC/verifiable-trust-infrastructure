@@ -2,18 +2,19 @@
 // administrator's decision (the Join requests nav badge and dashboard tile) and
 // current members (the Members tile).
 //
-// Neither listing carries a count. `vtc/join-requests/list/0.1` and
-// `vtc/members/list/0.1` both answer `Paginated` pages whose `totalEstimate`
-// the VTC leaves unset, so a count is the pages walked to the end. The
-// join-request status filter is applied to each page after it is read
-// (`routes::join_requests::read::list_join_requests_inner`), so a page can hold
-// no pending request and still carry a `nextCursor`: only the cursor running
-// out says the count is complete. The walk is bounded; past the bound the
-// count is reported as a floor (`more`), shown as `N+`.
+// Each is **one read**: `vtc/join-requests/list/0.1` and `vtc/members/list/0.1`
+// answer `Paginated` pages whose `totalEstimate` the VTC fills with the exact
+// number of rows the request's filter admits, and the filter is applied before
+// paging (`join::storage::list_join_requests_filtered`,
+// `members::storage::list_members_filtered`). So a `limit: 1` page carries the
+// count, whatever the community's size. Until the VTC filled it, a count was a
+// walk of every page — and since the status filter ran after each page was
+// cut, a page could be empty with a `nextCursor`, so only the cursor running
+// out said the count was complete.
 //
-// Pages are the schema maximum (200 for both, `lib/list-limits.json`): the
-// fewest reads, and never more than the listing accepts — the admission
-// criteria bug (#1921) was a page size over the maximum.
+// A VTC that leaves `totalEstimate` out is answered with the floor the one
+// page shows (`more`, rendered `N+`); the console is not built for one
+// (`vtc-action-list.md` §8a), but a badge must never take the shell down.
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -32,10 +33,8 @@ export const JOIN_REQUESTS_PLUGIN_ID = "join-requests";
 export const JOIN_DECIDE_CAP = "vtc.join.decide";
 export const MEMBERS_MANAGE_CAP = "vtc.members.manage";
 
-/** Page size for both walks: each listing's schema maximum. */
-export const COUNT_PAGE_SIZE = 200;
-/** Pages walked before a count is reported as a floor (10 000 rows). */
-export const MAX_COUNT_PAGES = 50;
+/** Page size for each count: one row — the count is `totalEstimate`. */
+export const COUNT_PAGE_SIZE = 1;
 
 /** Under the Join requests page's own `["join-requests"]` prefix, so a
  *  decision there (which invalidates that prefix) refreshes the badge too. */
@@ -43,51 +42,46 @@ export const PENDING_JOIN_REQUESTS_KEY = ["join-requests", "pending-count"] as c
 /** Likewise under the Members page's `["members"]` prefix. */
 export const MEMBER_COUNT_KEY = ["members", "count"] as const;
 
-/** A count, and whether there were more rows than the walk read. */
+/** A count, and whether it is only a floor (no `totalEstimate` came back). */
 export interface Tally {
   count: number;
   more: boolean;
 }
 
-/** `12`, or `10000+` when the walk stopped at its bound. */
+/** `12`, or `1+` when the VTC gave no total. */
 export function formatTally(t: Tally): string {
   return `${t.count}${t.more ? "+" : ""}`;
 }
 
-async function tally<T>(
-  task: string,
-  filter: Record<string, unknown>,
-  keep: (item: T) => boolean,
-): Promise<Tally> {
-  let count = 0;
-  let cursor: string | null = null;
-  for (let page = 0; page < MAX_COUNT_PAGES; page++) {
-    const body: { items: T[]; nextCursor?: string | null } = await postSignedRead(task, {
-      ...filter,
-      limit: COUNT_PAGE_SIZE,
-      ...(cursor ? { cursor } : {}),
-    });
-    count += body.items.filter(keep).length;
-    cursor = body.nextCursor ?? null;
-    if (!cursor) return { count, more: false };
+/** The count a page reports: its `totalEstimate`, or the floor its rows and
+ *  cursor show when it has none. */
+export function tallyOf(page: {
+  items: unknown[];
+  nextCursor?: string | null;
+  totalEstimate?: number | null;
+}): Tally {
+  if (typeof page.totalEstimate === "number") {
+    return { count: page.totalEstimate, more: false };
   }
-  return { count, more: true };
+  return { count: page.items.length, more: Boolean(page.nextCursor) };
+}
+
+async function tally(task: string, filter: Record<string, unknown>): Promise<Tally> {
+  const page: JoinRequestsPage | MembersPage = await postSignedRead(task, {
+    ...filter,
+    limit: COUNT_PAGE_SIZE,
+  });
+  return tallyOf(page);
 }
 
 /** Join requests awaiting an administrator's decision. */
 export function countPendingJoinRequests(): Promise<Tally> {
-  // The VTC filters to the status asked for; the item check holds the count to
-  // it should a page ever come back unfiltered.
-  return tally<JoinRequestsPage["items"][number]>(
-    JOIN_REQUESTS_LIST_TASK,
-    { status: "pending" },
-    (r) => r.status === "pending",
-  );
+  return tally(JOIN_REQUESTS_LIST_TASK, { status: "pending" });
 }
 
 /** Current members. */
 export function countMembers(): Promise<Tally> {
-  return tally<MembersPage["items"][number]>(MEMBERS_LIST_TASK, {}, () => true);
+  return tally(MEMBERS_LIST_TASK, {});
 }
 
 /** Whether `caps` holds `cap` anywhere — how the nav decides what to show. */

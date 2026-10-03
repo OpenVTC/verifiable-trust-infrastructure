@@ -2177,6 +2177,21 @@ async fn right_revoke_record(
         },
     )
     .await;
+    // An unratified break-glass taken back closes its ratification item,
+    // naming who revoked it, whichever door they used (`vtc-action-list.md`
+    // §8.2).
+    if unratified_bg && let Some(mark) = row.break_glass.as_ref() {
+        crate::admin_actions::queues::break_glass_ended(
+            state,
+            &resource.to_string(),
+            right.as_str(),
+            &subject,
+            &super::wire::timestamp(mark.at),
+            false,
+            &actor.did,
+        )
+        .await;
+    }
     Ok((row, resource))
 }
 

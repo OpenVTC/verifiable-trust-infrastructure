@@ -531,6 +531,11 @@ cnm git break-glass --right=git.repo.own --resource=github.com/acme/widgets \
   unratified one with the ordinary `git-ns/right/revoke`, and no policy can
   refuse that. Both are audited and announced like the break-glass.
   `cnm git break-glass-list [--resource <res>]` shows them all.
+- **In the action list**: every unratified break-glass is also a queue item
+  (`gitNs.breakGlass.review`) in the **Actions** list of the namespace's other
+  administrators, with **Ratify** and **Revoke**, which call the two tasks
+  above as the decider. It never expires into acceptance; it closes when the
+  break-glass is ratified or revoked by any route (`admin-access.md` §3.2a).
 
 **Policy** (`git_ns.rego` `settings`) may disable or tighten it, never quieten
 it: `break_glass` (`"enabled"` by default, or `"disabled"`),

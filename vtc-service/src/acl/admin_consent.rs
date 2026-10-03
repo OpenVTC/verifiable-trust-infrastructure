@@ -175,6 +175,23 @@ pub enum Act {
     /// approver's own authority; declining, or letting it lapse, withdraws
     /// them. Raised by the community itself, never by a requester's document.
     GrantsReview,
+    /// A **queue** item (`vtc-action-list.md` §8.2, *Existing queues*): an
+    /// unratified git-ns break-glass, for another administrator of the
+    /// namespace to ratify or revoke (`git-ns/right/ratify/0.1`,
+    /// `git-ns/right/revoke/0.3`). The subject is the record's subject, who
+    /// never decides it. A decision, not a consent: it never expires into
+    /// acceptance and is never gated (`crate::admin_actions::queues`).
+    BreakGlassReview,
+    /// A **queue** item: a join request referred for review
+    /// (`admission: review`), decided by a holder of `vtc.join.decide` through
+    /// the same `vtc/join-requests/decide` operation the Join requests page
+    /// sends. The subject is the applicant.
+    JoinReview,
+    /// A **queue** item: a withdrawn vetting statement a current membership
+    /// rests on (`vtc/vetting/revocations/list`, `needsReview`), for a holder
+    /// of `vtc.vetting.manage` to keep the member or start their removal. The
+    /// subject is the member.
+    VettingReview,
 }
 
 impl Act {
@@ -188,6 +205,11 @@ impl Act {
             Self::OperatorWrite => "VTI-VTC-023",
             Self::ChangeRoles | Self::RestoreBackup => "VTI-APV-018",
             Self::GrantsReview => "VTI-ACL-071",
+            // Queue items are decisions the community already asked for; what
+            // they implement is the operation each one decides.
+            Self::BreakGlassReview => "git-ns/right/ratify",
+            Self::JoinReview => "vtc/join-requests/decide",
+            Self::VettingReview => "vtc/vetting/revocations",
         }
     }
 
@@ -195,6 +217,9 @@ impl Act {
         match self {
             Self::ReduceUnrestricted | Self::GrantsReview => APPROVER_SET_EXCEPT_SUBJECT,
             Self::OperatorWrite => "administrators",
+            Self::BreakGlassReview => "namespace-administrators-except-subject",
+            Self::JoinReview => "join-deciders",
+            Self::VettingReview => "vetting-managers-except-subject",
             _ => APPROVER_SET,
         }
     }
@@ -203,7 +228,25 @@ impl Act {
     /// requester. For a reduction, where the subject is a party to it; and
     /// for a grants review, whose subject is the granter that left.
     pub(crate) fn excludes_subject(self) -> bool {
-        matches!(self, Self::ReduceUnrestricted | Self::GrantsReview)
+        matches!(
+            self,
+            Self::ReduceUnrestricted
+                | Self::GrantsReview
+                | Self::BreakGlassReview
+                | Self::JoinReview
+                | Self::VettingReview
+        )
+    }
+
+    /// Whether this is a **queue** item (`vtc-action-list.md` §8.2): an
+    /// existing human decision surfaced in the action list and made by one
+    /// holder of the capability it is about. Not a consent, so its deciders
+    /// are the capability's *holders* ([`may_decide`]), not its approvers.
+    pub(crate) fn is_queue(self) -> bool {
+        matches!(
+            self,
+            Self::BreakGlassReview | Self::JoinReview | Self::VettingReview
+        )
     }
 
     /// The stake an act carries when the caller names none: what its approvers
@@ -227,6 +270,11 @@ impl Act {
                 CapRef::all(Capability::ApprovalsAdmin),
             ],
             Self::RestoreBackup => vec![CapRef::all(Capability::BackupRestore)],
+            // A break-glass item is raised with its namespace's `git.ns.admin`
+            // as its stake; unqualified is the community-wide holder.
+            Self::BreakGlassReview => vec![CapRef::all(Capability::GitNsAdmin)],
+            Self::JoinReview => vec![CapRef::all(Capability::JoinDecide)],
+            Self::VettingReview => vec![CapRef::all(Capability::VettingManage)],
         }
     }
 
@@ -260,6 +308,9 @@ impl Act {
             Self::ChangeRoles => s::KIND_ROLE_DEFINE,
             Self::RestoreBackup => s::KIND_BACKUP_RESTORE,
             Self::GrantsReview => s::KIND_GRANTS_REVIEW,
+            Self::BreakGlassReview => s::KIND_BREAK_GLASS_REVIEW,
+            Self::JoinReview => s::KIND_JOIN_REVIEW,
+            Self::VettingReview => s::KIND_VETTING_REVIEW,
         }
     }
 }
@@ -334,6 +385,28 @@ pub fn lost_conferring(prev: &VtcAclEntry, next: Option<&VtcAclEntry>, now: u64)
 #[must_use]
 pub fn may_approve(entry: &VtcAclEntry, stake: &[CapRef], now: u64) -> bool {
     !entry.is_expired(now) && stake.iter().all(|c| entry.admin.can_approve(c))
+}
+
+/// Whether `entry` may decide an action of `act` with this stake. For a
+/// consent, [`may_approve`]: approve authority, its own axis (VTI-ACL-040).
+/// For a **queue** item, holding the capability it is about at a covering
+/// qualifier: a queue item *is* the decision — the join review the Join
+/// requests page has always taken to `vtc.join.decide` — so whoever may make
+/// that decision decides it here (`vtc-action-list.md` §8.2).
+#[must_use]
+pub fn may_decide(entry: &VtcAclEntry, act: Act, stake: &[CapRef], now: u64) -> bool {
+    if !act.is_queue() {
+        return may_approve(entry, stake, now);
+    }
+    if entry.is_expired(now) {
+        return false;
+    }
+    match act {
+        // A criterion-qualified vetting manager manages vetting too; the
+        // removal this item can start applies its own rules.
+        Act::VettingReview => entry.can_any(Capability::VettingManage),
+        _ => stake.iter().all(|c| entry.holds(c)),
+    }
 }
 
 /// The DIDs of every live holder of `vtc.roles.assign`, unqualified — the
@@ -1158,7 +1231,7 @@ pub(crate) async fn approvers_for(
     Ok(list_acl_entries(&state.acl_ks)
         .await?
         .into_iter()
-        .filter(|e| may_approve(e, &stake, now))
+        .filter(|e| may_decide(e, act, &stake, now))
         .map(|e| e.did)
         .filter(|d| d != requester && !(act.excludes_subject() && d == subject))
         .collect())
@@ -1203,6 +1276,9 @@ pub(crate) fn requester_still_authorized(
         // anything (`requester_still_authorized` is never asked of it — see
         // `crate::admin_actions::settle`).
         Act::GrantsReview => true,
+        // Queue items are raised by the community about a record; their
+        // requester is the party the record is about, and is never asked this.
+        Act::BreakGlassReview | Act::JoinReview | Act::VettingReview => true,
     }
 }
 
@@ -1235,6 +1311,9 @@ pub(crate) async fn pin_for(
         // A review re-affirms what is still under review at execution, and
         // nothing else; a change to one entry must not void the rest.
         Act::GrantsReview => json!(subject),
+        // A queue item is settled against its record, never a pin
+        // (`crate::admin_actions::queues::resolution`).
+        Act::BreakGlassReview | Act::JoinReview | Act::VettingReview => json!(subject),
     };
     Ok(StatePin {
         resource: subject.to_string(),

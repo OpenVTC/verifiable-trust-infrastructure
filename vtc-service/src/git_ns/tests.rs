@@ -7594,4 +7594,5 @@ async fn namespace_list_signed_by_a_console_key_answers_its_administrator() {
     assert_eq!(resources(&v, "namespaces", "resource"), ["github.com/acme"]);
 }
 
+mod break_glass_queue;
 mod c3;

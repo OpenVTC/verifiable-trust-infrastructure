@@ -22,6 +22,7 @@ mod acl_cli;
 mod acl_trust_tasks;
 mod acl_vtc_client;
 mod action_list_a2;
+mod action_list_queues;
 mod admin_authority_stopgaps;
 mod admin_bootstrap;
 mod admin_config;

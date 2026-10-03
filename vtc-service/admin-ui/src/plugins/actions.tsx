@@ -32,7 +32,6 @@ import { AlertTriangle, RefreshCw } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { NamedDid } from "@/components/NamedDid";
 import {
-  KIND_GRANTS_REVIEW,
   SUMMARY_REFUSED_MESSAGE,
   SummaryRefusal,
   matchCode,
@@ -57,7 +56,9 @@ import {
   cnmApproveCommand,
   cnmDenyCommand,
   decideAction,
+  decisionLabels,
   describeDecision,
+  isQueueItem,
   explainCancelError,
   explainDecisionError,
   explainReadError,
@@ -359,6 +360,15 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
                 <dt>Approvals</dt>
                 <dd>None — consent waived by single-administrator mode.</dd>
               </>
+            ) : isQueueItem(action) ? (
+              <>
+                <dt>Decision</dt>
+                <dd>
+                  One administrator holding what it is about decides it, either way. It does not
+                  expire: it waits here until someone does.
+                  {action.approvals.length > 0 && <ApprovalList action={action} book={book} />}
+                </dd>
+              </>
             ) : cooling ? (
               <>
                 <dt>Approvals</dt>
@@ -611,7 +621,11 @@ function ClosedFacts({ action, book }: { action: Action; book: NameBook }) {
           <dd>
             {consentWaivedOf(action)
               ? "Consent waived — single-administrator mode (VTI-APV-022)"
-              : (CLOSED_REASON_TEXT[action.closedReason] ?? action.closedReason)}
+              : isQueueItem(action) && action.closedReason === "thresholdMet"
+                ? `Decided: ${decisionLabels(action).approve}`
+                : isQueueItem(action) && action.closedReason === "declined"
+                  ? `Decided: ${decisionLabels(action).decline}`
+                  : (CLOSED_REASON_TEXT[action.closedReason] ?? action.closedReason)}
           </dd>
         </>
       )}
@@ -775,19 +789,22 @@ function ActionButtons({ action, summaryOk }: { action: Action; summaryOk: boole
   // A cooling-off says outright who may cancel it (`cancellableBy`); any other
   // open action of yours you may withdraw. A cooling-off's subject never can.
   const cooling = coolingOffOf(action);
+  // A queue item is decided, never withdrawn — not even by the party it is
+  // about (`vtc-action-list.md` §8.2).
   const canCancel =
     action.callerRole === "requester" &&
     action.status === "open" &&
+    !isQueueItem(action) &&
     (action.category !== "coolingOff" || !!cooling?.cancellableByMe);
   if (!action.challenge && !canCancel) return null;
 
   const busy = decide.isPending || cancel.isPending || (decidable && device.isPending);
-  // A departed granter's grants (`vtc-admin-roles.md` §6.3): approving
-  // re-affirms them under the approver's own authority; declining withdraws
-  // them now.
-  const review = action.kind === KIND_GRANTS_REVIEW;
-  const approveLabel = review ? "Re-affirm" : "Approve";
-  const declineLabel = review ? "Withdraw" : "Decline";
+  // What each answer does: a grants review re-affirms or withdraws; a queue
+  // item runs the operation that always decided it (ratify / revoke, approve
+  // / reject, keep the member / start removal).
+  const labels = decisionLabels(action);
+  const approveLabel = labels.approve;
+  const declineLabel = labels.decline;
 
   return (
     <div className="action-buttons">
@@ -836,9 +853,9 @@ function ActionButtons({ action, summaryOk }: { action: Action; summaryOk: boole
 
       {declining && (
         <ReasonForm
-          label="Why are you declining? (the requester sees this)"
-          required
-          submitLabel={decide.isPending ? "Signing…" : "Send decline"}
+          label={labels.declineReason}
+          required={labels.declineReasonRequired}
+          submitLabel={decide.isPending ? "Signing…" : `Send: ${declineLabel}`}
           busy={busy}
           reason={reason}
           onReason={setReason}

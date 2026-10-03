@@ -164,8 +164,8 @@ describe("refusal", () => {
     expect((out as SummaryRefusal).reason).toBe("badFormat");
   });
 
-  it("pins exactly twenty-five (kind, typeUri) pairs", () => {
-    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(25);
+  it("pins exactly twenty-eight (kind, typeUri) pairs", () => {
+    expect(Object.keys(PINNED_TEMPLATE_DIGESTS)).toHaveLength(28);
   });
 });
 
@@ -368,6 +368,47 @@ describe("role-based administration templates", () => {
         granter: f("/granter", "did"),
         subjects: f("/subjects", "capabilityList"),
         deadline: f("/deadline", "datetime"),
+      },
+    },
+    // Queue items (`vtc-action-list.md` §8.2).
+    {
+      kind: "gitNs.breakGlass.review",
+      typeUri: "urn:openvtc:vtc:git-ns:break-glass-review",
+      title: "Ratify or revoke the break-glass that gave {subject} {right} on {resource}",
+      effect:
+        "{subject} gave themselves {right} on {resource} with no one else, at {breakGlassAt}, saying: {justification}. It is already in effect. Ratifying confirms it; revoking takes it away. It never lapses into acceptance: it waits until another administrator decides.",
+      fields: {
+        subject: f("/subject", "did"),
+        right: f("/right", "text"),
+        resource: f("/resource", "text"),
+        justification: f("/justification", "text"),
+        breakGlassAt: f("/breakGlassAt", "datetime"),
+      },
+    },
+    {
+      kind: "member.join.review",
+      typeUri: "urn:openvtc:vtc:join:review",
+      title: "Admit or reject {applicant}",
+      effect:
+        "{applicant} applied at {submittedAt} and was referred for a decision. Approving admits them as a member and issues their membership credentials; rejecting refuses the application.",
+      fields: {
+        applicant: f("/applicant", "did"),
+        requestId: f("/requestId", "text"),
+        submittedAt: f("/submittedAt", "datetime"),
+      },
+    },
+    {
+      kind: "vetting.withdrawal.review",
+      typeUri: "urn:openvtc:vtc:vetting:withdrawal-review",
+      title: "Keep {member} or start their removal",
+      effect:
+        "{issuer} withdrew the vetting statement {statementId}, which {member}'s admission counted. Keeping the member records that the admission stands; starting removal sends it through vtc/members/admin-remove, which applies its own rules.",
+      fields: {
+        member: f("/member", "did"),
+        issuer: f("/issuer", "did"),
+        statementId: f("/statementId", "text"),
+        reason: f("/reason", "text"),
+        recordedAt: f("/recordedAt", "datetime"),
       },
     },
   ];

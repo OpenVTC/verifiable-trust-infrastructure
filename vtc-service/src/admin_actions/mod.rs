@@ -89,6 +89,9 @@
 //! order. The status transition `open → executing` under the lock is what
 //! makes the execution single; the handler's own locks serialise the write.
 
+#[cfg(test)]
+mod queue_tests;
+pub mod queues;
 pub mod summary;
 
 /// The declared error codes of `vtc/admin/actions/*`, read off the generated
@@ -269,6 +272,12 @@ pub enum Category {
     /// operator's offline write — that every remaining administrator
     /// acknowledges (VTI-VTC-023).
     Acknowledge,
+    /// An existing human decision surfaced in the action list
+    /// (`vtc-action-list.md` §8.2, *Existing queues*): a break-glass to ratify
+    /// or revoke, a join request to admit or reject, a withdrawn vetting
+    /// statement to keep or act on. One decision by one holder of the
+    /// capability it is about; never expires, never cancelled ([`queues`]).
+    Queue,
 }
 
 impl Category {
@@ -276,6 +285,7 @@ impl Category {
         match self {
             Self::Approval => "approval",
             Self::Acknowledge => "acknowledge",
+            Self::Queue => "queue",
         }
     }
 }
@@ -405,6 +415,11 @@ pub struct ActionRecord {
     /// open: entered in the history, completed, once its write landed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub consent_waived: bool,
+    /// For a queue item ([`Category::Queue`]): the record it surfaces — a
+    /// join request, a break-glass, a withdrawal and the member it touches —
+    /// so the same record is never raised twice while an item for it is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_key: Option<String>,
 }
 
 impl ActionRecord {
@@ -637,6 +652,7 @@ async fn record_waived(state: &AppState) {
         acknowledgers: None,
         approver_invite: None,
         consent_waived: true,
+        queue_key: None,
     };
     rec.close(
         Status::Completed,
@@ -814,8 +830,13 @@ pub(crate) async fn check_limits(
     let community = setting(state, crate::config_store::ACTION_MAX_OPEN).await?;
     let cooldown = setting(state, crate::config_store::ACTION_DECLINE_COOLDOWN).await?;
 
+    // Only operations someone asked for count: an operator's write and a queue
+    // item are the community's, and a busy join queue must never stop an
+    // administrator acting (`vtc-action-list.md` §7a.1, §8.2).
+    let asked = |r: &&ActionRecord| r.category == Category::Approval;
     let open_mine = actions
         .iter()
+        .filter(asked)
         .filter(|r| r.status.is_open() && r.requester == requester)
         .count() as u64;
     if open_mine >= per_requester {
@@ -826,7 +847,11 @@ pub(crate) async fn check_limits(
             crate::config_store::ACTION_MAX_OPEN_PER_REQUESTER
         )));
     }
-    let open_all = actions.iter().filter(|r| r.status.is_open()).count() as u64;
+    let open_all = actions
+        .iter()
+        .filter(asked)
+        .filter(|r| r.status.is_open())
+        .count() as u64;
     if open_all >= community {
         return Err(AppError::Conflict(format!(
             "this community already has {open_all} actions waiting for approval, the most \
@@ -952,6 +977,7 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
         acknowledgers: None,
         approver_invite: None,
         consent_waived: false,
+        queue_key: None,
     };
 
     let recent = {
@@ -1157,7 +1183,7 @@ pub(crate) async fn tally(state: &AppState, rec: &ActionRecord) -> Result<Tally,
     // A grants review is re-affirmed by one covering administrator, as an
     // `acl/update` re-affirmation is; every other act needs the threshold as
     // it stands now, if it has risen.
-    let needed = if rec.act == Act::GrantsReview {
+    let needed = if rec.act == Act::GrantsReview || rec.act.is_queue() {
         rec.threshold
     } else {
         rec.threshold.max(admin_consent::threshold(state).await?)
@@ -1274,6 +1300,11 @@ pub(crate) async fn recheck_cooling_off(
 async fn settle(state: &AppState, rec: &mut ActionRecord, now: u64) -> Result<bool, AppError> {
     if rec.status != Status::Open {
         return Ok(false);
+    }
+    if rec.category == Category::Queue {
+        // Settled against the record it surfaces, never by expiry, pin or
+        // eligibility: it stays until it is decided (§8.2).
+        return queues::settle(state, rec, now).await;
     }
     if rec.category == Category::Acknowledge {
         // VTI-VTC-023: complete once every remaining administrator expected to
@@ -1409,6 +1440,15 @@ async fn refresh_locked(state: &AppState) -> Result<(), AppError> {
         }
         if rec.status == Status::Executing {
             // Interrupted: no execution in this process owns it (R2.1).
+            if rec.category == Category::Queue
+                && rec.execution_id.as_deref().is_none_or(|id| !in_flight(id))
+            {
+                // A queue decision interrupted part-way: its record says
+                // whether it landed; if not, the item waits again.
+                queues::reconcile_interrupted(state, &mut rec, now).await?;
+                save(state, &rec).await?;
+                continue;
+            }
             if rec.execution_id.as_deref().is_none_or(|id| !in_flight(id)) {
                 reconcile(state, &mut rec, now).await?;
                 save(state, &rec).await?;
@@ -1428,17 +1468,25 @@ async fn refresh_locked(state: &AppState) -> Result<(), AppError> {
         }
         if settle(state, &mut rec, now).await? {
             save(state, &rec).await?;
-            let stage = match (rec.status, rec.closed_reason) {
-                (Status::Expired, _) => "expired",
-                (Status::Failed, _) => "failed",
-                (_, Some(ClosedReason::Acknowledged)) => "completed",
-                _ => "invalidated",
-            };
+            let stage = closing_stage(&rec);
             audit(state, &rec, &rec.requester.clone(), stage, Vec::new()).await;
             info!(action = %rec.id, status = rec.status.wire(), "action closed");
         }
     }
     Ok(())
+}
+
+/// The audit stage a settled record closed at.
+fn closing_stage(rec: &ActionRecord) -> &'static str {
+    match (rec.status, rec.closed_reason) {
+        (Status::Expired, _) => "expired",
+        (Status::Failed, _) => "failed",
+        (_, Some(ClosedReason::Acknowledged)) => "completed",
+        // A queue item whose record was decided by another route.
+        (Status::Completed, _) => "completed",
+        (Status::Declined, _) => "declined",
+        _ => "invalidated",
+    }
 }
 
 /// Settle an action left `executing` by an execution that is no longer
@@ -1572,7 +1620,16 @@ async fn effect_audited(
 /// cooling-off whose window has ended (VTI-APV-019, §8.2). What the sweeper
 /// runs each minute — and what a test drives directly.
 pub async fn sweep_once(state: &AppState) -> Result<(), AppError> {
+    // Queue items (§8.2): raise any a record should have and has none, then
+    // settle everything, then give new holders of each item's capability a
+    // slot. A failure here must not stop the rest of the sweep.
+    if let Err(e) = queues::reconcile(state).await {
+        warn!(error = %e, "queue items could not be reconciled");
+    }
     refresh_all(state).await?;
+    if let Err(e) = queues::refresh_slots(state).await {
+        warn!(error = %e, "queue item deciders could not be refreshed");
+    }
     let now = now_epoch();
     let due: Vec<String> = all(state)
         .await?
@@ -1663,6 +1720,9 @@ pub(crate) enum DecisionError {
     EvidenceInvalid(&'static str),
     /// More than [`DECISIONS_PER_MINUTE`] decisions by this approver.
     RateLimited,
+    /// A queue item's operation refused the decision (§8.2). Nothing was
+    /// written, and the item waits for a decision still.
+    Refused(String),
     Internal(AppError),
 }
 
@@ -1762,6 +1822,25 @@ pub(crate) async fn decide(
                 .await?,
             ),
         };
+
+        if rec.category == Category::Queue {
+            // One decision either way (§8.2): approving and declining each run
+            // the operation that always decided this record. Out of `open`
+            // under the lock, as an approval's execution is.
+            begin_execution(&mut rec, now);
+            save(state, &rec).await?;
+            drop(_guard);
+            return queues::decide(
+                state,
+                rec,
+                approver,
+                input.approve,
+                input.reason,
+                evidence,
+                input.payload_digest,
+            )
+            .await;
+        }
 
         if !input.approve {
             rec.close(
@@ -2239,7 +2318,10 @@ pub(crate) async fn cancel(
         if settle(state, &mut rec, now).await? {
             save(state, &rec).await?;
         }
-        if rec.requester != caller {
+        // A queue item is decided, never withdrawn — not even by the party
+        // it is about: a break-glass must not be able to take its own
+        // ratification item off the list (§8.2).
+        if rec.requester != caller || rec.category == Category::Queue {
             return Err(CancelError::NotRequester);
         }
         if rec.status != Status::Open {
@@ -2385,7 +2467,7 @@ pub(crate) async fn list(
 /// before closed in those orders.
 fn order_key(rec: &ActionRecord) -> (u8, i64, u64) {
     if rec.status.is_open() {
-        let expiry = if rec.category == Category::Acknowledge {
+        let expiry = if matches!(rec.category, Category::Acknowledge | Category::Queue) {
             i64::MAX
         } else {
             rec.expires_at as i64
@@ -2493,8 +2575,9 @@ impl<'a> ViewCtx<'a> {
             .filter(|s| {
                 self.entries.iter().any(|e| {
                     e.did == s.did
-                        && admin_consent::may_approve(
+                        && admin_consent::may_decide(
                             e,
+                            rec.act,
                             &rec.act.stake_or_default(&rec.stake),
                             self.now,
                         )
@@ -2518,7 +2601,7 @@ impl<'a> ViewCtx<'a> {
                         .iter()
                         .any(|d| d == caller)
             }
-            Category::Approval => {
+            Category::Approval | Category::Queue => {
                 rec.slot(caller).is_some()
                     && !rec.approved_by(caller)
                     && self.eligible(rec).iter().any(|d| d == caller)
@@ -2644,7 +2727,8 @@ impl<'a> ViewCtx<'a> {
                 action["cancellableBy"] = json!("requester");
             }
         }
-        if cooling_off.is_none() {
+        let queue = rec.category == Category::Queue;
+        if cooling_off.is_none() && !queue {
             // A cooling-off has neither: no approval is needed, and it does
             // not lapse — the published `threshold` cannot say zero, so it is
             // absent rather than a number that is not true.
@@ -2658,6 +2742,9 @@ impl<'a> ViewCtx<'a> {
         if rec.status.is_open() {
             let needed = if cooling_off.is_some() {
                 0
+            } else if queue {
+                // One decision by construction (`_shared` `threshold`).
+                1
             } else {
                 rec.threshold.max(self.threshold)
             };
@@ -3008,6 +3095,7 @@ pub async fn raise_operator_item(
         acknowledgers: write.acknowledgers.clone(),
         approver_invite: None,
         consent_waived: false,
+        queue_key: None,
     };
     {
         let _guard = ACTION_LOCK.lock().await;
@@ -3175,6 +3263,7 @@ async fn raise_review_item(
         acknowledgers: None,
         approver_invite: None,
         consent_waived: false,
+        queue_key: None,
     };
     {
         let _guard = ACTION_LOCK.lock().await;
@@ -3361,7 +3450,13 @@ async fn push_requests(state: &AppState, rec: &ActionRecord) {
     }
     match sign_requests(state, rec, None).await {
         Ok(docs) => {
-            let ttl = Duration::from_secs(rec.expires_at.saturating_sub(now_epoch()).max(60));
+            // A queue item never lapses; a push is still held no longer than
+            // a week — the action list is the source of truth (§7.1).
+            let ttl = Duration::from_secs(
+                rec.expires_at
+                    .saturating_sub(now_epoch())
+                    .clamp(60, 7 * 24 * 3600),
+            );
             for (approver, doc) in docs {
                 // Queued is all an `Ok` means (R1.1).
                 if let Err(e) =
@@ -3434,6 +3529,23 @@ pub(crate) async fn sign_requests(
             "authorityGrant",
             json!({ "granter": rec.subject }),
             "Approving re-affirms these grants under your own authority; declining withdraws them.",
+        ),
+        Act::BreakGlassReview => (
+            "breakGlassReview",
+            json!({ "subject": rec.subject }),
+            "Approving ratifies the break-glass; declining revokes it. It stays until someone \
+             decides.",
+        ),
+        Act::JoinReview => (
+            "joinReview",
+            json!({ "applicant": rec.subject }),
+            "Approving admits the applicant as a member; declining rejects the application.",
+        ),
+        Act::VettingReview => (
+            "vettingReview",
+            json!({ "member": rec.subject }),
+            "Approving keeps the member; declining starts their removal, which applies its own \
+             rules.",
         ),
     };
     let effect = Effect::new(kind, rec.summary_text.clone())

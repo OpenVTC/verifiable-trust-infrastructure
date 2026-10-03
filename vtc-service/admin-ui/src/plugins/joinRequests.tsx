@@ -16,6 +16,7 @@ import { ArrowLeft, ArrowRight, Inbox } from "lucide-react";
 
 import { postSignedRead, postSignedTrustTask } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { WAITING_COUNT_KEY } from "@/lib/action-badge";
 import { formatIso as formatDate } from "@/lib/format";
 import { useNameBook } from "@/lib/names";
 import { NamedDid } from "@/components/NamedDid";
@@ -123,7 +124,20 @@ function JoinRequestsList() {
               <option value="deferred">Deferred</option>
             </select>
           </label>
+          {/* The VTC filters before paging, so this counts every request in
+              this status, and each page holds only them. */}
+          {typeof query.data?.totalEstimate === "number" && (
+            <span className="muted" role="status">
+              {query.data.totalEstimate} {status}
+            </span>
+          )}
         </div>
+        {status === "pending" && (
+          <p className="muted">
+            Each pending request is also in Actions, where anyone holding vtc.join.decide
+            can approve or reject it. Both show the same decision.
+          </p>
+        )}
       </section>
 
       {query.error && (
@@ -231,6 +245,9 @@ function JoinRequestDetail() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["join-requests"] });
       void queryClient.invalidateQueries({ queryKey: ["join-request", id] });
+      // The decision closes the request's item in the action list too.
+      void queryClient.invalidateQueries({ queryKey: ["actions"] });
+      void queryClient.invalidateQueries({ queryKey: WAITING_COUNT_KEY });
     },
   });
 
@@ -248,6 +265,9 @@ function JoinRequestDetail() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["join-requests"] });
       void queryClient.invalidateQueries({ queryKey: ["join-request", id] });
+      // The decision closes the request's item in the action list too.
+      void queryClient.invalidateQueries({ queryKey: ["actions"] });
+      void queryClient.invalidateQueries({ queryKey: WAITING_COUNT_KEY });
     },
   });
 

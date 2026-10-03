@@ -485,6 +485,11 @@ pub async fn right_break_glass(
         },
     )
     .await;
+    // The other administrators decide it in their action list: a queue item
+    // that never lapses into acceptance (`vtc-action-list.md` §8.2). Raised
+    // after the Critical row and the notices, which stay what makes a
+    // break-glass visible; the sweeper raises it if this one is lost.
+    crate::admin_actions::queues::raise_break_glass(state, &ns, &resource, &row).await;
     Ok(wire::into(json!({
         "right": wire::right_record_full(&row, &resource, true),
     }))?)
@@ -633,7 +638,135 @@ pub async fn right_ratify(
         },
     )
     .await;
+    // The ratification item, if one is open, closes with the decider named —
+    // however the ratification arrived (`vtc-action-list.md` §8.2).
+    crate::admin_actions::queues::break_glass_ended(
+        state,
+        &resource.to_string(),
+        right.as_str(),
+        &subject,
+        &wire::timestamp(mark.at),
+        true,
+        &actor.did,
+    )
+    .await;
     Ok(wire::into(json!({
         "right": wire::right_record_full(&ratified, &resource, true),
     }))?)
+}
+
+// ── The action list's ratification queue (`vtc-action-list.md` §8.2) ───────
+
+/// An unratified break-glass record, as the action list raises it for the
+/// other administrators of its namespace to ratify or revoke.
+#[derive(Debug, Clone)]
+pub struct Unratified {
+    pub namespace: Namespace,
+    pub resource: Resource,
+    pub row: RightRow,
+}
+
+/// Every unratified break-glass record held now — what the action list keeps
+/// one open ratification item for each of.
+pub async fn unratified(state: &AppState) -> Result<Vec<Unratified>, AppError> {
+    let snap = Snapshot::load(&state.git_ns).await?;
+    let t = now();
+    let mut out = Vec::new();
+    for (scope, set) in &snap.rights {
+        let (Some(ns), Some(resource)) = (snap.scope_namespace(scope), snap.scope_resource(scope))
+        else {
+            continue;
+        };
+        for row in set
+            .rows
+            .iter()
+            .filter(|r| r.is_unratified_break_glass() && r.is_recorded(t))
+        {
+            out.push(Unratified {
+                namespace: ns.clone(),
+                resource: resource.clone(),
+                row: row.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Where one break-glass record stands, found by what its ratification item
+/// recorded: the resource, the right, the subject and its `breakGlass.at`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordState {
+    /// Held, and nobody has ratified it.
+    Unratified,
+    /// Ratified, by this administrator.
+    Ratified { by: String },
+    /// Not held any more: revoked, resigned, or its namespace or repository
+    /// changed — or a later break-glass replaced it.
+    Gone,
+}
+
+/// The state of the break-glass `subject` made for `right` on `resource` at
+/// `at` (`wire::timestamp` form).
+pub async fn record_state(
+    state: &AppState,
+    resource: &str,
+    right: &str,
+    subject: &str,
+    at: &str,
+) -> Result<RecordState, AppError> {
+    let (Ok(resource), Some(right)) = (Resource::parse(resource), Right::parse(right)) else {
+        return Ok(RecordState::Gone);
+    };
+    let snap = Snapshot::load(&state.git_ns).await?;
+    let Ok(Some(scope)) = ops::scope_for(&snap, &resource) else {
+        return Ok(RecordState::Gone);
+    };
+    let t = now();
+    let Some(row) = snap.rows(&scope).iter().find(|r| {
+        r.subject == subject
+            && r.right == right
+            && r.is_recorded(t)
+            && r.break_glass
+                .as_ref()
+                .is_some_and(|m| wire::timestamp(m.at) == at)
+    }) else {
+        return Ok(RecordState::Gone);
+    };
+    Ok(
+        match row.break_glass.as_ref().and_then(|m| m.ratified_by.clone()) {
+            Some(by) => RecordState::Ratified { by },
+            None => RecordState::Unratified,
+        },
+    )
+}
+
+/// The ratification item's record for one break-glass: what the deciders are
+/// shown, and what `git-ns/right/ratify` and `git-ns/right/revoke` are then
+/// called with.
+pub fn review_record(ns: &Namespace, resource: &Resource, row: &RightRow) -> Option<Value> {
+    let mark = row.break_glass.as_ref()?;
+    let mut v = json!({
+        "namespace": ns.id,
+        "resource": resource.to_string(),
+        "right": row.right.as_str(),
+        "subject": row.subject,
+        "breakGlassAt": wire::timestamp(mark.at),
+        "justification": mark.justification,
+    });
+    if let Some(at) = mark.effective_at {
+        v["effectiveAt"] = json!(wire::timestamp(at));
+    }
+    Some(v)
+}
+
+/// The capability whose holders decide a break-glass on `ns`: `git.ns.admin`
+/// at the namespace — its namespace administrators and the community-wide
+/// holders (`git-ns/right/break-glass/0.1`, *Definitions*).
+pub fn review_stake(ns: &Namespace) -> crate::acl::CapRef {
+    crate::acl::CapRef::new(
+        crate::acl::Capability::GitNsAdmin,
+        Some(crate::acl::resource_grant::namespace_qualifier(
+            &ns.forge, &ns.owner,
+        )),
+    )
 }

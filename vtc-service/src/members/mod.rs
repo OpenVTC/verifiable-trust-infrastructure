@@ -37,7 +37,7 @@ use serde_json::Value as JsonValue;
 
 pub use storage::{
     DEFAULT_DEPARTURE_PREFERENCE, MEMBER_EXTENSIONS_MAX_BYTES, delete_member, get_member,
-    list_members, list_members_paginated, store_member,
+    list_members, list_members_filtered, list_members_paginated, store_member,
 };
 
 /// Pull the top-level `id` off a credential in its wire (JSON) form.

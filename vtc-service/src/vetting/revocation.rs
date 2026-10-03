@@ -182,6 +182,10 @@ pub async fn withdraw(
                 .await?;
         }
         info!(statement = %notice.statement_id, "vetting statement withdrawn");
+        // A current membership resting on it is a review for the holders of
+        // `vtc.vetting.manage`, in their action list (`vtc-action-list.md`
+        // §8.2). The sweeper raises it if this is lost.
+        crate::admin_actions::queues::raise_vetting_reviews(state).await;
     }
     Ok(notice)
 }

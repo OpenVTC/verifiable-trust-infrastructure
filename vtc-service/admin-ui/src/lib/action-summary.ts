@@ -52,6 +52,20 @@ export const KIND_GRANTS_REVIEW = "acl.grants.review";
 /** The record type a grants review is raised under — never a task anybody sends. */
 export const GRANTS_REVIEW_URI = "urn:openvtc:vtc:acl:grants-review";
 
+// Queue items (`vtc-action-list.md` §8.2): existing human decisions surfaced
+// in the action list as category `queue`, each named by a record type.
+
+/** An unratified git-ns break-glass: approve ratifies it, decline revokes it. */
+export const KIND_BREAK_GLASS_REVIEW = "gitNs.breakGlass.review";
+export const BREAK_GLASS_REVIEW_URI = "urn:openvtc:vtc:git-ns:break-glass-review";
+/** A join request referred for review: approve admits, decline rejects. */
+export const KIND_JOIN_REVIEW = "member.join.review";
+export const JOIN_REVIEW_URI = "urn:openvtc:vtc:join:review";
+/** A withdrawn vetting statement a membership rests on: approve keeps the
+ *  member, decline starts their removal. */
+export const KIND_VETTING_REVIEW = "vetting.withdrawal.review";
+export const VETTING_REVIEW_URI = "urn:openvtc:vtc:vetting:withdrawal-review";
+
 /**
  * The pinned template digest for each `(kind, typeUri)`.
  *
@@ -114,6 +128,13 @@ export const PINNED_TEMPLATE_DIGESTS: Readonly<Record<string, string>> = Object.
   // A departed granter's grants, for re-affirmation (§6.3).
   [pinKey(KIND_GRANTS_REVIEW, GRANTS_REVIEW_URI)]:
     "zQmes3QBrvXfxcwu7tyU7gk58b8RrLfrQiteFRJGCwDYS4S",
+  // Queue items (§8.2).
+  [pinKey(KIND_BREAK_GLASS_REVIEW, BREAK_GLASS_REVIEW_URI)]:
+    "zQmc83acTt15e5rhcZi7TKnXt2NNBPB3zZ7cShQhbjvCkcP",
+  [pinKey(KIND_JOIN_REVIEW, JOIN_REVIEW_URI)]:
+    "zQmaxhUVhRYpEsMxfAzJWuoHvzVKmcbKSmZ2JjG8kQaHzW1",
+  [pinKey(KIND_VETTING_REVIEW, VETTING_REVIEW_URI)]:
+    "zQmcUNShH782uKh8YFnXsQ322vCS2Hs6U9tJv8SLABeKmBV",
 });
 
 function pinKey(kind: string, typeUri: string): string {

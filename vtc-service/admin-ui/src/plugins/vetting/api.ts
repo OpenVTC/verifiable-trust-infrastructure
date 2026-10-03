@@ -186,12 +186,20 @@ export interface PendingWithVetting {
   count: number;
   /** More pending requests exist than were checked. */
   more: boolean;
+  /** Every pending join request, from the listing's `totalEstimate`; absent
+   *  when the VTC gave none. */
+  pending?: number;
 }
 
 /**
  * Pending join requests that were decided on vetting facts and now wait for an
  * admin. The request list does not say which carry facts, so the first page
  * of pending requests is checked one by one — bounded at 50 reads.
+ *
+ * The page is of pending requests only: the VTC filters before paging, so its
+ * 50 rows are the first 50 pending — never a page of other statuses with the
+ * pending ones further on — and `totalEstimate` says how many are pending in
+ * all, which is what `more` is read from.
  */
 export async function fetchPendingWithVetting(): Promise<PendingWithVetting> {
   const page = await postSignedRead<JoinRequestsPage>(TASK_JOIN_REQUESTS_LIST, {
@@ -206,9 +214,11 @@ export async function fetchPendingWithVetting(): Promise<PendingWithVetting> {
       ),
     ),
   );
+  const pending = typeof page.totalEstimate === "number" ? page.totalEstimate : undefined;
   return {
     count: withFacts.filter(Boolean).length,
-    more: Boolean(page.nextCursor),
+    more: pending !== undefined ? pending > page.items.length : Boolean(page.nextCursor),
+    ...(pending !== undefined ? { pending } : {}),
   };
 }
 
