@@ -124,6 +124,21 @@ pub async fn connect(keyring_key: &str, target: &VtcTarget) -> CliResult<Connect
     connect_as(target, &session.client_did, &session.private_key_multibase).await
 }
 
+/// Show that the VTC accepts `client_did` — a full DI-signed authentication,
+/// with the VTC's DID as the audience — without keeping the session.
+///
+/// `cnm community continue` uses it to confirm a pending identity's grant
+/// before the community is promoted. A refusal carries the ACL fix.
+pub async fn confirm_identity(
+    target: &VtcTarget,
+    client_did: &str,
+    private_key_multibase: &str,
+) -> CliResult {
+    connect_as(target, client_did, private_key_multibase)
+        .await
+        .map(|_| ())
+}
+
 /// [`connect`] for an identity in hand.
 async fn connect_as(
     target: &VtcTarget,

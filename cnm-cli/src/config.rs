@@ -9,6 +9,15 @@ pub struct CnmConfig {
     pub personal_vta: Option<PersonalVtaConfig>,
     #[serde(default)]
     pub communities: BTreeMap<String, CommunityConfig>,
+    /// Communities whose admin identity has been minted but not yet confirmed
+    /// at the community (`cnm community add` → `cnm community continue`).
+    ///
+    /// Kept apart from [`Self::communities`] so nothing can select a community
+    /// whose identity no administrator has granted yet: `--community` and the
+    /// default resolve only confirmed ones. The key itself lives in the session
+    /// store under [`community_keyring_key`], as a confirmed one's does.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_communities: BTreeMap<String, PendingCommunity>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -16,7 +25,32 @@ pub struct PersonalVtaConfig {
     /// VTA DID is the source of truth — the REST endpoint and the
     /// DIDComm mediator are both resolved from the DID document at
     /// runtime.
+    ///
+    /// `None` while the cold start is pending: the identity is minted (and
+    /// possibly bound to a VTA DID in the session store) but has not yet
+    /// authenticated and rotated. `cnm setup continue` sets it.
     #[serde(default)]
+    pub vta_did: Option<String>,
+    /// The operator's name for this personal VTA, from `cnm setup --name`.
+    /// Only a label: cnm has one personal VTA, and `cnm setup continue <name>`
+    /// checks it so a script continues the setup it started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// A community admin identity minted locally and waiting for its grant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingCommunity {
+    pub name: String,
+    /// The `did:key` the operator asked an administrator to grant. Recorded
+    /// so `cnm community list` and the continue step can name it without the
+    /// session store.
+    pub admin_did: String,
+    /// The community's VTC, when known at `add` time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vtc_did: Option<String>,
+    /// The community's VTA, when it has one and it was known at `add` time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vta_did: Option<String>,
 }
 
@@ -117,8 +151,10 @@ mod tests {
             default_community: Some("storm".into()),
             personal_vta: Some(PersonalVtaConfig {
                 vta_did: Some("did:webvh:personal.example.com".into()),
+                name: None,
             }),
             communities: BTreeMap::new(),
+            pending_communities: BTreeMap::new(),
         };
         config.communities.insert(
             "storm".into(),

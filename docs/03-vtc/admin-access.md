@@ -426,6 +426,13 @@ Naming Bob at install is what lets the community start with two unrestricted
 administrators. If the community is already running with Alice alone, skip to
 step 3b.
 
+If Bob administers from `cnm` rather than a wallet, `cnm community add
+"<community>"` mints the DID he sends instead — one of his own for this
+community only, so it links him to no other community he runs. Once Alice has
+granted it (here, as `co_admin_did`; later, as in step 3), `cnm community
+continue <slug> --vtc-did <VTC DID>` confirms it. See
+[`bootstrap-runbook.md`](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row).
+
 ### Step 2 — Alice installs the community and claims her passkey
 
 1. Run `vtc setup` (interactive) or `vtc setup --from <toml>`. Set Bob as the
