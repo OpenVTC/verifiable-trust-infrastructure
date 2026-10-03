@@ -3,7 +3,15 @@ import { describe, expect, it } from "vitest";
 import type { WhoamiResponse } from "@/lib/api";
 import { getPlugins } from "@/plugin-api";
 import { registerBuiltinPlugins } from "@/plugins";
-import { holds, isCommunityAdmin, isSuperAdmin, pluginVisible } from "@/lib/viewer";
+import {
+  administersNamespace,
+  holds,
+  isCommunityAdmin,
+  isGitCommunityAdmin,
+  isSuperAdmin,
+  mayCreateIn,
+  pluginVisible,
+} from "@/lib/viewer";
 
 const withCaps = (capabilities: string[], adminRole: string | null): WhoamiResponse => ({
   session: {
@@ -70,6 +78,36 @@ describe("navigation follows capabilities, not the session role", () => {
     expect(ids).not.toContain("audit");
     expect(ids).not.toContain("profile");
     expect(ids).not.toContain("vetting");
+  });
+
+  // Phase C3: git rights are capabilities on the ACL entry, so Repos is for
+  // whoever holds git.ns.admin or git.repo.manage at some qualifier.
+  it("Repos is shown by git capability, at any qualifier, and to nobody else", () => {
+    expect(visible(withCaps(["vtc.members.manage"], "moderator"))).not.toContain("repos");
+    expect(visible(withCaps(["git.ns.admin"], "community-admin"))).toContain("repos");
+    expect(
+      visible(withCaps(["git.ns.admin@git-ns:github.com/acme"], "moderator")),
+    ).toContain("repos");
+    expect(
+      visible(withCaps(["git.repo.manage@git-repo:github.com/acme/repo_1"], "moderator")),
+    ).toContain("repos");
+  });
+
+  it("a namespace administrator administers their namespace only; binding is community-wide", () => {
+    const caps = ["git.ns.admin@git-ns:github.com/acme"];
+    expect(administersNamespace(caps, "github.com/acme")).toBe(true);
+    expect(administersNamespace(caps, "github.com/acme-labs")).toBe(false);
+    expect(isGitCommunityAdmin(withCaps(caps, "moderator"))).toBe(false);
+    expect(isGitCommunityAdmin(withCaps(["git.ns.admin"], "community-admin"))).toBe(true);
+    // A creator holds the creation grade at the namespace, not the capability
+    // in full; a maintainer's grade confers no creation.
+    expect(mayCreateIn(["git.repo.manage/create@git-ns:github.com/acme"], "github.com/acme")).toBe(
+      true,
+    );
+    expect(mayCreateIn(["git.repo.manage/maintain@git-repo:github.com/acme/r"], "github.com/acme")).toBe(
+      false,
+    );
+    expect(mayCreateIn(caps, "github.com/acme")).toBe(true);
   });
 
   it("a qualified vetting lead sees vetting", () => {

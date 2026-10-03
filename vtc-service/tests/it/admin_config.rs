@@ -454,6 +454,7 @@ async fn signer(fix: &Fixture, role: vtc_service::acl::VtcRole) -> Party {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await

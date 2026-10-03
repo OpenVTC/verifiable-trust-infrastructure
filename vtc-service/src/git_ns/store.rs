@@ -29,6 +29,7 @@ use tracing::warn;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+use super::GitNsHandles;
 use super::model::{LinkAttempt, Namespace, Repo, RightRow, RightsSet, Scope};
 
 static WRITE_LOCK: Mutex<()> = Mutex::const_new(());
@@ -40,10 +41,12 @@ pub async fn write_lock() -> MutexGuard<'static, ()> {
 
 const NS_PREFIX: &str = "ns:";
 const REPO_PREFIX: &str = "repo:";
-const RIGHTS_PREFIX: &str = "rights:";
+/// Where rights lived before phase C3 moved them onto the ACL entries; read
+/// only by [`super::migrate`].
+pub(crate) const RIGHTS_PREFIX: &str = "rights:";
 const LINK_PREFIX: &str = "link:";
 
-async fn list_prefix<T: DeserializeOwned>(
+pub(crate) async fn list_prefix<T: DeserializeOwned>(
     ks: &KeyspaceHandle,
     prefix: &str,
 ) -> Result<Vec<(String, T)>, AppError> {
@@ -99,26 +102,229 @@ pub async fn list_repos(ks: &KeyspaceHandle) -> Result<Vec<Repo>, AppError> {
         .collect())
 }
 
-pub async fn get_rights(ks: &KeyspaceHandle, scope: &Scope) -> Result<RightsSet, AppError> {
-    Ok(ks
-        .get::<RightsSet>(format!("{RIGHTS_PREFIX}{}", scope.key()))
-        .await?
-        .unwrap_or_default())
+/// The rights recorded on one scope, read from the ACL entries that hold them
+/// (phase C3: every right is a resource grant on its holder's entry,
+/// [`crate::acl::resource_grant`]).
+pub async fn get_rights(h: &GitNsHandles, scope: &Scope) -> Result<RightsSet, AppError> {
+    let mut set = RightsSet::default();
+    for entry in holders(&h.acl_ks).await? {
+        for g in &entry.resource_grants {
+            if grant_on_scope(&h.ks, g, scope).await?
+                && let Some(row) = row_of(&entry.did, g)
+            {
+                set.rows.push(row);
+            }
+        }
+    }
+    sort_rows(&mut set.rows);
+    Ok(set)
 }
 
-/// Write a scope's rights. An empty set removes the row rather than storing
-/// an empty one, so the keyspace never accumulates husks.
-pub async fn put_rights(
+/// Write a scope's rights: each subject's entry is made to hold exactly the
+/// rows `set` gives it on this scope, as resource grants.
+///
+/// - A subject with no entry gets one of the `application` community role —
+///   a non-member holding only grants (the bridge, an external signer) — so
+///   no grant ever sits on nothing (**VTI-ACL-037**). An elevated right never
+///   goes to one: the fixed rules give elevated rights to members only (rule
+///   5), and this refuses rather than writes if a caller gets that wrong.
+/// - An `application` entry left holding nothing is removed.
+/// - Entries that gain a grant are written before entries that only lose one,
+///   so a crash part-way through a transfer leaves two owners, never none.
+///
+/// Callers hold [`write_lock`].
+pub async fn put_rights(h: &GitNsHandles, scope: &Scope, set: &RightsSet) -> Result<(), AppError> {
+    use crate::acl::resource_grant as rg;
+    let qualifier = scope_qualifier(&h.ks, scope).await?;
+    if qualifier.is_none() && !set.rows.is_empty() {
+        return Err(AppError::Internal(format!(
+            "git-ns: no namespace or repository record for {}; its rights cannot be written",
+            scope.key()
+        )));
+    }
+    let mut desired: BTreeMap<String, Vec<rg::ResourceGrant>> = BTreeMap::new();
+    if let Some(q) = qualifier.as_ref() {
+        for row in &set.rows {
+            desired
+                .entry(row.subject.clone())
+                .or_default()
+                .push(grant_of(row, q.clone()));
+        }
+    }
+
+    let (mut gaining, mut losing, mut removing) = (Vec::new(), Vec::new(), Vec::new());
+    for mut entry in holders(&h.acl_ks).await? {
+        let mut kept = Vec::with_capacity(entry.resource_grants.len());
+        let mut before = Vec::new();
+        for g in std::mem::take(&mut entry.resource_grants) {
+            if grant_on_scope(&h.ks, &g, scope).await? {
+                before.push(g);
+            } else {
+                kept.push(g);
+            }
+        }
+        let after = desired.remove(&entry.did).unwrap_or_default();
+        if before == after {
+            continue;
+        }
+        let gains = after.iter().any(|g| !before.contains(g));
+        kept.extend(after);
+        entry.resource_grants = kept;
+        if entry.resource_grants.is_empty() && entry.is_application() {
+            removing.push(entry.did.clone());
+        } else if gains {
+            gaining.push(entry);
+        } else {
+            losing.push(entry);
+        }
+    }
+    // Subjects the index does not name: an entry with no grants yet, or none.
+    for (did, grants) in desired {
+        let entry = match crate::acl::get_acl_entry(&h.acl_ks, &did).await? {
+            Some(mut e) => {
+                e.resource_grants.extend(grants);
+                e
+            }
+            None => {
+                if let Some(g) = grants
+                    .iter()
+                    .find(|g| g.git_right().is_some_and(|r| r.is_elevated()))
+                {
+                    return Err(AppError::Internal(format!(
+                        "git-ns: refusing to write {} to {did}, which holds no membership — an \
+                         elevated right goes to a current member only",
+                        g.display()
+                    )));
+                }
+                let by = grants
+                    .first()
+                    .map(|g| g.delegated_by.clone())
+                    .unwrap_or_default();
+                let mut e = crate::acl::VtcAclEntry::new(
+                    did.clone(),
+                    crate::acl::VtcRole::Application,
+                    crate::acl::AdminAuthority::none(),
+                    by,
+                );
+                e.label = Some("holds git rights without membership".into());
+                e.resource_grants = grants;
+                e
+            }
+        };
+        gaining.push(entry);
+    }
+
+    for e in gaining.iter().chain(losing.iter()) {
+        crate::acl::store_acl_entry(&h.acl_ks, e).await?;
+        if e.resource_grants.is_empty() {
+            rg::index_holder(&h.acl_ks, &e.did, false).await?;
+        }
+    }
+    for did in removing {
+        h.acl_ks.remove(format!("acl:{did}")).await?;
+        rg::index_holder(&h.acl_ks, &did, false).await?;
+    }
+    Ok(())
+}
+
+/// The entries that hold resource grants, read through the holder index.
+async fn holders(acl_ks: &KeyspaceHandle) -> Result<Vec<crate::acl::VtcAclEntry>, AppError> {
+    let mut out = Vec::new();
+    for did in crate::acl::resource_grant::indexed_holders(acl_ks).await? {
+        if let Some(e) = crate::acl::get_acl_entry(acl_ks, &did).await?
+            && !e.resource_grants.is_empty()
+        {
+            out.push(e);
+        }
+    }
+    Ok(out)
+}
+
+/// The qualifier a scope's rights are held at, if its records exist.
+pub async fn scope_qualifier(
     ks: &KeyspaceHandle,
     scope: &Scope,
-    set: &RightsSet,
-) -> Result<(), AppError> {
-    let key = format!("{RIGHTS_PREFIX}{}", scope.key());
-    if set.rows.is_empty() {
-        ks.remove(key).await
-    } else {
-        ks.insert(key, set).await
+) -> Result<Option<crate::acl::ResourceQualifier>, AppError> {
+    use crate::acl::resource_grant as rg;
+    Ok(match scope {
+        Scope::Namespace(id) => get_namespace(ks, id)
+            .await?
+            .map(|n| rg::namespace_qualifier(&n.forge, &n.owner)),
+        Scope::Repo(id) => match get_repo(ks, id).await? {
+            Some(r) => get_namespace(ks, &r.namespace_id)
+                .await?
+                .map(|n| rg::repo_qualifier(&n.forge, &n.owner, id)),
+            None => None,
+        },
+    })
+}
+
+/// Whether `g` is a grant on `scope`. A repository grant is matched by the id
+/// its qualifier names, so the rights of a repository whose record is already
+/// gone can still be cleared.
+async fn grant_on_scope(
+    ks: &KeyspaceHandle,
+    g: &crate::acl::resource_grant::ResourceGrant,
+    scope: &Scope,
+) -> Result<bool, AppError> {
+    use crate::acl::ResourceQualifier as Q;
+    if g.git_right().is_none() {
+        return Ok(false);
     }
+    Ok(match (scope, &g.resource) {
+        (Scope::Repo(id), Q::GitRepo(_)) => {
+            crate::acl::resource_grant::repo_id_of(&g.resource) == Some(id.as_str())
+        }
+        (Scope::Namespace(_), Q::GitNs(_)) => {
+            scope_qualifier(ks, scope).await?.as_ref() == Some(&g.resource)
+        }
+        _ => false,
+    })
+}
+
+/// The right row a grant is, as the fixed rules read it.
+pub fn row_of(subject: &str, g: &crate::acl::resource_grant::ResourceGrant) -> Option<RightRow> {
+    Some(RightRow {
+        subject: subject.to_string(),
+        right: g.git_right()?,
+        granted_by: g.delegated_by.clone(),
+        granted_at: g.granted_at,
+        expires_at: g.expires_at,
+        reason: g.reason.clone(),
+        subject_was_member: g.subject_was_member,
+        granter_was_member: g.granter_was_member,
+        break_glass: g.break_glass.clone(),
+        review: g.review.clone(),
+    })
+}
+
+/// The grant a right row is, at `resource`.
+pub fn grant_of(
+    row: &RightRow,
+    resource: crate::acl::ResourceQualifier,
+) -> crate::acl::resource_grant::ResourceGrant {
+    let (capability, grade) = crate::acl::resource_grant::capability_for(row.right);
+    crate::acl::resource_grant::ResourceGrant {
+        capability,
+        resource,
+        grade,
+        delegated_by: row.granted_by.clone(),
+        granted_at: row.granted_at,
+        expires_at: row.expires_at,
+        reason: row.reason.clone(),
+        subject_was_member: row.subject_was_member,
+        granter_was_member: row.granter_was_member,
+        break_glass: row.break_glass.clone(),
+        review: row.review.clone(),
+    }
+}
+
+/// Grant order: oldest first, so "the owners, in grant order" reads the same
+/// as it did when each scope kept its rows in a list.
+fn sort_rows(rows: &mut [RightRow]) {
+    rows.sort_by(|a, b| {
+        (a.granted_at, &a.subject, a.right).cmp(&(b.granted_at, &b.subject, b.right))
+    });
 }
 
 pub async fn get_link(ks: &KeyspaceHandle, id: &str) -> Result<Option<LinkAttempt>, AppError> {
@@ -156,27 +362,61 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub async fn load(ks: &KeyspaceHandle) -> Result<Snapshot, AppError> {
-        let namespaces = list_namespaces(ks).await?;
-        let repos = list_repos(ks).await?;
-        let mut rights = BTreeMap::new();
-        for (key, set) in list_prefix::<RightsSet>(ks, RIGHTS_PREFIX).await? {
-            let rest = &key[RIGHTS_PREFIX.len()..];
-            let scope = if let Some(id) = rest.strip_prefix("ns:") {
-                Scope::Namespace(id.to_string())
-            } else if let Some(id) = rest.strip_prefix("repo:") {
-                Scope::Repo(id.to_string())
-            } else {
-                warn!(key, "skipping a rights row with an unknown scope");
+    /// Every record, the rights read from the ACL entries that hold them.
+    ///
+    /// A grant on an expired entry is left out: it confers nothing without a
+    /// live entry (**VTI-ACL-037**). A grant whose namespace or repository has
+    /// no record is left out too — it names nothing this community governs.
+    pub async fn load(h: &GitNsHandles) -> Result<Snapshot, AppError> {
+        use crate::acl::ResourceQualifier as Q;
+        let mut snap = Snapshot::load_records(&h.ks).await?;
+        let epoch = crate::auth::session::now_epoch();
+        let mut rights: BTreeMap<Scope, RightsSet> = BTreeMap::new();
+        for entry in holders(&h.acl_ks).await? {
+            if entry.is_expired(epoch) {
                 continue;
-            };
-            rights.insert(scope, set);
+            }
+            for g in &entry.resource_grants {
+                let scope = match &g.resource {
+                    Q::GitRepo(_) => crate::acl::resource_grant::repo_id_of(&g.resource)
+                        .filter(|id| snap.repo(id).is_some())
+                        .map(|id| Scope::Repo(id.to_string())),
+                    Q::GitNs(path) => snap
+                        .namespace_at(path)
+                        .map(|n| Scope::Namespace(n.id.clone())),
+                    _ => None,
+                };
+                if let (Some(scope), Some(row)) = (scope, row_of(&entry.did, g)) {
+                    rights.entry(scope).or_default().rows.push(row);
+                }
+            }
         }
+        for set in rights.values_mut() {
+            sort_rows(&mut set.rows);
+        }
+        snap.rights = rights;
+        Ok(snap)
+    }
+
+    /// Namespaces and repositories only — for a reader that asks nothing of
+    /// rights (the hook relay's "is this resource the projection's").
+    pub async fn load_records(ks: &KeyspaceHandle) -> Result<Snapshot, AppError> {
         Ok(Snapshot {
-            namespaces,
-            repos,
-            rights,
+            namespaces: list_namespaces(ks).await?,
+            repos: list_repos(ks).await?,
+            rights: BTreeMap::new(),
         })
+    }
+
+    /// The namespace a `git-ns:` qualifier path names: the bound one, or the
+    /// only one at that path.
+    pub fn namespace_at(&self, path: &str) -> Option<&Namespace> {
+        let at = |n: &&Namespace| format!("{}/{}", n.forge, n.owner) == path;
+        self.namespaces
+            .iter()
+            .filter(at)
+            .find(|n| n.state == super::model::NamespaceState::Bound)
+            .or_else(|| self.namespaces.iter().find(at))
     }
 
     /// This snapshot with every unratified break-glass row left out — the

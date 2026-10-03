@@ -850,6 +850,7 @@ mod tests {
             subject_was_member: true,
             granter_was_member: true,
             break_glass: None,
+            review: None,
         }
     }
 

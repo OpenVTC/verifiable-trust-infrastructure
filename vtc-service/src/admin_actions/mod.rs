@@ -444,7 +444,7 @@ async fn save(state: &AppState, rec: &ActionRecord) -> Result<(), AppError> {
         .await
 }
 
-async fn all(state: &AppState) -> Result<Vec<ActionRecord>, AppError> {
+pub(crate) async fn all(state: &AppState) -> Result<Vec<ActionRecord>, AppError> {
     let mut out = Vec::new();
     for (_, value) in state
         .admin_actions_ks
@@ -1785,6 +1785,18 @@ pub(crate) async fn decide(
             // A declined review withdraws the grants now rather than at the
             // deadline (`vtc-admin-roles.md` §6.3).
             if rec.act == Act::GrantsReview
+                && let Some(items) = git_review_items(&rec)
+                && let Err(e) = crate::git_ns::lifecycle::withdraw_reviewed(
+                    state,
+                    rec.payload["granter"].as_str().unwrap_or_default(),
+                    &items,
+                )
+                .await
+            {
+                warn!(action = %rec.id, error = %e, "a declined review's git grants could not be withdrawn now; the sweep will at the deadline");
+            }
+            if rec.act == Act::GrantsReview
+                && git_review_items(&rec).is_none()
                 && let Err(e) = crate::acl::delegation::withdraw_reviewed(
                     state,
                     rec.payload["granter"].as_str().unwrap_or_default(),
@@ -3037,6 +3049,37 @@ pub(crate) async fn raise_grants_review(
     subjects: &[String],
     deadline: u64,
 ) -> Result<Option<String>, AppError> {
+    raise_review_item(state, granter, subjects, None, deadline).await
+}
+
+/// [`raise_grants_review`] for the **git rights** a departed member granted
+/// (phase C3: each is a resource grant on its holder's entry, delegated from
+/// the granter — **VTI-ACL-071**). The same item kind, approver set and
+/// outcome: approving re-affirms each grant under an approver whose own entry
+/// covers it ([`crate::git_ns::lifecycle::reaffirm`]); declining, or letting
+/// it lapse, withdraws them. The payload lists them under `gitGrants`, and
+/// their subjects under `subjects`.
+pub(crate) async fn raise_git_grants_review(
+    state: &AppState,
+    granter: &str,
+    items: &[crate::git_ns::lifecycle::ReviewItem],
+    deadline: u64,
+) -> Result<Option<String>, AppError> {
+    let mut subjects: Vec<String> = items.iter().map(|i| i.subject.clone()).collect();
+    subjects.sort();
+    subjects.dedup();
+    let git = serde_json::to_value(items)
+        .map_err(|e| AppError::Internal(format!("git grants review payload: {e}")))?;
+    raise_review_item(state, granter, &subjects, Some(git), deadline).await
+}
+
+async fn raise_review_item(
+    state: &AppState,
+    granter: &str,
+    subjects: &[String],
+    git_grants: Option<Value>,
+    deadline: u64,
+) -> Result<Option<String>, AppError> {
     if subjects.is_empty() {
         return Ok(None);
     }
@@ -3066,11 +3109,14 @@ pub(crate) async fn raise_grants_review(
         );
         return Ok(None);
     }
-    let payload = json!({
+    let mut payload = json!({
         "granter": granter,
         "subjects": subjects,
         "deadline": rfc3339(deadline),
     });
+    if let Some(git) = git_grants {
+        payload["gitGrants"] = git;
+    }
     let type_uri = summary::GRANTS_REVIEW_URI;
     let digest = task_consent::payload_digest(type_uri, &payload)?;
     let mut slots = Vec::with_capacity(approvers.len());
@@ -3170,7 +3216,13 @@ async fn execute_grants_review(
     // The approval that executes it, first: that administrator decided.
     let mut approvers: Vec<String> = rec.approvals.iter().map(|a| a.did.clone()).collect();
     approvers.reverse();
-    match crate::acl::delegation::reaffirm(state, granter, &subjects, &approvers).await {
+    // Git rights (phase C3) are re-affirmed grant by grant; an item lists
+    // either kind, never both.
+    let outcome = match git_review_items(rec) {
+        Some(items) => crate::git_ns::lifecycle::reaffirm(state, granter, &items, &approvers).await,
+        None => crate::acl::delegation::reaffirm(state, granter, &subjects, &approvers).await,
+    };
+    match outcome {
         Ok(outcome) => {
             if let Err(e) = state
                 .admin_actions_ks
@@ -3186,6 +3238,13 @@ async fn execute_grants_review(
         }
         Err(e) => (false, None, Some(e.to_string())),
     }
+}
+
+/// The git grants a review item lists, when it is one for git rights.
+fn git_review_items(rec: &ActionRecord) -> Option<Vec<crate::git_ns::lifecycle::ReviewItem>> {
+    rec.payload
+        .get("gitGrants")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
 }
 
 // ─── role helpers ────────────────────────────────────────────────────────

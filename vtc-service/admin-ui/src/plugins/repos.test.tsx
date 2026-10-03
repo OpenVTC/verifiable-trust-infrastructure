@@ -40,8 +40,11 @@ beforeEach(() => {
   vi.mocked(signingAvailable).mockResolvedValue(false);
   vi.mocked(postSignedTrustTask).mockReset();
 });
-const mount = (route = "/repos", whoami?: WhoamiResponse) =>
-  renderWithProviders(<Repos />, { route, path: "/repos/*", whoami });
+/** Mount the page; by default as a community administrator, whose
+ *  `git.ns.admin` is community-wide (phase C3: what the page offers is read
+ *  from the viewer's capabilities). Pass `null` for no session probe. */
+const mount = (route = "/repos", whoami: WhoamiResponse | null = COMMUNITY_ADMIN) =>
+  renderWithProviders(<Repos />, { route, path: "/repos/*", whoami: whoami ?? undefined });
 
 const signedInAs = (roles: string[], scopes: string[]): WhoamiResponse => ({
   session: {
@@ -54,13 +57,25 @@ const signedInAs = (roles: string[], scopes: string[]): WhoamiResponse => ({
   scopes,
   // A community administrator is read from the capabilities whoami reports.
   ...(roles.includes("admin") && scopes.length === 0
-    ? { capabilities: ["vtc.roles.assign"], ext: { "org.openvtc": { adminRole: "community-admin" } } }
+    ? { capabilities: ["vtc.roles.assign", "git.ns.admin"], ext: { "org.openvtc": { adminRole: "community-admin" } } }
     : {}),
 });
 /** The admin role with no context restriction: the community administrator
  *  that reseat is signed as. */
 const COMMUNITY_ADMIN = signedInAs(["admin"], []);
-const CONTEXT_ADMIN = signedInAs(["admin"], ["ctx-a"]);
+/** An administrator of `github.com/acme` only: `git.ns.admin` qualified to
+ *  that namespace, a resource grant on their entry. */
+const NAMESPACE_ADMIN: WhoamiResponse = {
+  ...signedInAs(["admin"], []),
+  capabilities: ["git.ns.admin@git-ns:github.com/acme"],
+  ext: { "org.openvtc": { adminRole: "moderator" } },
+};
+/** An administrator holding nothing in any namespace. */
+const NO_GIT_ADMIN: WhoamiResponse = {
+  ...signedInAs(["admin"], []),
+  capabilities: ["vtc.members.manage"],
+  ext: { "org.openvtc": { adminRole: "moderator" } },
+};
 
 describe("Repos plugin — overview", () => {
   it("sends the administrator's reads as signed Trust Tasks, and changes nothing", async () => {
@@ -264,16 +279,30 @@ describe("Repos plugin — overview", () => {
     expect(within(personal).queryByRole("button", { name: /Reseat/ })).toBeNull();
   });
 
-  it.each([
-    ["an admin limited to some contexts", CONTEXT_ADMIN],
-    ["a viewer without a session probe", undefined],
-  ])("does not offer reseat to %s, who can still unbind", async (_, whoami) => {
+  it("does not offer reseat to a namespace administrator, who can still unbind their own", async () => {
     mockFetch(gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }, PERSONAL] }));
-    mount("/repos", whoami);
+    mount("/repos", NAMESPACE_ADMIN);
     const acme = await screen.findByRole("article", { name: "github.com/acme" });
     expect(within(acme).getByRole("button", { name: "Unbind github.com/acme" })).toBeTruthy();
     expect(within(acme).queryByRole("button", { name: /Reseat/ })).toBeNull();
     expect(acme.textContent).not.toMatch(/Needs a community administrator/);
+    // …and nothing in a namespace they do not administer, nor binding.
+    const personal = screen.getByRole("article", { name: "github.com/glenn-g" });
+    expect(within(personal).queryByRole("button", { name: /Unbind/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Bind namespace/ })).toBeNull();
+  });
+
+  it.each([
+    ["an administrator holding no git capability", NO_GIT_ADMIN],
+    ["a viewer without a session probe", null],
+  ])("offers %s nothing to sign", async (_, whoami) => {
+    mockFetch(gitNsRoutes({ namespaces: [{ ...ACME, headless: true, admins: [] }, PERSONAL] }));
+    mount("/repos", whoami);
+    const acme = await screen.findByRole("article", { name: "github.com/acme" });
+    expect(within(acme).queryByRole("button", { name: /Unbind|Reseat|Re-project/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New repo" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Adopt existing repo" })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Bind namespace/ })).toBeNull();
   });
 
   it("reseats with a member and a required statement, handed over when this browser cannot sign", async () => {

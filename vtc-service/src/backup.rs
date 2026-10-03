@@ -384,6 +384,17 @@ pub async fn import_backup(
         .await?;
     state.config_ks.persist().await?;
 
+    // A backup taken before phase C3 carries its git rights in the old rights
+    // store: move them onto the restored ACL entries now (`vtc-admin-roles.md`
+    // §9). Boot runs the same migration, so a failure here is logged and
+    // finished by the restart the import asks for.
+    if let Err(e) = crate::acl::resource_grant::rebuild_holder_index(&state.acl_ks).await {
+        tracing::warn!(error = %e, "backup import: the git grant-holder index could not be rebuilt; boot rebuilds it");
+    }
+    if let Err(e) = crate::git_ns::migrate::migrate_rights(state, "backup import").await {
+        tracing::warn!(error = %e, "backup import: git-namespace rights not yet moved onto the ACL entries; boot finishes it");
+    }
+
     Ok(ImportResult {
         status: "imported".into(),
         source_did: payload.config.vtc_did.clone(),

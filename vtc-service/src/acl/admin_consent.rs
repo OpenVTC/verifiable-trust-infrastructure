@@ -1273,6 +1273,7 @@ mod tests {
             updated_at: None,
             updated_by: None,
             expires_at,
+            resource_grants: Vec::new(),
         }
     }
 

@@ -9,7 +9,7 @@ import { Check, Plus, X } from "lucide-react";
 
 import { NamedDid } from "@/components/NamedDid";
 import { useNameBook } from "@/lib/names";
-import { useIsCommunityAdmin, useViewerDid } from "@/lib/viewer";
+import { useIsGitCommunityAdmin, useViewerDid } from "@/lib/viewer";
 import type {
   GitNsDriftItem,
   GitNsNamespaceRow,
@@ -302,7 +302,7 @@ function DriftList({
 }) {
   const book = useNameBook();
   const viewer = useViewerDid();
-  const superAdmin = useIsCommunityAdmin();
+  const superAdmin = useIsGitCommunityAdmin();
   return (
     <ul className="finding-list">
       {items.map((d, i) => {

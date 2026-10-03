@@ -183,6 +183,38 @@ pub(crate) fn render_v0_2(e: &VtcAclEntry, review: Option<&DelegationReview>) ->
         map.insert("expiresAt".into(), json!(epoch_to_rfc3339(at)));
     }
     let mut ours = json!({ "communityRole": e.role.to_string() });
+    // Resource grants (phase C3): the git rights this entry holds, each a
+    // qualified capability with its own granter. A granter's free-text reason
+    // is shown only to those who govern the resource (`git-ns/view`), never
+    // here.
+    if !e.resource_grants.is_empty() {
+        ours["resourceGrants"] = Value::Array(
+            e.resource_grants
+                .iter()
+                .map(|g| {
+                    let mut v = json!({
+                        "capability": g.capability,
+                        "resource": g.resource,
+                        "delegatedBy": g.delegated_by,
+                        "grantedAt": g.granted_at,
+                    });
+                    if let Some(grade) = g.grade {
+                        v["grade"] = json!(grade);
+                    }
+                    if let Some(at) = g.expires_at {
+                        v["expiresAt"] = json!(at);
+                    }
+                    if g.break_glass.is_some() {
+                        v["breakGlass"] = json!(true);
+                    }
+                    if let Some(r) = &g.review {
+                        v["review"] = json!({ "granter": r.granter, "deadline": r.deadline });
+                    }
+                    v
+                })
+                .collect(),
+        );
+    }
     if let Some(r) = review {
         ours["delegationReview"] = json!({
             "granter": r.granter,
@@ -378,11 +410,27 @@ pub(crate) async fn list_entries_v0_2(
                 || (matches!(direction, Some("actingIn" | "any")) && e.admin.act.is_all())
         })
         .filter(|e| {
-            let held: Vec<CapRef> = if e.admin.act.is_all() {
+            let mut held: Vec<CapRef> = if e.admin.act.is_all() {
                 e.admin.effective()
             } else {
                 vec![]
             };
+            // Resource grants (phase C3) answer for the capability they hold
+            // in full; a maintainer's or creator's grade is not the capability
+            // (`crate::acl::resource_grant`).
+            let now = chrono::Utc::now();
+            held.extend(
+                e.resource_grants
+                    .iter()
+                    .filter(|g| {
+                        g.is_live(now)
+                            && matches!(
+                                g.grade,
+                                None | Some(crate::acl::resource_grant::RepoGrade::Own)
+                            )
+                    })
+                    .map(crate::acl::resource_grant::ResourceGrant::cap_ref),
+            );
             let of_kind = |c: &&CapRef| capability.is_none_or(|k| c.capability == k);
             match &resource {
                 None => capability.is_none() || held.iter().any(|c| of_kind(&c)),
@@ -616,6 +664,7 @@ pub(crate) async fn plan_write(
     reason: Option<String>,
 ) -> Result<GrantPlan, WriteError> {
     let now = now_epoch();
+    next.role.refuse_unassignable()?;
     // VTI-ACL-052 / VTI-OPS-050, before anything that would leak whether the
     // caller's own entry is coverable.
     if next.did == actor_did {
@@ -735,7 +784,20 @@ pub(crate) async fn commit_grant(
     } else {
         None
     };
-    store_acl_entry(&state.acl_ks, &entry).await?;
+    // The entry's resource grants (git rights, phase C3) are not an `acl/*`
+    // axis: each is a delegation of its own, written by `git-ns/*`. An ACL
+    // write keeps whatever the stored entry holds now — read under the
+    // git-namespace write lock, so a grant written between plan and commit is
+    // not lost.
+    let mut entry = entry;
+    {
+        let _git = crate::git_ns::store::write_lock().await;
+        entry.resource_grants = get_acl_entry(&state.acl_ks, &entry.did)
+            .await?
+            .map(|e| e.resource_grants)
+            .unwrap_or_default();
+        store_acl_entry(&state.acl_ks, &entry).await?;
+    }
     crate::admin_actions::record_effect(state).await;
     drop(_admin_set);
 
@@ -1298,6 +1360,7 @@ pub(crate) async fn change_role_inner(
         return Err(not_covered(&did, "change the role of"));
     }
 
+    req.to_role.refuse_unassignable()?;
     let promoting = matches!(req.to_role, VtcRole::Admin);
     let granted = match source {
         crate::ceremony::StepUpSource::Session { .. } => {
@@ -1993,6 +2056,7 @@ mod tests {
             updated_at: None,
             updated_by: None,
             expires_at: Some(1_800_000_000),
+            resource_grants: Vec::new(),
         }
     }
 
@@ -2125,6 +2189,37 @@ mod tests {
         let plain = render_v0_2(&entry(VtcRole::Member, AdminAuthority::none()), None);
         assert_eq!(plain["role"], "member");
         let _: show::Response = conform(json!({ "entry": plain })).expect("conforms");
+    }
+
+    /// Phase C3: an entry's git rights render as resource grants in `ext`,
+    /// each with its granter and grade — never the granter's reason, which
+    /// only those governing the resource see (`git-ns/view`).
+    #[test]
+    fn resource_grants_render_in_ext_without_their_reason() {
+        use trust_tasks_rs::specs::acl::show::v0_2 as show;
+        let mut e = entry(VtcRole::Member, AdminAuthority::none());
+        e.resource_grants
+            .push(crate::acl::resource_grant::ResourceGrant {
+                capability: Capability::GitRepoManage,
+                resource: "git-repo:github.com/acme/repo_1".parse().unwrap(),
+                grade: Some(crate::acl::resource_grant::RepoGrade::Own),
+                delegated_by: "did:key:zGranter".into(),
+                granted_at: "2026-10-01T00:00:00Z".parse().unwrap(),
+                expires_at: None,
+                reason: Some("private reason".into()),
+                subject_was_member: true,
+                granter_was_member: true,
+                break_glass: None,
+                review: None,
+            });
+        let v = render_v0_2(&e, None);
+        let g = &v["ext"]["org.openvtc"]["resourceGrants"][0];
+        assert_eq!(g["capability"], "git.repo.manage");
+        assert_eq!(g["resource"], "git-repo:github.com/acme/repo_1");
+        assert_eq!(g["grade"], "own");
+        assert_eq!(g["delegatedBy"], "did:key:zGranter");
+        assert!(!v.to_string().contains("private reason"));
+        let _: show::Response = conform(json!({ "entry": v })).expect("conforms");
     }
 
     #[test]

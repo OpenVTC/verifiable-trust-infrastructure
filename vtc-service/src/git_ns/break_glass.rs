@@ -292,7 +292,7 @@ pub async fn right_break_glass(
     }
 
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
     // Step 2.
     let ns = ops::bound_namespace_for(&snap, &resource)?.clone();
@@ -415,7 +415,7 @@ pub async fn right_break_glass(
     // Step 8.
     let effective_at = (st.break_glass.delay_seconds > 0)
         .then(|| t + Duration::seconds(st.break_glass.delay_seconds as i64));
-    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut set = store::get_rights(&state.git_ns, &scope).await?;
     set.rows
         .retain(|r| !(r.subject == actor.did && r.right == right));
     let mut row = ops::new_row(&actor.did, right, &actor.did, actor.member);
@@ -428,9 +428,9 @@ pub async fn right_break_glass(
         ratified_by: None,
         ratified_at: None,
     });
-    let before = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let before = store::get_rights(&state.git_ns, &scope).await?;
     set.rows.push(row.clone());
-    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    store::put_rights(&state.git_ns, &scope, &set).await?;
     if let Scope::Repo(id) = &scope
         && right == Right::RepoOwn
         && effective_at.is_none()
@@ -444,7 +444,7 @@ pub async fn right_break_glass(
     // Steps 9 and 10. The critical row must be durable before the response;
     // if it cannot be written, the break-glass is undone rather than left
     // unaudited.
-    let after = Snapshot::load(&state.git_ns.ks).await?;
+    let after = Snapshot::load(&state.git_ns).await?;
     if let Err(e) = announce(
         state,
         &after,
@@ -461,7 +461,7 @@ pub async fn right_break_glass(
     .await
     {
         error!(error = %e, "the break-glass audit row could not be written; undoing the break-glass");
-        store::put_rights(&state.git_ns.ks, &scope, &before).await?;
+        store::put_rights(&state.git_ns, &scope, &before).await?;
         return Err(OpError::Internal(e));
     }
     audit(
@@ -509,7 +509,7 @@ pub async fn right_ratify(
     let statement = p.statement.as_ref().map(|s| s.to_string());
 
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
     let not_bg = || {
         declared(
@@ -586,7 +586,7 @@ pub async fn right_ratify(
     )
     .await?;
     // Step 5.
-    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut set = store::get_rights(&state.git_ns, &scope).await?;
     let Some(stored) = set
         .rows
         .iter_mut()
@@ -599,9 +599,9 @@ pub async fn right_ratify(
         m.ratified_at = Some(t);
     }
     let ratified = stored.clone();
-    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    store::put_rights(&state.git_ns, &scope, &set).await?;
     // Step 6.
-    let after = Snapshot::load(&state.git_ns.ks).await?;
+    let after = Snapshot::load(&state.git_ns).await?;
     if let Err(e) = announce(
         state,
         &after,

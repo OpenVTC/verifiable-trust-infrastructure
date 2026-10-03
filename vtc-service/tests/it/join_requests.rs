@@ -135,6 +135,7 @@ async fn build_fixture() -> Fixture {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await
@@ -668,6 +669,7 @@ async fn approve_409_when_duplicate_acl_exists() {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await
@@ -2168,6 +2170,7 @@ async fn seed_member(fix: &Fixture, did: &str) {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await
@@ -2576,6 +2579,7 @@ async fn the_vetter_role_credential_is_revocable_and_verifies_for_an_applicant()
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await

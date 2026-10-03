@@ -61,6 +61,7 @@ async fn build_fixture(holder_did: &str) -> Fixture {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await

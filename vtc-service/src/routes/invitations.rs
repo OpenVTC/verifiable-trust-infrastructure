@@ -135,6 +135,15 @@ pub(crate) async fn issue(
                 AppError::Validation(format!("unknown role `{role}`")),
             )
         })?;
+        if !parsed.is_assignable() {
+            return Err(TaskError::declared(
+                INVITATION_ISSUE_ERR_UNKNOWN_ROLE,
+                AppError::Validation(format!(
+                    "`{role}` is not a role an invitation can seat — it marks a non-member \
+                     holding git rights"
+                )),
+            ));
+        }
         if matches!(parsed, VtcRole::Admin) {
             return Err(AppError::Validation(
                 "an invitation may not grant `admin` (no admin via join)".into(),

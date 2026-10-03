@@ -604,6 +604,7 @@ async fn run_invite_cli(
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         };
         store_acl_entry(&acl_ks, &entry).await?;
         // An unrestricted admin made offline, without the consent the daemon

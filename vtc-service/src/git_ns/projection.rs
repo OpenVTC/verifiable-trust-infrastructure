@@ -493,7 +493,7 @@ pub async fn reconcile(
     backoff: &mut Backoff,
 ) -> Result<PassReport, AppError> {
     let t = now();
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let mapped = role_mapped(state).await?;
     let want = desired_with(&snap, t, &mapped);
     let relay = relay_wants(&snap, &mapped);
@@ -630,7 +630,7 @@ pub async fn verify(
             }
         }
     }
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let have = published(state).await?;
     let t = now();
     let mut seen = std::collections::BTreeSet::new();

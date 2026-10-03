@@ -157,6 +157,7 @@ async fn seed_acl(state: &AppState, did: &str, role: VtcRole) {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await
@@ -281,7 +282,7 @@ async fn grant(
 async fn bind_manual_is_bound_at_once_and_the_binder_is_its_admin() {
     let f = fixture().await;
     let id = bind_manual(&f).await;
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let ns = snap.namespace(&id).unwrap();
     assert_eq!(ns.state, super::model::NamespaceState::Bound);
     assert_eq!(
@@ -374,7 +375,7 @@ async fn bind_bridge_is_pending_until_the_bridge_reports_the_proof() {
     assert_eq!(code(&forged), "permissionDenied");
 
     ok(&send(&f.vtc.state, &f.bridge_party, "bridge/event", event.clone()).await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let ns = snap.namespace(&ns_id).unwrap();
     assert_eq!(ns.state, super::model::NamespaceState::Bound);
     assert_eq!(ns.owner_id.as_deref(), Some("91827364"));
@@ -435,7 +436,7 @@ async fn unbind_revokes_everything_and_detaches_every_repository() {
     let body = ok(&out);
     assert_eq!(body["rightsRevoked"], 3, "ns.admin, repo.create, own");
     assert_eq!(body["reposDetached"], 1);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(snap.namespace(&ns).is_none());
     assert!(snap.rights.is_empty());
     assert!(snap.repos.iter().all(|r| r.state == RepoState::Detached));
@@ -674,7 +675,7 @@ async fn create_in_a_manual_namespace_reserves_and_returns_manual_steps() {
     assert_eq!(code(&again), "git-ns/repo/create:nameTaken");
 
     // A reservation publishes nothing.
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let want = projection::desired(&snap, super::ops::now());
     assert!(want.keys().all(|k| !k.contains("gadgets")));
 }
@@ -714,7 +715,7 @@ async fn create_on_an_implied_repo_create_refuses_the_creator_as_owner() {
                 .contains("break-glass")
         );
     }
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(
         snap.repo_at("github.com/acme/gadgets").is_none(),
         "nothing reserved"
@@ -735,7 +736,7 @@ async fn create_on_an_implied_repo_create_may_name_another_owner() {
     )
     .await);
     assert_eq!(body["repo"]["owners"], json!([f.bob.did]));
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at("github.com/acme/gadgets").unwrap();
     let rows = snap.rows(&Scope::Repo(repo.id.clone()));
     assert!(rows.iter().any(|r| r.subject == f.bob.did
@@ -1008,7 +1009,7 @@ async fn archive_revokes_every_commit_right_and_is_idempotent() {
     assert_eq!(body["rightsRevoked"], 0);
 
     // The owner record is kept; no commit right is published for it.
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let want = projection::desired(&snap, super::ops::now());
     assert!(want.contains_key(&projection::tuple_key(&f.bob.did, "git.repo.own", &res)));
     assert!(!want.contains_key(&projection::tuple_key(&f.bob.did, "git.commit.sign", &res)));
@@ -1285,7 +1286,7 @@ async fn create_in_a_bridge_organisation_activates_on_the_result() {
         }),
     )
     .await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at("github.com/acme/gadgets").unwrap();
     assert_eq!(repo.state, RepoState::Active);
     assert_eq!(repo.forge_id.as_deref(), Some("812736990"));
@@ -1304,7 +1305,7 @@ async fn a_departed_members_rights_go_and_their_sole_repository_is_orphaned() {
         .await
         .unwrap();
     assert!(super::lifecycle::sweep(&f.vtc.state).await.unwrap());
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(&res).unwrap();
     assert_eq!(repo.state, RepoState::Orphaned);
     let rows = snap.rows(&Scope::Repo(repo.id.clone()));
@@ -1318,7 +1319,7 @@ async fn a_departed_members_rights_go_and_their_sole_repository_is_orphaned() {
 
     // A namespace admin names a new owner; the repository is active again.
     ok(&grant(&f, &f.admin, &f.carol.did, "git.repo.own", &res).await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert_eq!(snap.repo_at(&res).unwrap().state, RepoState::Active);
 }
 
@@ -1327,9 +1328,9 @@ async fn a_lapsed_right_is_withdrawn_and_recorded() {
     let f = fixture().await;
     let res = active_repo(&f).await;
     // Write an already-lapsed row directly: the grant task refuses one.
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let scope = Scope::Repo(snap.repo_at(&res).unwrap().id.clone());
-    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+    let mut set = store::get_rights(&f.vtc.state.git_ns, &scope)
         .await
         .unwrap();
     let mut row = set.rows[0].clone();
@@ -1337,10 +1338,10 @@ async fn a_lapsed_right_is_withdrawn_and_recorded() {
     row.right = super::model::Right::CommitSign;
     row.expires_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
     set.rows.push(row);
-    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+    store::put_rights(&f.vtc.state.git_ns, &scope, &set)
         .await
         .unwrap();
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(
         !projection::desired(&snap, super::ops::now()).contains_key(&projection::tuple_key(
             &f.carol.did,
@@ -1350,7 +1351,7 @@ async fn a_lapsed_right_is_withdrawn_and_recorded() {
         "a lapsed right is never published, sweep or no sweep"
     );
     assert!(super::lifecycle::sweep_expiry(&f.vtc.state).await.unwrap());
-    let set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+    let set = store::get_rights(&f.vtc.state.git_ns, &scope)
         .await
         .unwrap();
     assert!(set.rows.iter().all(|r| r.subject != f.carol.did));
@@ -1543,7 +1544,7 @@ async fn unlinking_drops_the_account_from_the_projection_and_only_that() {
     );
     assert!(after[0].payload.get("removeAccounts").is_none());
     // Bob's rights are untouched.
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(WIDGETS).unwrap();
     assert!(
         snap.rows(&Scope::Repo(repo.id.clone()))
@@ -1852,7 +1853,7 @@ async fn a_bound_bridge_namespace_grants_its_bridge_commit_sign_and_nothing_else
 
     // Recorded as a service grant: the community itself is the granter, and
     // the bridge — not a member — holds `git.commit.sign` on the namespace.
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let rows = snap.rows(&Scope::Namespace(ns.clone()));
     let grant_row = rows
         .iter()
@@ -1896,7 +1897,7 @@ async fn a_bound_bridge_namespace_grants_its_bridge_commit_sign_and_nothing_else
 
     // A departure sweep does not touch it: the bridge never was a member.
     super::lifecycle::sweep(&f.vtc.state).await.unwrap();
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(
         snap.rows(&Scope::Namespace(ns.clone()))
             .iter()
@@ -1943,7 +1944,7 @@ async fn a_console_key_acts_as_its_admin_and_a_revoked_one_as_nobody() {
     )
     .await);
     let ns = body["namespace"]["id"].as_str().unwrap().to_string();
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert_eq!(
         super::rules::admins(&snap, &ns, super::ops::now()),
         vec![f.admin.did.clone()]
@@ -2005,7 +2006,7 @@ async fn the_bridges_ext_report_reaches_the_admin_rows() {
         }),
     )
     .await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let status = snap.namespace(&ns).unwrap().forge_status.clone().unwrap();
     assert_eq!(status.installation_id.as_deref(), Some("55120033"));
     assert_eq!(
@@ -2040,7 +2041,7 @@ async fn the_bridges_ext_report_reaches_the_admin_rows() {
         }),
     )
     .await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at("github.com/acme/widgets").unwrap();
     assert_eq!(repo.forge_report.guard.as_deref(), Some("codeOwnerReview"));
     assert_eq!(repo.forge_report.steps.len(), 1);
@@ -2154,7 +2155,7 @@ async fn reconcile(f: &Fixture, registry: &MockRegistryClient) -> projection::Pa
 }
 
 async fn desired_now(f: &Fixture) -> std::collections::BTreeMap<String, projection::Tuple> {
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     projection::desired_all(&f.vtc.state, &snap, super::ops::now())
         .await
         .unwrap()
@@ -2185,7 +2186,7 @@ async fn finding_1_a_rename_of_a_repository_reusing_a_lost_name_does_not_move_it
         json!({ "type": "repoRenamed", "forgeId": "200", "from": "github.com/acme/widgets", "to": "github.com/acme/gadgets" }),
     )
     .await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let a = snap.repo_at("github.com/acme/widgets").unwrap();
     assert_eq!(a.forge_id.as_deref(), Some("100"), "A was not taken for B");
     assert!(snap.repo_at("github.com/acme/gadgets").is_none());
@@ -2217,7 +2218,7 @@ async fn finding_1_a_repository_created_at_a_governed_name_detaches_the_old_one(
         json!({ "type": "repoRenamed", "forgeId": "200", "from": "github.com/acme/widgets", "to": "github.com/acme/gadgets" }),
     )
     .await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(
         snap.repos
             .iter()
@@ -2239,7 +2240,7 @@ async fn finding_1_events_are_confined_to_their_namespace_and_a_transfer_out_det
     let f = fixture().await;
     let ns = bind_bridge(&f).await;
     adopt_with_forge_id(&f, "github.com/acme/widgets", "100").await;
-    let widgets_id = Snapshot::load(&f.vtc.state.git_ns.ks)
+    let widgets_id = Snapshot::load(&f.vtc.state.git_ns)
         .await
         .unwrap()
         .repo_at("github.com/acme/widgets")
@@ -2271,7 +2272,7 @@ async fn finding_1_events_are_confined_to_their_namespace_and_a_transfer_out_det
         let out = event(&f, &ns, bad.clone()).await;
         assert_eq!(code(&out), "permissionDenied", "{bad}");
     }
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert_eq!(
         snap.repo_at("github.com/beta/tools").unwrap().state,
         RepoState::Active
@@ -2289,7 +2290,7 @@ async fn finding_1_events_are_confined_to_their_namespace_and_a_transfer_out_det
         json!({ "type": "repoTransferred", "forgeId": "100", "from": "github.com/acme/widgets", "to": "github.com/beta/widgets" }),
     )
     .await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let a = snap.repo(&widgets_id).unwrap();
     assert_eq!(a.state, RepoState::Detached);
     assert_eq!(a.resource, "github.com/acme/widgets");
@@ -2494,6 +2495,7 @@ async fn finding_4_the_console_reads_refuse_a_context_scoped_admin() {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await
@@ -2721,6 +2723,18 @@ async fn finding_8_departure_audit_rows_carry_no_plaintext_departed_did() {
         .filter(|(k, _)| !before.contains(k))
         .map(|(_, v)| serde_json::from_slice(&v).unwrap())
         .collect();
+    // The review of the grant Bob made (phase C3, VTI-ACL-071) is an action
+    // item for the administrators, and names whose grants they are reviewing,
+    // as every `acl.grants.review` does; the sweep's own rows do not.
+    let (review, new): (Vec<Value>, Vec<Value>) = new
+        .into_iter()
+        .partition(|r| r["event"]["type"] == "TaskConsentRecorded");
+    assert!(
+        review
+            .iter()
+            .any(|r| r["event"]["data"]["task"] == "urn:openvtc:vtc:acl:grants-review"),
+        "the grant Bob issued goes to review"
+    );
     assert!(new.len() >= 2, "the revocation and the orphaning");
     for row in &new {
         assert!(
@@ -2772,7 +2786,7 @@ async fn finding_9b_a_later_installation_report_clears_installation_removed() {
     let f = fixture().await;
     let ns = bind_bridge(&f).await;
     ok(&event(&f, &ns, json!({ "type": "installationRemoved" })).await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(snap.namespace(&ns).unwrap().installation_removed);
     ok(&send(
         &f.vtc.state,
@@ -2785,7 +2799,7 @@ async fn finding_9b_a_later_installation_report_clears_installation_removed() {
         }),
     )
     .await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(!snap.namespace(&ns).unwrap().installation_removed);
 }
 
@@ -2819,7 +2833,7 @@ async fn finding_9c_a_result_racing_the_send_survives_the_write_back() {
 async fn finding_9e_detached_repositories_of_an_unbound_namespace_are_hidden_from_members() {
     let f = fixture().await;
     let res = active_repo(&f).await;
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let ns = snap.repo_at(&res).unwrap().namespace_id.clone();
     ok(&send(
         &f.vtc.state,
@@ -2830,7 +2844,7 @@ async fn finding_9e_detached_repositories_of_an_unbound_namespace_are_hidden_fro
     .await);
     let bob = ok(&send(&f.vtc.state, &f.bob, "view", json!({})).await);
     assert_eq!(bob["repos"], json!([]));
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let admin = super::view::build(&snap, super::view::Viewer::Administrator, None);
     assert_eq!(admin["repos"].as_array().unwrap().len(), 1);
 }
@@ -2843,9 +2857,9 @@ async fn finding_9g_an_external_signer_resigns_under_the_default_policy() {
     let res = active_repo(&f).await;
     // An external signer's row, as a community with a permissive policy
     // would have granted it.
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let scope = Scope::Repo(snap.repo_at(&res).unwrap().id.clone());
-    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+    let mut set = store::get_rights(&f.vtc.state.git_ns, &scope)
         .await
         .unwrap();
     let mut row = set.rows[0].clone();
@@ -2853,7 +2867,7 @@ async fn finding_9g_an_external_signer_resigns_under_the_default_policy() {
     row.right = super::model::Right::CommitSign;
     row.subject_was_member = false;
     set.rows.push(row);
-    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+    store::put_rights(&f.vtc.state.git_ns, &scope, &set)
         .await
         .unwrap();
     let body = ok(&send(
@@ -2881,7 +2895,7 @@ async fn unbind_hands_role_derived_grants_back_to_the_hook_relay_at_once() {
     let bob_own = projection::tuple_key(&f.bob.did, "git.repo.own", &res);
     assert!(registry.trust_records().await.contains_key(&carol));
 
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let ns = snap.repo_at(&res).unwrap().namespace_id.clone();
     ok(&send(
         &f.vtc.state,
@@ -2958,7 +2972,7 @@ async fn r1_a_name_reused_after_a_delete_is_recorded_once_and_adopted_as_the_new
             json!({ "type": "repoCreatedUnmanaged", "forgeId": "200", "resource": "github.com/acme/widgets" }),
         )
         .await);
-        let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+        let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
         let at = rows_at(&snap, "github.com/acme/widgets");
         assert_eq!(at.len(), 1, "run {run}: {at:?}");
         assert_eq!(at[0].forge_id.as_deref(), Some("200"), "run {run}");
@@ -2970,7 +2984,7 @@ async fn r1_a_name_reused_after_a_delete_is_recorded_once_and_adopted_as_the_new
             json!({ "resource": "github.com/acme/widgets", "owners": [f.carol.did] }),
         )
         .await);
-        let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+        let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
         let repo = snap.repo_at("github.com/acme/widgets").unwrap().clone();
         assert_eq!(repo.state, RepoState::Active, "run {run}");
         assert_eq!(repo.forge_id.as_deref(), Some("200"), "run {run}");
@@ -2982,7 +2996,7 @@ async fn r1_a_name_reused_after_a_delete_is_recorded_once_and_adopted_as_the_new
             json!({ "type": "repoRenamed", "forgeId": "100", "from": "github.com/acme/widgets", "to": "github.com/acme/widgets-old" }),
         )
         .await);
-        let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+        let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
         assert!(
             snap.repo_at("github.com/acme/widgets-old").is_none(),
             "run {run}"
@@ -3022,7 +3036,7 @@ async fn r1_b_after_unbind_and_rebind_a_name_is_recorded_once() {
             json!({ "type": "repoCreatedUnmanaged", "forgeId": fid, "resource": "github.com/acme/widgets" }),
         )
         .await);
-        let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+        let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
         let at = rows_at(&snap, "github.com/acme/widgets");
         assert_eq!(at.len(), 1, "run {run}: {at:?}");
         assert_eq!(at[0].forge_id.as_deref(), Some(fid), "run {run}");
@@ -3057,7 +3071,7 @@ async fn r1_adopting_a_detached_repository_forgets_its_old_forge_id() {
         json!({ "resource": "github.com/acme/widgets", "owners": [f.carol.did] }),
     )
     .await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let at = rows_at(&snap, "github.com/acme/widgets");
     assert_eq!(at.len(), 1);
     assert_eq!(at[0].state, RepoState::Active);
@@ -3124,7 +3138,7 @@ async fn r3_a_removal_and_an_account_link_are_serialised_on_the_member_row() {
 // ── re-review R4: a transfer hands over ownership as durable as the caller's ─
 
 async fn own_rows(f: &Fixture, res: &str) -> Vec<super::model::RightRow> {
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     snap.rows(&Scope::Repo(snap.repo_at(res).unwrap().id.clone()))
         .iter()
         .filter(|r| r.right == super::model::Right::RepoOwn)
@@ -3220,7 +3234,7 @@ mod r1_probes {
         *seed >> 33
     }
     async fn snap(f: &Fixture) -> Snapshot {
-        Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap()
+        Snapshot::load(&f.vtc.state.git_ns).await.unwrap()
     }
 
     async fn answer_latest_inspect(f: &Fixture, res: &str, fid: &str) {
@@ -4169,7 +4183,7 @@ async fn reseat_restores_an_admin_to_a_headless_namespace_and_answers_every_code
     let out = reseat(&f, &console, &ns, &dana.did).await;
     assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
     assert!(String::from_utf8_lossy(&out.body).contains("git-ns/right/break-glass"));
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(!super::rules::admins(&snap, &ns, super::ops::now()).contains(&dana.did));
     // Step 4 — members only.
     let out = reseat(&f, &dana, &ns, &f.stranger.did).await;
@@ -4209,7 +4223,7 @@ async fn reseat_restores_an_admin_to_a_headless_namespace_and_answers_every_code
             .unwrap()
             .contains("Alice left")
     );
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(super::rules::admins(&snap, &ns, super::ops::now()).contains(&f.carol.did));
 
     // A repeat finds it no longer headless.
@@ -4236,13 +4250,13 @@ async fn reseat_refuses_a_pending_namespace_and_counts_a_lapsed_admin_as_gone() 
     let f = fixture().await;
     let ns = bind_manual(&f).await;
     let scope = Scope::Namespace(ns.clone());
-    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+    let mut set = store::get_rights(&f.vtc.state.git_ns, &scope)
         .await
         .unwrap();
     for r in &mut set.rows {
         r.expires_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
     }
-    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+    store::put_rights(&f.vtc.state.git_ns, &scope, &set)
         .await
         .unwrap();
     ok(&reseat(&f, &f.admin, &ns, &f.carol.did).await);
@@ -4340,7 +4354,7 @@ async fn drift_resolve_adopts_a_members_forge_role_as_the_grant_it_is() {
     // The other item stays; the adopted one is gone.
     assert_eq!(body["sync"]["state"], "drift");
     assert_eq!(body["sync"]["drift"].as_array().unwrap().len(), 1);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(RES).unwrap();
     assert!(
         snap.rows(&Scope::Repo(repo.id.clone()))
@@ -4395,7 +4409,7 @@ async fn drift_adopt_of_ones_own_account_into_an_elevated_right_is_a_self_grant(
             .contains("break-glass")
     );
 
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(RES).unwrap();
     assert!(
         !snap
@@ -4421,7 +4435,7 @@ async fn drift_resolve_adopts_only_for_the_member_it_names() {
     .await;
     let sel = json!({ "type": "roleAdded", "account": carol_acct(), "observed": "maintain" });
     let rows_for = |did: String| {
-        let ks = f.vtc.state.git_ns.ks.clone();
+        let ks = f.vtc.state.git_ns.clone();
         async move {
             let snap = Snapshot::load(&ks).await.unwrap();
             let repo = snap.repo_at(RES).unwrap();
@@ -4478,7 +4492,7 @@ async fn a_namespace_admin_adopts_a_raise_over_their_own_name_right() {
                  "expected": "maintain", "observed": "admin" }]),
     )
     .await;
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(RES).unwrap().clone();
     let ns_rec = snap.namespace(&ns).unwrap().clone();
     // Effective: own (implied by ns.admin). Projected: maintain.
@@ -4558,7 +4572,7 @@ async fn an_adoption_never_grants_the_resolver_an_elevated_right() {
     let out = resolve_naming(&f, &console, sel, "adopt", Some(&f.admin.did)).await;
     assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
 
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert_eq!(own_rows(&snap), 0);
     assert_eq!(snap.repo_at(RES).unwrap().sync.drift.len(), 2);
 
@@ -4602,7 +4616,7 @@ async fn a_map_that_gives_maintainers_admin_makes_a_self_adopted_maintain_elevat
     assert_eq!(code(&out), "git-ns:selfGrantNotAllowed");
     assert!(String::from_utf8_lossy(&out.body).contains("git.repo.maintain"));
     assert!(!String::from_utf8_lossy(&out.body).contains("break-glass"));
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(RES).unwrap();
     assert!(
         !snap
@@ -4621,7 +4635,7 @@ async fn a_map_that_gives_maintainers_admin_makes_a_self_adopted_maintain_elevat
 #[tokio::test]
 async fn a_namespace_admin_alone_has_no_projected_right() {
     let (f, ns) = drift_fixture(json!([])).await;
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(RES).unwrap().clone();
     let ns_rec = snap.namespace(&ns).unwrap().clone();
     assert_eq!(
@@ -4727,7 +4741,7 @@ async fn drift_resolve_0_1_reverts_but_does_not_adopt() {
     )
     .await;
     assert_eq!(code(&out), "unsupportedVersion");
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(RES).unwrap();
     assert!(
         !snap
@@ -4968,7 +4982,7 @@ async fn a_bridge_before_job_0_4_is_sent_nothing_and_cannot_revert() {
     );
     // Nothing was sent, and nothing was resolved.
     assert_eq!(f.bridge.jobs.lock().unwrap().len(), before);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert_eq!(snap.repo_at(RES).unwrap().sync.drift.len(), 1);
 }
 
@@ -5147,7 +5161,7 @@ async fn a_manual_namespace_has_no_bridge_to_revert_with() {
     let f = fixture().await;
     let res = active_repo(&f).await;
     // Drift written directly: a manual namespace has no bridge to report it.
-    let mut snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let mut snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let mut repo = snap.repo_at(&res).unwrap().clone();
     repo.sync.drift = vec![json!({ "type": "bootstrapMissing", "resource": res })];
     store::put_repo(&f.vtc.state.git_ns.ks, &repo)
@@ -5174,7 +5188,7 @@ async fn bridge_event_0_2_is_served_and_a_transfer_detaches_wherever_it_goes() {
         json!({ "namespace": ns, "event": { "type": "repoTransferred", "forgeId": "100", "from": RES, "to": "github.com/acme/elsewhere" } }),
     )
     .await);
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(RES).unwrap();
     assert_eq!(repo.state, RepoState::Detached);
     assert!(snap.rows(&Scope::Repo(repo.id.clone())).is_empty());
@@ -5200,7 +5214,7 @@ async fn an_event_with_a_drift_item_outside_its_namespace_applies_nothing() {
         .await;
         assert_eq!(code(&out), "permissionDenied", "{v}");
     }
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert_eq!(snap.repo_at(RES).unwrap().state, RepoState::Active);
 }
 
@@ -5218,7 +5232,7 @@ async fn every_git_ns_task_that_takes_a_did_refuses_one_that_is_not_did_core() {
     })
     .await;
     let res = active_repo(&f).await;
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let ns = snap.repo_at(&res).unwrap().namespace_id.clone();
     let cases: Vec<(&Party, &str, Value)> = vec![
         (
@@ -5255,7 +5269,7 @@ async fn every_git_ns_task_that_takes_a_did_refuses_one_that_is_not_did_core() {
     .await;
     assert_eq!(code(&out), "malformedRequest", "namespace/reseat");
     // Nothing was recorded for it anywhere.
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(
         snap.rights
             .values()
@@ -5367,7 +5381,7 @@ decision := {"effect": "deny", "with": {"code": "no-adoptions", "reason": "forge
     .await;
     assert_eq!(code(&out), "git-ns:policyDenied");
     // The item is still outstanding; the same right granted directly is fine.
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert_eq!(snap.repo_at(RES).unwrap().sync.drift.len(), 1);
     ok(&grant(&f, &f.bob, &f.carol.did, "git.repo.maintain", RES).await);
 }
@@ -5406,7 +5420,7 @@ async fn an_adoption_whose_item_changed_grants_nothing() {
         r,
         Err(super::ops::OpError::Declared { code, .. }) if code == super::drift::DRIFT_NOT_FOUND
     ));
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let repo = snap.repo_at(RES).unwrap();
     assert!(
         snap.rows(&Scope::Repo(repo.id.clone()))
@@ -5456,14 +5470,14 @@ async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
     .await);
     // Bob holds an admin record that has lapsed, unswept.
     let scope = Scope::Namespace(ns.clone());
-    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+    let mut set = store::get_rights(&f.vtc.state.git_ns, &scope)
         .await
         .unwrap();
     let mut lapsed = set.rows[0].clone();
     lapsed.subject = f.bob.did.clone();
     lapsed.expires_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
     set.rows.push(lapsed);
-    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+    store::put_rights(&f.vtc.state.git_ns, &scope, &set)
         .await
         .unwrap();
     // The last admin leaves.
@@ -5482,7 +5496,7 @@ async fn reseat_evidence_reports_revocations_and_replaces_a_lapsed_record() {
     )
     .await);
 
-    let rows = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+    let rows = store::get_rights(&f.vtc.state.git_ns, &scope)
         .await
         .unwrap()
         .rows;
@@ -5749,7 +5763,7 @@ async fn break_glass_needs_the_bound_step_up_and_then_records_a_flagged_right() 
         "{}",
         String::from_utf8_lossy(&out.body)
     );
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(
         !super::rules::owners(
             &snap,
@@ -5770,7 +5784,7 @@ async fn break_glass_needs_the_bound_step_up_and_then_records_a_flagged_right() 
         body["right"].get("expiresAt").is_none(),
         "a break-glass never lapses"
     );
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     assert!(
         super::rules::owners(
             &snap,
@@ -5877,7 +5891,7 @@ default decision := {{"effect": "allow"}}
     activate_git_policy(&f, &with(r#""break_glass_delay_seconds": 3600"#)).await;
     let body = ok(&break_glass(&f, &f.carol, "git.repo.own", "github.com/acme/widgets").await);
     assert!(body["right"]["breakGlass"]["effectiveAt"].is_string());
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let id = repo_id(&snap, "github.com/acme/widgets");
     assert!(
         !super::rules::owners(&snap, &id, super::ops::now()).contains(&f.carol.did),
@@ -5964,9 +5978,9 @@ async fn a_ratifier_whose_own_authority_is_an_unratified_break_glass_is_refused(
     let (dan, erin) = (Party::new(), Party::new());
     seed_acl(&f.vtc.state, &dan.did, VtcRole::Member).await;
     seed_acl(&f.vtc.state, &erin.did, VtcRole::Member).await;
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let scope = Scope::Repo(repo_id(&snap, "github.com/acme/widgets"));
-    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+    let mut set = store::get_rights(&f.vtc.state.git_ns, &scope)
         .await
         .unwrap();
     let at = super::ops::now();
@@ -5982,7 +5996,7 @@ async fn a_ratifier_whose_own_authority_is_an_unratified_break_glass_is_refused(
         });
         set.rows.push(row);
     }
-    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+    store::put_rights(&f.vtc.state.git_ns, &scope, &set)
         .await
         .unwrap();
     let at = json!(super::wire::timestamp(at));
@@ -6031,7 +6045,7 @@ async fn the_break_glass_audience_is_every_other_administrator() {
     let f = carol_admin_fixture().await;
     let dana = Party::new();
     seed_acl(&f.vtc.state, &dana.did, VtcRole::Admin).await;
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let ns = snap.namespaces[0].clone();
     let got = super::break_glass::audience(&f.vtc.state, &snap, &ns, &f.carol.did)
         .await
@@ -6181,7 +6195,7 @@ async fn role_jobs_for(f: &Fixture, repo: &str) -> Vec<super::bridge::BridgeJob>
 }
 
 async fn namespace_now(f: &Fixture, ns: &str) -> super::model::Namespace {
-    Snapshot::load(&f.vtc.state.git_ns.ks)
+    Snapshot::load(&f.vtc.state.git_ns)
         .await
         .unwrap()
         .namespace(ns)
@@ -6775,15 +6789,15 @@ async fn an_admin_whose_own_lapses_falls_back_to_no_role() {
     .await);
     ok(&grant(&f, &f.admin, &f.carol.did, "git.repo.own", RES).await);
     // Lapsed, unswept.
-    let snap = Snapshot::load(&f.vtc.state.git_ns.ks).await.unwrap();
+    let snap = Snapshot::load(&f.vtc.state.git_ns).await.unwrap();
     let scope = Scope::Repo(snap.repo_at(RES).unwrap().id.clone());
-    let mut set = store::get_rights(&f.vtc.state.git_ns.ks, &scope)
+    let mut set = store::get_rights(&f.vtc.state.git_ns, &scope)
         .await
         .unwrap();
     for r in set.rows.iter_mut().filter(|r| r.subject == f.carol.did) {
         r.expires_at = Some("2020-01-01T00:00:00Z".parse().unwrap());
     }
-    store::put_rights(&f.vtc.state.git_ns.ks, &scope, &set)
+    store::put_rights(&f.vtc.state.git_ns, &scope, &set)
         .await
         .unwrap();
     assert_eq!(
@@ -7579,3 +7593,5 @@ async fn namespace_list_signed_by_a_console_key_answers_its_administrator() {
     .await);
     assert_eq!(resources(&v, "namespaces", "resource"), ["github.com/acme"]);
 }
+
+mod c3;

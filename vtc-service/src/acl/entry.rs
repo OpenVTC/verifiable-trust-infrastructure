@@ -66,6 +66,16 @@ pub struct VtcAclEntry {
     /// pruned by the background sweeper. `None` is permanent.
     #[serde(default)]
     pub expires_at: Option<u64>,
+    /// Capabilities held on one of the community's resources — a git
+    /// namespace or repository — each a delegation of its own
+    /// (**VTI-ACL-035 – 037**, [`super::resource_grant`]). Absent and empty are
+    /// the same: no resource grants.
+    #[serde(
+        default,
+        rename = "resourceGrants",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub resource_grants: Vec<super::resource_grant::ResourceGrant>,
 }
 
 impl VtcAclEntry {
@@ -88,6 +98,7 @@ impl VtcAclEntry {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         }
     }
 
@@ -97,14 +108,45 @@ impl VtcAclEntry {
     /// An expired entry can do nothing (**VTI-ACL-004**), and a qualified
     /// capability confers nothing without this live entry for the same subject
     /// — it is a member of the entry, not a right held beside it.
+    ///
+    /// The entry's resource grants answer too: a git right held on a
+    /// namespace or repository is this entry's capability at that qualifier
+    /// (phase C3, **VTI-VTC-020**).
     pub fn can(&self, cap: Capability, resource: Option<&ResourceQualifier>) -> bool {
-        !self.is_expired(vti_common::auth::session::now_epoch()) && self.admin.can(cap, resource)
+        !self.is_expired(vti_common::auth::session::now_epoch())
+            && (self.admin.can(cap, resource) || self.resource_grant_confers(cap, resource))
+    }
+
+    /// Whether one of this entry's live resource grants confers `cap` at
+    /// `resource`. Expiry of the entry itself is the caller's.
+    fn resource_grant_confers(
+        &self,
+        cap: Capability,
+        resource: Option<&ResourceQualifier>,
+    ) -> bool {
+        let now = chrono::Utc::now();
+        self.resource_grants
+            .iter()
+            .any(|g| g.is_live(now) && g.confers(cap, resource))
+    }
+
+    /// Whether this is a non-member's entry: the `application` community role,
+    /// which exists only to hold resource grants (the bridge, an external
+    /// signer) and is never a membership.
+    pub fn is_application(&self) -> bool {
+        self.role == VtcRole::Application
     }
 
     /// [`Self::can`] at any qualifier — the gate on a read that spans every
     /// resource of the capability's kind.
     pub fn can_any(&self, cap: Capability) -> bool {
-        !self.is_expired(vti_common::auth::session::now_epoch()) && self.admin.can_any(cap)
+        let now = chrono::Utc::now();
+        !self.is_expired(vti_common::auth::session::now_epoch())
+            && (self.admin.can_any(cap)
+                || self
+                    .resource_grants
+                    .iter()
+                    .any(|g| g.is_live(now) && g.confers(cap, Some(&g.resource))))
     }
 
     /// Whether this live entry holds `wanted` at a covering qualifier.
@@ -135,12 +177,28 @@ impl VtcAclEntry {
 
     /// The capabilities this entry holds, as `cap[@resource]` strings — what an
     /// audit row or an operator display names. Empty when it may not act.
+    ///
+    /// Resource grants are listed as the capability references they answer
+    /// for (`git.repo.manage@git-repo:…`), a maintainer's or creator's grade
+    /// included as `cap/grade@resource` so a display never reads one as the
+    /// capability in full.
     pub fn capability_list(&self) -> Vec<String> {
-        if self.admin.act.is_all() {
+        let mut out: Vec<String> = if self.admin.act.is_all() {
             self.admin.effective().iter().map(CapRef::display).collect()
         } else {
             Vec::new()
-        }
+        };
+        let now = chrono::Utc::now();
+        out.extend(
+            self.resource_grants
+                .iter()
+                .filter(|g| g.is_live(now))
+                .map(|g| match g.grade {
+                    Some(super::resource_grant::RepoGrade::Own) | None => g.cap_ref().display(),
+                    Some(_) => g.display(),
+                }),
+        );
+        out
     }
 
     /// Returns `true` once this entry has passed its
@@ -281,6 +339,7 @@ mod tests {
             updated_at: None,
             updated_by: None,
             expires_at,
+            resource_grants: Vec::new(),
         }
     }
 }

@@ -547,6 +547,7 @@ async fn a_resend_delivers_the_live_grant_credential_again() {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await
@@ -702,6 +703,7 @@ async fn kernel_community() -> Community {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await
@@ -1018,6 +1020,7 @@ async fn seed_member_row(vtc: &TestVtc, did: &str, days_ago: i64) {
             updated_at: None,
             updated_by: None,
             expires_at: None,
+            resource_grants: Vec::new(),
         },
     )
     .await

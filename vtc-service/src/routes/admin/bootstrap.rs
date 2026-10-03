@@ -198,6 +198,7 @@ pub(crate) async fn bootstrap(
         updated_at: None,
         updated_by: None,
         expires_at: None,
+        resource_grants: Vec::new(),
     };
     store_acl_entry(&state.acl_ks, &acl_entry).await?;
 
@@ -224,6 +225,7 @@ pub(crate) async fn bootstrap(
                 updated_at: None,
                 updated_by: None,
                 expires_at: None,
+                resource_grants: Vec::new(),
             };
             store_acl_entry(&state.acl_ks, &entry).await?;
             // The sister record a promotion writes, so the co-admin can enrol a

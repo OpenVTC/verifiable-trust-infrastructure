@@ -46,6 +46,74 @@ escalation, `repo.create` not re-delegable, a repository keeps an owner, a
 namespace keeps an admin, and namespace rights go to current members only. The
 community's `gitNamespace` policy is evaluated after them and can only refuse.
 
+### Rights are capabilities on the ACL entry
+
+There is one authority model (VTI-VTC-020). Every right is a **resource
+grant** on its holder's own ACL entry — a capability qualified by the
+namespace or by the repository's **id** (VTI-ACL-035), with its own granter
+(`delegatedBy`), time, expiry, reason and any break-glass mark
+(`vtc-service/src/acl/resource_grant.rs`). There is no separate rights store:
+the `git-ns/*` tasks read and write the entries, and `VtcAclEntry::can`
+answers the same question for the console, `acl/list`'s capability filter and
+the approver sets.
+
+| Right | Capability | Qualifier | Grade |
+|---|---|---|---|
+| `git.ns.admin` | `git.ns.admin` | `git-ns:github.com/acme` | — |
+| `git.repo.create` | `git.repo.manage` | `git-ns:github.com/acme` | `create` |
+| `git.repo.own` | `git.repo.manage` | `git-repo:github.com/acme/<repo-id>` | `own` |
+| `git.repo.maintain` | `git.repo.manage` | `git-repo:github.com/acme/<repo-id>` | `maintain` |
+| `git.commit.sign` | `git.commit.sign` | either | — |
+
+A **grade** narrows `git.repo.manage`: `own` is the capability in full on one
+repository (a repository manager for it), `maintain` is the maintainer's
+share — what the forge projection makes a maintainer, conferring no
+management — and `create` is creation in the namespace, conferring nothing
+over the repositories already in it. That is what keeps owner and maintainer
+apart for the forge roles and the fixed rules, and keeps the invariant that an
+implied `repo.create` carries no creator ownership. Implication is the rights
+model's: `git.ns.admin` at a namespace holds `git.repo.manage` and
+`git.commit.sign` throughout it. `acl/show` and `acl/list` (0.2) render an
+entry's grants in `ext["org.openvtc"].resourceGrants` — never their reasons —
+and `whoami` lists them as `git.repo.manage@git-repo:…` (a maintainer's or
+creator's as `git.repo.manage/maintain@…`, so a display never reads one as the
+capability in full).
+
+- **A grant is bounded by the granter's own entry** (VTI-ACL-037,
+  VTI-ACL-071): after the fixed rules pass, the granter's live entry must hold
+  the capability at a covering qualifier, or the grant is refused as an
+  `escalation`. The rules decide which holdings carry grant authority; this is
+  the floor under them.
+- **No grant without a live entry.** A grant on an expired entry confers
+  nothing, and removing an entry removes its grants. The lifecycle sweep then
+  records each as revoked and orphans what the subject owned alone.
+- **A subject that is no member** — the bridge's service grant, an external
+  signer a community's policy admits — holds its (never elevated) grants on an
+  entry of the community role **`application`**, created with the first grant
+  and removed with the last. It is never a membership: it cannot sign in, never
+  counts as a member, and never receives an elevated right. A subject with an
+  `application` entry who joins becomes a member on the same entry, keeping
+  its grants. No caller can assign the role.
+- **The community-administrator capability is `git.ns.admin` held
+  community-wide** — a `community-admin`'s. It binds, reseats a headless
+  namespace and ratifies; it is not a namespace administrator's grant
+  authority, which is a qualified `git.ns.admin` grant.
+- **An ACL write keeps the grants.** `acl/*` writes a role, act scope and
+  capabilities; it never adds or drops a resource grant, which only `git-ns/*`
+  writes. A key rotation (`acl/swap-key`, `vtc/members/rotate`) moves the grants
+  with the entry, and the grants its subject delegated name the new key.
+
+**Upgrading.** A store from before this change keeps its rights in
+`rights:*` rows of the `git_ns` keyspace. At boot, after the ACL's own
+migration, and right after a backup import, each is moved onto its holder's
+entry (`git_ns::migrate`), audited once (`gitNs.rights.migrated`), and the
+row removed — the store is removed, not kept read-only, so nothing can read a
+second model. A right that maps onto nothing that would confer it — an
+elevated right held by a DID with no member entry, a right on a namespace or
+repository with no record — is kept inert under `rights-unmapped:*` and raised
+as an acknowledge item for the community administrators, never dropped or
+granted. A second run does nothing.
+
 ## Configuration
 
 ```toml
@@ -98,7 +166,7 @@ can do (`capabilities`). It answers `decision` (`allow`, or `deny` with a
 | Setting | Default | Effect |
 |---|---|---|
 | `maintainer_grants_commit` | `false` | a maintainer may grant `git.commit.sign` on their repository |
-| `cascade_on_departure` | `false` | grants a departed member issued are revoked with them, instead of listed for review |
+| `cascade_on_departure` | `false` | grants a departed member issued are revoked with them, instead of going to review (re-affirmed, or withdrawn at the deadline) |
 | `role_drift` | `"report"` | `"enforce"` re-projects forge roles changed outside the VTC |
 
 ## What is published
@@ -146,9 +214,22 @@ while waiting for their next membership event.
 
 A member who leaves loses every git right. A repository they owned alone
 becomes `orphaned` — governed by the namespace admins — until one of them
-names an owner. Grants they issued stay, listed under *issued by departed
-members* (`GET /v1/git-ns/rights/issued-by-departed`), unless the policy sets
-`cascade_on_departure`. Their linked forge accounts are removed.
+names an owner. Their linked forge accounts are removed.
+
+A grant is a delegation (`vtc-admin-roles.md` §6.3, VTI-ACL-071), so the
+grants a departed member **issued** go to review: each stays in force, marked
+with a review (`{granter, deadline}`), and one `acl.grants.review` item in the
+action list — its payload's `gitGrants` naming each subject, right and
+resource — asks the community administrators to decide. Approving re-affirms
+each grant under an approver whose own entry covers it, who becomes its
+granter; declining withdraws them at once; a grant nobody re-affirms by the
+deadline (the action lifetime, `acl.action_lifetime`) is withdrawn by the
+lifecycle sweep, audited `gitNs.right.revoked` with detail `granterDeparted`.
+Grants with no granter to depart are never reviewed: a binding's first admin,
+a creator's own ownership, a break-glass (each granted by its own subject) and
+the bridge's service grant (granted by the community). A policy setting
+`cascade_on_departure` still revokes them at once instead. They are also listed
+under *issued by departed members* (`git-ns/right/issued-by-departed/0.1`).
 
 ## The bridge
 
@@ -161,7 +242,11 @@ grants that bridge `git.commit.sign` on the namespace — a *service grant*,
 `grantedBy` the VTC's own DID — because the bridge re-signs Dependabot pull
 requests with its own DID. The shipped policy admits exactly this grant
 (`bridge.serviceGrant`) and nothing else for a non-member; unbinding revokes
-it with everything else.
+it with everything else. The grant sits on the bridge's own ACL entry, of the
+community role `application` — a bridge holds a capability like anyone else,
+on an entry (VTI-ACL-070) — but the bridge is still authenticated exactly as
+before: its results and events are accepted because the namespace records its
+DID, not because of the entry.
 
 A bridge speaks only for the namespace it serves: every resource an event
 names must be a repository inside that namespace, and repositories are

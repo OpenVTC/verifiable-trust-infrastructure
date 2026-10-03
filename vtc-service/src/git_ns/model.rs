@@ -610,6 +610,12 @@ pub struct RightRow {
     /// `git-ns/right/break-glass/0.1` (`git-ns/_shared/0.4` `BreakGlass`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub break_glass: Option<BreakGlassMark>,
+    /// Open while the granter has departed, or no longer holds what this was
+    /// delegated from, and nobody has re-affirmed it: the row is withdrawn at
+    /// the deadline (**VTI-ACL-071**, `vtc-admin-roles.md` §6.3). Never
+    /// published.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::acl::resource_grant::GrantReview>,
 }
 
 /// How a self-granted right came to be, and whether another administrator has

@@ -176,7 +176,7 @@ pub async fn drift_resolve(
     // Steps 2 to 5, under the store lock, on one snapshot.
     let d = {
         let _guard = store::write_lock().await;
-        let snap = Snapshot::load(&state.git_ns.ks).await?;
+        let snap = Snapshot::load(&state.git_ns).await?;
         let t = now();
         let resource = ops::parse_resource(&p.resource)?;
         // Step 2.
@@ -401,7 +401,7 @@ async fn adopt(
     // their effective rights: a namespace admin projects to no forge role, so
     // one who holds `maintain` here can adopt a forge `admin` as `own`.
     if d.selector.kind == "roleChanged" {
-        let snap = Snapshot::load(&state.git_ns.ks).await?;
+        let snap = Snapshot::load(&state.git_ns).await?;
         let held = bridge::projected_repo_right(&snap, &d.ns, &d.repo, &member, now())
             .map(Right::rank)
             .unwrap_or(0);
@@ -428,7 +428,7 @@ async fn adopt(
     // (`tasks::acting_as`), so a console key cannot adopt for its admin what
     // the admin could not adopt themselves.
     let elevated = {
-        let snap = Snapshot::load(&state.git_ns.ks).await?;
+        let snap = Snapshot::load(&state.git_ns).await?;
         rules::elevated_on(&snap, right, &d.resource)
     };
     if rules::separation_of_duties(&actor.did, &member, right, elevated, &d.resource).is_err() {
@@ -552,7 +552,7 @@ async fn revert(state: &AppState, actor: &ops::Standing, d: &Decided) -> OpResul
         ));
     };
     {
-        let snap = Snapshot::load(&state.git_ns.ks).await?;
+        let snap = Snapshot::load(&state.git_ns).await?;
         let passed = rules::drift_revert_admitted(&snap, &actor.did, &d.resource, now())?;
         consent_gate(state, actor, "right.revoke", Some(impact)).await?;
         check_policy(
@@ -578,7 +578,7 @@ async fn revert(state: &AppState, actor: &ops::Standing, d: &Decided) -> OpResul
     match d.selector.kind.as_str() {
         "roleAdded" => {
             // `removeAccounts`, and only here.
-            let snap = Snapshot::load(&state.git_ns.ks).await?;
+            let snap = Snapshot::load(&state.git_ns).await?;
             let roles = bridge::desired_roles_now(state, &snap, &d.ns, &d.repo).await?;
             let account = item.get("account").cloned().unwrap_or(Value::Null);
             let (forge, id) = d.selector.account.clone().unwrap_or_default();

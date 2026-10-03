@@ -160,15 +160,17 @@ pub fn now() -> DateTime<Utc> {
 #[derive(Debug, Clone, Default)]
 pub struct Standing {
     pub did: String,
-    /// A current member: an unexpired ACL entry, and no departure recorded on
-    /// the member row. The ACL entry is what membership removal deletes, so it
+    /// A current member: an unexpired ACL entry that is not an `application`
+    /// entry, and no departure recorded on the member row. The ACL entry is what membership removal deletes, so it
     /// is the authoritative half; the row's `removed_at` covers a departure
     /// that kept the row.
     pub member: bool,
     pub role: Option<String>,
     /// Holds `git.ns.admin` **unqualified** — every namespace this community
-    /// governs (`vtc-admin-roles.md` §4; phase C3 folds the rest of the git
-    /// rights model into capabilities).
+    /// governs (`vtc-admin-roles.md` §4). What binds, reseats a headless
+    /// namespace and ratifies; never a namespace administrator's grant
+    /// authority, which is a qualified `git.ns.admin` resource grant on the
+    /// entry (phase C3, `crate::acl::resource_grant`).
     pub community_admin: bool,
 }
 
@@ -177,7 +179,9 @@ pub async fn standing(state: &AppState, did: &str) -> Result<Standing, AppError>
     let entry = entry.filter(|e| !e.is_expired(crate::auth::session::now_epoch()));
     let row = crate::members::get_member(&state.members_ks, did).await?;
     let departed = row.as_ref().is_some_and(|m| m.removed_at.is_some());
-    let member = entry.is_some() && !departed;
+    // An `application` entry holds git rights for a non-member (the bridge, an
+    // external signer); it is never a membership.
+    let member = entry.as_ref().is_some_and(|e| !e.is_application()) && !departed;
     let community_admin = member
         && entry
             .as_ref()
@@ -504,6 +508,7 @@ pub(super) fn new_row(
         subject_was_member: subject_member,
         granter_was_member: true,
         break_glass: None,
+        review: None,
     }
 }
 
@@ -525,7 +530,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
 
     let bridge_did = {
         let _guard = store::write_lock().await;
-        let snap = Snapshot::load(&state.git_ns.ks).await?;
+        let snap = Snapshot::load(&state.git_ns).await?;
         // Item 2.
         if snap
             .namespaces
@@ -578,14 +583,14 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
             };
             store::put_namespace(&state.git_ns.ks, &ns).await?;
             let scope = Scope::Namespace(ns.id.clone());
-            let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+            let mut set = store::get_rights(&state.git_ns, &scope).await?;
             set.rows.push(new_row(
                 &actor.did,
                 Right::NsAdmin,
                 &actor.did,
                 actor.member,
             ));
-            store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+            store::put_rights(&state.git_ns, &scope, &set).await?;
             audit(
                 state,
                 &actor.did,
@@ -652,7 +657,7 @@ pub async fn bind(state: &AppState, actor_did: &str, p: bind::Payload) -> OpResu
     })?;
 
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     if snap
         .namespaces
         .iter()
@@ -721,7 +726,7 @@ pub async fn unbind(
 ) -> OpResult<unbind::Response> {
     let actor = standing(state, actor_did).await?;
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
     // Item 1.
     let ns = namespace_by_id(&snap, &p.namespace)?.clone();
@@ -783,7 +788,7 @@ pub async fn unbind(
             )
             .await;
         }
-        store::put_rights(&state.git_ns.ks, scope, &Default::default()).await?;
+        store::put_rights(&state.git_ns, scope, &Default::default()).await?;
     }
     // Item 4 — detached, and no job to the bridge: removing the app or bot
     // is for a forge owner to do.
@@ -800,7 +805,7 @@ pub async fn unbind(
     // until each member's next membership event. Queued now, so the relay
     // re-asserts them on its next tick; the projector hands the same keys
     // back rather than withdrawing them.
-    let after = Snapshot::load(&state.git_ns.ks).await?;
+    let after = Snapshot::load(&state.git_ns).await?;
     let handed: Vec<(String, String)> = super::projection::role_mapped(state)
         .await?
         .into_iter()
@@ -861,7 +866,7 @@ pub async fn namespace_reseat(
         ));
     }
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
     // Step 2.
     let ns = namespace_by_id(&snap, &p.namespace)?.clone();
@@ -968,7 +973,7 @@ pub async fn namespace_reseat(
 
     // Step 6 — permanent, so the recovered namespace meets the last-admin
     // invariant from the moment it has an admin again.
-    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut set = store::get_rights(&state.git_ns, &scope).await?;
     // The subject's own lapsed admin record goes, as a grant replaces one
     // (`git-ns/right/grant`, item 7): one record per subject and right.
     set.rows
@@ -977,7 +982,7 @@ pub async fn namespace_reseat(
     row.reason = Some(statement.clone());
     row.granter_was_member = actor.member;
     set.rows.push(row.clone());
-    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    store::put_rights(&state.git_ns, &scope, &set).await?;
     // Step 8 — no forge projection to queue: `git.ns.admin` projects to no
     // forge role.
 
@@ -1064,7 +1069,7 @@ pub async fn repo_create(
 ) -> OpResult<create::Response> {
     let actor = standing(state, actor_did).await?;
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
     // Item 1.
     let ns = namespace_by_id(&snap, &p.namespace)?.clone();
@@ -1160,12 +1165,12 @@ pub async fn repo_create(
     };
     store::put_repo(&state.git_ns.ks, &repo).await?;
     let scope = Scope::Repo(repo.id.clone());
-    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut set = store::get_rights(&state.git_ns, &scope).await?;
     for (owner, member) in &owners {
         set.rows
             .push(new_row(owner, Right::RepoOwn, &actor.did, *member));
     }
-    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    store::put_rights(&state.git_ns, &scope, &set).await?;
     audit(
         state,
         &actor.did,
@@ -1272,7 +1277,7 @@ pub async fn repo_adopt(
 ) -> OpResult<adopt::Response> {
     let actor = standing(state, actor_did).await?;
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
     let resource = parse_resource(&p.resource)?;
     // Item 1.
@@ -1383,7 +1388,7 @@ pub async fn repo_adopt(
             // A detached repository gets no rights back beyond `owners`.
             if r.state != RepoState::PendingCreate {
                 store::put_rights(
-                    &state.git_ns.ks,
+                    &state.git_ns,
                     &Scope::Repo(r.id.clone()),
                     &Default::default(),
                 )
@@ -1427,7 +1432,7 @@ pub async fn repo_adopt(
     });
     store::put_repo(&state.git_ns.ks, &repo).await?;
     let scope = Scope::Repo(repo.id.clone());
-    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut set = store::get_rights(&state.git_ns, &scope).await?;
     for s in &owner_standing {
         if !set
             .rows
@@ -1454,7 +1459,7 @@ pub async fn repo_adopt(
             .await;
         }
     }
-    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    store::put_rights(&state.git_ns, &scope, &set).await?;
     audit(
         state,
         &actor.did,
@@ -1507,7 +1512,7 @@ pub async fn repo_transfer(
 ) -> OpResult<transfer::Response> {
     let actor = standing(state, actor_did).await?;
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
     let resource = parse_resource(&p.resource)?;
     // Item 1.
@@ -1581,7 +1586,7 @@ pub async fn repo_transfer(
     // admin, and this VTC applies to owners alike), so a permanent owner who
     // hands over to someone holding only an expiring record must leave them a
     // permanent one — or the repository is ownerless when it lapses.
-    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut set = store::get_rights(&state.git_ns, &scope).await?;
     let live_own =
         |r: &RightRow, who: &str| r.subject == who && r.right == Right::RepoOwn && r.is_live(t);
     // `None` is permanent; otherwise the latest expiry among live records.
@@ -1611,7 +1616,7 @@ pub async fn repo_transfer(
     }
     set.rows
         .retain(|r| !(r.subject == actor.did && r.right == Right::RepoOwn));
-    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    store::put_rights(&state.git_ns, &scope, &set).await?;
     let mut repo = repo;
     if repo.state == RepoState::Orphaned {
         repo.state = RepoState::Active;
@@ -1667,7 +1672,7 @@ pub async fn repo_archive(
 ) -> OpResult<archive::Response> {
     let actor = standing(state, actor_did).await?;
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
     let resource = parse_resource(&p.resource)?;
     // Item 1.
@@ -1717,13 +1722,13 @@ pub async fn repo_archive(
     // Item 4.
     repo.state = RepoState::Archived;
     store::put_repo(&state.git_ns.ks, &repo).await?;
-    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut set = store::get_rights(&state.git_ns, &scope).await?;
     let (gone, kept): (Vec<RightRow>, Vec<RightRow>) = set
         .rows
         .drain(..)
         .partition(|r| r.right == Right::CommitSign);
     set.rows = kept;
-    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    store::put_rights(&state.git_ns, &scope, &set).await?;
     for row in &gone {
         audit(
             state,
@@ -1832,7 +1837,7 @@ async fn right_grant_record(
 ) -> OpResult<(RightRow, Resource)> {
     let actor = standing(state, actor_did).await?;
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     if let Some(v) = &via {
         (v.still_holds)(&snap)?;
         if let Some(link) = v.linked_to {
@@ -1904,6 +1909,22 @@ async fn right_grant_record(
         st.rules,
         t,
     )?;
+    // VTI-ACL-037 / VTI-ACL-071, read from the ACL entry itself: a grant is a
+    // delegation and is never wider than what the granter's own live entry
+    // holds at a covering qualifier. The fixed rules above decide which
+    // holdings carry grant authority; this is the floor under them, so a rule
+    // that ever admitted too much still could not write past the granter.
+    if let Some(q) = store::scope_qualifier(&state.git_ns.ks, &scope).await?
+        && !crate::acl::get_acl_entry(&state.acl_ks, &actor.did)
+            .await?
+            .is_some_and(|e| crate::acl::resource_grant::granter_covers(&e, right, &q))
+    {
+        return Err(Refusal::Escalation(format!(
+            "your ACL entry does not hold {right} at {resource} or a qualifier covering it, so \
+             you cannot grant it (VTI-ACL-071)"
+        ))
+        .into());
+    }
     consent_gate(state, &actor, "right.grant", Some(right)).await?;
     let expires_at = p.expires_at;
     let version = check_policy_via(
@@ -1939,7 +1960,7 @@ async fn right_grant_record(
     // Item 6 — a live record already there is returned unchanged; so is an
     // unratified (or still pending) break-glass record, whose ratification is
     // `git-ns/right/ratify`'s and never a side effect of a grant (0.3, item 6).
-    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut set = store::get_rights(&state.git_ns, &scope).await?;
     if let Some(existing) = set
         .rows
         .iter()
@@ -1955,7 +1976,7 @@ async fn right_grant_record(
     row.reason = p.reason.as_ref().map(|r| r.to_string());
     row.granter_was_member = actor.member;
     set.rows.push(row.clone());
-    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    store::put_rights(&state.git_ns, &scope, &set).await?;
     // A named owner ends an orphaned repository's orphanhood.
     if let Scope::Repo(id) = &scope
         && right == Right::RepoOwn
@@ -2002,7 +2023,7 @@ async fn right_revoke_record(
 ) -> OpResult<(RightRow, Resource)> {
     let actor = standing(state, actor_did).await?;
     let _guard = store::write_lock().await;
-    let snap = Snapshot::load(&state.git_ns.ks).await?;
+    let snap = Snapshot::load(&state.git_ns).await?;
     let t = now();
     let resource = parse_resource(&p.resource)?;
     let right = right_from_wire(&to_string_json(&p.right))?;
@@ -2102,16 +2123,16 @@ async fn right_revoke_record(
         .await?
     };
     // Item 5.
-    let mut set = store::get_rights(&state.git_ns.ks, &scope).await?;
+    let mut set = store::get_rights(&state.git_ns, &scope).await?;
     set.rows
         .retain(|r| !(r.subject == subject && r.right == right));
-    store::put_rights(&state.git_ns.ks, &scope, &set).await?;
+    store::put_rights(&state.git_ns, &scope, &set).await?;
     // Item 6 — a break-glass record's end is announced and audited as its
     // break-glass was.
     if row.break_glass.is_some()
         && let Some(ns) = snap.scope_namespace(&scope)
     {
-        let after = Snapshot::load(&state.git_ns.ks).await?;
+        let after = Snapshot::load(&state.git_ns).await?;
         if let Err(e) = super::break_glass::announce(
             state,
             &after,
@@ -2178,7 +2199,7 @@ pub async fn account_link(
     let forge = p.forge.to_string();
     // Item 2.
     let (ns, bridge_did) = {
-        let snap = Snapshot::load(&state.git_ns.ks).await?;
+        let snap = Snapshot::load(&state.git_ns).await?;
         let ns = snap
             .namespaces
             .iter()
@@ -2361,7 +2382,7 @@ pub async fn account_unlink(
     // no longer hold the binding, so every target it reached changes digest
     // and is queued now; the projector sends them on its next tick. No
     // `removeAccounts` (item 5): only the roles the bridge gave go.
-    let affected: Vec<String> = Snapshot::load(&state.git_ns.ks)
+    let affected: Vec<String> = Snapshot::load(&state.git_ns)
         .await?
         .namespaces
         .iter()

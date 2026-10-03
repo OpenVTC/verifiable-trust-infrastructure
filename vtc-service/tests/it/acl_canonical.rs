@@ -127,6 +127,7 @@ async fn seed_entry(
             updated_at: None,
             updated_by: None,
             expires_at,
+            resource_grants: Vec::new(),
         },
     )
     .await

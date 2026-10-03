@@ -10,7 +10,12 @@ import { FolderGit2, Plus } from "lucide-react";
 import { NamedDid } from "@/components/NamedDid";
 import { fetchActivePolicy } from "@/lib/policies-api";
 import { useNameBook } from "@/lib/names";
-import { useIsCommunityAdmin } from "@/lib/viewer";
+import {
+  administersNamespace,
+  mayCreateIn,
+  useCapabilities,
+  useIsGitCommunityAdmin,
+} from "@/lib/viewer";
 import type {
   GitNsNamespaceRow,
   GitNsRepoRow,
@@ -133,7 +138,10 @@ function NamespaceCard({
   const book = useNameBook();
   // Reseat is signed with the community-administrator capability alone, so
   // nobody else is offered it. Unbind stays: a namespace admin may sign it too.
-  const superAdmin = useIsCommunityAdmin();
+  const superAdmin = useIsGitCommunityAdmin();
+  // Unbinding and re-projecting are the namespace's own administrators' to
+  // sign (`git.ns.admin` at this namespace, or community-wide).
+  const administers = administersNamespace(useCapabilities(), ns.resource);
   const managed = repos.filter((r) => r.state !== "unmanaged" && r.state !== "detached").length;
   const unmanaged = repos.filter((r) => r.state === "unmanaged").length;
   const creators = rights?.filter(
@@ -290,7 +298,7 @@ function NamespaceCard({
             </button>
           </>
         )}
-        {bridgeBound && !ns.installationRemoved && (
+        {administers && bridgeBound && !ns.installationRemoved && (
           <button
             type="button"
             className="secondary sm"
@@ -301,14 +309,16 @@ function NamespaceCard({
             Re-project roles
           </button>
         )}
-        <button
-          type="button"
-          className="secondary sm destructive"
-          onClick={onUnbind}
-          aria-label={`Unbind ${ns.resource}`}
-        >
-          Unbind
-        </button>
+        {administers && (
+          <button
+            type="button"
+            className="secondary sm destructive"
+            onClick={onUnbind}
+            aria-label={`Unbind ${ns.resource}`}
+          >
+            Unbind
+          </button>
+        )}
       </div>
     </article>
   );
@@ -326,6 +336,9 @@ function ReposTable({
   onAssignOwner: (resource: string) => void;
 }) {
   const book = useNameBook();
+  // Adopting and naming an owner are grants of `git.repo.own`, which the
+  // namespace's administrators make.
+  const administers = administersNamespace(useCapabilities(), ns.resource);
   if (repos.length === 0) {
     return (
       <div className="empty-state">
@@ -397,7 +410,7 @@ function ReposTable({
                     <ToneChip tone={status.tone} title={r.lastError ?? undefined}>
                       {status.label}
                     </ToneChip>
-                    {status.action === "adopt" && (
+                    {administers && status.action === "adopt" && (
                       <button
                         type="button"
                         className="link"
@@ -407,7 +420,7 @@ function ReposTable({
                         Adopt
                       </button>
                     )}
-                    {status.action === "assignOwner" && (
+                    {administers && status.action === "assignOwner" && (
                       <button
                         type="button"
                         className="link"
@@ -450,7 +463,9 @@ function NamespaceRights({
     rights.filter((r) => r.resource === ns.resource && r.right === right);
   const admins = holders("git.ns.admin");
   const creators = holders("git.repo.create");
-  const bound = ns.state === "bound";
+  // Granting either is the namespace administrators' (git.ns.admin here or
+  // community-wide); anyone else is not offered it.
+  const bound = ns.state === "bound" && administersNamespace(useCapabilities(), ns.resource);
 
   const list = (rows: GitNsRightRow[]) =>
     rows.length === 0 ? (
@@ -509,7 +524,10 @@ function NamespaceRights({
         A namespace admin can grant anything in the namespace — treat it like org
         owner. Granting it is destructive-class and needs a step-up; repo creators
         cannot pass their right on. Both go to current members only.
-        {!bound && " Nothing can be granted until the binding finishes."}
+        {ns.state !== "bound" && " Nothing can be granted until the binding finishes."}
+        {ns.state === "bound" &&
+          !bound &&
+          " Granting them takes git.ns.admin on this namespace."}
       </p>
     </section>
   );
@@ -584,7 +602,7 @@ function DepartedCard() {
             {people === 1 ? "person" : "people"} who left.{" "}
             {q.data.cascadeOnDeparture
               ? "The active policy revokes these (cascade_on_departure); they are listed until the revocation lands."
-              : "They stay valid — they were issued under the community's authority — so review whether to keep them."}
+              : "Each grant is a delegation: it goes to review in the action list, and is withdrawn unless an administrator re-affirms it before the deadline."}
           </p>
           <p>
             <Link to={DEPARTED_PATH} className="button secondary">
@@ -630,6 +648,13 @@ export function Overview() {
     [repos, namespaces],
   );
   const roleDerived = rights.filter((r) => r.origin === "roleDerived").length;
+  // What the viewer's own entry holds decides what is offered (phase C3: git
+  // rights are capabilities on the ACL entry). The VTC still decides each
+  // operation.
+  const caps = useCapabilities();
+  const gitAdmin = useIsGitCommunityAdmin();
+  const mayCreate = !!selected && mayCreateIn(caps, selected.resource);
+  const mayAdopt = !!selected && administersNamespace(caps, selected.resource);
   const policyVersion = policyQ.isSuccess ? (policyQ.data?.version ?? null) : undefined;
 
   return (
@@ -643,27 +668,33 @@ export function Overview() {
           </p>
         </div>
         <div className="gitns-head-actions">
-          <button
-            type="button"
-            className="secondary"
-            disabled={!selected || selected.state !== "bound"}
-            onClick={() => selected && setDialog({ kind: "create", ns: selected })}
-          >
-            New repo
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            disabled={!selected || selected.state !== "bound"}
-            onClick={() =>
-              setDialog({ kind: "adopt", namespaceResource: selected?.resource })
-            }
-          >
-            Adopt existing repo
-          </button>
-          <Link to={BIND_PATH} className="button primary">
-            <Plus aria-hidden="true" size={16} /> Bind namespace
-          </Link>
+          {mayCreate && (
+            <button
+              type="button"
+              className="secondary"
+              disabled={!selected || selected.state !== "bound"}
+              onClick={() => selected && setDialog({ kind: "create", ns: selected })}
+            >
+              New repo
+            </button>
+          )}
+          {mayAdopt && (
+            <button
+              type="button"
+              className="secondary"
+              disabled={!selected || selected.state !== "bound"}
+              onClick={() =>
+                setDialog({ kind: "adopt", namespaceResource: selected?.resource })
+              }
+            >
+              Adopt existing repo
+            </button>
+          )}
+          {gitAdmin && (
+            <Link to={BIND_PATH} className="button primary">
+              <Plus aria-hidden="true" size={16} /> Bind namespace
+            </Link>
+          )}
         </div>
       </header>
 
@@ -692,10 +723,14 @@ export function Overview() {
             <p>
               Bind a forge organisation or account to govern its repositories: who
               owns each, and who may commit.
+              {!gitAdmin &&
+                " Binding takes git.ns.admin held community-wide — a community administrator's."}
             </p>
-            <Link to={BIND_PATH} className="button primary">
-              Bind namespace
-            </Link>
+            {gitAdmin && (
+              <Link to={BIND_PATH} className="button primary">
+                Bind namespace
+              </Link>
+            )}
           </div>
         </section>
       )}

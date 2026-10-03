@@ -1120,6 +1120,7 @@ mod p0_14_role_change_policy_tests {
                 updated_at: None,
                 updated_by: None,
                 expires_at: None,
+                resource_grants: Vec::new(),
             },
         )
         .await

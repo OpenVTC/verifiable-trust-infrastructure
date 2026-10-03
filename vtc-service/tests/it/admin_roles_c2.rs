@@ -74,6 +74,7 @@ fn row(did: &str, admin: AdminAuthority, delegated_by: Option<&str>) -> VtcAclEn
         updated_at: None,
         updated_by: None,
         expires_at: None,
+        resource_grants: Vec::new(),
     }
 }
 
