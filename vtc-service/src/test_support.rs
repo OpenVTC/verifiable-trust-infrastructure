@@ -36,7 +36,6 @@ use crate::store::Store;
 use crate::supervisor::SupervisorKind;
 use vti_common::audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::jwt::JwtKeys;
-use vti_common::config::StoreConfig;
 
 /// The default `vtc_did` used by [`TestVtc`] — a sentinel that satisfies
 /// the routes which only compare it as a string. Matches the value the
@@ -225,9 +224,14 @@ impl TestVtcBuilder {
         init_jwt_provider();
 
         let dir = tempfile::tempdir().expect("temp dir");
-        let store = Store::open(&StoreConfig {
-            data_dir: dir.path().to_path_buf(),
-        })
+        // Every keyspace below already exists in the store this opens:
+        // creating ~45 fjall keyspaces fsyncs ~8 times each, which on macOS
+        // (`F_FULLFSYNC`) was most of every fixture's wall time. See
+        // `vti_common::store::test_fixture`.
+        let store = vti_common::store::test_fixture::open_with_keyspaces(
+            dir.path(),
+            crate::store::keyspaces::ALL,
+        )
         .expect("open store");
 
         // Open every keyspace the daemon's `AppState` carries. Keep this

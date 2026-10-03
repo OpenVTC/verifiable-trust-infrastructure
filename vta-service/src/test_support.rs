@@ -90,10 +90,12 @@ pub struct TestStore {
 pub async fn open_test_store() -> TestStore {
     let dir = tempfile::tempdir().expect("temp dir");
     let data_dir = dir.path().to_path_buf();
-    let store = Store::open(&StoreConfig {
-        data_dir: data_dir.clone(),
-    })
-    .expect("open store");
+    // Keyspaces copied from a pre-built template: creating them here fsyncs
+    // ~8 times each (`F_FULLFSYNC` on macOS). See
+    // `vti_common::store::test_fixture`.
+    let store =
+        vti_common::store::test_fixture::open_with_keyspaces(&data_dir, crate::keyspaces::ALL)
+            .expect("open store");
     TestStore {
         contexts_ks: store
             .keyspace(crate::keyspaces::CONTEXTS)
@@ -659,10 +661,9 @@ pub async fn build_signing_test_app_state_with_sink(
 
     init_jwt_provider();
     let dir = tempfile::tempdir().expect("temp dir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
+    let store =
+        vti_common::store::test_fixture::open_with_keyspaces(dir.path(), crate::keyspaces::ALL)
+            .expect("open store");
 
     // Provision the VTA's `{vta_did}#key-0` VC-issuance key into the keystore
     // and point the config at the resulting self-resolving did:key.
@@ -1233,10 +1234,9 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     init_jwt_provider();
 
     let dir = tempfile::tempdir().expect("temp dir");
-    let store_config = StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    };
-    let store = Store::open(&store_config).expect("open store");
+    let store =
+        vti_common::store::test_fixture::open_with_keyspaces(dir.path(), crate::keyspaces::ALL)
+            .expect("open store");
 
     let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
     let sessions_ks = store.keyspace(crate::keyspaces::SESSIONS).unwrap();
