@@ -100,13 +100,24 @@ Phase 2 prints a terse, scrape-friendly block (`vtc_did=…`, `admin_did=…`,
 `install_url=…`, `claim_code=…`, `single_admin_mode=…`); it never prints the
 admin private key.
 
+### A second administrator at install
+
+`co_admin_did = "<did>"` in the setup TOML names a second administrator: the
+install claim writes a `community-admin` entry for that DID beside the first
+admin's, so the community starts with someone to approve the other's
+authority-conferring changes ([`admin-access.md`](admin-access.md) §3.2).
+That administrator steps up with an approver device enrolled through an
+invite after the bootstrap, or a passkey (`admin-access.md` §4, step 5).
+
 ### A community with one administrator
 
 `single_admin_mode = true` in the setup TOML — or `vtc setup --from <toml>
 --single-admin` — installs the community in **single-administrator mode**
 (VTI-APV-022): wherever nobody but the requester could consent to an operation
-that ordinarily needs another administrator's approval, the requester's passkey
-step-up bound to that operation authorizes it instead, audited at `Critical`.
+that ordinarily needs another administrator's approval, the requester's
+step-up bound to that operation (a passkey gesture, or their approver device)
+authorizes it instead, audited at `Critical`. Removing or narrowing another
+administrator keeps its cooling-off in the mode.
 Setup writes `[acl] single_admin_mode = true` to the generated `config.toml`,
 and only then; the key is host configuration, changed afterwards only by
 editing `config.toml` and restarting — `config/patch` and `vtc/config/import`

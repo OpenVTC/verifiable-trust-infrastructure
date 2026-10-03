@@ -368,7 +368,7 @@ are audited as `CommunityBrandingUpdated`.
 VTC's DID as the audience, as the community profile's own DID. So the profile
 has to name the VTC (`cnm community set-vtc <vtc-did>`, or `--vtc-did` per
 command), and that DID needs an admin row in the VTC's ACL; see the
-[bootstrap runbook](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row).
+[bootstrap runbook](bootstrap-runbook.md#cnm-needs-its-own-administrator-entry).
 The API base comes from the VTC DID's `VTCRest` service; `cnm --url
 https://<vtc>/v1 …` overrides it. Tables are the default; the global `--json`
 prints the response instead, and `--full-display` prints DIDs and ids

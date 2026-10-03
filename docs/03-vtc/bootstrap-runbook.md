@@ -74,8 +74,11 @@ vtc --config /srv/vtc/config.toml admin invite --did <admin DID>
 a claim through it always leaves a DID that can sign in. `--ttl <seconds>`
 changes the default 900. It needs the daemon stopped because it opens the store
 directly. Once an admin exists, invite further admins from the running console
-(**Access control → Invite**) or with a signed `vtc/admin/invites/create/0.1`
-document, sent over any transport the VTC serves.
+(**Access control → Admin invites → Invite admin**) or with a signed
+`vtc/admin/invites/create/0.1` document, sent over any transport the VTC
+serves. An invite for a DID with no entry makes a new community
+administrator, so it waits in **Actions** for a second administrator's
+approval ([`admin-access.md`](admin-access.md) §3.2).
 
 > **Claim before you add any other admin.** `POST /v1/admin/bootstrap` refuses
 > with `409` once *any* admin ACL entry exists, and the install page treats
@@ -143,14 +146,18 @@ the install claim, or it trips the `409` rule above.
   (`vta_sdk::auth_di::sign_authenticate_doc`). The response carries the bearer
   token.
 
-### `cnm` needs its own super-admin row
+### `cnm` needs its own administrator entry
 
-`cnm vetting …`, `cnm audit verify`, `cnm backup …` and `cnm did-log install`
-drive this VTC's admin routes ([`vetting.md`](vetting.md) §7). They sign in to
-the VTC directly, with the VTC's DID as the audience, as the `cnm` community
-profile's **own** DID, which `cnm community list` shows as `Identity`. A fresh
-VTC's ACL has no entry for that DID, and `backup` and `audit verify` need a
-**super-admin**: an `admin` entry with no contexts.
+`cnm vetting …`, `cnm audit verify`, `cnm backup …`, `cnm did-log install`,
+`cnm access …` and `cnm actions …` drive this VTC's administrative Trust Tasks
+([`vetting.md`](vetting.md) §7). They sign in to the VTC directly, with the
+VTC's DID as the audience, as the `cnm` community profile's **own** DID, which
+`cnm community list` shows as `Identity`. A fresh VTC's ACL has no entry for
+that DID. Each command needs the capability its task is gated on
+([`admin-access.md`](admin-access.md) §1.2) — `vtc.backup.export` for a backup,
+`vtc.audit.read` for `audit verify`, `vtc.vetting.manage` for vetting — so a
+`community-admin` entry covers them all, and a narrower role covers the
+commands its capabilities reach.
 
 #### The usual way: a fresh identity for this community
 
@@ -168,9 +175,10 @@ cnm community add "Storm Network" --vtc-did <VTC DID>
 #    b. VTC host, daemon stopped:
 vtc --config /srv/vtc/config.toml acl add --did <did> --role admin --label cnm
 #    c. an existing administrator, online:
-#       cnm --community <theirs> access grant <did> --role admin --label cnm
-#       or the console's Access control → Add entry. A community-wide admin
-#       grant made online waits in Actions for a second administrator.
+#       cnm --community <theirs> access grant <did> --admin-role community-admin --label cnm
+#       or the console's Access control → Add entry. A community-admin grant
+#       made online waits in Actions for a second administrator, unless the
+#       community runs in single-administrator mode.
 
 # 3. Confirm: cnm signs in to the VTC as that DID and makes the profile usable.
 cnm community continue storm-network
@@ -223,19 +231,21 @@ from personal VTA" — the profile's DID is the one `cnm auth status` shows as
    `cnm --url https://<host>/v1 …` to override the API base. `cnm` never reads
    the VTC's DID from the server: it is the audience the sign-in is signed for,
    so the operator names it.
-2. **Add the profile's DID as a super-admin.** `set-vtc` prints the command
-   with the DID filled in. With the daemon **stopped**:
+2. **Give the profile's DID an administrator entry.** `set-vtc` prints the
+   command with the DID filled in. With the daemon **stopped**:
 
    ```sh
    vtc --config /srv/vtc/config.toml acl add --did <cnm Client DID> --role admin --label cnm
    ```
 
-   From a running console, use **Access control → Add entry** with role
-   `admin` and no contexts. The console asks for your passkey before it
-   writes: granting `admin` requires a live step-up (VTI-OPS-051), so the
-   operator doing the granting must already have one enrolled. If they do
-   not, use the offline command above. An unrestricted grant also waits in
-   **Actions** until another unrestricted admin approves it (below).
+   (`--role admin` writes a `community-admin`; add `--admin-role` and
+   `--capability` for a narrower one.) From a running console, use **Access
+   control → Add entry** with the administrative role `community-admin`. The
+   console asks for your step-up before it writes: granting administrative
+   authority requires one (VTI-OPS-051), so the operator doing the granting
+   must already hold a passkey or an approver device. If they do not, use the
+   offline command above. A `community-admin` grant also waits in **Actions**
+   until another holder of what it confers approves it (below).
 
 When the VTC refuses the sign-in, `cnm` prints that same `vtc acl add`
 command. A VTC gives the same refusal whether or not the DID is enrolled, so
@@ -288,9 +298,10 @@ invite. The binding is recorded with `enrolledVia: offline`.
 
 ### Adding a second admin later
 
-Two paths, and both ask the *granting* operator for their passkey first
-(VTI-OPS-051 — conferring administrative authority takes a fresh second
-factor, not just a live session):
+Two paths, and both ask the *granting* operator for their step-up first — a
+passkey gesture or their approver device (VTI-OPS-051 — conferring
+administrative authority takes a fresh second factor, not just a live
+session):
 
 - **Promote an existing member.** Console → **Members → *the member* → Promote
   to admin**. Over the API this is a signed `acl/change-role/0.1` document
@@ -300,31 +311,37 @@ factor, not just a live session):
   you read it, the change is refused rather than applied over the top.
   `PATCH /v1/members/{did}` with `{"role": "admin"}` is **not** this: it
   answers `adminRoleForbidden` and points here.
-- **Add an admin ACL entry for a DID that is not a member.** Console →
-  **Access control → Add entry**, or `acl/grant/0.1`.
+- **Add an ACL entry for a DID that is not a member.** Console → **Access
+  control → Add entry**, choosing the administrative role (and, to narrow it,
+  the capabilities), or `acl/grant/0.2`.
 
-You cannot promote *yourself*, with or without a passkey: admin elevation
-takes a second person, not a second factor. If you are the only admin and have
-lost your passkey, the offline `vtc … acl add` above is the break-glass.
+You cannot promote *yourself*, with or without a second factor: admin
+elevation takes a second person, not a second factor. If you are the only
+admin and have lost every step-up factor, the offline `vtc … acl add` above is
+the break-glass.
 
-Making someone an **unrestricted** admin — an admin grant with no scopes,
-promoting a member who has none, or an admin invite — takes a second person
-in a stronger sense too: another unrestricted admin has to consent
-(VTI-APV-014). The VTC does not refuse the operation: once your step-up is
+Granting an **authority-conferring** capability — a `community-admin`,
+anything holding `vtc.roles.assign`, `vtc.config.admin`, `vtc.policy.admin` for
+an authority purpose, and so on ([`admin-access.md`](admin-access.md) §1.2) —
+or minting an admin invite takes a second person in a stronger sense too:
+another holder of what it confers has to consent (VTI-APV-018, the generalised
+VTI-APV-014). The VTC does not refuse the operation: once your step-up is
 spent it **parks** it as an action and answers HTTP 202 with the action's id.
-You send nothing again. When enough other unrestricted admins have approved,
-the VTC re-checks everything against the community as it is then and runs the
+You send nothing again. When enough other holders have approved, the VTC
+re-checks everything against the community as it is then and runs the
 operation itself (VTI-APV-017). One decline closes it. Actions last 72 hours by
 default (`acl.action_lifetime`, 15 minutes to 14 days, runtime-patchable).
-The same applies to removing another unrestricted admin, lowering the consent
-threshold, and changing authority policy
-([`admin-access.md`](admin-access.md) §3.2). With only two unrestricted admins,
-a removal has nobody to approve it, so it lands after a 24-hour cooling-off
-the requester can cancel (`acl.removal_cooling_off`,
-[`admin-access.md`](admin-access.md) §3.4).
+The same applies to removing or narrowing another administrator, lowering the
+consent threshold, changing authority policy, defining a custom role, and
+committing a backup restore ([`admin-access.md`](admin-access.md) §3.2). A
+narrower role — `moderator`, `auditor`, `credential-officer`, `vetting-lead` —
+confers no authority, so it takes only your step-up. When only the requester
+and the subject hold what a removal takes away, it has nobody to approve it,
+so it lands after a 24-hour cooling-off the requester can cancel
+(`acl.removal_cooling_off`, [`admin-access.md`](admin-access.md) §3.4).
 
-When the operation makes a new unrestricted admin, the VTC also issues that
-admin an approver enrolment invite. The requester sees it once, on the
+When the operation makes a new community administrator, the VTC also issues
+that admin an approver enrolment invite. The requester sees it once, on the
 completed action in **Actions**: send the new admin the URL, and the claim
 code by a separate channel. They redeem it at `/admin/enrol-approver` to bind
 their approver device as their step-up factor
@@ -347,13 +364,14 @@ shows a six-character match code derived from the payload digest. With
 change that would run, so nothing is sent. The file-based `cnm consent approve
 <request-file>` still answers a pushed `task-consent/request` document.
 
-A community with a single unrestricted admin has
+A community with a single community administrator has
 nobody to ask, which is why `vtc setup` takes an optional `co_admin_did`. A
 community that really is run by one person is installed in
 **single-administrator mode** instead (`vtc setup --single-admin`, or
 `single_admin_mode = true` in the setup TOML; VTI-APV-022): wherever nobody
-but you could consent, your passkey step-up bound to the operation authorizes
-it, so you can add the second administrator online. It is host configuration
+but you could consent, your step-up bound to the operation authorizes it, so
+you can add the second administrator online. Removals keep their cooling-off
+even then. It is host configuration
 (`[acl] single_admin_mode` in `config.toml`, changed only there and by a
 restart), every administrator sees a permanent banner while it is on, and each
 waived consent is audited at `Critical`
@@ -473,7 +491,8 @@ vetting criterion when you want applicants to be able to join by it.
 
 | Check | How |
 |---|---|
-| The admin can sign in | Console sign-in with the passkey, or `vtc acl list` (daemon stopped) shows an `admin` entry |
+| The admin can sign in | Console sign-in with the passkey (or wallet, Path C), or `vtc acl list` (daemon stopped) shows a `community-admin` entry |
+| Every administrator can step up | each holds a passkey here or an approver device (Members → the member) |
 | Offline writes are acknowledged | No `Critical` operator-write banner in the console; **Actions** has nothing left to acknowledge |
 | A script can authenticate | `POST /v1/auth/` returns a token, not `403` |
 | `cnm` can administer the community | `cnm vetting vetters list` answers; if it prints `vtc acl add`, run that |

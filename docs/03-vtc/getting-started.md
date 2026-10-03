@@ -225,6 +225,19 @@ embedded admin SPA serving the install flow:
    renewal reminder), is revoked, or the browser loses its storage. See
    [Signing keys](website-and-admin.md#signing-keys--what-the-console-signs-with).
 
+A founder who signs in only with the VTA browser wallet picks the page's
+other option instead (install claim 0.3): the wallet signs the claim as the
+founder's own DID, and the plugin's approver device becomes their step-up
+factor — no passkey is registered
+([bootstrap runbook](bootstrap-runbook.md), Path C).
+
+If setup named a second administrator (`co_admin_did`), the claim writes
+both entries; if it was run with `--single-admin`, the community runs in
+single-administrator mode. A community with one administrator and neither
+cannot add a second community administrator online — see
+[`admin-access.md`](admin-access.md) §2 for the choices, and the roles,
+step-up and approvals every administrator works under.
+
 The page does not hand you a CLI credential. To authenticate a
 script or CLI, or to get the admin in without a browser, and for
 the order that admits a community's first vetter, follow the
@@ -321,8 +334,9 @@ per community needs one), then rotates as above; `pnm`'s key is never copied.
 grants (`cnm bootstrap request`, then the armored bundle and its digest).
 
 **Each community** — `cnm community add` gives every community its own key, so
-communities you run are not linked by a shared identity. See
-[`bootstrap-runbook.md`](bootstrap-runbook.md#cnm-needs-its-own-super-admin-row)
+communities you run are not linked by a shared identity
+([`admin-access.md`](admin-access.md) §1.5). See
+[`bootstrap-runbook.md`](bootstrap-runbook.md#cnm-needs-its-own-administrator-entry)
 for the grant and `cnm community continue`, which then rotates the granted key
 to a fresh one at the VTC (`acl/swap-key`); `cnm community rotate` does it again
 later.
@@ -332,6 +346,7 @@ later.
 | If you want to… | Read |
 |---|---|
 | Authenticate the first admin, and admit the first vetter | [`bootstrap-runbook.md`](bootstrap-runbook.md) |
+| Add administrators, give them roles, and approve each other's actions | [`admin-access.md`](admin-access.md) |
 | Know how an admitted member receives its credentials | [`credential-delivery.md`](credential-delivery.md) |
 | Understand the module layout | [`architecture.md`](architecture.md) |
 | Author policies + manage members | [`community-lifecycle.md`](community-lifecycle.md) |
