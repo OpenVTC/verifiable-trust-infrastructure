@@ -18,7 +18,7 @@ import { Fingerprint } from "lucide-react";
 
 import { useConfirm } from "@/components/ConfirmDialog";
 import { SigningUnavailableError } from "@/lib/api";
-import { answerStepUp, stepUpRequestOf } from "@/lib/bound-step-up";
+import { answerStepUp, operationOf, stepUpRequestOf } from "@/lib/bound-step-up";
 import type { SignedTrustTaskDocument } from "@/lib/console-key";
 import {
   fetchStepUpPasskeys,
@@ -74,7 +74,7 @@ export function StepUpPasskeysCard({ did }: { did: string }) {
   // is bound to it, and a freshly signed one would be a second act.
   const confirmInvite = useMutation({
     mutationFn: async (needed: StepUpNeeded) => {
-      await answerStepUp(needed.request);
+      await answerStepUp(needed.request, undefined, operationOf(needed.signed));
       return sendSigned<StepUpPasskeyInvite>(needed.signed);
     },
     onSuccess: (inv) => issuedNow(inv as StepUpPasskeyInvite),

@@ -753,6 +753,10 @@ const SIOP_BODY_DISCRIMINATOR_TYPES: &[&str] =
 const EMBEDDED_DOCUMENT_TYPES: &[&str] = &[
     "https://trusttasks.org/spec/auth/signing-key/authorize/0.1",
     "https://trusttasks.org/spec/trust-task-next-step/0.1",
+    // A step-up approver's statement, carried inside approve-response 0.6,
+    // redeem/finish, enroll or install claim/finish 0.3 — never acted on alone
+    // (attest/0.1 consumer item 1).
+    "https://trusttasks.org/spec/auth/step-up/approver/attest/0.1",
 ];
 
 /// Document types the console sends that the *spine* dispatches rather than
@@ -782,6 +786,15 @@ const SPINE_DOCUMENT_TYPES: &[&str] = &[
     // the signed door.
     "https://trusttasks.org/spec/vtc/relationships/list/0.2",
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.4",
+    // 0.6: the wallet-signed answer carrying a step-up approver's statement.
+    "https://trusttasks.org/spec/auth/step-up/approve-response/0.6",
+    // Step-up approvers (`trust_tasks::step_up_approver_tasks`).
+    "https://trusttasks.org/spec/auth/step-up/approver/list/0.1",
+    "https://trusttasks.org/spec/auth/step-up/approver/revoke/0.1",
+    "https://trusttasks.org/spec/auth/step-up/approver/invite/0.1",
+    "https://trusttasks.org/spec/auth/step-up/approver/enroll/0.1",
+    "https://trusttasks.org/spec/auth/step-up/approver/redeem/start/0.1",
+    "https://trusttasks.org/spec/auth/step-up/approver/redeem/finish/0.1",
     "https://trusttasks.org/spec/auth/passkey/enroll/invite/0.2",
     "https://trusttasks.org/spec/auth/passkey/enroll/redeem/finish/0.1",
     "https://trusttasks.org/spec/auth/passkey/revoke/start/0.2",

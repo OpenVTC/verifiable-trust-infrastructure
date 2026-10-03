@@ -1103,6 +1103,33 @@ fn table() -> Vec<Conformance> {
             // `ClaimFinishResponse` — routes/install.rs:103.
             json!({ "adminDid": OTHER_DID, "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" })
         ),
+        // 0.3 — a claim under an existing DID, with a step-up approver
+        // (`step_up_approver::claim_{start,finish}_v0_3`, which build their
+        // bodies from the generated types).
+        checked!(
+            s::install::claim::start::v0_3::Payload,
+            s::install::claim::start::v0_3::Response,
+            json!({ "token": "eyJhbGciOiJFZERTQSJ9.e30.sig", "claimCode": "K7QW3M2X9P" }),
+            json!({
+                "claimId": "clm_1f2e3d4c5b6a79880a1b2c3d4e5f6a7b",
+                "adminDid": OTHER_DID,
+                "challenge": "Q2xhaW1DaGFsbGVuZ2VOb25jZTQ1Njc4OTA",
+                "audience": DID,
+                "expiresAt": TS,
+            })
+        ),
+        checked!(
+            s::install::claim::finish::v0_3::Payload,
+            s::install::claim::finish::v0_3::Response,
+            json!({
+                "claimId": "clm_1f2e3d4c5b6a79880a1b2c3d4e5f6a7b",
+                "approverDid": "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+                "label": "Browser plugin",
+                "statement": { "id": "urn:uuid:3a6c1e0b-9d2f-4b7a-8c15-2e4f6a8b0c01" },
+            }),
+            // `ClaimFinishResponse` — the same body 0.2 answers with.
+            json!({ "adminDid": OTHER_DID, "setupSessionToken": "eyJhbGciOiJFZERTQSJ9.e30.sig" })
+        ),
         // ─── invitations ─────────────────────────────────────────────
         checked!(
             s::invitations::issue::v0_1::Payload,

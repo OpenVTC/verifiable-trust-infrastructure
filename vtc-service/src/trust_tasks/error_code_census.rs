@@ -600,6 +600,39 @@ fn witnesses() -> Vec<Witness> {
             "install_claim.rs",
             "the_claim_start_task_answers_with_the_code_its_spec_declares"
         ),
+        // 0.3 — the claim under an existing DID with a step-up approver. Its
+        // `invalidToken` and `registrationMismatch` are the same codes 0.2
+        // declares, witnessed above.
+        witness!(
+            s::install::claim::start::v0_3::error_codes::TOKEN_NAMES_NO_DID,
+            crate::routes::install::START_V0_3_ERR_TOKEN_NAMES_NO_DID,
+            "install_claim_v0_3.rs",
+            "claim_start_v0_3_answers_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::install::claim::finish::v0_3::error_codes::SUBJECT_MISMATCH,
+            crate::routes::install::FINISH_V0_3_ERR_SUBJECT_MISMATCH,
+            "install_claim_v0_3.rs",
+            "claim_finish_v0_3_answers_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::install::claim::finish::v0_3::error_codes::STATEMENT_INVALID,
+            crate::routes::install::FINISH_V0_3_ERR_STATEMENT_INVALID,
+            "install_claim_v0_3.rs",
+            "claim_finish_v0_3_answers_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::install::claim::finish::v0_3::error_codes::APPROVER_NOT_DISTINCT,
+            crate::routes::install::FINISH_V0_3_ERR_APPROVER_NOT_DISTINCT,
+            "install_claim_v0_3.rs",
+            "claim_finish_v0_3_answers_the_codes_its_spec_declares"
+        ),
+        witness!(
+            s::install::claim::finish::v0_3::error_codes::DID_UNRESOLVABLE,
+            crate::routes::install::FINISH_V0_3_ERR_DID_UNRESOLVABLE,
+            "install_claim_v0_3.rs",
+            "claim_finish_v0_3_refuses_a_founder_did_that_does_not_resolve"
+        ),
         witness!(
             s::members::update::v0_1::error_codes::ADMIN_ROLE_FORBIDDEN,
             crate::routes::members::update::UPDATE_ERR_ADMIN_ROLE_FORBIDDEN,

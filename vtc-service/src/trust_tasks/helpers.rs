@@ -220,7 +220,7 @@ pub(crate) fn task_error_to_reject<P>(
 /// Reading that as an extended code panicked the dispatcher the first time
 /// such an operation was bound on the signed door (#1641 batch 4), so the code
 /// is parsed the way the framework parses any code.
-fn declared_code(code: &str) -> TrustTaskCode {
+pub(crate) fn declared_code(code: &str) -> TrustTaskCode {
     code.parse()
         .unwrap_or_else(|e| panic!("declared code {code:?} is not a Trust Task code: {e}"))
 }
@@ -599,6 +599,7 @@ pub(crate) async fn verify_received_approval_proof(
 pub(crate) fn is_approval_type(type_uri: &str) -> bool {
     type_uri == super::STEP_UP_APPROVE_RESPONSE_TYPE
         || type_uri == super::STEP_UP_APPROVE_RESPONSE_V0_5_TYPE
+        || type_uri == super::STEP_UP_APPROVE_RESPONSE_V0_6_TYPE
         || type_uri == crate::acl::admin_consent::DECISION_TYPE
         || type_uri == crate::acl::admin_consent::DECISION_V0_2_TYPE
 }

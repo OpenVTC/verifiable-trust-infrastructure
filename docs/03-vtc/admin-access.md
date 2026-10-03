@@ -137,20 +137,55 @@ one administrator can go rogue. These are the controls that bound the damage.
 
 ### 3.1 Step-up bound to one operation
 
-Acts that confer authority need a live passkey gesture from the administrator
+Acts that confer authority need a live step-up from the administrator
 performing them, made for **that one operation**:
 
 - granting or promoting anyone to admin (scoped or unrestricted);
 - minting an admin invite that creates a new administrator;
-- inviting a member to enrol a step-up passkey, or revoking one on their behalf;
+- inviting a member to enrol a step-up passkey or a step-up approver, or
+  revoking one on their behalf;
 - git-namespace break-glass.
 
-The VTC sends a challenge bound to a digest of the exact operation. The gesture
-must verify the user and must come from the actor's own passkey. It is valid for
-one use within 300 seconds, and raises no session. Approving one act never
-approves a different one, and a script holding your console key can't use your
-gesture for an act you didn't see: the console key can redeem a gesture, but it
-can never make one.
+The VTC sends a challenge bound to a digest of the exact operation. The answer
+must come from the actor's **own additional factor**, one of:
+
+- **a passkey** — the gesture must verify the user and come from a passkey
+  registered to the actor; or
+- **a step-up approver** — a `did:key` bound to the actor as their step-up
+  factor, such as the approver identity the VTA browser plugin holds behind a
+  WebAuthn-unlocked key. It signs a statement over the challenge and the
+  operation digest; the answer around it is signed by the actor's **own DID**
+  (the wallet signs it as the persona), never by a console key. This is how a
+  wallet administrator, who has no passkey at this VTC, steps up (VTI-APV-015).
+
+The refusal says which the VTC will take (`accepts`). Once an administrator
+holds a dedicated step-up factor — an approver or a step-up passkey — their
+ordinary session passkeys stop counting for step-up.
+
+A step-up is valid for one use within 300 seconds, and raises no session.
+Approving one act never approves a different one, and a script holding your
+console key can't use your factor for an act you didn't see: the console key
+can redeem a recorded step-up, but it can never make one.
+
+### 3.1a Enrolling a step-up approver
+
+A second factor can't be bound on the strength of the first, so every
+enrolment rests on something independent of the subject's signing key, proves
+the approver key is held (the approver signs over a fresh challenge), carries
+the subject's own signature, and is audited naming how it was bound
+(`enrolledVia`, VTI-APV-016):
+
+| Route | Who | `enrolledVia` |
+|---|---|---|
+| Claim the install under your own DID (`vtc/install/claim/*/0.3`) | the founder, with the install URL and claim code | `install` |
+| An invite from another community administrator, behind their own step-up (Members → the member → **Invite to enrol an approver**), redeemed at `/admin/enrol-approver` | a member who holds no factor | `invite` |
+| Add or rotate one yourself behind a factor you already hold (**My passkeys → Approver devices**) | the subject | `selfService` |
+| `vtc admin enrol-approver --did <subject>`, daemon stopped — mints the same invite | the operator, with host access | `offline` |
+
+Nobody invites themselves. An approver DID is bound to one subject, once: a
+revoked one can never be bound again. A subject holds at most five. Revoking
+the last one is allowed — it costs the ability to step up with it, not the
+subject's authority — and is recovered through another invite.
 
 ### 3.2 Second-party consent: the action list
 
@@ -255,7 +290,8 @@ The audit trail has a row for every grant, update, revocation, promotion,
 admin invite and passkey registration, and for every step of an action
 (`TaskConsentRecorded`, stage `parked`, `approved`, `declined`, `cancelled`,
 `invalidated`, `expired`, `completed` or `failed`). Offline writers (`vtc acl add` and
-`remove`, `vtc admin invite`, `vtc create-did-key --admin`) cannot write the
+`remove`, `vtc admin invite`, `vtc admin enrol-approver`, `vtc create-did-key
+--admin`) cannot write the
 audit trail while the daemon is stopped, so they leave a marker. The daemon
 turns it into an `AclBreakGlassWritten` row at its next start, naming the
 command, the DID and the host it ran on.
@@ -269,6 +305,7 @@ needs the host itself. Protect the host the way you protect the community.
 |---|---|
 | Admin and install invites | single use, at most 24 hours, plus a claim code delivered separately (Argon2id-hashed) |
 | Step-up passkey invites | issued by a different unrestricted administrator behind their own step-up, redeemed by the member's own signature; five wrong claim codes void the invite |
+| Step-up approver invites | the same, at most 24 hours (15 minutes by default); the redemption is signed by the invited subject's own DID and carries the approver's proof of possession |
 | Member notices | members get a signed notice when a step-up passkey is enrolled or revoked for them, naming who did it |
 | Git-namespace break-glass | always a step-up, audited at `Critical`, announced to every other namespace administrator |
 
@@ -377,6 +414,32 @@ behind an existing one, and nobody can invite themselves. Alice does it:
 From then on Bob's step-up works whichever way he signs in, because the gesture
 is checked against the passkeys registered to his DID.
 
+### Step 5b — Or: Bob enrols an approver device, with no passkey at all
+
+If Bob would rather step up with the browser plugin than with a VTC passkey:
+
+1. Alice opens Members → Bob → **Invite to enrol an approver**, confirms with
+   her own step-up, and sends Bob the URL and the claim code by **different
+   channels**.
+2. Bob opens the URL (`/admin/enrol-approver#token=…`), types the code, and
+   approves twice in the plugin: his wallet signs the redemption **as his own
+   DID**, and the plugin's approver identity — unlocked by a WebAuthn gesture —
+   signs the enrolment statement.
+3. From then on, when a step-up is asked of Bob the console hands the request
+   and the operation to the plugin, which shows the operation and signs; his
+   wallet signs the answer as his DID.
+
+With no other administrator to ask, the operator runs `vtc admin
+enrol-approver --did did:webvh:…:bob` on the host with the daemon stopped; it
+mints the same invite and is audited as a break-glass at the next start.
+
+A founder who uses only a wallet can claim the install this way from the start:
+`vtc/install/claim/{start,finish}/0.3` claims the community under the DID the
+install token names (signed by that DID, checked against its live document) and
+binds the plugin's approver as the founder's step-up factor at bootstrap. The
+VTC serves it; the console's install page still drives the passkey claim
+(`bootstrap-runbook.md`, Path C).
+
 ### Step 6 — Make sure each approver can sign
 
 An approval (§3.2) is a `task-consent/decision` signed by the approver's **own
@@ -426,19 +489,18 @@ Promotions that Alice starts need an approver other than Alice: here, Bob.
 
 ## 5. Known gaps
 
-- **Wallet administrators can't step up without a VTC passkey.** Step 5 is the
-  workaround. Using the plugin's approver identity as the step-up factor is
-  designed in
-  [`../05-design-notes/vtc-approver-step-up.md`](../05-design-notes/vtc-approver-step-up.md)
-  and waits on specification changes.
+- **Approver step-up needs a plugin that supports it.** The VTC accepts a
+  step-up approver's statement (§3.1, step 5b); the browser plugin's
+  `approveStepUp` / `attestApprover` are a separate release. Until it ships,
+  step 5's passkey is the route. Mobile approvers are phase 2 of
+  [`../05-design-notes/vtc-approver-step-up.md`](../05-design-notes/vtc-approver-step-up.md).
 - **Two-admin removal has no cooling-off yet.** With two unrestricted
   administrators, either can remove the other on their own step-up (§3.4). The
   planned 24-hour cooling-off, the notice to the subject, and acknowledge items
   for offline writes come in the action list's next phase
   ([`../05-design-notes/vtc-action-list.md`](../05-design-notes/vtc-action-list.md) §10).
-- **A founder who uses only a wallet** can't claim the install under their own
-  DID. Install claims under an existing DID are a planned version of
-  `vtc/install/claim`.
+- **A co-administrator named at install** has no install token of their own;
+  they enrol an approver through an invite (step 5b) after the bootstrap.
 
 ## 6. Quick reference
 
@@ -449,6 +511,8 @@ Promotions that Alice starts need an approver other than Alice: here, Bob.
 | add an unrestricted admin, as the only admin | offline `vtc acl add … --role admin`, daemon stopped |
 | give an existing admin a console passkey | Access control → Admin invites → Invite admin |
 | give a member a step-up passkey | Members → member → Step-up passkeys → Invite… |
+| give a wallet admin an approver device | Members → member → Invite to enrol an approver; or offline `vtc admin enrol-approver --did …` |
+| add, rotate or revoke your own approver | My passkeys → Approver devices |
 | approve a promotion | console → Actions → Waiting for me → Approve (wallet), or `cnm consent approve --action <actionId>` |
 | see what is waiting | console → Actions, or `cnm actions list` |
 | withdraw my request | console → Actions → Requested by me → Cancel |

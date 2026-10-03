@@ -317,7 +317,7 @@ pub async fn record_use(
 /// not by subject, and this fires once per enrolment rather than on a hot
 /// path, the same trade-off [`crate::routes::members::rotate`] and
 /// `crate::emergency` make revoking a DID's sessions.
-async fn revoke_session_elevation(
+pub(crate) async fn revoke_session_elevation(
     sessions: &KeyspaceHandle,
     subject: &str,
 ) -> Result<(), AppError> {

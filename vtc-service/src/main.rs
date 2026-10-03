@@ -180,6 +180,24 @@ enum AdminCommands {
         #[arg(long, default_value_t = 900)]
         ttl: u64,
     },
+    /// Mint an invite for `--did` to enrol a step-up approver (offline).
+    ///
+    /// Run on a **stopped** daemon (fjall lock). The route for a community
+    /// whose administrators are all wallet-only and hold no step-up factor
+    /// (approver design note §6e, R4): it mints the same invite an
+    /// administrator would issue — a URL carrying a single-use token, and a
+    /// claim code to deliver over a separate channel — rather than writing a
+    /// factor directly, so the subject still signs the redemption with their
+    /// own DID and their approver still proves possession. The daemon audits
+    /// the invite as a break-glass at its next start (VTI-APV-016).
+    EnrolApprover {
+        /// The member DID the approver will be bound to.
+        #[arg(long)]
+        did: String,
+        /// Invite TTL in seconds (default: 900 = 15 min; at most 86400).
+        #[arg(long, default_value_t = 900)]
+        ttl: u64,
+    },
     /// Recover from a backup import interrupted mid-flight (offline,
     /// irreversible).
     ///
@@ -305,6 +323,12 @@ async fn main() {
                     AdminCommands::Invite { did, ttl } => {
                         if let Err(e) = run_invite_cli(cli.config, did, ttl).await {
                             eprintln!("Invite failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                    AdminCommands::EnrolApprover { did, ttl } => {
+                        if let Err(e) = run_enrol_approver_cli(cli.config, did, ttl).await {
+                            eprintln!("Approver invite failed: {e}");
                             std::process::exit(1);
                         }
                     }
@@ -618,6 +642,65 @@ async fn run_invite_cli(
     eprintln!();
     eprintln!("Restart the daemon (`vtc`) before claiming — the daemon must be running");
     eprintln!("for the browser to reach `/admin/install` and `/v1/install/claim/*`.");
+    Ok(())
+}
+
+/// `vtc admin enrol-approver` — mint a step-up approver invite for `--did`
+/// with the daemon stopped (approver design note §6e, R4).
+#[cfg(feature = "setup")]
+async fn run_enrol_approver_cli(
+    config_path: Option<std::path::PathBuf>,
+    subject: String,
+    ttl_seconds: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = vtc_service::config::AppConfig::load(config_path)?;
+    let base_url = config
+        .public_url
+        .clone()
+        .ok_or("config has no public_url — the invite needs a URL the subject can open")?;
+    let store = match vtc_service::store::offline::open_offline(&config.store) {
+        Ok(store) => store,
+        Err(e @ vtc_service::store::offline::OfflineStoreError::DaemonRunning { .. }) => {
+            return Err(format!(
+                "{e}.\n\nWhile the daemon runs, another community administrator issues this \
+                 invite instead: the admin console, Members → the member → Invite to enrol an \
+                 approver (`auth/step-up/approver/invite/0.1`)."
+            )
+            .into());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let minted = vtc_service::step_up_approver::mint_offline_invite(
+        &store,
+        &base_url,
+        &subject,
+        ttl_seconds,
+    )
+    .await?;
+    // Flush the invite and the break-glass marker before handing out the URL.
+    store.persist().await?;
+
+    let expires = chrono::DateTime::<chrono::Utc>::from_timestamp(minted.expires_at as i64, 0)
+        .map(|t| t.to_rfc3339())
+        .unwrap_or_default();
+    eprintln!();
+    eprintln!("✅ step-up approver invite minted");
+    eprintln!("   Subject:     {subject}");
+    eprintln!("   Invite id:   {}", minted.invite_id);
+    eprintln!("   Expires:     {expires}");
+    eprintln!();
+    eprintln!("Enrolment URL (one-shot):");
+    eprintln!("   {}", minted.url);
+    eprintln!();
+    eprintln!("Claim code (deliver via a SEPARATE channel — Signal/SMS/in person):");
+    eprintln!("   {}", minted.claim_code);
+    eprintln!();
+    eprintln!("The subject opens the URL, types the code, and signs the redemption with");
+    eprintln!("their own DID through their wallet; their approver device signs the");
+    eprintln!("enrolment statement. Five wrong codes void the invite.");
+    eprintln!();
+    eprintln!("Restart the daemon (`vtc`) first — it records this invite in the audit log");
+    eprintln!("as an offline (break-glass) action when it starts.");
     Ok(())
 }
 

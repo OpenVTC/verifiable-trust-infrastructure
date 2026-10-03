@@ -39,8 +39,28 @@
 // member's own proof, so this page does the ceremony and shows an **answer
 // code** — the assertion — which `cnm` signs into the approve-response with
 // the member's own key.
+//
+// ## Or with a step-up approver
+//
+// A wallet administrator holds no passkey here. When the request `accepts`
+// `approverSigned` (approve-request 0.4) and the VTA browser plugin exposes
+// `approveStepUp`, the plugin's **approver** — a `did:key` bound to the
+// subject as their step-up factor, unlocked only by a user gesture — signs an
+// `auth/step-up/approver/attest/0.1` statement over the challenge and
+// `boundTo`, after recomputing `boundTo` from the operation it is shown. The
+// console then has the wallet sign `auth/step-up/approve-response/0.6`
+// carrying that statement **as the subject's own DID** — never the console
+// key, which is a delegation the VTC refuses for this (VTI-APV-015 as amended,
+// VTI-APV-016).
 
-import { postUnsignedTrustTask } from "./api";
+import { addressedDocument, postSignedDocument, postUnsignedTrustTask, vtcDid } from "./api";
+import type { SignedTrustTaskDocument } from "./console-key";
+import {
+  approveStepUpWithWallet,
+  isWalletApproverAvailable,
+  signWithWallet,
+  type ApproverStepUpRequest,
+} from "./wallet";
 import {
   base64urlToBuffer,
   bufferToBase64url,
@@ -51,11 +71,15 @@ import {
 
 export const APPROVE_RESPONSE_URI =
   "https://trusttasks.org/spec/auth/step-up/approve-response/0.4";
+/** The approve-response version that carries `approverSigned` evidence. */
+export const APPROVE_RESPONSE_V0_6_URI =
+  "https://trusttasks.org/spec/auth/step-up/approve-response/0.6";
 
 /** Where the console answers a step-up handed over from `cnm`. */
 export const STEP_UP_PATH = "/step-up";
 
-/** `auth/step-up/approve-request/0.3`, as the VTC sends it for a bound step-up. */
+/** `auth/step-up/approve-request/0.4` (or 0.3), as the VTC sends it for a
+ *  bound step-up. */
 export interface StepUpRequest {
   subject: string;
   challenge: string;
@@ -63,6 +87,12 @@ export interface StepUpRequest {
   sessionId?: string;
   reason: string;
   targetAcr?: string;
+  /** 0.4: every evidence kind the VTC will take for this step-up. */
+  accepts?: string[];
+  /** 0.4: the subject's bound approver DIDs, present iff `accepts` lists
+   *  `approverSigned`. */
+  approvers?: string[];
+  /** 0.3's spelling of `accepts`, still read for a request from an older VTC. */
   acceptableEvidence?: string[];
   webauthn?: {
     challenge: string;
@@ -95,11 +125,61 @@ export function stepUpRequestOf(err: unknown): StepUpRequest | null {
   return isStepUpRequest(req) ? req : null;
 }
 
-/** Whether this request can be answered here: webauthn evidence accepted, and
- *  options to run it with. */
+/** The evidence kinds `req` accepts: 0.4's `accepts`, else 0.3's
+ *  `acceptableEvidence`, else (neither stated) a passkey if it carries
+ *  options for one. */
+export function acceptedKinds(req: StepUpRequest): string[] {
+  return req.accepts ?? req.acceptableEvidence ?? (req.webauthn ? ["webauthn"] : []);
+}
+
+/** Whether this request can be answered here with a passkey: webauthn
+ *  evidence accepted, and options to run it with. */
 export function answerableHere(req: StepUpRequest): boolean {
-  const kinds = req.acceptableEvidence;
-  return !!req.webauthn && (!kinds || kinds.includes("webauthn"));
+  return !!req.webauthn && acceptedKinds(req).includes("webauthn");
+}
+
+/** Whether this request can be answered here with the wallet plugin's step-up
+ *  approver: `approverSigned` accepted, an approver named, and a plugin that
+ *  can answer and sign as the subject. */
+export function approverAnswerableHere(req: StepUpRequest): boolean {
+  return (
+    acceptedKinds(req).includes("approverSigned") &&
+    (req.approvers?.length ?? 0) > 0 &&
+    isWalletApproverAvailable()
+  );
+}
+
+/** The refused operation a step-up is bound to — what the approver recomputes
+ *  `boundTo` from. */
+export interface StepUpOperation {
+  type: string;
+  payload: unknown;
+}
+
+/** The operation a refused signed document carries. */
+export function operationOf(document: { type: string; payload: unknown }): StepUpOperation {
+  return { type: document.type, payload: document.payload };
+}
+
+/** Whether anything this console holds can answer `req`, given the operation
+ *  it is for (an approver needs the operation; a passkey does not). */
+export function answerableAtAll(req: StepUpRequest, operation?: StepUpOperation): boolean {
+  return (!!operation && approverAnswerableHere(req)) || answerableHere(req);
+}
+
+/** What to tell an operator this console holds nothing to answer `req` with.
+ *  Names only routes that exist for them — never a self-invite. */
+export function noFactorGuidance(req: StepUpRequest): string {
+  const wantsApprover = acceptedKinds(req).includes("approverSigned");
+  return (
+    `This needs a step-up from ${req.subject}` +
+    (wantsApprover
+      ? ", answered by your step-up approver — open the console in the browser whose VTA wallet plugin holds it."
+      : ", and you hold no step-up factor this console can use.") +
+    " To enrol one, ask another community administrator to invite you (Members → you → " +
+    '"Invite to enrol an approver"), or have the operator run ' +
+    `\`vtc admin enrol-approver --did ${req.subject}\` on the host with the daemon stopped.`
+  );
 }
 
 /** The fragment `cnm` puts after `/admin/step-up#request=`. */
@@ -159,9 +239,16 @@ export async function runStepUpCeremony(
 }
 
 /**
- * Run the passkey ceremony `req` asks for and send the approve-response,
- * unsigned: the WebAuthn assertion is the gate, and the VTC checks that it
- * came from a console passkey registered to `req.subject`.
+ * Answer the step-up `req` asks for and send the approve-response.
+ *
+ * With `operation` (the refused document's type and payload), an
+ * `approverSigned` request and a wallet plugin exposing `approveStepUp`, the
+ * plugin's approver signs the statement and the wallet signs approve-response
+ * 0.6 as `req.subject` ([`answerWithApprover`]). Otherwise the passkey
+ * ceremony runs and approve-response 0.4 goes **unsigned**: the WebAuthn
+ * assertion is the gate, and the VTC checks that it came from a console
+ * passkey registered to `req.subject`. With neither, it throws
+ * [`noFactorGuidance`].
  *
  * Resolves once the VTC has **recorded** the gesture against the operation;
  * throws if it rejected it or the browser returned no credential. A member's
@@ -171,7 +258,14 @@ export async function runStepUpCeremony(
 export async function answerStepUp(
   req: StepUpRequest,
   credentials: Pick<CredentialsContainer, "get"> = navigator.credentials,
+  operation?: StepUpOperation,
 ): Promise<ApproveAck> {
+  if (operation && approverAnswerableHere(req)) {
+    return answerWithApprover(req, operation);
+  }
+  if (!answerableHere(req)) {
+    throw new Error(noFactorGuidance(req));
+  }
   const credential = await runStepUpCeremony(req, credentials);
   const payload: Record<string, unknown> = {
     subject: req.subject,
@@ -181,6 +275,46 @@ export async function answerStepUp(
   };
   if (req.sessionId) payload.sessionId = req.sessionId;
   const ack = await postUnsignedTrustTask<ApproveAck>(APPROVE_RESPONSE_URI, payload, req.subject);
+  return recorded(ack);
+}
+
+/**
+ * The `approverSigned` answer: the plugin's approver signs the statement over
+ * `req` (after recomputing `boundTo` from `operation`), and the wallet signs
+ * `auth/step-up/approve-response/0.6` around it **as `req.subject`** — the
+ * outer proof must be the subject's own DID, never a console key's delegation
+ * (approve-response 0.6, consumer step 1a).
+ */
+export async function answerWithApprover(
+  req: StepUpRequest,
+  operation: StepUpOperation,
+): Promise<ApproveAck> {
+  const audience = await vtcDid();
+  const { statement, approverDid } = await approveStepUpWithWallet({
+    request: req as unknown as ApproverStepUpRequest,
+    operation,
+    audience,
+  });
+  if (req.approvers && !req.approvers.includes(approverDid)) {
+    throw new Error(
+      `The wallet answered with approver ${approverDid}, which is not one this community ` +
+        "has bound to you. Enrol it first, or answer from the browser that holds a bound one.",
+    );
+  }
+  const payload: Record<string, unknown> = {
+    subject: req.subject,
+    challenge: req.challenge,
+    decision: "approved",
+    evidence: { kind: "approverSigned", statement },
+  };
+  if (req.sessionId) payload.sessionId = req.sessionId;
+  const envelope = await addressedDocument(APPROVE_RESPONSE_V0_6_URI, payload, req.subject);
+  const signed = await signWithWallet({ ...envelope }, req.subject);
+  const ack = await postSignedDocument<ApproveAck>(signed as unknown as SignedTrustTaskDocument);
+  return recorded(ack);
+}
+
+function recorded(ack: ApproveAck): ApproveAck {
   if (ack.status !== "recorded") {
     throw new Error(
       ack.reason

@@ -1,8 +1,13 @@
 # Step-up for wallet administrators — an approver device as the step-up factor
 
-Status: **accepted** (2026-10-02; open questions settled in §11). Nothing here is implemented yet. The wire
-changes in §9 land in dtgwg-trust-tasks-tf and dtgwg-vti-spec first; no VTC,
-console or plugin code is written against them until they do.
+Status: **accepted** (2026-10-02; open questions settled in §11). The wire
+changes in §9 landed in dtgwg-trust-tasks-tf (trust-tasks-rs 0.26.3) and
+dtgwg-vti-spec (VTI-APV-015 as amended, VTI-APV-016). The VTC side — §10 steps
+2–5 and step 7 (factor store, gate, enrolment R1–R4, revocation, install claim
+0.3, console) — is implemented: `vtc-service/src/acl/approver.rs`,
+`acl/bound_step_up.rs`, `step_up_approver.rs`,
+`trust_tasks/step_up_approver_tasks.rs`. The browser plugin (step 6), the
+console's 0.3 install page, and mobile approvers (phase 2) are not.
 
 Builds on `vtc-operation-bound-step-up.md` (the bound step-up this extends),
 `vtc-console-signing.md` (§6f, two factors), and the step-up passkey invite

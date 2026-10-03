@@ -137,6 +137,9 @@ pub struct AppState {
     /// Members' step-up passkeys — see `crate::step_up_passkey`. Never read
     /// by login or session step-up.
     pub step_up_passkeys_ks: KeyspaceHandle,
+    /// Step-up approvers — see `crate::acl::approver`. Read only by the bound
+    /// step-up gate (VTI-APV-015).
+    pub step_up_approvers_ks: KeyspaceHandle,
     /// Unrestricted-admin consent requests and grants (VTI-APV-014). See
     /// `crate::acl::admin_consent`.
     pub admin_actions_ks: KeyspaceHandle,
@@ -474,6 +477,7 @@ pub async fn run(
     let step_up_marks_ks = store.keyspace(keyspaces::STEP_UP_MARKS)?;
     let step_up_passkeys_ks = store.keyspace(keyspaces::STEP_UP_PASSKEYS)?;
     let admin_actions_ks = store.keyspace(keyspaces::ADMIN_ACTIONS)?;
+    let step_up_approvers_ks = store.keyspace(keyspaces::STEP_UP_APPROVERS)?;
     let member_pushes_ks = store.keyspace(keyspaces::MEMBER_PUSHES)?;
     let backup_bundles_ks = store.keyspace(keyspaces::BACKUP_BUNDLES)?;
     let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
@@ -812,6 +816,7 @@ pub async fn run(
         step_up_marks_ks,
         step_up_passkeys_ks,
         admin_actions_ks,
+        step_up_approvers_ks,
         member_pushes_ks,
         tsp_reach: Arc::new(vti_common::tsp_reach::TspReachability::new()),
         backup_bundles_ks,
@@ -1293,6 +1298,28 @@ pub async fn run(
         shutdown_rx.clone(),
     );
 
+    // Step-up approver enrolment state — invites, redemption ceremonies,
+    // install claims, parked install bindings and spent statement ids — past
+    // their life. A storage bound: every read already treats an expired row as
+    // absent. The bindings and their tombstones are kept.
+    {
+        let ks = state.step_up_approvers_ks.clone();
+        let mut shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) =
+                    crate::step_up_approver::sweep_expired(&ks, chrono::Utc::now()).await
+                {
+                    warn!(error = %e, "step-up approver sweep failed");
+                }
+                tokio::select! {
+                    _ = shutdown.changed() => return,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+                }
+            }
+        });
+    }
+
     // Automatic vetter grants. Always spawned: it reads its configuration
     // every minute and does nothing until an admin turns it on
     // (`PUT /v1/vetting/auto-grant`), so enabling needs no restart.
@@ -1364,49 +1391,9 @@ pub async fn run(
         }
     }
 
-    // VTI-APV-014: audit every ACL write an offline command made while the
-    // daemon was stopped. Each skipped the consent and attrition rules by
-    // design; this is the row that says so. Taken (and deleted) as it is read,
-    // so a restart loop audits each once.
-    if let Some(writer) = state.audit_writer.as_ref() {
-        match state.install_store.take_break_glass().await {
-            Ok(writes) => {
-                for w in writes {
-                    warn!(
-                        command = %w.command,
-                        action = %w.action,
-                        did = %w.did,
-                        operator_hostname = %w.operator_hostname,
-                        invoked_at = %w.invoked_at,
-                        "an ACL change was made offline (break-glass) since the daemon last ran \
-                         — auditing now",
-                    );
-                    let subject = w.did.clone();
-                    if let Err(e) = writer
-                        .write(
-                            "did:key:vtc-break-glass",
-                            Some(&subject),
-                            vti_common::audit::AuditEvent::AclBreakGlassWritten(
-                                vti_common::audit::BreakGlassAclData {
-                                    command: w.command,
-                                    action: w.action,
-                                    did: w.did,
-                                    role: w.role,
-                                    contexts: w.contexts,
-                                    operator_hostname: w.operator_hostname,
-                                    invoked_at: w.invoked_at,
-                                },
-                            ),
-                        )
-                        .await
-                    {
-                        error!(error = %e, "failed to emit AclBreakGlassWritten envelope");
-                    }
-                }
-            }
-            Err(e) => error!(error = %e, "failed to read queued break-glass ACL writes"),
-        }
-    }
+    // VTI-APV-014 / VTI-APV-016: audit every write an offline command made
+    // while the daemon was stopped.
+    audit_offline_break_glass(&state).await;
 
     // Snapshot the CORS allowlist + routing config before the
     // AppState `move` into the REST thread. Both layers are fixed
@@ -2352,6 +2339,58 @@ async fn wait_for_handle<T>(
         tokio::select! {
             _ = tokio::time::sleep(poll) => {}
             _ = shutdown.changed() => return HandleWait::ShuttingDown,
+        }
+    }
+}
+
+/// Audit every write an offline command made while the daemon was stopped —
+/// an ACL grant or removal (VTI-APV-014), or a step-up approver invite minted
+/// on the host (`vtc admin enrol-approver`, VTI-APV-016). Each skipped the
+/// rules the daemon enforces by design; this is the row that says so. Taken
+/// (and deleted) as it is read, so a restart loop audits each once. Called at
+/// boot, once the audit writer is online.
+pub async fn audit_offline_break_glass(state: &AppState) {
+    // VTI-APV-014: audit every ACL write an offline command made while the
+    // daemon was stopped. Each skipped the consent and attrition rules by
+    // design; this is the row that says so. Taken (and deleted) as it is read,
+    // so a restart loop audits each once.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        match state.install_store.take_break_glass().await {
+            Ok(writes) => {
+                for w in writes {
+                    warn!(
+                        command = %w.command,
+                        action = %w.action,
+                        did = %w.did,
+                        operator_hostname = %w.operator_hostname,
+                        invoked_at = %w.invoked_at,
+                        "an offline change (break-glass) was made since the daemon last ran \
+                         — auditing now",
+                    );
+                    let subject = w.did.clone();
+                    if let Err(e) = writer
+                        .write(
+                            "did:key:vtc-break-glass",
+                            Some(&subject),
+                            vti_common::audit::AuditEvent::AclBreakGlassWritten(
+                                vti_common::audit::BreakGlassAclData {
+                                    command: w.command,
+                                    action: w.action,
+                                    did: w.did,
+                                    role: w.role,
+                                    contexts: w.contexts,
+                                    operator_hostname: w.operator_hostname,
+                                    invoked_at: w.invoked_at,
+                                },
+                            ),
+                        )
+                        .await
+                    {
+                        error!(error = %e, "failed to emit AclBreakGlassWritten envelope");
+                    }
+                }
+            }
+            Err(e) => error!(error = %e, "failed to read queued break-glass ACL writes"),
         }
     }
 }

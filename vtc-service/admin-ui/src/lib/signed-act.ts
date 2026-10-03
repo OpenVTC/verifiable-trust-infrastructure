@@ -11,7 +11,13 @@
 // `lib/bound-step-up.ts`.
 
 import { postSignedDocument, postSignedTrustTask, type ApiError } from "./api";
-import { answerStepUp, stepUpRequestOf, type StepUpRequest } from "./bound-step-up";
+import {
+  answerStepUp,
+  approverAnswerableHere,
+  operationOf,
+  stepUpRequestOf,
+  type StepUpRequest,
+} from "./bound-step-up";
 import type { ConsoleSigningKey } from "./console-key";
 
 /** Ask the operator to confirm the gesture `req` asks for. */
@@ -25,11 +31,19 @@ export function gestureFromConfirm(
   confirm: (options: { title: string; message?: string; confirmLabel?: string }) => Promise<boolean>,
 ): ConfirmGesture {
   return (req) =>
-    confirm({
-      title: "Confirm with your passkey",
-      message: req.reason,
-      confirmLabel: "Use passkey",
-    });
+    confirm(
+      approverAnswerableHere(req)
+        ? {
+            title: "Confirm with your step-up approver",
+            message: req.reason,
+            confirmLabel: "Use approver",
+          }
+        : {
+            title: "Confirm with your passkey",
+            message: req.reason,
+            confirmLabel: "Use passkey",
+          },
+    );
 }
 
 /** Thrown when the operator declined the passkey confirmation. */
@@ -55,7 +69,9 @@ export async function postSignedWithStepUp<T>(
     const document = (e as ApiError | null)?.document;
     if (!req || !document) throw e;
     if (!(await confirmGesture(req))) throw new GestureDeclinedError();
-    await answerStepUp(req);
+    // The operation travels with the answer so a step-up approver can
+    // recompute `boundTo` from the bytes the VTC will execute.
+    await answerStepUp(req, undefined, operationOf(document));
     return postSignedDocument<T>(document);
   }
 }

@@ -523,6 +523,7 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         // this community has published about its repositories; the registry
         // and the forge are rebuilt from them.
         x if x == GIT_NS => &state.git_ns.ks,
+        x if x == STEP_UP_APPROVERS => &state.step_up_approvers_ks,
         _ => return None,
     })
 }

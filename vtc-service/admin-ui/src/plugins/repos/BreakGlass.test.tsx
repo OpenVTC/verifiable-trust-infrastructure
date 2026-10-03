@@ -269,7 +269,11 @@ describe("the flag and the self-grant", () => {
     expect(within(sign).queryByText("The VTC refused it")).toBeNull();
     fireEvent.click(confirm);
     await waitFor(() => expect(postSignedDocument).toHaveBeenCalledWith(signed));
-    expect(answerStepUp).toHaveBeenCalledWith(stepUpRequest);
+    expect(answerStepUp).toHaveBeenCalledWith(
+      stepUpRequest,
+      undefined,
+      expect.objectContaining({ type: expect.any(String) }),
+    );
     expect(postSignedTrustTask).toHaveBeenCalledTimes(1);
   });
 

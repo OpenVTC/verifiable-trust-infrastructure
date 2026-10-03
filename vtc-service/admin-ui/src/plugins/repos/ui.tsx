@@ -9,7 +9,7 @@ import { Fingerprint, KeyRound, ShieldAlert, SquareTerminal, Siren } from "lucid
 
 import { CopyButton } from "@/components/CopyButton";
 import { signingAvailable, SigningUnavailableError } from "@/lib/api";
-import { answerableHere, answerStepUp } from "@/lib/bound-step-up";
+import { answerableAtAll, answerStepUp, operationOf } from "@/lib/bound-step-up";
 import { useNameBook } from "@/lib/names";
 import { useToast } from "@/lib/toast";
 import type { GitNsBootstrapStatus, GitNsBreakGlassMark } from "@/lib/wire-types";
@@ -330,7 +330,7 @@ export function SignTaskDialog({
   // gesture is bound to it, and a freshly signed one would be a second act.
   const confirm = useMutation({
     mutationFn: async (needed: StepUpNeeded) => {
-      await answerStepUp(needed.request);
+      await answerStepUp(needed.request, undefined, operationOf(needed.signed));
       return sendSigned(needed.signed);
     },
     onSuccess: accepted,
@@ -447,8 +447,8 @@ export function SignTaskDialog({
                 Bound to <code>{stepUp.request.boundTo}</code>
               </span>
             )}
-            {!answerableHere(stepUp.request) && (
-              <span>This console cannot answer that step-up with a passkey.</span>
+            {!answerableAtAll(stepUp.request, operationOf(stepUp.signed)) && (
+              <span>This console holds no passkey or step-up approver to answer that step-up with.</span>
             )}
           </div>
         )}
@@ -509,7 +509,7 @@ export function SignTaskDialog({
           <button type="button" className="secondary" onClick={onClose} disabled={busy}>
             Close
           </button>
-          {manualSteps ? null : stepUp && answerableHere(stepUp.request) ? (
+          {manualSteps ? null : stepUp && answerableAtAll(stepUp.request, operationOf(stepUp.signed)) ? (
             <button
               type="button"
               className="primary"

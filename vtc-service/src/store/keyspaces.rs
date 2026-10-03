@@ -152,6 +152,18 @@ pub const STEP_UP_PASSKEYS: &str = "step_up_passkeys";
 /// requests and grants in (design §8a: net-new, nothing is migrated).
 pub const ADMIN_ACTIONS: &str = "admin_actions";
 
+/// Step-up **approvers** (VTI-APV-015, VTI-APV-016): `did:key`s bound to one
+/// subject each as that subject's step-up factor (`approver:<did>` live
+/// bindings and revoked tombstones, `subject:<did>` the live index), plus the
+/// enrolment state that binds them — invites (`invite:<tokenHash>`),
+/// redemption ceremonies (`redeem:<enrollmentId>`), install claims
+/// (`claim:<claimId>`) and claimed-but-not-bootstrapped bindings
+/// (`pending:<installJti>`) — and the spent statement ids (`spent:<hash>`). A
+/// keyspace of its own **by construction**, like [`STEP_UP_PASSKEYS`]: only the
+/// bound step-up gate reads it, never login or session step-up. See
+/// `crate::acl::approver` and `crate::step_up_approver`.
+pub const STEP_UP_APPROVERS: &str = "step_up_approvers";
+
 /// Member pushes in flight and recently finished (`push:<id>`): the signed
 /// Trust Task, the transports still to try, and how it ended. Encrypted at rest
 /// under the storage key. See `crate::member_push`.
@@ -204,6 +216,7 @@ pub const ALL: &[&str] = &[
     STEP_UP_MARKS,
     STEP_UP_PASSKEYS,
     ADMIN_ACTIONS,
+    STEP_UP_APPROVERS,
     MEMBER_PUSHES,
     BACKUP_BUNDLES,
     GIT_NS,
@@ -264,6 +277,17 @@ pub const BACKED_UP: &[&str] = &[
     // without it would restore a community whose published rights no longer
     // have a source, and the next projection pass would withdraw them all.
     GIT_NS,
+    // Step-up approvers (design note `vtc-approver-step-up.md` §4, §11.3).
+    // Backed up — unlike `step_up_passkeys` — because an approver is a
+    // `did:key`, bound to no WebAuthn relying party, so it is as valid on the
+    // restored host as on the original; a restore into a *different*
+    // community is already refused by the VTC-DID compatibility check. The
+    // revoked tombstones must come back too, or a burned approver DID could be
+    // bound again (`auth/step-up/approver/revoke/0.1` item 4). The enrolment
+    // rows beside them (invites, ceremonies, spent statement ids) all carry an
+    // expiry and are refused once it passes, so a restored one authorizes
+    // nothing the original could not.
+    STEP_UP_APPROVERS,
 ];
 
 /// Keyspaces deliberately omitted from backup (P3.9): ephemeral auth,
@@ -346,10 +370,10 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        // 38 top-level `*_ks` fields plus the three `AppState::git_ns` carries,
+        // 39 top-level `*_ks` fields plus the three `AppState::git_ns` carries,
         // plus the 2 hidden-vetting keyspaces (`VETTING_PCS_SPENT`, `VETTING_PCS_ISSUE`)
         // from the `zkp-pcs` development branch.
-        assert_eq!(ALL.len(), 43, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 44, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

@@ -219,6 +219,23 @@ pub enum AuditEvent {
     /// `inviteInvalidated`. The invite token and claim code are never recorded.
     StepUpPasskeyChanged(StepUpPasskeyData),
 
+    /// A step in the life of a **step-up approver** binding — a `did:key`
+    /// bound to one subject as that subject's step-up factor (VTI-APV-015):
+    /// an invite issued, voided after five wrong claim codes, an approver
+    /// enrolled or revoked, a binding discarded because its install claim was
+    /// never bootstrapped. Every binding names the anchor it rested on
+    /// (`enrolled_via` and `anchor`, VTI-APV-016). The invite token, the claim
+    /// code and any statement are never recorded.
+    StepUpApproverChanged(StepUpApproverData),
+
+    /// An operation-bound step-up answered by a **step-up approver's signed
+    /// statement** (`auth/step-up/approve-response/0.6`, evidence
+    /// `approverSigned`) rather than a passkey. Kept beside
+    /// [`Self::OperationStepUpRecorded`] so the row names the evidence kind and
+    /// the approver DID (approve-response 0.6, consumer item 7). Nothing is
+    /// elevated, exactly as for a passkey.
+    OperationStepUpApproved(OperationStepUpApprovedData),
+
     /// A step of the second-party consent that unrestricted admin authority
     /// needs (VTI-APV-014): asked for, approved or declined by another admin,
     /// granted once enough have approved, or spent by the operation it names.
@@ -754,6 +771,8 @@ impl AuditEvent {
             Self::AuthSteppedUp(..) => "AuthSteppedUp",
             Self::OperationStepUpRecorded(..) => "OperationStepUpRecorded",
             Self::StepUpPasskeyChanged(..) => "StepUpPasskeyChanged",
+            Self::StepUpApproverChanged(..) => "StepUpApproverChanged",
+            Self::OperationStepUpApproved(..) => "OperationStepUpApproved",
             Self::TaskConsentRecorded(..) => "TaskConsentRecorded",
             Self::AclBreakGlassWritten(..) => "AclBreakGlassWritten",
             Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
@@ -1451,6 +1470,54 @@ pub struct BreakGlassAclData {
     /// The host the command ran on, and when.
     pub operator_hostname: String,
     pub invoked_at: DateTime<Utc>,
+}
+
+/// Payload for [`AuditEvent::StepUpApproverChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StepUpApproverData {
+    /// `invited`, `inviteVoided`, `enrolled`, `revoked` or `discarded`.
+    pub stage: String,
+    /// The subject the approver is (or was to be) bound to.
+    pub subject: String,
+    /// The approver `did:key`, once there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver_did: Option<String>,
+    /// For an enrolment: `install`, `invite`, `selfService` or `offline` — the
+    /// anchor the binding rested on (VTI-APV-016).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrolled_via: Option<String>,
+    /// What that anchor was: the inviting administrator's DID, the install
+    /// token's `jti`, `host` for an offline invite, or the step-up evidence
+    /// (`webauthn:<credentialId>` / `approverSigned:<did>`) that authorized a
+    /// self-service enrolment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
+    /// An approver revoked in the same step (a self-service rotation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<String>,
+    /// The caller's free-text reason for a revocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When an issued invite lapses unredeemed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Payload for [`AuditEvent::OperationStepUpApproved`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationStepUpApprovedData {
+    /// Type URI of the operation the statement authorizes.
+    pub task: String,
+    /// The salted operation digest the approver signed over.
+    pub bound_to: String,
+    /// The evidence kind — `approverSigned`.
+    pub evidence_kind: String,
+    /// The step-up approver `did:key` whose statement answered.
+    pub approver_did: String,
+    /// When the unspent authorization lapses.
+    pub expires_at: DateTime<Utc>,
 }
 
 /// Payload for [`AuditEvent::StepUpPasskeyChanged`].

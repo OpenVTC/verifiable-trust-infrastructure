@@ -258,15 +258,14 @@ pub(super) async fn settle_signed_gate(
     use crate::acl::bound_step_up::{self, Gate};
 
     let type_uri = doc.type_uri.to_string();
-    let step_up_refusal =
-        |request: &trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload| {
-            reject_with_code(
-                doc,
-                TrustTaskCode::Standard(StandardCode::PermissionDenied),
-                "a passkey gesture bound to this operation is required",
-                Some(bound_step_up::refusal_details(request)),
-            )
-        };
+    let step_up_refusal = |request: &crate::acl::bound_step_up::ApproveRequest| {
+        reject_with_code(
+            doc,
+            TrustTaskCode::Standard(StandardCode::PermissionDenied),
+            "a passkey gesture bound to this operation is required",
+            Some(bound_step_up::refusal_details(request)),
+        )
+    };
     let subject = &plan.entry.did;
 
     if plan.confers_unrestricted {

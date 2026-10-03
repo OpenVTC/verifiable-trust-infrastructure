@@ -778,7 +778,7 @@ pub(crate) enum ChangeRoleOutcome {
     Changed(Box<AclEntryEnvelope>),
     /// A promotion that needs a gesture bound to it, and has none yet. Nothing
     /// was written.
-    StepUpRequired(Box<trust_tasks_rs::specs::auth::step_up::approve_request::v0_3::Payload>),
+    StepUpRequired(Box<crate::acl::bound_step_up::ApproveRequest>),
 }
 
 /// `acl/change-role` for either door. The bearer route passes
