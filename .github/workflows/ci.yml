@@ -1754,5 +1754,15 @@ jobs:
 
       - name: Cross-compile (iOS + Android) and generate bindings
         run: |
+          # The workspace builds dependencies at opt-level 2 in dev (#1931), so
+          # tests spend less time running them. This job only checks that the
+          # crate cross-compiles and that its bindings generate; it runs
+          # nothing. Optimising every dependency once per target cost about
+          # 3 minutes per target across five targets, and took a job that ran
+          # 39-57 minutes past its 60-minute limit on every run after #1931.
+          # A profile in a cargo config file takes precedence over the
+          # manifest's, so this restores the default for this job alone.
+          mkdir -p ~/.cargo
+          printf '[profile.dev.package."*"]\nopt-level = 0\n' >> ~/.cargo/config.toml
           export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
           ./vta-mobile-core/scripts/build-mobile.sh all
