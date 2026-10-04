@@ -778,9 +778,8 @@ async fn dispatch_trust_task_validated(
     };
     let outcome = crate::admin_actions::with_submission(
         submission,
-        // Boxed: the dispatcher is one large future, and the task-local adds
-        // a frame around it on the stack every document is dispatched on.
-        Box::pin(dispatch_typed(state, ctx, doc, &type_uri)),
+        // Already boxed: `dispatch_typed` returns the chosen handler's future.
+        dispatch_typed(state, ctx, doc, &type_uri),
     )
     .await;
     let outcome = sign_response(state, outcome).await;
@@ -1004,12 +1003,23 @@ pub(crate) fn dispatch_parked_boxed<'a>(
     ))
 }
 
-async fn dispatch_typed(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
+/// The routing table, as a plain `fn` returning the chosen handler's future,
+/// boxed — never an `async fn` that awaits it.
+///
+/// An `async fn` holding this `match` is one poll function with every arm's
+/// handler future and its temporaries in a single stack frame, live under
+/// whichever handler runs: unoptimised, that frame was ~1.1 MiB, and with
+/// `vetting-pcs` a `git-ns/*` document overflowed a 2 MiB test thread on Linux
+/// (it already had once, after VTI-13 grew the join path, which boxing three
+/// arms put off). Here each arm is boxed where it is chosen and this frame is
+/// gone before any handler is polled, so the stack a document is dispatched on
+/// is the deepest handler's alone, not that plus the sum of all the others.
+fn dispatch_typed<'a>(
+    state: &'a AppState,
+    ctx: &'a JoinAuthCtx,
     doc: TrustTask<Value>,
-    type_uri: &str,
-) -> TrustTaskOutcome {
+    type_uri: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = TrustTaskOutcome> + Send + 'a>> {
     // Every `rooms/*` operation is authorized against the DID that **signed the
     // request**, so an unsigned one has nothing to authorize and is refused.
     //
@@ -1024,36 +1034,53 @@ async fn dispatch_typed(
     let rooms_presenter = ctx.verified_signer.as_deref();
 
     match type_uri {
-        // The three join-decision arms are boxed. This `match` is one future
-        // the size of its largest arm, awaited for *every* document, and these
-        // three carry the whole decision — credential verification, every
-        // criterion evaluated, the vetting count, the policy — inline. Unboxed,
-        // they set the stack every other task is dispatched on: with
-        // `vetting-pcs` a `git-ns/*` document overflowed a 2 MiB test thread
-        // on Linux after VTI-13 (#1907) grew the join path.
-        jr::JOIN_REQUEST_SUBMIT_TYPE => Box::pin(handle_submit(state, ctx, doc)).await,
-        jr::JOIN_REQUEST_MANIFEST_TYPE => handle_manifest(state, ctx, doc).await,
-        jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
-        jr::JOIN_REQUEST_WITHDRAW_TYPE => handle_withdraw(state, ctx, doc).await,
-        jr::JOIN_REQUEST_SUPPLEMENT_TYPE => Box::pin(handle_supplement(state, ctx, doc)).await,
-        jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
-        mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
+        jr::JOIN_REQUEST_SUBMIT_TYPE => {
+            Box::pin(async move { handle_submit(state, ctx, doc).await })
+        }
+        jr::JOIN_REQUEST_MANIFEST_TYPE => {
+            Box::pin(async move { handle_manifest(state, ctx, doc).await })
+        }
+        jr::JOIN_REQUEST_STATUS_TYPE => {
+            Box::pin(async move { handle_status(state, ctx, doc).await })
+        }
+        jr::JOIN_REQUEST_WITHDRAW_TYPE => {
+            Box::pin(async move { handle_withdraw(state, ctx, doc).await })
+        }
+        jr::JOIN_REQUEST_SUPPLEMENT_TYPE => {
+            Box::pin(async move { handle_supplement(state, ctx, doc).await })
+        }
+        jr::MEMBER_SELF_REMOVE_TYPE => {
+            Box::pin(async move { handle_self_remove(state, ctx, doc).await })
+        }
+        mem::MEMBER_VMC_TYPE => Box::pin(async move { handle_member_vmc(state, ctx, doc).await }),
         vta_sdk::protocols::credential_exchange::REQUEST => {
-            credential_exchange::handle_request(state, ctx, doc).await
+            Box::pin(async move { credential_exchange::handle_request(state, ctx, doc).await })
         }
         vta_sdk::protocols::credential_exchange::PRESENT => {
-            Box::pin(credential_exchange::handle_present(state, ctx, doc)).await
+            Box::pin(
+                async move { Box::pin(credential_exchange::handle_present(state, ctx, doc)).await },
+            )
         }
         vetting_wire::VETTING_REVOKE_STATEMENT_TYPE => {
-            handle_revoke_statement(state, ctx, doc).await
+            Box::pin(async move { handle_revoke_statement(state, ctx, doc).await })
         }
-        vetting_wire::VETTING_VETTER_GRANT_TYPE => handle_vetter_grant(state, ctx, doc).await,
-        vetting_wire::VETTING_VETTER_PROFILE_TYPE => handle_vetter_profile(state, ctx, doc).await,
-        vetting_wire::VETTING_VETTER_LIST_TYPE => handle_vetter_list(state, ctx, doc).await,
-        vetting_wire::VETTING_VETTER_SHOW_TYPE => handle_vetter_show(state, ctx, doc).await,
-        vetting_wire::VETTING_VETTER_RESEND_TYPE => handle_vetter_resend(state, ctx, doc).await,
+        vetting_wire::VETTING_VETTER_GRANT_TYPE => {
+            Box::pin(async move { handle_vetter_grant(state, ctx, doc).await })
+        }
+        vetting_wire::VETTING_VETTER_PROFILE_TYPE => {
+            Box::pin(async move { handle_vetter_profile(state, ctx, doc).await })
+        }
+        vetting_wire::VETTING_VETTER_LIST_TYPE => {
+            Box::pin(async move { handle_vetter_list(state, ctx, doc).await })
+        }
+        vetting_wire::VETTING_VETTER_SHOW_TYPE => {
+            Box::pin(async move { handle_vetter_show(state, ctx, doc).await })
+        }
+        vetting_wire::VETTING_VETTER_RESEND_TYPE => {
+            Box::pin(async move { handle_vetter_resend(state, ctx, doc).await })
+        }
         vetting_wire::VETTING_VETTER_RESEND_0_2_TYPE => {
-            handle_vetter_resend_v0_2(state, ctx, doc).await
+            Box::pin(async move { handle_vetter_resend_v0_2(state, ctx, doc).await })
         }
         // Hidden vetting's community half (development branch `zkp-pcs`). Four exchanges: a
         // vetter enrolling, a vetter drawing its drip, a vetter asking to vet at an event, an
@@ -1061,20 +1088,26 @@ async fn dispatch_typed(
         // without the suite cannot serve them and answering "unsupported type" is the honest
         // response.
         #[cfg(feature = "vetting-pcs")]
-        crate::vetting::pcs_tasks::PCS_ROOT_TYPE => handle_pcs_root(state, ctx, doc).await,
+        crate::vetting::pcs_tasks::PCS_ROOT_TYPE => {
+            Box::pin(async move { handle_pcs_root(state, ctx, doc).await })
+        }
         #[cfg(feature = "vetting-pcs")]
-        crate::vetting::pcs_tasks::PCS_TOKENS_TYPE => handle_pcs_tokens(state, ctx, doc).await,
+        crate::vetting::pcs_tasks::PCS_TOKENS_TYPE => {
+            Box::pin(async move { handle_pcs_tokens(state, ctx, doc).await })
+        }
         #[cfg(feature = "vetting-pcs")]
-        crate::vetting::pcs_tasks::EVENT_MODE_TYPE => handle_event_mode(state, ctx, doc).await,
+        crate::vetting::pcs_tasks::EVENT_MODE_TYPE => {
+            Box::pin(async move { handle_event_mode(state, ctx, doc).await })
+        }
         #[cfg(feature = "vetting-pcs")]
         crate::vetting::pcs_tasks::PCS_CHALLENGE_TYPE => {
-            handle_pcs_challenge(state, ctx, doc).await
+            Box::pin(async move { handle_pcs_challenge(state, ctx, doc).await })
         }
         // The community's own act of turning hidden vetting on for a criterion. Admin REST with
         // no Trust Task of its own until now; was `POST /vetting/hidden`.
         #[cfg(feature = "vetting-pcs")]
         crate::vetting::pcs_tasks::HIDDEN_PUBLISH_TYPE => {
-            handle_hidden_publish(state, ctx, doc).await
+            Box::pin(async move { handle_hidden_publish(state, ctx, doc).await })
         }
         // The rooms family. Note what these still do not take: no `ctx`, and no auth
         // claims. A room operation is authorized by the authority chain the room itself
@@ -1095,7 +1128,7 @@ async fn dispatch_typed(
         // agree with `ROOMS_DISPATCHED_URIS` by hand, and had already failed to:
         // `rooms/records/curate` was dispatched and named in neither array, so
         // every version hint this service emitted was wrong about it.
-        uri if crate::rooms::handlers::serves(uri) => {
+        uri if crate::rooms::handlers::serves(uri) => Box::pin(async move {
             // A room operation is authorized against the DID that signed the
             // request, so an unsigned one has nothing to authorize. The spine
             // verified any proof that was present; absent, there is no signer.
@@ -1103,7 +1136,7 @@ async fn dispatch_typed(
                 return reject_with(&doc, trust_tasks_rs::RejectReason::ProofRequired);
             };
             crate::rooms::handlers::dispatch(state, doc, presenter).await
-        }
+        }),
         // Every `git-ns/*` task, in one arm, read off that family's own
         // dispatcher as the rooms arm is. Authority there is the signer's git
         // rights, resolved from the VTC's records at execution time — never
@@ -1114,35 +1147,35 @@ async fn dispatch_typed(
         // sender for a proof their spec allowed to be absent. The sender is
         // still passed through for `account/link-status`'s now-dead fallback
         // (see `git_ns::tasks::caller`); `view` no longer reads it.
-        uri if backup_tasks::URIS.contains(&uri) => {
+        uri if backup_tasks::URIS.contains(&uri) => Box::pin(async move {
             match backup_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("backup_tasks::URIS names {uri}, which it does not route"),
             }
-        }
-        uri if admin_tasks::URIS.contains(&uri) => {
+        }),
+        uri if admin_tasks::URIS.contains(&uri) => Box::pin(async move {
             match admin_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("admin_tasks::URIS names {uri}, which it does not route"),
             }
-        }
-        uri if auth_tasks::URIS.contains(&uri) => {
+        }),
+        uri if auth_tasks::URIS.contains(&uri) => Box::pin(async move {
             match auth_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("auth_tasks::URIS names {uri}, which it does not route"),
             }
-        }
-        uri if install_tasks::URIS.contains(&uri) => {
+        }),
+        uri if install_tasks::URIS.contains(&uri) => Box::pin(async move {
             match install_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("install_tasks::URIS names {uri}, which it does not route"),
             }
-        }
-        uri if recognise_tasks::URIS.contains(&uri) => {
+        }),
+        uri if recognise_tasks::URIS.contains(&uri) => Box::pin(async move {
             match recognise_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
@@ -1150,16 +1183,16 @@ async fn dispatch_typed(
                     unreachable!("recognise_tasks::URIS names {uri}, which it does not route")
                 }
             }
-        }
+        }),
         #[cfg(feature = "website")]
-        uri if website_tasks::URIS.contains(&uri) => {
+        uri if website_tasks::URIS.contains(&uri) => Box::pin(async move {
             match website_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("website_tasks::URIS names {uri}, which it does not route"),
             }
-        }
-        uri if signing_key_tasks::URIS.contains(&uri) => {
+        }),
+        uri if signing_key_tasks::URIS.contains(&uri) => Box::pin(async move {
             match signing_key_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
@@ -1167,29 +1200,29 @@ async fn dispatch_typed(
                     unreachable!("signing_key_tasks::URIS names {uri}, which it does not route")
                 }
             }
-        }
-        uri if surface_tasks::URIS.contains(&uri) => {
+        }),
+        uri if surface_tasks::URIS.contains(&uri) => Box::pin(async move {
             match surface_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("surface_tasks::URIS names {uri}, which it does not route"),
             }
-        }
-        uri if policy_tasks::URIS.contains(&uri) => {
+        }),
+        uri if policy_tasks::URIS.contains(&uri) => Box::pin(async move {
             match policy_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("policy_tasks::URIS names {uri}, which it does not route"),
             }
-        }
-        uri if role_tasks::URIS.contains(&uri) => {
+        }),
+        uri if role_tasks::URIS.contains(&uri) => Box::pin(async move {
             match Box::pin(role_tasks::dispatch(state, ctx, doc, uri)).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("role_tasks::URIS names {uri}, which it does not route"),
             }
-        }
-        uri if community_tasks::URIS.contains(&uri) => {
+        }),
+        uri if community_tasks::URIS.contains(&uri) => Box::pin(async move {
             match community_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
@@ -1197,8 +1230,8 @@ async fn dispatch_typed(
                     unreachable!("community_tasks::URIS names {uri}, which it does not route")
                 }
             }
-        }
-        uri if step_up_passkey_tasks::URIS.contains(&uri) => {
+        }),
+        uri if step_up_passkey_tasks::URIS.contains(&uri) => Box::pin(async move {
             match step_up_passkey_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
@@ -1206,8 +1239,8 @@ async fn dispatch_typed(
                     unreachable!("step_up_passkey_tasks::URIS names {uri}, which it does not route")
                 }
             }
-        }
-        uri if step_up_approver_tasks::URIS.contains(&uri) => {
+        }),
+        uri if step_up_approver_tasks::URIS.contains(&uri) => Box::pin(async move {
             match step_up_approver_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
@@ -1217,15 +1250,15 @@ async fn dispatch_typed(
                     )
                 }
             }
-        }
-        uri if member_tasks::URIS.contains(&uri) => {
+        }),
+        uri if member_tasks::URIS.contains(&uri) => Box::pin(async move {
             match member_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("member_tasks::URIS names {uri}, which it does not route"),
             }
-        }
-        uri if crate::git_ns::tasks::serves(uri) => {
+        }),
+        uri if crate::git_ns::tasks::serves(uri) => Box::pin(async move {
             crate::git_ns::tasks::dispatch(
                 state,
                 doc,
@@ -1233,58 +1266,90 @@ async fn dispatch_typed(
                 ctx.sender_did.as_deref(),
             )
             .await
+        }),
+        PERSONHOOD_CHALLENGE_TYPE => {
+            Box::pin(async move { handle_personhood_challenge(state, ctx, doc).await })
         }
-        PERSONHOOD_CHALLENGE_TYPE => handle_personhood_challenge(state, ctx, doc).await,
-        PERSONHOOD_ASSERT_TYPE => handle_personhood_assert(state, ctx, doc).await,
+        PERSONHOOD_ASSERT_TYPE => {
+            Box::pin(async move { handle_personhood_assert(state, ctx, doc).await })
+        }
         // The admin-facing member verbs. Each is authorized from the verified
         // signer's ACL entry — never from a bearer token, which this endpoint
         // does not read — see [`admin_signer`].
-        MEMBER_CREDENTIALS_TYPE => handle_member_credentials(state, ctx, doc).await,
-        MEMBER_UPDATE_TYPE => handle_member_update(state, ctx, doc).await,
-        MEMBER_ADMIN_REMOVE_TYPE => handle_member_admin_remove(state, ctx, doc).await,
-        MEMBER_PURGE_TYPE => handle_member_purge(state, ctx, doc).await,
-        JOIN_DECIDE_TYPE => handle_join_decide(state, ctx, doc).await,
-        COMMUNITY_PROFILE_UPDATE_TYPE => handle_community_profile_update(state, ctx, doc).await,
-        CONFIG_EXPORT_TYPE => handle_config_export(state, ctx, doc).await,
-        CONFIG_IMPORT_TYPE => handle_config_import(state, ctx, doc).await,
-        ENDORSEMENT_TYPE_REGISTER_TYPE => handle_endorsement_type_register(state, ctx, doc).await,
-        ENDORSEMENT_TYPE_DELETE_TYPE => handle_endorsement_type_delete(state, ctx, doc).await,
-        BACKUP_EXPORT_TYPE => handle_backup_export(state, ctx, doc).await,
-        ACL_GRANT_TYPE => acl_tasks::handle_grant(state, ctx, doc).await,
-        ACL_CHANGE_ROLE_TYPE => acl_tasks::handle_change_role(state, ctx, doc).await,
-        ACL_SHOW_TYPE => acl_tasks::handle_show(state, ctx, doc).await,
-        ACL_LIST_TYPE => acl_tasks::handle_list(state, ctx, doc).await,
-        ACL_UPDATE_TYPE => acl_tasks::handle_update(state, ctx, doc).await,
-        ACL_REVOKE_TYPE => acl_tasks::handle_revoke(state, ctx, doc).await,
-        ACL_GRANT_V0_2_TYPE => acl_tasks::handle_grant_v0_2(state, ctx, doc).await,
-        ACL_CHANGE_ROLE_V0_2_TYPE => acl_tasks::handle_change_role_v0_2(state, ctx, doc).await,
-        ACL_SHOW_V0_2_TYPE => acl_tasks::handle_show_v0_2(state, ctx, doc).await,
-        ACL_LIST_V0_2_TYPE => acl_tasks::handle_list_v0_2(state, ctx, doc).await,
-        ACL_UPDATE_V0_2_TYPE => acl_tasks::handle_update_v0_2(state, ctx, doc).await,
-        ACL_REVOKE_V0_2_TYPE => acl_tasks::handle_revoke_v0_2(state, ctx, doc).await,
-        ACL_SWAP_KEY_TYPE => acl_tasks::handle_swap_key(state, ctx, doc).await,
-        STEP_UP_APPROVE_RESPONSE_TYPE => handle_step_up_approve_response(state, ctx, doc).await,
+        MEMBER_CREDENTIALS_TYPE => {
+            Box::pin(async move { handle_member_credentials(state, ctx, doc).await })
+        }
+        MEMBER_UPDATE_TYPE => Box::pin(async move { handle_member_update(state, ctx, doc).await }),
+        MEMBER_ADMIN_REMOVE_TYPE => {
+            Box::pin(async move { handle_member_admin_remove(state, ctx, doc).await })
+        }
+        MEMBER_PURGE_TYPE => Box::pin(async move { handle_member_purge(state, ctx, doc).await }),
+        JOIN_DECIDE_TYPE => Box::pin(async move { handle_join_decide(state, ctx, doc).await }),
+        COMMUNITY_PROFILE_UPDATE_TYPE => {
+            Box::pin(async move { handle_community_profile_update(state, ctx, doc).await })
+        }
+        CONFIG_EXPORT_TYPE => Box::pin(async move { handle_config_export(state, ctx, doc).await }),
+        CONFIG_IMPORT_TYPE => Box::pin(async move { handle_config_import(state, ctx, doc).await }),
+        ENDORSEMENT_TYPE_REGISTER_TYPE => {
+            Box::pin(async move { handle_endorsement_type_register(state, ctx, doc).await })
+        }
+        ENDORSEMENT_TYPE_DELETE_TYPE => {
+            Box::pin(async move { handle_endorsement_type_delete(state, ctx, doc).await })
+        }
+        BACKUP_EXPORT_TYPE => Box::pin(async move { handle_backup_export(state, ctx, doc).await }),
+        ACL_GRANT_TYPE => Box::pin(async move { acl_tasks::handle_grant(state, ctx, doc).await }),
+        ACL_CHANGE_ROLE_TYPE => {
+            Box::pin(async move { acl_tasks::handle_change_role(state, ctx, doc).await })
+        }
+        ACL_SHOW_TYPE => Box::pin(async move { acl_tasks::handle_show(state, ctx, doc).await }),
+        ACL_LIST_TYPE => Box::pin(async move { acl_tasks::handle_list(state, ctx, doc).await }),
+        ACL_UPDATE_TYPE => Box::pin(async move { acl_tasks::handle_update(state, ctx, doc).await }),
+        ACL_REVOKE_TYPE => Box::pin(async move { acl_tasks::handle_revoke(state, ctx, doc).await }),
+        ACL_GRANT_V0_2_TYPE => {
+            Box::pin(async move { acl_tasks::handle_grant_v0_2(state, ctx, doc).await })
+        }
+        ACL_CHANGE_ROLE_V0_2_TYPE => {
+            Box::pin(async move { acl_tasks::handle_change_role_v0_2(state, ctx, doc).await })
+        }
+        ACL_SHOW_V0_2_TYPE => {
+            Box::pin(async move { acl_tasks::handle_show_v0_2(state, ctx, doc).await })
+        }
+        ACL_LIST_V0_2_TYPE => {
+            Box::pin(async move { acl_tasks::handle_list_v0_2(state, ctx, doc).await })
+        }
+        ACL_UPDATE_V0_2_TYPE => {
+            Box::pin(async move { acl_tasks::handle_update_v0_2(state, ctx, doc).await })
+        }
+        ACL_REVOKE_V0_2_TYPE => {
+            Box::pin(async move { acl_tasks::handle_revoke_v0_2(state, ctx, doc).await })
+        }
+        ACL_SWAP_KEY_TYPE => {
+            Box::pin(async move { acl_tasks::handle_swap_key(state, ctx, doc).await })
+        }
+        STEP_UP_APPROVE_RESPONSE_TYPE => {
+            Box::pin(async move { handle_step_up_approve_response(state, ctx, doc).await })
+        }
         STEP_UP_APPROVE_RESPONSE_V0_5_TYPE => {
-            handle_step_up_approve_response_v0_5(state, ctx, doc).await
+            Box::pin(async move { handle_step_up_approve_response_v0_5(state, ctx, doc).await })
         }
         STEP_UP_APPROVE_RESPONSE_V0_6_TYPE => {
-            handle_step_up_approve_response_v0_6(state, ctx, doc).await
+            Box::pin(async move { handle_step_up_approve_response_v0_6(state, ctx, doc).await })
         }
         // Boxed: a decision that completes an action re-enters this dispatcher
         // with the parked document.
         crate::acl::admin_consent::DECISION_TYPE
         | crate::acl::admin_consent::DECISION_V0_2_TYPE => {
-            Box::pin(action_tasks::handle_decision(state, ctx, doc)).await
+            Box::pin(async move { action_tasks::handle_decision(state, ctx, doc).await })
         }
-        uri if action_tasks::URIS.contains(&uri) => {
+        uri if action_tasks::URIS.contains(&uri) => Box::pin(async move {
             match Box::pin(action_tasks::dispatch(state, ctx, doc, uri)).await {
                 Some(outcome) => outcome,
                 // `URIS` is exactly what `dispatch` routes.
                 None => unreachable!("action_tasks::URIS names {uri}, which it does not route"),
             }
-        }
-        discovery::DISCOVERY_V0_3_TYPE => discovery::handle(ctx, doc),
-        other => unsupported_type_or_version(&doc, other),
+        }),
+        discovery::DISCOVERY_V0_3_TYPE => Box::pin(async move { discovery::handle(ctx, doc) }),
+        other => Box::pin(async move { unsupported_type_or_version(&doc, other) }),
     }
 }
 
