@@ -207,6 +207,11 @@ pub(crate) fn render_v0_2(e: &VtcAclEntry, review: Option<&DelegationReview>) ->
                     if g.break_glass.is_some() {
                         v["breakGlass"] = json!(true);
                     }
+                    // Recorded for itself under single-administrator mode
+                    // (VTI-APV-022, `git_ns::single_admin`).
+                    if g.single_admin.is_some() {
+                        v[crate::git_ns::single_admin::EXT_MARKER] = json!(true);
+                    }
                     if let Some(r) = &g.review {
                         v["review"] = json!({ "granter": r.granter, "deadline": r.deadline });
                     }
@@ -2211,6 +2216,7 @@ mod tests {
                 granter_was_member: true,
                 break_glass: None,
                 review: None,
+                single_admin: None,
             });
         let v = render_v0_2(&e, None);
         let g = &v["ext"]["org.openvtc"]["resourceGrants"][0];

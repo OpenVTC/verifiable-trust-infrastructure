@@ -328,14 +328,30 @@ authorizes it instead. The operation runs at once; nothing waits in Actions.
   one credential remove the only other eligible party and then act on the
   waiver. A community that wants no cooling-off sets
   `acl.removal_cooling_off = 0`, a visible, audited configuration change.
+- **It covers git separation of duties the same way.** Nobody records an
+  elevated git right (`git.ns.admin`, `git.repo.create`, `git.repo.own`) for
+  themselves (git-namespaces *Separation of duties*), and break-glass needs
+  another administrator to ratify — so in this mode, where nobody else could
+  make the grant or decide the break-glass, such a self-grant (`cnm git grant`,
+  `create`, `adopt --owner <you>`, `reseat` to yourself, a drift adoption for
+  your own account) runs on your step-up bound to that operation instead. The
+  record is marked, counts toward the last-owner and last-admin invariants, and
+  needs no ratification; a second administrator, or an owner who could make the
+  grant, and the refusal applies again ([git-namespaces](git-namespaces.md#single-administrator-mode-waives-it-where-nobody-else-could-grant)).
 - **It is never quiet.** Every administrator sees a permanent *SINGLE ADMIN
   MODE* banner on every console page and a dashboard tile; `cnm actions list`
   prints the same notice. Each waived operation is entered in the Actions
   history marked **Consent waived**. And it is audited at `Critical`: a
   `SingleAdminMode` row at every start with the mode in effect (`inEffect`),
   another when the host configuration turned it on or off since the last start
-  (`enabled` / `disabled`), and one for every operation whose consent it waived
-  (`consentWaived`, naming the task, the requirement and the payload digest).
+  (`enabled` / `disabled`), one for every operation whose consent it waived
+  (`consentWaived`, naming the task, the requirement and the payload digest),
+  and one for every git self-grant it waived (`selfGrantWaived`, naming the
+  task, its digest, the git-ns action, the right and the resource — written
+  before the record, and refusing the operation if it cannot be). A waived git
+  self-grant is answered with `ext.org.openvtc.selfGrantWaived`, which `cnm`
+  reports as *Single-administrator waiver applied*, and shows in the git
+  activity list as `gitNs.right.selfGrantWaived`.
 
 ### 2.2 Several administrators
 
@@ -499,7 +515,10 @@ bound to the move.
    72 hours*", linking to it. A sends nothing again.
 3. Each approver finds the action in the console's **Actions** page (or `cnm
    actions list`) and approves or declines it, signing with their own DID
-   (§4 step 6). One decline closes it for everyone.
+   (§4 step 6). One decline closes it for everyone. An open console learns of
+   a new action within a second over its live channel (a hint, never the
+   action — `website-and-admin.md`, *Live updates*), and polls every minute
+   when that channel is down; `cnm actions watch` does the same on a terminal.
 4. The approval that reaches the threshold **runs the stored operation**. The
    VTC re-checks everything first, against the community as it is then
    (VTI-APV-017):
@@ -611,6 +630,10 @@ place to decide it at the next sweep.
 - No one decides their own action: the requester is never an approver, the
   subject of a reduction never approves it, and a break-glass is never
   ratified by the one who broke the glass.
+- No one records an elevated git right for themselves; break-glass is the
+  explicit way, ratified by another administrator. In single-administrator
+  mode, where nobody else could grant it, the requester's operation-bound
+  step-up stands in, audited at `Critical` (§2.1a).
 
 ### 3.4 Admins cannot remove each other down to nothing
 

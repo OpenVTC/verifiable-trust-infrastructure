@@ -926,10 +926,39 @@ fn witnesses() -> Vec<Witness> {
         ),
     ];
     table.extend(action_witnesses());
+    table.extend(event_witnesses());
     table.extend(role_witnesses());
     #[cfg(feature = "vetting-pcs")]
     table.extend(pcs_witnesses());
     table
+}
+
+/// The live console channel's declared codes
+/// (`vtc/admin/events/subscribe/0.1`), each driven over the HTTPS door in
+/// `admin_events.rs`.
+fn event_witnesses() -> Vec<Witness> {
+    use crate::admin_events::codes as c;
+    use trust_tasks_rs::specs::vtc::admin::events::subscribe::v0_1::error_codes as e;
+    vec![
+        witness!(
+            e::NOT_ADMINISTRATOR,
+            c::NOT_ADMINISTRATOR,
+            "admin_events.rs",
+            "refusals_are_json_and_open_no_stream"
+        ),
+        witness!(
+            e::STREAM_UNAVAILABLE,
+            c::STREAM_UNAVAILABLE,
+            "admin_events.rs",
+            "refusals_are_json_and_open_no_stream"
+        ),
+        witness!(
+            e::TOO_MANY_STREAMS,
+            c::TOO_MANY_STREAMS,
+            "admin_events.rs",
+            "streams_past_the_cap_are_refused_too_many_streams"
+        ),
+    ]
 }
 
 /// The action list's declared codes (`vtc/admin/actions/*`), each driven over

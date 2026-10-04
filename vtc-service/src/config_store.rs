@@ -400,14 +400,19 @@ impl ConfigStore {
 
     /// Write (insert or replace) a db-layer override.
     pub async fn put(&self, key: &str, value: &Value) -> Result<(), AppError> {
-        self.ks.insert(storage_key(key), value).await
+        self.ks.insert(storage_key(key), value).await?;
+        // `vtc/config/export` reads these (`crate::admin_events`).
+        crate::admin_events::notify(crate::admin_events::Topic::Config);
+        Ok(())
     }
 
     /// Remove a db-layer override. After this call, the effective
     /// value comes from the lower-priority layer (env, toml, or
     /// default).
     pub async fn delete(&self, key: &str) -> Result<(), AppError> {
-        self.ks.remove(storage_key(key)).await
+        self.ks.remove(storage_key(key)).await?;
+        crate::admin_events::notify(crate::admin_events::Topic::Config);
+        Ok(())
     }
 
     /// Snapshot every db-layer override. Used by

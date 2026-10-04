@@ -449,6 +449,31 @@ button.primary:focus-visible {
   white-space: nowrap;
 }
 
+/* The live channel's status (components/LiveIndicator.tsx). */
+.live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.live-indicator .live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex: none;
+}
+
+.live-indicator.live .live-dot {
+  background: var(--success);
+}
+
+.nav.collapsed .live-indicator .live-label {
+  display: none;
+}
+
 .session-badge button.link {
   text-align: left;
   margin-top: var(--space-1);

@@ -81,7 +81,8 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   AclMigrated: "ACL rows migrated to role-based administration at boot",
   AdminActionBurst: "Admin raised a burst of actions for approval",
   AdminActionEffect: "An approved action's operation took effect",
-  SingleAdminMode: "Single-administrator mode: in effect, changed, or a consent waived (VTI-APV-022)",
+  SingleAdminMode:
+    "Single-administrator mode: in effect, changed, a consent waived, or a git self-grant waived (VTI-APV-022)",
   AdminRoleDefined: "Custom administrative role defined",
   AdminRoleDeleted: "Custom administrative role deleted",
   AclKeyRotated: "ACL entry rolled to a new key",

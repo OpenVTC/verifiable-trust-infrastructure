@@ -123,6 +123,11 @@ fn build_with(
     }
 
     let mut rights = Vec::new();
+    // Records made under single-administrator mode's waiver of separation of
+    // duties (`super::single_admin`), listed for 0.4 and 0.5 under
+    // `ext.org.openvtc.selfGrantWaived` — `RightRecord` itself admits no
+    // member to carry the mark.
+    let mut waived = Vec::new();
     for (scope, set) in &snap.rights {
         let Some(res) = snap.scope_resource(scope) else {
             continue;
@@ -152,6 +157,9 @@ fn build_with(
             if governed || own || (unratified_bg && bg_visible) {
                 if shape.break_glass {
                     rights.push(wire::right_record_full(row, &res, governed));
+                    if let Some(w) = super::single_admin::view_entry(row, &res) {
+                        waived.push(w);
+                    }
                 } else if row.is_live(t) {
                     rights.push(wire::right_record(row, &res, governed));
                 }
@@ -159,7 +167,11 @@ fn build_with(
         }
     }
 
-    json!({ "namespaces": namespaces, "repos": repos, "rights": rights })
+    let mut v = json!({ "namespaces": namespaces, "repos": repos, "rights": rights });
+    if !waived.is_empty() {
+        v["ext"] = json!({ "org.openvtc": { super::single_admin::EXT_MARKER: waived } });
+    }
+    v
 }
 
 /// The member's view, as the generated response type.
@@ -311,4 +323,23 @@ pub fn narrow_to_break_glass(v: &mut Value) {
         repos.retain(keep_repo);
     }
     v["rights"] = Value::Array(rights);
+    // A self-grant waived by single-administrator mode is no break-glass.
+    if let Some(ours) = v
+        .pointer_mut("/ext/org.openvtc")
+        .and_then(Value::as_object_mut)
+    {
+        ours.remove(super::single_admin::EXT_MARKER);
+        if ours.is_empty()
+            && let Some(ext) = v.get_mut("ext").and_then(Value::as_object_mut)
+        {
+            ext.remove("org.openvtc");
+        }
+    }
+    if v.get("ext")
+        .and_then(Value::as_object)
+        .is_some_and(serde_json::Map::is_empty)
+        && let Some(o) = v.as_object_mut()
+    {
+        o.remove("ext");
+    }
 }

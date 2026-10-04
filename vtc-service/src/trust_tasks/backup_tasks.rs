@@ -670,6 +670,7 @@ async fn rerecord_waiver(
                     task: Some(type_uri.clone()),
                     digest: Some(vti_common::task_consent::payload_digest(&type_uri, &shown)?),
                     kind: Some(Act::RestoreBackup.kind(&type_uri).into()),
+                    ..Default::default()
                 },
             ),
         )

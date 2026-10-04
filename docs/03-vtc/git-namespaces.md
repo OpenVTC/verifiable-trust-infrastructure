@@ -477,7 +477,9 @@ a namespace admin over it) answers an item with `git-ns/drift/resolve`:
   there — and, while no map is reported, `git.repo.maintain`) for themselves — the member the item names is compared with
   the resolver after console-key delegation, and a match is refused
   `git-ns:selfGrantNotAllowed`: another owner adopts it, or the resolver uses
-  `git-ns/right/break-glass`. Adopting `commit.sign`, or `maintain` where it is
+  `git-ns/right/break-glass` (in single-administrator mode, with nobody else
+  who could adopt it, it is waived on the resolver's step-up instead — see
+  *Separation of duties*). Adopting `commit.sign`, or `maintain` where it is
   not elevated, for oneself is allowed. The right is the **lowest** whose role in the bridge's reported role map (the
   repository's own entry where it has one) is the observed role — under the
   default map `admin` is `git.repo.own`, `maintain` is `git.repo.maintain`,
@@ -576,7 +578,9 @@ admin record ended. The subject is never the administrator reseating:
 reseating a namespace to yourself is a self-grant of `git.ns.admin`, refused
 with `git-ns:selfGrantNotAllowed` (separation of duties) — another community
 administrator reseats it to you, or (once this VTC serves it) you record it
-explicitly with `git-ns/right/break-glass`.
+explicitly with `git-ns/right/break-glass`. In single-administrator mode, with
+no other administrator who could reseat it, it is waived on your passkey
+gesture instead ([below](#single-administrator-mode-waives-it-where-nobody-else-could-grant)).
 
 ## Separation of duties and break-glass
 
@@ -602,7 +606,10 @@ creator the owner only on an **explicit** `git.repo.create` record (granted by
 someone else, or a break-glass). A `git.repo.create` implied by `git.ns.admin`
 carries no creator ownership: a namespace admin names another member with
 `owners` (`cnm git create --owner <did>`), or is refused
-`git-ns:selfGrantNotAllowed`. A single-admin community breaks the glass once
+`git-ns:selfGrantNotAllowed`. A community in single-administrator mode has
+these self-grants waived on a passkey gesture where nobody else could make them
+([below](#single-administrator-mode-waives-it-where-nobody-else-could-grant));
+one with a single git administrator but not in that mode breaks the glass once
 for `git.repo.create` on the namespace, not once per repository.
 
 Elevated rights (`own`, `repo.create`, `ns.admin`) go only to a current
@@ -669,6 +676,67 @@ it: `break_glass` (`"enabled"` by default, or `"disabled"`),
 `break_glass_delay_seconds` (the right takes effect later; at most a day;
 revocable meanwhile), `break_glass_min_justification_chars`, and any deny
 decision on `input.action == "right.breakGlass"` (or `"right.ratify"`).
+
+### Single-administrator mode waives it where nobody else could grant
+
+A community run by one person (`[acl] single_admin_mode`, set at install —
+[admin-access §2.1a](admin-access.md#21a-single-administrator-mode)) has nobody
+to make its administrator's elevated grants and nobody to ratify a
+break-glass, so separation of duties would make ordinary work impossible:
+`cnm git adopt github.com/<login>/<repo> --owner <your DID>` would be refused,
+and every break-glass would stay unratified forever. In that mode, and **only
+where nobody but the requester is eligible**, rule 7 is waived for the one
+operation under the same discipline as the consent waiver (VTI-APV-022):
+
+- **Who counts as eligible** (`git_ns::single_admin::others_eligible`): the
+  consent gate's own test (`admin_consent::approvers_for`) over the namespace's
+  `git.ns.admin` — every other live entry that could decide a break-glass on
+  it (its administrators and the community-wide holders) or whose approve scope
+  reaches it — and every other member whose git rights carry the authority to
+  make this grant (rules 1 and 2: an owner of an existing repository could make
+  another owner). One such party and the refusal stands, gesture or not; the
+  mode off, it always stands.
+- **Every path the rule covers**: `git-ns/right/grant`, `repo/create` naming
+  the requester owner on an implied `git.repo.create` (or by default),
+  `repo/adopt` naming the requester owner, `namespace/reseat` to the requester,
+  and a `drift/resolve` adoption whose linked member is the resolver. Rules 1,
+  2 and 5, the granter-covers floor, `[git_ns] elevated_requires_admin` and the
+  community's policy all still apply.
+- **Step-up**: the requester's operation-bound passkey gesture, the one
+  break-glass takes, bound by digest to the document as sent (the
+  `drift/resolve` document, for an adoption). The first send is refused
+  `permissionDenied` with `details.stepUpRequest`, whose message says
+  *single-administrator mode*; `cnm git grant|create|adopt|reseat|drift resolve`
+  print a note saying the gesture stands in for a second administrator, show
+  the `<vtc>/admin/step-up#request=…` link, and send the identical document
+  again — the same flow as `cnm git break-glass`.
+- **Audited first**: a `Critical` `SingleAdminMode { event: selfGrantWaived }`
+  row naming the rule (`git-ns/right/grant/0.3#rule-7`), the task, its digest,
+  the git-ns action (`right.grant`, `repo.create`, `repo.adopt`,
+  `namespace.reseat`, `drift.adopt`), the right and the resource, written
+  **before** the record. If it cannot be written the operation is refused and
+  nothing is recorded.
+- **Marked**: the record carries `singleAdmin {at, task}` (never published);
+  the task's answer carries `ext.org.openvtc.selfGrantWaived {mode:
+  "singleAdministrator", requirement, right, resource}`, which `cnm` reports
+  as *Single-administrator waiver applied*; `git-ns/view` 0.4 and 0.5 list such
+  records under `ext.org.openvtc.selfGrantWaived`; the ACL entry's resource
+  grant shows `selfGrantWaived: true`; and a `gitNs.right.selfGrantWaived`
+  activity item follows the write.
+- **It counts**: unlike an unratified break-glass record, a waived record
+  counts toward the last-owner and last-admin invariants — in such a community
+  it is how rights are normally held. There is nothing to ratify.
+
+The moment a second administrator (or an owner who could make the grant)
+exists, self-grants are refused again and go through them or break-glass.
+
+**Specification status.** `git-ns/right/grant/0.3` states rule 7 as a MUST
+and names break-glass as "the one way" to self-grant; it does not yet carve out
+VTI-APV-022's single-administrator mode. This waiver is host configuration, not
+community policy (which still cannot waive the rule), but it is a divergence
+from the rule's text until the git-ns specification (dtgwg-trust-tasks-tf)
+admits it and it is recorded in the VTI specification's divergence register
+(Appendix F).
 
 
 ### Step-up passkeys for members

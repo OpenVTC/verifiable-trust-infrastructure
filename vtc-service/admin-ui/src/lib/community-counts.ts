@@ -19,7 +19,8 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { postSignedRead } from "./api";
-import { useRefetchWhenSeen, WAITING_POLL_MS } from "./action-badge";
+import { useRefetchWhenSeen } from "./action-badge";
+import { useLivePollMs } from "./use-live-events";
 import { holds } from "./viewer";
 import type { JoinRequestsPage, MembersPage } from "./wire-types";
 
@@ -92,7 +93,8 @@ export function mayCount(caps: ReadonlyArray<string> | null | undefined, cap: st
 /**
  * Pending join requests, kept fresh while `enabled` the way the Actions badge
  * is: fetched when enabled (sign-in), when the tab regains focus or becomes
- * visible, and every 60 s. `undefined` while unknown or on failure — a badge
+ * visible, when the live channel hints at `joinRequests`, and on the same poll
+ * (60 s offline, 5 minutes live). `undefined` while unknown or on failure — a badge
  * is decoration and must never take the shell down.
  */
 export function usePendingJoinRequests(enabled: boolean): Tally | undefined {
@@ -103,11 +105,12 @@ export function usePendingJoinRequests(enabled: boolean): Tally | undefined {
 /** [`usePendingJoinRequests`]'s query, whole — the dashboard tile shows its
  *  loading and failure states too. One cache entry serves both. */
 export function usePendingJoinRequestsQuery(enabled: boolean) {
+  const pollMs = useLivePollMs();
   const query = useQuery({
     queryKey: PENDING_JOIN_REQUESTS_KEY,
     queryFn: countPendingJoinRequests,
     enabled,
-    refetchInterval: enabled ? WAITING_POLL_MS : false,
+    refetchInterval: enabled ? pollMs : false,
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: false,
     staleTime: 0,

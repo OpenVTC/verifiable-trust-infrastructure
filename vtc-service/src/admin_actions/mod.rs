@@ -456,7 +456,11 @@ async fn save(state: &AppState, rec: &ActionRecord) -> Result<(), AppError> {
     state
         .admin_actions_ks
         .insert(action_key(&rec.id), rec)
-        .await
+        .await?;
+    // Every change to an action passes here: tell open consoles to re-read
+    // (`crate::admin_events`). A hint, never the record.
+    crate::admin_events::notify_actions();
+    Ok(())
 }
 
 pub(crate) async fn all(state: &AppState) -> Result<Vec<ActionRecord>, AppError> {
@@ -491,7 +495,9 @@ async fn delete(state: &AppState, rec: &ActionRecord) -> Result<(), AppError> {
             .await?;
     }
     state.admin_actions_ks.remove(effect_key(&rec.id)).await?;
-    state.admin_actions_ks.remove(action_key(&rec.id)).await
+    state.admin_actions_ks.remove(action_key(&rec.id)).await?;
+    crate::admin_events::notify_actions();
+    Ok(())
 }
 
 // ─── submission and execution context ────────────────────────────────────
@@ -577,6 +583,7 @@ pub(crate) async fn spend_waiver(state: &AppState, waiver: Waiver) -> Result<(),
                     task: Some(waiver.type_uri.clone()),
                     digest: Some(waiver.digest.clone()),
                     kind: Some(kind),
+                    ..Default::default()
                 }),
             )
             .await?;

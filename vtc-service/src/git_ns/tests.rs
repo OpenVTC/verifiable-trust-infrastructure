@@ -222,6 +222,17 @@ async fn send(state: &AppState, who: &Party, task: &str, payload: Value) -> Trus
     dispatch_trust_task_core(state, &JoinAuthCtx::rest(), &body).await
 }
 
+/// The document a direct `right_grant_via` in these tests stands for: none
+/// carries a single-administrator waiver, so it is never bound to.
+fn test_waived_op() -> super::single_admin::WaivedOp<'static> {
+    static PAYLOAD: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    super::single_admin::WaivedOp {
+        type_uri: "https://trusttasks.org/spec/git-ns/drift/resolve/0.3",
+        payload: PAYLOAD.get_or_init(|| json!({})),
+        kind: "drift.adopt",
+    }
+}
+
 fn payload(out: &TrustTaskOutcome) -> Value {
     let doc: Value = serde_json::from_slice(&out.body).unwrap();
     doc["payload"].clone()
@@ -4680,6 +4691,7 @@ async fn an_adopted_grant_rechecks_the_link_where_it_is_written() {
             via: "drift.adopt",
             still_holds: &holds,
             linked_to: Some(&wrong),
+            op: test_waived_op(),
         }),
     )
     .await;
@@ -4701,6 +4713,7 @@ async fn an_adopted_grant_rechecks_the_link_where_it_is_written() {
             via: "drift.adopt",
             still_holds: &holds,
             linked_to: Some(&gone),
+            op: test_waived_op(),
         }),
     )
     .await;
@@ -4723,6 +4736,7 @@ async fn an_adopted_grant_rechecks_the_link_where_it_is_written() {
                 via: "drift.adopt",
                 still_holds: &holds,
                 linked_to: Some(&right),
+                op: test_waived_op(),
             }),
         )
         .await
@@ -5420,6 +5434,7 @@ async fn an_adoption_whose_item_changed_grants_nothing() {
             via: "drift.adopt",
             still_holds: &still_holds,
             linked_to: None,
+            op: test_waived_op(),
         }),
     )
     .await;
@@ -7604,3 +7619,4 @@ async fn namespace_list_signed_by_a_console_key_answers_its_administrator() {
 mod break_glass_queue;
 mod c3;
 mod pr_gate;
+mod single_admin;

@@ -404,6 +404,15 @@ export interface paths {
          *
          *     Administrator verbs are dispatched here too — their authority is the
          *     verified signer's ACL entry, read when the document executes.
+         *
+         *     ## Streamed responses (HTTPS binding 0.3 §2.1)
+         *
+         *     A request sent with `Accept: text/event-stream` may be answered with a
+         *     stream — today only `vtc/admin/events/subscribe/0.1`
+         *     (`crate::admin_events`). The document runs through the whole pipeline
+         *     first; a refusal is the ordinary JSON `trust-task-error`, and only a
+         *     success opens `200 text/event-stream`, whose first event is the signed
+         *     `#response`. Every other task answers JSON whatever `Accept` says.
          */
         post: operations["dispatch"];
         delete?: never;

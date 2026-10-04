@@ -40,6 +40,7 @@ pub mod projection;
 pub mod reproject;
 pub mod role_map;
 pub mod rules;
+pub mod single_admin;
 pub mod store;
 pub mod tasks;
 pub mod view;

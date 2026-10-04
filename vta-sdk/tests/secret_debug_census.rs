@@ -129,6 +129,9 @@ const NOT_SECRET_EXACT: &[&str] = &[
     "record_key",
     // A push attempt's outbox idempotency key.
     "attempt_key",
+    // A queue action's dedup key: the identifier of the record it is raised
+    // for (a join request, a break-glass, a withdrawal and its member).
+    "queue_key",
 ];
 
 /// Words that, anywhere in a name, make it public material.

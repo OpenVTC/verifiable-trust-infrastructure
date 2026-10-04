@@ -786,8 +786,11 @@ export function isElevatedIn(right: GitNsRight, map: GitNsRoleMap | null | undef
 }
 
 export type AdoptStanding =
-  /** Adoptable, by this viewer: grants `right` to `member`. */
-  | { may: true; member: string; right: GitNsRight }
+  /** Adoptable, by this viewer: grants `right` to `member`. `selfGrant`
+   *  when that is the viewer adopting an elevated right for themselves,
+   *  offered only under single-administrator mode, whose waiver the VTC
+   *  applies if nobody else could adopt it. */
+  | { may: true; member: string; right: GitNsRight; selfGrant?: boolean }
   /** Adoptable, but not by this viewer — hand the command to someone who can. */
   | { may: false; handOver: true; member: string; right: GitNsRight; why: string }
   /** Not adoptable by anyone as it stands. */
@@ -819,6 +822,11 @@ export type AdoptStanding =
  *   accepts only from a community administrator (`elevated_requires_admin`,
  *   assumed on, as for every elevated task).
  *
+ * Under single-administrator mode (`singleAdmin`, VTI-APV-022) step 6 is not
+ * applied here: the VTC waives it for the one administrator when nobody else
+ * could adopt the role, and refuses it otherwise, so the console sends it and
+ * lets the VTC decide.
+ *
  * The VTC decides either way; this only keeps the console from offering what
  * it would refuse.
  */
@@ -830,6 +838,7 @@ export function adoptStanding(
   item: GitNsDriftItem,
   member: string | undefined,
   heldRank: number,
+  singleAdmin = false,
 ): AdoptStanding {
   const refuse = (why: string): AdoptStanding => ({ may: false, handOver: false, why });
   if (repo.state !== "active" && repo.state !== "orphaned") {
@@ -860,7 +869,8 @@ export function adoptStanding(
   // Separation of duties, mirroring `rules::elevated_on` (grant 0.3 rule 7,
   // drift/resolve 0.3 step 6): where the bridge's map projects the right to
   // forge `admin` it is elevated too — but break-glass does not carry it.
-  if (!!viewer && viewer === member.trim() && isElevatedIn(right, repo.roleMap)) {
+  const selfGrant = !!viewer && viewer === member.trim() && isElevatedIn(right, repo.roleMap);
+  if (selfGrant && !singleAdmin) {
     return {
       may: false,
       handOver: true,
@@ -890,7 +900,7 @@ export function adoptStanding(
       why: `Adopting as ${rightLabel(right).toLowerCase()} is an elevated grant, which this VTC accepts only from a community administrator who also owns the repository. Hand the command below to one.`,
     };
   }
-  return { may: true, member, right };
+  return selfGrant ? { may: true, member, right, selfGrant: true } : { may: true, member, right };
 }
 
 // ── activity ────────────────────────────────────────────────────────────
@@ -920,6 +930,7 @@ const ACTIVITY: Record<string, string> = {
   "gitNs.right.breakGlass": "broke the glass — self-granted",
   "gitNs.right.breakGlassRatified": "break-glass ratified",
   "gitNs.right.breakGlassRevoked": "break-glass revoked",
+  "gitNs.right.selfGrantWaived": "self-granted — single-administrator mode",
   "gitNs.pullRequest.closed": "pull request closed — its author may not open one here",
   "gitNs.pullRequest.gateUnenforced": "pull-request policy not enforced — the bridge cannot close pull requests (needs git-ns/bridge/job 0.5)",
 };
@@ -955,6 +966,54 @@ export function isElevated(right: string): boolean {
  *  the VTC refuses with `git-ns:selfGrantNotAllowed`? */
 export function isSelfGrant(viewer: string | null, subject: string, right: string): boolean {
   return !!viewer && viewer === subject.trim() && isElevated(right);
+}
+
+// ── single-administrator mode's self-grant waiver (VTI-APV-022) ─────────
+//
+// On a node in single-administrator mode, where nobody else could make the
+// grant, the VTC waives separation of duties for that one operation instead
+// of refusing it — on the requester's passkey, audited at Critical. The record
+// is marked; `git-ns/view` lists it under `ext.org.openvtc.selfGrantWaived`.
+
+/** One record made under the waiver, as `git-ns/view` lists it. */
+export interface GitNsSelfGrantWaived {
+  subject: string;
+  right: string;
+  resource: string;
+  /** When it was recorded. */
+  at: string;
+  /** The task that recorded it (`git-ns/right/grant/0.3`, …). */
+  task: string;
+}
+
+/** The waived records a `git-ns/view` answer's `ext` lists; anything that is
+ *  not one is dropped. */
+export function selfGrantWaivedOf(
+  ext: { "org.openvtc"?: { selfGrantWaived?: unknown } } | undefined,
+): GitNsSelfGrantWaived[] {
+  const list = ext?.["org.openvtc"]?.selfGrantWaived;
+  if (!Array.isArray(list)) return [];
+  return list.filter(
+    (w): w is GitNsSelfGrantWaived =>
+      !!w &&
+      typeof w === "object" &&
+      typeof (w as GitNsSelfGrantWaived).subject === "string" &&
+      typeof (w as GitNsSelfGrantWaived).right === "string" &&
+      typeof (w as GitNsSelfGrantWaived).resource === "string",
+  );
+}
+
+/** The waiver mark on a recorded right, if it was made under one. */
+export function waiverFor(
+  waived: readonly GitNsSelfGrantWaived[] | undefined,
+  row: { subject: string; right: string; resource: string; origin?: string },
+): GitNsSelfGrantWaived | null {
+  if (!waived || row.origin === "roleDerived") return null;
+  return (
+    waived.find(
+      (w) => w.subject === row.subject && w.right === row.right && w.resource === row.resource,
+    ) ?? null
+  );
 }
 
 export type BreakGlassState = "unratified" | "pending" | "ratified";

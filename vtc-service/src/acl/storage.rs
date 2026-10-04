@@ -161,6 +161,9 @@ pub async fn store_acl_entry(ks: &KeyspaceHandle, entry: &VtcAclEntry) -> Result
     if !entry.resource_grants.is_empty() {
         super::resource_grant::index_holder(ks, &entry.did, true).await?;
     }
+    // Authority moved: open console streams re-check their callers' readable
+    // topics before their next byte (`crate::admin_events`).
+    crate::admin_events::notify_authority();
     Ok(())
 }
 
@@ -179,7 +182,9 @@ pub async fn delete_acl_entry(ks: &KeyspaceHandle, did: &str) -> Result<(), AppE
         super::resource_grant::keep_departed(ks, did, &entry.resource_grants).await?;
     }
     ks.remove(acl_key(did)).await?;
-    super::resource_grant::index_holder(ks, did, false).await
+    super::resource_grant::index_holder(ks, did, false).await?;
+    crate::admin_events::notify_authority();
+    Ok(())
 }
 
 /// Return every ACL entry in the keyspace. Unbounded — intended

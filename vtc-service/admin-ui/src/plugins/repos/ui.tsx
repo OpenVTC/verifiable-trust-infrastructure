@@ -5,9 +5,10 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Fingerprint, KeyRound, ShieldAlert, SquareTerminal, Siren } from "lucide-react";
+import { Fingerprint, KeyRound, ShieldAlert, SquareTerminal, Siren, UserCheck } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
+import { useSingleAdminMode } from "@/lib/action-badge";
 import { signingAvailable, SigningUnavailableError } from "@/lib/api";
 import { answerableAtAll, answerStepUp, operationOf } from "@/lib/bound-step-up";
 import { useNameBook } from "@/lib/names";
@@ -28,6 +29,7 @@ import {
   bootstrapSteps,
   bootstrapSummary,
   breakGlassState,
+  type GitNsSelfGrantWaived,
   type Tone,
 } from "./model";
 
@@ -91,9 +93,62 @@ export function BreakGlassChip({ mark }: { mark: GitNsBreakGlassMark | null | un
   );
 }
 
-/** What the operator can do about a refusal the VTC gave, where the code says. */
-export function refusalHint(err: unknown): string | null {
+/**
+ * The mark a right recorded under single-administrator mode's waiver of
+ * separation of duties carries wherever it is shown (VTI-APV-022). Unlike a
+ * break-glass it awaits nobody — there was nobody else — so it is a quiet
+ * chip, with what happened on hover.
+ */
+export function SelfGrantWaivedChip({ mark }: { mark: GitNsSelfGrantWaived | null | undefined }) {
+  if (!mark) return null;
+  return (
+    <span
+      className="chip warning gitns-self-grant-waived"
+      title={`Self-granted ${formatDay(mark.at)} under single-administrator mode: nobody else could grant it, so separation of duties was waived for this one operation, on the administrator's passkey, and recorded as a critical audit event.`}
+    >
+      <UserCheck aria-hidden="true" size={12} /> self-granted (single-admin)
+    </span>
+  );
+}
+
+/** Whether a task's answer says single-administrator mode waived separation
+ *  of duties for it (`ext.org.openvtc.selfGrantWaived`). */
+export function selfGrantWaivedIn(response: unknown): boolean {
+  const ext = (response as { ext?: { "org.openvtc"?: { selfGrantWaived?: unknown } } } | null)?.ext;
+  const w = ext?.["org.openvtc"]?.selfGrantWaived;
+  return !!w && typeof w === "object";
+}
+
+/**
+ * Shown where a form builds an elevated self-grant on a community in
+ * single-administrator mode (VTI-APV-022): the console does not block it, the
+ * VTC decides — it waives separation of duties only when nobody else could
+ * make the grant, and refuses it (`git-ns:selfGrantNotAllowed`) otherwise.
+ */
+export function SingleAdminSelfGrantNotice() {
+  return (
+    <div className="finding warn gitns-single-admin-waiver" role="status">
+      <strong>
+        <UserCheck aria-hidden="true" size={14} /> Single-administrator mode: this self-grant
+        will be waived, recorded as a critical audit event, and needs your passkey.
+      </strong>
+      <span className="muted">
+        The VTC waives separation of duties only when nobody else could make this grant. If
+        another administrator, or a member whose git rights cover it, could, it refuses — ask
+        them instead. The record is marked as self-granted wherever it is listed.
+      </span>
+    </div>
+  );
+}
+
+/** What the operator can do about a refusal the VTC gave, where the code says.
+ *  `singleAdmin`: the community runs in single-administrator mode, where a
+ *  self-grant is refused only because somebody else could make it. */
+export function refusalHint(err: unknown, singleAdmin = false): string | null {
   const code = (err as { code?: unknown } | null)?.code;
+  if (code === "git-ns:selfGrantNotAllowed" && singleAdmin) {
+    return "Single-administrator mode waives separation of duties only when nobody else could make this grant — and here somebody else can: another administrator, or a member whose git rights cover it. Ask them to grant it. If nobody else can act in time, break the glass, which is recorded, announced and flagged until another administrator ratifies or revokes it.";
+  }
   if (code === "git-ns:selfGrantNotAllowed") {
     return "Separation of duties: nobody grants themselves namespace admin, repo creator or owner. Ask another administrator to grant it — or, if nobody else can, break the glass, which is recorded, announced to every administrator and flagged until one of them ratifies or revokes it.";
   }
@@ -306,7 +361,12 @@ export function SignTaskDialog({
   const [stepUp, setStepUp] = useState<StepUpNeeded | null>(null);
   const accepted = (response: Record<string, unknown>) => {
     void queryClient.invalidateQueries({ queryKey: gitNsKeys.all });
-    toast.push("success", `${task.title}: accepted`);
+    toast.push(
+      "success",
+      selfGrantWaivedIn(response)
+        ? `${task.title}: accepted — single-administrator waiver applied`
+        : `${task.title}: accepted`,
+    );
     const steps = (response as { manualSteps?: unknown }).manualSteps;
     if (onSent) onSent(response);
     else if (Array.isArray(steps) && steps.length > 0) {
@@ -348,7 +408,8 @@ export function SignTaskDialog({
   const destructive = task.consent === "destructive";
   const unavailable = send.error instanceof SigningUnavailableError;
   const refusal = confirm.isError ? confirm.error : send.isError && !stepUp ? send.error : null;
-  const hint = refusal ? refusalHint(refusal) : null;
+  const singleAdmin = useSingleAdminMode();
+  const hint = refusal ? refusalHint(refusal, singleAdmin) : null;
 
   return (
     <div
@@ -395,6 +456,8 @@ export function SignTaskDialog({
           </strong>
           <span className="muted">{task.consentNote ?? CONSENT_MEANS[task.consent]}</span>
         </div>
+
+        {task.singleAdminWaiver && <SingleAdminSelfGrantNotice />}
 
         {signing ? (
           <p>

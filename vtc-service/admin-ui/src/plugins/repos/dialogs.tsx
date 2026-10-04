@@ -18,6 +18,7 @@
 import { useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 
+import { useSingleAdminMode } from "@/lib/action-badge";
 import { useNameBook } from "@/lib/names";
 import { useViewerDid } from "@/lib/viewer";
 import { shortenDid } from "@/lib/format";
@@ -52,12 +53,13 @@ import { fetchMembersPage, gitNsKeys } from "./api";
 import {
   consentClass,
   driftRevertEffect,
+  isElevatedIn,
   isSelfGrant,
   RIGHT_LABEL,
   rightLabel,
   shortName,
 } from "./model";
-import { useModal } from "./ui";
+import { SingleAdminSelfGrantNotice, useModal } from "./ui";
 
 const OTHER = "__other__";
 
@@ -320,7 +322,12 @@ export function GrantDialog({
   const namespaceRight = right === "git.ns.admin" || right === "git.repo.create";
   const consent = consentClass("right.grant", right);
   const viewer = useViewerDid();
+  // Single-administrator mode (VTI-APV-022): the VTC waives separation of
+  // duties when nobody else could make the grant and refuses it otherwise,
+  // so the form builds it and lets the VTC decide.
+  const singleAdmin = useSingleAdminMode();
   const selfGrant = isSelfGrant(viewer, subject, right);
+  const blocked = selfGrant && !singleAdmin;
   const [breakGlass, setBreakGlass] = useState(false);
 
   if (breakGlass) {
@@ -331,20 +338,23 @@ export function GrantDialog({
 
   const submit = () => {
     const next = {
-      subject: selfGrant ? SELF_GRANT_ERROR : didError(subject),
+      subject: blocked ? SELF_GRANT_ERROR : didError(subject),
       days: expiryDaysError(days),
       reason: reasonError(reason),
     };
     setErrors(next);
     if (next.subject || next.days || next.reason) return;
     onBuilt(
-      grantTask({
-        subject: subject.trim(),
-        right,
-        resource,
-        expiresInDays: days.trim() ? Number(days) : undefined,
-        reason,
-      }),
+      withWaiver(
+        grantTask({
+          subject: subject.trim(),
+          right,
+          resource,
+          expiresInDays: days.trim() ? Number(days) : undefined,
+          reason,
+        }),
+        selfGrant && singleAdmin,
+      ),
     );
   };
 
@@ -384,9 +394,10 @@ export function GrantDialog({
           Right: <b>{RIGHT_LABEL[right]}</b> <code>{right}</code>
         </p>
       )}
-      {selfGrant && (
+      {blocked && (
         <SelfGrantNotice right={right} onBreakGlass={() => setBreakGlass(true)} />
       )}
+      {selfGrant && singleAdmin && <SingleAdminSelfGrantNotice />}
       {consent !== "normal" && (
         <p className="muted">
           Granting {RIGHT_LABEL[right].toLowerCase()} is{" "}
@@ -479,6 +490,10 @@ export function AdoptDialog({
     name: null,
     owner: null,
   });
+  // Naming yourself first owner is a self-grant of `git.repo.own`, which
+  // single-administrator mode's waiver covers (VTI-APV-022).
+  const viewer = useViewerDid();
+  const waiver = useSingleAdminMode() && isSelfGrant(viewer, owner, "git.repo.own");
 
   const submit = () => {
     const nameErr = fixed ? null : segmentError(name.trim(), "repository");
@@ -486,7 +501,7 @@ export function AdoptDialog({
     const next = { name: nameErr, owner: didError(owner) };
     setErrors(next);
     if (next.name || next.owner) return;
-    onBuilt(adoptTask(resource, [owner.trim()]));
+    onBuilt(withWaiver(adoptTask(resource, [owner.trim()]), waiver));
   };
 
   return (
@@ -516,6 +531,7 @@ export function AdoptDialog({
         onChange={setOwner}
         error={errors.owner}
       />
+      {waiver && <SingleAdminSelfGrantNotice />}
     </FormDialog>
   );
 }
@@ -580,6 +596,13 @@ export function CreateDialog({
   const [owner, setOwner] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [ownerError, setOwnerError] = useState<string | null>(null);
+  // Owning what you create, on the namespace admin's implied create right, is
+  // a self-grant single-administrator mode's waiver covers (VTI-APV-022). An
+  // empty owner is the signer.
+  const viewer = useViewerDid();
+  const singleAdmin = useSingleAdminMode();
+  const ownsIt = !owner.trim() || (!!viewer && owner.trim() === viewer);
+  const waiver = singleAdmin && ownsIt;
 
   const submit = () => {
     const e = segmentError(name, "repository");
@@ -588,15 +611,18 @@ export function CreateDialog({
     setOwnerError(oe);
     if (!e && !oe) {
       onBuilt(
-        createTask({
-          namespaceId,
-          namespaceResource,
-          name,
-          visibility,
-          description,
-          owners: owner.trim() ? [owner.trim()] : undefined,
-          personal,
-        }),
+        withWaiver(
+          createTask({
+            namespaceId,
+            namespaceResource,
+            name,
+            visibility,
+            description,
+            owners: owner.trim() ? [owner.trim()] : undefined,
+            personal,
+          }),
+          waiver,
+        ),
       );
     }
   };
@@ -619,8 +645,13 @@ export function CreateDialog({
         onChange={setOwner}
         placeholder="Optional — you, if empty"
         error={ownerError}
-        hint="Empty makes you the owner, which the VTC accepts only if someone else granted you git.repo.create here (or you broke the glass for it). A namespace admin's create right is implied and makes nobody an owner on its own: name another member."
+        hint={
+          singleAdmin
+            ? "Empty makes you the owner. Without an explicit git.repo.create someone else granted you, that is a self-grant: single-administrator mode waives it only while nobody else could make it."
+            : "Empty makes you the owner, which the VTC accepts only if someone else granted you git.repo.create here (or you broke the glass for it). A namespace admin's create right is implied and makes nobody an owner on its own: name another member."
+        }
       />
+      {waiver && <SingleAdminSelfGrantNotice />}
       <TextField
         label="Name"
         value={name}
@@ -684,7 +715,9 @@ export function ReseatDialog({
   // A community administrator reseating a headless namespace to themselves is
   // a self-grant of `git.ns.admin`, which `git-ns/right/grant` 0.3 routes to
   // break-glass.
+  const singleAdmin = useSingleAdminMode();
   const selfGrant = isSelfGrant(viewer, subject, "git.ns.admin");
+  const blocked = selfGrant && !singleAdmin;
   const [breakGlass, setBreakGlass] = useState(false);
 
   if (breakGlass) {
@@ -700,12 +733,17 @@ export function ReseatDialog({
 
   const submit = () => {
     const next = {
-      subject: selfGrant ? SELF_GRANT_ERROR : didError(subject),
+      subject: blocked ? SELF_GRANT_ERROR : didError(subject),
       statement: statementError(statement),
     };
     setErrors(next);
     if (next.subject || next.statement) return;
-    onBuilt(reseatTask(namespaceId, namespaceResource, subject.trim(), statement));
+    onBuilt(
+      withWaiver(
+        reseatTask(namespaceId, namespaceResource, subject.trim(), statement),
+        selfGrant && singleAdmin,
+      ),
+    );
   };
 
   return (
@@ -729,9 +767,10 @@ export function ReseatDialog({
         membersOnly
         error={errors.subject}
       />
-      {selfGrant && (
+      {blocked && (
         <SelfGrantNotice right="git.ns.admin" onBreakGlass={() => setBreakGlass(true)} />
       )}
+      {selfGrant && singleAdmin && <SingleAdminSelfGrantNotice />}
       <TextField
         label="Statement"
         value={statement}
@@ -774,6 +813,16 @@ export function DriftResolveDialog({
   onBuilt: (task: SignedTask) => void;
 }) {
   const book = useNameBook();
+  const viewer = useViewerDid();
+  // Adopting an elevated role for your own account is a self-grant: offered
+  // only under single-administrator mode (`adoptStanding`), whose waiver the
+  // VTC applies if nobody else could adopt it (VTI-APV-022).
+  const waiver =
+    useSingleAdminMode() &&
+    !!adopt &&
+    !!viewer &&
+    adopt.member.trim() === viewer &&
+    isElevatedIn(adopt.right, roleMap);
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const submit = () => {
@@ -782,7 +831,7 @@ export function DriftResolveDialog({
     if (e) return;
     onBuilt(
       adopt
-        ? driftAdoptTask(resource, item, adopt.member, adopt.right, reason)
+        ? withWaiver(driftAdoptTask(resource, item, adopt.member, adopt.right, reason), waiver)
         : driftRevertTask(resource, item, reason, roleMap),
     );
   };
@@ -812,6 +861,7 @@ export function DriftResolveDialog({
       ) : (
         <p className="muted">{driftRevertEffect(item)}</p>
       )}
+      {waiver && <SingleAdminSelfGrantNotice />}
       <TextField
         label="Reason"
         value={reason}
@@ -829,6 +879,12 @@ export function DriftResolveDialog({
 }
 
 // ── break-glass ─────────────────────────────────────────────────────────
+
+/** `task`, marked for the sign dialog's single-administrator notice when
+ *  `waiver` (see `SignedTask.singleAdminWaiver`). */
+function withWaiver(task: SignedTask, waiver: boolean): SignedTask {
+  return waiver ? { ...task, singleAdminWaiver: true } : task;
+}
 
 const SELF_GRANT_ERROR =
   "You cannot grant yourself this right: separation of duties. Choose someone else, or break the glass.";
