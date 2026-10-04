@@ -407,6 +407,37 @@ jobs:
           # than the assumption that this step worked.
           free -h
 
+      # Since 2026-10-03 this job has died the same silent way again, 12 runs
+      # in a row, 11-20 minutes into "Checking API compatibility" — once with
+      # "The runner has received a shutdown signal", otherwise a bare exit 143.
+      # The swap above was in place (15 GiB RAM + 14 GiB swap) every time.
+      #
+      # What changed is the workload, not the runner. release-plz runs the
+      # semver check for every changed crate in a pool of `available_parallelism`
+      # workers (4 here), and each check builds the crate's whole dependency tree
+      # twice — rustdoc for the workspace copy and for the crates.io baseline,
+      # the baseline into a target dir of its own. A release that touches one or
+      # two crates fits; this one touches eleven, so four cold builds of trees
+      # the size of vta-service's run at once, each at cargo's default `-j 4`.
+      # Measured locally, one such check alone is 1.4 GB RSS and 1.6 GB of
+      # target; the same check on vta-service peaks at 5.3 GB (see above).
+      #
+      # So: half the build jobs per check (four checks at -j2 is still eight
+      # rustc processes on four cores, so wall time barely moves), and the ~20
+      # GB of preinstalled SDKs this job never uses deleted so four baseline
+      # target dirs and the swapfile fit on the same disk. The sampler logs
+      # memory and disk every 30 s so that if this ever recurs the log says
+      # which of the two ran out instead of leaving it to inference.
+      - name: Make room for parallel semver checks
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h / /mnt
+          nohup bash -c 'while true; do
+              echo "$(date -u +%H:%M:%S) $(free -m | awk "/Mem:/{printf \"mem used %sM avail %sM\", \$3, \$7} /Swap:/{printf \" swap used %sM\", \$3}") $(df -BG --output=avail / | tail -1 | tr -d " ")G free on /"
+              sleep 30
+            done' > "$RUNNER_TEMP/resources.log" 2>&1 &
+
       - name: Run release-plz
         # Pinned to a full version: release-plz/action does NOT publish a
         # moving major tag, so `@v0` resolves to nothing and the job fails at
@@ -430,3 +461,10 @@ jobs:
           # a GitHub App token. Until then, close-and-reopen the Release PR to
           # trigger CI before merging it.
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          # Two build jobs per semver check; see "Make room for parallel
+          # semver checks" above.
+          CARGO_BUILD_JOBS: "2"
+
+      - name: Memory and disk during release-plz
+        if: always()
+        run: cat "$RUNNER_TEMP/resources.log" || true
