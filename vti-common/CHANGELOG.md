@@ -2,6 +2,59 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.37.2](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.37.1...vti-common-v0.37.2) — 2026-10-04
+
+
+### Added
+
+- **vtc**: A community serves governance/capability/* — members list its capability modules, administrators enable them, and the trust registry follows ([#1948](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1948))
+
+* feat(vtc): a community serves governance/capability/* — members list its capability modules, administrators enable them, and the trust registry follows
+
+  OpenVTC's Capabilities panel sends a signed governance/capability/list/0.1
+  to the community's VTC DID over DIDComm or TSP, and the VTC answered
+  unsupportedType: it only ever relayed git-trust writes outward. The VTC is
+  the source of truth for which capability modules a community has enabled;
+  its Trust Registry is a projection, whose own enable/disable are admin-only
+  and only switch which record families it accepts.
+
+  "Capability module" (a pluggable governance capability, git-trust first) is
+  kept apart from ACL capabilities throughout: crate::capability_modules,
+  trust_tasks::capability_module_tasks, AuditEvent::CapabilityModuleChanged.
+
+  list/enable/disable 0.1 are served on the document spine (DISPATCHED_URIS),
+  so DIDComm, TSP and HTTPS route them and discovery lists them; every reply,
+  refusals included, is signed, addressed to the requester and threaded.
+
+  - list answers members and administrators (an application entry and unknown
+    DIDs get permissionDenied), filters on status as the registry does (absent
+    means enabled), and answers the generated #response that
+    trust-tasks-capability-client's parse_capability_reply reads. Admins
+    holding vtc.config.admin also see each decision's projection in ext.
+  - enable/disable need vtc.config.admin (VTI-ACL-030) and a step-up bound to
+    the document (VTI-APV-015) — the destructive class. They do not park for
+    consent: VTI-APV-018–020 / VTI-VTC-022 ask that of authority-conferring
+    acts, and a module confers no ACL authority. config.authority defaults to
+    the VTC DID and may name nothing else; any other config member is
+    configInvalid rather than silently ignored. Declared codes
+    unknownCapability, alreadyEnabled, configInvalid, notEnabled are emitted.
+
+  The decision (version, config, enabledAt/By, generation, projection status)
+  is persisted in the community keyspace first and audited; the new
+  capability_modules::Projector then sends governance/capability/enable|
+  disable as the registry's admin via TrustRegistryClient::
+  project_capability_module (TSP > DIDComm selection, schema-checked payload).
+  alreadyEnabled/notEnabled are success. Transient failures back off 5 s to
+  1 h with jitter; a refusal is marked failed, audited once
+  (projectionFailed), warned, and still retried at the cap so fixing the
+  registry converges. Results are recorded only against the generation sent;
+  no lock is held across the round trip.
+
+  The git-trust manifest is a pinned copy of the registry's; enablement does
+  not yet gate [hooks.git-trust] or the git-ns projection.
+
+
+
 ## [0.37.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vti-common-v0.37.0...vti-common-v0.37.1) — 2026-10-04
 
 
