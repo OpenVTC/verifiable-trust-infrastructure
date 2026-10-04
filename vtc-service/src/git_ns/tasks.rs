@@ -49,8 +49,8 @@ use trust_tasks_rs::specs::git_ns::view::{v0_1 as view, v0_2 as view2, v0_4 as v
 use trust_tasks_rs::{AsyncDispatcher, RejectReason, StandardCode, TrustTask, TrustTaskCode};
 
 use super::admin_reads::{
-    account_list_v0_1, activity_list_v0_1, bridge_job_list_v0_1, projection_show_v0_1,
-    right_issued_by_departed_v0_1, right_list_v0_1,
+    account_list_v0_1, activity_list_v0_1, bridge_job_list_v0_1, bridge_job_list_v0_2,
+    projection_show_v0_1, right_issued_by_departed_v0_1, right_list_v0_1,
 };
 
 use crate::server::AppState;
@@ -155,6 +155,9 @@ pub(crate) fn dispatcher() -> AsyncDispatcher<GitNsCtx, TrustTaskOutcome> {
         .on_async(handle_right_list)
         .on_async(handle_right_issued_by_departed)
         .on_async(handle_bridge_job_list)
+        // 0.2 (trust-tasks-rs 0.27.4, trust-tasks-tf #727): 0.1 plus
+        // `closePullRequest` jobs and their `number`.
+        .on_async(handle_bridge_job_list_v2)
         .on_async(handle_projection_show)
         .on_async(handle_account_list)
         .on_async(handle_activity_list)
@@ -367,6 +370,11 @@ signed_handler!(
     handle_bridge_job_list,
     bridge_job_list_v0_1::Payload,
     super::admin_reads::bridge_job_list
+);
+signed_handler!(
+    handle_bridge_job_list_v2,
+    bridge_job_list_v0_2::Payload,
+    super::admin_reads::bridge_job_list_v2
 );
 signed_handler!(
     handle_projection_show,

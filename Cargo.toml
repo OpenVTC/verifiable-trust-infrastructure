@@ -545,8 +545,10 @@ aws-smithy-types = ">=1.6.1, <1.7"
 #
 # 0.27.3 is a FLOOR: it carries `git-ns/bridge/event/0.4` (`pullRequestOpened`)
 # and `git-ns/bridge/job/0.5` (`closePullRequest`) (trust-tasks-tf #723), which
-# the VTC's pull-request gate (`git_ns::pr_gate`) serves and sends.
-trust-tasks-rs = { version = "0.27.3", default-features = false, features = [
+# the VTC's pull-request gate (`git_ns::pr_gate`) serves and sends. 0.27.4
+# adds `git-ns/bridge/job/list/0.2` (trust-tasks-tf #727), whose rows carry
+# `closePullRequest` jobs and their pull request `number`.
+trust-tasks-rs = { version = "0.27.4", default-features = false, features = [
   "validate",
   "all-specs",
 ] }

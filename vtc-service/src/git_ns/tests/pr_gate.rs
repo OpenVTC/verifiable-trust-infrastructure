@@ -129,6 +129,12 @@ fn event_0_4_is_served_beside_the_earlier_versions() {
             "bridge/event {v} is not served"
         );
     }
+    for v in ["0.1", "0.2"] {
+        assert!(
+            served.contains(&format!("{URI}/bridge/job/list/{v}").as_str()),
+            "bridge/job/list {v} is not served"
+        );
+    }
 }
 
 #[tokio::test]
@@ -180,14 +186,57 @@ async fn an_outsiders_pull_request_is_closed_by_a_0_5_job_with_the_rendered_mess
         .expect("the close was sent");
     assert_eq!(ty, JOB_TYPE_V0_5);
 
-    // The administrator's job list still answers (it cannot carry the kind).
-    ok(&send(
+    // `bridge/job/list` 0.1 cannot carry the kind and leaves it out — before
+    // paging; 0.2 lists it with its pull request's number.
+    let v1 = ok(&send_ver(
         &f.vtc.state,
         &f.admin,
         "bridge/job/list",
+        "0.1",
         json!({ "namespace": ns }),
     )
     .await);
+    let v1_jobs = v1["jobs"].as_array().unwrap();
+    assert!(!v1_jobs.is_empty(), "{v1}");
+    assert!(
+        v1_jobs
+            .iter()
+            .all(|j| j["kind"] != "closePullRequest" && j.get("number").is_none()),
+        "{v1}"
+    );
+    let v1_one = ok(&send_ver(
+        &f.vtc.state,
+        &f.admin,
+        "bridge/job/list",
+        "0.1",
+        json!({ "namespace": ns, "limit": 1 }),
+    )
+    .await);
+    assert_eq!(v1_one["jobs"].as_array().unwrap().len(), 1);
+    assert_ne!(v1_one["jobs"][0]["kind"], "closePullRequest");
+    let v2 = ok(&send_ver(
+        &f.vtc.state,
+        &f.admin,
+        "bridge/job/list",
+        "0.2",
+        json!({ "namespace": ns }),
+    )
+    .await);
+    let v2_jobs = v2["jobs"].as_array().unwrap();
+    assert_eq!(v2_jobs.len(), v1_jobs.len() + 1, "{v2}");
+    let close = v2_jobs
+        .iter()
+        .find(|j| j["kind"] == "closePullRequest")
+        .expect("0.2 lists the close");
+    assert_eq!(close["number"], 42);
+    assert_eq!(close["repo"], RES);
+    assert!(
+        v2_jobs
+            .iter()
+            .filter(|j| j["kind"] != "closePullRequest")
+            .all(|j| j.get("number").is_none()),
+        "{v2}"
+    );
 
     // The bridge reports it closed: one audit row, without a DID.
     ok(&send(

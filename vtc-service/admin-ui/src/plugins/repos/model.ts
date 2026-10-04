@@ -932,8 +932,29 @@ const ACTIVITY: Record<string, string> = {
   "gitNs.right.breakGlassRevoked": "break-glass revoked",
   "gitNs.right.selfGrantWaived": "self-granted — single-administrator mode",
   "gitNs.pullRequest.closed": "pull request closed — its author may not open one here",
+  "gitNs.job.closePullRequest": "bridge job close pull request",
   "gitNs.pullRequest.gateUnenforced": "pull-request policy not enforced — the bridge cannot close pull requests (needs git-ns/bridge/job 0.5)",
 };
+
+/** A bridge job's kind in words, for the job list
+ *  (`git-ns/bridge/job/list/0.2`): a `closePullRequest` job names the pull
+ *  request it closes. */
+export function jobKindLabel(job: { kind: string; number?: number }): string {
+  switch (job.kind) {
+    case "closePullRequest":
+      return job.number !== undefined ? `close pull request #${job.number}` : "close pull request";
+    case "projectRoles":
+      return "project roles";
+    case "createRepo":
+      return "create repository";
+    case "beginBind":
+      return "begin binding";
+    case "beginAccountLink":
+      return "begin account link";
+    default:
+      return job.kind;
+  }
+}
 
 /** An activity item's action in words. Unknown actions are shown verbatim
  *  rather than dropped: a new audit action is still something that happened. */

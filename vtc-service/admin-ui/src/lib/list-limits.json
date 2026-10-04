@@ -1,7 +1,7 @@
 {
   "https://trusttasks.org/spec/git-ns/account/list/0.1": 500,
   "https://trusttasks.org/spec/git-ns/activity/list/0.1": 500,
-  "https://trusttasks.org/spec/git-ns/bridge/job/list/0.1": 500,
+  "https://trusttasks.org/spec/git-ns/bridge/job/list/0.2": 500,
   "https://trusttasks.org/spec/git-ns/projection/show/0.1": 500,
   "https://trusttasks.org/spec/git-ns/right/issued-by-departed/0.1": 500,
   "https://trusttasks.org/spec/git-ns/right/list/0.1": 500,

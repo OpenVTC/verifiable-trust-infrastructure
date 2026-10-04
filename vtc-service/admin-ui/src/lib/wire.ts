@@ -1444,11 +1444,17 @@ export interface components {
             jobId: string;
             /**
              * @description `projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |
-             *     `beginBind` | `beginAccountLink`.
+             *     `beginBind` | `beginAccountLink` | `closePullRequest` (0.2 only).
              */
             kind: string;
             lastError?: string | null;
             namespace: string;
+            /**
+             * Format: int64
+             * @description The pull request a `closePullRequest` job closes, in `repo`. Absent for
+             *     every other kind.
+             */
+            number?: number | null;
             repo?: string | null;
             /**
              * @description `pending` | `accepted` | `succeeded` | `partial` | `failed` |

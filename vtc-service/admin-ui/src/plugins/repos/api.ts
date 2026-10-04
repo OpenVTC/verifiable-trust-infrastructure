@@ -5,7 +5,7 @@
 // Registry projection, the linked-account roster and the activity feed are
 // `git-ns/namespace/list/0.1`, `git-ns/repo/list/0.1`, `git-ns/view/0.5`
 // (`scope: administrator`, `breakGlass: true`), `git-ns/right/list/0.1`,
-// `git-ns/right/issued-by-departed/0.1`, `git-ns/bridge/job/list/0.1`,
+// `git-ns/right/issued-by-departed/0.1`, `git-ns/bridge/job/list/0.2`,
 // `git-ns/projection/show/0.1`, `git-ns/account/list/0.1` and
 // `git-ns/activity/list/0.1` — signed with this browser's console key and
 // posted to `/v1/trust-tasks`, the same documents `cnm git` sends over TSP or
@@ -57,7 +57,7 @@ export const TASK_VIEW = "https://trusttasks.org/spec/git-ns/view/0.5";
 export const TASK_RIGHT_LIST = "https://trusttasks.org/spec/git-ns/right/list/0.1";
 export const TASK_RIGHT_ISSUED_BY_DEPARTED =
   "https://trusttasks.org/spec/git-ns/right/issued-by-departed/0.1";
-export const TASK_BRIDGE_JOB_LIST = "https://trusttasks.org/spec/git-ns/bridge/job/list/0.1";
+export const TASK_BRIDGE_JOB_LIST = "https://trusttasks.org/spec/git-ns/bridge/job/list/0.2";
 export const TASK_PROJECTION_SHOW = "https://trusttasks.org/spec/git-ns/projection/show/0.1";
 export const TASK_ACCOUNT_LIST = "https://trusttasks.org/spec/git-ns/account/list/0.1";
 export const TASK_ACTIVITY_LIST = "https://trusttasks.org/spec/git-ns/activity/list/0.1";
@@ -161,7 +161,8 @@ export function driftRows(view: GitNsViewAnswer): GitNsDriftRow[] {
 }
 
 /** Bridge jobs in the namespaces the caller administers
- *  (`git-ns/bridge/job/list/0.1`). */
+ *  (`git-ns/bridge/job/list/0.2` — 0.1 leaves out `closePullRequest` jobs,
+ *  which its job-kind list cannot name). */
 export const fetchJobs = (): Promise<GitNsJobList> =>
   postSignedRead<GitNsJobList>(TASK_BRIDGE_JOB_LIST, {});
 

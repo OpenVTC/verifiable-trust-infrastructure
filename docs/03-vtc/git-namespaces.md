@@ -430,8 +430,8 @@ characters.
 
 Only the closes. Each close the VTC orders is a `closePullRequest` job,
 which appears in `git-ns/activity/list` as `gitNs.job.closePullRequest` with
-its state (it is left out of `git-ns/bridge/job/list` 0.1, whose job-kind list
-predates job 0.5); when the bridge reports the pull request closed
+its state, and in `git-ns/bridge/job/list/0.2` with the pull request's
+`number` (0.1, whose job-kind list predates job 0.5, leaves it out); when the bridge reports the pull request closed
 (`succeeded`, `close` applied), the VTC audits
 `gitNs.pullRequest.closed` with the repository and a detail of `{number,
 author (login), level}`. A pull request that was allowed, or reopened by a
@@ -861,7 +861,7 @@ is refused `malformedRequest` rather than silently reinterpreted.
 | `git-ns/view/0.5` (`breakGlass: true`) | only break-glass records, ratified ones included, and the namespaces holding them | `cnm git break-glass-list` |
 | `git-ns/right/list/0.1` (`resource?`, `subject?`) | every right the VTC knows of, recorded and role-derived, across every namespace, with `subjectMember` / `granterDeparted` | — |
 | `git-ns/right/issued-by-departed/0.1` | recorded rights whose granter has since left, grouped by granter, plus `cascadeOnDeparture` | — |
-| `git-ns/bridge/job/list/0.1` (`namespace?`, `state?`) | bridge jobs in the administered namespaces, with kind, queue state, attempts and last error | — |
+| `git-ns/bridge/job/list/0.2` (`namespace?`, `state?`) | bridge jobs in the administered namespaces, with kind, queue state, attempts and last error, and a `closePullRequest` job's pull request `number`. 0.1 is still served and leaves `closePullRequest` jobs out | — |
 | `git-ns/projection/show/0.1` (`resource?`) | what is published to the Trust Registry, `registryConfigured` and `pendingChanges` | — |
 | `git-ns/account/list/0.1` (`member?`, `forge?`) | every member's linked forge account, community-wide, each with `memberCurrent` | — |
 | `git-ns/activity/list/0.1` (`namespace?`) | rights changes, drift and bridge jobs in the administered namespaces, newest first | — |
