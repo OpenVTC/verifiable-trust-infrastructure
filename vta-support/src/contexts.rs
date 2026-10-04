@@ -28,6 +28,15 @@ pub async fn effective_context_policy(
     ks: &KeyspaceHandle,
     context_id: &str,
 ) -> Result<ContextPolicy, AppError> {
+    Ok(effective_context_policy_and_record(ks, context_id).await?.0)
+}
+
+/// [`effective_context_policy`], plus the record of `context_id` itself (read
+/// on the way), for a caller that needs both without reading it twice.
+pub async fn effective_context_policy_and_record(
+    ks: &KeyspaceHandle,
+    context_id: &str,
+) -> Result<(ContextPolicy, Option<ContextRecord>), AppError> {
     // Collect ids leaf→root, then resolve root→leaf.
     let mut ids: Vec<String> = Vec::new();
     let mut cur: Option<String> = Some(context_id.to_string());
@@ -38,14 +47,17 @@ pub async fn effective_context_policy(
     ids.reverse();
 
     let mut policies: Vec<ContextPolicy> = Vec::new();
+    let mut leaf = None;
     for id in &ids {
-        if let Some(rec) = get_context(ks, id).await?
-            && let Some(policy) = rec.context_policy
-        {
+        let rec = get_context(ks, id).await?;
+        if let Some(policy) = rec.as_ref().and_then(|r| r.context_policy.clone()) {
             policies.push(policy);
         }
+        if id == context_id {
+            leaf = rec;
+        }
     }
-    Ok(ContextPolicy::resolve(policies.iter()))
+    Ok((ContextPolicy::resolve(policies.iter()), leaf))
 }
 
 /// Enforce a per-day operation quota for a context (the `quotas` arm of

@@ -1750,6 +1750,9 @@ async fn sign_payload_recorded(
         ));
     }
 
+    // The key's context record, read once with its policy below and reused
+    // for the custody check's base path.
+    let mut context_record = None;
     if let Some(ref ctx) = record.context_id {
         auth.require_context(ctx)?;
         // Gate 4 (#818) — the caller's own ACL row may narrow which key ids
@@ -1767,7 +1770,9 @@ async fn sign_payload_recorded(
         // chain, so a child context can only narrow the set, never widen it. An
         // unscoped key (no context) has no policy and is naturally unrestricted
         // (and super-admin-only, gated below).
-        let policy = crate::contexts::effective_context_policy(contexts_ks, ctx).await?;
+        let (policy, ctx_record) =
+            crate::contexts::effective_context_policy_and_record(contexts_ks, ctx).await?;
+        context_record = ctx_record;
         if !policy.allows_signing_key(key_id) {
             return Err(AppError::Forbidden(format!(
                 "signing key {key_id} is not permitted by the policy of context {ctx}"
@@ -1869,13 +1874,14 @@ async fn sign_payload_recorded(
                     algorithm, record.key_type
                 )));
             }
-            let key = super::key_custody::derive_record_key(
+            let key = super::key_custody::derive_record_key_in_context(
                 contexts_ks,
                 keys_ks,
                 &**seed_store,
                 audit,
                 &auth.did,
                 &record,
+                context_record.as_ref(),
                 channel,
             )
             .await?;
