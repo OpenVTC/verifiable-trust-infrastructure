@@ -2,6 +2,442 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.27.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.26.0...cnm-cli-v0.27.0) — 2026-10-04
+
+
+### Added
+
+- **vtc/git-ns**: PR-open gate — close pull requests from openers the policy does not allow ([#1937](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1937))
+
+* feat(vtc/git-ns): PR-open gate — close pull requests from openers the policy does not allow
+
+  The VTC side of git-ns/bridge/event 0.4 (pullRequestOpened) and
+  git-ns/bridge/job 0.5 (closePullRequest), trustoverip/dtgwg-trust-tasks-tf#723,
+  published in trust-tasks-rs 0.27.3 (now the workspace floor).
+
+  - bridge/event 0.4 is served (and so listed in trust-task-discovery) beside
+    0.1-0.3, which are read as 0.4; every earlier event kind is unchanged.
+  - On pullRequestOpened for a repository recorded active in a bridge-mode
+    namespace, the author (matched by forge + id through account links) is
+    checked against the gitNamespace policy's new settings: pr_open
+    ("anyone" default | members | committers | maintainers | {"roles": [...]}),
+    pr_open_overrides (per namespace / repository), pr_exempt (default
+    ["dependabot[bot]"]), pr_close_message and pr_join_hint. Owners and
+    maintainers (explicit or implied), the bridge's app account and exempt
+    logins are always allowed; unlinked accounts only under "anyone". A reopen
+    by an owner, maintainer or the bridge is an override; anyone else's
+    re-checks the author.
+  - A disallowed pull request gets a queued closePullRequest job whose message
+    renders only {author} (login), {repo}, {community} and {join_hint}.
+  - Jobs go as 0.5 to a bridge that lists 0.5 and as 0.4 to a 0.4-only bridge;
+    closePullRequest never goes to a bridge without 0.5, whose namespace's
+    administrators are told once (gitNs.pullRequest.gateUnenforced).
+  - Only closes are recorded: the job (activity gitNs.job.closePullRequest) and,
+    on a succeeded close, the audit row gitNs.pullRequest.closed
+    {number, author login, level}. bridge/job/list 0.1 omits closePullRequest
+    jobs, whose kind its JobKind enum does not yet name.
+
+  Hygiene, not the merge gate: the required commit-trust check is unchanged and
+  the gate fails open.
+
+- **vtc/git-ns**: Single-administrator mode waives git self-grant separation of duties ([#1936](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1936))
+
+* feat(vtc/git-ns): single-administrator mode waives git self-grant separation of duties
+
+  A community in single-administrator mode (VTI-APV-022, #1925) has one
+  administrator. Fixed rule 7 of git-ns/right/grant/0.3 still refused every
+  elevated self-grant, so `cnm git adopt <repo> --owner <own DID>` failed with
+  git-ns:selfGrantNotAllowed. Break-glass left records nobody could ever ratify.
+
+  Single-administrator mode now reaches rule 7. It uses the same discipline as
+  the consent waiver (`git_ns::single_admin`):
+
+  - Only where nobody else is eligible. `others_eligible` reuses
+    `admin_consent::approvers_for` over the namespace's `git.ns.admin`. That
+    covers the break-glass deciders and any approve scope reaching them. It also
+    counts any other member whose git rights could make this grant (rules 1 and
+    2). One eligible party, or the mode off, and the refusal stands.
+  - Every path the rule covers: right/grant, repo/create (implied repo.create
+    naming self as owner), repo/adopt naming self, namespace/reseat to self, and
+    drift/resolve adopt for one's own account. The rules accept a `Waivable`
+    token only for that exact actor, right and resource. Rules 1, 2 and 5, the
+    granter-covers floor, the consent-class gate and policy all still apply.
+  - Requires the requester's operation-bound step-up. This is the break-glass
+    mechanism (`bound_step_up`), bound to the document actually signed (for an
+    adoption, the drift/resolve document).
+  - Writes a Critical `SingleAdminMode { event: selfGrantWaived }` audit row
+    before the write. It names the rule, task, digest, git-ns action, right and
+    resource. If the audit write fails, the operation is refused and nothing is
+    recorded.
+  - Marks the result. The record carries `singleAdmin { at, task }`, which is
+    never published. The answer carries `ext.org.openvtc.selfGrantWaived`.
+    git-ns/view 0.4/0.5 lists waived records under the same ext member. The ACL
+    resource grant shows `selfGrantWaived: true`. A `gitNs.right.selfGrantWaived`
+    activity item is written.
+  - Counts for invariants. Waived records count toward the last-owner and
+    last-admin invariants, unlike unratified break-glass.
+
+- **vtc**: Live admin console — a hint-only event stream over HTTPS (binding 0.3 streamed responses) ([#1932](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1932))
+
+* feat(vtc): live admin console — a hint-only event stream over HTTPS (binding 0.3 streamed responses)
+
+  An open admin console now holds one live channel per session:
+  `vtc/admin/events/subscribe/0.1` POSTed as a signed document to the ordinary
+  `/v1/trust-tasks` door with `Accept: text/event-stream, application/json;q=0.5`,
+  answered as an HTTPS binding 0.3 §2.1 streamed response — the signed
+  `#response` as the first SSE event, `vtc/admin/events/event/0.1` hints after it
+  (one document per `data:` line, no `event:` field, SSE `id` = resume token,
+  heartbeats as comments). No new route; every other task is unchanged.
+
+  Hints only: `topic`, `at`, `resumeToken`, and `count` on actions /
+  acknowledgements / joinRequests. Never a record, an id or a DID. The console
+  reacts only by re-reading the topic's own signed read, so authorization stays
+  on every read.
+
+  VTC (`vtc-service/src/admin_events`, `trust_tasks/event_tasks.rs`):
+  - a process-wide broadcast bus fed from the storage seams (action save/delete,
+    join-request store/delete, member store/delete, ACL store/delete, config
+    overrides, community profile); no row data travels on it;
+  - effective topics = requested ∩ readable (joinRequests needs vtc.join.decide,
+    config needs vtc.config.admin); standing re-checked on every ACL change,
+    before every hint and once a heartbeat — a shrink ends the stream;
+  - per-recipient digests so a change the caller's read would not show sends no
+    hint; at most one hint per topic per second;
+  - refusals stay JSON and open no stream (notAdministrator, streamUnavailable,
+    tooManyStreams, permissionDenied, malformedRequest for a Last-Event-ID that
+    disagrees with `since`); 5-minute issuedAt window; a replayed subscribe
+    answers 204 (its response is never recorded for redelivery);
+  - resume tokens are MAC'd, per-caller masked positions under a per-process
+    key; unknown/foreign/expired `since` → `resumed: false`, never an error;
+    in-memory history 10 min / 4096 changes;
+  - the stream ends with the client, at shutdown, when the signer's ACL entry,
+    console-key delegation or document expiresAt lapses, after an hour, or on a
+    write stalled for 2× heartbeat; never a trust-task-error after the response;
+  - caps: 5 concurrent streams per administrator, 256 in all;
+  - hints are signed with the VTC key (proof RECOMMENDED);
+  - no lock held across an await (R1.3).
+
+- **vtc**: Custom roles, capability approver sets, admin-key rollover and capability-driven console (VTI-CLT-025 – 032, VTI-APV-018) ([#1927](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1927))
+
+Phase C2 of role-based administration (docs/05-design-notes/vtc-admin-roles.md).
+
+  Single-administrator mode (VTI-APV-022, #1925): ChangeRoles and RestoreBackup
+  go through gesture_then_consent_for, so with the mode on and nobody else
+  eligible they run on the requester's bound gesture, the waiver audited
+  Critical; both are tested. A restore replaces the audit log, so its waiver row
+  is written again into the restored log after the commit.
+
+  Custom roles (§6.2). vtc/roles/{define,list,show,delete}/0.1 are served on the
+  signed-document spine with the generated types. A role is a record in the acl
+  keyspace (role:<name>, carried by a backup), resolved onto every entry read
+  from its stored definition; an entry naming an undefined role confers nothing,
+  sign-in included (VTI-ACL-011). define/delete take vtc.roles.assign +
+  vtc.approvals.admin, the requester's bound gesture and the N-of-M consent of the
+  other holders (new Act::ChangeRoles). A ceiling is bounded by what the requester
+  and every approver hold and may approve (exceedsDefinerAuthority, VTI-ACL-042,
+  -071); git.commit.sign is additive and never in a ceiling. delete is refused
+  while any entry (expired ones too) or pending grant holds the role (inUse),
+  counted and removed under the admin-set lock a custom-role grant commits under.
+
+  Approver sets (§7). may_approve reads approve authority alone (VTI-ACL-040), so
+  the least-privilege approver counts for every act (VTI-ACL-041); a test covers
+  every Act.
+
+  Departed-granter review (§6.3). A removed, narrowed or expired granter's
+  grants become one acl.grants.review action for the holders who may approve
+  vtc.roles.assign (the subjects excluded): approve re-affirms each grant the
+  approver covers, decline withdraws at once, a lapse is withdrawn by the
+  delegation sweeper (kept as the backstop; it now also notices expired
+  granters).
+
+  Key rollover. acl/swap-key/0.1 rolls the signer's own entry to a new key with
+  exactly its authority (VTI-CLT-025 – 032, VTI-ACL-052): no console key, a
+  required short-lived VP-JWT link proof from the new key addressed to the VTC,
+  AclKeyRotated audited before one atomic move_if_unchanged, the member row and
+  delegatedBy pointers following the key, old sessions revoked. A member's own
+  rotation now re-points delegations too. cnm community continue rotates the
+  granted key this way; cnm community rotate rotates a configured one
+  (vtc-client: VtcClient::acl_swap_key). Note: VTI-ACL-054 – 058 (hand-off
+  markers) are a different mechanism and are not implemented here.
+
+  Backup restore. backup/finalize-import with confirm: true is previewed, then
+  parked (Act::RestoreBackup) for the holders of vtc.backup.restore; approvers see
+  the payload without its password, and the staged bundle is kept alive for the
+  action's lifetime.
+
+  Console. auth/whoami returns the caller's live capabilities (the published
+  member) and ext["org.openvtc"].{adminRole, approves}; navigation and action
+  buttons render per capability; a Roles page lists, defines and deletes roles
+  through the action list; the new action kinds have pinned summary templates.
+
+- **vtc**: Single-administrator mode, set at install, for communities with one administrator (VTI-APV-022) ([#1925](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1925))
+
+A community run by one person has nobody to give second-party consent
+  (VTI-APV-014, -018 - 020). Without this, its administrator could add a
+  colleague or change an authority rule only through the offline break-glass.
+  VTI-APV-022 lets a node run in single-administrator mode instead. This
+  implements it at the VTC.
+
+  - Config: `[acl] single_admin_mode` (default false). Host configuration
+    only (item 1). It is read at start, kept out of the runtime registry,
+    and refused by name by `config/patch` and `vtc/config/import`, with the
+    host-side fix in the refusal. It is written to config.toml only when on.
+  - Setup: `vtc setup --single-admin` (interactive and `--from`),
+    `single_admin_mode = true` in the setup TOML, and an interactive
+    "Run as a single-administrator community?" (default No). Setup warns when
+    it is chosen beside `co_admin_did`, because the mode has no effect while
+    that administrator is eligible.
+  - Gate: where the approver set is empty and the mode is on, the consent
+    gate neither refuses nor parks. The requester's operation-bound step-up
+    (VTI-APV-015) stands in for the consent. Spending it writes a Critical
+    `SingleAdminMode{consentWaived}` audit row naming the requirement, task,
+    kind and digest. The row is written before the write, and a failure to
+    audit refuses the operation. Once the write lands, the operation enters
+    the action history marked `ext.org.openvtc.consentWaived`. A non-empty
+    approver set parks exactly as before (item 2).
+  - Reductions (VTI-APV-019) are unchanged and keep their cooling-off.
+    Removing the subject at once would let one credential first remove the
+    only other eligible party and then act on the waiver
+    (vtc-action-list.md section 8.5).
+  - Boot (item 4): Critical `inEffect` at every start with the mode on, and
+    `enabled`/`disabled` when the value differs from the last start (stored in
+    the install keyspace). A start that cannot audit does not proceed.
+  - Visibility (item 3): `vtc/admin/actions/list` carries
+    `ext.org.openvtc.singleAdminMode`. The console shows a permanent,
+    non-dismissable banner on every page and a dashboard tile, and marks
+    waived operations in Actions. `cnm actions list` prints a notice and marks
+    waived operations.
+  - Docs: admin-access section 2.1a, bootstrap runbook, non-interactive setup
+    and example TOML, vtc-action-list section 8.5, vtc-admin-roles section 7,
+    the infographic, and CLAUDE.md.
+
+  Adds the `AuditEvent::SingleAdminMode` variant to vti-common. The enum is
+  `#[non_exhaustive]`, so this is additive.
+
+- **vtc**: Trust-tasks 0.27 — cooling-off actions, the reduction-pending notice, offline-write records, and approver-device approvals ([#1922](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1922))
+
+trust-tasks-rs 0.27.1 (trust-tasks-tf #719) specifies what the action list's
+  A2 phase had to express by workaround. This adopts it.
+
+  - trust-tasks-rs and its sibling crates move to 0.27.1, in lockstep with the
+    TDK release built on it: affinidi-tdk 0.23, affinidi-messaging-sdk 0.33,
+    affinidi-messaging-test-mediator 0.18 (mediator 0.37), and
+    affinidi-messaging-mediator-{admin,tui} 0.8. The graph holds one
+    trust-tasks-rs (and one trust-tasks-proof), so the mediator `MediatorAcl` is
+    one type and no bridge is needed. 0.27.0's typed git-ns
+    `ActivityItem.source` needed no change: the VTC builds that response from
+    JSON, and its wire is unchanged.
+  - `vtc/admin/actions/{list,show,cancel,acknowledge}/0.2` are served beside 0.1.
+    At 0.2 a cooling-off (VTI-APV-019) is category `coolingOff` with `landsAt`
+    and `cancellableBy: requester`, no threshold, expiry or approvers remaining,
+    closes `landedAfterCoolingOff`, and its subject sees it as `callerRole:
+    subject` in `all` and `history`, never `waitingForMe`. 0.1 keeps answering
+    as before (`ext["org.openvtc"].coolingOff`, `thresholdMet`). A parked
+    operation's next step expects show/0.2. vtc-client, cnm and the console use
+    0.2; cnm and the console count down to `landsAt`.
+  - A reduction parked for its cooling-off sends the subject
+    `vtc/members/authority-reduction-pending-notice/0.1` (durable push). The
+    landing still sends the authority-reduced notice (`unopposed`); a cancelled
+    one reduces and sends nothing more. Landing never waits on delivery.
+  - An operator's offline write (VTI-VTC-023), the emergency bootstrap
+    included, is raised with `typeUri` the record type
+    `vtc/operator/offline-write/0.1` and the record `{command, dids, host, at}`
+    as payload, replacing the URN placeholder and four per-command templates
+    with one pinned template. The emergency marker now records the recovery DID
+    and the administrators it wiped. A document of the record type answers
+    `unsupportedType`; the manifest census lists it as embedded-only.
+  - The console approves with the admin's approver device through the plugin's
+    `approveDecision` (vta-browser-plugin #293): the device signs a
+    decision-purpose statement over the per-approver salted wire digest, and
+    the wallet signs `task-consent/decision/0.2` carrying it as `approverSigned`
+    evidence. Precedence: approver device, passkey, wallet signature alone,
+    then the `cnm consent approve` guidance.
+  - A crash between a `policy/upsert` revision write and its effect marker was
+    reconciled `failed` although the revision existed, because the upsert moves
+    no state pin (CLAUDE.md R2.1). An executing action's revision is now stored
+    under an id derived from the action and execution
+    (`admin_actions::policy_revision_id`), so the row is its own evidence.
+
+- **vtc**: Administration is role-based — capabilities, built-in roles and explicit act scope (VTI-ACL-030 – 037, VTI-APV-018) ([#1924](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1924))
+
+Phase C1 of docs/05-design-notes/vtc-admin-roles.md. A VTC ACL entry no longer
+  reads "admin with an empty context list" as unrestricted: it carries explicit
+  administrative authority beside its community role.
+
+  Model (vtc-service/src/acl/capability.rs, entry.rs)
+  - VtcAclEntry gains adminRole (seven built-ins: community-admin, moderator,
+    vetting-lead, repo-manager, credential-officer, auditor, approver; custom
+    roles are a C2 placeholder), act all|none, capabilities ceiling|none|listed
+    with resource qualifiers (git-ns, git-repo, policy, criterion) and additive
+    grants, approve and approveCapabilities. Absent means none.
+  - A typed registry of 20 capabilities with authority-conferring flags. The
+    effective set is ceiling ∩ listed (plus additive), and every gate asks one
+    question: entry.can(capability, resource). No authority list is tested
+    with is_empty().
+
+  Gates (§4)
+  - Every require_super_admin / is_super_admin / "any admin" gate is replaced
+    by the specific capability. Reads need any administrative role; writes need
+    their capability. Console sign-in admits every administrative role. git-ns
+    community-admin standing is git.ns.admin unqualified.
+  - vtc/members/update refuses a move to or from a community role that implies
+    an administrative role (moderator, issuer, admin) with adminRoleForbidden;
+    acl/change-role carries the bound gesture for it.
+
+  Consent (VTI-APV-018, -019, -009)
+  - APV-014 generalises to any authority-conferring capability: approvers are
+    holders of the same capability at a covering qualifier who may approve it;
+    the requester (and, for a reduction, the subject) is excluded. A2's
+    after_reduction, agreements, cooling-off, record_effect and notices are
+    kept; actions record the capabilities at stake. An expiry put on or brought
+    forward is a reduction of everything the entry holds. The last holder of
+    vtc.roles.assign is never removed.
+
+  Granting bounds (§6.3; VTI-ACL-031, -033, -042, -050, -053, -071)
+  - A granter must hold each capability and vtc.roles.assign at a qualifier at
+    least as wide, may confer approve only within its own, never past its own
+    expiry, never to itself. delegatedBy is recorded. A departed or narrowed
+    granter's grants go under review and are withdrawn after the action
+    lifetime unless re-affirmed (review listing + sweeper, not an action-list
+    item).
+
+  Wire
+  - acl/{grant,update,show,list,revoke,change-role}/0.2 are served with the
+    generated trust_tasks_rs types beside 0.1, mapped per acl/_shared/0.2
+    CONVENTIONS §8; an entry 0.1 cannot express is refused at 0.1. Six 0.2
+    summary templates are pinned (Rust and console).
+
+  Migration (§9)
+  - At boot, before anything is authorized, every ACL row in the pre-role shape
+    is rewritten in place with the same mapping a backup import uses. All rows
+    are mapped before any is written, and each is one put, so a refusal or a
+    crash leaves no half-migrated row. A second boot is a no-op. The run is
+    audited once (new AuditEvent::AclMigrated, Critical: counts plus the
+    context-scoped admins left with no administrative role), and those losses
+    are raised as an acknowledge item for the remaining community-admins
+    (VTI-VTC-023; new pinned template, urn:openvtc:vtc:operator:acl-migration).
+    A row that cannot be mapped refuses the boot, naming the DID and the
+    offline fix (vtc acl remove, which now removes an undecodable row, then
+    vtc acl add). It is never dropped.
+  - Backup import maps legacy rows: unrestricted admin -> community-admin,
+    context-scoped admin -> no administrative role (listed for re-grant in the
+    import report), moderator / issuer -> the matching role, custom -> none.
+  - Install bootstrap and the co-admin are community-admins; offline
+    `vtc acl add --role admin` writes a community-admin, and gains
+    --admin-role and --capability cap[@resource]; --contexts is refused.
+
+  Clients
+  - vtc-client gains the 0.2 calls; cnm access list/show/grant/update use 0.2
+    with --admin-role / --capability / --approve.
+  - The console's Access control shows each entry's administrative role and
+    capabilities, adds and edits with role and capability narrowing, and no
+    longer calls a least-privilege entry "all" ([#746](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/746)).
+
+- **cnm**: Setup onboards the personal VTA the way pnm does — self-minted key, grant, rotate ([#1923](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1923))
+
+`cnm setup` used to require a sealed bundle from an administrator before cnm
+  could touch the personal VTA. It now follows pnm's admin cold start: mint an
+  ephemeral did:key, park it, print the grant routes (`vta import-did`,
+  `admin_did` in setup.toml, `pnm acl create`), and on
+  `cnm setup continue [<name>] [--vta-did <did>] [--vta-url <url>]` authenticate,
+  which rotates to a fresh did:key over `acl/swap-key` and removes the temp DID's
+  entry. A continue before the grant prints the routes and stays resumable.
+  Non-interactive mode mirrors pnm ([#1753](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1753)): `cnm setup --name <name>
+  [--overwrite]` and `continue --vta-did` each print one `{slug, admin_did,
+  state}` line.
+
+  Alternatives in the wizard:
+  - "Bootstrap from your existing pnm session" when a pnm profile on this
+    machine ($PNM_HOME honoured) is bound to the same VTA DID. pnm's config and
+    session store are read only; pnm's key authenticates in memory once, over
+    REST (so no mediator socket is taken from a running pnm), to grant cnm's
+    own freshly minted key, which then rotates as above. The grant is an
+    unrestricted admin: cnm creates a top-level context per community on the
+    personal VTA, which the VTA gates on super-admin.
+  - "I have a sealed bundle from an admin" — unchanged, digest pinned.
+
+  Communities now get an admin identity each, so one operator's communities
+  share no key. `cnm community add <name> [--vtc-did] [--vta-did] [--slug]
+  [--overwrite]` mints a did:key for that community, parks it in
+  `pending_communities` (not selectable by --community or as default until
+  confirmed), and prints the VTC grant routes: `co_admin_did` in vtc setup,
+  `vtc acl add` offline, or an existing admin's `cnm access grant` / console,
+  noting the second-administrator approval an online unrestricted grant waits
+  for. `cnm community continue <slug> [--vtc-did] [--vta-did]` confirms with a
+  DI-signed authenticate to the VTC (VTC audience) before promoting the
+  profile. The VTC has no key-rotation task (no acl/swap-key; a successor admin
+  entry is itself an unrestricted grant needing a second admin's consent,
+  VTI-APV-014), so the minted key is kept rather than a rotation invented.
+  Reusing another community's key takes `--reuse-identity <community>` (or an
+  explicit, warned choice in the wizard). `cnm community list` shows each
+  community's identity and the pending ones; `delete` drops a pending one.
+  Holding a community identity as a persona on the personal VTA is a follow-up.
+
+- **vtc**: Consent-gated operations wait in an action list and complete on the N-th approval (VTI-APV-017) ([#1918](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1918))
+
+A VTC operation that needs other administrators' approval -- an unrestricted
+  grant (VTI-APV-014), a reduction of another unrestricted admin (VTI-APV-019),
+  a lowered consent threshold (VTI-APV-020), an authority-policy change
+  (VTI-VTC-022) -- is no longer refused with `auth:consent_required` and re-sent.
+  Phase A1 of docs/05-design-notes/vtc-action-list.md.
+
+  Once every other check passes and the requester's operation-bound step-up is
+  spent (VTI-APV-015), the operation is parked as an action in the new
+  `admin_actions` keyspace (excluded from backup: it binds the ACL as it stood on
+  this host). The record keeps the requester's signed document verbatim, the
+  payload, requester, step-up evidence, approver set, threshold, one challenge
+  per approver, a state pin and its lifetime. The requester is answered
+  `trust-task-next-step/0.1` (202, continuation `proceed`, expecting
+  `vtc/admin/actions/show/0.1` with the action id) and never sends it again.
+
+  Approvers decide with `task-consent/decision/0.1` or `/0.2`, signed by their
+  own DID (a delegated console key is refused). The approval that reaches the
+  threshold moves the action out of `open` under a lock -- so concurrent final
+  approvals execute it once -- and dispatches the stored document through the
+  handler it was submitted to, re-running every check against the community as
+  it is then; the consent gate re-checks approver eligibility, threshold and
+  state pin. It closes `completed`, or `failed` with nothing written. One deny
+  closes it for everyone; the requester can cancel; it expires; it is
+  invalidated when the requester loses authority, the pinned state moves, or the
+  eligible approvers can no longer reach the threshold (VTI-APV-004/-005/-006/
+  -007/-008/-009/-017). Freshness and replay are held once, at submission
+  (VTI-OPS-024..027).
+
+  decision/0.2 `webauthn` evidence is verified against the approver's passkeys
+  with user verification required, as an additional factor. `approverSigned`
+  evidence is refused (evidenceInvalid, approverSignedUnsupported) until the
+  approver store lands.
+
+  New config keys, runtime-patchable: acl.action_lifetime (72 h, 15 min-14 d),
+  acl.action_max_open_per_requester (5, 1-20), acl.action_max_open (50,
+  10-500), acl.action_decline_cooldown (1 h, 0-24 h). More than three actions by
+  one requester in ten minutes writes a Critical `AdminActionBurst` audit row
+  and flags approvers' cards; an approver may decide at most ten a minute
+  (VTI-APV-021, section 7a.1).
+
+  Summaries are templates as data (title/effect prose, JSON Pointer fields, a
+  closed format set) keyed by (kind, typeUri), each pinned by digest in the
+  build, with shared vectors run by the service and the console (VTI-APV-011,
+  -013).
+
+  Served on the signed-document spine: vtc/admin/actions/{list,show,cancel,
+  acknowledge}/0.1 (acknowledge answers notAcknowledgeable until A2 raises
+  acknowledge items), with conformance witnesses and declared-code witnesses.
+
+
+
+### Fixed
+
+- **cnm**: The community grant hint names the --admin-role flag that exists ([#1934](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1934))
+
+`cnm community add` printed `cnm access grant <did> --role admin` for an
+  existing administrator to run, but `cnm access grant` takes
+  `--admin-role <role>` (role-based administration, #1924); `--role` does
+  not exist, so the printed command failed. It now prints
+  `--admin-role community-admin`, and the console hint names the admin role.
+
+
+
 ## [0.26.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/cnm-cli-v0.25.1...cnm-cli-v0.26.0) — 2026-10-02
 
 

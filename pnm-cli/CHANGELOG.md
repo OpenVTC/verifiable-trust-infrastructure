@@ -2,6 +2,57 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.33.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.32.0...pnm-cli-v0.33.0) — 2026-10-04
+
+
+### Added
+
+- **vtc**: Trust-tasks 0.27 — cooling-off actions, the reduction-pending notice, offline-write records, and approver-device approvals ([#1922](https://github.com/OpenVTC/verifiable-trust-infrastructure/pull/1922))
+
+trust-tasks-rs 0.27.1 (trust-tasks-tf #719) specifies what the action list's
+  A2 phase had to express by workaround. This adopts it.
+
+  - trust-tasks-rs and its sibling crates move to 0.27.1, in lockstep with the
+    TDK release built on it: affinidi-tdk 0.23, affinidi-messaging-sdk 0.33,
+    affinidi-messaging-test-mediator 0.18 (mediator 0.37), and
+    affinidi-messaging-mediator-{admin,tui} 0.8. The graph holds one
+    trust-tasks-rs (and one trust-tasks-proof), so the mediator `MediatorAcl` is
+    one type and no bridge is needed. 0.27.0's typed git-ns
+    `ActivityItem.source` needed no change: the VTC builds that response from
+    JSON, and its wire is unchanged.
+  - `vtc/admin/actions/{list,show,cancel,acknowledge}/0.2` are served beside 0.1.
+    At 0.2 a cooling-off (VTI-APV-019) is category `coolingOff` with `landsAt`
+    and `cancellableBy: requester`, no threshold, expiry or approvers remaining,
+    closes `landedAfterCoolingOff`, and its subject sees it as `callerRole:
+    subject` in `all` and `history`, never `waitingForMe`. 0.1 keeps answering
+    as before (`ext["org.openvtc"].coolingOff`, `thresholdMet`). A parked
+    operation's next step expects show/0.2. vtc-client, cnm and the console use
+    0.2; cnm and the console count down to `landsAt`.
+  - A reduction parked for its cooling-off sends the subject
+    `vtc/members/authority-reduction-pending-notice/0.1` (durable push). The
+    landing still sends the authority-reduced notice (`unopposed`); a cancelled
+    one reduces and sends nothing more. Landing never waits on delivery.
+  - An operator's offline write (VTI-VTC-023), the emergency bootstrap
+    included, is raised with `typeUri` the record type
+    `vtc/operator/offline-write/0.1` and the record `{command, dids, host, at}`
+    as payload, replacing the URN placeholder and four per-command templates
+    with one pinned template. The emergency marker now records the recovery DID
+    and the administrators it wiped. A document of the record type answers
+    `unsupportedType`; the manifest census lists it as embedded-only.
+  - The console approves with the admin's approver device through the plugin's
+    `approveDecision` (vta-browser-plugin #293): the device signs a
+    decision-purpose statement over the per-approver salted wire digest, and
+    the wallet signs `task-consent/decision/0.2` carrying it as `approverSigned`
+    evidence. Precedence: approver device, passkey, wallet signature alone,
+    then the `cnm consent approve` guidance.
+  - A crash between a `policy/upsert` revision write and its effect marker was
+    reconciled `failed` although the revision existed, because the upsert moves
+    no state pin (CLAUDE.md R2.1). An executing action's revision is now stored
+    under an id derived from the action and execution
+    (`admin_actions::policy_revision_id`), so the row is its own evidence.
+
+
+
 ## [0.32.0](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/pnm-cli-v0.31.1...pnm-cli-v0.32.0) — 2026-10-02
 
 
