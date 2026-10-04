@@ -86,6 +86,8 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   AdminRoleDefined: "Custom administrative role defined",
   AdminRoleDeleted: "Custom administrative role deleted",
   AclKeyRotated: "ACL entry rolled to a new key",
+  CapabilityModuleChanged:
+    "Capability module enabled, disabled, or projected to the trust registry",
 };
 
 // Events that fire on a schedule or at daemon-internal lifecycle

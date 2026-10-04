@@ -222,6 +222,47 @@ pub trait TrustRegistryClient: Send + Sync {
             "this registry transport cannot delete authorization records".into(),
         ))
     }
+
+    /// Project one capability-module decision to the registry, as its
+    /// administrator: `governance/capability/enable/0.1` or `/disable/0.1`
+    /// ([`crate::capability_modules`]).
+    ///
+    /// The VTC is the source of truth for which capability modules a
+    /// community has enabled; the registry's enablement is a projection of
+    /// it, and only switches which record families the registry accepts.
+    /// Convergent: an `alreadyEnabled` answer to an enable, or a `notEnabled`
+    /// answer to a disable, is the state wanted, so it is success.
+    ///
+    /// Defaults to a `Permanent` refusal so a transport with no write surface
+    /// says so rather than pretending.
+    async fn project_capability_module(
+        &self,
+        _change: &CapabilityModuleChange,
+    ) -> Result<(), RegistryError> {
+        Err(RegistryError::Permanent(
+            "this registry transport cannot enable or disable capability modules".into(),
+        ))
+    }
+}
+
+/// One capability-module decision, as the registry is told it
+/// ([`TrustRegistryClient::project_capability_module`]).
+///
+/// "Capability" is a pluggable governance module (`git-trust`), never an ACL
+/// capability on an administrator's entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CapabilityModuleChange {
+    /// The module's slug, e.g. `git-trust`.
+    pub capability: String,
+    /// The module version the community enabled.
+    pub version: String,
+    /// `true` for `governance/capability/enable`, `false` for `/disable`.
+    pub enabled: bool,
+    /// The enablement config (`config.authority`, for a record-writing
+    /// module). Ignored on a disable.
+    pub config: Option<serde_json::Value>,
+    /// The operator's reason on a disable.
+    pub reason: Option<String>,
 }
 
 /// How the VTC reaches its trust registry, as an operator sees it.
@@ -300,6 +341,9 @@ struct MockState {
     pub trust_records: std::collections::BTreeMap<String, serde_json::Value>,
     pub trust_record_deletes: usize,
     pub next_trust_record_error: Option<RegistryError>,
+    /// Capability-module projections received, in order.
+    pub capability_module_changes: Vec<CapabilityModuleChange>,
+    pub next_capability_module_error: Option<RegistryError>,
 }
 
 impl MockRegistryClient {
@@ -388,6 +432,16 @@ impl MockRegistryClient {
     /// Queue an error for the next authorization-record write or delete.
     pub async fn fail_next_trust_record(&self, err: RegistryError) {
         self.inner.lock().await.next_trust_record_error = Some(err);
+    }
+
+    /// Every capability-module projection the registry received, in order.
+    pub async fn capability_module_changes(&self) -> Vec<CapabilityModuleChange> {
+        self.inner.lock().await.capability_module_changes.clone()
+    }
+
+    /// Queue an error for the next capability-module projection.
+    pub async fn fail_next_capability_module(&self, err: RegistryError) {
+        self.inner.lock().await.next_capability_module_error = Some(err);
     }
 }
 
@@ -491,6 +545,18 @@ impl TrustRegistryClient for MockRegistryClient {
         s.trust_record_deletes += 1;
         s.trust_records
             .remove(&format!("{entity_id}|{action}|{resource}"));
+        Ok(())
+    }
+
+    async fn project_capability_module(
+        &self,
+        change: &CapabilityModuleChange,
+    ) -> Result<(), RegistryError> {
+        let mut s = self.inner.lock().await;
+        if let Some(err) = s.next_capability_module_error.take() {
+            return Err(err);
+        }
+        s.capability_module_changes.push(change.clone());
         Ok(())
     }
 }

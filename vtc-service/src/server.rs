@@ -1250,6 +1250,37 @@ pub async fn run(
         });
     }
 
+    // Capability modules: project each enable / disable this community has
+    // decided to its trust registry, until the registry holds it. Spawned only
+    // with a registry client; without one, decisions are held here with their
+    // projection pending and the reason on it, and a later boot with a
+    // registry configured projects them. Supervised like the hook relay.
+    if state.registry_client.is_some() {
+        let projector_state = state.clone();
+        let mut supervisor_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if *supervisor_shutdown.borrow() {
+                    break;
+                }
+                let projector = crate::capability_modules::Projector::new(projector_state.clone());
+                let run_shutdown = supervisor_shutdown.clone();
+                let child = tokio::spawn(async move { projector.run(run_shutdown).await });
+                match child.await {
+                    Ok(()) => break,
+                    Err(join_err) if join_err.is_panic() => {
+                        error!(error = %join_err, "capability-module projector panicked — restarting after backoff");
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                            _ = supervisor_shutdown.changed() => break,
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     // Suspensions first, before anything is served and before the git-ns
     // projector's first pass: a crash between an action's write and its
     // marker's is settled from the action list, so no request is answered —

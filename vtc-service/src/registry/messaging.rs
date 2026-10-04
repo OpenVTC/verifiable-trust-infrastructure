@@ -78,7 +78,9 @@ use crate::credentials::LocalSigner;
 use crate::hooks::PendingReplies;
 use crate::messaging::VtcMessaging;
 
-use super::client::{RegistryError, RegistryTransport, TrustRegistryClient};
+use super::client::{
+    CapabilityModuleChange, RegistryError, RegistryTransport, TrustRegistryClient,
+};
 use super::model::{RegistryRecord, RegistryStatus};
 use super::upstream::UpstreamRegistryClient;
 use super::{RECOGNISE_ACTION, TRUST_GRAPH_RESOURCE};
@@ -88,6 +90,9 @@ const RECORD_PUT: &str = "https://trusttasks.org/spec/registry/record/put/0.1";
 const RECORD_DELETE: &str = "https://trusttasks.org/spec/registry/record/delete/0.1";
 const RECORD_QUERY: &str = "https://trusttasks.org/spec/registry/record/query/0.1";
 const RECOGNITION: &str = "https://trusttasks.org/spec/registry/recognition/0.1";
+/// `governance/capability/{enable,disable}/0.1`, read off the generated types.
+const CAPABILITY_ENABLE: &str = <trust_tasks_rs::specs::governance::capability::enable::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+const CAPABILITY_DISABLE: &str = <trust_tasks_rs::specs::governance::capability::disable::v0_1::Payload as trust_tasks_rs::Payload>::TYPE_URI;
 
 /// Default wait for the registry's reply before a call is deemed transient.
 /// Matches the hook writer's window — same mediator, same round trip.
@@ -578,6 +583,49 @@ fn classify(doc: &TrustTask<Value>, expect_slug: &str) -> Result<(), RegistryErr
     Ok(())
 }
 
+/// Classify the registry's answer to a `governance/capability/enable|disable`.
+///
+/// Convergent on purpose: the projector re-sends the community's decision
+/// until the registry holds it, so the registry already being in the wanted
+/// state is success, not a failure. The spec declares those answers as
+/// `governance/capability/enable:alreadyEnabled` and
+/// `governance/capability/disable:notEnabled`; registries that predate the
+/// extended codes send `taskFailed` with an `already_enabled:` / `not_enabled:`
+/// message prefix, which is accepted for the same reason.
+fn classify_capability_toggle(
+    reply: &TrustTask<Value>,
+    slug: &str,
+    enabled: bool,
+) -> Result<(), RegistryError> {
+    if reply.type_uri.slug() == "trust-task-error" {
+        let code = reply
+            .payload
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let message = reply
+            .payload
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let (extended, legacy) = if enabled {
+            (
+                trust_tasks_rs::specs::governance::capability::enable::v0_1::error_codes::ALREADY_ENABLED.code,
+                "already_enabled",
+            )
+        } else {
+            (
+                trust_tasks_rs::specs::governance::capability::disable::v0_1::error_codes::NOT_ENABLED.code,
+                "not_enabled",
+            )
+        };
+        if code == extended || (code == "taskFailed" && message.starts_with(legacy)) {
+            return Ok(());
+        }
+    }
+    classify(reply, slug)
+}
+
 /// Build the TRQP record for a member as this community asserts it.
 ///
 /// The spec's `TrustRecord` carries no validity window, so the membership
@@ -901,6 +949,59 @@ impl TrustRegistryClient for MessagingRegistryClient {
         }
     }
 
+    async fn project_capability_module(
+        &self,
+        change: &CapabilityModuleChange,
+    ) -> Result<(), RegistryError> {
+        use trust_tasks_rs::specs::governance::capability::{
+            disable::v0_1 as disable, enable::v0_1 as enable,
+        };
+        use trust_tasks_rs::validate::ValidatedPayload;
+        self.authority()?;
+        let (type_uri, slug, payload) = if change.enabled {
+            let mut payload = json!({
+                "capability": change.capability,
+                "version": change.version,
+            });
+            if let Some(config) = &change.config {
+                payload["config"] = config.clone();
+            }
+            (CAPABILITY_ENABLE, "governance/capability/enable", payload)
+        } else {
+            let mut payload = json!({ "capability": change.capability });
+            if let Some(reason) = &change.reason {
+                payload["reason"] = json!(reason);
+            }
+            (CAPABILITY_DISABLE, "governance/capability/disable", payload)
+        };
+        // Hold our own document to its published schema before it leaves: a
+        // payload the registry would refuse as malformed is a bug here, and
+        // retrying it would only spin (R3.5).
+        let checked = if change.enabled {
+            enable::Payload::validate_value(&payload)
+        } else {
+            disable::Payload::validate_value(&payload)
+        };
+        if let Err(e) = checked {
+            return Err(RegistryError::Permanent(format!(
+                "{slug} payload does not match its published schema: {e}"
+            )));
+        }
+        match self.select().await? {
+            // The registry's governance surface is admin-only and served over
+            // its messaging transports; REST is TRQP queries alone.
+            Protocol::Rest => Err(RegistryError::Permanent(
+                "the trust registry is reachable only over REST, which has no governance \
+                 surface; enabling a capability module there needs TSP or DIDComm"
+                    .into(),
+            )),
+            protocol => {
+                let reply = self.round_trip(type_uri, payload, protocol).await?;
+                classify_capability_toggle(&reply, slug, change.enabled)
+            }
+        }
+    }
+
     fn transport(&self) -> RegistryTransport {
         // A poisoned lock only happens if a writer panicked mid-update; report
         // the address we were configured with rather than failing a diagnostics
@@ -1012,6 +1113,73 @@ mod tests {
     // `vta_sdk::tsp_binding`, which re-exports `trust_tasks_tsp::ENVELOPE_TYPE`,
     // so there is no local copy left to drift; `outbound::tests::
     // the_tsp_seal_is_the_published_envelope` checks the seal against it.
+
+    /// The capability-module projection converges: the registry already
+    /// holding the decision — under the declared extended code or the older
+    /// `taskFailed` prefix — is success; any other refusal is not.
+    #[test]
+    fn a_capability_toggle_already_in_the_wanted_state_is_success() {
+        let enable = "governance/capability/enable";
+        let disable = "governance/capability/disable";
+        let with = |code: &str, message: &str| {
+            let mut doc = error_doc(code);
+            doc.payload["message"] = json!(message);
+            doc
+        };
+        assert!(
+            classify_capability_toggle(&record_doc(CAPABILITY_ENABLE, json!({})), enable, true)
+                .is_ok()
+        );
+        assert!(
+            classify_capability_toggle(
+                &error_doc("governance/capability/enable:alreadyEnabled"),
+                enable,
+                true
+            )
+            .is_ok()
+        );
+        assert!(
+            classify_capability_toggle(&with("taskFailed", "already_enabled: it is"), enable, true)
+                .is_ok()
+        );
+        assert!(
+            classify_capability_toggle(
+                &error_doc("governance/capability/disable:notEnabled"),
+                disable,
+                false
+            )
+            .is_ok()
+        );
+        assert!(
+            classify_capability_toggle(
+                &with("taskFailed", "not_enabled: it is not"),
+                disable,
+                false
+            )
+            .is_ok()
+        );
+        // An enable's idempotent answer is not a disable's, and vice versa.
+        assert!(
+            classify_capability_toggle(
+                &error_doc("governance/capability/enable:alreadyEnabled"),
+                disable,
+                false
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            classify_capability_toggle(&error_doc("permissionDenied"), enable, true),
+            Err(RegistryError::Permanent(_))
+        ));
+        assert!(matches!(
+            classify_capability_toggle(&error_doc("unsupportedType"), enable, true),
+            Err(RegistryError::Incompatible(_))
+        ));
+        assert!(matches!(
+            classify_capability_toggle(&error_doc("internalError"), disable, false),
+            Err(RegistryError::Transient(_))
+        ));
+    }
 
     #[test]
     fn tsp_envelope_wraps_the_document() {

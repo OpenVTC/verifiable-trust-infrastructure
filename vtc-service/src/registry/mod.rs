@@ -85,7 +85,10 @@ pub const RECOGNISE_ACTION: &str = "recognise";
 /// [`RECOGNISE_ACTION`].
 pub const TRUST_GRAPH_RESOURCE: &str = "trust-graph";
 
-pub use client::{MockRegistryClient, RegistryError, RegistryTransport, TrustRegistryClient};
+pub use client::{
+    CapabilityModuleChange, MockRegistryClient, RegistryError, RegistryTransport,
+    TrustRegistryClient,
+};
 pub use drift::{
     Disagreement, DriftEntry, DriftSnapshot, DriftState, MAX_REPORTED as MAX_REPORTED_DRIFT,
     check as check_drift,

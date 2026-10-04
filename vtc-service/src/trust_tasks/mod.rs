@@ -132,6 +132,11 @@ pub(crate) mod step_up_approver_tasks;
 // their only door.
 pub(crate) mod role_tasks;
 
+// Capability modules: `governance/capability/{list,enable,disable}/0.1`
+// (`design-docs/vtc-capability-modules.md`). The decisions and their registry
+// projection are `crate::capability_modules`'s; this is their only door.
+pub(crate) mod capability_module_tasks;
+
 // The integration tests' soft WebAuthn authenticator, for the spine tests that
 // drive a real passkey ceremony.
 #[cfg(test)]
@@ -1257,6 +1262,15 @@ fn dispatch_typed<'a>(
                 }
             }
         }),
+        uri if capability_module_tasks::URIS.contains(&uri) => Box::pin(async move {
+            match capability_module_tasks::dispatch(state, ctx, doc, uri).await {
+                Some(outcome) => outcome,
+                // `URIS` is exactly what `dispatch` routes.
+                None => unreachable!(
+                    "capability_module_tasks::URIS names {uri}, which it does not route"
+                ),
+            }
+        }),
         uri if member_tasks::URIS.contains(&uri) => Box::pin(async move {
             match member_tasks::dispatch(state, ctx, doc, uri).await {
                 Some(outcome) => outcome,
@@ -2075,6 +2089,10 @@ mod spine_proof_tests {
         ),
         (surface_tasks::ROOMS_LIST_TYPE, "a public read"),
         (
+            capability_module_tasks::LIST_TYPE,
+            "a member read; `acting_party` refuses an unsigned caller as `proofRequired`",
+        ),
+        (
             auth_tasks::CHALLENGE_TYPE,
             "names no identity to authorize — it is the first message of the handshake",
         ),
@@ -2788,6 +2806,13 @@ pub(crate) const DISPATCHED_URIS: &[&str] = &[
     role_tasks::DELETE_TYPE,
     // A subject rolling its own admin entry to a new key (VTI-CLT-025 – 032).
     ACL_SWAP_KEY_TYPE,
+    // Capability modules (`vtc-capability-modules.md`): a member's listing of
+    // what the community has enabled — OpenVTC's Capabilities panel — and an
+    // administrator turning one on or off, which this VTC then projects to its
+    // Trust Registry. No REST route.
+    capability_module_tasks::LIST_TYPE,
+    capability_module_tasks::ENABLE_TYPE,
+    capability_module_tasks::DISABLE_TYPE,
     // backup/* — the chunked transfer `vtc/backup/import` could never be,
     // because its envelope does not fit one document.
     backup_tasks::INITIATE_EXPORT_TYPE,

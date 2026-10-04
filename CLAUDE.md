@@ -1218,6 +1218,30 @@ new flow, update both this section and the relevant `docs/*.md`.
   `cnm-cli/src/git.rs`, `vtc-client/src/git_ns.rs`.
 - **Docs**: `docs/03-vtc/git-namespaces.md`.
 
+### VTC capability modules (`governance/capability/*`)
+- **What**: A community's pluggable governance capabilities (`git-trust`
+  first) — listed by its members, enabled and disabled by its administrators.
+  Not ACL capabilities (`vtc.config.admin` …): keep the two apart in names,
+  types and audit text (`capability_modules`, "capability module",
+  `CapabilityModuleChanged`).
+- **Invariants to preserve**: the VTC is the source of truth and the Trust
+  Registry a projection — a decision is persisted (community keyspace) before
+  the projector tells the registry, as its admin, over the registry client's
+  TSP > DIDComm selection; the projector is the only retry owner, records an
+  answer only against the generation it sent, treats `alreadyEnabled` /
+  `notEnabled` as success, and surfaces a refusal as `failed` + an audit row
+  while still retrying at the cap. `enable`/`disable` take `vtc.config.admin`
+  and a step-up bound to the document (destructive class), never the action
+  list (they confer no ACL authority). `list` answers members and admins only,
+  as the generated `#response` that `trust-tasks-capability-client` parses.
+  The git-trust manifest is a copy of the registry's, pinned by a test.
+- **Code**: `vtc-service/src/capability_modules/`,
+  `vtc-service/src/trust_tasks/capability_module_tasks.rs`,
+  `vtc-service/src/registry/{client,messaging}.rs`
+  (`project_capability_module`).
+- **Docs**: `docs/03-vtc/trust-registry.md` (*Capability modules*),
+  `../design-docs/vtc-capability-modules.md`.
+
 ## Runtime guards to preserve
 
 These are load-bearing — know they exist before adjusting nearby code.

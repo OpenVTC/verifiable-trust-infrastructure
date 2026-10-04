@@ -776,6 +776,39 @@ pub enum AuditEvent {
     /// exactly as it was. Written **before** the move commits; a node that
     /// cannot write it does not move the entry (VTI-CLT-032).
     AclKeyRotated(AclKeyRotatedData),
+
+    /// A community turned a **capability module** on or off
+    /// (`governance/capability/enable/0.1`, `governance/capability/disable/0.1`),
+    /// or its Trust Registry projection of that decision settled
+    /// (`event`: `enabled`, `disabled`, `projected`, `projectionFailed`).
+    ///
+    /// "Capability" here is a pluggable governance module such as `git-trust`
+    /// (`vtc-capability-modules.md`) — not an ACL capability on an
+    /// administrator's entry, which [`Self::AclGranted`] and its neighbours
+    /// record.
+    CapabilityModuleChanged(CapabilityModuleChangedData),
+}
+
+/// Payload for [`AuditEvent::CapabilityModuleChanged`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityModuleChangedData {
+    /// The capability module's slug, e.g. `git-trust`.
+    pub capability: String,
+    /// The module version the decision concerns.
+    pub version: String,
+    /// `enabled`, `disabled`, `projected` or `projectionFailed`.
+    pub event: String,
+    /// The authority the module acts under at the trust registry (its
+    /// `config.authority`), when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority: Option<String>,
+    /// The operator's free-text reason on a disable, if one was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Why a projection failed (`projectionFailed` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Payload for [`AuditEvent::AdminRoleDefined`] / [`AuditEvent::AdminRoleDeleted`].
@@ -954,6 +987,7 @@ impl AuditEvent {
             Self::AdminRoleDefined(..) => "AdminRoleDefined",
             Self::AdminRoleDeleted(..) => "AdminRoleDeleted",
             Self::AclKeyRotated(..) => "AclKeyRotated",
+            Self::CapabilityModuleChanged(..) => "CapabilityModuleChanged",
         }
     }
 

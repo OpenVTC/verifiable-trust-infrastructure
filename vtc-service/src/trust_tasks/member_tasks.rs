@@ -206,11 +206,11 @@ async fn self_signer(
 /// Who is acting, and in what role: the signer's own current ACL row, or — for
 /// a signer with no row — the administrator a console-key delegation names
 /// ([`admin_signer`]). Refused when neither applies, or when the row expired.
-struct Actor {
-    did: String,
+pub(super) struct Actor {
+    pub(super) did: String,
     /// The live entry the actor acts under — its own, or the delegating
     /// administrator's for a console key.
-    entry: crate::acl::VtcAclEntry,
+    pub(super) entry: crate::acl::VtcAclEntry,
 }
 
 impl Actor {
@@ -221,7 +221,7 @@ impl Actor {
     }
 }
 
-async fn acting_party(
+pub(super) async fn acting_party(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: &TrustTask<Value>,
