@@ -3330,17 +3330,28 @@ async fn handle_revoke_statement(
 
 /// `vtc/vetting/vetters/grant/0.1` — an admin names a member a vetter.
 ///
-/// The sender is the proven signer; whether they may grant (community Admin,
-/// read from the ACL row) and whom (a current member) is decided in
-/// [`crate::vetting::vetters::grant`], the same path `POST /v1/vetting/vetters`
-/// takes.
+/// The acting administrator is resolved as for every other administrative
+/// task — the proven signer, or the administrator a console key acts for
+/// ([`admin_signer`]) — and held to `vtc.vetting.manage` (VTI-ACL-030).
+/// Whom (a current member) is decided in [`crate::vetting::vetters::grant`],
+/// the same path `POST /v1/vetting/vetters` takes. Resolving the bare signer
+/// here, as this handler once did, refused every grant the console made: the
+/// console signs with its own `did:key`, which holds no entry of its own.
 async fn handle_vetter_grant(
     state: &AppState,
     ctx: &JoinAuthCtx,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    let admin_did = match resolve_holder(state, ctx, &doc).await {
-        Ok(did) => did,
+    let admin_did = match capable_signer(
+        state,
+        ctx,
+        &doc,
+        crate::acl::Capability::VettingManage,
+        None,
+    )
+    .await
+    {
+        Ok(claims) => claims.did,
         Err(reject) => return reject,
     };
     let body: vetting_wire::vetters::grant::v0_1::Payload = match parse_checked_payload(&doc) {
@@ -8536,5 +8547,149 @@ mod backup_export_tests {
         // left.
         assert_eq!(error_code(&out).as_deref(), Some("internalError"));
         assert!(payload_of(&out).get("envelope").is_none());
+    }
+}
+
+/// `vtc/vetting/vetters/grant/0.1` signed by a console key: the grant is the
+/// administrator's, as for every other administrative task (VTI-ACL-030).
+#[cfg(test)]
+mod vetter_grant_console_key_tests {
+    use super::members_admin_tests::{dispatch, error_code, signed};
+    use super::*;
+    use crate::acl::console_key::{ConsoleKeyDelegation, DelegationScope, store_delegation};
+    use crate::acl::{AdminAuthority, VtcAclEntry, VtcRole, store_acl_entry};
+    use crate::members::{Member, store_member};
+    use crate::test_support::TestVtc;
+    use serde_json::json;
+    use vti_rooms_dtg::test_support::Party;
+
+    const MEMBER: &str = "did:key:zVetterGrantConsoleKeyMember";
+
+    async fn seed(vtc: &TestVtc, did: &str, role: VtcRole, admin: AdminAuthority) {
+        store_acl_entry(
+            &vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: did.into(),
+                role,
+                label: None,
+                admin,
+                delegated_by: None,
+                created_at: 0,
+                created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
+                expires_at: None,
+                resource_grants: Vec::new(),
+                label_set_by_subject: false,
+            },
+        )
+        .await
+        .expect("seed ACL row");
+    }
+
+    async fn delegate(vtc: &TestVtc, console: &Party, admin_did: &str) {
+        store_delegation(
+            &vtc.state.console_keys_ks,
+            &ConsoleKeyDelegation {
+                console_did: console.did.clone(),
+                admin_did: admin_did.to_string(),
+                scope: DelegationScope::Console,
+                label: None,
+                created_at: chrono::Utc::now(),
+                expires_at: chrono::Utc::now() + chrono::Duration::days(1),
+                last_used_at: None,
+                revoked_at: None,
+                revoked_by: None,
+            },
+        )
+        .await
+        .expect("store delegation");
+    }
+
+    /// A community with one community-admin and one member to name a vetter.
+    async fn community() -> (TestVtc, Party) {
+        let vtc = TestVtc::builder()
+            .with_audit(true)
+            .with_signers(true)
+            .build()
+            .await;
+        let admin = Party::new();
+        seed(
+            &vtc,
+            &admin.did,
+            VtcRole::Admin,
+            AdminAuthority::community_admin(),
+        )
+        .await;
+        seed(&vtc, MEMBER, VtcRole::Member, AdminAuthority::none()).await;
+        store_member(&vtc.state.members_ks, &Member::fresh(MEMBER))
+            .await
+            .expect("store member");
+        // A grant issues a revocable vetter role credential.
+        for purpose in [
+            affinidi_status_list::StatusPurpose::Revocation,
+            affinidi_status_list::StatusPurpose::Suspension,
+        ] {
+            crate::status_list::ensure_initial(
+                &vtc.state.status_lists_ks,
+                purpose,
+                format!("https://vtc.example.com/v1/status-lists/{purpose}"),
+            )
+            .await
+            .expect("provision status list");
+        }
+        (vtc, admin)
+    }
+
+    fn grant() -> Value {
+        json!({ "memberDid": MEMBER })
+    }
+
+    #[tokio::test]
+    async fn vti_acl_030_a_console_key_grants_a_vetter_as_its_community_admin() {
+        let (vtc, admin) = community().await;
+        let console = Party::new();
+        delegate(&vtc, &console, &admin.did).await;
+        let doc = signed(&console, vetting_wire::VETTING_VETTER_GRANT_TYPE, grant()).await;
+        let out = dispatch(&vtc, &doc).await;
+        assert_eq!(error_code(&out), None, "{out:?}");
+        let rows = crate::vetting::vetters::grant_rows(&vtc.state)
+            .await
+            .expect("grant rows");
+        assert!(
+            rows.iter().any(|r| r.member_did == MEMBER && !r.revoked),
+            "the member is a vetter: {rows:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn vti_acl_030_a_console_key_with_no_delegation_grants_nothing() {
+        let (vtc, _admin) = community().await;
+        let console = Party::new();
+        let doc = signed(&console, vetting_wire::VETTING_VETTER_GRANT_TYPE, grant()).await;
+        let out = dispatch(&vtc, &doc).await;
+        assert!(error_code(&out).is_some(), "refused: {out:?}");
+        let rows = crate::vetting::vetters::grant_rows(&vtc.state)
+            .await
+            .expect("grant rows");
+        assert!(rows.is_empty(), "nothing granted: {rows:?}");
+    }
+
+    #[tokio::test]
+    async fn vti_acl_030_a_console_key_of_an_admin_without_vetting_manage_grants_nothing() {
+        let (vtc, _admin) = community().await;
+        let moderator = Party::new();
+        seed(
+            &vtc,
+            &moderator.did,
+            VtcRole::Admin,
+            AdminAuthority::for_role(crate::acl::AdminRole::Moderator),
+        )
+        .await;
+        let console = Party::new();
+        delegate(&vtc, &console, &moderator.did).await;
+        let doc = signed(&console, vetting_wire::VETTING_VETTER_GRANT_TYPE, grant()).await;
+        let out = dispatch(&vtc, &doc).await;
+        assert!(error_code(&out).is_some(), "refused: {out:?}");
     }
 }
