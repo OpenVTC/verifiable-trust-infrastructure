@@ -24,7 +24,7 @@ azure-secrets = ["vta-sdk/azure-secrets"]
 vta-sdk = { path = "../vta-sdk", version = "0.63", features = ["session", "crypto-provider", "acl-setup"] }
 # `agent-names` powers the global `--resolve-agent-names` flag; without it
 # the flag parses but can never resolve anything.
-vta-cli-common = { path = "../vta-cli-common", version = "0.33", features = [
+vta-cli-common = { path = "../vta-cli-common", version = "0.34", features = [
   "agent-names",
 ] }
 affinidi-did-resolver-cache-sdk = { workspace = true }

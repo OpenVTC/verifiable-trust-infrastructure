@@ -43,7 +43,7 @@ vta-sdk = { path = "../vta-sdk", version = "0.63", features = ["session"] }
 # The room's wire types, and — under the `mls` feature — its group-key and
 # sealing layers, which this crate re-exports rather than owning. A VTA needs
 # both and must not depend on a VTC client, so they live in the shared leaf.
-vti-rooms = { path = "../vti-rooms", version = "0.7" }
+vti-rooms = { path = "../vti-rooms", version = "0.8" }
 
 # `TrustTask` — the join-submit document this client signs, and the `#response`
 # envelope the VTC answers it with. Same crate `vta-sdk` builds the document
