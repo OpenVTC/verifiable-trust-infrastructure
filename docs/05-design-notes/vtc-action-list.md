@@ -45,7 +45,7 @@ Builds on `vtc-operation-bound-step-up.md` §4 (the APV-014 consent as built,
 | #1927 | the same machinery for custom roles, the departed-granter review (`acl.grants.review`) and a restore's commit (`vtc-admin-roles.md` §7) |
 | #1929 | the join-request badge and the dashboard's count tiles beside the Actions badge |
 | #1931 | the existing queues as `queue` items (§8.2): break-glass ratification, join review, vetting withdrawal review; listings that filter before paging and count exactly |
-| #1943 | the subject of a cooling-off is **suspended** until it lands or is cancelled (§8.2); in single-administrator mode a reduction can be made **now**, and an open cooling-off landed now, on a typed confirmation and a gesture bound to the immediate variant (§8.5) |
+| #1944 | the subject of a cooling-off is **suspended** until it lands or is cancelled (§8.2); in single-administrator mode a reduction can be made **now**, and an open cooling-off landed now, on a typed confirmation and a gesture bound to the immediate variant (§8.5) |
 
 Deviations recorded during implementation, beside the two above:
 
