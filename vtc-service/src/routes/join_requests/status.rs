@@ -71,7 +71,7 @@ pub async fn status_inner(
     if req.applicant_did != applicant_did {
         return Err(not_found());
     }
-    answer(state, id, req, resend_credentials).await
+    answer(state, id, req, resend_credentials, false).await
 }
 
 /// Resolve the applicant's **open** request without being told its id.
@@ -115,7 +115,7 @@ pub async fn status_by_applicant(
                 AppError::NotFound(format!("join request not found: {id}")),
             )
         })?;
-    answer(state, id, req, resend_credentials).await
+    answer(state, id, req, resend_credentials, true).await
 }
 
 /// The request an id-less poll answers about: the applicant's open request,
@@ -142,10 +142,39 @@ async fn find_pollable_request(
     Ok(approved.map(|r| r.id))
 }
 
+/// [`answer_inner`], logged.
+///
+/// One `info` line per answered poll. Before it, an answered `status` poll
+/// logged nothing at all — only the re-delivery paths warned — so a stuck join
+/// whose applicant was polling steadily read in the logs exactly like one whose
+/// polls never arrived. The line names only what the request row already
+/// carries in the other join logs: the applicant's DID and the request id.
+async fn answer(
+    state: &AppState,
+    id: Uuid,
+    req: crate::join::JoinRequest,
+    resend_credentials: bool,
+    id_less: bool,
+) -> Result<JoinRequestStatusResponseBody, TaskError> {
+    let applicant = req.applicant_did.clone();
+    let resp = answer_inner(state, id, req, resend_credentials).await?;
+    info!(
+        request = %id,
+        applicant = %applicant,
+        status = %resp.status,
+        id_less,
+        resend_asked = resend_credentials,
+        credentials_delivered = ?resp.credentials_delivered,
+        resend = ?resp.credential_resend,
+        "join-requests/status poll answered"
+    );
+    Ok(resp)
+}
+
 /// The response for a request the caller owns, plus — for an `approved` one —
 /// what the community knows about its credentials' delivery, and the answer to
 /// `resend_credentials` when it was asked.
-async fn answer(
+async fn answer_inner(
     state: &AppState,
     id: Uuid,
     req: crate::join::JoinRequest,
