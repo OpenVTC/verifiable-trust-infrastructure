@@ -2450,7 +2450,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |\n`beginBind` | `beginAccountLink`."
+            "description": "`projectRoles` | `createRepo` | `bootstrap` | `archive` | `inspect` |\n`beginBind` | `beginAccountLink` | `closePullRequest` (0.2 only)."
           },
           "lastError": {
             "type": [
@@ -2460,6 +2460,15 @@
           },
           "namespace": {
             "type": "string"
+          },
+          "number": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The pull request a `closePullRequest` job closes, in `repo`. Absent for\nevery other kind.",
+            "minimum": 0
           },
           "repo": {
             "type": [

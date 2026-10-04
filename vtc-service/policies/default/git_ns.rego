@@ -82,6 +82,35 @@ import rego.v1
 # A policy can also refuse `input.action == "right.breakGlass"` outright for any
 # condition — some rights, some namespaces, anyone who is not a community
 # administrator — with a deny decision.
+#
+# The pull-request gate (git-ns/bridge/event 0.4, git-ns/bridge/job 0.5). The
+# forge lets anyone who can read a public repository open a pull request; a
+# community may have its bridge close those whose author it does not allow.
+# This is hygiene, not the merge gate: the required commit-trust check still
+# decides what can be merged, and the gate fails open (VTC or bridge down, a
+# bridge without job 0.5, an unreadable setting — the pull request stays open).
+# Owners and maintainers of the repository (a namespace admin included) and the
+# bridge's own account are always allowed, and a reopen by an owner or
+# maintainer is never closed again. The bridge must take git-ns/bridge/job 0.5
+# and, on GitHub, its App needs "Pull requests: write".
+#   pr_open            who may open one: "anyone" (default — no gate),
+#                      "members" (a linked account of a current member),
+#                      "committers" (git.commit.sign on the repository or its
+#                      namespace, by record or implication), "maintainers"
+#                      (git.repo.maintain or higher), or {"roles": [...]} (a
+#                      member whose VTC role is listed: "moderator",
+#                      "custom:reviewer", …). A forge account linked to nobody
+#                      is allowed only under "anyone".
+#   pr_open_overrides  {"<forge>/<owner>[/<repo>]": <level>} — a repository's
+#                      entry wins over its namespace's, which wins over pr_open
+#   pr_exempt          forge logins always allowed (default ["dependabot[bot]"])
+#   pr_close_message   Markdown posted before closing; placeholders {author}
+#                      (the forge login), {repo} (owner/name), {community} and
+#                      {join_hint}. Absent: a built-in message. Nothing else
+#                      the VTC knows about the author can be rendered into it.
+#   pr_join_hint       the sentence {join_hint} becomes (may use {community}
+#                      and {repo}). Absent: one naming the community's public
+#                      URL, if it has one, and asking to link a forge account.
 settings := {
 	"maintainer_grants_commit": false,
 	"cascade_on_departure": false,
@@ -89,6 +118,9 @@ settings := {
 	"break_glass": "enabled",
 	"break_glass_delay_seconds": 0,
 	"break_glass_min_justification_chars": 0,
+	"pr_open": "anyone",
+	"pr_open_overrides": {},
+	"pr_exempt": ["dependabot[bot]"],
 }
 
 default decision := {"effect": "deny", "with": {

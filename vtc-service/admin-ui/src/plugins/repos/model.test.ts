@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activityVerb,
+  jobKindLabel,
   bootstrapSummary,
   consentClass,
   contains,
@@ -196,6 +197,15 @@ describe("namespace facts", () => {
     expect(activityVerb("gitNs.right.granted")).toBe("granted");
     expect(activityVerb("gitNs.job.createRepo")).toBe("bridge job createRepo");
     expect(activityVerb("gitNs.something.new")).toBe("gitNs.something.new");
+  });
+
+  it("labels a pull-request close with the pull request it closes", () => {
+    expect(jobKindLabel({ kind: "closePullRequest", number: 42 })).toBe("close pull request #42");
+    expect(jobKindLabel({ kind: "closePullRequest" })).toBe("close pull request");
+    expect(jobKindLabel({ kind: "projectRoles" })).toBe("project roles");
+    expect(jobKindLabel({ kind: "somethingNew" })).toBe("somethingNew");
+    expect(activityVerb("gitNs.job.closePullRequest")).toBe("bridge job close pull request");
+    expect(activityVerb("gitNs.pullRequest.closed")).toContain("pull request closed");
   });
 
   it("reports a lost installation and a headless namespace", () => {

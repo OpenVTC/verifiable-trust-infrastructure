@@ -39,6 +39,11 @@
 //! break-glass, which is on unless a policy says `"disabled"`: it exists for
 //! the moment nobody else is available, which is not the moment to discover a
 //! typo in a settings object turned it off.
+//!
+//! The pull-request gate's settings (`pr_open`, `pr_open_overrides`,
+//! `pr_close_message`, `pr_join_hint`, `pr_exempt`) are read from the same
+//! object by [`pr_gate`] into [`super::pr_gate::PrGateSettings`]; absent or
+//! unreadable, the gate is `anyone` — no gate.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -295,6 +300,32 @@ pub fn settings(policy: &CompiledPolicy) -> Settings {
     }
 }
 
+/// The pull-request gate's settings from `policy` ([`super::pr_gate`]). A
+/// key this VTC cannot read keeps its default, and is logged.
+pub fn pr_gate(policy: &CompiledPolicy) -> super::pr_gate::PrGateSettings {
+    let value = evaluate(policy, SETTINGS_QUERY, serde_json::json!({}))
+        .ok()
+        .and_then(|r| first_value(&r).cloned());
+    let (settings, problems) = super::pr_gate::PrGateSettings::from_settings(value.as_ref());
+    for problem in problems {
+        tracing::warn!(
+            %problem,
+            "the gitNamespace policy's pull-request settings are partly unreadable; that key \
+             keeps its default"
+        );
+    }
+    settings
+}
+
+/// The pull-request gate's settings from the active policy, or the defaults
+/// (no gate) when there is none.
+pub async fn active_pr_gate(state: &AppState) -> super::pr_gate::PrGateSettings {
+    match load(state).await {
+        Ok(p) => pr_gate(&p.compiled),
+        Err(_) => super::pr_gate::PrGateSettings::default(),
+    }
+}
+
 /// Settings from the active policy, or the defaults when there is none.
 pub async fn active_settings(state: &AppState) -> Settings {
     match load(state).await {
@@ -491,6 +522,39 @@ mod tests {
     #[test]
     fn the_default_settings_are_all_off() {
         assert_eq!(settings(&default_policy()), Settings::default());
+    }
+
+    #[test]
+    fn the_default_pull_request_gate_is_anyone() {
+        let gate = pr_gate(&default_policy());
+        assert_eq!(gate, crate::git_ns::pr_gate::PrGateSettings::default());
+        assert!(!gate.is_configured());
+    }
+
+    #[test]
+    fn pull_request_settings_are_read_from_the_policy() {
+        let p = compile(
+            "package vtc.git_namespace\nimport rego.v1\n\
+             default decision := {\"effect\": \"allow\"}\n\
+             settings := {\"pr_open\": {\"roles\": [\"moderator\"]}, \
+             \"pr_open_overrides\": {\"github.com/acme/docs\": \"anyone\"}, \
+             \"pr_exempt\": []}\n",
+            uuid::Uuid::nil(),
+        )
+        .unwrap();
+        let gate = pr_gate(&p);
+        assert_eq!(
+            gate.pr_open,
+            crate::git_ns::pr_gate::PrOpenLevel::Roles(vec!["moderator".into()])
+        );
+        assert!(gate.exempt.is_empty());
+        let docs = super::super::model::Resource::parse("github.com/acme/docs").unwrap();
+        assert_eq!(
+            gate.level_for(&docs),
+            &crate::git_ns::pr_gate::PrOpenLevel::Anyone
+        );
+        // The rest of the settings are unaffected by the new keys.
+        assert_eq!(settings(&p), Settings::default());
     }
 
     #[test]
