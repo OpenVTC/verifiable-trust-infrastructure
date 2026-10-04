@@ -1790,7 +1790,18 @@ fn run_rest_thread(
     state: AppState,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) {
-    let rt = tokio::runtime::Builder::new_current_thread()
+    // One worker per CPU when there is more than one. On a single thread the
+    // REST server can use at most one CPU however many the host has; with
+    // one CPU a current-thread runtime is cheaper (measured in an enclave).
+    let cpus = std::thread::available_parallelism().map_or(1, usize::from);
+    let mut builder = if cpus > 1 {
+        let mut b = tokio::runtime::Builder::new_multi_thread();
+        b.worker_threads(cpus).thread_name("vta-rest-worker");
+        b
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+    };
+    let rt = builder
         .enable_all()
         .build()
         .expect("failed to build REST runtime");
