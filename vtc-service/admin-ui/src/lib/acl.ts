@@ -12,6 +12,7 @@
 // (`acl/revoke/0.1`) stay at 0.1.
 
 import { postSignedRead } from "./api";
+import { withImmediate } from "./immediate";
 import { postSignedWithStepUp, type ConfirmGesture } from "./signed-act";
 
 export const ACL_LIST_TASK = "https://trusttasks.org/spec/acl/list/0.2";
@@ -63,8 +64,18 @@ export interface AclEntry {
       /** The subject set its own label (VTI-ACL-052 item 2): show it as
        *  self-set to everyone else. */
       labelSetBySubject?: boolean;
+      /** A cooling-off reduction of this entry is open: it authorizes
+       *  nothing until it lands or is cancelled (vtc-action-list.md §8.2). */
+      suspended?: AclSuspension;
     };
   };
+}
+
+/** What holds an entry suspended, and until when. */
+export interface AclSuspension {
+  actionId: string;
+  landsAt: string;
+  requester: string;
 }
 
 export interface AclListResponse {
@@ -235,6 +246,12 @@ export function isUnrestricted(e: AclEntry): boolean {
     e.role === "community-admin" && e.act.scope === "all" && e.capabilities.scope === "ceiling"
   );
 }
+
+/** The suspension an open cooling-off holds on the entry, if any. */
+export const suspensionOf = (e: AclEntry): AclSuspension | null => {
+  const s = e.ext?.["org.openvtc"]?.suspended;
+  return s && typeof s.actionId === "string" && typeof s.landsAt === "string" ? s : null;
+};
 
 /** Whether the label was set by the entry's own subject (VTI-ACL-052). */
 export const labelSelfSet = (e: AclEntry): boolean =>
@@ -407,6 +424,24 @@ export async function revokeAcl(subject: string, confirmGesture: ConfirmGesture)
   await postSignedWithStepUp<{ entry: AclEntry | null }>(
     ACL_REVOKE_TASK,
     { subject },
+    confirmGesture,
+  );
+}
+
+/**
+ * Remove `subject` **now**, without the cooling-off — single-administrator
+ * mode only (vtc-action-list.md §8.5). `typed` is the subject's DID as the
+ * administrator typed it; the gesture the VTC asks for is bound to this
+ * immediate removal. An open cooling-off of the same removal lands now.
+ */
+export async function revokeAclNow(
+  subject: string,
+  typed: string,
+  confirmGesture: ConfirmGesture,
+): Promise<void> {
+  await postSignedWithStepUp<{ entry: AclEntry | null }>(
+    ACL_REVOKE_TASK,
+    withImmediate({ subject }, typed),
     confirmGesture,
   );
 }

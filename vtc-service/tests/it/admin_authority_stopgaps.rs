@@ -91,6 +91,7 @@ fn row(did: &str, role: VtcRole, scopes: &[&str]) -> VtcAclEntry {
         expires_at: None,
         resource_grants: Vec::new(),
         label_set_by_subject: false,
+        suspension: None,
     }
 }
 

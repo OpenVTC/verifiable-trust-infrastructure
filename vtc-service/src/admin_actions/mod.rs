@@ -67,9 +67,17 @@
 //! the window ends ([`sweep_once`]) unless the requester cancels it; the subject
 //! sees it coming — sent `vtc/members/authority-reduction-pending-notice/0.1`
 //! when it is parked, and shown it as `callerRole: subject` at `_shared/0.2`
-//! ([`WireVersion`]), where it is category `coolingOff` with `landsAt`. If the subject meanwhile asks to reduce the requester, the
-//! earlier request lands first ([`refuse_if_reduced_first`]) and the subject's
-//! own actions are then invalidated: first to act wins.
+//! ([`WireVersion`]), where it is category `coolingOff` with `landsAt`.
+//!
+//! From the moment it is parked until it lands or is cancelled the subject is
+//! **suspended** (`vtc-action-list.md` §8.2): [`save`] keeps a marker beside its
+//! ACL entry — written before the record, lifted after it — that makes every
+//! authorization question asked of the entry answer `false`, and
+//! [`reconcile_suspensions`] repairs whichever half a crash left. The subject
+//! can therefore not answer with a counter-request at all: first to act wins.
+//! In single-administrator mode a reduction may land now, or an open
+//! cooling-off be landed now ([`immediate_request`], [`spend_immediate`],
+//! §8.5).
 //!
 //! ## Crash-safe execution (CLAUDE.md R2.1)
 //!
@@ -420,6 +428,20 @@ pub struct ActionRecord {
     /// so the same record is never raised twice while an item for it is open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_key: Option<String>,
+    /// A reduction that landed **now**, without (the rest of) its cooling-off,
+    /// in single-administrator mode (`vtc-action-list.md` §8.5): who asked and
+    /// when. Set on the cooling-off it landed early, or on the history entry of
+    /// a reduction that never waited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landed_now: Option<LandedNow>,
+}
+
+/// Who landed a reduction now, and when (`vtc-action-list.md` §8.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LandedNow {
+    pub by: String,
+    pub at: u64,
 }
 
 impl ActionRecord {
@@ -452,14 +474,139 @@ async fn load(state: &AppState, id: &str) -> Result<Option<ActionRecord>, AppErr
     state.admin_actions_ks.get(action_key(id)).await
 }
 
+/// Write `rec`, and keep its subject's suspension marker in step with it
+/// (`vtc-action-list.md` §8.2).
+///
+/// Every change to an action passes here, so this is where the ordering that
+/// makes suspension crash-safe lives (CLAUDE.md R2.1): an action that
+/// suspends has its marker written **before** the record, and one that no
+/// longer does has its marker removed **after** the record. A crash between
+/// the two writes can only leave a marker with no open action — an entry held
+/// suspended a moment too long, which [`reconcile_suspensions`] lifts at the
+/// next start or sweep — never an open cooling-off whose subject still acts.
 async fn save(state: &AppState, rec: &ActionRecord) -> Result<(), AppError> {
+    let suspends = suspends(rec);
+    if suspends {
+        crate::acl::storage::put_suspension(&state.acl_ks, &rec.subject, &suspension_of(rec))
+            .await?;
+    }
     state
         .admin_actions_ks
         .insert(action_key(&rec.id), rec)
         .await?;
+    if !suspends {
+        lift_suspension(state, rec).await?;
+    }
     // Every change to an action passes here: tell open consoles to re-read
     // (`crate::admin_events`). A hint, never the record.
     crate::admin_events::notify_actions();
+    Ok(())
+}
+
+/// Whether `rec` suspends its subject: an open cooling-off reduction
+/// (`vtc-action-list.md` §8.2).
+fn suspends(rec: &ActionRecord) -> bool {
+    rec.status.is_open()
+        && rec.cooling_off_until.is_some()
+        && rec.act == Act::ReduceUnrestricted
+        && rec.category == Category::Approval
+}
+
+fn suspension_of(rec: &ActionRecord) -> crate::acl::Suspension {
+    crate::acl::Suspension {
+        action_id: rec.id.clone(),
+        lands_at: rec.cooling_off_until.unwrap_or(rec.expires_at),
+        requester: rec.requester.clone(),
+    }
+}
+
+/// `rec` no longer suspends: lift its marker if it is the one holding the
+/// subject. Called after the record is written.
+async fn lift_suspension(state: &AppState, rec: &ActionRecord) -> Result<(), AppError> {
+    let held = crate::acl::storage::get_suspension(&state.acl_ks, &rec.subject).await?;
+    if held.is_some_and(|s| s.action_id == rec.id) {
+        // Another open cooling-off on the same subject (only a record written
+        // before one-at-a-time was enforced) takes over the marker.
+        let next = all(state)
+            .await?
+            .into_iter()
+            .filter(|r| r.id != rec.id && suspends(r) && r.subject == rec.subject)
+            .min_by_key(|r| r.cooling_off_until);
+        match next {
+            Some(other) => {
+                crate::acl::storage::put_suspension(
+                    &state.acl_ks,
+                    &rec.subject,
+                    &suspension_of(&other),
+                )
+                .await?;
+            }
+            None => {
+                crate::acl::storage::remove_suspension(&state.acl_ks, &rec.subject).await?;
+                info!(
+                    action = %rec.id,
+                    subject = %rec.subject,
+                    status = rec.status.wire(),
+                    "suspension lifted: the cooling-off reduction holding it is no longer open"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The open cooling-off reduction of `subject`, if any — what suspends them.
+pub(crate) async fn open_cooling_off_on(
+    state: &AppState,
+    subject: &str,
+) -> Result<Option<ActionRecord>, AppError> {
+    refresh_all(state).await?;
+    Ok(all(state)
+        .await?
+        .into_iter()
+        .filter(|r| suspends(r) && r.subject == subject)
+        .min_by_key(|r| r.cooling_off_until))
+}
+
+/// Bring every suspension marker into line with the open cooling-off
+/// reductions (`vtc-action-list.md` §8.2): a marker with no open action
+/// holding it is lifted, and an open action with no marker gets one. Run at
+/// start, before anything is served, and on every sweep — the repair for a
+/// crash between an action's write and its marker's, and for a restored backup
+/// whose ACL carries markers for actions this node never had.
+pub async fn reconcile_suspensions(state: &AppState) -> Result<(), AppError> {
+    let _guard = ACTION_LOCK.lock().await;
+    let mut wanted: HashMap<String, crate::acl::Suspension> = HashMap::new();
+    for rec in all(state).await?.iter().filter(|r| suspends(r)) {
+        let s = suspension_of(rec);
+        match wanted.get(&rec.subject) {
+            Some(held) if held.lands_at <= s.lands_at => {}
+            _ => {
+                wanted.insert(rec.subject.clone(), s);
+            }
+        }
+    }
+    let held = crate::acl::storage::list_suspensions(&state.acl_ks).await?;
+    for (did, s) in &held {
+        if !wanted.contains_key(did) {
+            warn!(
+                subject = %did,
+                action = %s.action_id,
+                "a suspension with no open cooling-off holding it was lifted (reconciled)"
+            );
+            crate::acl::storage::remove_suspension(&state.acl_ks, did).await?;
+        }
+    }
+    for (did, w) in &wanted {
+        if held.get(did) != Some(w) {
+            warn!(
+                subject = %did,
+                action = %w.action_id,
+                "an open cooling-off whose subject was not suspended: suspended now (reconciled)"
+            );
+            crate::acl::storage::put_suspension(&state.acl_ks, did, w).await?;
+        }
+    }
     Ok(())
 }
 
@@ -488,6 +635,7 @@ async fn by_wire(state: &AppState, wire: &str) -> Result<Option<ActionRecord>, A
 }
 
 async fn delete(state: &AppState, rec: &ActionRecord) -> Result<(), AppError> {
+    lift_suspension(state, rec).await?;
     for slot in &rec.approvers {
         state
             .admin_actions_ks
@@ -512,6 +660,328 @@ pub(crate) struct Submission {
     /// A consent single-administrator mode waived for this document, spent
     /// and waiting for its write to land ([`spend_waiver`], [`record_effect`]).
     pub waiver: Arc<std::sync::Mutex<Option<Waiver>>>,
+    /// A reduction landing now, without its cooling-off, spent and waiting
+    /// for its write to land ([`spend_immediate`], [`record_effect`]).
+    pub immediate: Arc<std::sync::Mutex<Option<Immediate>>>,
+}
+
+// ─── remove now (single-administrator mode, §8.5) ─────────────────────────
+
+/// `ext["org.openvtc"].immediate` on a reduction's payload: land it now,
+/// without the cooling-off (`vtc-action-list.md` §8.5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImmediateRequest {
+    /// What the requester typed: the subject's DID, or the id of the
+    /// cooling-off being landed.
+    pub confirm: String,
+    /// The open cooling-off this lands now, when it names one.
+    pub action_id: Option<String>,
+}
+
+/// The member of `ext["org.openvtc"]` that asks for it.
+pub const IMMEDIATE_EXT: &str = "immediate";
+
+/// Read `ext["org.openvtc"].immediate` off a reduction's payload.
+/// `{"confirm": "<subject DID or action id>", "actionId": "<optional>"}`; any
+/// other shape is malformed, never ignored — a request to skip a safeguard
+/// that cannot be read must not fall back to the delayed path silently.
+pub(crate) fn immediate_request(payload: &Value) -> Result<Option<ImmediateRequest>, AppError> {
+    let Some(v) = payload
+        .get("ext")
+        .and_then(|e| e.get(crate::routes::acl::EXT_NS))
+        .and_then(|o| o.get(IMMEDIATE_EXT))
+    else {
+        return Ok(None);
+    };
+    let malformed = || {
+        AppError::Validation(
+            "ext.org.openvtc.immediate is {\"confirm\": \"<the subject's DID, or the action's \
+             id>\", \"actionId\": \"<optional: the cooling-off to land now>\"}"
+                .into(),
+        )
+    };
+    let obj = v.as_object().ok_or_else(malformed)?;
+    if obj.keys().any(|k| k != "confirm" && k != "actionId") {
+        return Err(malformed());
+    }
+    let confirm = obj
+        .get("confirm")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(malformed)?
+        .to_string();
+    let action_id = match obj.get("actionId") {
+        None => None,
+        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+        Some(_) => return Err(malformed()),
+    };
+    Ok(Some(ImmediateRequest { confirm, action_id }))
+}
+
+/// `payload` without `ext["org.openvtc"].immediate` — the delayed operation
+/// the immediate one corresponds to (and its digest, the one a cooling-off of
+/// it was parked under). Containers the member leaves empty go with it.
+pub(crate) fn without_immediate(payload: &Value) -> Value {
+    let mut out = payload.clone();
+    let Some(ext) = out.get_mut("ext").and_then(Value::as_object_mut) else {
+        return out;
+    };
+    if let Some(ours) = ext
+        .get_mut(crate::routes::acl::EXT_NS)
+        .and_then(Value::as_object_mut)
+    {
+        ours.remove(IMMEDIATE_EXT);
+        if ours.is_empty() {
+            ext.remove(crate::routes::acl::EXT_NS);
+        }
+    }
+    if ext.is_empty()
+        && let Some(o) = out.as_object_mut()
+    {
+        o.remove("ext");
+    }
+    out
+}
+
+/// The open cooling-off of `subject` that an immediate `op` lands now: the
+/// one `action_id` names — which must be open, about this subject, and the
+/// same operation once `immediate` is set aside — or, when it names none, the
+/// open cooling-off of exactly that operation, if there is one.
+pub(crate) async fn cooling_off_to_land(
+    state: &AppState,
+    subject: &str,
+    op: Operation<'_>,
+    action_id: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let delayed = without_immediate(op.payload);
+    let digest = task_consent::payload_digest(op.type_uri, &delayed)?;
+    refresh_all(state).await?;
+    let same_op =
+        |r: &ActionRecord| r.subject == subject && r.type_uri == op.type_uri && r.digest == digest;
+    match action_id {
+        Some(id) => {
+            let rec = load(state, id)
+                .await?
+                .filter(|r| suspends(r) && r.subject == subject)
+                .ok_or_else(|| {
+                    AppError::Conflict(format!(
+                        "{id} is not an open cooling-off reduction of {subject}: there is nothing \
+                         of that id to land now. Check vtc/admin/actions/show {id}"
+                    ))
+                })?;
+            if !same_op(&rec) {
+                return Err(AppError::Conflict(format!(
+                    "{id} cools off a different operation than this one ({}); landing it now \
+                     sends that same operation again with ext.org.openvtc.immediate added",
+                    rec.type_uri
+                )));
+            }
+            Ok(Some(rec.id))
+        }
+        None => Ok(all(state)
+            .await?
+            .into_iter()
+            .find(|r| suspends(r) && same_op(r))
+            .map(|r| r.id)),
+    }
+}
+
+/// A reduction landing now, its gesture spent (`vtc-action-list.md` §8.5).
+#[derive(Debug, Clone)]
+pub struct Immediate {
+    stake: Vec<crate::acl::CapRef>,
+    requester: String,
+    subject: String,
+    type_uri: String,
+    payload: Value,
+    digest: String,
+    summary: String,
+    evidence: StepUpEvidence,
+    /// The open cooling-off it lands early, if any.
+    target: Option<String>,
+}
+
+impl Immediate {
+    pub(crate) fn new(
+        stake: Vec<crate::acl::CapRef>,
+        requester: &str,
+        subject: &str,
+        op: Operation<'_>,
+        summary: &str,
+        evidence: StepUpEvidence,
+        target: Option<String>,
+    ) -> Result<Self, AppError> {
+        Ok(Self {
+            stake,
+            requester: requester.to_string(),
+            subject: subject.to_string(),
+            type_uri: op.type_uri.to_string(),
+            payload: op.payload.clone(),
+            digest: task_consent::payload_digest(op.type_uri, op.payload)?,
+            summary: summary.to_string(),
+            evidence,
+            target,
+        })
+    }
+}
+
+/// Spend an immediate reduction: a `Critical` `SingleAdminMode { event:
+/// reductionImmediate }` row naming the task, its digest and the cooling-off
+/// it lands early (`resource`), written **before** the write it authorizes and
+/// refusing the operation if it cannot be — and the reduction held for
+/// [`record_effect`] to close that cooling-off, or enter it in the history,
+/// once the write lands.
+pub(crate) async fn spend_immediate(state: &AppState, imm: Immediate) -> Result<(), AppError> {
+    let kind = Act::ReduceUnrestricted.kind(&imm.type_uri).to_string();
+    warn!(
+        requester = %imm.requester,
+        subject = %imm.subject,
+        task = %imm.type_uri,
+        landing = imm.target.as_deref().unwrap_or("-"),
+        "an administrator reduced now, without the cooling-off — single-administrator mode \
+         (VTI-APV-022, VTI-APV-019)"
+    );
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &imm.requester,
+                Some(imm.subject.as_str()),
+                AuditEvent::SingleAdminMode(vti_common::audit::SingleAdminModeData {
+                    event: "reductionImmediate".into(),
+                    requirement: Some(Act::ReduceUnrestricted.requirement().into()),
+                    task: Some(imm.type_uri.clone()),
+                    digest: Some(imm.digest.clone()),
+                    kind: Some(kind),
+                    resource: imm.target.clone(),
+                    ..Default::default()
+                }),
+            )
+            .await?;
+    }
+    let _ = SUBMISSION.try_with(|s| {
+        if let Ok(mut slot) = s.immediate.lock() {
+            *slot = Some(imm);
+        }
+    });
+    Ok(())
+}
+
+/// An immediate reduction's write has landed: the cooling-off it landed early
+/// closes `completed` (`landedAfterCoolingOff`, marked landed now), lifting the
+/// subject's suspension; one that never waited is entered in the history.
+/// Best-effort, as [`record_effect`] is: the write has happened and its
+/// `Critical` row is already written. A crash before this leaves the
+/// cooling-off open over a subject whose entry has moved, which its next
+/// settle invalidates.
+async fn record_immediate(state: &AppState) {
+    let Ok(Some((submission, imm))) = SUBMISSION.try_with(|s| {
+        s.immediate
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+            .map(|i| (s.clone(), i))
+    }) else {
+        return;
+    };
+    let now = now_epoch();
+    let landed = LandedNow {
+        by: imm.requester.clone(),
+        at: now,
+    };
+    let message = "Landed now, without waiting out the cooling-off, on the requester's typed \
+                   confirmation and passkey gesture bound to the immediate operation — \
+                   single-administrator mode (VTI-APV-022, VTI-APV-019)";
+    if let Some(id) = &imm.target {
+        let closed = {
+            let _guard = ACTION_LOCK.lock().await;
+            match load(state, id).await {
+                Ok(Some(mut rec)) if rec.status == Status::Open => {
+                    rec.close(
+                        Status::Completed,
+                        ClosedReason::LandedAfterCoolingOff,
+                        Some(message.into()),
+                        now,
+                    );
+                    rec.closed_by = Some(imm.requester.clone());
+                    rec.landed_now = Some(landed.clone());
+                    match save(state, &rec).await {
+                        Ok(()) => Some(rec),
+                        Err(e) => {
+                            warn!(action = %id, error = %e, "could not close a cooling-off landed now");
+                            None
+                        }
+                    }
+                }
+                _ => None,
+            }
+        };
+        if let Some(rec) = closed {
+            audit(state, &rec, &imm.requester, "completed", Vec::new()).await;
+            return;
+        }
+    }
+    let pin = match admin_consent::pin_for(state, Act::ReduceUnrestricted, &imm.subject).await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "could not pin an immediate reduction's state for its history entry");
+            return;
+        }
+    };
+    let mut rec = ActionRecord {
+        id: format!("act-{}", uuid::Uuid::new_v4().simple()),
+        kind: Act::ReduceUnrestricted.kind(&imm.type_uri).to_string(),
+        act: Act::ReduceUnrestricted,
+        stake: imm.stake,
+        type_uri: imm.type_uri,
+        payload: imm.payload,
+        digest: imm.digest,
+        submitted_doc: (*submission.received).clone(),
+        submitted_signer: submission.signer.clone().unwrap_or_default(),
+        transport: transport_name(submission.transport).to_string(),
+        requester: imm.requester.clone(),
+        subject: imm.subject,
+        requester_step_up: RequesterStepUp {
+            kind: imm.evidence.kind,
+            credential_id: imm.evidence.credential_id,
+            bound_to: imm.evidence.bound_to,
+            at: now,
+        },
+        approver_set: Act::ReduceUnrestricted.approver_set().to_string(),
+        approvers: Vec::new(),
+        threshold: 0,
+        approvals: Vec::new(),
+        state_pin: pin,
+        summary_text: imm.summary,
+        status: Status::Open,
+        created_at: now,
+        expires_at: now,
+        executing_since: None,
+        closed_at: None,
+        closed_reason: None,
+        closed_message: None,
+        closed_by: None,
+        result: None,
+        result_secret: false,
+        category: Category::Approval,
+        cooling_off_until: None,
+        execution_id: None,
+        acknowledgers: None,
+        approver_invite: None,
+        consent_waived: false,
+        queue_key: None,
+        landed_now: Some(landed),
+    };
+    rec.close(
+        Status::Completed,
+        ClosedReason::ThresholdMet,
+        Some(message.into()),
+        now,
+    );
+    rec.closed_by = Some(imm.requester);
+    let _guard = ACTION_LOCK.lock().await;
+    if let Err(e) = save(state, &rec).await {
+        warn!(error = %e, "could not enter an immediate reduction in the action history");
+    }
 }
 
 /// An operation whose consent single-administrator mode waived
@@ -660,6 +1130,7 @@ async fn record_waived(state: &AppState) {
         approver_invite: None,
         consent_waived: true,
         queue_key: None,
+        landed_now: None,
     };
     rec.close(
         Status::Completed,
@@ -745,8 +1216,10 @@ pub(crate) fn note_gate_spent(action_id: &str) {
 pub(crate) async fn record_effect(state: &AppState) {
     let Ok(exec) = EXECUTING.try_with(Clone::clone) else {
         // Not an approved action — but perhaps an operation whose consent
-        // single-administrator mode waived, now landed (VTI-APV-022).
+        // single-administrator mode waived, now landed (VTI-APV-022), or a
+        // reduction it let land now (§8.5).
         record_waived(state).await;
+        record_immediate(state).await;
         return;
     };
     if exec.effect_recorded.swap(true, Ordering::SeqCst) {
@@ -985,6 +1458,7 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
         approver_invite: None,
         consent_waived: false,
         queue_key: None,
+        landed_now: None,
     };
 
     let recent = {
@@ -992,6 +1466,20 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
         // The limits again, under the lock: two submissions racing past the
         // first check cannot both take the last slot.
         check_limits(state, p.act, p.requester, p.subject).await?;
+        // One cooling-off per subject (`vtc-action-list.md` §8.2), again under
+        // the lock: two racing past the gate's check cannot both suspend.
+        if suspends(&rec)
+            && let Some(other) = all(state)
+                .await?
+                .into_iter()
+                .find(|r| suspends(r) && r.subject == rec.subject)
+        {
+            return Err(AppError::Conflict(format!(
+                "a reduction of {} is already cooling off ({}); cancel it first to ask for \
+                 something different",
+                rec.subject, other.id
+            )));
+        }
         for slot in &rec.approvers {
             state
                 .admin_actions_ks
@@ -1043,6 +1531,28 @@ pub(crate) async fn park(state: &AppState, p: Parking<'_>) -> Result<ActionRecor
     );
     push_requests(state, &rec).await;
     notify_cooling_off_subject(state, &rec).await;
+    if suspends(&rec) {
+        // The subject is suspended now. A reduction binds the subject's
+        // sessions at once (`routes::acl`), and so does this: its live
+        // sessions go, and every request after is answered from the entry,
+        // which refuses. It may sign in again to see why.
+        match crate::routes::auth::revoke_sessions_for_did(&state.sessions_ks, &rec.subject).await {
+            Ok(revoked) => warn!(
+                action = %rec.id,
+                subject = %rec.subject,
+                revoked,
+                "subject suspended until the cooling-off reduction lands or is cancelled \
+                 (vtc-action-list.md §8.2); its sessions were revoked"
+            ),
+            Err(e) => warn!(
+                action = %rec.id,
+                subject = %rec.subject,
+                error = %e,
+                "subject suspended, but its sessions could not be revoked; every request is \
+                 still refused from its entry"
+            ),
+        }
+    }
     Ok(rec)
 }
 
@@ -1102,8 +1612,9 @@ fn parked_message(rec: &ActionRecord, eligible: u64) -> String {
     if let Some(until) = rec.cooling_off_until {
         return format!(
             "Nobody but you and {} can consent to this, so it waits out a cooling-off and \
-             lands by itself in {} ({}) unless you cancel it. They can see it coming but \
-             cannot block it (VTI-APV-019).",
+             lands by itself in {} ({}) unless you cancel it. Until then they are suspended: \
+             their entry authorizes nothing, though it is kept, and cancelling restores it. \
+             They can see it coming but cannot block it (VTI-APV-019).",
             rec.subject,
             human_duration(until.saturating_sub(now_epoch())),
             rfc3339(until)
@@ -1412,7 +1923,9 @@ async fn live_admins(state: &AppState, now: u64) -> Result<Vec<String>, AppError
     Ok(crate::acl::list_acl_entries(&state.acl_ks)
         .await?
         .into_iter()
-        .filter(|e| e.admin.is_administrator() && !e.is_expired(now))
+        // A suspended administrator acknowledges nothing while its reduction
+        // cools off (`vtc-action-list.md` §8.2), so it holds no item open.
+        .filter(|e| e.admin.is_administrator() && !e.is_expired(now) && !e.is_suspended())
         .map(|e| e.did)
         .collect())
 }
@@ -1641,6 +2154,7 @@ pub async fn sweep_once(state: &AppState) -> Result<(), AppError> {
         warn!(error = %e, "queue items could not be reconciled");
     }
     refresh_all(state).await?;
+    reconcile_suspensions(state).await?;
     if let Err(e) = queues::refresh_slots(state).await {
         warn!(error = %e, "queue item deciders could not be refreshed");
     }
@@ -2702,6 +3216,21 @@ impl<'a> ViewCtx<'a> {
                 }),
             );
         }
+        // §8.2: an open cooling-off suspends its subject until it lands or is
+        // cancelled — every version says so, for the console to show.
+        if suspends(rec) {
+            ext.insert(
+                "subjectSuspended".into(),
+                json!({ "subject": rec.subject, "until": rfc3339(cooling_off.unwrap_or_default()) }),
+            );
+        }
+        // §8.5: landed now, without (the rest of) its cooling-off.
+        if let Some(l) = &rec.landed_now {
+            ext.insert(
+                "landedNow".into(),
+                json!({ "by": l.by, "at": rfc3339(l.at), "mode": "singleAdministrator" }),
+            );
+        }
         if let Some(until) = cooling_off.filter(|_| !v0_2) {
             // 0.1 only. VTI-APV-019 / §8.2: nobody else can consent, so there
             // is no threshold and no expiry — it lands by itself at `landsAt`
@@ -3116,6 +3645,7 @@ pub async fn raise_operator_item(
         approver_invite: None,
         consent_waived: false,
         queue_key: None,
+        landed_now: None,
     };
     {
         let _guard = ACTION_LOCK.lock().await;
@@ -3284,6 +3814,7 @@ async fn raise_review_item(
         approver_invite: None,
         consent_waived: false,
         queue_key: None,
+        landed_now: None,
     };
     {
         let _guard = ACTION_LOCK.lock().await;
@@ -3392,6 +3923,9 @@ pub(crate) async fn pending_role_grants(state: &AppState, name: &str) -> Result<
 /// to reduce `requester` is still open, the earlier request lands first — now —
 /// and this one is refused. The requester's own open actions are then
 /// invalidated by losing their authority (§4.4).
+///
+/// A backstop: the subject of an open cooling-off is suspended, and its
+/// counter-request is refused at the door before it gets here.
 pub(crate) async fn refuse_if_reduced_first(
     state: &AppState,
     requester: &str,

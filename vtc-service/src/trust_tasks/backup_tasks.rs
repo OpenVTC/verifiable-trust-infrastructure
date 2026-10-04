@@ -526,6 +526,12 @@ async fn handle_finalize_import(
     if confirm {
         // An approved action executing this restore: its effect has landed.
         crate::admin_actions::record_effect(state).await;
+        // The restored ACL may carry suspension markers for cooling-offs this
+        // node never had, and has lost those of the ones it has: bring them
+        // into line with the action list now (`vtc-action-list.md` §8.2).
+        if let Err(e) = crate::admin_actions::reconcile_suspensions(state).await {
+            tracing::warn!(error = %e, "suspensions not reconciled after the restore; the sweep retries");
+        }
         // The restore replaced the audit log, the waiver's `Critical` row
         // (written before the commit, so an unauditable waiver is refused)
         // with it: record it again in the log the community now has

@@ -85,6 +85,56 @@ pub struct VtcAclEntry {
     /// it existed, which reads as `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub label_set_by_subject: bool,
+    /// Set while a **cooling-off** reduction of this entry is open
+    /// (`vtc-action-list.md` §8.2, VTI-APV-019): from the moment it is raised
+    /// until it lands or is cancelled, the entry authorizes nothing —
+    /// [`Self::can`], [`Self::can_any`] and [`Self::can_approve`] all answer
+    /// `false` — while the row itself is untouched, so cancelling restores it
+    /// exactly. Never stored on the row: read beside it at load from the
+    /// marker the action list keeps ([`super::storage::get_acl_entry`],
+    /// [`crate::admin_actions`]).
+    #[serde(skip)]
+    pub suspension: Option<Suspension>,
+}
+
+/// A suspension pending a reduction's cooling-off (`vtc-action-list.md` §8.2):
+/// which action holds it and when that action lands.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Suspension {
+    pub action_id: String,
+    /// Unix-epoch seconds at which the reduction lands.
+    pub lands_at: u64,
+    /// The administrator who asked for the reduction.
+    pub requester: String,
+}
+
+impl Suspension {
+    /// When it lands, as RFC 3339.
+    pub fn lands_at_rfc3339(&self) -> String {
+        chrono::DateTime::from_timestamp(self.lands_at as i64, 0)
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+            .unwrap_or_else(|| self.lands_at.to_string())
+    }
+
+    /// The refusal every privileged act of a suspended entry gets: what holds
+    /// it, and until when.
+    pub fn refusal(&self, did: &str) -> AppError {
+        AppError::Forbidden(self.message(did))
+    }
+
+    /// [`Self::refusal`]'s text.
+    pub fn message(&self, did: &str) -> String {
+        format!(
+            "{did} is suspended pending its removal: a reduction of this entry is cooling off \
+             (action {}, requested by {}, lands {}), and until it lands or is cancelled the \
+             entry authorizes nothing (VTI-APV-019). You can still sign in and see the action \
+             (vtc/admin/actions/show)",
+            self.action_id,
+            self.requester,
+            self.lands_at_rfc3339(),
+        )
+    }
 }
 
 impl VtcAclEntry {
@@ -109,6 +159,7 @@ impl VtcAclEntry {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         }
     }
 
@@ -123,7 +174,8 @@ impl VtcAclEntry {
     /// namespace or repository is this entry's capability at that qualifier
     /// (phase C3, **VTI-VTC-020**).
     pub fn can(&self, cap: Capability, resource: Option<&ResourceQualifier>) -> bool {
-        !self.is_expired(vti_common::auth::session::now_epoch())
+        self.suspension.is_none()
+            && !self.is_expired(vti_common::auth::session::now_epoch())
             && (self.admin.can(cap, resource) || self.resource_grant_confers(cap, resource))
     }
 
@@ -151,7 +203,8 @@ impl VtcAclEntry {
     /// resource of the capability's kind.
     pub fn can_any(&self, cap: Capability) -> bool {
         let now = chrono::Utc::now();
-        !self.is_expired(vti_common::auth::session::now_epoch())
+        self.suspension.is_none()
+            && !self.is_expired(vti_common::auth::session::now_epoch())
             && (self.admin.can_any(cap)
                 || self
                     .resource_grants
@@ -167,11 +220,20 @@ impl VtcAclEntry {
     /// May this live entry approve an action needing `wanted`
     /// (**VTI-ACL-040**)? Independent of what it may do.
     pub fn can_approve(&self, wanted: &CapRef) -> bool {
-        !self.is_expired(vti_common::auth::session::now_epoch()) && self.admin.can_approve(wanted)
+        self.suspension.is_none()
+            && !self.is_expired(vti_common::auth::session::now_epoch())
+            && self.admin.can_approve(wanted)
+    }
+
+    /// Whether a cooling-off reduction of this entry is open, so that it
+    /// authorizes nothing until it lands or is cancelled ([`Self::suspension`]).
+    pub fn is_suspended(&self) -> bool {
+        self.suspension.is_some()
     }
 
     /// Whether this live entry holds an administrative role of any kind —
-    /// what console sign-in admits.
+    /// what console sign-in admits. A suspended entry still does: it signs in
+    /// to see why, and every act it would take is refused by [`Self::can`].
     pub fn is_administrator(&self) -> bool {
         !self.is_expired(vti_common::auth::session::now_epoch()) && self.admin.is_administrator()
     }
@@ -337,6 +399,31 @@ mod tests {
         assert_eq!(e.admin.act, VtcActScope::All);
     }
 
+    /// A suspended entry authorizes nothing, whatever it holds, and keeps
+    /// what it holds (`vtc-action-list.md` §8.2).
+    #[test]
+    fn a_suspended_entry_authorizes_nothing() {
+        let mut e = sample_entry(None);
+        e.admin = AdminAuthority::community_admin();
+        assert!(e.can(Capability::RolesAssign, None));
+        e.suspension = Some(Suspension {
+            action_id: "act-1".into(),
+            lands_at: 1,
+            requester: "did:key:zOther".into(),
+        });
+        for c in Capability::ALL {
+            assert!(!e.can(c, None), "{c:?}");
+            assert!(!e.can_any(c), "{c:?}");
+            assert!(!e.can_approve(&CapRef::all(c)), "{c:?}");
+        }
+        // Still an administrator by its row: it may sign in and see why.
+        assert!(e.is_administrator());
+        assert_eq!(e.admin, AdminAuthority::community_admin());
+        // Never written to the row.
+        let bytes = serde_json::to_vec(&e).unwrap();
+        assert!(decode(&bytes).unwrap().suspension.is_none());
+    }
+
     fn sample_entry(expires_at: Option<u64>) -> VtcAclEntry {
         VtcAclEntry {
             did: "did:key:zSomeMember".into(),
@@ -351,6 +438,7 @@ mod tests {
             expires_at,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         }
     }
 }

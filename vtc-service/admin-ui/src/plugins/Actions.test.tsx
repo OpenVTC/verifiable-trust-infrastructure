@@ -597,6 +597,74 @@ describe("a cooling-off", () => {
     expect(within(card).queryByRole("button", { name: "Cancel request" })).toBeNull();
   });
 
+  it("says its subject is suspended until it lands, and offers no Land now outside single-administrator mode", async () => {
+    anyView([
+      await coolingOff({
+        ext: { "org.openvtc": { subjectSuspended: { subject: ME, until: LANDS_AT } } },
+      }),
+    ]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action cool-1" });
+    const line = within(card).getByTestId("suspended-subject");
+    expect(line.textContent).toMatch(/suspended until it lands/);
+    expect(line.textContent).toMatch(/cancelling restores it/);
+    expect(within(card).queryByRole("button", { name: "Land now" })).toBeNull();
+  });
+
+  it("lands now in single-administrator mode, once the subject's DID or the action id is typed back", async () => {
+    const open = await coolingOff({
+      ext: { "org.openvtc": { subjectSuspended: { subject: ME, until: LANDS_AT } } },
+    });
+    const requests = mockFetch([
+      ...NAME_BOOK_ROUTES,
+      { path: "/health", body: { status: "ok", version: "t", vtc_did: VTC } },
+      taskRoute(ACTIONS_LIST_TASK, {
+        actions: [open],
+        counts: { waitingForMe: 0, requestedByMe: 1 },
+        ext: { "org.openvtc": { singleAdminMode: true } },
+      }),
+      taskRoute(REDUCE.typeUri, { entry: null }),
+    ]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action cool-1" });
+    fireEvent.click(await within(card).findByRole("button", { name: "Land now" }));
+    const dialog = await screen.findByRole("dialog");
+    const submit = within(dialog).getByRole("button", { name: "Land now" }) as HTMLButtonElement;
+    const input = within(dialog).getByRole("textbox");
+    fireEvent.change(input, { target: { value: "not it" } });
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: "cool-1" } });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() => expect(sentPayloads(requests, REDUCE.typeUri)).toHaveLength(1));
+    // The same operation, with `immediate` naming the action beside it.
+    expect(sentPayloads(requests, REDUCE.typeUri)[0]).toEqual({
+      ...open.payload,
+      ext: { "org.openvtc": { immediate: { confirm: "cool-1", actionId: "cool-1" } } },
+    });
+  });
+
+  it("says a cooling-off landed now", async () => {
+    anyView([
+      await coolingOff({
+        status: "completed",
+        closedReason: "landedAfterCoolingOff",
+        closedAt: "2026-10-03T09:00:05Z",
+        cancellableBy: undefined,
+        ext: {
+          "org.openvtc": {
+            landedNow: { by: REQUESTER, at: "2026-10-03T09:00:05Z", mode: "singleAdministrator" },
+          },
+        },
+      }),
+    ]);
+    render();
+    const card = await screen.findByRole("article", { name: "Action cool-1" });
+    expect(await within(card).findByText("Landed now")).toBeTruthy();
+    expect(within(card).getByText(/without waiting out the cooling-off/)).toBeTruthy();
+    expect(within(card).queryByRole("button")).toBeNull();
+  });
+
   it("says a landed cooling-off landed uncancelled", async () => {
     anyView([
       await coolingOff({

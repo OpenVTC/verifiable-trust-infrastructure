@@ -52,6 +52,7 @@ mod config_identity;
 mod console_list_limits;
 mod console_signed_document;
 mod cookie_session;
+mod cooling_off_suspension;
 mod diagnostics;
 mod did_log;
 mod did_register;

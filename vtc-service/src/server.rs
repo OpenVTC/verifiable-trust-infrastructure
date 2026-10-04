@@ -1300,6 +1300,11 @@ pub async fn run(
     // first pass, at startup, the reconciliation of any action a crash left
     // `executing` (R2.1): nothing is running in this new process, so every one
     // is settled from the effect it recorded.
+    // Suspensions first, before anything is served: a crash between an
+    // action's write and its marker's is settled from the action list, so no
+    // request is ever answered from a marker the list does not hold
+    // (`vtc-action-list.md` §8.2).
+    crate::admin_actions::reconcile_suspensions(&state).await?;
     crate::admin_actions::spawn_sweeper(state.clone(), shutdown_rx.clone());
     crate::join::retention::RetentionSweeper::spawn(
         state.join_requests_ks.clone(),

@@ -32,7 +32,7 @@ use vti_common::error::AppError;
 use vti_common::pagination::{Cursor, Paginated, paginate};
 use vti_common::store::KeyspaceHandle;
 
-use super::entry::{VtcAclEntry, decode, iter};
+use super::entry::{Suspension, VtcAclEntry, decode, iter};
 
 fn acl_key(did: &str) -> String {
     format!("acl:{did}")
@@ -106,6 +106,10 @@ pub async fn require_capability(
     let entry = get_acl_entry(acl_ks, did).await?;
     match entry {
         Some(e) if e.can(cap, resource) => Ok(e),
+        Some(VtcAclEntry {
+            suspension: Some(s),
+            ..
+        }) => Err(s.refusal(did)),
         _ => Err(capability_refusal(did, cap, resource)),
     }
 }
@@ -119,6 +123,10 @@ pub async fn require_any_capability(
     let entry = get_acl_entry(acl_ks, did).await?;
     match entry {
         Some(e) if e.can_any(cap) => Ok(e),
+        Some(VtcAclEntry {
+            suspension: Some(s),
+            ..
+        }) => Err(s.refusal(did)),
         _ => Err(capability_refusal(did, cap, None)),
     }
 }
@@ -137,6 +145,10 @@ pub fn capability_refusal(
 }
 
 /// Retrieve an ACL entry by DID. `Ok(None)` if absent.
+///
+/// A suspension pending a cooling-off reduction is read beside the row
+/// ([`get_suspension`]) and set on the entry, so every authorization question
+/// asked of it answers as the suspension requires (`vtc-action-list.md` §8.2).
 pub async fn get_acl_entry(
     ks: &KeyspaceHandle,
     did: &str,
@@ -149,10 +161,91 @@ pub async fn get_acl_entry(
             // A custom role's ceiling is its definition as stored now
             // (VTI-ACL-011: none stored, nothing conferred).
             super::roles::resolve(ks, &mut entry).await?;
+            entry.suspension = get_suspension(ks, did).await?;
             Ok(Some(entry))
         }
         None => Ok(None),
     }
+}
+
+// ---------- suspension markers ----------
+
+/// `suspended:<did>` → the [`Suspension`] an open cooling-off reduction holds
+/// on that subject (`vtc-action-list.md` §8.2). Kept in the ACL keyspace so
+/// that every read of an entry finds it beside the row.
+///
+/// The action list is the source of truth and writes these
+/// ([`crate::admin_actions`]): a marker is written **before** the action
+/// record that holds it and removed **after** the record closes, so a crash
+/// between the two leaves a marker with no open action — the entry
+/// over-restricted, never an open reduction whose subject still acts — and
+/// [`crate::admin_actions::reconcile_suspensions`] settles it at the next
+/// start and every sweep.
+const SUSPENSION_PREFIX: &str = "suspended:";
+
+fn suspension_key(did: &str) -> String {
+    format!("{SUSPENSION_PREFIX}{did}")
+}
+
+/// The suspension held on `did`, if any.
+pub async fn get_suspension(
+    ks: &KeyspaceHandle,
+    did: &str,
+) -> Result<Option<Suspension>, AppError> {
+    ks.get(suspension_key(did)).await
+}
+
+/// Record that `did` is suspended by `s`.
+pub async fn put_suspension(
+    ks: &KeyspaceHandle,
+    did: &str,
+    s: &Suspension,
+) -> Result<(), AppError> {
+    ks.insert(suspension_key(did), s).await?;
+    // Authority moved: open console streams re-check their callers.
+    crate::admin_events::notify_authority();
+    Ok(())
+}
+
+/// Lift the suspension on `did`.
+pub async fn remove_suspension(ks: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
+    ks.remove(suspension_key(did)).await?;
+    crate::admin_events::notify_authority();
+    Ok(())
+}
+
+/// Every suspension marker, by subject DID.
+pub async fn list_suspensions(
+    ks: &KeyspaceHandle,
+) -> Result<std::collections::HashMap<String, Suspension>, AppError> {
+    let mut out = std::collections::HashMap::new();
+    for (k, v) in ks
+        .prefix_iter_raw(SUSPENSION_PREFIX.as_bytes().to_vec())
+        .await?
+    {
+        let did = String::from_utf8_lossy(&k[SUSPENSION_PREFIX.len()..]).into_owned();
+        match serde_json::from_slice::<Suspension>(&v) {
+            Ok(s) => {
+                out.insert(did, s);
+            }
+            Err(e) => tracing::warn!(%did, error = %e, "unreadable suspension marker"),
+        }
+    }
+    Ok(out)
+}
+
+async fn apply_suspensions(
+    ks: &KeyspaceHandle,
+    entries: &mut [VtcAclEntry],
+) -> Result<(), AppError> {
+    let mut marks = list_suspensions(ks).await?;
+    if marks.is_empty() {
+        return Ok(());
+    }
+    for e in entries.iter_mut() {
+        e.suspension = marks.remove(&e.did);
+    }
+    Ok(())
 }
 
 /// Store (create or overwrite) an ACL entry.
@@ -194,6 +287,7 @@ pub async fn delete_acl_entry(ks: &KeyspaceHandle, did: &str) -> Result<(), AppE
 pub async fn list_acl_entries(ks: &KeyspaceHandle) -> Result<Vec<VtcAclEntry>, AppError> {
     let mut entries = iter(ks).await?;
     super::roles::resolve_all(ks, &mut entries).await?;
+    apply_suspensions(ks, &mut entries).await?;
     Ok(entries)
 }
 
@@ -218,6 +312,7 @@ pub async fn list_acl_entries_paginated(
     let snapshot_id: u64 = pairs.len() as u64;
     let mut page = paginate(pairs, cursor, limit, &audit_key.key, snapshot_id, decode)?;
     super::roles::resolve_all(ks, &mut page.items).await?;
+    apply_suspensions(ks, &mut page.items).await?;
     Ok(page)
 }
 
@@ -257,6 +352,7 @@ mod tests {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         }
     }
 

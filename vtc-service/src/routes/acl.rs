@@ -231,6 +231,15 @@ pub(crate) fn render_v0_2(e: &VtcAclEntry, review: Option<&DelegationReview>) ->
             "deadline": epoch_to_rfc3339(r.deadline),
         });
     }
+    // A cooling-off reduction is open (`vtc-action-list.md` §8.2): the entry
+    // authorizes nothing until it lands or is cancelled.
+    if let Some(s) = &e.suspension {
+        ours["suspended"] = json!({
+            "actionId": s.action_id,
+            "landsAt": s.lands_at_rfc3339(),
+            "requester": s.requester,
+        });
+    }
     map.insert("ext".into(), json!({ EXT_NS: ours }));
     out
 }
@@ -248,6 +257,11 @@ pub(crate) fn conform<T: serde::de::DeserializeOwned>(value: Value) -> Result<T,
 /// read the ACL.
 pub(crate) async fn reader_entry(state: &AppState, did: &str) -> Result<VtcAclEntry, AppError> {
     match get_acl_entry(&state.acl_ks, did).await? {
+        // A suspended entry reads nothing privileged (`vtc-action-list.md`
+        // §8.2): it sees only its action and its notice.
+        Some(e) if e.is_administrator() && e.suspension.is_some() => {
+            Err(e.suspension.as_ref().expect("checked").refusal(did))
+        }
         Some(e) if e.is_administrator() => Ok(e),
         _ => Err(AppError::Forbidden(format!(
             "{did} holds no administrative role, so it may not read this community's ACL"
@@ -2271,6 +2285,7 @@ mod tests {
             expires_at: Some(1_800_000_000),
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         }
     }
 

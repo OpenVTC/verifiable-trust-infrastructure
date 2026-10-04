@@ -112,6 +112,7 @@ fn row(did: &str, role: VtcRole, scopes: &[&str]) -> VtcAclEntry {
         expires_at: None,
         resource_grants: Vec::new(),
         label_set_by_subject: false,
+        suspension: None,
     }
 }
 
@@ -877,9 +878,11 @@ async fn vti_apv_019_the_requester_cancels_a_cooling_off() {
     assert!(notices(&b.did).is_empty());
 }
 
-/// First to act wins: the subject answering with a request to remove the
-/// requester lands the earlier request at once, their own is refused, and the
-/// subject's other open actions are invalidated with their authority.
+/// First to act wins, by suspension (§8.2): once the cooling-off is raised the
+/// subject is suspended, so its answering request to remove the requester is
+/// refused outright — it never gets to raise one — the earlier request keeps
+/// its cooling-off, and the subject's other open actions are invalidated with
+/// its authority.
 #[tokio::test]
 async fn vti_apv_019_the_first_of_two_administrators_to_act_wins() {
     let mut fix = fixture().await;
@@ -904,29 +907,22 @@ async fn vti_apv_019_the_first_of_two_administrators_to_act_wins() {
     )
     .await;
 
-    // B answers by asking to remove A: refused, and A's lands first.
+    // B answers by asking to remove A: refused, because B is suspended.
     let (status, reply) = post(
         &fix.vtc,
         &signed(&b, REVOKE, json!({ "subject": a.did })).await,
     )
     .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{reply}");
-    assert_eq!(reply["payload"]["details"]["reason"], "conflict", "{reply}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{reply}");
     assert!(
-        reply.to_string().contains("first to act wins"),
+        reply.to_string().contains("suspended pending its removal"),
         "said plainly: {reply}"
     );
-    for _ in 0..100 {
-        if entry(&fix, &b.did).await.is_none() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert!(
-        entry(&fix, &b.did).await.is_none(),
-        "the earlier one landed"
-    );
     assert!(entry(&fix, &a.did).await.is_some(), "the later one did not");
+    assert!(entry(&fix, &b.did).await.is_some(), "the earlier one waits");
+    assert_eq!(action(&fix, &a, &first).await["status"], "open");
+    land_now(&fix, &first).await;
+    assert!(entry(&fix, &b.did).await.is_none(), "then lands");
     assert_eq!(action(&fix, &a, &first).await["status"], "completed");
     let gone = action(&fix, &a, &pending).await;
     assert_eq!(gone["status"], "cancelled", "{gone}");

@@ -40,7 +40,10 @@ import {
   verifySummary,
   type VerifiedSummary,
 } from "@/lib/action-summary";
-import { WAITING_COUNT_KEY } from "@/lib/action-badge";
+import { WAITING_COUNT_KEY, useSingleAdminMode } from "@/lib/action-badge";
+import { TypedConfirmDialog } from "@/components/TypedConfirmDialog";
+import { immediateConfirmMatches } from "@/lib/immediate";
+import { gestureFromConfirm } from "@/lib/signed-act";
 import {
   MAX_REASON_LEN,
   acknowledgeAction,
@@ -61,6 +64,9 @@ import {
   decisionLabels,
   describeDecision,
   isQueueItem,
+  landActionNow,
+  landedNowOf,
+  suspendedSubjectOf,
   explainCancelError,
   explainDecisionError,
   explainReadError,
@@ -283,6 +289,8 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
   const ack = isAcknowledgeItem(action);
   const cooling = coolingOffOf(action);
   const waived = consentWaivedOf(action);
+  const suspended = suspendedSubjectOf(action);
+  const landedNow = landedNowOf(action);
 
   return (
     <article
@@ -293,6 +301,14 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
         <p className="action-severity">
           <span className="chip danger">Critical</span>{" "}
           <strong>The operator changed access control offline</strong>
+        </p>
+      )}
+      {landedNow && (
+        <p className="action-severity">
+          <span className="chip warning">Landed now</span>{" "}
+          <strong>Single-administrator mode</strong> — <NamedDid book={book} did={landedNow.by} />{" "}
+          landed this at {formatIso(landedNow.at)} without waiting out the cooling-off, on a typed
+          confirmation and a passkey gesture bound to the immediate removal.
         </p>
       )}
       {waived && (
@@ -408,6 +424,12 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
                 </dd>
                 <dt>Lands</dt>
                 <dd className="action-countdown">{landsIn(cooling.landsAt)}</dd>
+                <dt>Subject</dt>
+                <dd data-testid="suspended-subject">
+                  {suspended ? <NamedDid book={book} did={suspended} /> : "The administrator it reduces"}{" "}
+                  is <strong>suspended</strong> until it lands: their entry authorizes nothing,
+                  though it is kept, and cancelling restores it.
+                </dd>
               </>
             )}
             {open && !cooling && action.expiresAt && (
@@ -460,6 +482,9 @@ export function ActionCard({ action, detail = false }: { action: Action; detail?
         <AcknowledgeButton action={action} summaryOk={summary.state === "ok"} />
       ) : (
         <ActionButtons action={action} summaryOk={summary.state === "ok"} />
+      )}
+      {open && cooling && !cooling.againstYou && (
+        <LandNowButton action={action} subject={suspended} summaryOk={summary.state === "ok"} />
       )}
 
       {!detail && (
@@ -718,6 +743,78 @@ function ActionResult({ result }: { result: Record<string, unknown> }) {
         ))}
       </dl>
     </section>
+  );
+}
+
+// ── Land now (single-administrator mode, §8.5) ──────────────────────
+
+/**
+ * Land an open cooling-off now, without waiting for it — offered only while
+ * single-administrator mode is in effect, and never to the administrator it
+ * reduces. The administrator types the subject's DID (or the action's id);
+ * the same operation is then sent again with `ext.org.openvtc.immediate`, and
+ * the VTC asks for a passkey gesture bound to landing it now.
+ */
+function LandNowButton({
+  action,
+  subject,
+  summaryOk,
+}: {
+  action: Action;
+  subject: string | null;
+  summaryOk: boolean;
+}) {
+  const singleAdminMode = useSingleAdminMode();
+  const confirm = useConfirm();
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [asking, setAsking] = useState(false);
+  const land = useMutation({
+    mutationFn: (typed: string) => landActionNow(action, typed, gestureFromConfirm(confirm)),
+    onSuccess: () => {
+      toast.push("success", "Landed now — the cooling-off is over.");
+      void queryClient.invalidateQueries({ queryKey: ACTIONS_KEY });
+      void queryClient.invalidateQueries({ queryKey: WAITING_COUNT_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["acl"] });
+    },
+    onError: (err) => toast.pushFromError(err, "Land now failed"),
+  });
+  if (!singleAdminMode) return null;
+  return (
+    <>
+      <div className="form-actions">
+        <button
+          type="button"
+          className="secondary destructive"
+          disabled={!summaryOk || land.isPending}
+          title="Single-administrator mode: land this now, without waiting out the cooling-off"
+          onClick={() => setAsking(true)}
+        >
+          Land now
+        </button>
+      </div>
+      {asking && (
+        <TypedConfirmDialog
+          title="Land this now?"
+          message={
+            <p>
+              Single-administrator mode: this lands at once instead of at{" "}
+              {action.landsAt ? formatIso(action.landsAt) : "the end of its cooling-off"}. It cannot
+              be undone. You will then be asked for a passkey gesture bound to landing it now.
+            </p>
+          }
+          prompt="Type the administrator's DID, or this action's id, to confirm"
+          matches={(t) => immediateConfirmMatches(t, subject ?? undefined, action.actionId)}
+          confirmLabel="Land now"
+          busy={land.isPending}
+          onCancel={() => setAsking(false)}
+          onConfirm={(typed) => {
+            setAsking(false);
+            land.mutate(typed);
+          }}
+        />
+      )}
+    </>
   );
 }
 

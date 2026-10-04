@@ -779,6 +779,7 @@ async fn dispatch_trust_task_validated(
         signer: ctx.verified_signer.clone(),
         transport: ctx.transport,
         waiver: Default::default(),
+        immediate: Default::default(),
     };
     let outcome = crate::admin_actions::with_submission(
         submission,
@@ -4225,6 +4226,19 @@ pub(crate) async fn capable_signer(
     Ok(claims)
 }
 
+/// The administrative verbs a suspended subject may still send: reading the
+/// action list, where it sees the reduction about itself (VTI-APV-019), and
+/// withdrawing a request of its own — which reduces nothing, and is refused
+/// for any action it did not ask for.
+const SUSPENDED_MAY_SEND: &[&str] = &[
+    action_tasks::LIST_TYPE,
+    action_tasks::LIST_V0_2_TYPE,
+    action_tasks::SHOW_TYPE,
+    action_tasks::SHOW_V0_2_TYPE,
+    action_tasks::CANCEL_TYPE,
+    action_tasks::CANCEL_V0_2_TYPE,
+];
+
 /// Read `did`'s ACL row and shape it into the claims the admin verbs take.
 ///
 /// Split out of [`admin_signer`] because the delegated arm needs the identical
@@ -4237,6 +4251,18 @@ async fn resolve_admin_claims(
     let (role, allowed_contexts) = crate::acl::resolve_auth_role(&state.acl_ks, did)
         .await
         .map_err(|e| app_error_to_reject(doc, &e))?;
+    // A subject whose reduction is cooling off is suspended
+    // (`vtc-action-list.md` §8.2): it may read the action list — to see the
+    // action about itself (VTI-APV-019) — and nothing else, whatever the
+    // operation. One refusal here, naming the action and when it lands, for
+    // every administrative verb; the capability checks behind it refuse too.
+    if !SUSPENDED_MAY_SEND.contains(&doc.type_uri.to_string().as_str())
+        && let Some(s) = crate::acl::storage::get_suspension(&state.acl_ks, did)
+            .await
+            .map_err(|e| app_error_to_reject(doc, &e))?
+    {
+        return Err(app_error_to_reject(doc, &s.refusal(did)));
+    }
     Ok(vti_common::auth::extractor::AuthClaims {
         did: did.to_string(),
         role,
@@ -5688,6 +5714,7 @@ mod tests {
                     expires_at: None,
                     resource_grants: Vec::new(),
                     label_set_by_subject: false,
+                    suspension: None,
                 },
             )
             .await
@@ -6074,6 +6101,7 @@ mod members_admin_tests {
                 expires_at: None,
                 resource_grants: Vec::new(),
                 label_set_by_subject: false,
+                suspension: None,
             },
         )
         .await
@@ -6336,6 +6364,7 @@ mod members_admin_tests {
                 expires_at: Some(1),
                 resource_grants: Vec::new(),
                 label_set_by_subject: false,
+                suspension: None,
             },
         )
         .await
@@ -6552,6 +6581,7 @@ mod members_admin_tests {
                 expires_at: Some(1),
                 resource_grants: Vec::new(),
                 label_set_by_subject: false,
+                suspension: None,
             },
         )
         .await

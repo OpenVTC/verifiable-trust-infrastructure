@@ -116,6 +116,7 @@ async fn build_fixture() -> Fixture {
                 expires_at: None,
                 resource_grants: Vec::new(),
                 label_set_by_subject: false,
+                suspension: None,
             },
         )
         .await
@@ -587,6 +588,7 @@ async fn list_returns_issued_and_received_edges() {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await
@@ -854,6 +856,7 @@ mod pairwise {
                 expires_at: None,
                 resource_grants: Vec::new(),
                 label_set_by_subject: false,
+                suspension: None,
             },
         )
         .await

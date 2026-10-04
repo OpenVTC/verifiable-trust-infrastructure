@@ -18,6 +18,7 @@ import {
   grantAcl,
   grantRequest,
   revokeAcl,
+  revokeAclNow,
   updateAcl,
 } from "./acl";
 import { answerStepUp, type StepUpRequest } from "./bound-step-up";
@@ -124,6 +125,17 @@ describe("acl/revoke", () => {
     expect.objectContaining({ type: expect.any(String) }),
   );
     expect(vi.mocked(postSignedDocument)).toHaveBeenCalledWith(SIGNED);
+  });
+
+  // §8.5: removing now asks for it in the payload, so the gesture the VTC
+  // asks for is bound to the immediate removal and to nothing else.
+  it("removes now with ext.org.openvtc.immediate carrying the typed DID", async () => {
+    vi.mocked(postSignedTrustTask).mockResolvedValueOnce({ entry: null });
+    await revokeAclNow(ALICE, ALICE, vi.fn());
+    expect(vi.mocked(postSignedTrustTask)).toHaveBeenCalledWith(ACL_REVOKE_TASK, {
+      subject: ALICE,
+      ext: { "org.openvtc": { immediate: { confirm: ALICE } } },
+    });
   });
 
   // …and removing another unrestricted one is parked for a third

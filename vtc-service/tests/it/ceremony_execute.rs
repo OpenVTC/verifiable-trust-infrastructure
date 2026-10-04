@@ -110,6 +110,7 @@ async fn admit_duplicate_acl_is_conflict() {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await
@@ -379,6 +380,7 @@ async fn depart_refuses_the_last_admin() {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await
@@ -476,6 +478,7 @@ async fn remint_refuses_demoting_the_last_admin() {
             expires_at: None,
             resource_grants: Vec::new(),
             label_set_by_subject: false,
+            suspension: None,
         },
     )
     .await

@@ -66,6 +66,7 @@ fn entry(did: &str, admin: AdminAuthority, expires_at: Option<u64>) -> VtcAclEnt
         expires_at,
         resource_grants: Vec::new(),
         label_set_by_subject: false,
+        suspension: None,
     }
 }
 
